@@ -1,6 +1,6 @@
 name: Publish Linux Desktop (reusable)
 
-# Reusable workflow: publish an already-built Linux AppImage to a release
+# Reusable workflow: publish one already-built Linux artifact (AppImage or deb) to a release
 # channel on the distribution CDN. Called by nightly.yml (channel: nightly)
 # and release.yml (channel: insider | stable) as its own lane BESIDE the
 # macOS sign-and-notarize workflow, mirroring publish-cli.yml: the Linux
@@ -18,17 +18,17 @@ name: Publish Linux Desktop (reusable)
 # on GitHub Releases.
 #
 # Key properties:
-#   - The versioned key desktop/<channel>/<version>/KiroCrew-<arch>.AppImage
+#   - The versioned key desktop/<channel>/<version>/KiroCrew-<arch>.<ext>
 #     is immutable-cached by CloudFront and is never republished with
 #     different bytes (--if-none-match conditional write; a 412 on a job
 #     re-run keeps the existing object and continues idempotently).
-#   - The mutable alias desktop/<channel>/latest/KiroCrew-<arch>.AppImage
+#   - The mutable alias desktop/<channel>/latest/KiroCrew-<arch>.<ext>
 #     (max-age=300) is written AFTER the versioned key so it never points
 #     at bytes that are not yet live.
 #   - Arch-qualified filename: Linux has no universal binary, so per-arch
 #     filenames are the contract (per-arch, never per-distro). One
-#     invocation of this workflow publishes exactly one arch, so x86_64 and
-#     aarch64 never share a key, a feed, or an alias.
+#     invocation of this workflow publishes exactly one (arch, format) pair,
+#     so no two of them ever share a key, a feed, or an alias.
 #   - Writes feed/<channel>/latest-linux[-arm64].yml (electron-updater
 #     channel metadata) AFTER the versioned AppImage is live and BEFORE the
 #     latest alias, mirroring the mac lane's go-live order: a feed must
@@ -51,13 +51,22 @@ on:
         description: "Desktop CPU architecture this invocation publishes: x64 | arm64"
         required: true
         type: string
+      format:
+        description: >-
+          Linux artifact format this invocation publishes: appimage | deb.
+          One invocation publishes exactly ONE (arch, format) pair, so no two
+          formats ever share a CDN key, a feed, or a latest alias — the same
+          discipline the arch dimension already enforces.
+        required: false
+        type: string
+        default: appimage
       publish:
         description: "Publish to the public CDN; false skips the job entirely"
         required: false
         type: boolean
         default: true
-      appimage_artifact:
-        description: "Name of the uploaded artifact containing the AppImage"
+      build_artifact:
+        description: "Name of the uploaded artifact containing the Linux artifact to publish"
         required: true
         type: string
       promote:
@@ -70,6 +79,13 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      # The only secret this workflow reads. Declared so a caller can pass just
+      # this one rather than `secrets: inherit`, which would hand a reusable
+      # workflow every secret in the repository. Not `required`, because the job
+      # skips itself when it is absent (a fork has no signing role).
+      AWS_SIGNING_ROLE_ARN:
+        required: false
 
 permissions:
   contents: read
@@ -78,7 +94,7 @@ permissions:
 
 jobs:
   publish-linux:
-    name: Publish Linux AppImage (${{ inputs.channel }} · ${{ inputs.arch }})
+    name: Publish Linux ${{ inputs.format }} (${{ inputs.channel }} · ${{ inputs.arch }})
     # Public-distribution gates: skipped when the caller runs publish-less
     # or the CDN is not configured (fork). BOTH variables are required --
     # the bucket receives the upload and the CDN base is baked into the
@@ -99,6 +115,7 @@ jobs:
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       ARCH: ${{ inputs.arch }}
+      FORMAT: ${{ inputs.format }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -123,14 +140,51 @@ jobs:
               echo "LINUX_BASENAME=KiroCrew-x86_64" >> "$GITHUB_ENV"
               echo "FEED_FILE=latest-linux.yml" >> "$GITHUB_ENV"
               echo "EXPECT_ELF_MACHINE=x86-64" >> "$GITHUB_ENV"
+              echo "EXPECT_DEB_ARCH=amd64" >> "$GITHUB_ENV"
+              echo "EXPECT_RPM_ARCH=x86_64" >> "$GITHUB_ENV"
               ;;
             arm64)
               echo "LINUX_BASENAME=KiroCrew-aarch64" >> "$GITHUB_ENV"
               echo "FEED_FILE=latest-linux-arm64.yml" >> "$GITHUB_ENV"
               echo "EXPECT_ELF_MACHINE=aarch64" >> "$GITHUB_ENV"
+              echo "EXPECT_DEB_ARCH=arm64" >> "$GITHUB_ENV"
+              echo "EXPECT_RPM_ARCH=aarch64" >> "$GITHUB_ENV"
               ;;
             *)
               echo "::error::unsupported arch '${ARCH}' (expected x64 or arm64)"
+              exit 1
+              ;;
+          esac
+
+      # Resolve every FORMAT-dependent name, fail-closed for the same reason as
+      # the arch block: a wrong extension or feed prefix writes bytes under a key
+      # that is immutable once published.
+      #
+      # FEED_PREFIX is what keeps the two formats' electron-updater metadata
+      # apart. The channel FILE name is derived by electron-updater from platform
+      # and arch with no hook to change it, so two formats cannot share a
+      # directory without one overwriting the other's feed. A per-format
+      # subdirectory leaves that derivation — including the -arm64 suffix —
+      # completely untouched; auto-update.js points a package install at the same
+      # subdirectory via buildFeedBase()'s `variant`.
+      - name: Resolve format-dependent names
+        run: |
+          set -euo pipefail
+          case "${FORMAT}" in
+            appimage)
+              echo "LINUX_EXT=AppImage" >> "$GITHUB_ENV"
+              echo "FEED_PREFIX=feed/${CHANNEL}" >> "$GITHUB_ENV"
+              ;;
+            deb)
+              echo "LINUX_EXT=deb" >> "$GITHUB_ENV"
+              echo "FEED_PREFIX=feed/${CHANNEL}/deb" >> "$GITHUB_ENV"
+              ;;
+            rpm)
+              echo "LINUX_EXT=rpm" >> "$GITHUB_ENV"
+              echo "FEED_PREFIX=feed/${CHANNEL}/rpm" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::unsupported format '${FORMAT}' (expected appimage, deb or rpm)"
               exit 1
               ;;
           esac
@@ -146,7 +200,7 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ inputs.appimage_artifact }}
+          name: ${{ inputs.build_artifact }}
           path: artifacts
 
       - name: Verify immutable promotion bundle
@@ -159,30 +213,32 @@ jobs:
             --expected-source-sha "${GITHUB_SHA}" \
             --expected-base-version "${PROMOTION_BASE_VERSION}"
 
-      - name: Locate AppImage
+      - name: Locate Linux artifact
         if: env.HAS_SIGNING_SECRETS
         env:
           PROMOTE: ${{ inputs.promote }}
         run: |
           set -euo pipefail
           # Promotion bundles carry BOTH arches under canonical names, so the
-          # match must be arch-pinned there. Fresh builds carry one AppImage
-          # with electron-builder's versioned filename, which never equals the
-          # canonical basename -- match any AppImage in that mode.
+          # match must be arch-pinned there. Fresh builds carry one artifact per
+          # format with electron-builder's versioned filename, which never equals
+          # the canonical basename -- match any file of this format in that mode.
+          # The extension alone separates the formats, so a build that produced
+          # both an AppImage and a deb still yields exactly one match here.
           if [ "${PROMOTE}" = "true" ]; then
-            PATTERN="${LINUX_BASENAME}.AppImage"
+            PATTERN="${LINUX_BASENAME}.${LINUX_EXT}"
           else
-            PATTERN="*.AppImage"
+            PATTERN="*.${LINUX_EXT}"
           fi
-          mapfile -t APPIMAGES < <(find artifacts -type f -name "$PATTERN")
-          if [ "${#APPIMAGES[@]}" -eq 0 ]; then
-            echo "No AppImage found matching ${PATTERN} in build artifacts"; exit 1
+          mapfile -t MATCHES < <(find artifacts -type f -name "$PATTERN")
+          if [ "${#MATCHES[@]}" -eq 0 ]; then
+            echo "No ${LINUX_EXT} found matching ${PATTERN} in build artifacts"; exit 1
           fi
-          if [ "${#APPIMAGES[@]}" -gt 1 ]; then
-            echo "Expected exactly one AppImage matching ${PATTERN}, found ${#APPIMAGES[@]}:"; printf '%s\n' "${APPIMAGES[@]}"; exit 1
+          if [ "${#MATCHES[@]}" -gt 1 ]; then
+            echo "Expected exactly one ${LINUX_EXT} matching ${PATTERN}, found ${#MATCHES[@]}:"; printf '%s\n' "${MATCHES[@]}"; exit 1
           fi
-          echo "APPIMAGE_PATH=${APPIMAGES[0]}" >> "$GITHUB_ENV"
-          ls -la "${APPIMAGES[0]}"
+          echo "ARTIFACT_PATH=${MATCHES[0]}" >> "$GITHUB_ENV"
+          ls -la "${MATCHES[0]}"
 
       # The artifact NAME is caller-supplied, so nothing upstream proves the
       # bytes are the arch this invocation publishes them as. Verify it against
@@ -190,17 +246,48 @@ jobs:
       # passes every checksum the updater applies (sha512 matches the bytes that
       # were uploaded) and only fails on the user's machine as "cannot execute
       # binary file", after the key is already burned.
-      - name: Verify AppImage architecture
+      - name: Verify artifact architecture
         if: env.HAS_SIGNING_SECRETS
+        env:
+          # Through env, not `${{ }}` inside run: a caller-supplied value
+          # interpolated into the script body is a shell-injection surface, and
+          # this one only ever appears in a diagnostic string.
+          BUILD_ARTIFACT: ${{ inputs.build_artifact }}
         run: |
           set -euo pipefail
-          FILE_OUT="$(file -b "${APPIMAGE_PATH}")"
-          echo "${FILE_OUT}"
-          if ! printf '%s' "${FILE_OUT}" | grep -qi -- "${EXPECT_ELF_MACHINE}"; then
-            echo "::error::artifact ${{ inputs.appimage_artifact }} is not ${ARCH} (expected ELF machine '${EXPECT_ELF_MACHINE}'): ${FILE_OUT}"
-            exit 1
+          # An AppImage is an ELF, so its own header carries the machine. A deb and
+          # an rpm are archives whose ELF payload is compressed inside, so the
+          # authoritative statement is the package metadata's own architecture
+          # field -- which is also the value dpkg/rpm enforce at install time,
+          # making it the right thing to gate on. Each format names that arch
+          # differently (amd64 vs x86_64), which is why the expectations are
+          # resolved per format rather than shared.
+          if [ "${FORMAT}" = "deb" ]; then
+            PKG_ARCH="$(dpkg-deb -f "${ARTIFACT_PATH}" Architecture)"
+            EXPECT="${EXPECT_DEB_ARCH}"
+          elif [ "${FORMAT}" = "rpm" ]; then
+            PKG_ARCH="$(rpm -qp --queryformat '%{ARCH}' "${ARTIFACT_PATH}" 2>/dev/null)"
+            EXPECT="${EXPECT_RPM_ARCH}"
+          else
+            PKG_ARCH=""
+            EXPECT=""
           fi
-          echo "Architecture verified: ${ARCH} (${EXPECT_ELF_MACHINE})"
+          if [ -n "${EXPECT}" ]; then
+            echo "${FORMAT} architecture: ${PKG_ARCH}"
+            if [ "${PKG_ARCH}" != "${EXPECT}" ]; then
+              echo "::error::artifact ${BUILD_ARTIFACT} declares architecture '${PKG_ARCH}', expected '${EXPECT}' for ${ARCH}"
+              exit 1
+            fi
+            echo "Architecture verified: ${ARCH} (${EXPECT})"
+          else
+            FILE_OUT="$(file -b "${ARTIFACT_PATH}")"
+            echo "${FILE_OUT}"
+            if ! printf '%s' "${FILE_OUT}" | grep -qi -- "${EXPECT_ELF_MACHINE}"; then
+              echo "::error::artifact ${BUILD_ARTIFACT} is not ${ARCH} (expected ELF machine '${EXPECT_ELF_MACHINE}'): ${FILE_OUT}"
+              exit 1
+            fi
+            echo "Architecture verified: ${ARCH} (${EXPECT_ELF_MACHINE})"
+          fi
 
       # Signed SLSA provenance for the EXACT bytes this lane uploads,
       # attested before anything reaches S3. This closes the decoupling
@@ -211,16 +298,16 @@ jobs:
       # with no verifiable provenance. Placed BEFORE the versioned-key
       # write so un-attested bytes never go live; if attestation fails,
       # the job fails and nothing is published.
-      - name: Attest AppImage provenance
+      - name: Attest artifact provenance
         if: env.HAS_SIGNING_SECRETS && !inputs.promote
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: ${{ env.APPIMAGE_PATH }}
+          subject-path: ${{ env.ARTIFACT_PATH }}
 
-      - name: Verify promoted AppImage provenance
+      - name: Verify promoted artifact provenance
         if: env.HAS_SIGNING_SECRETS && inputs.promote
         run: |
-          gh attestation verify "${APPIMAGE_PATH}" \
+          gh attestation verify "${ARTIFACT_PATH}" \
             --repo "${{ github.repository }}" \
             --signer-workflow "${{ github.repository }}/.github/workflows/publish-linux.yml"
 
@@ -229,16 +316,16 @@ jobs:
       # never carry different bytes. --if-none-match makes the write
       # conditional; a 412 on a job re-run keeps the existing object and
       # continues idempotently.
-      - name: Publish AppImage to distribution bucket
+      - name: Publish artifact to distribution bucket
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          APPIMAGE_KEY="desktop/${CHANNEL}/${VERSION}/${LINUX_BASENAME}.AppImage"
+          ARTIFACT_KEY="desktop/${CHANNEL}/${VERSION}/${LINUX_BASENAME}.${LINUX_EXT}"
           set +e
           PUT_OUT=$(aws s3api put-object \
             --bucket "${{ vars.CLI_DIST_BUCKET }}" \
-            --key "${APPIMAGE_KEY}" \
-            --body "${APPIMAGE_PATH}" \
+            --key "${ARTIFACT_KEY}" \
+            --body "${ARTIFACT_PATH}" \
             --if-none-match '*' \
             --content-type application/octet-stream \
             --cache-control "public, max-age=31536000, immutable" 2>&1)
@@ -254,13 +341,13 @@ jobs:
               # key. Same discipline as publish-cli.yml's 412 path; the
               # compare goes through the public CDN because the publish
               # role's S3 read-back grant covers cli/* only.
-              echo "Key already published (job re-run) -- verifying existing bytes match this build: ${APPIMAGE_KEY}"
-              curl -fsSL --retry 3 "${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}" -o /tmp/published.AppImage
-              PUBLISHED_SHA=$(sha256sum /tmp/published.AppImage | awk '{print $1}')
-              LOCAL_SHA=$(sha256sum "${APPIMAGE_PATH}" | awk '{print $1}')
-              rm -f /tmp/published.AppImage
+              echo "Key already published (job re-run) -- verifying existing bytes match this build: ${ARTIFACT_KEY}"
+              curl -fsSL --retry 3 "${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}" -o /tmp/published.artifact
+              PUBLISHED_SHA=$(sha256sum /tmp/published.artifact | awk '{print $1}')
+              LOCAL_SHA=$(sha256sum "${ARTIFACT_PATH}" | awk '{print $1}')
+              rm -f /tmp/published.artifact
               if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
-                echo "::error::Immutable key ${APPIMAGE_KEY} already holds DIFFERENT bytes (published ${PUBLISHED_SHA}, this build ${LOCAL_SHA}). The version string is burned -- cut a new version instead of re-running. Refusing to repoint the latest alias."
+                echo "::error::Immutable key ${ARTIFACT_KEY} already holds DIFFERENT bytes (published ${PUBLISHED_SHA}, this build ${LOCAL_SHA}). The version string is burned -- cut a new version instead of re-running. Refusing to repoint the latest alias."
                 exit 1
               fi
               echo "Published bytes identical -- keeping existing object and continuing."
@@ -269,8 +356,8 @@ jobs:
               exit $RC
             fi
           fi
-          echo "APPIMAGE_KEY=${APPIMAGE_KEY}" >> "$GITHUB_ENV"
-          echo "Public artifact: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
+          echo "ARTIFACT_KEY=${ARTIFACT_KEY}" >> "$GITHUB_ENV"
+          echo "Public artifact: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}"
 
       # electron-updater channel metadata (latest-linux.yml) -- the feed
       # website/electron/auto-update.js reads on Linux. Written only after
@@ -302,8 +389,8 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          APPIMAGE_SHA512=$(openssl dgst -sha512 -binary "${APPIMAGE_PATH}" | base64 -w 0)
-          APPIMAGE_SIZE=$(stat -c%s "${APPIMAGE_PATH}")
+          ARTIFACT_SHA512=$(openssl dgst -sha512 -binary "${ARTIFACT_PATH}" | base64 -w 0)
+          ARTIFACT_SIZE=$(stat -c%s "${ARTIFACT_PATH}")
 
           # FAIL CLOSED if the feed would describe bytes other than the ones
           # served. The versioned AppImage key is conditionally written and a
@@ -314,49 +401,49 @@ jobs:
           # Aborting is correct: republishing an immutable key causes edge
           # divergence (#62) -- cut a new version instead.
           SERVED_SHA512=$(curl -fsS --retry 3 --retry-delay 2 \
-            "${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}" | openssl dgst -sha512 -binary | base64 -w 0)
-          if [ "$SERVED_SHA512" != "$APPIMAGE_SHA512" ]; then
-            echo "::error::published AppImage does not match the artifact this feed would advertise."
-            echo "::error::  expected sha512 (local build): $APPIMAGE_SHA512"
+            "${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}" | openssl dgst -sha512 -binary | base64 -w 0)
+          if [ "$SERVED_SHA512" != "$ARTIFACT_SHA512" ]; then
+            echo "::error::published artifact does not match the bytes this feed would advertise."
+            echo "::error::  expected sha512 (local build): $ARTIFACT_SHA512"
             echo "::error::  served   sha512 (published):   $SERVED_SHA512"
             exit 1
           fi
-          echo "Verified published AppImage matches the feed digest."
+          echo "Verified published artifact matches the feed digest."
           cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
           files:
-            - url: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}
-              sha512: '${APPIMAGE_SHA512}'
-              size: ${APPIMAGE_SIZE}
-          path: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}
-          sha512: '${APPIMAGE_SHA512}'
+            - url: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}
+              sha512: '${ARTIFACT_SHA512}'
+              size: ${ARTIFACT_SIZE}
+          path: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}
+          sha512: '${ARTIFACT_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
           EOF
           aws s3 cp /tmp/"${FEED_FILE}" \
-            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/${FEED_FILE}" \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/${FEED_PREFIX}/${FEED_FILE}" \
             --content-type text/yaml \
             --cache-control "public, max-age=300"
-          echo "Feed written: feed/${CHANNEL}/${FEED_FILE} -> ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
+          echo "Feed written: ${FEED_PREFIX}/${FEED_FILE} -> ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}"
 
       # Human-clickable permalink to the current AppImage:
-      #   <CDN>/desktop/<channel>/latest/KiroCrew-x86_64.AppImage
+      #   <CDN>/desktop/<channel>/latest/KiroCrew-x86_64.<ext>
       # Same mutable-alias semantics as the latest-DMG alias: plain
       # overwrite, max-age=300, written AFTER the versioned key and the
       # feed so it never points at bytes that are not yet live nor ahead
       # of the go-live switch.
-      - name: Update latest AppImage alias
+      - name: Update latest artifact alias
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          LATEST_APPIMAGE_KEY="desktop/${CHANNEL}/latest/${LINUX_BASENAME}.AppImage"
+          LATEST_ARTIFACT_KEY="desktop/${CHANNEL}/latest/${LINUX_BASENAME}.${LINUX_EXT}"
           aws s3api put-object \
             --bucket "${{ vars.CLI_DIST_BUCKET }}" \
-            --key "${LATEST_APPIMAGE_KEY}" \
-            --body "${APPIMAGE_PATH}" \
+            --key "${LATEST_ARTIFACT_KEY}" \
+            --body "${ARTIFACT_PATH}" \
             --content-type application/octet-stream \
             --cache-control "public, max-age=300" > /dev/null
-          echo "LATEST_APPIMAGE_KEY=${LATEST_APPIMAGE_KEY}" >> "$GITHUB_ENV"
-          echo "Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_APPIMAGE_KEY}"
+          echo "LATEST_ARTIFACT_KEY=${LATEST_ARTIFACT_KEY}" >> "$GITHUB_ENV"
+          echo "Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_ARTIFACT_KEY}"
 
       - name: Summary
         if: env.HAS_SIGNING_SECRETS
@@ -364,7 +451,7 @@ jobs:
           {
             echo "## Publish Linux (${CHANNEL} · ${ARCH})"
             echo "- Version: ${VERSION}"
-            echo "- Public AppImage: ${{ vars.CLI_CDN_BASE }}/${APPIMAGE_KEY}"
-            echo "- Feed: \`feed/${CHANNEL}/${FEED_FILE}\`"
-            echo "- Latest AppImage alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_APPIMAGE_KEY}"
+            echo "- Public artifact: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}"
+            echo "- Feed: \`${FEED_PREFIX}/${FEED_FILE}\`"
+            echo "- Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_ARTIFACT_KEY}"
           } >> "$GITHUB_STEP_SUMMARY"

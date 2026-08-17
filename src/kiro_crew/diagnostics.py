@@ -322,6 +322,8 @@ _CHANNEL_LABELS = release_channel.CHANNEL_LABELS
 _INSTALL_OPTIONS = {
     "dmg": "Desktop app",
     "appimage": "Desktop app",
+    "deb": "Desktop app (deb)",
+    "rpm": "Desktop app (rpm)",
     "wheel": "pip / pipx",
     "docker": "Docker",
     "source": "From source",

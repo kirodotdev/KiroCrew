@@ -60,18 +60,47 @@ remote Gateway over an SSH tunnel. See the
 [desktop app guide](docs/build/desktop-app.md).
 
 - **macOS** (one universal DMG, Apple Silicon + Intel): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
-- **Linux x86_64**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
-- **Linux aarch64** (Graviton, Raspberry Pi, ARM laptops): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.AppImage)
 - **Windows**: no desktop build yet, so run the Gateway from a [source install](#build-from-source) and open the dashboard in your browser
 
-Not sure which Linux file you need? `uname -m` prints it — `x86_64` or `aarch64`.
+**On Linux, start with the one-line install** — it is the smoothest path, works
+on every distro and both architectures, and puts `kirocrew` on your `PATH`,
+which is what makes `kirocrew service install` (and the AppArmor profile the
+agent sandbox needs on Ubuntu 23.10+) reachable:
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
+```
+
+You then work in the dashboard at `http://localhost:5476`. Add a **desktop
+package** when you want what only the Electron shell gives you: an
+application-menu entry and icon, a native window, a taskbar badge, a system-wide
+hotkey, a Gateway that starts and stops with the app, and in-app updates. A
+`.deb` or `.rpm` installs to a fixed path under `/opt`, which is what lets it set
+the AppArmor profile up for you; the AppImage needs no root but needs FUSE and
+carries a manual sandbox step. `uname -m` prints which architecture you need.
+
+| Linux desktop package | x86_64 | aarch64 (Graviton, Raspberry Pi, ARM laptops) |
+|---|---|---|
+| **`.deb`** (Debian, Ubuntu) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.deb) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.deb) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.deb) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.deb) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.deb) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.deb) |
+| **`.rpm`** (Fedora, RHEL, CentOS Stream, Amazon Linux 2023) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.rpm) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.rpm) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.rpm) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.rpm) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.rpm) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.rpm) |
+| **AppImage** (no root, any distro) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.AppImage) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.AppImage) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.AppImage) |
+
+```bash
+sudo apt install ./KiroCrew-x86_64.deb     # Debian, Ubuntu
+sudo dnf install ./KiroCrew-x86_64.rpm     # Fedora, RHEL, CentOS Stream, AL2023
+```
+
+The Linux desktop app needs **glibc 2.34 or newer** (Ubuntu 22.04+, Debian 12+,
+Fedora, CentOS Stream 9, Amazon Linux 2023). On an older host — Ubuntu 20.04,
+Debian 11, Amazon Linux 2 — use the one-line install above.
+
 Every architecture below is a first-class lane: each gets its own build, its own
 auto-update feed, and its own SLSA provenance attestation.
 
 | Install path | x86_64 | aarch64 (ARM64) |
 |---|---|---|
-| **Desktop AppImage** | yes | yes |
 | **CLI one-liner / wheel** | yes | yes (the wheel is `py3-none-any`; native libraries are vendored per architecture) |
+| **Desktop `.deb` / `.rpm` / AppImage** | yes | yes |
 | **Docker image** | yes | yes (`linux/amd64` and `linux/arm64` under every tag, so `docker pull` picks yours) |
 
 Take Stable unless you have a reason not to — the table below says who each

@@ -7,6 +7,7 @@ command on Linux where there is no brew.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from kiro_crew import cli_doctor
@@ -584,3 +585,71 @@ class TestDoctorKas:
         assert "2099-01-01T00:00:00Z" in out
         assert "SECRET-DO-NOT-PRINT" not in out
         assert issues == []
+
+
+class TestPathLauncherOwnership:
+    """`kirocrew doctor` names which install owns the `kirocrew` command.
+
+    A gateway deliberately never takes the name from another install's working
+    launcher, so the two can diverge silently: the documented Linux pairing puts
+    a cli.sh wheel and a deb/rpm desktop install on one machine, and the desktop
+    app has no terminal to show the decline. This is where that is visible.
+    """
+
+    def test_matching_launcher_is_reported_clean(self, monkeypatch, tmp_path, capsys) -> None:
+        exe = tmp_path / "opt" / "bin" / "kirocrew"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(exe))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(exe))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "kirocrew CLI: ✅" in out
+        assert "different install" not in out
+
+    def test_divergent_launcher_names_both_paths(self, monkeypatch, tmp_path, capsys) -> None:
+        wheel = tmp_path / "crew-venv" / "bin" / "kirocrew"
+        wheel.parent.mkdir(parents=True)
+        wheel.write_text("")
+        package = tmp_path / "opt" / "KiroCrew" / "kirocrew"  # brand-ok: real /opt path
+        package.parent.mkdir(parents=True)
+        package.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(wheel))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(package))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        # Both sides must be named, or the user cannot tell which is which.
+        # Compare like with like: the check prints realpath, and on Windows a
+        # realpath can differ in form (short vs long name, case) from str(path).
+        assert os.path.realpath(wheel) in out and os.path.realpath(package) in out
+        assert "kirocrew setup" in out
+
+    def test_no_launcher_on_path_is_informational(self, monkeypatch, capsys) -> None:
+        """The desktop app runs its bundled backend directly, so an absent
+        terminal command is a state, not a fault."""
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: None)
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⏹ not on PATH" in out
+        assert "⚠" not in out
+
+    def test_unresolvable_install_does_not_cry_wolf(self, monkeypatch, tmp_path, capsys) -> None:
+        """A bare "kirocrew" sentinel is not a path, so there is nothing to
+        compare and no divergence to claim."""
+        found = tmp_path / "bin" / "kirocrew"
+        found.parent.mkdir(parents=True)
+        found.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(found))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: "kirocrew")
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "kirocrew CLI: ✅" in out

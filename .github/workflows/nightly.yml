@@ -195,8 +195,8 @@ jobs:
   # existed. True per-arch publish independence needs the publishers to run
   # past a partial build failure and let their own artifact download decide;
   # tracked in #2645 rather than reshaped here.
-  publish-linux-x64:
-    name: Publish Linux Desktop (nightly channel · x64)
+  publish-linux-appimage-x64:
+    name: Publish Linux appimage (nightly channel · x64)
     needs: [version, build-desktop]
     permissions:
       contents: read
@@ -207,12 +207,14 @@ jobs:
       channel: nightly
       version: ${{ needs.version.outputs.nightly_version }}
       arch: x64
+      format: appimage
       publish: true
-      appimage_artifact: build-linux-x64
-    secrets: inherit
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
-  publish-linux-arm64:
-    name: Publish Linux Desktop (nightly channel · arm64)
+  publish-linux-appimage-arm64:
+    name: Publish Linux appimage (nightly channel · arm64)
     needs: [version, build-desktop]
     permissions:
       contents: read
@@ -223,9 +225,83 @@ jobs:
       channel: nightly
       version: ${{ needs.version.outputs.nightly_version }}
       arch: arm64
+      format: appimage
       publish: true
-      appimage_artifact: build-linux-arm64
-    secrets: inherit
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-x64:
+    name: Publish Linux deb (nightly channel · x64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: x64
+      format: deb
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-arm64:
+    name: Publish Linux deb (nightly channel · arm64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: arm64
+      format: deb
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-x64:
+    name: Publish Linux rpm (nightly channel · x64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: x64
+      format: rpm
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-arm64:
+    name: Publish Linux rpm (nightly channel · arm64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      arch: arm64
+      format: rpm
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
   # ── Windows installer publish ─────────────────────────────────────────
   # Depends on build-windows rather than build-desktop: the installer is

@@ -6519,7 +6519,7 @@ class GatewayOrchestrator:
                 #     light the dashboard badge so the operator runs `kirocrew
                 #     update`. Before this branch existed the path `return`ed
                 #     silently, leaving the host below the floor with no signal.
-                #   * externally managed (dmg/appimage/docker: not self_updatable
+                #   * externally managed (dmg/appimage/deb/rpm/docker: not self_updatable
                 #     AND no `update_command`) -> its own updater owns this; the
                 #     backend must not drive a git reset on a non-git tree nor
                 #     show an inapplicable CLI-update badge. Log and return.

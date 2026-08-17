@@ -3826,7 +3826,12 @@ class TestSetupChannelGating:
         monkeypatch.setattr(
             "kiro_crew.agent.install_agent", lambda clean=False: tmp_path / "agent.json"
         )
-        monkeypatch.setattr("kiro_crew.agent.ensure_kirocrew_on_path", lambda: None)
+        # Mirror the real signature (bin_dir, *, claim_existing): the setup path
+        # passes claim_existing=True, and a stub that refused it would fail here
+        # for a reason that has nothing to do with channel gating.
+        monkeypatch.setattr(
+            "kiro_crew.agent.ensure_kirocrew_on_path", lambda *a, **k: None
+        )
         monkeypatch.setattr("kiro_crew.mcp_cleanup.clean_stale_managed_mcp", lambda: [])
         # Neutralize every unrelated wizard step so only the gating is under test.
         for name in (

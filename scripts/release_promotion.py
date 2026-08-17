@@ -30,6 +30,10 @@ ARTIFACT_NAMES = {
     "sdist": re.compile(r"^kirocrew-[A-Za-z0-9_.]+\.tar\.gz$"),
     "appimage": re.compile(r"^KiroCrew-x86_64\.AppImage$"),
     "appimage_arm64": re.compile(r"^KiroCrew-aarch64\.AppImage$"),
+    "deb": re.compile(r"^KiroCrew-x86_64\.deb$"),
+    "deb_arm64": re.compile(r"^KiroCrew-aarch64\.deb$"),
+    "rpm": re.compile(r"^KiroCrew-x86_64\.rpm$"),
+    "rpm_arm64": re.compile(r"^KiroCrew-aarch64\.rpm$"),
     "mac_zip": re.compile(r"^notarized\.zip$"),
     "dmg": re.compile(r"^KiroCrew\.dmg$"),
 }

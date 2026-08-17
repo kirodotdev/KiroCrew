@@ -252,4 +252,36 @@ describe("uninstall data preservation contract", () => {
     assert.equal(electronPkg.build.nsis.oneClick, false);
     assert.equal(electronPkg.build.nsis.perMachine, false);
   });
+
+  it("gives nightly its own Linux package identity so it installs beside stable", () => {
+    const nightlyOverrides = fs.readFileSync(
+      path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+      "utf8"
+    );
+    // Linux packages key install identity off the PACKAGE NAME, so a shared name
+    // makes dpkg/rpm treat a nightly install as an upgrade of stable and remove
+    // it -- the same class as the nsis.guid hazard above. The launcher and
+    // desktop-entry names are per-install paths and must move with it.
+    for (const override of [
+      "-c.deb.packageName=kirocrew-nightly",
+      "-c.rpm.packageName=kirocrew-nightly",
+      "-c.linux.executableName=kirocrew-desktop-nightly",
+      "-c.extraMetadata.desktopName=kirocrew-desktop-nightly.desktop",
+    ]) {
+      assert.ok(
+        nightlyOverrides.includes(override),
+        `build-desktop.sh must pass ${override} for the nightly channel`
+      );
+    }
+    // And the stable defaults they override must be the ones actually shipped,
+    // so a rename on either side fails here instead of silently colliding.
+    assert.equal(electronPkg.build.deb.packageName, "kirocrew");
+    assert.equal(electronPkg.build.rpm.packageName, "kirocrew");
+    assert.equal(electronPkg.build.linux.executableName, "kirocrew-desktop");
+    assert.equal(electronPkg.desktopName, "kirocrew-desktop.desktop");
+    // syncDesktopName is what ties Electron's app_id and the entry's
+    // StartupWMClass to desktopName; without it the nightly override above
+    // would move the filename but not the window association.
+    assert.equal(electronPkg.build.linux.syncDesktopName, true);
+  });
 });

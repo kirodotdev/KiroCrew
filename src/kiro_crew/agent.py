@@ -52,6 +52,7 @@ from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FIL
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
+    _in_ephemeral_tree,
     _in_linked_git_worktree,
     _valid_override_home,
     isolated_agents_dir,
@@ -284,18 +285,107 @@ def _user_overrides_path() -> Path:
 _KIROCREW_BIN: str | None = None
 
 
-def _bin_is_usable(path: Path) -> bool:
-    """Return True if *path* is a readable file.
+def _interpreter_runnable(candidate: Path) -> bool:
+    """Return True if *candidate* could actually be exec'd as an interpreter.
 
-    Symbol preserved for callers; the previous Amazon-specific Apollo/Brazil
-    wrapper-script rejection logic is a no-op on a public install (those
-    binaries are absent), so any readable executable is accepted.
+    Existence is not enough: a present-but-not-executable interpreter fails at
+    exec time (``EACCES`` — "bad interpreter: Permission denied"), so a launcher
+    naming one is exactly as dead as a launcher naming a reaped path. Keeping
+    this stricter than ``exists()`` is what lets :func:`_bin_is_usable` promise it
+    narrows only by provably-dead targets.
+
+    POSIX-only narrowing by construction: Windows has no execute bit and
+    ``os.access(f, X_OK)`` is True for any existing file, so this degrades to an
+    existence check there rather than validating anything extra.
+    """
+    return candidate.is_file() and os.access(candidate, os.X_OK)
+
+
+def _bin_is_usable(path: Path) -> bool:
+    """Return True if *path* is a readable launcher whose interpreter still exists.
+
+    Readability alone is not usability. A launcher is a thin wrapper around an
+    interpreter living elsewhere, so it OUTLIVES the thing it needs: a reaped work
+    directory, a removed ``.venv``, or a pruned bundle leaves an executable file
+    that fails at run time with "virtual environment not found". Accepting one
+    makes ``ensure_kirocrew_on_path`` publish a machine-wide ``kirocrew`` that is
+    broken from the moment it is written — and that function runs on EVERY gateway
+    start, so it would keep re-publishing it.
+
+    Two launcher shapes, judged differently because only one of them states the
+    answer: a pip console script names its interpreter in the shebang, which stays
+    correct for every install layout (a venv, ``python3.12 -m pip install`` into
+    ``~/.local/bin``, a distro package), so it is read directly. A shell wrapper's
+    shebang names the SHELL, so its interpreter is resolved relative to the
+    wrapper instead.
+
+    Nothing is executed, and a launcher naming no interpreter of ours is accepted,
+    so this only ever narrows the set by provably-dead targets.
     """
     try:
-        with open(path, "rb"):
-            return True
+        with open(path, "rb") as stream:
+            head = stream.read(4096)
     except OSError:
         return False
+    if not head.startswith(b"#!"):
+        return True  # compiled launcher (pip's Windows .exe, a frozen binary)
+    text = head.decode("utf-8", errors="replace")
+
+    shebang = text.splitlines()[0][2:].strip()
+    interpreter = shebang.split()[0] if shebang else ""
+    # `#!/usr/bin/env python3` names the FINDER, not the interpreter, so it says
+    # nothing about a specific path; only an absolute python path is decisive.
+    # `is_absolute()` rather than a leading "/" so a native Windows path
+    # (`C:\...\python.exe`) is recognised there too -- pip ships a compiled
+    # `.exe` launcher on Windows, which returns above, but a shebang script that
+    # does reach here must not be judged by a POSIX-only shape.
+    candidate = Path(interpreter)
+    if candidate.is_absolute() and candidate.name.startswith("python"):
+        return _interpreter_runnable(candidate)
+
+    bin_dir = path.parent
+    # `<venv>/bin/kirocrew` (already inside the venv) vs `<root>/bin/kirocrew`
+    # (the repo launcher and the packaged bundle's wrapper, beside the venv).
+    venv_root = bin_dir.parent
+    if venv_root.name != ".venv":
+        venv_root = venv_root / ".venv"
+    checks: list[tuple[str, tuple[Path, ...]]] = [
+        (".venv", (venv_root / "bin" / "python", venv_root / "Scripts" / "python.exe")),
+        # Packaged PBS bundle: `<root>/bin/python3.12`, beside the launcher. The
+        # marker identifies that LAYOUT, not merely a version, and it stays a
+        # literal on purpose: widening it to `python3\.\d+` also matches shebangs
+        # that name a version while keeping their interpreter somewhere else
+        # entirely -- Apollo's `#!/apollo/sbin/envroot $ENVROOT/python3.10/bin/
+        # python3.10` is one, and it then gets held to a sibling `python3.10`
+        # that was never supposed to exist, so a working launcher is judged dead.
+        # Broadening the marker broadens the OBLIGATION it imposes, which is the
+        # opposite of what a liveness check should do when it cannot identify the
+        # shape. The same literal appears in `packaging/build-desktop.sh`, which
+        # builds this layout; unifying the two is its own change.
+        ("python3.12", (bin_dir / "python3.12", venv_root / "bin" / "python3.12")),
+    ]
+    for marker, candidates in checks:
+        if marker not in text:
+            continue
+        if not any(_interpreter_runnable(c) for c in candidates):
+            return False
+    return True
+
+
+def _launcher_works(path: Path) -> bool:
+    """Return True if *path* is a launcher that would actually run today.
+
+    Combines the two halves of the question asked of any launcher we did not
+    write ourselves: the file is present and executable, AND the interpreter it
+    delegates to still exists (:func:`_bin_is_usable`). Used to decide whether an
+    ``~/.local/bin/kirocrew`` that points somewhere ELSE is a working install's
+    launcher — which must be left alone — or a dead one we should replace.
+
+    Deliberately not folded into ``ensure_kirocrew_on_path``'s gate on its OWN
+    resolved target: that gate additionally requires an absolute path, and its
+    interpreter check already happened inside :func:`_resolve_kirocrew_bin`.
+    """
+    return path.is_file() and os.access(path, os.X_OK) and _bin_is_usable(path)
 
 
 def _kirocrew_bin_subpath(root: Path) -> Path:
@@ -339,9 +429,10 @@ def _resolve_kirocrew_bin() -> str:
 
     def _usable(p: str | Path) -> bool:
         sp = str(p)
-        if not (sp and os.path.isfile(sp) and os.access(sp, os.X_OK)):
-            return False
-        return _bin_is_usable(Path(sp))
+        # The empty-string guard is this resolver's own concern: its candidates
+        # come from config and env, where "" means "unset". Everything after it is
+        # the shared predicate, so the two cannot drift apart.
+        return bool(sp) and _launcher_works(Path(sp))
 
     # Frozen/PyInstaller app (shipped desktop app): ``sys.executable`` is the
     # bundled ``kirocrew-backend`` binary, which *is* the kirocrew CLI and
@@ -664,7 +755,9 @@ def _extra_mcp_scope_globals() -> list[Path]:
     return [s.global_json for s in scopes]
 
 
-def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
+def ensure_kirocrew_on_path(
+    bin_dir: Path | None = None, *, claim_existing: bool = False
+) -> str | None:
     """Ensure a ``kirocrew`` launcher is reachable on the user's PATH.
 
     The source ``install.sh`` symlinks ``~/.local/bin/kirocrew`` → the venv
@@ -675,10 +768,16 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
 
     * No-op if ``kirocrew`` already resolves on PATH to the same binary.
     * No-op if no concrete binary can be resolved (nothing to point at).
+    * No-op if a launcher for a DIFFERENT install is there and still works,
+      unless ``claim_existing`` says the user asked for this one by name.
     * Otherwise (re)create ``<bin_dir>/kirocrew`` → the resolved binary.
 
     Args:
         bin_dir: Target directory for the shim. Defaults to ``~/.local/bin``.
+        claim_existing: Take the name over from another install's working
+            launcher. ``kirocrew setup`` passes True because the user named this
+            install; gateway startup must NOT, since it runs unattended on every
+            start and would make the last install to boot win.
 
     Returns:
         The shim path if one was created/updated, else ``None``.
@@ -721,17 +820,75 @@ def ensure_kirocrew_on_path(bin_dir: Path | None = None) -> str | None:
         )
         return None
 
+    # Same hazard from the other direction: an AppImage's runtime mount and a
+    # scratch tree under the temp dir are both reaped out from under a launcher
+    # that points into them — and this function runs on EVERY gateway start, so
+    # it would re-create that dangling link every time. Declining leaves
+    # whatever already worked in place; a package install (fixed path under
+    # /opt) or a venv install is the shape that can carry a durable launcher.
+    if _in_ephemeral_tree(Path(target).resolve()):
+        logger.info(
+            "Not installing a kirocrew launcher: %s is inside an ephemeral tree (an "
+            "AppImage runtime mount, or the system temp directory), which is reaped "
+            "out from under the link. Install the deb/rpm package for a durable "
+            "`kirocrew` on PATH, or link a persistent install yourself.",
+            target,
+        )
+        return None
+
     # Already reachable on PATH as the same binary? Then there's nothing to do.
     existing = shutil.which("kirocrew")
     if existing and os.path.realpath(existing) == os.path.realpath(target):
         return None
+
+    # Ownership, checked on PATH before the target path: a working `kirocrew`
+    # ANYWHERE on PATH already belongs to some install — a pipx bin dir, a distro
+    # package, /usr/local/bin — and writing <bin_dir>/kirocrew would shadow it or
+    # be shadowed by it depending on PATH order, which is not a decision an
+    # unattended start gets to make. The per-path check further down is still
+    # needed and is not redundant with this one: it catches a working launcher
+    # sitting AT <bin_dir>/kirocrew while <bin_dir> is not on PATH at all.
+    if existing and not claim_existing:
+        existing_on_path = Path(os.path.realpath(existing))
+        if _launcher_works(existing_on_path):
+            logger.info(
+                "Leaving `kirocrew` on PATH alone: %s -> %s still works and belongs "
+                "to another install. Run `kirocrew setup` from the install you want "
+                "on PATH to switch it deliberately.",
+                existing,
+                existing_on_path,
+            )
+            return None
 
     bin_dir = bin_dir or (Path.home() / ".local" / "bin")
     link = bin_dir / "kirocrew"
     try:
         bin_dir.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() or link.exists():
+            existing_target = Path(os.path.realpath(link))
             if os.path.realpath(link) == os.path.realpath(target):
+                return None
+            # A launcher that still WORKS belongs to another install — typically
+            # the cli.sh wheel under ~/.kiro/crew-venv — and taking the name from
+            # it is not a repair. This runs on EVERY gateway start, so whichever
+            # install booted last would win, and the losing installer's upgrades
+            # would then land on a path nothing points at: `kirocrew` keeps
+            # working, silently at the wrong version, which is worse than a
+            # visible break. The documented Linux pairing (cli.sh for the CLI,
+            # deb/rpm for the desktop shell) puts both on one machine by design,
+            # so this is the ordinary configuration rather than a corner case.
+            #
+            # An explicit `kirocrew setup` DOES claim the name: the user named
+            # this install. A dangling or otherwise dead launcher is replaced on
+            # either path — that vacuum is what this function exists to fill.
+            if not claim_existing and _launcher_works(existing_target):
+                logger.info(
+                    "Leaving the existing kirocrew launcher alone: %s -> %s still "
+                    "works and belongs to another install. Run `kirocrew setup` "
+                    "from the install you want on PATH to switch it deliberately.",
+                    link,
+                    existing_target,
+                )
                 return None
             link.unlink()
         link.symlink_to(target)
@@ -764,7 +921,10 @@ def run_first_run_setup() -> None:
     rebuild. This is invoked from gateway startup to close that gap:
 
     * **PATH shim** — ``ensure_kirocrew_on_path()`` is idempotent and only
-      writes ``~/.local/bin/kirocrew``, so it runs on every start.
+      writes ``~/.local/bin/kirocrew``, so it runs on every start. It is called
+      WITHOUT ``claim_existing`` for exactly that reason: running unattended on
+      every start, it must fill an empty or broken slot only, never take the
+      command away from another install that still works.
     * **Stale predecessor MCP purge** — ``clean_stale_managed_mcp()`` mutates
       the user's *global* ``~/.kiro/settings/mcp.json``, so it runs ONCE,
       guarded by a marker file, to honor the "KiroCrew owns only the agent

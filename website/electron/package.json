@@ -2,6 +2,8 @@
   "name": "kirocrew-electron-mac",
   "version": "0.3.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
+  "homepage": "https://github.com/kirodotdev/KiroCrew",
+  "desktopName": "kirocrew-desktop.desktop",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -48,10 +50,61 @@
     "linux": {
       "category": "Development",
       "icon": "build/icons",
+      "executableName": "kirocrew-desktop",
+      "maintainer": "Kiro Crew Maintainers <maintainers@crew.kiro.dev>",
+      "synopsis": "Persistent AI agent workspace with memory, schedules, and unattended work",
+      "syncDesktopName": true,
       "target": [
-        "AppImage"
+        "AppImage",
+        "deb",
+        "rpm"
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "packageName": "kirocrew",
+      "packageCategory": "devel",
+      "priority": "optional",
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://updates.crew.kiro.dev/feed/stable/deb"
+        }
+      ],
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4 | libnotify4t64",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2 | libasound2t64"
+      ]
+    },
+    "rpm": {
+      "packageName": "kirocrew",
+      "packageCategory": "Development/Tools",
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://updates.crew.kiro.dev/feed/stable/rpm"
+        }
+      ],
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "libXtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "libuuid",
+        "libsecret",
+        "alsa-lib"
+      ]
     },
     "dmg": {
       "writeUpdateInfo": false

@@ -78,10 +78,10 @@ concurrency group, and their version derivation.
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle; a bare tag verifies that same-commit bundle and promotes the exact files/OCI digest to stable without building. Then creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. Runs first; every build job needs it. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
-| `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` (AppImage) via `packaging/build-desktop.sh`. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. |
+| `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. |
 | `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
-| `publish-linux.yml` | reusable publish | AppImage to `desktop/<channel>/<version>/`, `feed/<channel>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER ARCH (`arch: x64` / `arch: arm64`), each with its own keys and feed. |
+| `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. |
 | `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
@@ -122,9 +122,15 @@ desktop/<channel>/<version>/KiroCrew.zip                      immutable
 desktop/<channel>/<version>/KiroCrew.dmg                      immutable
 desktop/<channel>/<version>/KiroCrew-x86_64.AppImage          immutable
 desktop/<channel>/<version>/KiroCrew-aarch64.AppImage         immutable
+desktop/<channel>/<version>/KiroCrew-x86_64.deb               immutable
+desktop/<channel>/<version>/KiroCrew-aarch64.deb              immutable
+desktop/<channel>/<version>/KiroCrew-x86_64.rpm               immutable
+desktop/<channel>/<version>/KiroCrew-aarch64.rpm              immutable
 desktop/<channel>/latest/KiroCrew.dmg                         pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-x86_64.AppImage             pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-aarch64.AppImage            pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-<arch>.deb                  pointer, max-age=300
+desktop/<channel>/latest/KiroCrew-<arch>.rpm                  pointer, max-age=300
 feed/<channel>/latest-mac.yml                                 pointer, max-age=300
 feed/<channel>/latest-mac.json                                pointer, max-age=300 (legacy bridge)
 feed/<channel>/latest-linux.yml                               pointer, max-age=300  (x64)
@@ -229,7 +235,7 @@ triggers. Nothing about it is caller-specific: the trigger files carry only
 version derivation and `uses:` calls.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
-   the wheel, sdist, and AppImage (not the mac zip or DMG, whose bytes are not
+   the wheel, sdist, and every Linux artifact (not the mac zip or DMG, whose bytes are not
    final yet), uploads everything to `pre-signed/`, extracts the `.app` from the
    `*-mac.zip`, and submits it to CDSigner with a manifest generated at sign
    time from the actual bundle contents by
@@ -443,7 +449,14 @@ exactly `{darwin, linux, win32}`.
 On macOS electron-updater's `MacUpdater` downloads the archive itself and serves
 it to Electron's built-in `autoUpdater` (Squirrel.Mac) over a loopback proxy, so
 the atomic bundle swap is unchanged and `NSURLCache` is no longer in the feed
-path. On Linux it replaces the AppImage in place. On Windows `NsisUpdater` reads
+path. On Linux the install shape decides: an AppImage is replaced in place (so
+the directory holding it must be writable, which `bundle-location.js`'s
+`canUpdateLinuxInstall` gates on), while a deb or rpm is handed to
+`dpkg`/`rpm` behind an elevation prompt by electron-updater's `DebUpdater` /
+`RpmUpdater`. `resolveLinuxInstall()` picks the shape from three positive
+signals — `resources/package-type`, `$APPIMAGE`, and an `/opt` install path —
+and a package whose FORMAT cannot be named is refused rather than pointed at
+another format's feed. On Windows `NsisUpdater` reads
 `latest.yml` and runs the NSIS installer, verifying the download's Authenticode
 signature **fail-closed** against the `publisherName` pinned in
 `website/electron/package.json`. That verification is why `publish-windows.yml`

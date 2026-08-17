@@ -20,6 +20,10 @@ RELEASE_CHANNELS = ("stable", "insider", "nightly")
 EXTERNALLY_MANAGED = {
     "dmg": "Update via the desktop app's built-in updater (About → Check for updates).",
     "appimage": "Update via the desktop app's built-in updater (About → Check for updates).",
+    "deb": "Update via the desktop app's built-in updater (About → Check for updates), "
+           "which hands the new package to dpkg, or reinstall the .deb.",
+    "rpm": "Update via the desktop app's built-in updater (About → Check for updates), "
+           "which hands the new package to rpm, or reinstall the .rpm.",
     "docker": "Update by pulling a newer image (docker pull).",
 }
 
@@ -27,7 +31,7 @@ EXTERNALLY_MANAGED = {
 class InstallLayout(NamedTuple):
     """Describes how this Kiro Crew instance was installed."""
 
-    kind: str  # "git", "wheel", "dmg", "appimage", "docker", or "source"
+    kind: str  # "git", "wheel", "dmg", "appimage", "deb", "rpm", "docker", or "source"
     proj: str  # KIROCREW_PROJECT_DIR value (may be empty for non-git)
     is_git: bool
     is_externally_managed: bool

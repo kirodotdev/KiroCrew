@@ -8,23 +8,23 @@
 # the artifact and a running install cannot change it. `beacon.distribution()`
 # prefers this file and falls back to the env var.
 #
-# WHY A SHARED SCRIPT: four packaging paths need the identical file (wheel,
-# dmg, appimage, docker). Inlining the write in each one is how they drift,
+# WHY A SHARED SCRIPT: six packaging paths need the identical file (wheel,
+# dmg, appimage, deb, rpm, docker). Inlining the write in each one is how they drift,
 # and a `dist` value that disagrees with the artifact is worse than no value,
 # because it is indistinguishable from a real population shift on the dashboard.
 #
-# Usage: stamp-distribution.sh <dmg|appimage|wheel|source|docker> [package_dir]
+# Usage: stamp-distribution.sh <dmg|appimage|deb|rpm|wheel|source|docker> [package_dir]
 set -euo pipefail
 
-DIST="${1:?usage: stamp-distribution.sh <dmg|appimage|wheel|source|docker> [package_dir]}"
+DIST="${1:?usage: stamp-distribution.sh <dmg|appimage|deb|rpm|wheel|source|docker> [package_dir]}"
 PKG_DIR="${2:-}"
 
 # Keep in sync with beacon.KNOWN_DISTRIBUTIONS. A typo here would otherwise bake
 # a value the clamp rejects, silently falling back to "source": the exact
 # failure this script exists to remove.
 case "$DIST" in
-  dmg|appimage|wheel|source|docker) ;;
-  *) echo "ERROR: unknown distribution '$DIST' (want: dmg|appimage|wheel|source|docker)" >&2
+  dmg|appimage|deb|rpm|wheel|source|docker) ;;
+  *) echo "ERROR: unknown distribution '$DIST' (want: dmg|appimage|deb|rpm|wheel|source|docker)" >&2
      exit 1 ;;
 esac
 

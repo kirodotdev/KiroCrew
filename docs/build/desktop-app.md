@@ -13,7 +13,7 @@ build is driven by [`packaging/build-desktop.sh`](../../packaging/build-desktop.
 ## What `make desktop` produces
 
 ```bash
-make desktop               # macOS: ONE universal DMG (arm64 + x86_64) · Linux: AppImage
+make desktop               # macOS: ONE universal DMG (arm64 + x86_64) · Linux: AppImage + deb + rpm
 UNIVERSAL=0 make desktop   # macOS: faster host-arch-only DMG (local iteration)
 ```
 
@@ -23,7 +23,7 @@ Output lands in **`website/electron/dist/`**:
 |---------|----------|----------|
 | `make desktop` | macOS | `KiroCrew-<version>-universal.dmg` |
 | `UNIVERSAL=0 make desktop` | macOS | `KiroCrew-<version>-arm64.dmg` (Apple Silicon host) or `KiroCrew-<version>.dmg` (Intel host) |
-| `make desktop` | Linux | `KiroCrew-*.AppImage` (host arch) |
+| `make desktop` | Linux | `KiroCrew-*.AppImage`, `*.deb`, `*.rpm` (host arch) |
 
 The electron-builder configuration lives in
 [`website/electron/package.json`](../../website/electron/package.json):
@@ -34,7 +34,20 @@ The electron-builder configuration lives in
   remains aligned with `productName` because Electron uses it to locate the
   `KiroCrew Helper` app bundles during startup
 - mac target: `dmg` (category `public.app-category.developer-tools`)
-- linux target: `AppImage` (category `Development`)
+- linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend
+  tree is packaged three times, with `scripts/stamp-distribution.sh` re-run
+  between electron-builder invocations so each artifact's beacon `dist` names
+  its OWN format -- a single stamp would label one artifact as another.
+- `desktopName` + `linux.syncDesktopName` are what make window association
+  work: Electron derives its app_id from `desktopName`, and electron-builder
+  derives the `.desktop` file's name and `StartupWMClass` from the same value,
+  so the three agree by construction instead of by coincidence. Overriding
+  `StartupWMClass` by hand breaks that agreement.
+- `deb.depends` declares alternatives (`libgtk-3-0 | libgtk-3-0t64`) because
+  Ubuntu 24.04's 64-bit `time_t` transition renamed several libraries;
+  `rpm.depends` needs no such thing but uses entirely different names
+  (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
+  `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
 
 ### macOS default — one universal DMG for both arches
 
@@ -58,15 +71,19 @@ an Intel Mac where the universal build cannot run. Per-arch targets:
 |--------|-----------|----------|
 | macOS arm64 (Apple Silicon) | Apple Silicon Mac (`UNIVERSAL=0`) | arm64 `.dmg` |
 | macOS x86_64 (Intel) | Intel Mac | x86_64 `.dmg` |
-| Linux x86_64 | x86_64 Linux | x86_64 `.AppImage` |
-| Linux aarch64 (Graviton/ARM) | aarch64 Linux | aarch64 `.AppImage` |
+| Linux x86_64 | x86_64 Linux | x86_64 `.AppImage`, `.deb`, `.rpm` |
+| Linux aarch64 (Graviton/ARM) | aarch64 Linux | aarch64 `.AppImage`, `.deb`, `.rpm` |
 
 **Both Linux architectures ship.** `build-desktop.yml` builds them on
 `ubuntu-22.04` and `ubuntu-22.04-arm`, and `publish-linux.yml` runs once per
 arch — each writing its own immutable S3 key, its own electron-updater channel
 file (`latest-linux.yml` for x64, `latest-linux-arm64.yml` for arm64) and its own
-`latest` alias. Published basenames are `KiroCrew-x86_64.AppImage` and
-`KiroCrew-aarch64.AppImage`.
+`latest` alias. Published basenames are `KiroCrew-<arch>.<ext>` for each of the
+six (arch, format) pairs -- `KiroCrew-x86_64.deb`, `KiroCrew-aarch64.rpm`, and so
+on. A package format also gets its own feed DIRECTORY
+(`feed/<channel>/deb/latest-linux.yml`), because electron-updater derives the
+channel FILE name from platform and arch with no hook to change it, so two
+formats sharing a directory would overwrite each other's metadata.
 
 Two properties are load-bearing and worth knowing before you touch that lane:
 
@@ -75,7 +92,15 @@ Two properties are load-bearing and worth knowing before you touch that lane:
   install, plus the `python -m kiro_crew --version` self-containment gate), so a
   host that cannot execute the target architecture cannot build it. macOS gets
   away with one host only because Rosetta 2 executes the x86_64 slice.
-- **The runner's glibc is the floor for every user.** The AppImage links against
+- **The runner's glibc is the ceiling on what the artifacts may require.** The
+  binaries link against it, so the runner bounds compatibility. The MEASURED
+  requirement of the shipped binaries is lower than the runner's own version:
+  the highest `GLIBC_*` symbol version across the Electron binary and every
+  bundled `.so` is **2.34**, which covers Ubuntu 22.04+, Debian 12+, Fedora,
+  CentOS Stream 9 and Amazon Linux 2023, and excludes Ubuntu 20.04, Debian 11
+  and Amazon Linux 2. Read the requirement with
+  `objdump -T <binary> | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1` rather
+  than assuming it equals the runner's glibc. The AppImage links against
   it, which is why both Linux legs stay on 22.04 (glibc 2.35) rather than moving
   to 24.04 (2.39) — the newer floor would exclude AL2023, Debian 12 and RHEL 9.
 

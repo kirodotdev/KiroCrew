@@ -27,6 +27,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.platform import update_layout
 from kiro_crew.platform.update_governance import (
     min_version,
     resolve_remote_url,
@@ -128,10 +129,20 @@ _ERR_UNKNOWN = "unknown"
 #: makes the Windows machine a thin client for a gateway running on EC2 Linux, so
 #: the backend answering this call is a Linux install that identifies itself
 #: correctly on its own.
+#: The one externally-managed distribution whose remedy is an image pull
+#: rather than the desktop app.
+_CONTAINER_DISTRIBUTION = "docker"
+
+#: DERIVED, not restated: ``update_layout.EXTERNALLY_MANAGED`` owns WHICH
+#: distributions are externally managed, and this module owns only the wording
+#: shown for them. The two lists were duplicated once, and the copy here fell
+#: behind when Linux gained deb and rpm -- a package install then reached
+#: ``_check_release_feed()`` and was compared against the CLI wheel channel,
+#: which is exactly the wrong-stream false positive described above. Deriving the
+#: key set makes that drift impossible: a format added there appears here.
 _EXTERNALLY_MANAGED = {
-    "dmg": _ERR_MANAGED_BY_APP,
-    "appimage": _ERR_MANAGED_BY_APP,
-    "docker": _ERR_MANAGED_BY_IMAGE,
+    dist: _ERR_MANAGED_BY_IMAGE if dist == _CONTAINER_DISTRIBUTION else _ERR_MANAGED_BY_APP
+    for dist in update_layout.EXTERNALLY_MANAGED
 }
 
 

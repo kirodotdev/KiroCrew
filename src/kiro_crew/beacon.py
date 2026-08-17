@@ -165,7 +165,9 @@ _CI_ENV_VARS = (
 # "source" is the git-clone path and the correct answer for an unstamped tree,
 # so it is the default rather than an "unknown" bucket.
 DIST_ENV = "KIROCREW_DISTRIBUTION"
-KNOWN_DISTRIBUTIONS = frozenset({"dmg", "appimage", "wheel", "source", "docker"})
+KNOWN_DISTRIBUTIONS = frozenset(
+    {"dmg", "appimage", "deb", "rpm", "wheel", "source", "docker"}
+)
 DEFAULT_DISTRIBUTION = "source"
 
 # Optional dependency: ``_build_info`` exists only in a packaged artifact, so

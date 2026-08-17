@@ -238,6 +238,31 @@ test("manualDownloadUrl: Linux picks the AppImage for the running arch", () => {
   );
 });
 
+test("manualDownloadUrl: the link matches the format they installed", () => {
+  // A package install's escape hatch must hand back the SAME format. Offering an
+  // AppImage to someone whose files are managed by dpkg/rpm creates a second,
+  // unmanaged install beside the first instead of repairing it -- and the
+  // package manager then knows nothing about the copy they actually run.
+  assert.strictEqual(
+    manualDownloadUrl("stable", "linux", "x64", "deb"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-x86_64.deb`,
+  );
+  assert.strictEqual(
+    manualDownloadUrl("stable", "linux", "arm64", "rpm"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-aarch64.rpm`,
+  );
+  // No format, or one we do not publish, falls back to the AppImage rather than
+  // inventing an extension no lane serves.
+  assert.strictEqual(
+    manualDownloadUrl("stable", "linux", "x64", ""),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-x86_64.AppImage`,
+  );
+  assert.strictEqual(
+    manualDownloadUrl("stable", "linux", "x64", "pacman"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-x86_64.AppImage`,
+  );
+});
+
 test("manualDownloadUrl: null wherever there is no publish lane", () => {
   // A dev build has no channel lane -- offering a 404 is worse than offering
   // nothing.

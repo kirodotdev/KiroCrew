@@ -40,8 +40,12 @@ STEP_NAME = "Verify stable publication preconditions"
 #: would put stable bytes on the CDN without the preconditions check.
 PUBLISH_JOBS = (
     "publish-cli",
-    "publish-linux-x64",
-    "publish-linux-arm64",
+    "publish-linux-appimage-x64",
+    "publish-linux-appimage-arm64",
+    "publish-linux-deb-x64",
+    "publish-linux-deb-arm64",
+    "publish-linux-rpm-x64",
+    "publish-linux-rpm-arm64",
     "publish-docker",
     "sign-and-notarize",
     "github-release",

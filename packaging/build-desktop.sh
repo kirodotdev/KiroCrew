@@ -46,8 +46,8 @@ HOST_ARCH="$(uname -m)"
 
 # Beacon provenance for the artifact this run produces, derived from the
 # electron-builder target rather than the host: mac.target is dmg, linux.target
-# is AppImage (website/electron/package.json). Reading the host OS instead would
-# be wrong on Linux, where the same machine also builds wheels.
+# is AppImage + deb + rpm (website/electron/package.json). Reading the host OS instead
+# would be wrong on Linux, where the same machine also builds wheels.
 # Windows ships an NSIS installer, which has no KNOWN_DISTRIBUTIONS value yet;
 # "source" is the honest answer until "nsis" is added on both sides.
 case "$OS" in
@@ -55,6 +55,14 @@ case "$OS" in
   windows) KC_DISTRIBUTION="source" ;;
   *)       KC_DISTRIBUTION="appimage" ;;
 esac
+
+# Linux packages ONE backend tree into several artifact formats, and the beacon
+# `dist` value is baked INTO that tree — so each format needs its own stamp or
+# one artifact reports itself as the other, which is exactly the mislabel
+# scripts/stamp-distribution.sh exists to prevent. Pair each target with its
+# dist label here; the packaging step re-stamps between invocations. The
+# expensive work (PBS interpreter + pip closure) still happens once.
+LINUX_TARGET_DISTS=( "AppImage:appimage" "deb:deb" "rpm:rpm" )
 
 # Universal is the macOS default; Linux has no universal concept (AppImage is
 # per-arch). UNIVERSAL=0 opts a macOS build out.
@@ -112,6 +120,25 @@ case "$KC_VERSION" in
 esac
 
 log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
+
+# Re-stamp every staged backend tree with <dist>, for the Linux multi-format
+# path (see LINUX_TARGET_DISTS). Rewrites one generated module per tree, so it
+# is cheap enough to run between electron-builder invocations. Finding the trees
+# by their site-packages layout keeps this working for both the single-tree
+# Linux build and macOS's two-arch layout.
+restamp_backends() {
+  local dist="$1" sp found=0
+  while IFS= read -r sp; do
+    [ -n "$sp" ] || continue
+    bash "$ROOT/scripts/stamp-distribution.sh" "$dist" "$sp" >/dev/null
+    found=$((found + 1))
+  done < <(find "$ELECTRON_DIR/backend-dist" -type d -path "*/site-packages/kiro_crew" 2>/dev/null)
+  if [ "$found" -eq 0 ]; then
+    echo "ERROR: no staged backend tree found to stamp as '$dist'" >&2
+    exit 1
+  fi
+  echo "    stamped $found backend tree(s) as dist=$dist"
+}
 
 # Recursively remove a directory tree, defeating the macOS .DS_Store/ENOTEMPTY
 # race. macOS Desktop Services (Finder/Spotlight) can drop a fresh .DS_Store
@@ -447,6 +474,23 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       # space-free makes the packaged app abort with "Unable to find helper
       # app". Nightly re-overrides the static display name to keep its suffix.
       "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew Nightly"
+      # Linux packages key their INSTALL identity off the package name, so
+      # nightly needs its own or dpkg/rpm treat a nightly install as an UPGRADE
+      # of stable and remove it -- the same hazard as the nsis.guid below, from
+      # the Linux side. Three names move together because all three are
+      # per-install-unique paths a second channel must not claim:
+      #
+      #   packageName    -> the dpkg/rpm package identity
+      #   executableName -> /usr/bin/<name> and /opt/<Product>/<name>
+      #   desktopName    -> /usr/share/applications/<name>, and (via
+      #                     linux.syncDesktopName) Electron's app_id and the
+      #                     entry's StartupWMClass, which must keep matching
+      #
+      # productName already differs, so the /opt directory does not collide.
+      "-c.deb.packageName=kirocrew-nightly"
+      "-c.rpm.packageName=kirocrew-nightly"
+      "-c.linux.executableName=kirocrew-desktop-nightly"
+      "-c.extraMetadata.desktopName=kirocrew-desktop-nightly.desktop"
       # Squirrel.Windows keyed the INSTALL identity off squirrelWindows.name;
       # NSIS keys it off two separate things, and nightly needs both:
       #
@@ -470,24 +514,17 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       "-c.nsis.guid=0f417bf9-2759-51d6-acfb-f864805d1f41"
     )
   fi
-  if [ "$OS" = "darwin" ]; then
-    EB_ARGS+=( --mac )
-    [ "$UNIVERSAL" = "1" ] && EB_ARGS+=( --universal )
-  elif [ "$OS" = "windows" ]; then
-    EB_ARGS+=( --win )
-  else
-    EB_ARGS+=( --linux )
-  fi
-
   # Start from a pristine output dir. A prior interrupted universal build can
   # leave dist/mac-universal-<arch>-temp dirs behind (with a .DS_Store inside);
   # those linger and re-trip the ENOTEMPTY cleanup below on every later run.
   # This pre-clean is itself exposed to the .DS_Store race (Finder re-drops one
   # mid-removal), so it MUST go through the resilient helper — a plain rm here
   # aborts the build before the retry loop below is ever reached.
+  # Runs ONCE, before any invocation: the Linux path invokes electron-builder
+  # per target, and clearing between them would delete the previous artifact.
   rm_rf_resilient dist
 
-  # macOS universal .DS_Store/ENOTEMPTY race:
+  # One electron-builder invocation, with the macOS .DS_Store/ENOTEMPTY retry:
   # electron-builder's universal step stages each arch into
   # dist/mac-universal-<arch>-temp, lipo-merges them, then removes the temp
   # dirs with a recursive fs.rm. If macOS Desktop Services (Finder/Spotlight)
@@ -495,22 +532,45 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   # which performs no retries -- fails the final rmdir with ENOTEMPTY and the
   # whole build aborts (electron-userland/electron-builder#6890). It is a
   # transient race, so retry from a swept, clean dir a bounded number of times.
-  attempt=1; max_attempts=3
-  while : ; do
-    eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
-    if CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "${EB_ARGS[@]}" 2>&1 | tee "$eb_log"; then
-      rm -f "$eb_log"; break
-    fi
-    if grep -q "ENOTEMPTY" "$eb_log" && [ "$attempt" -lt "$max_attempts" ]; then
-      echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
-      find dist -name .DS_Store -delete 2>/dev/null || true
-      rm -rf dist/*-temp 2>/dev/null || true
-      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep 2; continue
-    fi
-    rm -f "$eb_log"
-    echo "❌ electron-builder failed (not the .DS_Store race, or retries exhausted)." >&2
-    exit 1
-  done
+  eb_run() {
+    local attempt=1 max_attempts=3 eb_log
+    while : ; do
+      eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
+      if CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@" 2>&1 | tee "$eb_log"; then
+        rm -f "$eb_log"; return 0
+      fi
+      if grep -q "ENOTEMPTY" "$eb_log" && [ "$attempt" -lt "$max_attempts" ]; then
+        echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
+        find dist -name .DS_Store -delete 2>/dev/null || true
+        rm -rf dist/*-temp 2>/dev/null || true
+        rm -f "$eb_log"; attempt=$((attempt + 1)); sleep 2; continue
+      fi
+      rm -f "$eb_log"
+      echo "❌ electron-builder failed (not the .DS_Store race, or retries exhausted)." >&2
+      exit 1
+    done
+  }
+
+  if [ "$OS" = "darwin" ]; then
+    EB_ARGS+=( --mac )
+    [ "$UNIVERSAL" = "1" ] && EB_ARGS+=( --universal )
+    eb_run "${EB_ARGS[@]}"
+  elif [ "$OS" = "windows" ]; then
+    EB_ARGS+=( --win )
+    eb_run "${EB_ARGS[@]}"
+  else
+    # One invocation PER FORMAT, each preceded by its own beacon stamp, so the
+    # AppImage and the deb do not both claim the label of whichever was built
+    # last. Targets are named explicitly rather than letting package.json's
+    # target array drive a single invocation, because a single invocation shares
+    # one stamped backend tree between both artifacts.
+    for pair in "${LINUX_TARGET_DISTS[@]}"; do
+      target="${pair%%:*}"; dist="${pair##*:}"
+      log "Packaging Linux ${target} (dist=${dist})…"
+      restamp_backends "$dist"
+      eb_run "${EB_ARGS[@]}" --linux "$target"
+    done
+  fi
 )
 
 # Universal post-gate: the staged shell binary must carry BOTH arch slices.
@@ -533,6 +593,6 @@ if [ "$UNIVERSAL" = "1" ]; then
 fi
 
 log "Done. Installer(s) are in $ELECTRON_DIR/dist/"
-ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,zip,exe} 2>/dev/null | sed 's/^/   /' || true
+ls -1 "$ELECTRON_DIR/dist/"*.{dmg,AppImage,deb,rpm,zip,exe} 2>/dev/null | sed 's/^/   /' || true
 echo ""
 echo "    The .app embeds the backend, so it runs with no PATH kirocrew needed."

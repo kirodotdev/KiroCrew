@@ -506,6 +506,44 @@ def _doctor_data_home() -> None:
             )
 
 
+def _doctor_path_launcher() -> None:
+    """Report which install the ``kirocrew`` command on PATH actually belongs to.
+
+    A gateway never takes the name from another install's working launcher (see
+    ``agent.ensure_kirocrew_on_path``), which is the right call — but it leaves a
+    gap the user cannot see from anywhere else. The documented Linux pairing puts
+    a cli.sh wheel and a deb/rpm desktop install on ONE machine, so typing
+    ``kirocrew`` can run a different install, at a different version or channel,
+    than the app that is running. The desktop app has no terminal, so the decline
+    is logged where nobody reads it; this is the surface someone checks when a
+    version looks wrong.
+
+    Read-only: it resolves and compares paths, and never writes or relinks.
+    """
+    from kiro_crew.agent import _resolve_kirocrew_bin
+
+    on_path = shutil.which("kirocrew")
+    if not on_path:
+        # Not an error on its own: the desktop app runs its bundled backend
+        # directly, and a user who never wanted a terminal command is fine.
+        print("  kirocrew CLI: ⏹ not on PATH (run `kirocrew setup` to link it)")
+        return
+    running = _resolve_kirocrew_bin()
+    if not os.path.isabs(running) or os.path.realpath(on_path) == os.path.realpath(running):
+        print(f"  kirocrew CLI: ✅ {on_path}")
+        return
+    print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
+    # Paths are printed UNWRAPPED, one per line: a wrapped path cannot be copied
+    # or pasted into a command, which is the first thing someone does with it.
+    print(f"{_INDENT}on PATH:      {os.path.realpath(on_path)}")
+    print(f"{_INDENT}this install: {os.path.realpath(running)}")
+    _print_wrapped(
+        "Both can coexist — the wheel keeps its own updates — but `kirocrew` in a "
+        "terminal runs the one on PATH, which may be a different version or "
+        "channel. Run `kirocrew setup` from the install you want to own the name."
+    )
+
+
 def _doctor_trust_root() -> None:
     """Report whether session identities can be signed, and from which file.
 
@@ -1298,6 +1336,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover migration archive) ──
     _doctor_data_home()
+    _doctor_path_launcher()
     _doctor_trust_root()
 
     # ── KAS backend (only when selected) ──

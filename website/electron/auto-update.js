@@ -37,7 +37,67 @@ const {
   classifyBundleLocation,
   containingDirForBundle,
   canInstallUpdates,
+  classifyLinuxInstall,
+  containingDirForAppImage,
+  canUpdateLinuxInstall,
+  describeLinuxInstall,
 } = require("./bundle-location");
+
+// The Linux package formats this app ships. A format is BOTH the feed
+// sub-directory a package install reads its channel file from AND the download
+// extension its manual-reinstall link must use, so one set serves both: the
+// format has to be known rather than assumed, because `package-type` is the only
+// signal that names it and the resourcesPath fallback in classifyLinuxInstall()
+// proves only that this IS a package. An unnamed format therefore stays empty,
+// canUpdateLinuxInstall() refuses, and the download link falls back to the
+// AppImage — instead of pointing an rpm install at deb bytes either way.
+const LINUX_PACKAGE_EXTENSIONS = new Set(["deb", "rpm"]);
+
+/**
+ * Which Linux install shape is running, resolved from the three signals that
+ * exist at runtime. I/O-bearing (it reads the package-type file), so it sits
+ * here rather than in the pure bundle-location module, and every input is
+ * injectable so tests never touch a real filesystem.
+ *
+ * @param {object} [o]
+ * @param {object} [o.env=process.env]
+ * @param {string} [o.resourcesPath=process.resourcesPath]
+ * @returns {{kind:string, format:string, appImagePath:string}}
+ */
+function resolveLinuxInstall({ env = process.env, resourcesPath = process.resourcesPath } = {}) {
+  const appImagePath = (env && env.APPIMAGE) || "";
+  let packageType = "";
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    packageType = fs.readFileSync(path.join(resourcesPath || "", "package-type"), "utf8").trim();
+  } catch {
+    // Absent on an AppImage and on any build whose target had no publish config
+    // — the other two signals cover both, so this is a normal case, not a fault.
+    packageType = "";
+  }
+  const kind = classifyLinuxInstall({ appImagePath, packageType, resourcesPath });
+  const format = kind === "package" && LINUX_PACKAGE_EXTENSIONS.has(packageType) ? packageType : "";
+  return { kind, format, appImagePath };
+}
+
+// Can the AppImage replace itself, i.e. is the directory HOLDING the image
+// writable? AppImageUpdater stages the new image beside the old one and `mv`s it
+// over the original, so the containing directory — not the mounted, read-only
+// squashfs the app runs from — is what must be writable. Same fail-safe TRUE as
+// isBundleContainerWritable: a probe that cannot run must not read as
+// "un-updatable".
+function isAppImageContainerWritable(appImagePath) {
+  const dir = containingDirForAppImage(appImagePath);
+  if (!dir) return true;
+  try {
+    const fs = require("fs");
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Can the macOS installer write the directory holding our .app (i.e. replace
 // the bundle)? electron-updater does NOT install on macOS itself: MacUpdater
@@ -173,13 +233,21 @@ function resolveChannel(stamped, preference) {
  * update harness (KIROCREW_UPDATE_FEED=http://127.0.0.1:PORT/feed) works;
  * cleartext update metadata over a real network stays rejected.
  *
- * @param {{base:string, channel:string}} o
+ * `variant` adds one path segment below the channel, which is how a Linux
+ * package install reaches its OWN channel file: electron-updater derives the
+ * file NAME from platform and arch with no hook to change it, so two formats
+ * cannot share a directory without one overwriting the other's metadata.
+ * Separating them by directory leaves that derivation — including the
+ * `-arm64` suffix — completely untouched.
+ *
+ * @param {{base:string, channel:string, variant?:string}} o
  * @returns {string}
  * @throws {Error} on a non-HTTPS, non-loopback base
  */
-function buildFeedBase({ base, channel }) {
+function buildFeedBase({ base, channel, variant = "" }) {
   const b = (base || DEFAULT_FEED_BASE).replace(/\/+$/, "");
-  const url = `${b}/${encodeURIComponent(channel)}/`;
+  const tail = variant ? `${encodeURIComponent(variant)}/` : "";
+  const url = `${b}/${encodeURIComponent(channel)}/${tail}`;
   const parsed = new URL(url);
   const isLoopback = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname);
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopback)) {
@@ -208,17 +276,27 @@ function buildFeedBase({ base, channel }) {
  * @param {string} channel    resolved update channel
  * @param {string} osPlatform process.platform value
  * @param {string} [osArch]   process.arch value; defaults to the running arch
+ * @param {string} [linuxFormat] resolved package format ("deb"/"rpm"), or "" for
+ *        an AppImage / unknown shape
  * @returns {string|null}
  */
-function manualDownloadUrl(channel, osPlatform, osArch = process.arch) {
+function manualDownloadUrl(channel, osPlatform, osArch = process.arch, linuxFormat = "") {
   if (!channelHasLane(channel, osPlatform)) return null;
   // The mac DMG is universal, so darwin needs no arch. Linux has no universal
-  // binary: publish-linux.yml publishes one AppImage per arch under the
-  // basenames below, so handing a user the wrong one is an immediate
-  // "cannot execute binary file" — which is exactly the dead end this link
-  // exists to avoid. An arch with no published lane returns null rather than
-  // guessing x86_64.
-  const linuxFile = { x64: "KiroCrew-x86_64.AppImage", arm64: "KiroCrew-aarch64.AppImage" }[osArch];
+  // binary: publish-linux.yml publishes one artifact per arch per format under
+  // the basenames below, so handing a user the wrong one is an immediate
+  // "cannot execute binary file" — or, for a package, one dpkg/rpm refuses.
+  // An arch with no published lane returns null rather than guessing x86_64.
+  // The format must match how they installed: offering an AppImage to someone
+  // whose files are managed by a package manager invites two parallel installs,
+  // so every recognised package format keeps its own extension and only an
+  // AppImage (or a shape we could not name) falls back to the image.
+  const linuxArch = { x64: "x86_64", arm64: "aarch64" }[osArch];
+  const linuxExt = LINUX_PACKAGE_EXTENSIONS.has(linuxFormat) ? linuxFormat : "AppImage";
+  // A published artifact FILENAME, not prose: the joined form is what
+  // publish-linux.yml writes to the CDN, and the arch and extension are
+  // interpolated because there are now six (arch, format) pairs to name.
+  const linuxFile = linuxArch ? `KiroCrew-${linuxArch}.${linuxExt}` : null; // brand-ok
   // Windows ships x64 only. build-windows.yml has no arm64 leg, and Windows has
   // exactly one channel file whatever the arch (electron-updater appends an arch
   // suffix for linux alone), so a second arch means another entry in the same
@@ -408,6 +486,11 @@ function initAutoUpdate(deps) {
     osArch = process.arch,
     resourcesPath = process.resourcesPath,
     probeBundleWritable = isBundleContainerWritable,
+    // Linux install shape + its AppImage writability probe, injected for the
+    // same reason as probeBundleWritable: the verdict must be assertable in a
+    // test without a real AppImage mount or a real /opt install.
+    linuxInstall = null,
+    probeAppImageWritable = isAppImageContainerWritable,
     // Electron's NATIVE autoUpdater, used only to observe
     // `before-quit-for-update` -- the signal that the platform installer has
     // actually taken over (see forceExitFailsafe). electron-updater drives it
@@ -420,6 +503,16 @@ function initAutoUpdate(deps) {
     onUpdateState = null,
     log = console,
   } = deps;
+
+  // Linux install shape. Resolved once, and BEFORE getInfo() is defined: the
+  // early-return stubs below hand getInfo out, so a renderer could call it
+  // before a later declaration initialised — a temporal dead zone crash on the
+  // one path that exists to report a problem gracefully. The signals cannot
+  // change while the process lives, and re-reading package-type per check would
+  // add a synchronous file read to a path that runs every four hours.
+  const linux = osPlatform === "linux"
+    ? (linuxInstall || resolveLinuxInstall({ resourcesPath }))
+    : { kind: "", format: "", appImagePath: "" };
 
   // When the in-app UI is wired (onUpdateState provided), it owns the prompt;
   // the native dialog stays as the fallback for headless / no-renderer cases.
@@ -471,7 +564,7 @@ function initAutoUpdate(deps) {
       platform,
       packaged: !!app.isPackaged,
       // Escape hatch for a failed install (see manualDownloadUrl).
-      downloadUrl: manualDownloadUrl(currentChannel(), osPlatform, osArch),
+      downloadUrl: manualDownloadUrl(currentChannel(), osPlatform, osArch, linux.format),
       // Replay seed for a freshly mounted renderer (see lastEmittedState).
       lastState: lastEmittedState,
     };
@@ -515,12 +608,12 @@ function initAutoUpdate(deps) {
   // verdict rests on whether the bundle's containing directory is writable.
   //
   // macOS only, by construction: classifyBundleLocation() returns "other" for
-  // every non-darwin platform, so this is a no-op on Linux. That is deliberate
-  // rather than an oversight — a Linux AppImage self-replaces via `mv` into
-  // dirname($APPIMAGE) and so shares the writability requirement, but deb/rpm
-  // installs go through the package manager with privilege escalation and do
-  // not. Getting Linux right needs AppImage-vs-package detection, which is its
-  // own change; guessing here would disable updates for deb/rpm users.
+  // every non-darwin platform, so this is a no-op on Linux. Linux asks the same
+  // question through its own signals, immediately below, because the two
+  // platforms agree on nothing but the question: an AppImage self-replaces via
+  // `mv` into dirname($APPIMAGE) and so shares the writability requirement,
+  // while a deb install is handed to dpkg behind an elevation prompt and needs
+  // no writable directory at all.
   // ... and carry the reason out as `disabled`, exactly like the dev/platform
   // paths above: main.js merges it into the info payload it hands the renderer,
   // so About shows "unavailable" instead of a live Check button that no-ops.
@@ -536,6 +629,25 @@ function initAutoUpdate(deps) {
       getInfo,
       disabled: bundleLocation,
     };
+  }
+
+  if (osPlatform === "linux") {
+    const imageWritable = linux.kind === "appimage"
+      ? probeAppImageWritable(linux.appImagePath)
+      : true;
+    if (!canUpdateLinuxInstall(linux.kind, { imageWritable, packageFormat: linux.format })) {
+      const reason = linux.kind === "package" ? "linux-package-unknown-format" : "appimage-readonly";
+      log.info(`[update] auto-update disabled (${reason}): `
+        + describeLinuxInstall(linux.kind, { imageWritable, packageFormat: linux.format }));
+      return {
+        check: () => {},
+        download: async () => {},
+        install: async () => {},
+        getInfo,
+        disabled: reason,
+      };
+    }
+    log.info(`[update] linux install: ${linux.kind}${linux.format ? ` (${linux.format})` : ""}`);
   }
 
   configureUpdater(autoUpdater);
@@ -590,7 +702,9 @@ function initAutoUpdate(deps) {
 
   function configureFeed() {
     const channel = currentChannel();
-    const url = buildFeedBase({ base: feedBase, channel });
+    // A package install reads its channel file from a per-format subdirectory,
+    // so the two Linux formats never overwrite each other's metadata.
+    const url = buildFeedBase({ base: feedBase, channel, variant: linux.format });
     autoUpdater.setFeedURL({ provider: "generic", url });
     log.info(`[update] feed: ${url}`);
     return url;
@@ -948,6 +1062,7 @@ module.exports = {
   configureUpdater,
   classifyError,
   manualDownloadUrl,
+  resolveLinuxInstall,
   DEFAULT_FEED_BASE,
   DOWNLOAD_BASE,
   SUPPORTED_PLATFORMS,

@@ -33,6 +33,10 @@ def _bundle(path: Path) -> Path:
         "kirocrew-1.2.3rc4.tar.gz": b"sdist",
         "KiroCrew-x86_64.AppImage": b"appimage",
         "KiroCrew-aarch64.AppImage": b"appimage-arm64",
+        "KiroCrew-x86_64.deb": b"deb",
+        "KiroCrew-aarch64.deb": b"deb-arm64",
+        "KiroCrew-x86_64.rpm": b"rpm",
+        "KiroCrew-aarch64.rpm": b"rpm-arm64",
         "notarized.zip": b"mac-zip",
         "KiroCrew.dmg": b"dmg",
     }
@@ -71,6 +75,10 @@ def test_manifest_round_trip_binds_source_and_every_shipping_file(tmp_path: Path
         "sdist",
         "appimage",
         "appimage_arm64",
+        "deb",
+        "deb_arm64",
+        "rpm",
+        "rpm_arm64",
         "mac_zip",
         "dmg",
     }

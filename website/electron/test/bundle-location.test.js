@@ -15,6 +15,10 @@ const {
   canInstallUpdates,
   shouldOfferRelocation,
   describeLocation,
+  classifyLinuxInstall,
+  containingDirForAppImage,
+  canUpdateLinuxInstall,
+  describeLinuxInstall,
 } = require("../bundle-location");
 
 const DARWIN = { platform: "darwin" };
@@ -117,4 +121,97 @@ test("containingDirForBundle refuses to guess on an unusable shape", () => {
   for (const bad of [undefined, null, "", 42, "relative/path", "/"]) {
     assert.equal(containingDirForBundle(bad), "", String(bad));
   }
+});
+
+// --- Linux: two formats, opposite update stories -----------------------------
+// Same shape of question as the macOS block above (where am I, and can I be
+// replaced), but the AppImage's containing directory is what decides it while a
+// package install is dpkg's to update. Every signal is a POSITIVE
+// identification, so a format we have never seen reports "unknown" and stays
+// updatable rather than inheriting AppImage semantics by default.
+
+const IMAGE_READ_ONLY = { imageWritable: false };
+
+test("the package-type file identifies a package install", () => {
+  assert.equal(classifyLinuxInstall({ packageType: "deb" }), "package");
+  assert.equal(classifyLinuxInstall({ packageType: "rpm" }), "package");
+});
+
+test("$APPIMAGE identifies an AppImage", () => {
+  assert.equal(
+    classifyLinuxInstall({ appImagePath: "/home/u/Applications/KiroCrew-x86_64.AppImage" }),
+    "appimage",
+  );
+});
+
+test("package-type wins over $APPIMAGE — it is the more authoritative signal", () => {
+  assert.equal(
+    classifyLinuxInstall({ appImagePath: "/home/u/K.AppImage", packageType: "deb" }),
+    "package",
+  );
+});
+
+test("an /opt resourcesPath is a package install even with no other signal", () => {
+  // A deb-installed app relaunched from its desktop entry carries no $APPIMAGE,
+  // and a build whose target had no publish config writes no package-type file.
+  // Without this fallback such a launch would classify "unknown" and be handed
+  // the AppImage self-replace path, which has no image to replace.
+  assert.equal(classifyLinuxInstall({ resourcesPath: "/opt/KiroCrew/resources" }), "package");
+});
+
+test("no signal at all is 'unknown', never a guess", () => {
+  assert.equal(classifyLinuxInstall(), "unknown");
+  assert.equal(classifyLinuxInstall({}), "unknown");
+  assert.equal(classifyLinuxInstall({ appImagePath: "", packageType: "   " }), "unknown");
+});
+
+test("the AppImage's containing directory is what must be writable", () => {
+  assert.equal(containingDirForAppImage("/home/u/Applications/K.AppImage"), "/home/u/Applications");
+});
+
+test("a non-absolute AppImage path yields no directory to probe", () => {
+  // Mirrors containingDirForBundle: resolving a relative path against the
+  // process cwd would probe an unrelated directory and report on the wrong one.
+  assert.equal(containingDirForAppImage("Apps/K.AppImage"), "");
+  assert.equal(containingDirForAppImage(""), "");
+  assert.equal(containingDirForAppImage("/K.AppImage"), "");
+});
+
+test("an AppImage in a directory it cannot write cannot self-update", () => {
+  assert.equal(canUpdateLinuxInstall("appimage", IMAGE_READ_ONLY), false);
+  assert.equal(canUpdateLinuxInstall("appimage", { imageWritable: true }), true);
+});
+
+test("a package install is updatable ONLY when its format is known", () => {
+  // Each format reads its own feed directory, so the format is what makes an
+  // update fetchable. Knowing only "this is a package" (the resourcesPath
+  // fallback) is not enough: guessing would hand an rpm install the deb feed.
+  assert.equal(canUpdateLinuxInstall("package", { packageFormat: "deb" }), true);
+  assert.equal(canUpdateLinuxInstall("package", { packageFormat: "rpm" }), true);
+  assert.equal(canUpdateLinuxInstall("package"), false);
+  assert.equal(canUpdateLinuxInstall("package", { packageFormat: "" }), false);
+  // Writability of /opt is irrelevant to a package install either way.
+  assert.equal(canUpdateLinuxInstall("package", { packageFormat: "deb", imageWritable: false }), true);
+});
+
+test("an unrecognised install shape fails OPEN", () => {
+  assert.equal(canUpdateLinuxInstall("unknown"), true);
+  assert.equal(canUpdateLinuxInstall("unknown", IMAGE_READ_ONLY), true);
+});
+
+test("each un-updatable state explains itself in its own terms", () => {
+  assert.equal(describeLinuxInstall("package", { packageFormat: "deb" }), "");
+  assert.equal(describeLinuxInstall("appimage"), "");
+  assert.equal(describeLinuxInstall("unknown"), "");
+
+  const ro = describeLinuxInstall("appimage", IMAGE_READ_ONLY);
+  assert.match(ro, /AppImage/);
+  assert.match(ro, /cannot write/);
+
+  // A package whose format could not be named points at the package manager
+  // rather than blaming the filesystem.
+  const pkg = describeLinuxInstall("package");
+  assert.match(pkg, /package format/);
+  assert.match(pkg, /package manager/);
+  assert.doesNotMatch(pkg, /AppImage/);
 });

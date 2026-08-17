@@ -300,7 +300,11 @@ def _setup_impl(
     from kiro_crew.agent import ensure_kirocrew_on_path
     from kiro_crew.mcp_cleanup import clean_stale_managed_mcp
 
-    shim = ensure_kirocrew_on_path()
+    # `claim_existing`: this is the explicit setup path, so the user has named
+    # THIS install as the one they want `kirocrew` to mean. Gateway startup
+    # deliberately does not, so a background start never takes the command away
+    # from a working install (see ensure_kirocrew_on_path).
+    shim = ensure_kirocrew_on_path(claim_existing=True)
     if shim:
         print(f"  ✅ Linked kirocrew on PATH: {shim}")
     removed_mcp = clean_stale_managed_mcp()

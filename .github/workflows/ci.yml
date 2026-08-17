@@ -68,6 +68,7 @@ jobs:
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
+      linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -96,6 +97,16 @@ jobs:
               - '!website/**'
               - '!.github/**'
               - '!scripts/**'
+            # Independent of the three buckets above: it answers a different
+            # question ("could this diff change what a Linux package installs?")
+            # and so may overlap them freely.
+            linux_packaging:
+              - 'website/electron/package.json'
+              - 'website/electron/auto-update.js'
+              - 'website/electron/bundle-location.js'
+              - 'packaging/build-desktop.sh'
+              - 'scripts/stamp-distribution.sh'
+              - '.github/workflows/build-desktop.yml'
 
       - name: Decide surface
         id: decide
@@ -120,6 +131,47 @@ jobs:
           echo "only_backend=$only_backend"   >> "$GITHUB_OUTPUT"
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
+
+  # Build the Linux desktop packages and install them for real, but ONLY when the
+  # diff could change what a package installs. The check is expensive (a PBS
+  # interpreter, a full pip closure, then electron-builder three times), and it
+  # verifies things no cheaper gate can: dependency names that must exist in the
+  # target distro's repositories, the generated .desktop entry, and the maintainer
+  # scripts. Same trade the macOS-packaging path gate already makes.
+  #
+  # A packaging change that lands without this having run is the failure mode this
+  # exists to prevent: a package that builds green and refuses to install.
+  linux-packaging:
+    name: Linux Packaging (build + smoke-install)
+    needs: changes
+    if: ${{ needs.changes.outputs.linux_packaging == 'true' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      # Builds all three Linux formats from one backend tree, re-stamping the
+      # beacon distribution between electron-builder invocations.
+      - name: Build the Linux desktop packages
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bash packaging/build-desktop.sh
+
+      - name: Install the packages in their target distros
+        run: ./scripts/smoke-linux-packages.sh website/electron/dist
 
   scrub-lint:
     name: De-Amazon Scrub Lint

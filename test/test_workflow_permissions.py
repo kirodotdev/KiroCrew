@@ -66,6 +66,16 @@ def _workflow_permissions(name: str) -> dict[str, str]:
     return permissions
 
 
+#: Job headers for every Linux publish caller. Six lanes = three formats
+#: (appimage / deb / rpm) x two arches, each its own job because
+#: publish-linux.yml writes one immutable versioned key per invocation.
+_PUBLISH_LINUX_JOB_HEADERS = tuple(
+    f"  publish-linux-{fmt}-{arch}:"
+    for fmt in ("appimage", "deb", "rpm")
+    for arch in ("x64", "arm64")
+)
+
+
 class TestNightlyPermissions:
     def test_only_publish_callers_can_mint_oidc_tokens(self) -> None:
         lines = _lines("nightly.yml")
@@ -92,7 +102,7 @@ class TestNightlyPermissions:
         # their own SLSA provenance for the exact bytes they upload -- never
         # contents:write. One lane per arch, so BOTH are asserted: a new arch
         # that quietly widened its grant would otherwise slip through.
-        for arch_job in ("  publish-linux-x64:", "  publish-linux-arm64:"):
+        for arch_job in _PUBLISH_LINUX_JOB_HEADERS:
             assert _permission_block(lines, arch_job) == {
                 "contents": "read",
                 "id-token": "write",
@@ -167,7 +177,7 @@ class TestReleasePermissions:
             "attestations": "write",
         }
         # Linux desktop lanes: OIDC + in-lane provenance (see nightly note).
-        for arch_job in ("  publish-linux-x64:", "  publish-linux-arm64:"):
+        for arch_job in _PUBLISH_LINUX_JOB_HEADERS:
             assert _permission_block(lines, arch_job) == {
                 "contents": "read",
                 "id-token": "write",

@@ -404,8 +404,8 @@ jobs:
   # existed. True per-arch publish independence needs the publishers to run
   # past a partial build failure and let their own artifact download decide;
   # tracked in #2645 rather than reshaped here.
-  publish-linux-x64:
-    name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel · x64)
+  publish-linux-appimage-x64:
+    name: Publish Linux appimage (${{ needs.version.outputs.channel }} channel · x64)
     needs: [version, stable-gate, build-desktop, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
@@ -420,14 +420,16 @@ jobs:
       channel: ${{ needs.version.outputs.channel }}
       version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       arch: x64
+      format: appimage
       publish: true
-      appimage_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
+      build_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
       promote: ${{ needs.version.outputs.channel == 'stable' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
-    secrets: inherit
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
-  publish-linux-arm64:
-    name: Publish Linux Desktop (${{ needs.version.outputs.channel }} channel · arm64)
+  publish-linux-appimage-arm64:
+    name: Publish Linux appimage (${{ needs.version.outputs.channel }} channel · arm64)
     needs: [version, stable-gate, build-desktop, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
@@ -442,11 +444,109 @@ jobs:
       channel: ${{ needs.version.outputs.channel }}
       version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       arch: arm64
+      format: appimage
       publish: true
-      appimage_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-arm64' }}
+      build_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-arm64' }}
       promote: ${{ needs.version.outputs.channel == 'stable' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
-    secrets: inherit
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-x64:
+    name: Publish Linux deb (${{ needs.version.outputs.channel }} channel · x64)
+    needs: [version, stable-gate, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      arch: x64
+      format: deb
+      publish: true
+      build_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-arm64:
+    name: Publish Linux deb (${{ needs.version.outputs.channel }} channel · arm64)
+    needs: [version, stable-gate, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      arch: arm64
+      format: deb
+      publish: true
+      build_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-arm64' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-x64:
+    name: Publish Linux rpm (${{ needs.version.outputs.channel }} channel · x64)
+    needs: [version, stable-gate, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      arch: x64
+      format: rpm
+      publish: true
+      build_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-arm64:
+    name: Publish Linux rpm (${{ needs.version.outputs.channel }} channel · arm64)
+    needs: [version, stable-gate, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      arch: arm64
+      format: rpm
+      publish: true
+      build_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-arm64' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
   # ── Windows installer publish ─────────────────────────────────────────
   # INSIDER ONLY, and that is a deliberate boundary rather than an omission.
@@ -593,7 +693,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" \) -exec cp {} release/ \;
+          find artifacts -type f \( -name "*.whl" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) -exec cp {} release/ \;
 
           NOTARIZED_DIR="artifacts/KiroCrew-notarized-${{ needs.version.outputs.channel }}-${{ needs.version.outputs.version }}"
           NOTARIZED_ZIP="${NOTARIZED_DIR}/notarized.zip"
@@ -674,11 +774,15 @@ jobs:
       ${{ always() && needs.version.outputs.channel == 'insider' &&
           needs.release-candidate-tests.result == 'success' &&
           needs.publish-cli.result == 'success' &&
-          needs.publish-linux-x64.result == 'success' &&
-          needs.publish-linux-arm64.result == 'success' &&
+          needs.publish-linux-appimage-x64.result == 'success' &&
+          needs.publish-linux-appimage-arm64.result == 'success' &&
+          needs.publish-linux-deb-x64.result == 'success' &&
+          needs.publish-linux-deb-arm64.result == 'success' &&
+          needs.publish-linux-rpm-x64.result == 'success' &&
+          needs.publish-linux-rpm-arm64.result == 'success' &&
           needs.publish-docker.result == 'success' &&
           needs.sign-and-notarize.result == 'success' }}
-    needs: [version, release-candidate-tests, publish-cli, publish-linux-x64, publish-linux-arm64, publish-docker, sign-and-notarize]
+    needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -708,17 +812,28 @@ jobs:
           }
           WHEEL=$(one wheel -name '*.whl')
           SDIST=$(one sdist -name '*.tar.gz')
-          # The bundle records both x64 and arm64 AppImages; each artifact
-          # directory must be scoped to its specific arch or "exactly one"
-          # fails when both are present in the download tree.
+          # The bundle records every Linux artifact the promotion will republish:
+          # three formats x two arches. Each lookup is scoped to BOTH its arch
+          # directory and its extension, because "exactly one" is otherwise
+          # ambiguous the moment a second format lands in the same download tree.
+          # A format missing here would be silently absent from stable while its
+          # publish job still succeeds against a bundle that never carried it.
           APPIMAGE=$(one AppImage -path '*build-linux-x64*' -name '*.AppImage')
           APPIMAGE_ARM64=$(one AppImage-arm64 -path '*build-linux-arm64*' -name '*.AppImage')
+          DEB=$(one deb -path '*build-linux-x64*' -name '*.deb')
+          DEB_ARM64=$(one deb-arm64 -path '*build-linux-arm64*' -name '*.deb')
+          RPM=$(one rpm -path '*build-linux-x64*' -name '*.rpm')
+          RPM_ARM64=$(one rpm-arm64 -path '*build-linux-arm64*' -name '*.rpm')
           MAC_ZIP=$(one notarized.zip -path '*KiroCrew-notarized-*' -name 'notarized.zip')
           DMG=$(one notarized-DMG -path '*KiroCrew-notarized-*' -name 'KiroCrew.dmg')
           cp "$WHEEL" "promotion-bundle/$(basename "$WHEEL")"
           cp "$SDIST" "promotion-bundle/$(basename "$SDIST")"
           cp "$APPIMAGE" promotion-bundle/KiroCrew-x86_64.AppImage
           cp "$APPIMAGE_ARM64" promotion-bundle/KiroCrew-aarch64.AppImage
+          cp "$DEB" promotion-bundle/KiroCrew-x86_64.deb
+          cp "$DEB_ARM64" promotion-bundle/KiroCrew-aarch64.deb
+          cp "$RPM" promotion-bundle/KiroCrew-x86_64.rpm
+          cp "$RPM_ARM64" promotion-bundle/KiroCrew-aarch64.rpm
           cp "$MAC_ZIP" promotion-bundle/notarized.zip
           cp "$DMG" promotion-bundle/KiroCrew.dmg
           OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')

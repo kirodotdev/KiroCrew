@@ -16,6 +16,14 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 RELEASE = WORKFLOWS / "release.yml"
 CLI = WORKFLOWS / "publish-cli.yml"
 LINUX = WORKFLOWS / "publish-linux.yml"
+#: Every (format, arch) Linux publish lane release.yml calls. Each is a
+#: separate job because publish-linux.yml writes one immutable versioned key
+#: per invocation.
+LINUX_LANES = tuple(
+    f"publish-linux-{fmt}-{arch}"
+    for fmt in ("appimage", "deb", "rpm")
+    for arch in ("x64", "arm64")
+)
 MAC = WORKFLOWS / "sign-and-notarize.yml"
 DOCKER = WORKFLOWS / "publish-docker.yml"
 PROMOTION_ARTIFACT = "KiroCrew-notarized-stable-${{ needs.version.outputs.version }}"
@@ -69,7 +77,7 @@ def test_stable_tag_resolves_candidate_and_never_enters_build_jobs() -> None:
 
 def test_every_stable_lane_consumes_the_verified_handoff() -> None:
     jobs = _workflow(RELEASE)["jobs"]
-    for name in ("publish-cli", "publish-linux-x64", "publish-linux-arm64", "publish-docker", "sign-and-notarize"):
+    for name in ("publish-cli", *LINUX_LANES, "publish-docker", "sign-and-notarize"):
         job = jobs[name]
         assert "resolve-promotion" in job["needs"]
         assert "needs.resolve-promotion.result == 'success'" in job["if"]
@@ -77,15 +85,10 @@ def test_every_stable_lane_consumes_the_verified_handoff() -> None:
     assert PROMOTION_ARTIFACT_FORMAT in jobs["publish-cli"]["with"]["wheel_artifact"]
     assert jobs["publish-cli"]["with"]["promote"].endswith(" == 'stable' }}")
 
-    linux_inputs = jobs["publish-linux-x64"]["with"]
-    assert PROMOTION_ARTIFACT_FORMAT in linux_inputs["appimage_artifact"]
-    assert "resolve-promotion.outputs.source_version" in linux_inputs["version"]
-    assert linux_inputs["promote"].endswith(" == 'stable' }}")
-
-    linux_arm64_inputs = jobs["publish-linux-arm64"]["with"]
-    assert PROMOTION_ARTIFACT_FORMAT in linux_arm64_inputs["appimage_artifact"]
-    assert "resolve-promotion.outputs.source_version" in linux_arm64_inputs["version"]
-    assert linux_arm64_inputs["promote"].endswith(" == 'stable' }}")
+    for lane in LINUX_LANES:
+        assert PROMOTION_ARTIFACT_FORMAT in jobs[lane]["with"]["build_artifact"], lane
+        assert "resolve-promotion.outputs.source_version" in jobs[lane]["with"]["version"], lane
+        assert jobs[lane]["with"]["promote"].endswith(" == 'stable' }}"), lane
 
     docker_inputs = jobs["publish-docker"]["with"]
     assert docker_inputs["promote"].endswith(" == 'stable' }}")
@@ -138,16 +141,24 @@ def test_prerelease_record_waits_for_test_gate_and_all_publish_lanes() -> None:
         "version",
         "release-candidate-tests",
         "publish-cli",
-        "publish-linux-x64",
-        "publish-linux-arm64",
+        "publish-linux-appimage-x64",
+        "publish-linux-appimage-arm64",
+        "publish-linux-deb-x64",
+        "publish-linux-deb-arm64",
+        "publish-linux-rpm-x64",
+        "publish-linux-rpm-arm64",
         "publish-docker",
         "sign-and-notarize",
     }
     for dependency in (
         "release-candidate-tests",
         "publish-cli",
-        "publish-linux-x64",
-        "publish-linux-arm64",
+        "publish-linux-appimage-x64",
+        "publish-linux-appimage-arm64",
+        "publish-linux-deb-x64",
+        "publish-linux-deb-arm64",
+        "publish-linux-rpm-x64",
+        "publish-linux-rpm-arm64",
         "publish-docker",
         "sign-and-notarize",
     ):
@@ -188,8 +199,8 @@ def test_file_publishers_verify_manifest_and_prior_provenance() -> None:
     assert "gh attestation verify" in cli_verify["run"]
 
     linux_manifest = _step(LINUX, "publish-linux", "Verify immutable promotion bundle")
-    linux_attest = _step(LINUX, "publish-linux", "Attest AppImage provenance")
-    linux_verify = _step(LINUX, "publish-linux", "Verify promoted AppImage provenance")
+    linux_attest = _step(LINUX, "publish-linux", "Attest artifact provenance")
+    linux_verify = _step(LINUX, "publish-linux", "Verify promoted artifact provenance")
     linux_promote = "env.HAS_SIGNING_SECRETS && inputs.promote"
     linux_fresh = "env.HAS_SIGNING_SECRETS && !inputs.promote"
     assert linux_manifest["if"] == linux_promote

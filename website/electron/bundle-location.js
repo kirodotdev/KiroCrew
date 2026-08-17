@@ -29,6 +29,14 @@
 // Translocation is the exception that needs no writability test: even if the
 // ephemeral copy were writable, replacing it updates a temporary directory and
 // leaves the user's real app untouched.
+//
+// LINUX is the same question with different answers: an AppImage replaces itself
+// in the directory holding the image, so writability decides it there too, while
+// a deb/rpm install is the package manager's to update and the app must not try.
+// Those live in the classifyLinuxInstall() family at the bottom of this file,
+// kept separate from the macOS bundle functions because the two platforms share
+// no path shape — collapsing them would mean one function whose parameters only
+// ever apply to half its callers.
 
 // The randomized read-only mount point Gatekeeper uses for a quarantined app.
 // Path shape: /private/var/folders/<x>/<y>/d/AppTranslocation/<UUID>/d/Foo.app
@@ -37,6 +45,10 @@ const TRANSLOCATION_MARKER = "/AppTranslocation/";
 const VOLUME_PREFIX = "/Volumes/";
 const APPLICATIONS_MARKER = "/Applications/";
 const RESOURCES_SUFFIX = "/Contents/Resources";
+// fpm installs a deb/rpm under this prefix, so a resourcesPath below it is a
+// package install even when no other signal survived (an app relaunched without
+// $APPIMAGE, or a build whose package-type file was not written).
+const PACKAGE_PREFIX = "/opt/";
 
 /**
  * Classify the filesystem location an app bundle is running from. Path-only —
@@ -145,12 +157,113 @@ function describeLocation(location, { bundleWritable = true } = {}) {
   return "Kiro Crew is running from a read-only disk image, so it cannot install its own updates.";
 }
 
+/**
+ * Which Linux install shape is this process running as?
+ *
+ * Linux ships two formats with opposite update stories, and the shell must tell
+ * them apart before it arms an updater: an AppImage self-replaces by `mv`-ing a
+ * new image over itself, so it needs its containing directory to be writable,
+ * while a deb/rpm install is owned by the package manager and is updated with
+ * privilege escalation the app does not have.
+ *
+ * Both signals are positive identifications rather than the absence of the
+ * other, so a third format added later reports "unknown" instead of silently
+ * inheriting AppImage semantics: `resources/package-type` is written by
+ * electron-builder for its package targets, `$APPIMAGE` is exported by the
+ * AppImage runtime and holds the image's own path, and a package install is the
+ * only shape of ours that lands under /opt (fpm's fixed prefix).
+ *
+ * @param {object} [signals]
+ * @param {string} [signals.appImagePath=""]  value of process.env.APPIMAGE
+ * @param {string} [signals.packageType=""]   contents of resources/package-type
+ * @param {string} [signals.resourcesPath=""] process.resourcesPath
+ * @returns {"appimage"|"package"|"unknown"}
+ */
+function classifyLinuxInstall({ appImagePath = "", packageType = "", resourcesPath = "" } = {}) {
+  if (typeof packageType === "string" && packageType.trim() !== "") return "package";
+  if (typeof appImagePath === "string" && appImagePath !== "") return "appimage";
+  if (typeof resourcesPath === "string" && resourcesPath.startsWith(PACKAGE_PREFIX)) {
+    return "package";
+  }
+  return "unknown";
+}
+
+/**
+ * The directory an AppImage must be able to write in order to replace itself:
+ * the one holding the image. Mirrors containingDirForBundle()'s defensiveness —
+ * "" for anything that is not an absolute path, so no caller probes an
+ * unrelated directory.
+ *
+ * @param {string} appImagePath
+ * @returns {string}
+ */
+function containingDirForAppImage(appImagePath) {
+  if (typeof appImagePath !== "string" || !appImagePath.startsWith("/")) return "";
+  const sep = appImagePath.lastIndexOf("/");
+  if (sep <= 0) return "";
+  return appImagePath.slice(0, sep);
+}
+
+/**
+ * Can this Linux install apply its own update?
+ *
+ * Three different reasons to say no or yes:
+ *
+ * - "appimage" depends on the filesystem: it `mv`s a new image over itself and
+ *   so needs the containing directory writable.
+ * - "package" needs its FORMAT to be known, because each format reads its own
+ *   feed directory. The resourcesPath fallback in classifyLinuxInstall() proves
+ *   only that this IS a package, not which kind — and guessing would hand an rpm
+ *   install the deb feed (or an AppImage), so an unnamed format is refused.
+ * - "unknown" fails open, in the same direction as canInstallUpdates(): a signal
+ *   we could not read must not disable updates fleet-wide.
+ *
+ * @param {string} kind  a classifyLinuxInstall() result
+ * @param {object} [opts]
+ * @param {boolean} [opts.imageWritable=true]  can the AppImage's containing dir
+ *        be written? Only consulted for "appimage".
+ * @param {string} [opts.packageFormat=""]  resolved package format ("deb"/"rpm").
+ *        Only consulted for "package".
+ * @returns {boolean}
+ */
+function canUpdateLinuxInstall(kind, { imageWritable = true, packageFormat = "" } = {}) {
+  if (kind === "appimage") return imageWritable !== false;
+  if (kind === "package") return typeof packageFormat === "string" && packageFormat !== "";
+  return true;
+}
+
+/**
+ * User-facing explanation for a Linux install that cannot self-update, or ""
+ * when it can — so callers can treat "" as "nothing to say", exactly like
+ * describeLocation().
+ *
+ * @param {string} kind
+ * @param {object} [opts]
+ * @param {boolean} [opts.imageWritable=true]
+ * @param {string} [opts.packageFormat=""]
+ * @returns {string}
+ */
+function describeLinuxInstall(kind, { imageWritable = true, packageFormat = "" } = {}) {
+  if (canUpdateLinuxInstall(kind, { imageWritable, packageFormat })) return "";
+  if (kind === "package") {
+    return "Kiro Crew cannot tell which package format this install came from, so it "
+      + "cannot fetch the right update. Update it through your package manager.";
+  }
+  return "Kiro Crew cannot write to the folder holding its AppImage, so it cannot replace "
+    + "itself with an update. Move the AppImage somewhere you own, such as ~/Applications.";
+}
+
 module.exports = {
   classifyBundleLocation,
   containingDirForBundle,
   canInstallUpdates,
   shouldOfferRelocation,
   describeLocation,
+  classifyLinuxInstall,
+  containingDirForAppImage,
+  canUpdateLinuxInstall,
+  describeLinuxInstall,
   TRANSLOCATION_MARKER,
   VOLUME_PREFIX,
+  PACKAGE_PREFIX,
 };

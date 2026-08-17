@@ -262,6 +262,14 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # Resolves the diff base inside Actions (it lives under .github/scripts).
         # The floor resolves the same base with `git merge-base` inline.
         "scripts/resolve-i18n-base.sh",
+        # Installs the built Linux packages in Ubuntu and Amazon Linux containers.
+        # It needs docker AND a completed electron-builder run, so it cannot be a
+        # pre-push gate: the floor would then demand a ~10-minute desktop build
+        # from every contributor whose diff happens to touch packaging.
+        "scripts/smoke-linux-packages.sh",
+        # Invoked BY packaging/build-desktop.sh to write the beacon provenance
+        # module, never standalone. Gating on it would gate on the build script.
+        "scripts/stamp-distribution.sh",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))
@@ -288,6 +296,8 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "uv": "resolves/installs dependencies",
         "sudo": "privileged provisioning -- belongs in setup, never in a gate",
         # Wrappers whose payload is already covered by another assertion.
+        "bash": "an interpreter prefix -- the payload is the .sh path, covered by "
+                "the script scan above",
         "npm": "covered by the npm-script scan above",
         "npx": "covered by the npm-script scan and the tsc/eslint assertions",
         "python": "covered by the scripts/ scan and the pytest gate",

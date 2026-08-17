@@ -9,8 +9,8 @@ name: Build Desktop (reusable)
 #
 # Platform matrix (expand as support lands):
 #   - macOS universal (arm64 + x86_64): shipped (one desktop DMG)
-#   - Linux x64:    shipped (AppImage)
-#   - Linux arm64:  shipped (AppImage — Graviton, Raspberry Pi, ARM laptops)
+#   - Linux x64:    shipped (AppImage + deb + rpm)
+#   - Linux arm64:  shipped (AppImage + deb + rpm — Graviton, Raspberry Pi, ARM laptops)
 #
 # Linux is built NATIVELY per arch, never cross-compiled: build-desktop.sh
 # provisions a python-build-standalone interpreter and then RUNS it (pip
@@ -148,5 +148,40 @@ jobs:
             website/electron/dist/*.dmg
             website/electron/dist/*.zip
             website/electron/dist/*.AppImage
+            website/electron/dist/*.deb
+            website/electron/dist/*.rpm
           if-no-files-found: error
           retention-days: 14
+
+  # Install the Linux packages for real, in the distros they target.
+  #
+  # Everything this job checks is invisible to a unit test, because it lives in
+  # metadata the package manager interprets rather than in code we run:
+  # dependency names that must exist in the target distro's repositories (they
+  # differ per distro, and Ubuntu 24.04's 64-bit time_t rename split several of
+  # them), the .desktop entry electron-builder generates, and the maintainer
+  # scripts that place the launcher symlink. A wrong name here produces a package
+  # that builds green and refuses to install, which no other gate would catch.
+  #
+  # x64 only: the checks are about metadata and dependency resolution, neither of
+  # which is arch-specific, and running arm64 containers under emulation would
+  # cost far more than it proves.
+  smoke-linux-packages:
+    name: Smoke-install Linux packages (deb + rpm)
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download Linux x64 build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: build-linux-x64
+          path: dist
+
+      # x64 only: every assertion is about metadata and dependency resolution,
+      # neither of which is arch-specific, and running arm64 containers under
+      # emulation would cost far more than it proves.
+      - name: Install the packages in their target distros
+        run: ./scripts/smoke-linux-packages.sh dist
