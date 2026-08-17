@@ -21,6 +21,33 @@ All notable changes to KiroCrew are documented in this file.
   used to open a file stays symlink-resolved so the traversal check is unchanged.
   Validation is delegated to the resolving helper rather than duplicated, so the
   two cannot drift apart.
+- **Code Review Sage's "Ask the reviewer" no longer dies with the review's
+  session.** The reviewer's reasoning lives in the session that produced the
+  findings, and that session was kept resident only briefly — a 1800s idle TTL,
+  a 6h cap, a 4-session LRU cap, and gateway restart. Worse than "unloaded":
+  retiring it called `handle.destroy()`, which unlinks the kiro-cli transcript
+  unless `keep_transcript` is set, so the reasoning was DELETED and no amount of
+  waiting or re-opening could bring it back. Sage now keeps the transcript and
+  a follow-up RESUMES it as an ordinary chat session (`session/load`), filed in
+  a `Sage Review` folder and titled `followup-pr#<n>-<title>`. Nothing is held
+  resident between the review and the question: asking is the rare case, so a
+  follow-up pays a cold load from disk instead of pinning the shared reviewer
+  subprocess on the chance that someone asks. Because the follow-up is a normal
+  session, its tool use now runs through the dashboard's approval pipeline,
+  which sees real permission requests and can reject BEFORE execution — closing
+  the documented limitation that Sage's own gate was post-hoc for
+  spec-pre-approved tools. A resume that would not restore the review is refused
+  rather than attempted: the dashboard's fallback for a failed resume is to
+  replay Kiro Crew's conversation log, and a follow-up session has none, so a
+  session opened anyway would answer confidently about a review it knows nothing
+  about; the same reason a run that is still going is not offerable, since a
+  second coverage pass can replace the findings a mid-run conversation was
+  opened on. Follow-up offers are retired after two weeks with no activity,
+  measured from the transcript's own mtime so a conversation still in use keeps
+  its offer. Retiring an offer removes only Sage's own descriptor: the one
+  session id available there comes from a file the reviewer can write, so
+  deleting on that authority would let a prompt-injected review name any session
+  on the machine and have this app remove it.
 
 - **A long-running cron job's next tick is no longer dispatched up to 30s
   late.** A job is invisible to the scheduler's wake computation while it's

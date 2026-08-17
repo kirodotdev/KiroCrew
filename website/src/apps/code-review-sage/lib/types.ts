@@ -330,9 +330,9 @@ export type MainView = 'reviews' | 'learning' | 'settings'
 export type ListTab = 'pulls' | 'reviews'
 export type RailSection = 'repos' | 'reviews' | 'learning' | 'settings'
 
-// --- Post-review chat --------------------------------------------------------
+// --- Follow-up sessions ------------------------------------------------------
 
-/** One exchange with the reviewer that produced this run's findings. */
+/** One exchange from a review discussed before follow-ups became sessions. */
 export interface ChatTurn {
   /** 'user' | 'reviewer' — widened to string because it is worker-written JSON
    *  crossing a trust boundary, and an unknown role must render as unknown
@@ -351,20 +351,26 @@ export interface ChatTurn {
 export interface ChatState {
   run_id: string
   change_id: string
-  /** Whether the reviewer session is still alive and can be asked anything. */
-  live: boolean
-  /** A question is in flight; the session refuses a second one. */
-  busy: boolean
+  /** Stored exchanges from before follow-ups became chat sessions. */
   turns: ChatTurn[]
-  /** How long a chat may sit idle before it is closed, for the explainer copy. */
-  idle_ttl_secs: number
-  /** Whether a question can be answered at all right now. False means tool use
-   *  cannot be gated (no safety override), so the turn would be refused — the UI
-   *  must say so instead of offering a composer. */
-  can_ask: boolean
+  /** Whether opening a follow-up would restore the reviewer's own context. False
+   *  means the session transcript is gone or was never kept, and a session opened
+   *  anyway would answer without knowing what was reviewed. */
+  resumable: boolean
+  /** Why not, when `resumable` is false. */
+  reason: string
+  /** The chat session a follow-up on this review uses. */
+  slot_key: string
+  /** Whether that session already exists, so the panel offers to continue the
+   *  conversation instead of inviting the user to start one they already had. */
+  followup_open: boolean
 }
 
-export interface ChatAskResponse {
+/** What the follow-up endpoint hands back for the slot the caller then creates. */
+export interface FollowupStart {
   ok: boolean
-  turns: ChatTurn[]
+  slot_key: string
+  agent: string
+  folder_id: string
+  title: string
 }

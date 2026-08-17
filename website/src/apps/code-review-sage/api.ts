@@ -5,9 +5,9 @@
 // dashboard session cookie — no tokens are added here.
 import type {
   AddRepoResponse,
-  ChatAskResponse,
   ChatState,
   ConsolidateResponse,
+  FollowupStart,
   LearningsResponse,
   NamespacesResponse,
   PinnedRepo,
@@ -71,24 +71,18 @@ async function sendJSON<T>(path: string, method: string, body?: unknown): Promis
 }
 
 export const sageApi = {
-  // --- Post-review chat ---
-  /** Transcript for one reviewed change, plus whether it can still be asked.
-   *  History comes from disk, so an archived run still shows what was discussed. */
+  // --- Follow-up sessions ---
+  /** Stored history for one reviewed change, plus whether a follow-up session
+   *  would restore the reviewer's own context. */
   chatState: (runId: string, changeId: string): Promise<ChatState> =>
     getJSON(`/chat?run_id=${encodeURIComponent(runId)}`
       + `&change_id=${encodeURIComponent(changeId)}`),
 
-  /** Ask the reviewer one thing. Rejects with a `SageApiError` whose `code` is
-   *  `chat_expired` / `chat_busy` / `chat_message_too_long` / ... */
-  chatAsk: (runId: string, changeId: string, message: string):
-  Promise<ChatAskResponse> =>
-    sendJSON('/chat', 'POST',
-      { run_id: runId, change_id: changeId, message }),
-
-  /** End the conversation, releasing the reviewer subprocess it was holding. */
-  chatClose: (runId: string, changeId: string):
-  Promise<{ ok: boolean; closed: boolean }> =>
-    sendJSON('/chat-close', 'POST', { run_id: runId, change_id: changeId }),
+  /** Arm the resume and get what the chat slot needs. Rejects with a
+   *  `SageApiError` whose `code` is `followup_not_recorded` /
+   *  `followup_transcript_gone` / `chat_run_deleted` / ... */
+  followupStart: (runId: string, changeId: string): Promise<FollowupStart> =>
+    sendJSON('/followup', 'POST', { run_id: runId, change_id: changeId }),
 
   // --- Runs (threads) ---
   runs: (): Promise<RunsResponse> => getJSON('/runs'),

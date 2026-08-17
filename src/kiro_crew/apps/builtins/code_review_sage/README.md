@@ -11,47 +11,34 @@ request unless you turn on `review.auto_post`, which publishes them as a PENDING
 ## Ask the reviewer
 
 A report states conclusions; "why did you decide that?" is answerable only by the
-session that decided it. After a deep review the reviewer's session is kept alive
-for a bounded while (idle TTL plus an absolute cap, see `sage_lib/chat_session.py`)
-so the Focus Report can offer a chat panel against that same session. Once it is
-reclaimed the transcript stays readable and the composer disappears, because an
-input that cannot send is worse than none.
+session that decided it. So after a deep review that session's transcript is kept
+(`sage_lib/followup.py`) and the Focus Report offers to open a **follow-up
+session**: an ordinary chat session whose kiro-cli session is `session/load`ed
+from the review's own transcript, filed in a `Sage Review` folder and titled
+`followup-pr#<n>-<pull request title>`.
 
-Asking requires the safety override (YOLO) to be active, with enough remaining
-runway to cover the whole turn. Without it the panel explains why instead of
-offering a composer: the reviewer's session carries pre-approved tools, and a
-turn that is not authorized to use tools at all must not start.
+Nothing is held resident between the review and the question. Asking is the rare
+case, so a follow-up pays a cold load from disk rather than pinning the shared
+reviewer subprocess on the chance that someone asks. From the first turn on it is
+a normal session: it survives restarts, appears in the sidebar, and its tool use
+runs through the dashboard's own approval pipeline — which sees real permission
+requests and can reject *before* execution, rather than the app gating tool calls
+after the fact.
 
-### Known limitation: pre-approved tools are gated after they run
+A resume that would not restore the review is refused rather than attempted. The
+dashboard's fallback for a failed resume is to replay Kiro Crew's own conversation
+log, and a follow-up session has none, so a session opened anyway would answer
+confidently with no idea what was reviewed. The panel therefore says why it is
+offering nothing: the review kept no session, its transcript is gone, or the run
+is still going (its findings can still be replaced by a second coverage pass).
 
-Authorization is enforced in two places, and for one class of tool the second is
-POST-HOC. An agent spec's `allowedTools` pre-approves tools, which then execute
-with **no permission request** — there is nothing to reject, and by the time
-`EVENT_TOOL_CALL` arrives the call has already been made. So the per-tool checks
-applied there (operator denied-commands, the `~/.aws` / `~/.ssh` sensitive-path
-blocks, the enterprise profile ceiling) cannot prevent the FIRST pre-approved
-call. They still abort the turn, which stops every subsequent tool and withholds
-the answer, and they remain a genuine pre-execution gate for any tool that does
-raise a permission event.
-
-This matters here specifically because the session's context is
-attacker-influenced: it was built by reviewing a pull request whose diff and
-description come from an outsider, and this feature then lets a human keep
-prompting that same session. An instruction planted in a diff could steer a
-follow-up answer into a pre-approved read of a credential file.
-
-Scope: the reviewer agent pre-approves one MCP server; the fallback `kirocrew`
-agent pre-approves roughly thirty entries. The session's spec cannot be narrowed
-after the fact — it is the review's own session, which is the point of keeping
-it — so moving the check cannot close this. Closing it requires either a session
-with no pre-approved tools, or routing every tool call through the same
-`HookManager` the dashboard and Slack paths use, with the turn-level override
-kept as an additional restriction on top.
-
-Until then this is an accepted limitation, bounded by three conditions holding at
-once: the reviewed pull request is authored by an untrusted party, an operator has
-turned the safety override on, and someone asks a follow-up question. With the
-override off the chat surface does not exist.
+Follow-up offers are retired after two weeks with no activity, measured from the
+transcript's own mtime so a conversation still in use keeps its offer. Retiring an
+offer removes only Sage's descriptor: the one session id available here comes from
+a file the reviewer itself can write, so it proves the form of a session id and
+never which session Sage recorded, and deleting on that authority would let a
+prompt-injected review name any session on the machine. Reclaiming a transcript is
+the platform's own user-controlled session cleanup.
 
 ## Architecture (V1)
 

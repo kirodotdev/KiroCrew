@@ -59,8 +59,8 @@ if str(_APP_ROOT) not in sys.path:
 # module load, so this resolves on first import.
 from sage_lib import (  # noqa: E402,E501
     adapters,
-    chat_session,
     discovery,
+    followup,
     learning,
     pipeline,
     report,
@@ -2007,33 +2007,25 @@ async def _handle_consolidate(request: web.Request) -> web.Response:
                               "running": True})
 
 
-# --- post-review chat -------------------------------------------------------
-# The reviewer that produced a report can be asked about it, on the very session
-# that produced it (see ``sage_lib/chat_session.py``). History is on disk so an
-# archived run still shows what was discussed; ``live`` says whether the composer
-# can be used at all.
-
-# A question is one prompt, not a document. Bounded so a paste cannot become an
-# unbounded turn on the shared reviewer subprocess.
-_CHAT_MSG_MAX = 8000
-
-# How often idle chats are swept. The lease pins a kiro-cli subprocess, and a
-# closed browser tab sends nothing, so this cannot be lazy: without a timer an
-# abandoned chat would hold the subprocess until the app is disabled.
-_CHAT_SWEEP_INTERVAL = 300.0
-
-# Serializes transcript persistence. Read-merge-write is not atomic, so two tabs
-# finishing prompts at once would both merge against the SAME history and the
-# later write would silently drop an exchange.
+# --- follow-up sessions -----------------------------------------------------
+# A finished review can be asked about later. Its session transcript is kept (see
+# ``sage_lib/followup.py``) and a follow-up RESUMES it as an ordinary chat
+# session, so the reviewer's own reasoning comes back cold from disk and the
+# conversation from then on is a normal session: it survives restarts, is filed in
+# the sidebar, and its tool use runs through the dashboard's approval pipeline.
 #
-# One lock for all chats rather than one per key: `MAX_CHAT_SESSIONS` is 4 and a
-# write is a small file, so the contention is negligible — and a per-key registry
-# would need its own lifecycle to avoid leaking an entry per chat ever opened.
-_CHAT_PERSIST_LOCK = asyncio.Lock()
+# This app's part is deliberately small — validate, seed the resume, and hand back
+# what the slot needs. Creating the slot itself stays with the dashboard's own
+# endpoint so slot policy (agent binding, workspace, title redaction, ownership)
+# has exactly one implementation.
+
+# How often kept transcripts are aged out. They are the largest thing this app
+# leaves on disk and a closed tab reports nothing, so this cannot be lazy.
+_FOLLOWUP_SWEEP_INTERVAL = 3600.0
 
 
 def _chat_params(run_id: str, change_id: str) -> str:
-    """Validate the pair identifying a chat. Returns an error code, or ""."""
+    """Validate the pair identifying a review. Returns an error code, or ""."""
     if not run_id or not change_id:
         return "chat_params_required"
     return ""
@@ -2047,9 +2039,9 @@ def _require_enabled(handler: _ChatHandler) -> _ChatHandler:
 
     Routes are registered once at gateway startup, so a disabled app's endpoints
     stay reachable — the platform's convention is that handlers check enabled
-    state themselves. Without this the chat surface of a disabled app stays
-    promptable and tool-capable, which no teardown hook can retroactively prevent
-    for a request already in flight.
+    state themselves. Without this a disabled app could still start a session on
+    a reviewer's context, which no teardown hook can retroactively prevent for a
+    request already in flight.
 
     ``is_app_enabled`` reads ``installed.json`` synchronously, so it runs off the
     event loop. Deny-by-default: an unreadable state file disables the surface
@@ -2069,10 +2061,10 @@ def _require_enabled(handler: _ChatHandler) -> _ChatHandler:
 
 @_require_enabled
 async def _handle_chat_get(request: web.Request) -> web.Response:
-    """GET .../chat?run_id=&change_id= — transcript plus whether it is still live.
+    """GET .../chat?run_id=&change_id= — stored history plus follow-up readiness.
 
-    200 even with no history: "this review was never discussed" is a normal state
-    for the panel, not an error.
+    200 even with nothing to show: "this review was never discussed" is a normal
+    state for the panel, not an error.
     """
     run_id = (request.query.get("run_id") or "").strip()
     change_id = (request.query.get("change_id") or "").strip()
@@ -2081,31 +2073,117 @@ async def _handle_chat_get(request: web.Request) -> web.Response:
         return web.json_response(
             {"code": bad, "error": "missing run_id or change_id"}, status=400)
     turns = await asyncio.to_thread(
-        chat_session.read_transcript, run_id, change_id)
-    registry = chat_session.peek_registry()
-    key = chat_session.chat_key(run_id, change_id)
-    state = registry.status(key) if registry is not None else {
-        "live": False, "busy": False}
+        followup.read_transcript, run_id, change_id)
+    async with _LOCK:
+        run = _find_run(run_id)
+        run_live = run is not None and _is_live(run)
+    desc, reason = await asyncio.to_thread(
+        followup.resumable, run_id, change_id)
+    # A run still in flight is not offerable even with a descriptor on disk: its
+    # first pass may be superseded by a second, which retires that descriptor and
+    # leaves an already-open conversation pointing at findings the run replaced.
+    if run_live:
+        desc, reason = None, followup.ERR_RUN_LIVE
+    slot_key = followup.slot_key(run_id, change_id)
     return web.json_response({
         "run_id": run_id,
         "change_id": change_id,
-        "live": bool(state.get("live")),
-        "busy": bool(state.get("busy")),
         "turns": turns,
-        # Told to the UI so it can explain WHY the composer is disabled instead
-        # of rendering an input that silently fails.
-        "idle_ttl_secs": chat_session.CHAT_IDLE_TTL_SECS,
-        # Whether a question could be answered at all right now. A turn is refused
-        # outright without the safety override, because an agent spec's
-        # allowedTools pre-approves tools that then run with no permission event —
-        # so the UI must say so BEFORE a question is typed rather than after.
-        "can_ask": chat_session.can_ask(),
+        # Whether a follow-up would restore the reviewer's own context. Told to
+        # the UI so it can explain why the button is absent instead of offering
+        # one that opens a session which knows nothing about the review.
+        "resumable": desc is not None,
+        "reason": reason,
+        "slot_key": slot_key,
+        # Whether that session already exists. Without it the panel invites a
+        # returning user to "open" a conversation they already had, with no trace
+        # of it -- which reads as the review having lost it.
+        "followup_open": bool(desc is not None
+                              and _followup_session_exists(slot_key)),
     })
 
 
+def _followup_session_exists(slot_key: str) -> bool:
+    """Whether a chat session for this review is actually in the sidebar.
+
+    Read from the SLOT, never from the session map. The two are independent and
+    the map deliberately outlives the slot: closing a tab pops it from the slot
+    table but keeps its mapping so a later resume can reload the conversation. So
+    a mapping proves a session once existed, not that one exists now -- and this
+    answer decides whether the panel offers to continue a conversation or to
+    create it, which in turn decides whether the slot is handed a title and a
+    folder. Deriving it from the map made a closed session read as open, so the
+    recreate that followed omitted both and landed unfiled under the placeholder
+    title.
+
+    Reads the slot table directly because the dashboard exposes no read-only
+    existence check; absent state (tests, a bare app) answers False, which is the
+    safe direction -- it offers to create, and creating is idempotent.
+    """
+    slots = getattr(_APP_STATE.get("state"), "_slots", None)
+    if not isinstance(slots, dict):
+        return False
+    return slot_key in slots
+
+
+async def _ensure_followup_folder(state: Any) -> str:
+    """Find-or-create the folder follow-up sessions are filed under.
+
+    Through ``mutate_folders`` so find-then-create is one transaction: two tabs
+    starting a follow-up at the same moment would otherwise each miss the other's
+    folder and build a duplicate. Idempotent — an existing folder is adopted and
+    nothing is written.
+    """
+    def _create_or_adopt(folders: list[dict]) -> tuple[bool, str]:
+        for f in folders:
+            if str(f.get("name", "")).strip() != followup.FOLDER_NAME:
+                continue
+            # Re-engaging the folder clears `hidden`, matching the folder CRUD
+            # handler's own unhide-on-assign rule.
+            if f.get("hidden"):
+                f["hidden"] = False
+                return True, str(f.get("id", ""))
+            return False, str(f.get("id", ""))
+        folder = {
+            "id": uuid.uuid4().hex[:12],
+            "name": followup.FOLDER_NAME,
+            "order": len(folders),
+            "collapsed": False,
+            "hidden": False,
+            "parent_id": "",
+            "project_dir": "",
+        }
+        folders.append(folder)
+        return True, str(folder["id"])
+
+    try:
+        return str(await state.mutate_folders(_create_or_adopt))
+    except Exception:  # noqa: BLE001 - filing is a nicety, the session is not
+        logger.warning("code-review-sage: follow-up folder write failed",
+                       exc_info=True)
+        return ""
+
+
+def _change_title(run_id: str, change_id: str) -> str:
+    """The reviewed pull request's title, or "" when it cannot be read."""
+    try:
+        rec = results.read_result(change_id, None, run_id) or {}
+        return store.redact_text(str(rec.get("title") or ""))
+    except Exception:  # pragma: no cover - a title is cosmetic
+        logger.debug("code-review-sage: could not read change title",
+                     exc_info=True)
+        return ""
+
+
 @_require_enabled
-async def _handle_chat_post(request: web.Request) -> web.Response:
-    """POST .../chat {run_id, change_id, message} — ask the reviewer one thing."""
+async def _handle_followup_start(request: web.Request) -> web.Response:
+    """POST .../followup {run_id, change_id} — prepare a session on this review.
+
+    Returns what the caller hands to ``POST /api/chat/slots``: the derived slot
+    key, the agent the review ran as, the folder to file it in, and a title. The
+    resume itself is already armed when this returns, so the slot's first turn
+    loads the reviewer's transcript.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -2114,194 +2192,103 @@ async def _handle_chat_post(request: web.Request) -> web.Response:
         body = {}
     run_id = str(body.get("run_id") or "").strip()
     change_id = str(body.get("change_id") or "").strip()
-    message = body.get("message")
     bad = _chat_params(run_id, change_id)
     if bad:
         return web.json_response(
             {"code": bad, "error": "missing run_id or change_id"}, status=400)
-    if not isinstance(message, str) or not message.strip():
-        return web.json_response(
-            {"code": "chat_message_required",
-             "error": "message must be a non-empty string"}, status=400)
-    if len(message) > _CHAT_MSG_MAX:
-        return web.json_response(
-            {"code": "chat_message_too_long",
-             "error": f"message exceeds {_CHAT_MSG_MAX} characters"}, status=400)
-
-    registry = chat_session.peek_registry()
-    if registry is None:
-        return web.json_response(
-            {"code": "chat_expired",
-             "error": "no live reviewer session for this review"}, status=409)
-    key = chat_session.chat_key(run_id, change_id)
-
-    # The chat outlives its review, so the run can be deleted while this chat is
-    # still live. Check under the same lock the registry mutates under, and close
-    # the chat rather than answering into a run that no longer exists — otherwise
-    # persistence recreates the directory deletion just removed.
     async with _LOCK:
-        run_known = _find_run(run_id) is not None
+        run = _find_run(run_id)
+        run_known = run is not None
+        run_live = run is not None and _is_live(run)
     if not run_known:
-        registry = chat_session.peek_registry()
-        if registry is not None:
-            await registry.close(key)
         return web.json_response(
-            {"code": chat_session.ERR_RUN_GONE,
-             "error": "the review this conversation belongs to was deleted"},
-            status=409)
+            {"code": followup.ERR_RUN_GONE,
+             "error": "the review this belongs to was deleted"}, status=409)
+    if run_live:
+        # A first pass can be superseded by a second one in the same run, and that
+        # retires the descriptor. Opening now would hand the user a conversation
+        # whose findings the run then replaces, with nothing saying so.
+        return web.json_response(
+            {"code": followup.ERR_RUN_LIVE,
+             "error": "this review is still running"}, status=409)
 
-    result = await registry.ask(key, message.strip())
-    if not result.get("ok"):
-        code = str(result.get("error") or "chat_turn_failed")
+    desc, reason = await asyncio.to_thread(
+        followup.resumable, run_id, change_id)
+    if desc is None:
         # Literal-status returns rather than one computed `status=`: the
         # error-code contract gate cannot statically verify a site whose status is
         # a variable, so a dynamic status reads as non-compliant even when the
         # body carries a `code`.
-        if code == chat_session.ERR_NEEDS_OVERRIDE:
-            # Not a failure — a refusal. The turn was never sent, because tool use
-            # on this session cannot be gated without the safety override.
+        if reason == followup.ERR_TRANSCRIPT_GONE:
             return web.json_response(
-                {"code": code,
-                 "error": "tool use cannot be gated without the safety override"},
-                status=409)
-        if code in ("chat_expired", "chat_busy"):
-            # A state the user can act on — start a new review, or wait for the
-            # question in flight — so the request itself was well-formed.
-            return web.json_response(
-                {"code": code,
-                 "error": "the reviewer cannot take this question right now"},
+                {"code": followup.ERR_TRANSCRIPT_GONE,
+                 "error": "the reviewer's session is no longer on disk"},
                 status=409)
         return web.json_response(
-            {"code": code, "error": "the reviewer failed to answer"}, status=502)
-
-    new_turns = list(result.get("turns") or [])
-
-    # Append to what is on disk rather than dumping the live session's list: a
-    # gateway restart ends the session but keeps the file, and a later chat on
-    # the same run must not erase the earlier conversation.
-    def _persist() -> list[dict]:
-        # The STRICT reader: `read_transcript` reads an unreadable or oversized
-        # file as "no history", which on this append path would overwrite the
-        # whole conversation with just this exchange.
-        history = chat_session.read_transcript_for_merge(run_id, change_id)
-        merged = history + new_turns
-        chat_session.write_transcript(run_id, change_id, merged)
-        return merged
-
-    try:
-        # Held across the whole read-merge-write, not just the write: the race is
-        # two readers seeing the same history, not two writers.
-        async with _CHAT_PERSIST_LOCK:
-            turns = await asyncio.to_thread(_persist)
-    except chat_session.TranscriptUnreadable:
-        # Refuse rather than clobber: the answer is reported as unsaved and the
-        # existing transcript stays intact on disk for the operator to inspect.
-        logger.warning("chat transcript unreadable; refusing to overwrite",
-                       exc_info=True)
-        return web.json_response(
-            {"code": "chat_persist_failed",
-             "error": "the answer could not be saved"}, status=500)
-    except FileNotFoundError:
-        # The run's directory went away between the check above and the write, or
-        # an ancestor of the transcript path is a link and the write was refused.
-        # Report it rather than returning an answer whose record was discarded.
-        registry = chat_session.peek_registry()
-        if registry is not None:
-            await registry.close(key)
-        return web.json_response(
-            {"code": chat_session.ERR_RUN_GONE,
-             "error": "the review this conversation belongs to was deleted"},
+            {"code": followup.ERR_NO_DESCRIPTOR,
+             "error": "this review did not keep a resumable session"},
             status=409)
-    except Exception:
-        # Reporting 200 here loses the exchange silently: the answer is not on
-        # disk, so the next poll refetches the OLD history and the question the
-        # user just asked disappears with no error anywhere. A full or unwritable
-        # data directory is exactly when that would happen.
-        logger.warning("chat transcript persist failed", exc_info=True)
+
+    state = _APP_STATE.get("state")
+    sessions = getattr(state, "sessions", None)
+    if sessions is None or not hasattr(sessions, "seed_conversation"):
         return web.json_response(
-            {"code": "chat_persist_failed",
-             "error": "the answer could not be saved"}, status=500)
-    return web.json_response({"ok": True, "turns": turns})
+            {"code": "followup_unavailable",
+             "error": "sessions are not available in this context"}, status=503)
 
-
-@_require_enabled
-async def _handle_chat_close(request: web.Request) -> web.Response:
-    """POST .../chat-close {run_id, change_id} — end the chat, free the lease."""
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    run_id = str(body.get("run_id") or "").strip()
-    change_id = str(body.get("change_id") or "").strip()
-    bad = _chat_params(run_id, change_id)
-    if bad:
+    slot_key = followup.slot_key(run_id, change_id)
+    # The session-map key a dashboard slot resolves its resume from. Seeded before
+    # the slot exists on purpose: the key is derived, so the mapping can be armed
+    # first and the slot's very first turn already resumes.
+    session_key = f"dashboard:{slot_key}"
+    # A slot that already carries a mapping is left alone. Re-seeding would point
+    # a follow-up conversation back at the review's own starting transcript and
+    # discard everything discussed since.
+    mapped = await asyncio.to_thread(sessions.resumable_sid, session_key)
+    if not mapped:
+        await asyncio.to_thread(
+            sessions.seed_conversation, session_key, desc["sid"],
+            provider=desc["provider"], cwd=desc["cwd"])
+        # Read back rather than trust the write: the session map self-prunes an
+        # entry whose files are gone, so this doubles as the last check that the
+        # transcript is still there. Refusing here is the point — a slot created
+        # without a mapping resumes nothing and then answers anyway, with no idea
+        # what was reviewed.
+        mapped = await asyncio.to_thread(sessions.resumable_sid, session_key)
+    if not mapped:
         return web.json_response(
-            {"code": bad, "error": "missing run_id or change_id"}, status=400)
-    registry = chat_session.peek_registry()
-    closed = False
-    if registry is not None:
-        closed = await registry.close(chat_session.chat_key(run_id, change_id))
-    # 200 either way: "already gone" is the state the caller wanted.
-    return web.json_response({"ok": True, "closed": closed})
+            {"code": followup.ERR_TRANSCRIPT_GONE,
+             "error": "the reviewer's session is no longer on disk"}, status=409)
+
+    folder_id = ""
+    if hasattr(state, "mutate_folders"):
+        folder_id = await _ensure_followup_folder(state)
+    title = followup.slot_title(
+        change_id, await asyncio.to_thread(_change_title, run_id, change_id))
+    return web.json_response({
+        "ok": True,
+        "slot_key": slot_key,
+        "agent": desc["agent"],
+        "folder_id": folder_id,
+        "title": title,
+    })
 
 
-async def _chat_sweep_loop() -> None:
-    """Close idle chats forever, so an abandoned one cannot pin the subprocess."""
+async def _followup_sweep_loop() -> None:
+    """Age out kept transcripts forever, so they cannot accumulate unbounded."""
     while True:
         try:
-            await asyncio.sleep(_CHAT_SWEEP_INTERVAL)
-            registry = chat_session.peek_registry()
-            if registry is None:
-                continue
-            closed = await registry.sweep()
-            if closed:
-                logger.info("code-review-sage: swept %d idle chat(s)", closed)
+            await asyncio.sleep(_FOLLOWUP_SWEEP_INTERVAL)
+            dropped = await asyncio.to_thread(followup.prune)
+            if dropped:
+                logger.info(
+                    "code-review-sage: dropped %d idle review transcript(s)",
+                    dropped)
         except asyncio.CancelledError:  # pragma: no cover - shutdown
             raise
         except Exception:  # pragma: no cover - never let the sweeper die
-            logger.debug("code-review-sage: chat sweep failed", exc_info=True)
-
-
-def on_disable(app: object) -> None:
-    """Close every retained review chat when the app is disabled.
-
-    Disabling an app has to withdraw its RUNTIME, not just its UI. A retained chat
-    holds a live ACP session and a batch lease on the shared kiro-cli subprocess,
-    so without this the process stays pinned and the session stays promptable — a
-    disabled app that can still run tools.
-
-    Defined HERE rather than in the package ``__init__`` because module identity is
-    load-bearing: the app dir is hyphenated, so its siblings are reached through
-    the ``sys.path`` shim above as top-level ``sage_lib.*``. That makes
-    ``sage_lib.chat_session`` and ``...code_review_sage.sage_lib.chat_session`` two
-    distinct ``sys.modules`` entries with separate ``_REGISTRY`` globals. The
-    runtime populates the short-name one (this module and ``review_pool`` both
-    import it that way), so a hook reading the fully-qualified one would always see
-    ``None`` and close nothing.
-
-    ``apps/routes.py`` calls this on the disable path, which is synchronous, so the
-    close is scheduled on the running loop; with no loop there is no registry
-    holding anything either.
-    """
-    registry = chat_session.peek_registry()
-    if registry is None:
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:  # pragma: no cover - no loop (CLI/teardown)
-        logger.debug("no running loop; retained chats close with the process")
-        return
-
-    def _report(task: "asyncio.Task") -> None:
-        exc = task.exception()
-        if exc is not None:
-            logger.warning("closing retained review chats on disable failed: %s",
-                           exc)
-
-    # Fire-and-forget: the disable response must not block on subprocess teardown.
-    loop.create_task(registry.close_all()).add_done_callback(_report)
+            logger.debug("code-review-sage: transcript sweep failed",
+                         exc_info=True)
 
 
 def register_routes(app: web.Application) -> None:
@@ -2337,15 +2324,12 @@ def register_routes(app: web.Application) -> None:
 
     app.on_startup.append(_reap_on_startup)
 
-    async def _start_chat_sweeper(_app: web.Application) -> None:
-        # Runs on the gateway loop, so this is where the loop is knowable;
-        # the review driver's worker threads need it to schedule a close.
-        chat_session.bind_loop(asyncio.get_running_loop())
-        task = asyncio.create_task(_chat_sweep_loop())
+    async def _start_followup_sweeper(_app: web.Application) -> None:
+        task = asyncio.create_task(_followup_sweep_loop())
         _TASKS.add(task)
         task.add_done_callback(_TASKS.discard)
 
-    app.on_startup.append(_start_chat_sweeper)
+    app.on_startup.append(_start_followup_sweeper)
     # Cache the dashboard state so a finished run can push a bell notification
     # from a background task (no request in scope there). Absent in tests that
     # register routes on a bare app — every read site treats it as optional.
@@ -2356,8 +2340,8 @@ def register_routes(app: web.Application) -> None:
     except Exception:  # pragma: no cover - defensive
         pass
     app.router.add_get("/api/apps/code-review-sage/chat", _handle_chat_get)
-    app.router.add_post("/api/apps/code-review-sage/chat", _handle_chat_post)
-    app.router.add_post("/api/apps/code-review-sage/chat-close", _handle_chat_close)
+    app.router.add_post("/api/apps/code-review-sage/followup",
+                        _handle_followup_start)
     app.router.add_post("/api/apps/code-review-sage/review", _handle_review)
     app.router.add_post("/api/apps/code-review-sage/review-repo", _handle_review_repo)
     app.router.add_get("/api/apps/code-review-sage/repo-prs", _handle_repo_prs)

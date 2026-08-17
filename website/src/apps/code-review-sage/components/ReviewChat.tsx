@@ -1,49 +1,47 @@
-// Post-review chat: ask the reviewer about the findings it just produced.
+// Follow-up on a review: open a chat session that RESUMES the reviewer.
 //
 // A report carries conclusions; "why did you decide that?" is answerable only by
-// the session that decided it. The backend keeps that session alive for a bounded
-// while (see `sage_lib/chat_session.py`), which is why this panel has two distinct
-// states rather than one:
+// the session that decided it. That session's transcript is kept, so a follow-up
+// loads it from disk and continues as an ordinary chat session — which is why this
+// panel has no composer of its own. Everything after the button is the Chat tab:
+// history that survives restarts, real approval prompts, steering, subagents.
 //
-//   * LIVE   — the reviewer is still loaded and can be asked anything.
-//   * CLOSED — it has been reclaimed. History is still shown, but there is no
-//              composer, because an input that cannot send is worse than none.
+// Two states, and the difference matters:
+//
+//   * RESUMABLE — the reviewer's session is on disk and can be reopened.
+//   * NOT RESUMABLE — nothing was kept, or the transcript is gone. No button,
+//     because a session opened anyway would answer confidently with no idea what
+//     was reviewed.
 //
 // Collapsed by default: most reports are read without questions, and the findings
 // are the substance of this tab.
-//
-// The reviewer answers in markdown (fenced code, `identifiers`, bold, numbered
-// steps), so its turns render through the shared MarkdownRenderer. The user's own
-// turns and the raw reasoning disclosure deliberately do NOT -- see Turn().
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, MessageCircle, Send, TriangleAlert } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { ChevronDown, ChevronRight, MessageCircle, TriangleAlert } from 'lucide-react'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
+import { api } from '../../../api/client'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import { i18nT } from '../../../i18n/t'
 import { SageApiError, sageApi } from '../api'
 import type { ChatTurn } from '../lib/types'
 
-/** Codes the backend can return for a question, mapped to localized copy. An
- *  unmapped code falls back to a generic string rather than showing the server's
- *  English prose inside a translated page. */
-const ASK_ERROR_KEY: Record<string, string> = {
-  chat_expired: 'apps.codeReviewSage.components.reviewChat.error_expired',
-  chat_busy: 'apps.codeReviewSage.components.reviewChat.error_busy',
-  chat_message_too_long: 'apps.codeReviewSage.components.reviewChat.error_too_long',
-  chat_message_required: 'apps.codeReviewSage.components.reviewChat.error_empty',
-  chat_needs_override: 'apps.codeReviewSage.components.reviewChat.error_needs_override',
+/** Codes the backend can return, mapped to localized copy. An unmapped code falls
+ *  back to a generic string rather than showing the server's English prose inside
+ *  a translated page. */
+const REASON_KEY: Record<string, string> = {
+  followup_not_recorded: 'apps.codeReviewSage.components.reviewChat.not_recorded_notice',
+  followup_transcript_gone: 'apps.codeReviewSage.components.reviewChat.transcript_gone_notice',
+  followup_run_live: 'apps.codeReviewSage.components.reviewChat.run_live_notice',
   chat_run_deleted: 'apps.codeReviewSage.components.reviewChat.error_run_deleted',
-  chat_persist_failed: 'apps.codeReviewSage.components.reviewChat.error_persist_failed',
-  chat_override_expiring: 'apps.codeReviewSage.components.reviewChat.error_override_expiring',
-  chat_override_lapsed: 'apps.codeReviewSage.components.reviewChat.error_override_lapsed',
-  chat_tool_denied: 'apps.codeReviewSage.components.reviewChat.error_tool_denied',
-  chat_transcript_dir_unsafe: 'apps.codeReviewSage.components.reviewChat.error_transcript_unsafe',
 }
 
-/** While live, poll so a session closed by the idle sweep (or a question sent from
- *  another tab) stops offering a composer that would fail. */
-const POLL_MS = 8000
+function reasonText(code: string): string {
+  const key = REASON_KEY[code]
+  return key
+    ? i18nT(key)
+    : i18nT('apps.codeReviewSage.components.reviewChat.error_generic')
+}
 
 function Reasoning({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
@@ -125,72 +123,52 @@ export default function ReviewChat(
   { runId, changeId }: { runId: string; changeId: string },
 ) {
   const [open, setOpen] = useState(false)
-  const [draft, setDraft] = useState('')
-  const [askError, setAskError] = useState('')
-  const qc = useQueryClient()
-  const endRef = useRef<HTMLDivElement | null>(null)
+  const [error, setError] = useState('')
+  const navigate = useNavigate()
 
   const stateQ = useQuery({
     queryKey: ['sage', 'chat', runId, changeId],
     queryFn: () => sageApi.chatState(runId, changeId),
     enabled: open && Boolean(runId) && Boolean(changeId),
-    refetchInterval: (q) => (q.state.data?.live ? POLL_MS : false),
   })
 
-  // Preserve the last good payload across a polling blip: react-query keeps stale
-  // data when status flips to error, so gating on `isError` alone would eject the
-  // transcript the user is reading.
   const state = stateQ.data
   const turns = state?.turns ?? []
-  const live = Boolean(state?.live)
-  const busy = Boolean(state?.busy)
-  // A live session is not sufficient: without the safety override the turn is
-  // refused before it is ever sent, because an agent spec's allowedTools
-  // pre-approves tools that would then run with no permission event. Telling the
-  // user only after they have typed is the failure mode this avoids.
-  const canAsk = live && Boolean(state?.can_ask)
+  const resumable = Boolean(state?.resumable)
+  // An existing conversation changes the offer from "start one" to "go back to
+  // it": the exchanges live in the Chat tab, not here, so a panel that says
+  // "open" reads as though they were lost.
+  const alreadyOpen = Boolean(state?.followup_open)
 
-  const ask = useMutation({
-    mutationFn: (message: string) => sageApi.chatAsk(runId, changeId, message),
-    onSuccess: () => {
-      setDraft('')
-      setAskError('')
-      void qc.invalidateQueries({ queryKey: ['sage', 'chat', runId, changeId] })
+  const start = useMutation({
+    mutationFn: async () => {
+      // Two calls, deliberately. The app arms the resume and hands back what the
+      // slot needs; the slot itself is created through the dashboard's own
+      // endpoint so agent binding, workspace resolution and title redaction have
+      // one implementation rather than a copy in this app.
+      const prep = await sageApi.followupStart(runId, changeId)
+      // Title and folder are sent only when the session is being CREATED. That
+      // endpoint addresses an existing slot by name and then re-pins whatever it
+      // is given, so sending them again on a continue would revert a session the
+      // user has since renamed or moved into a folder of their own.
+      const slot = await api.createChatSlot(
+        prep.slot_key, prep.agent, undefined, undefined, undefined,
+        alreadyOpen ? undefined : prep.title, undefined, undefined,
+        alreadyOpen ? undefined : (prep.folder_id || undefined),
+      )
+      return slot.key || prep.slot_key
+    },
+    onSuccess: (slotKey: string) => {
+      setError('')
+      navigate('/chat?' + new URLSearchParams({ sid: slotKey }).toString())
     },
     onError: (e: unknown) => {
-      // Some codes arrive with a reason appended (`chat_tool_denied: <why>`), so
-      // match on the code itself. The reason is deliberately NOT rendered: it can
-      // embed the model-authored tool title, and the localized message already
-      // says what the user can do about it. It stays in the server log.
+      // Some codes arrive with a reason appended, so match on the code itself.
       const raw = e instanceof SageApiError ? e.code : ''
-      const code = raw.split(':', 1)[0].trim()
-      const key = ASK_ERROR_KEY[code]
-      setAskError(key
-        ? i18nT(key)
-        : i18nT('apps.codeReviewSage.components.reviewChat.error_generic'))
-      // A failed question may mean the session died; re-read so the composer
-      // reflects reality instead of inviting a second doomed attempt.
-      void qc.invalidateQueries({ queryKey: ['sage', 'chat', runId, changeId] })
+      setError(reasonText(raw.split(':', 1)[0].trim()))
+      void stateQ.refetch()
     },
   })
-
-  const close = useMutation({
-    mutationFn: () => sageApi.chatClose(runId, changeId),
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: ['sage', 'chat', runId, changeId] })
-    },
-  })
-
-  useEffect(() => {
-    if (open) endRef.current?.scrollIntoView({ block: 'nearest' })
-  }, [open, turns.length])
-
-  const canSend = canAsk && !busy && !ask.isPending && draft.trim().length > 0
-
-  function submit() {
-    if (!canSend) return
-    ask.mutate(draft.trim())
-  }
 
   return (
     <div className="rounded-md border border-border">
@@ -215,102 +193,70 @@ export default function ReviewChat(
 
       {open && (
         <div className="flex flex-col gap-3 border-t border-border px-2.5 py-2.5">
-          {turns.length === 0 && !stateQ.isLoading && (
+          {stateQ.isLoading && (
+            // Without this the expanded panel is an empty bordered strip, which
+            // reads as "there is nothing here" rather than "still reading".
             <div className="text-[12px] leading-[1.6] text-muted">
-              {i18nT('apps.codeReviewSage.components.reviewChat.empty_hint')}
+              {i18nT('apps.codeReviewSage.components.reviewChat.loading')}
             </div>
           )}
           {turns.length > 0 && (
+            // Exchanges from before follow-ups became sessions. Labelled rather
+            // than shown flush under the button, so they do not read as part of
+            // the session the button opens.
             <div className="flex flex-col gap-3">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-muted">
+                {i18nT('apps.codeReviewSage.components.reviewChat.earlier_questions')}
+              </div>
               {turns.map((t, i) => (
                 <Turn key={`${t.ts}-${i}`} turn={t} />
               ))}
-              <div ref={endRef} />
             </div>
           )}
 
-          {canAsk ? (
-            <div className="flex flex-col gap-1.5">
-              <textarea
-                value={draft}
-                onChange={e => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    submit()
-                  }
-                }}
-                rows={2}
-                disabled={busy || ask.isPending}
-                placeholder={i18nT('apps.codeReviewSage.components.reviewChat.placeholder')}
-                aria-label={i18nT('apps.codeReviewSage.components.reviewChat.placeholder')}
-                className="w-full resize-y rounded-md border border-border bg-bg px-2 py-1.5 text-[12.5px] text-text placeholder:text-muted disabled:opacity-60"
-              />
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => close.mutate()}
-                  disabled={close.isPending}
-                  className="text-[11.5px] text-muted hover:text-text disabled:opacity-60 cursor-pointer"
-                >
-                  {i18nT('apps.codeReviewSage.components.reviewChat.end_chat')}
-                </button>
-                <button
-                  type="button"
-                  onClick={submit}
-                  disabled={!canSend}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2.5 py-1 text-[12.5px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50 cursor-pointer"
-                >
-                  <Send size={12} />
-                  {busy || ask.isPending
-                    ? i18nT('apps.codeReviewSage.components.reviewChat.sending')
-                    : i18nT('apps.codeReviewSage.components.reviewChat.send')}
-                </button>
-              </div>
-            </div>
-          ) : (
-            // No composer once the session is gone. The explainer says what
-            // happened and that the history above is intact, so a returning user
-            // is not left wondering whether their conversation was lost.
-            !stateQ.isLoading && (
-              // Ruled off from the transcript on purpose: rendered flush under the
-              // last answer in the same muted style, this notice reads as the
-              // reviewer still talking rather than as the app explaining that it
-              // has gone.
-              <div className="flex flex-col gap-2 border-t border-border pt-2.5">
-                {draft.trim() && (
-                  // The session can lapse BETWEEN keystrokes — the poll flips
-                  // `live` while the user is mid-sentence. Unmounting the composer
-                  // then would take the half-written question with it, so the text
-                  // is handed back instead of destroyed. Read-only on purpose: it
-                  // is no longer an input, and offering one that cannot send is the
-                  // thing this branch exists to avoid.
-                  <div className="flex flex-col gap-1">
-                    <div className="text-[10px] font-medium uppercase tracking-wide text-muted">
-                      {i18nT('apps.codeReviewSage.components.reviewChat.unsent_label')}
-                    </div>
-                    <textarea
-                      value={draft}
-                      readOnly
-                      rows={2}
-                      aria-label={i18nT('apps.codeReviewSage.components.reviewChat.unsent_label')}
-                      className="w-full resize-y rounded-md border border-border bg-bg-elevated px-2 py-1.5 text-[12.5px] text-text"
-                    />
+          {!stateQ.isLoading && (
+            // Ruled off from the stored history when there is any: rendered flush
+            // under the last answer in the same muted style, this block reads as
+            // the reviewer still talking rather than as the app offering to
+            // reopen it.
+            <div className={turns.length > 0
+              ? 'flex flex-col gap-2 border-t border-border pt-2.5'
+              : 'flex flex-col gap-2'}
+            >
+              {resumable ? (
+                <>
+                  <div className="text-[12px] leading-[1.6] text-muted">
+                    {alreadyOpen
+                      ? i18nT('apps.codeReviewSage.components.reviewChat.continue_hint')
+                      : i18nT('apps.codeReviewSage.components.reviewChat.resume_hint')}
                   </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => start.mutate()}
+                    disabled={start.isPending}
+                    className="inline-flex w-fit items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2.5 py-1 text-[12.5px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50 cursor-pointer"
+                  >
+                    <MessageCircle size={12} />
+                    {start.isPending
+                      ? i18nT('apps.codeReviewSage.components.reviewChat.opening')
+                      : alreadyOpen
+                        ? i18nT('apps.codeReviewSage.components.reviewChat.continue_session')
+                        : i18nT('apps.codeReviewSage.components.reviewChat.open_session')}
+                  </button>
+                </>
+              ) : (
+                // No button once there is nothing to resume. The explainer says
+                // what happened and what to do about it, so a returning user is
+                // not left wondering whether the review lost their conversation.
                 <div className="text-[12px] leading-[1.6] text-muted">
-                  {live
-                    // Still loaded, but tool use cannot be gated — a different
-                    // situation from "it is gone", and a different remedy.
-                    ? i18nT('apps.codeReviewSage.components.reviewChat.needs_override_notice')
-                    : i18nT('apps.codeReviewSage.components.reviewChat.closed_notice')}
+                  {reasonText(state?.reason || '')}
                 </div>
-              </div>
-            )
+              )}
+            </div>
           )}
 
-          {askError && (
-            <div className="text-[11.5px] text-danger">{askError}</div>
+          {error && (
+            <div className="text-[11.5px] text-danger">{error}</div>
           )}
         </div>
       )}
