@@ -17,6 +17,7 @@ They never raise — on failure they return an empty string and log a warning.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import zipfile
 import zlib
@@ -33,6 +34,7 @@ except ModuleNotFoundError:  # pragma: no cover — exercised via monkeypatch
 
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
+from kiro_crew.zip_vet import ZipVetError, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +145,37 @@ def _read_zip_entry(
 _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
+# Inventory bounds for the OOXML containers this module opens. A .docx/.pptx is
+# a zip, so every parse here is parsing attacker-controlled container metadata:
+# without a vet, ``ZipFile.__init__`` allocates one ``ZipInfo`` per DECLARED
+# central-directory entry, and neither site had any bound at all (#3908).
+#
+# Looser than the ingest caps in the knowledge handler on purpose — this is a
+# text extractor for a document a user already has, not an upload gate — but
+# bounded, which is the property that was missing.
+_DOC_MAX_MEMBERS = 20000
+_DOC_MAX_UNCOMPRESSED = 500 * 1024 * 1024  # 500 MB declared expansion
+
+
+def _open_vetted_zip(path: str) -> zipfile.ZipFile | None:
+    """Vet an OOXML container's inventory, then open it. ``None`` if refused.
+
+    Returning ``None`` rather than raising matches this module's contract: every
+    extractor here degrades to "" on an unreadable document instead of failing
+    the caller, and a refused archive is exactly that case.
+    """
+    try:
+        vet_zip_inventory(
+            path,
+            max_members=_DOC_MAX_MEMBERS,
+            max_uncompressed_bytes=_DOC_MAX_UNCOMPRESSED,
+        )
+    except ZipVetError as exc:
+        logger.warning("doc_parser: refused %s archive (%s)", os.path.basename(path), exc.reason)
+        return None
+    return zipfile.ZipFile(path, "r")
+
+
 def _extract_docx(path: str) -> str:
     """Extract text from a .docx file (ZIP containing word/document.xml).
 
@@ -152,7 +185,10 @@ def _extract_docx(path: str) -> str:
     if is_sensitive_path(path):
         return ""
     paragraphs: list[str] = []
-    with zipfile.ZipFile(path, "r") as zf:
+    zf_or_none = _open_vetted_zip(path)
+    if zf_or_none is None:
+        return ""
+    with zf_or_none as zf:
         if "word/document.xml" not in zf.namelist():
             return ""
         data = _read_zip_entry(zf, "word/document.xml")
@@ -184,7 +220,10 @@ def _extract_pptx(path: str) -> str:
     if is_sensitive_path(path):
         return ""
     slides: list[tuple[int, str]] = []
-    with zipfile.ZipFile(path, "r") as zf:
+    zf_or_none = _open_vetted_zip(path)
+    if zf_or_none is None:
+        return ""
+    with zf_or_none as zf:
         slide_names = sorted(
             (n for n in zf.namelist() if _SLIDE_RE.match(n)),
             key=lambda n: int(_SLIDE_RE.match(n).group(1)),  # type: ignore[union-attr]

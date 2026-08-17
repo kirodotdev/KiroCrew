@@ -3,6 +3,18 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Untrusted zip containers are inventory-vetted before `ZipFile` allocates.**
+  `.docx`/`.pptx`/`.xlsx` uploads are zip archives, so every parse site reads
+  attacker-controlled container metadata. `ZipFile.__init__` materializes one
+  `ZipInfo` per DECLARED central-directory entry, so a member cap read off
+  `infolist()` runs *after* the allocation it is meant to bound — an archive
+  declaring hundreds of thousands of entries exhausted memory during
+  construction while the check sat on the next line, never reached. The
+  knowledge-ingest inspector had exactly that shape, and the two OOXML parse
+  sites in `doc_parser` had no inventory bound at all. A shared
+  `zip_vet.vet_zip_inventory` now does a raw-bytes EOCD/ZIP64 preflight before
+  the archive is opened, and all three route through it with their own caps as
+  parameters. (#3908)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A

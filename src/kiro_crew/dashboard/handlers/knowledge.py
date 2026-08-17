@@ -9,7 +9,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -56,6 +55,7 @@ from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
+from kiro_crew.zip_vet import ZipVetError, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -1324,19 +1324,22 @@ def _inspect_zip_archive(path: str) -> str | None:
     synchronous zip I/O, so callers MUST run it off the event loop (via
     ``asyncio.to_thread``) — a large/hostile central directory would otherwise
     stall the gateway loop and heartbeat.
+
+    Delegates to the shared vet, which adds the guard this site was missing: the
+    member cap used to be read off ``infolist()``, i.e. AFTER ``ZipFile.__init__``
+    had already allocated one ``ZipInfo`` per declared entry, so an archive
+    declaring hundreds of thousands of entries exhausted memory before the check
+    ran. The shared vet bounds the declared count from raw EOCD bytes first
+    (#3908).
     """
     try:
-        with zipfile.ZipFile(path) as zf:
-            infos = zf.infolist()
-            if len(infos) > _MAX_INGEST_ARCHIVE_MEMBERS:
-                return "too_many_members"
-            uncompressed = 0
-            for zi in infos:
-                uncompressed += zi.file_size
-                if uncompressed > _MAX_INGEST_ARCHIVE_UNCOMPRESSED:
-                    return "uncompressed_too_large"
-    except zipfile.BadZipFile:
-        return "bad_archive"
+        vet_zip_inventory(
+            path,
+            max_members=_MAX_INGEST_ARCHIVE_MEMBERS,
+            max_uncompressed_bytes=_MAX_INGEST_ARCHIVE_UNCOMPRESSED,
+        )
+    except ZipVetError as exc:
+        return exc.reason
     return None
 
 
