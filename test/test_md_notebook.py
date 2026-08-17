@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import pytest
+import yarl
 from aiohttp.test_utils import TestClient, TestServer
 
 from conftest import requires_symlinks
@@ -127,10 +128,14 @@ class SignedClient:
         self, method: str, path: str, payload: Optional[dict[str, Any]] = None
     ) -> tuple[int, Any]:
         body = json.dumps(payload).encode() if payload is not None else b""
-        headers = self._headers(method, path, body)
+        # Sign the WIRE form of the target, as the gateway does: yarl requotes
+        # the human-readable path (e.g. a space becomes %20), and raw_path_qs
+        # is the exact request-target the client puts on the wire.
+        url = yarl.URL(path)
+        headers = self._headers(method, url.raw_path_qs, body)
         if payload is not None:
             headers["Content-Type"] = "application/json"
-        resp = await self._client.request(method, path, data=body or None, headers=headers)
+        resp = await self._client.request(method, url, data=body or None, headers=headers)
         try:
             return resp.status, await resp.json()
         except Exception:  # noqa: BLE001 — a non-JSON body is itself the failure
@@ -239,6 +244,52 @@ async def test_tampered_signature_is_rejected(fixtures) -> None:
             "/api/vaults", headers={"X-KiroCrew-Proxy": f"{int(time.time())}:deadbeef"}
         )
         assert resp.status == 401
+
+
+def _sign_wire_target(method: str, wire_target: str, body: bytes = b"") -> dict[str, str]:
+    """Sign exactly as the gateway does (apps/routes.py::handle_app_api_proxy):
+    over the RAW, percent-encoded request-target, never a decoded form."""
+    ts = str(int(time.time()))
+    digest = hashlib.sha256(body).hexdigest()
+    msg = f"{ts}:{method}:{wire_target}:{digest}"
+    sig = hmac.new(SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return {"X-KiroCrew-Proxy": f"{ts}:{sig}"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire_target",
+    [
+        "/api/health?path=/tmp/my%20notes.md",  # space
+        "/api/health?path=/tmp/caf%C3%A9.md",  # non-ASCII
+        "/api/health?path=/tmp/my+notes.md",  # '+' (decodes to space in query)
+    ],
+)
+async def test_gateway_signed_escapable_query_verifies(fixtures, wire_target: str) -> None:
+    """A query parameter needing percent-escaping (a note path with a space or
+    non-ASCII character) must verify: the middleware has to recompute the HMAC
+    over the same RAW request-target the gateway signed, not aiohttp's decoded
+    path + query_string reconstruction (issue: note reads 401ing while plain
+    listings pass)."""
+    server_mod, _remote, _seed = fixtures
+    app = server_mod.create_app()
+    async with TestClient(TestServer(app)) as raw:
+        # encoded=True keeps the exact signed bytes on the wire, mirroring the
+        # gateway's yarl.URL(..., encoded=True) forwarding.
+        url = yarl.URL(wire_target, encoded=True)
+        resp = await raw.get(url, headers=_sign_wire_target("GET", wire_target))
+        assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_gateway_signed_no_query_target_verifies(fixtures) -> None:
+    """Without a query string neither side appends a '?' — the raw and decoded
+    spellings coincide and the signature must still verify."""
+    server_mod, _remote, _seed = fixtures
+    app = server_mod.create_app()
+    async with TestClient(TestServer(app)) as raw:
+        resp = await raw.get("/api/health", headers=_sign_wire_target("GET", "/api/health"))
+        assert resp.status == 200, await resp.text()
 
 
 # ---------------------------------------------------------------------------

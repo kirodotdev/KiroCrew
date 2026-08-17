@@ -5,8 +5,9 @@ import hmac
 import time
 
 import pytest
+from aiohttp.test_utils import make_mocked_request
 
-from kiro_crew.apps.proxy_auth import verify_proxy_request
+from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
 
 SECRET = "s3cret-app-key"
 
@@ -83,3 +84,25 @@ def test_stale_timestamp_fails():
 def test_wrong_secret_fails():
     hdr = _sign("GET", "/api/read", b"")
     assert not verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret="different")
+
+
+@pytest.mark.parametrize(
+    "wire_target",
+    [
+        "/api/read?path=/tmp/my%20notes.md",
+        "/api/read?path=/tmp/caf%C3%A9.md",
+        "/api/read?path=/tmp/my+notes.md",
+        "/api/search?q=hello%20world&dir=/tmp/my%20folder",
+    ],
+)
+def test_raw_request_target_preserves_wire_encoding(wire_target: str):
+    """The aiohttp reconstruction helper must return the raw request-target
+    byte-for-byte — the exact string routes.py signs — never a decoded form."""
+    req = make_mocked_request("GET", wire_target)
+    assert raw_request_target(req) == wire_target
+
+
+def test_raw_request_target_no_query_appends_nothing():
+    """No query string means no '?' on either side of the HMAC."""
+    req = make_mocked_request("GET", "/api/vaults")
+    assert raw_request_target(req) == "/api/vaults"

@@ -26,9 +26,29 @@ import hashlib
 import hmac
 import os
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # typing only — ThreadingHTTPServer backends never need aiohttp
+    from aiohttp import web
 
 _ENV_KEY = "KIROCREW_PROXY_SECRET"
 _MAX_SKEW_SECONDS = 60
+
+
+def raw_request_target(request: web.Request) -> str:
+    """The raw, percent-encoded request-target an aiohttp backend received.
+
+    The gateway signs ``target_url.raw_path_qs`` — the request-target exactly
+    as it goes on the wire, query string included, with no ``?`` when there is
+    none. aiohttp *decodes* ``request.path`` and ``request.query_string``, so a
+    reconstruction from those diverges from the signed bytes (and fails closed
+    with 401) as soon as a query parameter carries a percent-encodable
+    character such as a space, ``+``, or non-ASCII. ``request.raw_path`` is the
+    request line's target verbatim, so verifying against it recomputes the HMAC
+    over the same bytes the gateway signed. aiohttp middlewares must use this;
+    ``ThreadingHTTPServer`` backends already get the raw form as ``self.path``.
+    """
+    return request.raw_path
 
 
 def proxy_secret() -> str:

@@ -38,7 +38,7 @@ from aiohttp import web
 from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
-from kiro_crew.apps.proxy_auth import verify_proxy_request
+from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import restrict_to_owner
@@ -826,7 +826,9 @@ async def proxy_auth_middleware(request: web.Request, handler: Callable) -> web.
     """
     if request.path == "/health":
         return await handler(request)
-    target = request.path + (f"?{request.query_string}" if request.query_string else "")
+    # Verify over the RAW request-target — the exact bytes the gateway signed;
+    # the decoded path + query_string diverge on percent-encodable characters.
+    target = raw_request_target(request)
     body = await request.read() if request.can_read_body else b""
     if not verify_proxy_request(
         request.headers.get("X-KiroCrew-Proxy", ""),

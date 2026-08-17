@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yarl
 from aiohttp import web  # noqa: F401  (used by builtin re-shell tests)
 from aiohttp.test_utils import TestClient, TestServer  # noqa: F401
 
@@ -2672,6 +2673,43 @@ async def test_hmac_health_bypasses_verification():
             assert resp.status == 200
             body = await resp.json()
             assert body["status"] == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire_target",
+    [
+        "/api/fleet?name=my%20worktree",  # space
+        "/api/fleet?name=caf%C3%A9",  # non-ASCII
+        "/api/fleet?name=a+b",  # '+' (decodes to space in query)
+    ],
+)
+async def test_hmac_gateway_signed_escapable_query_passes(wire_target: str):
+    """The gateway signs the RAW percent-encoded request-target; the middleware
+    must recompute over the same wire bytes, not aiohttp's decoded
+    path + query_string reconstruction, or every escapable query value 401s."""
+    secret = "test-secret"
+    app = _make_hmac_app()
+    with patch.object(mod, "_load_app_secret", return_value=secret):
+        async with TestClient(TestServer(app)) as client:
+            headers = _sign_request(secret, "GET", wire_target)
+            # encoded=True keeps the exact signed bytes on the wire, mirroring
+            # the gateway's yarl.URL(..., encoded=True) forwarding.
+            resp = await client.get(yarl.URL(wire_target, encoded=True), headers=headers)
+            assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_hmac_gateway_signed_no_query_target_passes():
+    """Without a query string neither side appends a '?' — raw and decoded
+    spellings coincide and the signature must still verify."""
+    secret = "test-secret"
+    app = _make_hmac_app()
+    with patch.object(mod, "_load_app_secret", return_value=secret):
+        async with TestClient(TestServer(app)) as client:
+            headers = _sign_request(secret, "GET", "/api/fleet")
+            resp = await client.get("/api/fleet", headers=headers)
+            assert resp.status == 200, await resp.text()
 
 
 # =============================================================================

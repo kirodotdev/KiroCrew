@@ -52,6 +52,7 @@ from aiohttp import web
 
 from kiro_crew import frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service
+from kiro_crew.apps.proxy_auth import raw_request_target
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.instances import run_marker
@@ -4540,7 +4541,7 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
     """Verify X-KiroCrew-Proxy HMAC on every request except /health.
 
     Message format matches routes.py signing:
-      msg = "<timestamp>:<METHOD>:<path>[?query]:<sha256(body)>"
+      msg = "<timestamp>:<METHOD>:<raw request-target>:<sha256(body)>"
     Fail-closed: missing/invalid/expired signature -> 401.
     """
     if request.path == "/health":
@@ -4588,11 +4589,10 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
     # Reconstruct the signed message exactly as routes.py builds it
     body = await request.read() if request.can_read_body else b""
     body_hash = hashlib.sha256(body).hexdigest()
-    # The gateway signs "/api/<path>[?query]" — the path as received by the backend
-    msg = f"{ts_str}:{request.method}:{request.path}"
-    if request.query_string:
-        msg += f"?{request.query_string}"
-    msg += f":{body_hash}"
+    # The gateway signs the RAW percent-encoded request-target; recompute over
+    # the same wire bytes, never the decoded path + query_string (which diverge
+    # on percent-encodable characters and would fail closed with 401).
+    msg = f"{ts_str}:{request.method}:{raw_request_target(request)}:{body_hash}"
 
     expected_sig = _hmac_mod.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
     if not _hmac_mod.compare_digest(sig_received, expected_sig):
