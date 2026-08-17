@@ -969,6 +969,13 @@ const REVEAL_FLASH_HOLD_MS = 1600
  *  the classes are removed at HOLD + FADE + slack, so shortening this below
  *  the CSS duration snaps the outline off mid-fade. */
 const REVEAL_FLASH_FADE_MS = 500
+/** One filter dimension that can hide a reveal target: whether it hides THIS
+ *  row, and how to drop it. `clear` receives the row because the folder filter
+ *  un-hides that row's own ancestor chain rather than clearing globally. */
+interface RevealBlockingFilter {
+  hides: (slot: Slot) => boolean
+  clear: (slot: Slot) => void
+}
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
@@ -1935,6 +1942,58 @@ function ChatSidebar({
   // or the folder lane strands its folders as empty "New chat in <name>" shells.
   const listNarrowed = Boolean(slotFilter) || activeFilters.size > 0 || activeTagIds.size > 0
 
+  /** Every filter that can hide a reveal target, registered ONCE: the reveal
+   *  effect iterates this list instead of naming the dimensions by hand, so a
+   *  new filter opts in here and nowhere else. Deliberately NOT `listNarrowed`
+   *  above — that asks "is anything filtering?", this asks "does THIS row fail a
+   *  filter?", and the two lists differ (the folder filter is in this one only,
+   *  and tags enter raw here but resolved there). */
+  const revealBlockingFilters = useMemo<RevealBlockingFilter[]>(() => {
+    // Search and status defer to list membership: both rank against backend
+    // state (relevance, unread) that a single row cannot answer for alone.
+    const excluded = (slot: Slot) => !filteredSlots.some(s => s.key === slot.key)
+    return [
+      {
+        // Raw `filterTagIds`, not resolved `activeTagIds`, and not behind
+        // `excluded`: mid-flight nothing is filtered, so the row is re-hidden.
+        hides: slot => filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
+        clear: () => clearTagFilter(),
+      },
+      { hides: slot => Boolean(slotFilter) && excluded(slot), clear: () => setSlotFilter('') },
+      {
+        hides: slot => activeFilters.size > 0 && excluded(slot),
+        clear: () => {
+          // Persisted like toggleFilter: remount re-reads the stored '1' and
+          // would silently restore the filter that hides this row.
+          for (const filterDef of SESSION_FILTERS) {
+            if (activeFilters.has(filterDef.key)) safeSetItem(filterDef.storageKey, '0')
+          }
+          setActiveFilters(new Set())
+        },
+      },
+      {
+        hides: slot => !!slot.folder_id && filterHiddenSubtree.has(slot.folder_id),
+        clear: slot => {
+          // Un-hide the target's ancestor chain (persisted, mirroring
+          // toggleFolderFilter). Cycle-guarded like filterHiddenSubtree.
+          setFilterHiddenFolders(prev => {
+            const next = new Set(prev)
+            const visited = new Set<string>()
+            let curId: string | undefined = slot.folder_id
+            while (curId && !visited.has(curId)) {
+              visited.add(curId)
+              next.delete(curId)
+              const cid = curId
+              curId = folders.find(f => f.id === cid)?.parent_id
+            }
+            safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
+            return next
+          })
+        },
+      },
+    ]
+  }, [filteredSlots, filterTagIds, clearTagFilter, slotFilter, activeFilters, filterHiddenSubtree, folders])
+
   // List view (the folder tree) drops an unchecked folder's whole block —
   // header and sessions together. Only the folder's OWN id is checked here:
   // removing a parent block already takes its descendants with it.
@@ -2165,43 +2224,10 @@ function ChatSidebar({
       console.debug('reveal-in-sidebar: no session for key', key)
       return
     }
-    // A live sidebar search or status filter can exclude the target row from
-    // the list entirely (#912 D5) — reveal is an explicit "show me this row",
-    // so drop the filters that hide it rather than scrolling to nothing.
-    // Outside the filteredSlots check: while the tag query is in flight nothing
-    // is filtered, so the row reads present and is re-hidden when it resolves.
-    if (filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id))) clearTagFilter()
-    if (!filteredSlots.some(s => s.key === key)) {
-      if (slotFilter) setSlotFilter('')
-      if (activeFilters.size > 0) {
-        // Persisted like toggleFilter: state alone is not enough — the sidebar
-        // unmounts whenever the drawer collapses, and remount re-reads the
-        // stored '1', silently restoring the filter that hides this row.
-        for (const filterDef of SESSION_FILTERS) {
-          if (activeFilters.has(filterDef.key)) safeSetItem(filterDef.storageKey, '0')
-        }
-        setActiveFilters(new Set())
-      }
-    }
+    // Reveal means "show me this row", so drop every filter hiding the target
+    // rather than scrolling to nothing (#912 D5). Registered in one list above.
+    for (const dim of revealBlockingFilters) if (dim.hides(slot)) dim.clear(slot)
     if (slot.folder_id) {
-      // The folder filter hides whole subtrees in the flat and tree lanes —
-      // un-hide the target's ancestor chain (persisted, mirroring
-      // toggleFolderFilter). Cycle-guarded like filterHiddenSubtree.
-      if (filterHiddenSubtree.has(slot.folder_id)) {
-        setFilterHiddenFolders(prev => {
-          const next = new Set(prev)
-          const visited = new Set<string>()
-          let curId: string | undefined = slot.folder_id
-          while (curId && !visited.has(curId)) {
-            visited.add(curId)
-            next.delete(curId)
-            const cid = curId
-            curId = folders.find(f => f.id === cid)?.parent_id
-          }
-          safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
-          return next
-        })
-      }
       // Expand all collapsed ancestor folders. Cycle-guarded: a hand-edited
       // folders.json can contain a parent_id loop and must not hang the tab.
       const visited = new Set<string>()
@@ -2254,7 +2280,7 @@ function ChatSidebar({
       revealFlashTimersRef.current = [t1, t2]
     }
     tryScroll()
-  }, [revealRequest, dispatch, slots, folders, filteredSlots, filterHiddenSubtree, slotFilter, activeFilters, filterTagIds, clearTagFilter, updateFolderMutation])
+  }, [revealRequest, dispatch, slots, folders, revealBlockingFilters, updateFolderMutation])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
