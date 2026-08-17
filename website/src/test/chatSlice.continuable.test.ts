@@ -81,6 +81,13 @@ describe('selectContinuable', () => {
     }))).toBe(false)
   })
 
+  it('is false when the transcript holds only a session-reload notice', () => {
+    // Same class of assistant-role system notice as compaction (isSystemNoticeKind).
+    expect(selectContinuable(state({
+      messages: [msg('assistant', 'Session reloaded: …', { kind: 'session_reload' })],
+    }))).toBe(false)
+  })
+
   it('is false when the transcript holds only non-conversational rows', () => {
     expect(selectContinuable(state({
       messages: [msg('tool_call', 'grep'), msg('tool_result', 'hit')],

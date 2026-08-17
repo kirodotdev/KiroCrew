@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
@@ -37,6 +37,8 @@ export interface SessionActions {
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
   move: (slotKey: string, folderId: string | null) => void
+  /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
+  reload: (slotKey: string) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
   close: (slotKey: string) => void
 }
@@ -85,11 +87,31 @@ export function useSessionActions(mode?: string): SessionActions {
     },
   })
 
+  // Session reload (relaunch the agent process in place). No optimistic state:
+  // the success confirmation is the feed notice the backend appends, arriving
+  // over the websocket (and lighting the row's unread indicator for a
+  // non-active slot). Failure must NOT be silent -- the user would proceed
+  // believing their stale MCP config was refreshed, the exact confusion the
+  // feature exists to fix. alert() is the always-available surface (the
+  // dashboard has no global toast); the copy branches on the backend's
+  // machine-readable code, because "try again when the session is idle" is a
+  // dead end for a slot that LOOKS idle but has sub-agents still working.
+  const reloadMutation = useMutation({
+    mutationFn: (slot: string) => api.chatSlotReload(slot),
+    onError: (err) => {
+      const body = err instanceof ApiError ? err.body : ''
+      alert(i18nT(body.includes('slot_subagents_running')
+        ? 'hooks.useSessionActions.reload_failed_subagents'
+        : 'hooks.useSessionActions.reload_failed'))
+    },
+  })
+
   // Destructure the stable `mutate` fns so the action callbacks below aren't
   // recreated on every render (the mutation result objects are new each render).
   const { mutate: forkMutate } = forkMutation
   const { mutate: pinMutate } = pinMutation
   const { mutate: modeMutate } = modeMutation
+  const { mutate: reloadMutate } = reloadMutation
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
 
@@ -122,9 +144,11 @@ export function useSessionActions(mode?: string): SessionActions {
     moveSlotToFolder(slotKey, folderId)
   }, [moveSlotToFolder])
 
+  const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
+
   const close = useCallback((slotKey: string) => {
     if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, close }
+  return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
 }

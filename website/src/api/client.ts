@@ -1680,6 +1680,10 @@ export const api = {
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j),
   chatSlotWorkspace: (slot: string, workspace: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
+  // Relaunch the slot's agent process in place (fresh agent spec, env, and MCP
+  // servers; conversation preserved). 409 while a turn is in flight.
+  chatSlotReload: (slot: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/reload', {}).then(j) as Promise<{ ok?: boolean; error?: string }>,
   chatSlotProject: (slot: string, project: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j),
   // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.

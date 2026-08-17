@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../types'
+import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { OPTION_MARKER_RE } from './optionMarker'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
@@ -79,7 +80,7 @@ export function deriveFollowUpOptions(
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m.role === 'user' || m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false }
-    if ((m.kind ?? (m.meta?.kind as string | undefined)) === 'compaction') continue
+    if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
     if (m.role === 'assistant' && m.content) {
       const { options, isPlan } = parseOptions(m.content)
       return { followUpOptions: options, followUpIsPlan: isPlan }

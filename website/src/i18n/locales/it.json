@@ -6199,6 +6199,10 @@
       "move_to_folder": "Sposta nella cartella…",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
+      "reload_blocked_running": "turno in corso",
+      "reload_blocked_subagents": "sub-agenti al lavoro",
+      "reload_session": "Ricarica la sessione",
+      "reload_session_tooltip": "Riavvia il processo dell'agente per applicare le modifiche MCP/configurazione. La conversazione viene conservata.",
       "rename": "Rinomina",
       "reveal_in_sidebar": "Mostra nella barra laterale",
       "switch_to_autopilot": "Passa al pilota automatico",
@@ -6837,6 +6841,8 @@
     },
     "useSessionActions": {
       "close_this_session": "Chiudere questa sessione?",
+      "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
+      "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
       "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
     },

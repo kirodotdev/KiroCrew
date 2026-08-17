@@ -6199,6 +6199,10 @@
       "move_to_folder": "Mover a la carpeta…",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
+      "reload_blocked_running": "turno en curso",
+      "reload_blocked_subagents": "subagentes trabajando",
+      "reload_session": "Recargar sesión",
+      "reload_session_tooltip": "Reinicia el proceso del agente para aplicar cambios de MCP/configuración. La conversación se conserva.",
       "rename": "Cambiar el nombre",
       "reveal_in_sidebar": "Mostrar en la barra lateral",
       "switch_to_autopilot": "Cambiar a piloto automático",
@@ -6837,6 +6841,8 @@
     },
     "useSessionActions": {
       "close_this_session": "¿Cerrar esta sesión?",
+      "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
+      "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
       "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
     },

@@ -6025,6 +6025,10 @@
       "move_to_folder": "移动到文件夹…",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
+      "reload_blocked_running": "轮次进行中",
+      "reload_blocked_subagents": "子代理工作中",
+      "reload_session": "重新加载会话",
+      "reload_session_tooltip": "重启代理进程以加载新的 MCP/配置更改。对话会保留。",
       "rename": "重命名",
       "reveal_in_sidebar": "在侧边栏中显示",
       "switch_to_autopilot": "切换到自动驾驶",
@@ -6661,6 +6665,8 @@
     },
     "useSessionActions": {
       "close_this_session": "关闭此会话？",
+      "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
+      "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
       "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
     },

@@ -6025,6 +6025,10 @@
       "move_to_folder": "フォルダーに移動…",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
+      "reload_blocked_running": "ターン実行中",
+      "reload_blocked_subagents": "サブエージェント動作中",
+      "reload_session": "セッションを再読み込み",
+      "reload_session_tooltip": "エージェントプロセスを再起動して新しい MCP/設定の変更を反映します。会話は保持されます。",
       "rename": "名前変更",
       "reveal_in_sidebar": "サイドバーに表示",
       "switch_to_autopilot": "オートパイロットに切り替え",
@@ -6661,6 +6665,8 @@
     },
     "useSessionActions": {
       "close_this_session": "このセッションを閉じますか？",
+      "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
+      "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
       "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
     },

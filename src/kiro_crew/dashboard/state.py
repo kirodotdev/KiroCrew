@@ -31,6 +31,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.side_state import SideState
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.messaging.link import (
@@ -474,7 +475,7 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
         # is never scanned, because a later user/assistant row returns first.
         if is_stop_event_row(m):
             return False
-        if role == "assistant" and meta.get("kind") == "compaction":
+        if is_system_notice(role, meta):
             continue
         if role in ("user", "assistant") and m.get("content"):
             return True if role == "user" else saw_trailing_error
@@ -2215,26 +2216,27 @@ class _ChatSlot:
         found_conv = False
         for m in reversed(self.messages):
             role = m.get("role")
-            # Compute meta/compaction flag once for both guards below
+            # Compute meta/system-notice flag once for both guards below
             msg_meta = m.get("meta") or {}
-            is_compaction = role == "assistant" and msg_meta.get("kind") == "compaction"
+            is_notice = is_system_notice(role, msg_meta)
             # Capture last_activity_ts from the most recent actionable message
             if (
                 not last_activity_ts
                 and role in ("tool_call", "tool_result", "assistant")
-                and not is_compaction
+                and not is_notice
             ):
                 last_activity_ts = m.get("ts") or ""
             # Capture the last conversational message (role/options once, and
-            # the newest non-empty preview). Skip compaction
-            # notices: assistant-role system messages tagged
-            # meta.kind == "compaction" — the auto-compact notice
-            # ("Auto-compacted at N%.", _AUTO_COMPACT_NOTICE) and the
-            # /compact result banner (chat_utils._append_compaction_notice).
+            # the newest non-empty preview). Skip system notices:
+            # assistant-role status rows tagged with a kind in
+            # SYSTEM_NOTICE_KINDS — the auto-compact notice
+            # ("Auto-compacted at N%.", _AUTO_COMPACT_NOTICE), the /compact
+            # result banner (chat_utils._append_compaction_notice), and the
+            # session-reload confirmation (api_chat_slot_reload).
             # This keeps the sidebar showing the last real message and mirrors
             # the frontend's deriveFollowUpOptions skip so preview/options
             # stay consistent.
-            if role in ("user", "assistant") and not is_compaction:
+            if role in ("user", "assistant") and not is_notice:
                 txt = m.get("content") or ""
                 if txt:
                     if not found_conv:

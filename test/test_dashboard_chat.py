@@ -14368,3 +14368,328 @@ class TestForkSlotTail:
         new_slot = state._slots.get(data["key"])
         visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
         assert visible[-1]["content"] == "reply1"
+
+
+# ── Session reload endpoint (POST /api/chat/slots/{slot}/reload) ──
+
+
+class TestSessionReload:
+    """api_chat_slot_reload — relaunch the slot's agent process in place.
+
+    The endpoint's contract: refuse while a turn is in flight (409), otherwise
+    tear down via reset(skip_if_busy=True), append the session_reload feed
+    notice, and eagerly re-arm the resume spawn.
+    """
+
+    @staticmethod
+    def _idle_provider():
+        provider = MagicMock()
+        provider.has_active_turn = MagicMock(return_value=False)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_reload_unknown_slot_404(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/nope/reload")
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_reload_resets_notices_and_respawns(self, tmp_path, monkeypatch):
+        """Happy path: atomic reset, feed notice tagged session_reload, eager resume."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data == {"ok": True}
+        state.sessions.reset.assert_awaited_once_with("dashboard:s1", skip_if_busy=True)
+        # The feed carries the durable confirmation, tagged so the follow-up
+        # options / continuable scans skip it (isSystemNoticeKind frontend twin).
+        notice = slot.messages[-1]
+        assert notice["role"] == "assistant"
+        assert notice["meta"]["kind"] == "session_reload"
+        assert "Reloading session" in notice["content"]
+        eager.assert_called_once()
+        assert eager.call_args.kwargs.get("allow_resume") is True
+
+    @pytest.mark.asyncio
+    async def test_reload_refused_while_turn_in_flight(self, tmp_path, monkeypatch):
+        """409 with no teardown, no notice, no eager spawn while a turn runs."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        busy = MagicMock()
+        busy.has_active_turn = MagicMock(return_value=True)
+        state.sessions.get_provider = MagicMock(return_value=busy)
+        state.sessions.reset = AsyncMock()
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+        before = len(slot.messages)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+
+        assert resp.status == 409
+        state.sessions.reset.assert_not_awaited()
+        assert len(slot.messages) == before
+        eager.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reload_race_turn_started_after_fast_path(self, tmp_path, monkeypatch):
+        """A turn slipping in between the fast path and the atomic guard is a 409.
+
+        reset(skip_if_busy=True) returning False is ambiguous (no session OR
+        busy); the re-check of has_active_turn is what disambiguates. Nothing
+        may be appended or respawned for the busy case.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        idle = self._idle_provider()
+        busy = MagicMock()
+        busy.has_active_turn = MagicMock(return_value=True)
+        # First lookup (fast path) sees idle; second (post-reset re-check) busy.
+        state.sessions.get_provider = MagicMock(side_effect=[idle, busy])
+        state.sessions.reset = AsyncMock(return_value=False)
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+        before = len(slot.messages)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+
+        assert resp.status == 409
+        assert len(slot.messages) == before
+        eager.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reload_retries_when_racing_turn_already_finished(
+        self, tmp_path, monkeypatch
+    ):
+        """A declined reset whose racing turn already FINISHED retries once.
+
+        Falling through would report success while the stale live process
+        survives untouched -- the silent false-success the endpoint exists to
+        prevent. The retry succeeds here; a second decline is the 409 case
+        (covered below).
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(side_effect=[False, True])
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data == {"ok": True}
+        assert state.sessions.reset.await_count == 2
+        assert slot.messages[-1]["meta"]["kind"] == "session_reload"
+        eager.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reload_double_decline_is_turn_in_flight(self, tmp_path, monkeypatch):
+        """Two consecutive declines with a live session mean a genuinely racing
+        turn: 409, no notice, no respawn -- never a false success."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=False)
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+        before = len(slot.messages)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+            data = await resp.json()
+
+        assert resp.status == 409
+        assert data["code"] == "turn_in_flight"
+        assert state.sessions.reset.await_count == 2
+        assert len(slot.messages) == before
+        eager.assert_not_called()
+
+    def test_system_notice_kinds_backend_frontend_parity(self):
+        """The two SYSTEM_NOTICE_KINDS twins must hold the same set.
+
+        A kind skipped on one side but not the other leaves the sidebar showing
+        notice boilerplate while the chat pane shows the real turn (or vice
+        versa) -- the exact divergence the shared predicates exist to prevent.
+        Asserted on the TS source because nothing else couples the two files.
+        """
+        import re
+        from pathlib import Path
+
+        from kiro_crew.dashboard.system_notices import SYSTEM_NOTICE_KINDS
+
+        ts_path = (
+            Path(__file__).resolve().parents[1] / "website/src/lib/systemNotice.ts"
+        )
+        ts_src = ts_path.read_text(encoding="utf-8")
+        m = re.search(r"new Set\(\[([^\]]*)\]\)", ts_src)
+        assert m, "SYSTEM_NOTICE_KINDS Set literal not found in systemNotice.ts"
+        frontend = set(re.findall(r"'([^']+)'", m.group(1)))
+        assert frontend == set(SYSTEM_NOTICE_KINDS)
+
+    @pytest.mark.asyncio
+    async def test_reload_without_live_session_is_ok(self, tmp_path, monkeypatch):
+        """No live session: reload is a no-op teardown but still ok + notice + respawn.
+
+        The goal state (next spawn picks up fresh config) already holds, so
+        this must not be an error; reloaded=False tells the caller no process
+        was actually torn down.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.sessions.reset = AsyncMock(return_value=False)
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data == {"ok": True}
+        assert slot.messages[-1]["meta"]["kind"] == "session_reload"
+        eager.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reload_cancels_pending_question_waits(self, tmp_path, monkeypatch):
+        """A pending ask_question wait is released by the reload teardown.
+
+        The card lives in dashboard state, not the session — without the
+        unblock it would survive the reset and hold its MCP worker until
+        timeout with no agent left to receive the answer.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.schedule_eager_spawn",
+            MagicMock(return_value=None),
+        )
+        cancelled = MagicMock(return_value=1)
+        monkeypatch.setattr(state, "cancel_questions_for_slot", cancelled)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+
+        assert resp.status == 200
+        cancelled.assert_called_once_with("s1")
+
+    @pytest.mark.asyncio
+    async def test_reload_app_token_denied_on_foreign_slot(self, tmp_path, monkeypatch):
+        """An app token gets the indistinguishable 404, and nothing is torn down.
+
+        Reload is a teardown; without the cancel-route ownership policy, an app
+        allowed /api/chat/* could reset a foreign slot's process and cancel its
+        pending waits.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot._app = "other-app"
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.sessions.reset = AsyncMock()
+        app = _make_app_with_agent_routes(state)
+
+        @web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "attacker-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reload_targets_the_linked_session_key(self, tmp_path, monkeypatch):
+        """A channel-born slot reloads its LINKED session, not the phantom
+        dashboard-prefixed key — otherwise reload reports success while the
+        live process keeps its stale config.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.linked_session_key = "slack:123.456"
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.schedule_eager_spawn",
+            MagicMock(return_value=None),
+        )
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+
+        assert resp.status == 200
+        state.sessions.reset.assert_awaited_once_with("slack:123.456", skip_if_busy=True)
+
+    @pytest.mark.asyncio
+    async def test_reload_refused_while_subagents_attached(self, tmp_path, monkeypatch):
+        """409 while children are running/queued/delivering — the reset would
+        tear down the shared subagent runtime and discard their work.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=self._idle_provider())
+        state.sessions.reset = AsyncMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=["child-1"])
+        state.subagents._queued_depth = MagicMock(return_value=0)
+        eager = MagicMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn", eager)
+        before = len(slot.messages)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+            data = await resp.json()
+
+        assert resp.status == 409
+        assert data["code"] == "slot_subagents_running"
+        state.sessions.reset.assert_not_awaited()
+        assert len(slot.messages) == before
+        eager.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reload_fails_closed_on_unreadable_children_probe(
+        self, tmp_path, monkeypatch
+    ):
+        """A None running-probe is the probe FAILING, not zero children."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        state.sessions.get_provider = MagicMock(return_value=None)
+        state.sessions.reset = AsyncMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=None)
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/reload")
+
+        assert resp.status == 409
+        state.sessions.reset.assert_not_awaited()

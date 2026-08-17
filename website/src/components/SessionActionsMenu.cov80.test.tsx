@@ -2,18 +2,20 @@ import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import SessionActionsMenu from './SessionActionsMenu'
 import { sseSlots, markSlotUnread } from '../store/dashboardSlice'
+import { sseSubagentSpawn } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { ChatSlot } from '../types'
 
 /** happy-dom cannot drive Radix menus, so both families collapse to buttons.
  *  Hoisted, because the vi.mock factories below run before module init. */
 const { Item, Separator } = vi.hoisted(() => ({
-  Item: ({ children, onSelect, className }: {
+  Item: ({ children, onSelect, className, disabled }: {
     children?: React.ReactNode
     onSelect?: () => void
     className?: string
+    disabled?: boolean
   }) => (
-    <button type="button" className={className} onClick={() => onSelect?.()}>{children}</button>
+    <button type="button" className={className} disabled={disabled} onClick={() => onSelect?.()}>{children}</button>
   ),
   Separator: () => <hr data-testid="zzq-sep" />,
 }))
@@ -44,6 +46,7 @@ const actions = vi.hoisted(() => ({
   toggleMode: vi.fn(),
   copyLink: vi.fn(),
   move: vi.fn(),
+  reload: vi.fn(),
   close: vi.fn(),
 }))
 const popouts = vi.hoisted(() => ({
@@ -107,6 +110,40 @@ describe('SessionActionsMenu', () => {
     expect(actions.copyLink).toHaveBeenCalledWith('zzq-slot')
     fireEvent.click(btn('Close session'))
     expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+  })
+
+  it('wires Reload session to the slot and disables it while a turn runs', () => {
+    const { unmount } = setup()
+    fireEvent.click(btn('Reload session'))
+    expect(actions.reload).toHaveBeenCalledWith('zzq-slot')
+    unmount()
+
+    // While the slot runs, the item is disabled: the backend would answer 409
+    // anyway (killing an in-flight process orphans the streaming prompt) —
+    // the disable makes that visible instead of a dead click.
+    actions.reload.mockReset()
+    setup({}, { running: true })
+    const reloadBtn = screen.getByRole('button', { name: /Reload session/ })
+    expect(reloadBtn).toBeDisabled()
+    fireEvent.click(reloadBtn)
+    expect(actions.reload).not.toHaveBeenCalled()
+  })
+
+  it('disables Reload session while sub-agent children are attached', () => {
+    // A slot whose turn ended but whose children still run LOOKS idle; the
+    // backend still 409s (the reset would tear down the children's shared
+    // runtime), so the item must not offer the click.
+    const store = createTestStore()
+    store.dispatch(sseSlots([{ key: 'zzq-slot', messages: 0, running: false } as ChatSlot]))
+    store.dispatch(sseSubagentSpawn({ slot: 'zzq-slot', id: 'sa-1', task: 't', agent: 'a' }))
+    renderWithProviders(
+      <SessionActionsMenu variant="dropdown" slotKey="zzq-slot" />,
+      { store },
+    )
+    expect(screen.getByRole('button', { name: /Reload session/ })).toBeDisabled()
+    // The reason renders inline: a disabled Radix item is pointer-events-none,
+    // so a hover title can never explain the grey state.
+    expect(screen.getByText('sub-agents working')).toBeInTheDocument()
   })
 
   it('labels read/unread and pin/unpin from the live store state', () => {

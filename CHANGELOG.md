@@ -24,6 +24,24 @@ All notable changes to KiroCrew are documented in this file.
   still gets picked up, just moments later rather than being computed
   twice.
 
+- **Reload session: relaunch a session's agent process in place.** A live
+  agent process mounts its MCP servers and builds its tool table once, at
+  session-init time, so config that changes afterwards — a newly added MCP
+  server, an env or agent-spec fix — never reaches an already-open session;
+  the only remedies were restarting the whole gateway or abandoning the
+  conversation for a new chat. The session actions menu now carries a
+  "Reload session" item (disabled while a turn runs) backed by
+  `POST /api/chat/slots/{slot}/reload`: it targets the slot's linked session
+  key, applies the cancel-route app-isolation policy, refuses with 409 while
+  a turn is in flight or sub-agent children are attached, tears the process
+  down through the same chokepoint the agent/workspace switches use, appends
+  a feed notice, and eagerly re-arms the resume spawn, so the relaunched
+  process re-reads its agent spec and environment and re-initializes MCP
+  servers via session/load with the conversation preserved. The busy check
+  is evaluated atomically with the session pop, closing the check-then-reset
+  race, and the notice kind is skipped by the last-real-message scans on
+  both backend and frontend.
+
 - **Removing a worktree in Dev Fleet no longer strands its pod's isolated
   HOME.** Reclamation was gated on the pod's unit still being ACTIVE, which the
   ordinary path never is: you stop the pod when testing ends and prune days

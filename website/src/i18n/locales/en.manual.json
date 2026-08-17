@@ -1934,6 +1934,10 @@
       "mark_as_read": "Mark as read",
       "mark_as_unread": "Mark as unread",
       "pin": "Pin",
+      "reload_blocked_running": "turn running",
+      "reload_blocked_subagents": "sub-agents working",
+      "reload_session": "Reload session",
+      "reload_session_tooltip": "Restarts the agent process to pick up MCP/config changes. The conversation is kept.",
       "switch_to_autopilot": "Switch to Autopilot",
       "switch_to_chat": "Switch to Chat",
       "unpin": "Unpin"
@@ -2308,6 +2312,8 @@
     },
     "useSessionActions": {
       "close_this_session": "Close this session?",
+      "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
+      "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
       "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
     },

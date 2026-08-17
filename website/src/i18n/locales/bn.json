@@ -6112,6 +6112,10 @@
       "move_to_folder": "ফোল্ডারে সরান…",
       "pin": "পিন করো",
       "pop_out_to_window": "উইন্ডোতে পপ আউট করুন",
+      "reload_blocked_running": "টার্ন চলছে",
+      "reload_blocked_subagents": "সাব-এজেন্ট কাজ করছে",
+      "reload_session": "সেশন পুনরায় লোড করুন",
+      "reload_session_tooltip": "MCP/কনফিগারেশন পরিবর্তন প্রয়োগ করতে এজেন্ট প্রসেস পুনরায় চালু করে। কথোপকথন সংরক্ষিত থাকে।",
       "rename": "নাম পরিবর্তন",
       "reveal_in_sidebar": "সাইডবারে দেখান",
       "switch_to_autopilot": "Autopilot-এ যাও",
@@ -6749,6 +6753,8 @@
     },
     "useSessionActions": {
       "close_this_session": "এই সেশন বন্ধ করবে?",
+      "reload_failed": "সেশন পুনরায় লোড ব্যর্থ হয়েছে। এজেন্ট ব্যস্ত থাকতে পারে বা গেটওয়ে পৌঁছানো যাচ্ছে না; সেশন নিষ্ক্রিয় হলে আবার চেষ্টা করুন।",
+      "reload_failed_subagents": "এই সেশনে সাব-এজেন্টরা এখনও কাজ করছে। তারা শেষ করলে আবার চেষ্টা করুন।",
       "switch_to_autopilot_mode_future_messages_will_us": "Autopilot মোডে যাবে? পরের মেসেজগুলো Autopilot আচরণ অনুসরণ করবে (প্ল্যান → অনুমোদন → এক্সিকিউট)।",
       "switch_to_normal_chat_mode_future_messages_will": "সাধারণ চ্যাট মোডে যাবে? পরের মেসেজগুলো সাধারণ চ্যাট আচরণ অনুসরণ করবে।"
     },

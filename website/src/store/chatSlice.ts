@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, createSelector, type PayloadAction } fro
 import { api } from '../api/client'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
+import { isSystemNoticeKind } from '../lib/systemNotice'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity } from '../types'
@@ -1605,8 +1606,9 @@ export const selectContinuable = (state: RootState): boolean => {
     if (m.role === 'queued') return false
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
-      // Compaction notices are assistant-role system messages, not the floor.
-      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      // System notices (compaction, session reload) are assistant-role status
+      // messages, not the floor.
+      if (m.role === 'assistant' && isSystemNoticeKind((m.meta as { kind?: string } | undefined)?.kind)) continue
       return true
     }
   }
@@ -1659,7 +1661,7 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
     if (m.role === 'error') { sawTrailingError = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
-      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      if (m.role === 'assistant' && isSystemNoticeKind((m.meta as { kind?: string } | undefined)?.kind)) continue
       return m.role === 'user' ? true : sawTrailingError
     }
   }
