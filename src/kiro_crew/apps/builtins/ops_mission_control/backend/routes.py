@@ -1590,6 +1590,17 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
                 {"error": "pagerduty_user_id is too long", "code": "value_too_long"}, status=400
             )
 
+    # incident.io's rotation identity, on the same fence for the same reason. Length-checked
+    # only: its ids are opaque ULIDs, and pinning that shape here would assert a vendor
+    # format this app does not own.
+    inc_user: str | None = None
+    if "incidentio_user_id" in body:
+        inc_user = str(body["incidentio_user_id"]).strip()
+        if len(inc_user) > _MAX_PROVIDER_ID_LEN:
+            return web.json_response(
+                {"error": "incidentio_user_id is too long", "code": "value_too_long"}, status=400
+            )
+
     primary: bool | None = None
     if "primary_instance" in body:
         try:
@@ -1736,6 +1747,7 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
         or slack_channel is not None
         or notify_enabled is not None
         or pd_user is not None
+        or inc_user is not None
         or wants_sync
         or bool(numerics)
     )
@@ -1821,6 +1833,9 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
     if pd_user is not None:
         await asyncio.to_thread(policy_store.put, policy_store.PAGERDUTY_USER_KEY, pd_user)
         applied["pagerduty_user_id"] = pd_user
+    if inc_user is not None:
+        await asyncio.to_thread(policy_store.put, policy_store.INCIDENTIO_USER_KEY, inc_user)
+        applied["incidentio_user_id"] = inc_user
 
     _audit("settings_put", f"{sorted(applied)}", "success")
     return web.json_response({"ok": True, "applied": applied})
