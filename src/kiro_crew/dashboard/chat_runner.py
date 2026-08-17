@@ -3356,7 +3356,51 @@ async def _eager_spawn(
             agent_model = ""
             resolved_ok = False
             try:
-                cfg = KiroCrewConfig.load()
+                # Off-loop: the load stats and reads config.json plus any
+                # config.local.json overlay, deep-merges them and runs the full
+                # schema validation. This task is speculative — it only makes the
+                # first real message faster — so it has no business holding the
+                # loop the live sessions share.
+                #
+                # The suspension lands INSIDE the envelope this function already
+                # maintains: `_bound` was snapshotted just above, and the guards
+                # after get_or_create below already discard a session whose
+                # creator lost the race, whose slot was deleted or replaced, or
+                # whose bindings moved. So a switch or delete landing during the
+                # load is revalidated there, and nothing new is needed here.
+                # Only the load crosses over: bindings are resolved and the slot
+                # read back on the loop, so no slot or session state is handed to
+                # a worker.
+                #
+                # An abandoned worker (cancelled eager task) is acceptable, but
+                # NOT because the load is read-only — it is not. Every load
+                # publishes three process-global snapshots (mcp.extra_path_dirs,
+                # the agent alias table, the autocompact threshold) and its
+                # write-back migration can rewrite config.json. The narrower
+                # reason it is safe: the autocompact publish is ordered on a
+                # ticket drawn BEFORE the read, so a load that began earlier
+                # cannot overwrite a newer one, and the other two are idempotent
+                # rebinds of what was just read. Residue: those two carry no
+                # ordering of their own, so a late worker can republish a value a
+                # newer load already superseded — a property of concurrent loads
+                # in general, not of this call site. The stop-hook nudge-cap load
+                # in this module already runs off-loop for the same reason.
+                #
+                # The write-back MIGRATION cannot fire here, which is worth
+                # stating because the offload would otherwise look like it moves
+                # a config WRITE onto a worker. It is one-shot per process: only
+                # the first load whose on-disk config still has a legacy shape
+                # calls save(), and every later load skips it. This task is
+                # created at exactly one site -- schedule_eager_spawn -- which
+                # runs its own KiroCrewConfig.load() ON THE LOOP before it
+                # creates the task, and only creates it if that load succeeded.
+                # So a pending migration is always performed by that on-loop
+                # load, on the loop, exactly as before this change; by the time
+                # this call runs the config is canonical and needs_migration is
+                # False. Deleting that on-loop load (see #7734) must keep this
+                # invariant in view: it would make THIS the process's first load
+                # and hand the migration write to a worker.
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 bindings = resolve_agent_bindings(cfg, slot.agent or None)
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
