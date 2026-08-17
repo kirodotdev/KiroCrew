@@ -378,6 +378,7 @@ class TestLifecycleOnTheSlot:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
             assert resp.status == 200
             thread_ts = (await resp.json())["thread_ts"]
 
@@ -735,6 +736,24 @@ class TestTurnEntryWiring:
         assert calls == ["dashboard:chat-7-1785370000"]
 
 
+async def _settle_slack_backfill(state):
+    """Await the backfill the slack-link endpoint spawns fire-and-forget.
+
+    The endpoint answers 200 without awaiting the drain, so the mock it posts
+    through has not been called yet when the request resolves. The task is
+    registered in ``state._background_tasks`` synchronously, before the handler
+    returns, so by then the set is already populated and waiting on it is a
+    handshake rather than a second race. Loops because a settled task may have
+    spawned another.
+    """
+    for _ in range(10):
+        pending = [t for t in tuple(state._background_tasks) if not t.done()]
+        if not pending:
+            return
+        await asyncio.gather(*pending, return_exceptions=True)
+    raise AssertionError("slack backfill did not settle")
+
+
 def _slack_app(state):
     from kiro_crew.dashboard.chat_slack import api_chat_slot_slack_link
 
@@ -778,6 +797,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
             assert resp.status == 200
 
         texts = [c.args[1] for c in state.slack_client.post_message.await_args_list]
@@ -796,6 +816,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
 
         assert _is_live_control(state.slack_client.post_blocks.await_args.args[1])
         assert _recs(state, slot)
@@ -814,6 +835,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
 
         blocks = state.slack_client.post_blocks.await_args.args[1]
         assert not _is_live_control(blocks)
@@ -838,6 +860,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
 
         blocks = state.slack_client.post_blocks.await_args.args[1]
         assert _is_live_control(blocks)
@@ -862,6 +885,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
 
         texts = [c.args[1] for c in state.slack_client.post_message.await_args_list]
         assert any("[OPTIONS: A | B]" in t for t in texts)
@@ -878,6 +902,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _settle_slack_backfill(state)
 
         posts = state.slack_client.post_blocks.await_args_list
         assert len(posts) == 2
