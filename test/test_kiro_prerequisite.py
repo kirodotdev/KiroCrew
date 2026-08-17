@@ -216,9 +216,13 @@ class TestKiroPrerequisiteHelpers:
         real_open = os.open
         real_read = os.read
 
-        def windows_open(path: str, flags: int, mode: int = 0o777) -> int:
+        # ``**kwargs`` because this replaces the os module attribute, so it is live for
+        # the whole test INCLUDING teardown, where pytest's own tmp_path cleanup calls
+        # os.open with dir_fd=. A stub narrower than the API it stands in for turns that
+        # cleanup into a TypeError reported as an error at teardown.
+        def windows_open(path: str, flags: int, mode: int = 0o777, **kwargs: object) -> int:
             real_flags = flags if native_binary_flag else flags & ~binary_flag
-            fd = real_open(path, real_flags, mode)
+            fd = real_open(path, real_flags, mode, **kwargs)  # type: ignore[arg-type]
             if flags & binary_flag:
                 binary_fds.add(fd)
             return fd

@@ -8,7 +8,6 @@ import hmac as _hmac_mod
 import json
 import os
 import sys
-import tempfile
 import textwrap
 import threading
 import time
@@ -3359,7 +3358,7 @@ def _mk_make_live_wt(tmp_path, *, venv: bool = False, dist: bool = False,
     return wt
 
 
-def _assert_sandboxed(path, what: str) -> None:
+def _assert_sandboxed(path, what: str, sandbox_root) -> None:
     """Fail loudly when a host-mutating make-live seam resolves outside the sandbox.
 
     The seams below decide WHERE the cutover writes and WHAT it executes. If one is
@@ -3368,10 +3367,17 @@ def _assert_sandboxed(path, what: str) -> None:
     drop-in to point at a pytest tmpdir and restarts the unit, which then fails
     203/EXEC on every boot once the tmpdir is reaped. Asserting containment here
     makes the next missed seam fail inside the test instead of taking down the host.
+
+    *sandbox_root* is THIS test's own directory, not a generic temp root. The
+    distinction is the whole strength of the check: "somewhere under the system temp
+    dir" is satisfied by any tmp path at all, whereas "inside the tree this test
+    built" is satisfied only by the redirect actually taking effect. It also stops the
+    assertion depending on where ``tempfile`` happens to be rooted, which the suite's
+    isolation floor now controls.
     """
     resolved = Path(path).resolve()
-    tmp_root = Path(tempfile.gettempdir()).resolve()
-    assert tmp_root in resolved.parents, (
+    root = Path(sandbox_root).resolve()
+    assert root == resolved or root in resolved.parents, (
         f"{what} resolved OUTSIDE the temp sandbox: {resolved}. A test that reaches "
         f"the cutover path must never touch a real host path."
     )
@@ -3416,15 +3422,14 @@ def _stub_make_live(monkeypatch, wt, *, live=None, in_pod=False, unit_status="ok
     monkeypatch.setattr(mod, "_live_worktree_path", AsyncMock(return_value=live))
     monkeypatch.setattr(mod, "_in_pod", lambda: in_pod)
     monkeypatch.setattr(mod, "_live_user_unit_status", AsyncMock(return_value=unit_status))
-    sandbox_dropin = (
-        Path(wt).parent / "_systemd" / f"{mod._LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
-    )
-    _assert_sandboxed(sandbox_dropin, "_dropin_path")
+    sandbox_root = Path(wt).parent
+    sandbox_dropin = sandbox_root / "_systemd" / f"{mod._LIVE_GATEWAY_UNIT}.d" / "make-live.conf"
+    _assert_sandboxed(sandbox_dropin, "_dropin_path", sandbox_root)
     monkeypatch.setattr(mod, "_dropin_path", lambda: sandbox_dropin)
     monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(0, "", "")))
     # Prove the redirect actually took: a rename of the production symbol would
     # otherwise leave the real path live while every test still looked green.
-    _assert_sandboxed(mod._dropin_path(), "patched _dropin_path()")
+    _assert_sandboxed(mod._dropin_path(), "patched _dropin_path()", sandbox_root)
     if pointer_dir is not None:
         pointer_dir.mkdir(parents=True, exist_ok=True)
         ptr_file = pointer_dir / "live_target.json"

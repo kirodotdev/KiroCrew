@@ -107,9 +107,10 @@ than fixed; if it only fails on your branch, it's yours. Never label a failure
 
 **A confirmed flake is a bug with a root cause, not noise to retry.** Do NOT add a
 rerun, lengthen a `sleep`, or relax an assertion. Read
-`docs/system-specs/common/testing-conventions.md` § Determinism for the four classes
+`docs/system-specs/common/testing-conventions.md` § Determinism for the five classes
 and the one correct fix for each: seed nondeterministic input, poll instead of
-sleeping, `MagicMock` for sync methods, `await` after `cancel()`. To find what is
+sleeping, `MagicMock` for sync methods, `await` after `cancel()`, and bound a
+complexity test's doubling RATIO rather than an absolute duration. To find what is
 actually flaky rather than guessing, mine CI instead of the local suite (a real flake
 often will not reproduce on macOS at all):
 

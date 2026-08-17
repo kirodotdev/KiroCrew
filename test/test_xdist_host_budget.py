@@ -48,6 +48,24 @@ def slot_dir(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib
             pass
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_live_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the LIVE memory readings to "unknown" for every test in this file.
+
+    The budget takes the tightest of three readings, and two of them describe the host
+    AT THIS MOMENT: the cgroup ceiling and ``MemAvailable``. Left live, a test asserting
+    that a big host reaches the worker cap measures whatever else is running on the
+    machine -- it passed on an idle host and returned 14 instead of 32 on the same
+    32-core box while another suite held memory. That is the wall-clock-race flake class
+    applied to memory instead of time.
+
+    "Unknown" (0) rather than a large number, because that is the reading these tests
+    want out of the way; each test then declares the ceiling it is actually about.
+    """
+    monkeypatch.setattr(ct, "_cgroup_limit_mib", lambda: 0)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 0)
+
+
 @pytest.fixture
 def budget_host(slot_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
     """A deterministic 10-core / 32 GiB host, so only contention varies."""
@@ -345,6 +363,33 @@ def test_claim_fails_open_when_the_dir_cannot_be_made(
     monkeypatch.setattr(ct, "_held_slots", [])
 
     assert ct._claim_worker_slots(8, 64) == 8
+    assert ct._held_slots == []
+
+
+def test_an_unwritable_slot_dir_drops_to_one_worker_and_says_why(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory that EXISTS but cannot be written is the case ``mkdir`` misses.
+
+    ``mkdir(exist_ok=True)`` succeeds on it -- Linux reports EEXIST before it checks
+    write permission -- so the failure only appears at the first ``os.open``. It must NOT
+    fail open to the unbudgeted ceiling: if this run cannot take a lock then neither can a
+    concurrent one, so both would get the full cap with no coordination, which is the
+    oversubscription the budget exists to prevent. One worker, and a warning naming the
+    fix, because a silent hour-long suite is a bug nobody can see.
+    """
+    monkeypatch.setattr(ct, "_held_slots", [])
+    real_open = os.open
+
+    def _deny(path, *args, **kwargs):
+        if "worker-" in str(path):
+            raise PermissionError(13, "read-only", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(ct.os, "open", _deny)
+
+    with pytest.warns(UserWarning, match=ct._SLOT_DIR_ENV):
+        assert ct._claim_worker_slots(16, 16) == 1
     assert ct._held_slots == []
 
 

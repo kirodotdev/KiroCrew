@@ -2,15 +2,37 @@
 
 ``test/conftest.py`` holds the bulk of the suite's isolation, but it only applies
 to ``test/``. ``[tool:pytest] testpaths`` also collects ``transfer`` and
-``src/kiro_crew/apps/builtins`` (42 test modules that ship inside the package,
+``src/kiro_crew/apps/builtins`` (~108 test modules that ship inside the package,
 next to the code they cover), and those get no ``test/conftest.py`` fixtures at
-all. Anything that must hold for EVERY test therefore has to live here, at the
+all -- only this file, plus that app's own ``tests/conftest.py`` where one exists.
+Anything that must hold for EVERY test therefore has to live here, at the
 rootdir, which is the one conftest pytest applies to all three testpaths.
 
-Only the host-mutation floor belongs in this file. It is deliberately narrow: a
-guard that makes it impossible for a test to reconfigure or restart the
-developer's real Kiro Crew service, and one that fails the run when a test leaves
-residue in the repository checkout. Everything else stays in ``test/conftest.py``.
+Only the HOST-MUTATION FLOOR belongs in this file: the guards that must hold for a
+test collected from any of the three testpaths, because what they protect is the
+developer's machine rather than the correctness of one suite. Everything that is
+merely suite-specific isolation stays in ``test/conftest.py``.
+
+The floor has four parts, and each one exists because the "remember to isolate
+this" contract failed at least once:
+
+* **Services.** ``$XDG_CONFIG_HOME`` is redirected and the stdlib spawn funnels
+  refuse a ``systemctl``/``launchctl`` invocation carrying a mutating verb, so no
+  test can reconfigure or restart the operator's real gateway (issue #1722).
+* **The data home.** ``KIROCREW_HOME`` is pinned per test, and the ``~/.kiro``
+  paths that production binds at IMPORT time (which the env var cannot reach) are
+  pinned with it. Without this, the ~108 test modules that ship inside the package
+  under ``src/kiro_crew/apps/builtins/*/tests/`` -- which see this conftest and no
+  other -- write the operator's live ``~/.kiro/crew`` the moment they touch
+  ``config_dir()``.
+* **The system temp directory.** ``tempfile``'s base is redirected to a per-run
+  directory for the whole process, so a bare ``mkdtemp()`` whose cleanup is missing
+  or skipped leaves its directory somewhere this run owns and removes, instead of
+  accumulating in the shared temp root forever. What was left behind is REPORTED
+  first, so the leak is a red rather than silent inode consumption.
+* **The repository checkout.** The run fails when it ends with residue anywhere in
+  the checkout, which is how a subprocess spawned without ``cwd=`` announces
+  itself.
 
 One consequence of living at the rootdir: the module name ``conftest`` is now
 resolvable from the repository root as well as from ``test/``, and 11 test modules
@@ -32,22 +54,31 @@ real ``_make_live()`` because that function was the subject under test, and two
 of that function's seams (the drop-in path and the subprocess layer) were left
 for each test to remember to stub.
 
-The two fixtures below remove that "remember to" from the contract. Neither
-changes the behaviour of a test that already isolates itself correctly.
+The fixtures below remove that "remember to" from the contract. None of them
+changes the behaviour of a test that already isolates itself correctly: every one
+sets a value a test can still override, and a test that sets its own
+``KIROCREW_HOME`` or its own temp dir keeps winning.
 
-Imports are stdlib + pytest only, on purpose: a rootdir conftest is imported
-before every collection, so pulling ``kiro_crew`` in here would make the whole
-suite depend on import-time side effects of the package under test.
+Imports at MODULE level are stdlib + pytest only, on purpose: a rootdir conftest is
+imported before every collection, so pulling ``kiro_crew`` in here would make the
+whole suite depend on import-time side effects of the package under test. The
+fixtures that do need ``kiro_crew`` import it in their own body, which runs at test
+setup -- by which point the test module has already imported the package anyway --
+and tolerate an ImportError so a partial checkout cannot break collection.
 """
 
 from __future__ import annotations
 
 import asyncio.base_events
+import getpass
 import importlib
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
+import warnings
 
 import pytest
 
@@ -404,6 +435,748 @@ def _block_host_service_mutation(request, monkeypatch):
     )
     monkeypatch.setattr(os, "execve", guarded_exec)
 
+
+# ── the process working directory is shared state too ─────────────────
+
+
+#: The working directory pytest started in, captured once. Restoring to THIS rather than
+#: to a per-test snapshot is both simpler and more correct: it is the only value that is
+#: certain to still exist, and it is where every test expects to begin.
+_SESSION_CWD: str | None = None
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Record the working directory pytest started in, before any test can move it."""
+    global _SESSION_CWD
+    try:
+        _SESSION_CWD = os.getcwd()
+    except OSError:  # pragma: no cover - pytest could not have started here
+        _SESSION_CWD = str(_REPO_ROOT)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Put the process working directory back, BEFORE any fixture teardown runs.
+
+    The CWD is per-PROCESS, so under xdist one test's ``os.chdir`` silently becomes every
+    later test's starting directory on that worker. That was survivable while the
+    directory it pointed at outlived the run. It is not survivable now: with
+    ``tmp_path_retention_policy = failed`` pytest removes a passing test's ``tmp_path`` at
+    that test's own teardown, so a test that chdirs into ``tmp_path`` and does not come
+    back leaves the worker sitting in a DELETED directory -- and then ``Path.cwd()`` raises
+    ``FileNotFoundError`` in every later test that reaches it, including deep inside
+    production code (``taskrunner.TaskRunner.__init__`` does ``work_dir or Path.cwd()``).
+
+    Measured instance and its numbers:
+    ``docs/system-specs/common/testing-conventions.md`` § Rules. It reads as "the suite is
+    flaky" -- many files, each passing in isolation -- rather than as one missing line.
+
+    **A ``tryfirst`` teardown hook rather than an autouse fixture, and the difference is
+    load-bearing on Windows.** A fixture here would be an OUTER one (the rootdir conftest
+    is set up before the test's own fixtures), so it would tear down LAST -- after
+    ``tmp_path`` cleanup had already tried to remove a directory the process was still
+    sitting in. Windows refuses to delete a process's current working directory, so the
+    cleanup fails there. Making the fixture depend on ``tmp_path`` would invert the order,
+    but at the price of allocating a directory for every test in the suite, which is
+    exactly the per-test cost this change removed elsewhere. A ``tryfirst`` hookimpl runs
+    before the default ``pytest_runtest_teardown``, which is what performs fixture
+    finalization -- so the CWD is restored before ANY teardown, at no per-test cost.
+
+    Restoring rather than failing is deliberate. The damage a leaked CWD does is to OTHER
+    tests, so the floor's job is to stop it propagating; naming every offender is a
+    separate cleanup, and one a red suite would not help with. A test that wants to change
+    directory for its own duration keeps working, and ``monkeypatch.chdir`` (which reverts
+    itself, and whose undo lands on the same value) remains the right tool inside a test.
+    """
+    if _SESSION_CWD is None:  # pragma: no cover - configure always runs first
+        return
+    try:
+        if os.getcwd() == _SESSION_CWD:
+            return
+    except OSError:
+        # The CWD was deleted under us, so the comparison itself raises. Getting back to a
+        # real directory is the whole point, so fall through and do it unconditionally.
+        pass
+    try:
+        os.chdir(_SESSION_CWD)
+    except OSError:  # pragma: no cover - the starting directory would have to be gone
+        pass
+
+
+# ── tracked Windows gaps apply to every testpath ──────────────────────
+
+
+def pytest_collection_modifyitems(config, items):
+    """On Windows, skip the tracked known-gap tests (all parametrizations).
+
+    The list lives in ``test/windows-expected-failures.txt`` -- one unparametrized node
+    id per line, captured from the first Windows CI runs. It is a burn-down backlog:
+    fixed tests get their line deleted, and anything NOT on the list still fails the
+    job, so the Windows line holds for the tests that pass today.
+
+    Lives HERE rather than in ``test/conftest.py`` because the list already names node
+    ids under ``src/kiro_crew/apps/builtins/auto_improvement/tests/``, and a hook rooted
+    at ``test/`` is never registered when only in-package tests are collected -- which is
+    exactly what CI's reduced-scope Windows job does when a diff touches no path under
+    ``test/``. Those entries are also absent from ``BACKEND_DESELECTS``, so they were
+    collected unskipped and the shard went red for a gap that was already tracked.
+
+    The list file itself stays under ``test/``, read by path from here. Node ids are
+    always spelled with ``/`` even on Windows, so the in-package entries need no
+    translation.
+    """
+    if not platform_compat_or_none() or not platform_compat_or_none().IS_WINDOWS:
+        return
+    listfile = _REPO_ROOT / "test" / "windows-expected-failures.txt"
+    try:
+        text = listfile.read_text(encoding="utf-8")
+    except OSError:  # pragma: no cover - list file absent in a partial checkout
+        return
+    expected = {ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")}
+    marker = pytest.mark.skip(
+        reason="known Windows gap -- tracked in test/windows-expected-failures.txt"
+    )
+    for item in items:
+        if item.nodeid.split("[")[0] in expected:
+            item.add_marker(marker)
+
+
+def platform_compat_or_none():
+    """``kiro_crew.platform_compat``, or ``None`` when it cannot be imported.
+
+    Imported lazily so this rootdir conftest keeps its module-level imports to the
+    stdlib: it is loaded before every collection, and a module-scope import of the
+    package under test would make the whole suite depend on that package's import-time
+    side effects.
+    """
+    try:
+        from kiro_crew import platform_compat
+    except ImportError:  # pragma: no cover - partial checkout
+        return None
+    return platform_compat
+
+
+# ── the system temp directory is host state too ───────────────────────
+
+
+#: Prefix for the run's own temp base, a sibling of the platform temp root.
+#:
+#: The name is ``kc-pytest-<user>-<pid>``. The pid is what lets a later run tell an
+#: ABANDONED root (its process is gone) from one a concurrent run is still using. The
+#: user segment is not decoration: on POSIX the platform temp root is SHARED between
+#: accounts, so a bare pid collides across users -- two accounts can hold the same pid
+#: at the same time, and the second would try to reuse a directory it cannot write.
+#: Windows gives each account its own temp root, so there the segment is redundant and
+#: harmless.
+_TMP_ROOT_PREFIX = "kc-pytest-"
+
+
+def _tmp_root_prefix_for_run() -> str:
+    """``kc-pytest-<user>-<pid>-`` -- the stem this run's temp root is created under.
+
+    The user segment is not decoration: on POSIX the platform temp root is SHARED between
+    accounts, so a bare pid collides across users -- two accounts can hold the same pid at
+    the same time. The pid is what lets a later run tell an ABANDONED root from one a
+    concurrent run is still using. The trailing hyphen is where ``mkdtemp`` appends its
+    random component; see :func:`_create_tmp_root` for why that randomness is required and
+    not cosmetic.
+    """
+    try:
+        raw = getpass.getuser()
+    except Exception:  # noqa: BLE001 - no passwd entry and no env fallback
+        raw = "u"
+    user = "".join(ch if ch.isalnum() else "_" for ch in raw)[:24] or "u"
+    return f"{_TMP_ROOT_PREFIX}{user}-{os.getpid()}-"
+
+
+def _create_tmp_root(parent: pathlib.Path) -> pathlib.Path:
+    """Create this run's temp root under *parent*, atomically and unguessably.
+
+    ``mkdtemp`` rather than ``mkdir(exist_ok=True)`` on a name derived from the pid, and
+    the difference is a local privilege boundary rather than a style choice. The platform
+    temp root is world-writable with a sticky bit on POSIX, and a pid-derived name is
+    PREDICTABLE -- so another local account can pre-create that exact name as a SYMLINK to
+    a directory it controls. ``mkdir(..., exist_ok=True)`` succeeds against a
+    symlink-to-directory, the session redirect then follows it, and every temp write in
+    the run -- including whatever secrets a test fixture fabricates -- lands somewhere the
+    other account chose and can read.
+
+    ``mkdtemp`` closes that in three ways at once: it appends a random component, so the
+    name cannot be guessed ahead of time; it creates with ``O_EXCL``, so it fails rather
+    than adopting anything that already exists; and it sets mode ``0o700``, so the
+    directory is unreadable to other accounts once made. It also makes the name
+    UNPREDICTABLE to this suite, which is what lets the invariant below hold: a run can
+    only ever name the root it created itself.
+
+    The pid stays in the name for a human reading a stray directory, not for machinery:
+    nothing parses it. See :func:`_isolate_tempfile_base` for why this run never touches a
+    root it did not create.
+    """
+    return pathlib.Path(tempfile.mkdtemp(prefix=_tmp_root_prefix_for_run(), dir=parent))
+
+
+#: Env vars ``tempfile`` consults, so a CHILD process inherits the redirect too.
+#: A test that spawns a helper which writes to its temp dir would otherwise put
+#: that file in the real ``/tmp``, where nothing prunes it.
+_TMP_ENV_VARS = ("TMPDIR", "TEMP", "TMP")
+
+#: Opt-in diagnostic: give every test its OWN temp base, named after the test.
+#:
+#: Off by default because a directory per test is precisely the per-test cost the
+#: suite's fixture audit exists to avoid (paid ~26.5k times). It is the escape hatch
+#: for the one question the session-scoped guard below cannot answer: a single stray
+#: directory in a 26k-test run names no culprit. Re-run the suspect subset with
+#: ``KIROCREW_TMP_PER_TEST=1`` and the residue's parent directory IS the test id.
+_TMP_PER_TEST_ENV = "KIROCREW_TMP_PER_TEST"
+
+#: Names under the run's temp base that are NOT this suite's residue.
+#:
+#: Each entry is something OTHER than a test creating a directory it forgot to remove,
+#: which is the only thing this guard is about. Measured from CI, where the surfaces this
+#: developer host cannot reach are exercised:
+#:
+#: * ``pytest-of-`` -- a NESTED pytest's own ``basetemp`` tree. Several tests spawn one,
+#:   and it resolves ``gettempdir()`` after the redirect has taken effect, so it computes
+#:   its basetemp inside ours. A child runner's bookkeeping, with its own retention.
+#: * ``kirocrew-computer-shots`` -- the computer-use screenshot spool, which production
+#:   deliberately keeps under ``tempfile.gettempdir()`` as a persistent ring buffer
+#:   (pinned by ``test_computer_use_capture.py``). Long-lived BY DESIGN, so its presence
+#:   is the feature working, not a test leaking.
+#: * ``playwright-`` / ``.org.chromium.`` -- created by the browser and its driver, which
+#:   inherit the redirected ``TMPDIR`` like any other child. Third-party scratch this
+#:   suite does not own and cannot register cleanup for.
+_TMP_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "pytest-of-",
+    "kirocrew-computer-shots",
+    "playwright-",
+    ".org.chromium.",
+)
+
+#: Make temp residue FAIL the run rather than warn.
+#:
+#: Off by default, and that is a staged rollout rather than a soft opinion. The guard
+#: found real residue on CI surfaces this host cannot reach, and the entries that remain
+#: after the exclusions above are single ``mkstemp`` FILES rather than the ``mkdtemp``
+#: directories the rule is written about -- one inode each, several of them created by
+#: production code a test merely reached. Failing the suite on that set today would block
+#: every unrelated change while the set is attributed, and a guard that blocks unrelated
+#: work is a guard somebody deletes.
+#:
+#: So: the residue is removed either way (which is the whole inode win), and it is
+#: REPORTED either way. Set this to make it fatal -- in a burn-down branch, or in CI once
+#: the remaining set is empty. Same shape as ``windows-expected-failures.txt``: a known
+#: set, visible, with a way to hold the line once it is closed.
+_TMP_RESIDUE_STRICT_ENV = "KIROCREW_TMP_RESIDUE_STRICT"
+
+
+def _redirect_tempfile_base(base: pathlib.Path) -> None:
+    """Point ``tempfile`` AND every child process at *base*.
+
+    ``tempfile.tempdir`` is the module global ``gettempdir()`` memoises into, so
+    assigning it directly is what covers code already holding a reference to the
+    module; the env vars are what cover a child process, which re-derives its own.
+    Both are needed: patching only the global leaves subprocess writes in the real
+    temp dir, and setting only the env vars is a no-op for a process that already
+    resolved ``gettempdir()`` once.
+
+    All three names are set because the platforms disagree on which one is real:
+    ``TMPDIR`` is the POSIX spelling and ``TEMP``/``TMP`` are what Windows and the
+    tools spawned there read. Setting a name the running platform ignores is inert,
+    so there is no need to branch.
+    """
+    base.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(base)
+    for name in _TMP_ENV_VARS:
+        os.environ[name] = str(base)
+
+
+def _remove_tree(path: pathlib.Path) -> bool:
+    """Delete *path*, defeating Windows read-only files. True when it is gone.
+
+    ``shutil.rmtree(..., ignore_errors=True)`` is the reflexive spelling and it is the
+    WRONG one here: on Windows a mode-444 file cannot be unlinked, a git checkout is
+    full of them (loose objects are written read-only), and ``ignore_errors`` swallows
+    every such failure so the caller reports success over a tree still on disk. Five
+    test modules combine a bare ``mkdtemp()`` with a real ``git`` spawn, so that is not
+    hypothetical. ``platform_compat.rmtree_force`` clears the attribute and retries, and
+    returns a filesystem-derived boolean rather than the hook's opinion.
+    """
+    try:
+        from kiro_crew import platform_compat as _pc
+    except ImportError:  # pragma: no cover - partial checkout
+        shutil.rmtree(path, ignore_errors=True)
+        return not path.exists()
+    return _pc.rmtree_force(path)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_tempfile_base(tmp_path_factory):
+    """Give the run its own ``tempfile`` base, then report and remove what leaked.
+
+    AUTOSDE forbids a bare ``tempfile.mkdtemp()`` / ``TemporaryDirectory()`` whose
+    destruction is not registered in the same scope, because those directories
+    survive the run and accumulate across runs until they exhaust inodes -- MEASURED
+    on this host, a ``/tmp`` tmpfs with a fixed 1,048,576-inode budget starts
+    returning ENOSPC to unrelated processes with 90% of its BYTES still free.
+    Enforcing that per call site is a contract every new test has to remember, and
+    the shape that breaks it is invisible when reading the test:
+    ``unittest.TestCase`` tearDown does NOT run when setUp raises, so a ``setUp:
+    mkdtemp()`` paired with a ``tearDown: rmtree()`` leaks on every setUp failure --
+    and it is the FAILING run, the one nobody is watching closely, that leaves the
+    residue.
+
+    Redirecting the base fixes the class instead of the call sites: whatever the suite
+    creates without cleaning up lands in one directory this fixture owns, so the teardown
+    can both NAME it (residue is still a defect) and REMOVE it (so the accumulation stops
+    regardless of whether anyone acts on the report).
+
+    The report WARNS by default and fails only under ``KIROCREW_TMP_RESIDUE_STRICT`` --
+    see ``_TMP_RESIDUE_STRICT_ENV`` for why that is a staged rollout and not a shrug.
+
+    Under ``-n auto`` each xdist worker is its own process, so each gets its own
+    root and reports only its own leaks; the controller runs no tests and creates
+    none.
+
+    **A run only ever deletes the root it created itself.** There is deliberately no sweep
+    of other roots, and that is a design decision rather than an omission. Reclaiming a
+    root left by a killed run means deciding that some OTHER directory is abandoned, and
+    every available signal for that is unsound: the name can be pre-created by another
+    local account, and a pid is meaningless across PID namespaces -- two containers sharing
+    a bind-mounted temp directory can each hold the same pid, so "that process is gone" is
+    a statement about the wrong namespace and the reward for getting it wrong is deleting
+    a live run's data. The platform already owns this job (``systemd-tmpfiles`` on a timer,
+    macOS's periodic cleanup, and a tmpfs cleared on reboot), and it owns it with
+    information this process does not have. So a run killed before its teardown leaves one
+    directory behind for the platform to reclaim -- bounded, and far smaller than the
+    375,780-inode-per-run accumulation this redirect removes.
+
+    **Why the platform's own temp dir rather than pytest's ``basetemp``.** Nesting
+    under ``basetemp`` would have been tidier -- pytest already prunes it -- but it
+    adds ``pytest-of-<user>/pytest-<n>/popen-gw<k>/`` to the front of every
+    ``mkdtemp()`` path in the suite, roughly 60 characters. Windows still caps a
+    path at 260 unless long paths are enabled, and a macOS ``AF_UNIX`` ``sun_path``
+    is capped at ~104 bytes, so that nesting would trade an inode leak for a
+    platform-specific path-length failure. A sibling of the platform temp root named
+    ``kc-pytest-<pid>`` is SHORTER than what pytest's own ``tmp_path`` already
+    hands out, so no existing path gets longer on any platform.
+
+    Two things deliberately stay outside the redirect:
+
+    * ``test/tmpdir_helpers.short_tmp_base()`` forces ``/tmp`` on POSIX, because
+      macOS's per-user temp root alone already exceeds the ``AF_UNIX`` cap. Those
+      sites clean up after themselves.
+    * A test that patches ``tempfile.gettempdir`` or passes its own ``dir=`` still
+      wins, as it should.
+    """
+    # Resolve pytest's basetemp FIRST, and discard the value: the call is what matters.
+    # pytest computes basetemp lazily from `tempfile.gettempdir()` on first use, so
+    # forcing it now pins it OUTSIDE the redirect below. Skip this and pytest's whole
+    # basetemp lands INSIDE the run's temp root, where the teardown here would delete
+    # it -- taking with it every failed test's retained `tmp_path`, which
+    # `tmp_path_retention_policy = failed` exists to keep -- and adding ~25 characters
+    # to every temp path in the suite, straight into the Windows 260-character cap and
+    # the macOS AF_UNIX 104-byte cap. That ordering was previously accidental: an
+    # unrelated fixture 300 lines above happened to call `mktemp` first.
+    tmp_path_factory.getbasetemp()
+    previous_tempdir = tempfile.tempdir
+    previous_env = {name: os.environ.get(name) for name in _TMP_ENV_VARS}
+    parent = pathlib.Path(tempfile.gettempdir())
+    base = _create_tmp_root(parent)
+    _redirect_tempfile_base(base)
+    try:
+        yield base
+    finally:
+        tempfile.tempdir = previous_tempdir
+        for name, value in previous_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        per_test = bool(os.environ.get(_TMP_PER_TEST_ENV))
+        leaked = _tmp_residue(base, per_test=per_test)
+        # Removed even when it is empty, and even when the report below raises:
+        # leaving the root behind would itself be the accumulation this guards.
+        _remove_tree(base)
+        if not leaked:
+            return
+        report = _tmp_residue_report(base, leaked, per_test=per_test)
+        if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
+            raise AssertionError(report)
+        warnings.warn(report, stacklevel=1)
+
+
+def _tmp_residue(base: pathlib.Path, *, per_test: bool) -> list[str]:
+    """Names left under *base*, excluding what is not a leak.
+
+    In per-test mode the immediate children are the per-test bases the fixture itself
+    created, so the scan descends one level and reports ``<test id>/<name>``. Without
+    that, every test in the run would be reported as its own leak and the mode would
+    answer nothing.
+    """
+    try:
+        children = sorted(base.iterdir())
+    except OSError:
+        return []
+    residue: list[str] = []
+    for child in children:
+        if child.name.startswith(_TMP_RESIDUE_ALLOWED_PREFIXES):
+            continue
+        if not per_test:
+            residue.append(child.name)
+            continue
+        try:
+            residue.extend(f"{child.name}/{leaf.name}" for leaf in sorted(child.iterdir()))
+        except OSError:
+            continue
+    return residue
+
+
+def _tmp_residue_report(base: pathlib.Path, leaked: list[str], *, per_test: bool) -> str:
+    """The message naming what the run left behind, and how to find its owner."""
+    shown = leaked[:20]
+    more = f"    ... and {len(leaked) - len(shown)} more\n" if len(leaked) > len(shown) else ""
+    hint = (
+        "Each name above is a test id, so the leak is in that test."
+        if per_test
+        else f"Re-run the suspect subset with {_TMP_PER_TEST_ENV}=1 and each residue "
+        f"name becomes the id of the test that leaked it."
+    )
+    return (
+        f"{len(leaked)} temporary entr{'y' if len(leaked) == 1 else 'ies'} outlived "
+        f"this run under {base}:\n"
+        + "".join(f"    {name}\n" for name in shown)
+        + more
+        + "\nThis is reported at session teardown, so it is attributed to the last "
+        "test this worker ran -- that test is almost certainly NOT the culprit.\n"
+        "A test must register the destruction of anything it creates in the SAME "
+        "scope. Use pytest's tmp_path, or pair every tempfile.mkdtemp() with "
+        "self.addCleanup(shutil.rmtree, path, ignore_errors=True) on the line "
+        "after it -- NOT an rmtree in tearDown, which unittest skips entirely when "
+        "setUp raises.\n" + hint
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tempfile_base_per_test(_isolate_tempfile_base, request):
+    """Opt-in: give this test its own temp base so a leak names its own test.
+
+    Inert unless ``KIROCREW_TMP_PER_TEST`` is set, so the steady-state cost is one
+    environment read per test. See ``_TMP_PER_TEST_ENV``.
+
+    Named from the NODEID, not ``node.name``. The bare function name carries no module
+    or class, and 807 function names are duplicated across this suite (``test_defaults``
+    appears 17 times, ``test_invalid_json_is_400`` 29), so a name-keyed directory would
+    report a leak against a name shared by dozens of tests -- answering the wrong
+    question in the one mode that exists to answer it precisely. The nodeid is kept
+    TAIL-first under the length cap, because the distinguishing part is at the end.
+    """
+    if not os.environ.get(_TMP_PER_TEST_ENV):
+        return
+    safe = "".join(
+        ch if (ch.isalnum() or ch in "-._") else "_" for ch in request.node.nodeid
+    )
+    _redirect_tempfile_base(_isolate_tempfile_base / safe[-100:])
+
+
+# ── the operator's data home is host state too ────────────────────────
+
+
+@pytest.fixture(scope="session")
+def _isolation_root(tmp_path_factory):
+    """One session-scoped parent for the per-test isolation dirs below.
+
+    ``tmp_path_factory.mktemp`` picks its numbered suffix by scanning the whole
+    basetemp, so its cost grows with the number of entries already there. The
+    autouse fixtures that need a directory ``mkdir`` under this root instead, which
+    is a single syscall and does not scan.
+
+    Named ``i`` rather than something descriptive to keep the paths short: Windows
+    still caps a path at 260 characters unless long paths are enabled, and
+    everything a test writes under ``KIROCREW_HOME`` nests inside here.
+    """
+    return tmp_path_factory.mktemp("i")
+
+
+@pytest.fixture
+def _isolation_dirs(_isolation_root):
+    """Return an allocator for this test's isolation PATHS.
+
+    Each call returns ``<root>/<counter>-<name>``, so one test's paths cannot collide
+    with another's (the counter is per-process, and pytest-xdist gives every worker
+    its own ``basetemp``). Flat rather than nested, to keep Windows paths short.
+
+    **A path, not a directory: nothing is created.** Every consumer only needs somewhere
+    to POINT, and creates the directory itself if it ever writes -- ``config_dir()``
+    creates the data home, ``create_agent_folder`` creates the subagent registry,
+    ``OLLAMA_MODELS`` is only ever read. Creating them eagerly cost a ``mkdir`` per name
+    on every test and left the directories behind for the whole session, because they are
+    not ``tmp_path`` dirs and no retention policy reaches them.
+
+    MEASURED on one full ``test/`` run at ``-n 8``: 366,716 of the run's 372,126
+    basetemp inodes -- 98.5% -- were these directories, ~317k of them empty. On a
+    ``/tmp`` tmpfs with a fixed 1,048,576-inode budget that is a third of the machine's
+    entire allowance spent on directories nothing ever opened, and it is what made a
+    second concurrent run fail with ENOSPC while 90% of the bytes were free.
+
+    A future consumer that genuinely needs the directory to exist should ``mkdir`` at its
+    own call site, where the reason is visible, rather than through a flag here.
+    """
+    made: dict[str, pathlib.Path] = {}
+    _isolation_dirs.seq += 1  # type: ignore[attr-defined]
+    stem = _isolation_dirs.seq  # type: ignore[attr-defined]
+
+    def _get(name: str) -> pathlib.Path:
+        path = made.get(name)
+        if path is None:
+            path = _isolation_root / f"{stem}-{name}"
+            made[name] = path
+        return path
+
+    return _get
+
+
+_isolation_dirs.seq = 0  # type: ignore[attr-defined]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
+    """Pin ``KIROCREW_HOME`` to a per-test tmp dir, for EVERY testpath.
+
+    This lives at the rootdir rather than in ``test/conftest.py`` because the leak it
+    closes is worst in the testpaths that conftest does not reach. The ~108 test
+    modules under ``src/kiro_crew/apps/builtins/*/tests/`` ship inside the package and
+    see only this file, so before this fixture existed here any of them that touched
+    ``config_dir()`` resolved the operator's live data home -- and that resolution is
+    not read-only: ``config_dir()`` CREATES the home and its marker on first use, and
+    can run the one-time ``~/.kirocrew`` -> ``~/.kiro/crew`` migration as a side
+    effect. Two of the eight app suites had grown their own redirect fixture; the
+    other six had not, which is exactly the "remember to" contract this file exists to
+    delete.
+
+    A test that sets its own ``KIROCREW_HOME`` still wins: ``monkeypatch.setenv``
+    applied later in setup overrides this, and reverts independently.
+
+    ``config.paths._resolved_home`` is reset with it. ``config_dir()`` memoises the
+    resolved home in that module global for the process lifetime, and under xdist one
+    worker runs thousands of tests in one process, so a value cached by an earlier
+    test would otherwise leak into a later one. Resetting it also invalidates
+    ``_config_dir_memo``, which is keyed on that global by identity.
+
+    ``KIROCREW_PROJECT_DIR`` is cleared for a different reason -- to match CI on a dev
+    box. It is auto-set to the repo root when running from a checkout, so
+    ``skills._project_skills_dir()`` resolves the repo's real ``skills/`` and a test
+    driving ``_ensure_builtin_skills`` against a tmp dir sees live skills as a
+    "source", flipping relocation behaviour: green in CI, red locally.
+
+    ``KIROCREW_BOUND_PORT`` is cleared because ``_export_bound_port`` writes it into
+    the real process environment when a test boots a server, so a port exported by one
+    test would leak into every later test's port resolution on that worker.
+    ``KIROCREW_DEV_MODE`` / ``KIROCREW_STRICT_ON_LOOP_PERSIST`` are cleared so a
+    developer who exports them does not flip the off-loop-IO guards strict for the
+    whole suite.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(_isolation_dirs("kirocrew-home")))
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+    monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
+    monkeypatch.delenv("KIROCREW_STRICT_ON_LOOP_PERSIST", raising=False)
+    paths = sys.modules.get("kiro_crew.config.paths")
+    if paths is not None:
+        monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_sel_default_dir(tmp_path_factory):
+    """Redirect the Security Event Log's default dir to a session-local tmp dir.
+
+    SEL is a process SINGLETON whose writer is a DAEMON THREAD, and
+    ``_init_locked`` binds ``self._dir`` once, from whatever ``_default_dir()``
+    resolved at that moment. Two consequences, and the second is why this belongs at
+    the rootdir rather than in ``test/conftest.py``:
+
+    * Every event any test emits through the default ``sel()`` appends to ONE file.
+      Unredirected that is the operator's real ``security_events.jsonl`` -- a
+      non-atomic append, shared across xdist workers.
+    * Whichever test calls ``sel()`` FIRST fixes the directory for the whole
+      process, and the writer thread keeps using it after that test ends. When the
+      first caller is a test whose home is a per-test tmp dir, the thread outlives
+      the tmp dir and RE-CREATES it on the next flush -- ``_flush_batch`` opens with
+      ``self._dir.mkdir(parents=True, exist_ok=True)``. So the directory reappears
+      *after* the test's own cleanup removed it, and no amount of tidying in the
+      test can win against a thread that rebuilds the path. MEASURED: this is
+      exactly what left one stray ``mkdtemp`` directory behind per run of the
+      ops-mission-control suite. Full telling:
+      ``docs/system-specs/common/testing-conventions.md`` § Rules.
+
+    Session scope is what fixes both: the thread's directory is stable for the whole
+    run and belongs to no individual test, so nothing deletes it underneath the
+    writer, and the thread is not churned per test.
+
+    Patches the ``_default_dir()`` accessor rather than a captured constant, because
+    the module resolves its default lazily so that importing ``kiro_crew.sel`` never
+    triggers the one-time data-home migration as an import side effect. Tests that
+    manage their own ``SecurityEventLog`` (passing ``base_dir`` and resetting
+    ``_instance``) are unaffected.
+    """
+    try:
+        from kiro_crew import sel as _sel
+    except ImportError:  # pragma: no cover - partial checkout
+        yield
+        return
+    original_default = _sel._default_dir
+    original_instance = _sel.SecurityEventLog._instance
+    sel_dir = tmp_path_factory.mktemp("sel")
+    _sel._default_dir = lambda: sel_dir
+    _sel.SecurityEventLog._instance = None
+    try:
+        yield
+    finally:
+        _sel._default_dir = original_default
+        _sel.SecurityEventLog._instance = original_instance
+
+
+#: ``~/.kiro`` paths production binds at IMPORT time, which ``KIROCREW_HOME`` cannot
+#: reach: the module captured an absolute path from ``Path.home()`` before any test
+#: set an environment variable, so the env override is read too late to matter.
+#:
+#: This directory is a SEPARATE isolation axis from the data home. ``~/.kiro`` is
+#: kiro-cli's own home -- machine-wide, shared with the real installed agent -- so a
+#: test that writes ``~/.kiro/settings/mcp.json`` edits the MCP servers of the
+#: operator's live agent, not a copy of them.
+#:
+#: Each entry is ``(module, attribute, path relative to the per-test kiro home)``.
+#: The relative paths keep production's real SHAPE (``.kiro/settings/mcp.json``, not a
+#: flattened name) because several tests assert on the path's suffix, and a
+#: same-shaped tmp path keeps those assertions meaningful.
+#:
+#: ``test/test_host_isolation_floor.py`` ratchets this table against the
+#: ``Path.home()`` bindings ``src/kiro_crew`` actually has, so a new one cannot land
+#: unpinned.
+_SHARED_KIRO_PATHS: tuple[tuple[str, str, str], ...] = (
+    ("kiro_crew.agent", "_KIRO_MCP_JSON", ".kiro/settings/mcp.json"),
+    ("kiro_crew.agent", "_CC_MCP_JSON", ".claude.json"),
+    ("kiro_crew.agent", "_DEFAULT_KIRO_HOOKS_DIR", ".kiro/hooks"),
+    ("kiro_crew.learn", "_DEFAULT_DIR", ".kiro/crew"),
+    ("kiro_crew.apps.bridges", "_LEGACY_SHARED_MCP_PATH", ".kiro/settings/mcp.json"),
+    ("kiro_crew.dashboard.handlers.mcp", "_GLOBAL_MCP_JSON", ".kiro/settings/mcp.json"),
+    # A DERIVED sibling (`_GLOBAL_MCP_JSON.with_suffix(".lock")`), and it has to move
+    # WITH its json or the pair is worse than either alone: `_McpFileLockSync.__enter__`
+    # creates `_GLOBAL_MCP_JSON.parent` and then touches `_MCP_LOCK_PATH`, so redirecting
+    # only the json makes the code create a tmp directory and then touch a lock in the
+    # REAL one -- whose parent nothing created, giving `FileNotFoundError` on any host
+    # where `~/.kiro/settings` does not already exist. It passed on a developer box only
+    # because that directory was there, and on CI only because an earlier test had
+    # leaked into it. This is the sibling-binding case the ratchet's own docstring says
+    # it cannot see, which is why the set is enumerated here by hand.
+    ("kiro_crew.dashboard.handlers.mcp", "_MCP_LOCK_PATH", ".kiro/settings/mcp.lock"),
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_kiro_paths(_isolation_dirs, monkeypatch):
+    """Redirect the import-time ``~/.kiro`` bindings to a per-test tmp tree.
+
+    Patches only a module ALREADY in ``sys.modules``, the same tolerance
+    ``_isolate_launchd_paths`` uses: several of these modules are heavy, and importing
+    them for all ~26.5k tests would cost far more than the leak they close.
+
+    That filter is not a coverage gap, but the reason is narrower than "collection
+    imports everything": a module that is not loaded has no binding for a test to
+    REACH, so there is nothing to leak. The residual hole is a module first imported
+    inside a test's own body, after this fixture has already run for that test.
+
+    Creates nothing. Every path here names a file whose absence is the normal
+    fresh-install state, so a READER handles it already, and every test in the suite
+    that WRITES one of them patches the same attribute itself (which wins over this
+    fixture). Pre-creating the ``.kiro/settings`` parents instead cost a ``mkdir`` per
+    entry on every test in the suite -- see ``_isolation_dirs`` for what that added up
+    to. So a test that touches none of these modules pays one ``sys.modules`` lookup
+    per entry and no syscall at all.
+    """
+    targets = [
+        (module, attr, relative)
+        for module, attr, relative in _SHARED_KIRO_PATHS
+        if sys.modules.get(module) is not None
+    ]
+    if not targets:
+        return
+    root = _isolation_dirs("kiro-home")
+    for module, attr, relative in targets:
+        monkeypatch.setattr(
+            sys.modules[module], attr, root.joinpath(*relative.split("/")), raising=False
+        )
+
+
+# ── other real host paths a test must not reach ───────────────────────
+#
+# Same test as the data home above: each of these protects something on the
+# operator's machine rather than the correctness of one suite, so it holds for every
+# testpath. They were in ``test/conftest.py``, which the ~108 in-package test modules
+# never load -- so an in-package test that spawned a subagent wrote the real registry,
+# and one that reached the embeddings boot path could start a 610MB download.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_subagents_dir(_isolation_dirs, monkeypatch):
+    """Pin the subagent registry dir to a tmp dir for the whole suite.
+
+    ``kiro_crew.subagent_persistence._SUBAGENTS_DIR`` is bound at import time to
+    ``config_dir() / "subagents"``, so the ``KIROCREW_HOME`` safety net above
+    cannot retroactively redirect it. Any test that calls ``SubagentManager.spawn``
+    or ``create_agent_folder`` without isolating this global itself would write
+    stub agent folders into the operator's real ``~/.kirocrew/subagents/``. On the
+    next gateway start, orphan reconciliation sweeps those stubs and floods the
+    logs with "lost to gateway restart" warnings (e.g. tasks ``t`` / ``ls /tmp``).
+    Redirecting the module global gives every test an isolated, empty registry.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
+        _isolation_dirs("subagents"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_model_download(monkeypatch, _isolation_dirs):
+    """Never let a test trigger the 610MB embedding-model download.
+
+    Embeddings are always-on, so any test that boots the gateway/server
+    startup path would otherwise kick ``start_background_model_download()``.
+    The env escape hatch is honored by ``ModelDownloadManager.ensure_model``
+    and ``start_background_model_download`` — a test that wants to exercise
+    the download path monkeypatches the manager's HTTP calls directly
+    (see test_embeddings.py) rather than unsetting this.
+
+    ``OLLAMA_MODELS`` is additionally pinned to an empty tmp dir so the
+    legacy-blob salvage fast-path (``_salvage_legacy_ollama_blob``) can never
+    read the developer's real ``~/.ollama`` store — without this, download
+    tests would pass/fail machine-dependently on hosts that ran the
+    Ollama-era embeddings.
+    """
+    monkeypatch.setenv("KIROCREW_SKIP_MODEL_DOWNLOAD", "1")
+    monkeypatch.setenv("OLLAMA_MODELS", str(_isolation_dirs("ollama-models")))
+    # Force telemetry OFF for every test. `_consent_enabled` reads this env var BEFORE
+    # the config flag, which is what makes it a reliable gate: ~15 tests patch
+    # `KiroCrewConfig.load` with a bare MagicMock, whose `telemetry.enabled` is TRUTHY,
+    # so a real recorder starts and `Path(cfg.local_dir)` resolves the mock to the
+    # RELATIVE path `MagicMock/load().telemetry.local_dir/...` -- writing metrics and a
+    # lock file into the repo root, plus a background reader thread that outlives the
+    # test. Tests that exercise telemetry delete this var themselves (test/metrics/).
+    monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_state_sidecar(_isolation_dirs, monkeypatch):
+    """Pin the agent_state sidecar to a tmp dir for the whole suite.
+
+    ``kiro_crew.agent_state`` stores per-agent bookkeeping (model_managed,
+    cc_model) in ``~/.kirocrew/agent_model_state.json`` via ``config_dir()``.
+    Tests that exercise the install / refresh / migration / PATCH paths would
+    otherwise read and write the operator's real sidecar. Redirect
+    ``config_dir`` — referenced as a module attribute at call time — to a fresh
+    tmp dir so every test starts from empty state.
+    """
+    sidecar_root = _isolation_dirs("agent-state")
+    monkeypatch.setattr("kiro_crew.agent_state.config_dir", lambda: sidecar_root)
 
 # ── the repository checkout is host state too ─────────────────────────
 

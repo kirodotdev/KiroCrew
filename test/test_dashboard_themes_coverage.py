@@ -499,7 +499,10 @@ class TestAtomicWriteFailureCleanup:
     def test_a_failed_temp_unlink_still_reraises_the_original_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _no_unlink(_path: object) -> None:
+        # Accepts what os.unlink really takes (dir_fd): this replaces the os module
+        # attribute, so it is live through teardown, where pytest's tmp_path cleanup
+        # calls unlink with dir_fd=.
+        def _no_unlink(_path: object, **_kwargs: object) -> None:
             raise OSError("temp already gone")
 
         monkeypatch.setattr(th.os, "unlink", _no_unlink)

@@ -10,8 +10,20 @@ from unittest.mock import patch
 
 import pytest
 
+import kiro_crew.learn as learn_mod
 from kiro_crew.atomic_write import replace_with_retry
-from kiro_crew.learn import _DEFAULT_DIR, Lesson, LessonStore
+from kiro_crew.learn import Lesson, LessonStore
+
+# Read through the MODULE, never `from kiro_crew.learn import _DEFAULT_DIR`.
+# ``_DEFAULT_DIR`` is a ``Path.home()``-derived literal, so the isolation floor in the
+# rootdir conftest redirects it per test to keep the fallback from writing the
+# operator's real data home. A by-value capture at import time would freeze the
+# pre-redirect path and compare against a directory the code under test no longer
+# names — the assertion would fail while the behaviour was correct.
+
+
+def _default_dir() -> Path:
+    return learn_mod._DEFAULT_DIR
 
 
 def _make_lesson(rule: str, category: str = "knowledge", negative: str | None = None) -> Lesson:
@@ -78,7 +90,7 @@ class TestLessonStoreSecurity:
         sensitive.mkdir()
         with patch("kiro_crew.security.is_sensitive_path", return_value=True):
             store = LessonStore(base_dir=sensitive)
-        assert store._dir == _DEFAULT_DIR
+        assert store._dir == _default_dir()
 
     def test_sensitive_base_dir_emits_sel_audit(self, tmp_path: Path) -> None:
         sensitive = tmp_path / ".aws"
@@ -104,7 +116,7 @@ class TestLessonStoreSecurity:
             ),
         ):
             store = LessonStore(base_dir=sensitive)
-        assert store._dir == _DEFAULT_DIR
+        assert store._dir == _default_dir()
 
     def test_sensitive_config_dir_falls_back_to_default(self, tmp_path: Path) -> None:
         sensitive = tmp_path / ".kirocrew-sensitive"
@@ -114,17 +126,17 @@ class TestLessonStoreSecurity:
             patch("kiro_crew.security.is_sensitive_path", return_value=True),
         ):
             store = LessonStore()
-        assert store._dir == _DEFAULT_DIR
+        assert store._dir == _default_dir()
 
     def test_config_dir_exception_falls_back_to_default(self) -> None:
         with patch("kiro_crew.learn._config_dir", side_effect=OSError("broken loader")):
             store = LessonStore()
-        assert store._dir == _DEFAULT_DIR
+        assert store._dir == _default_dir()
 
     def test_config_dir_none_falls_back_to_default(self) -> None:
         with patch("kiro_crew.learn._config_dir", None):
             store = LessonStore()
-        assert store._dir == _DEFAULT_DIR
+        assert store._dir == _default_dir()
 
     def test_non_sensitive_base_dir_used_directly(self, tmp_path: Path) -> None:
         with patch("kiro_crew.security.is_sensitive_path", return_value=False):

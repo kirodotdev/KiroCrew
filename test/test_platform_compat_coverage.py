@@ -1391,7 +1391,9 @@ class TestLinkHelpers:
         victim.mkdir()
         calls: list[str] = []
         monkeypatch.setattr(pc, "_ISJUNCTION", lambda _p: True)
-        monkeypatch.setattr(pc.os, "rmdir", lambda p: calls.append(str(p)))
+        # ``**_`` because this replaces the os module attribute for the whole test,
+        # teardown included, and os.rmdir really takes dir_fd=.
+        monkeypatch.setattr(pc.os, "rmdir", lambda p, **_: calls.append(str(p)))
         pc.unlink_link_or_junction(victim)
         assert calls == [str(victim)]
 

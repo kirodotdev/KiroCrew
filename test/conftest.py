@@ -13,7 +13,6 @@ import warnings
 import pytest
 from hypothesis import HealthCheck, settings
 
-from kiro_crew import sel as _sel
 from kiro_crew.safety_override import reset_singleton as _reset_safety_override
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
@@ -132,26 +131,17 @@ def make_dir_link(link: pathlib.Path, target: pathlib.Path) -> None:
     link.symlink_to(target, target_is_directory=True)
 
 
-def pytest_collection_modifyitems(config, items):
-    """On Windows, skip the tracked known-gap tests (all parametrizations).
-
-    The list lives in test/windows-expected-failures.txt -- one
-    unparametrized node id per line, captured from the first Windows CI
-    runs. It is a burn-down backlog: fixed tests get their line deleted,
-    and anything NOT on the list still fails the job, so the Windows line
-    holds for the ~16k tests that pass today.
-    """
-    if not platform_compat.IS_WINDOWS:
-        return
-    listfile = os.path.join(os.path.dirname(__file__), "windows-expected-failures.txt")
-    with open(listfile, encoding="utf-8") as fh:
-        expected = {ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")}
-    marker = pytest.mark.skip(
-        reason="known Windows gap -- tracked in test/windows-expected-failures.txt"
-    )
-    for item in items:
-        if item.nodeid.split("[")[0] in expected:
-            item.add_marker(marker)
+#: ``pytest_collection_modifyitems`` -- which applies the
+#: ``windows-expected-failures.txt`` skips -- lives in the ROOTDIR ``conftest.py``.
+#: That list already names node ids under
+#: ``src/kiro_crew/apps/builtins/auto_improvement/tests/``, and a hook rooted here never
+#: runs when only those in-package tests are collected (which is exactly what CI's
+#: reduced-scope Windows job does on a frontend-only diff), so the skips silently did
+#: not apply where they were needed.
+#:
+#: ``collect_ignore`` above deliberately stays here: it names paths relative to its own
+#: conftest's directory and every entry is a file under ``test/``, so it is correct
+#: where it is.
 
 
 @pytest.fixture(autouse=True)
@@ -247,6 +237,10 @@ _MAX_WORKERS_ENV = "KIROCREW_MAX_TEST_WORKERS"
 _SLOT_DIR_ENV = "KIROCREW_TEST_SLOT_DIR"
 _DEFAULT_WORKER_CAP = 32
 _GIB = 1024**3
+# The LIVE memory readings are taken in MiB, because in GiB anything under 1 GiB
+# truncates to 0 -- which is the same value they use for "could not determine", and an
+# unknown reading is deliberately skipped. See _host_available_mib.
+_MIB = 1024**2
 # Headroom to reserve per worker. Measured peak RSS for a worker on a heavy
 # 1,231-test subset is ~0.37 GiB (~0.50 GiB under --cov), so 2 GiB reserves
 # roughly 4x typical and keeps the term from binding on ordinary hosts while
@@ -254,6 +248,15 @@ _GIB = 1024**3
 # for EXPECTED footprint: it cannot save a host from a genuinely leaking worker
 # (one orphaned run was observed at 4.3 GiB RSS), which is a separate bug.
 _GIB_PER_WORKER = 2
+# Headroom to reserve per worker against the LIVE availability reading, which needs a
+# different margin from the static ceilings above and not by preference -- by kind.
+# Total RAM and the cgroup limit are worst-case bounds that never move, so paying ~4x
+# measured RSS there is free. `MemAvailable` is ALREADY the current headroom, so
+# reserving 4x on top of it double-counts: on a host with 28 GiB free it would refuse
+# to spawn more than 14 workers on 32 idle cores, halving parallelism to protect memory
+# that was never at risk. 1 GiB is ~2x the measured peak under coverage (~0.50 GiB),
+# which still refuses to start 32 workers on a host with 8 GiB genuinely free.
+_GIB_PER_WORKER_AVAILABLE = 1
 
 # Lock files this process holds for its whole lifetime -- the fds MUST stay open,
 # because the lock lives exactly as long as the fd does.
@@ -311,14 +314,192 @@ def _host_total_gib() -> int:
     return int(pages * page_size // _GIB)
 
 
+def _cgroup_limit_files() -> list[str]:
+    """Every memory-ceiling file that bounds THIS process, tightest-first-ish.
+
+    The ceiling lives at the process's OWN cgroup, not at the root of the hierarchy.
+    Under cgroup v2 the root has no ``memory.max`` file at all, so reading
+    ``/sys/fs/cgroup/memory.max`` finds something only where a cgroup NAMESPACE has
+    remapped the container's own cgroup onto the mount root -- the docker/podman
+    default, but not what a systemd slice with ``MemoryMax=``, a ``cgroupns=host``
+    Kubernetes pod, or LXC gives you. There the limit is at
+    ``/sys/fs/cgroup/<relative path>/memory.max``, and a root-only read returns nothing,
+    which is indistinguishable from "no limit".
+
+    A cgroup is bounded by the tightest limit anywhere on its ancestor chain, so the own
+    cgroup and every ancestor are candidates. The bare root paths stay LAST so a
+    namespaced container -- and a host where ``/proc/self/cgroup`` cannot be read at
+    all -- keeps the reading it would otherwise have had.
+    """
+    files: list[str] = []
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        controllers, relative = fields[1], fields[2]
+        if not controllers:  # v2 spells its single entry "0::<path>"
+            base, leaf = "/sys/fs/cgroup", "memory.max"
+        elif "memory" in controllers.split(","):  # v1: "<id>:<controllers>:<path>"
+            base, leaf = "/sys/fs/cgroup/memory", "memory.limit_in_bytes"
+        else:
+            continue
+        parts = [part for part in relative.split("/") if part]
+        while parts:
+            files.append("/".join([base, *parts, leaf]))
+            parts.pop()
+    files.append("/sys/fs/cgroup/memory.max")
+    files.append("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    return files
+
+
+def _cgroup_limit_mib() -> int:
+    """The cgroup's memory ceiling in MiB, or 0 when there is none.
+
+    ``SC_PHYS_PAGES`` reports the MACHINE's RAM, which is the wrong number inside a
+    container: a 2-CPU/8 GiB CI container on a 256 GiB host reads 256 GiB and sizes its
+    worker budget against memory it will be OOM-killed for touching.
+
+    Takes the TIGHTEST limit found on the process's cgroup chain (see
+    :func:`_cgroup_limit_files`), not the first one: an inner cgroup can be looser than
+    an ancestor, and the ancestor still binds.
+
+    MiB, not GiB, for the reason spelled out on :func:`_host_available_mib`: in GiB a
+    512 MiB container ceiling truncates to ``0``, which is this function's own "there is
+    no limit" answer -- so the tightest ceiling of all would be read as no ceiling.
+
+    ``max`` is cgroup v2's spelling for "no limit". v1 uses a very large sentinel
+    instead, which no ``min()`` will ever pick, so it needs no special case.
+    """
+    tightest = 0
+    for path in _cgroup_limit_files():
+        try:
+            with open(path, encoding="utf-8") as handle:
+                raw = handle.read().strip()
+        except OSError:
+            continue
+        if not raw or raw == "max":
+            continue
+        try:
+            mib = int(raw) // _MIB
+        except ValueError:
+            continue
+        if mib > 0 and (tightest == 0 or mib < tightest):
+            tightest = mib
+    return tightest
+
+
+def _host_available_mib() -> int:
+    """RAM in MiB that is actually free for a new worker, or 0 when unknown.
+
+    ``MemAvailable`` is the kernel's own estimate of what a new allocation can use
+    without swapping; it counts reclaimable page cache, which ``MemFree`` and
+    ``SC_AVPHYS_PAGES`` both omit and would therefore understate badly on any host
+    that has read files.
+
+    Bounding on this in ADDITION to total RAM is what makes the budget protective
+    rather than decorative. The flock slots below already stop two pytest runs from
+    oversubscribing each other, but they are blind to memory the host is using for
+    anything else -- a build, a browser, a running gateway. Sizing 32 workers against
+    total RAM on a machine with 2 GiB genuinely free is how a run starts swapping and
+    then makes no progress at all, which is the incident the whole budget exists to
+    prevent.
+
+    **MiB, not GiB, and the unit is load-bearing.** Truncating to whole GiB makes every
+    reading under 1 GiB come back as ``0`` -- which is also this function's "could not
+    determine" answer, and :func:`_memory_bounded_capacity` SKIPS an unknown reading. So
+    in GiB the bound would drop out precisely on the starved host it exists to protect:
+    860 MiB free would read as "unknown", the live term would be discarded, and the
+    static total-RAM bound would happily allow 16 workers. In MiB the same host reads
+    860, which floors the budget at one worker.
+
+    Linux-only by construction. macOS has no equivalent single number (its compressor
+    makes "available" a policy question rather than a reading), so this returns 0 there
+    and the static bounds stand alone.
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith("MemAvailable:"):
+                    continue
+                # "MemAvailable:   107374182 kB" -- the unit is always kB.
+                return int(line.split()[1]) * 1024 // _MIB
+    except (OSError, IndexError, ValueError):
+        return 0
+    return 0
+
+
+def _bounded_by(limit: int, readings: tuple[tuple[int, int], ...]) -> int:
+    """*limit*, reduced by each ``(MiB, GiB-per-worker)`` reading that is available.
+
+    A reading of 0 means "could not determine" and is SKIPPED rather than treated as
+    zero memory. That direction matters more than it looks: reading it as zero would
+    collapse the run to a single worker on any platform without that reading -- macOS
+    and Windows have no ``/proc/meminfo`` and no ``/sys/fs/cgroup`` -- and a run that
+    silently drops to one worker looks like a hang, not like a bug.
+
+    Which is exactly why the readings that can be genuinely SMALL are in MiB: in GiB a
+    sub-1-GiB reading truncates to 0 and would be discarded as unknown, so the bound
+    would vanish on the starved host it exists to protect.
+    """
+    for mib, per_worker_gib in readings:
+        if mib > 0:
+            limit = min(limit, max(1, mib // (per_worker_gib * 1024)))
+    return max(1, limit)
+
+
+def _static_memory_bounded_capacity(cores: int) -> int:
+    """*cores*, reduced by the memory readings that are CONSTANT for the machine.
+
+    Total RAM and the cgroup ceiling only. Both are properties of the host, so a number
+    derived from them is stable across runs -- which is what makes it safe to use as the
+    shared slot RANGE below. Sharing a range only works if every run computes the same
+    one; a range that moves between runs is not a namespace, it is a race.
+
+    This is also what keeps the memory budget genuinely SHARED rather than per-run. On a
+    64-core / 32 GiB host the static bound is 16 workers, so there are 16 slots in
+    total: a first run takes them all, and a second gets its floor of one. Put the same
+    bound only on the per-run cap and both runs would take 16 each -- 32 workers against
+    a 16-worker memory budget, which is the swapping incident the budget exists to
+    prevent, reached from the opposite direction.
+
+    Total RAM stays in GiB because a machine with under 1 GiB of RAM in total is not a
+    configuration this suite runs on, and its unit is pinned by existing tests.
+    """
+    return _bounded_by(
+        cores,
+        (
+            (_host_total_gib() * 1024, _GIB_PER_WORKER),
+            (_cgroup_limit_mib(), _GIB_PER_WORKER),
+        ),
+    )
+
+
+def _live_memory_bounded_cap(cap: int) -> int:
+    """*cap*, reduced by what is free on the host RIGHT NOW.
+
+    Deliberately applied to the per-run cap and NOT to the shared slot range. The
+    reading is transient, and slots fill from index 0 upward, so a range shortened by a
+    momentary dip excludes precisely the slots an earlier run left free -- collapsing a
+    later run to one worker while most of the machine sits idle. A cap is the right
+    place for a transient reading: it throttles THIS run without reshaping the namespace
+    every other run has to agree on.
+    """
+    return _bounded_by(cap, ((_host_available_mib(), _GIB_PER_WORKER_AVAILABLE),))
+
+
 def _claim_worker_slots(capacity: int, cap: int) -> int:
     """Take up to ``cap`` of the host's ``capacity`` worker slots and HOLD them.
 
-    ``capacity`` is how many slots the HOST has (cores, bounded by RAM) and is
-    the range probed; ``cap`` is the most any single run may take. Keeping these
-    separate matters on a large host: with 64 cores and a cap of 32, a first run
-    takes slots 0-31 and a second still finds 32-63 free and gets its full 32.
-    Probing only ``cap`` slots would have collapsed that second run to one
+    ``capacity`` is how many slots the HOST has -- its core count, a constant, never a
+    transient memory reading -- and is the range probed; ``cap`` is the most any single
+    run may take. Keeping these separate matters on a large host: with 64 cores and a
+    cap of 32, a first run takes slots 0-31 and a second still finds 32-63 free and gets
+    its full 32. Probing only ``cap`` slots would have collapsed that second run to one
     worker while half the machine sat idle.
 
     Each slot is an advisory lock on its own file, acquired non-blocking and
@@ -365,6 +546,30 @@ def _claim_worker_slots(capacity: int, cap: int) -> int:
         try:
             fd = os.open(str(_slot_path(slot_dir, index)), os.O_CREAT | os.O_RDWR, 0o600)
         except OSError:
+            # The directory exists but this run cannot create a slot file in it: a
+            # read-only bind mount, an exhausted quota, a leftover dir owned by another
+            # account. `mkdir(exist_ok=True)` above does NOT catch that -- Linux reports
+            # EEXIST before it checks write permission -- so this is where it surfaces.
+            #
+            # Fall through to the one-worker floor rather than failing open to the
+            # unbudgeted ceiling. Fail-open is the wrong direction HERE specifically
+            # because the failure is not local: if this run cannot take a lock then
+            # neither can a concurrent one, so both would receive the full cap with no
+            # coordination at all -- which is precisely the oversubscription this budget
+            # exists to prevent (two runs, ten workers each, load average ~590, zero tests
+            # completing in 21 minutes). One worker is slow; two unbudgeted runs make no
+            # progress.
+            #
+            # Say so, though. Silently dropping to one worker is a suite that takes an
+            # hour for a reason nobody can see, and the fix -- point
+            # KIROCREW_TEST_SLOT_DIR somewhere writable -- is only obvious once the cause
+            # is named.
+            warnings.warn(
+                "xdist worker budget: cannot create a slot file under "
+                f"{slot_dir}, so this run falls back to a single worker. Point "
+                f"{_SLOT_DIR_ENV} at a writable directory to restore parallelism.",
+                stacklevel=2,
+            )
             break
         if platform_compat.try_acquire_lock(fd, exclusive=True):
             _held_slots.append(fd)  # keep the fd -- closing it drops the lock
@@ -379,19 +584,26 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 
     Two separate quantities.
 
-    **Host capacity** -- how many slots exist to compete for:
+    **Host capacity** -- how many slots exist to compete for: cores, bounded by the
+    memory readings that are CONSTANT for the machine (total RAM and the cgroup ceiling;
+    see :func:`_static_memory_bounded_capacity`). It has to be constant, because it is
+    the range of slot indices probed and every run must compute the same range for
+    sharing to mean anything. Cores alone are the wrong unit: a 10-core / 32 GiB laptop
+    cannot back 32 multi-GiB workers, and once it starts swapping the run stops making
+    progress at all. Putting the static bound HERE rather than on the cap is also what
+    keeps the memory budget shared: 16 slots on a 32 GiB host means two runs share 16
+    workers, not 16 each.
 
-    1. **Cores.** ``os.cpu_count()``.
-    2. **RAM.** ~2 GiB per worker. Cores alone are the wrong unit: a 10-core /
-       32 GiB laptop cannot back 32 multi-GiB workers, and once it starts
-       swapping the run stops making progress altogether.
+    **Per-run cap** -- the most this single run may take, the tightest of:
 
-    **Per-run cap** (``KIROCREW_MAX_TEST_WORKERS``, default 32) -- the most any
-    single run may take. The optimal worker count for this suite plateaus around
-    24-32 and then *regresses*: every extra worker re-imports the full app
-    (aiohttp/boto3/numpy/pdfplumber/transcribe) and writes its own
-    ``.coverage.*`` file to combine at the end. Measured on a 64-core host:
-    156s @ 64 workers vs 92s @ 32 workers (-41%).
+    1. ``KIROCREW_MAX_TEST_WORKERS``, default 32. The optimal worker count for this
+       suite plateaus around 24-32 and then *regresses*: every extra worker re-imports
+       the full app (aiohttp/boto3/numpy/pdfplumber/transcribe) and writes its own
+       ``.coverage.*`` file to combine at the end. Measured on a 64-core host:
+       156s @ 64 workers vs 92s @ 32 workers (-41%).
+    2. What is free on the host right now (see :func:`_live_memory_bounded_cap`). This
+       reading is transient, so it throttles this run only and never reshapes the shared
+       range -- it says nothing about the machine, only about what else is running on it.
 
     Keeping them separate is what makes a big host behave: with 64 cores and a
     cap of 32, two runs get 32 workers each rather than the second collapsing
@@ -416,11 +628,16 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     An explicit ``-n <N>`` on the command line always wins; this hook only fires
     for ``auto`` / ``logical``.
     """
-    capacity = os.cpu_count() or 1
-    total_gib = _host_total_gib()
-    if total_gib:
-        capacity = min(capacity, max(1, total_gib // _GIB_PER_WORKER))
-    cap = max(1, _int_env(_MAX_WORKERS_ENV, _DEFAULT_WORKER_CAP))
+    # The two memory bounds go to different places, and which one goes where is the
+    # whole correctness argument. The STATIC bound shapes the shared slot range, so the
+    # budget is shared between concurrent runs rather than granted to each of them. The
+    # LIVE bound only throttles this run, because a transient reading must not reshape a
+    # namespace every other run has to agree on -- slots fill from index 0, so a shrunken
+    # range excludes exactly the slots an earlier run left free.
+    capacity = _static_memory_bounded_capacity(os.cpu_count() or 1)
+    cap = _live_memory_bounded_cap(
+        min(capacity, max(1, _int_env(_MAX_WORKERS_ENV, _DEFAULT_WORKER_CAP)))
+    )
     return _claim_worker_slots(capacity, cap)
 
 
@@ -573,101 +790,11 @@ def _reset_reasoning_effort_globals():
         _cp._reasoning_effort_ordered = saved_ordered
 
 
-@pytest.fixture(scope="session")
-def _isolation_root(tmp_path_factory):
-    """One session-scoped parent for the per-test isolation dirs below.
-
-    ``tmp_path_factory.mktemp`` picks its numbered suffix by scanning the whole
-    basetemp, so its cost grows with the number of entries already there. Four autouse
-    fixtures called it per test, adding thousands of siblings to one directory. Those
-    fixtures now ``mkdir`` under this root instead, which is a single syscall and does
-    not scan.
-
-    Named ``i`` rather than something descriptive to keep the paths short: Windows
-    still caps a path at 260 characters unless long paths are enabled, and everything
-    a test writes under ``KIROCREW_HOME`` nests inside here.
-    """
-    return tmp_path_factory.mktemp("i")
-
-
-@pytest.fixture
-def _isolation_dirs(_isolation_root):
-    """Return an allocator for this test's isolation dirs, created on demand.
-
-    Each call returns ``<root>/<counter>-<name>``, so one test's dirs cannot collide
-    with another's (the counter is per-process, and pytest-xdist gives every worker its
-    own ``basetemp`` -- verified: workers report ``popen-gw0``/``popen-gw1`` roots).
-    Flat rather than nested, again to keep Windows paths short.
-    """
-    made: dict[str, pathlib.Path] = {}
-    _isolation_dirs.seq += 1  # type: ignore[attr-defined]
-    stem = _isolation_dirs.seq  # type: ignore[attr-defined]
-
-    def _get(name: str) -> pathlib.Path:
-        if name not in made:
-            path = _isolation_root / f"{stem}-{name}"
-            path.mkdir(parents=True, exist_ok=True)
-            made[name] = path
-        return made[name]
-
-    return _get
-
-
-_isolation_dirs.seq = 0  # type: ignore[attr-defined]
-
-
-@pytest.fixture(autouse=True)
-def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
-    """Pin ``KIROCREW_HOME`` to a per-test tmp dir as a safety net.
-
-    ``config_dir()`` reads ``KIROCREW_HOME`` on every call and falls back to the
-    operator's real ``~/.kirocrew`` when it is unset. Any test that reaches a
-    code path resolving ``apps_dir()`` / ``config_dir()`` (e.g. a lifecycle
-    dispatch that calls ``app_dir(name)/"data".mkdir()``) without setting
-    ``KIROCREW_HOME`` itself would otherwise create real dirs/files under the
-    developer's home — and under Hypothesis that means one orphan per generated
-    example, accumulating into thousands of stray ``~/.kirocrew/apps/<name>/``
-    dirs over a dev's test history.
-
-    This runs before the test body, so a test that sets its own
-    ``KIROCREW_HOME`` via ``monkeypatch.setenv`` still wins (its value is applied
-    later and reverted independently). The guard only changes behavior for tests
-    that did NOT isolate the home themselves — exactly the leak we want to close.
-
-    Also reset ``config.paths._resolved_home`` to ``None``: ``config_dir()`` now
-    caches the resolved data home in that module global for the process lifetime
-    (so the one-time ~/.kirocrew -> ~/.kiro/crew migration runs at most once).
-    Under xdist a worker runs many tests in one process, so a value cached by an
-    earlier test (which may have patched ``Path.home`` / cleared ``KIROCREW_HOME``)
-    would otherwise leak into a later test that resolves the default home. Reset
-    per test so each resolves fresh against its own patched environment.
-
-    Also clear ``KIROCREW_PROJECT_DIR`` for the same "match CI on a dev box"
-    reason: it is auto-set to the repo root when running from a checkout, so
-    ``skills._project_skills_dir()`` resolves to the repo's real ``skills/``.
-    A test that drives ``_ensure_builtin_skills`` against a tmp dir then sees the
-    live ``skills/kirocrew-dev/*`` as a "source", which flips relocation/cleanup
-    behavior — green in CI (env unset there), red locally. Tests that need a
-    project dir set it themselves via ``monkeypatch`` (which still wins).
-    """
-    home = _isolation_dirs("kirocrew-home")
-    monkeypatch.setenv("KIROCREW_HOME", str(home))
-    monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-    # ``_export_bound_port`` writes KIROCREW_BOUND_PORT into the real process
-    # environment when a test boots a dashboard/API server. Under xdist a
-    # worker runs many tests in one process, so a port exported by one test
-    # would leak into every later test's port resolution. Clear it per test;
-    # a test that wants it sets it via monkeypatch (which still wins).
-    monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
-    # Match CI on a dev box for the off-loop-IO strictness knob too: a developer
-    # with KIROCREW_DEV_MODE=1 (or KIROCREW_STRICT_ON_LOOP_PERSIST=1) exported
-    # would otherwise flip history's _locked guard AND the auto_research
-    # campaigns-DB guard strict for the whole suite, failing tests that call
-    # sync helpers directly on the loop as harness convenience. Tests that
-    # exercise strict mode set the env themselves via monkeypatch (which wins).
-    monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
-    monkeypatch.delenv("KIROCREW_STRICT_ON_LOOP_PERSIST", raising=False)
-    monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
+#: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
+#: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
+#: testpath, including the ~108 test modules that ship inside the package under
+#: ``src/kiro_crew/apps/builtins/*/tests/`` and never see this file. The fixtures
+#: below still request ``_isolation_dirs`` and resolve it up the hierarchy.
 
 
 @pytest.fixture(autouse=True)
@@ -794,67 +921,12 @@ def _reset_options_control_state():
     outbound._LOCK_USERS.clear()
 
 
-@pytest.fixture(autouse=True)
-def _isolate_subagents_dir(_isolation_dirs, monkeypatch):
-    """Pin the subagent registry dir to a tmp dir for the whole suite.
-
-    ``kiro_crew.subagent_persistence._SUBAGENTS_DIR`` is bound at import time to
-    ``config_dir() / "subagents"``, so the ``KIROCREW_HOME`` safety net above
-    cannot retroactively redirect it. Any test that calls ``SubagentManager.spawn``
-    or ``create_agent_folder`` without isolating this global itself would write
-    stub agent folders into the operator's real ``~/.kirocrew/subagents/``. On the
-    next gateway start, orphan reconciliation sweeps those stubs and floods the
-    logs with "lost to gateway restart" warnings (e.g. tasks ``t`` / ``ls /tmp``).
-    Redirecting the module global gives every test an isolated, empty registry.
-    """
-    monkeypatch.setattr(
-        "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
-        _isolation_dirs("subagents"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _no_model_download(monkeypatch, _isolation_dirs):
-    """Never let a test trigger the 610MB embedding-model download.
-
-    Embeddings are always-on, so any test that boots the gateway/server
-    startup path would otherwise kick ``start_background_model_download()``.
-    The env escape hatch is honored by ``ModelDownloadManager.ensure_model``
-    and ``start_background_model_download`` — a test that wants to exercise
-    the download path monkeypatches the manager's HTTP calls directly
-    (see test_embeddings.py) rather than unsetting this.
-
-    ``OLLAMA_MODELS`` is additionally pinned to an empty tmp dir so the
-    legacy-blob salvage fast-path (``_salvage_legacy_ollama_blob``) can never
-    read the developer's real ``~/.ollama`` store — without this, download
-    tests would pass/fail machine-dependently on hosts that ran the
-    Ollama-era embeddings.
-    """
-    monkeypatch.setenv("KIROCREW_SKIP_MODEL_DOWNLOAD", "1")
-    monkeypatch.setenv("OLLAMA_MODELS", str(_isolation_dirs("ollama-models")))
-    # Force telemetry OFF for every test. `_consent_enabled` reads this env var BEFORE
-    # the config flag, which is what makes it a reliable gate: ~15 tests patch
-    # `KiroCrewConfig.load` with a bare MagicMock, whose `telemetry.enabled` is TRUTHY,
-    # so a real recorder starts and `Path(cfg.local_dir)` resolves the mock to the
-    # RELATIVE path `MagicMock/load().telemetry.local_dir/...` -- writing metrics and a
-    # lock file into the repo root, plus a background reader thread that outlives the
-    # test. Tests that exercise telemetry delete this var themselves (test/metrics/).
-    monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
-
-
-@pytest.fixture(autouse=True)
-def _isolate_agent_state_sidecar(_isolation_dirs, monkeypatch):
-    """Pin the agent_state sidecar to a tmp dir for the whole suite.
-
-    ``kiro_crew.agent_state`` stores per-agent bookkeeping (model_managed,
-    cc_model) in ``~/.kirocrew/agent_model_state.json`` via ``config_dir()``.
-    Tests that exercise the install / refresh / migration / PATCH paths would
-    otherwise read and write the operator's real sidecar. Redirect
-    ``config_dir`` — referenced as a module attribute at call time — to a fresh
-    tmp dir so every test starts from empty state.
-    """
-    sidecar_root = _isolation_dirs("agent-state")
-    monkeypatch.setattr("kiro_crew.agent_state.config_dir", lambda: sidecar_root)
+#: ``_isolate_subagents_dir``, ``_no_model_download`` and
+#: ``_isolate_agent_state_sidecar`` live in the ROOTDIR ``conftest.py``. Each one
+#: protects a real HOST path (the subagent registry a running gateway sweeps as
+#: orphans, a 610MB model download, the operator's agent-state sidecar), so by the
+#: same test the data home meets they belong to the floor that every testpath sees --
+#: not to this file, which the in-package suites never load.
 
 
 @pytest.fixture(autouse=True)
@@ -1020,31 +1092,10 @@ def _clean_slack_thread_state():
         _m.clear()
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _isolate_sel_default_dir(tmp_path_factory):
-    """Redirect the Security Event Log default dir to a session-local tmp dir.
-
-    SEL's default singleton writes to the real security_events.jsonl under the
-    data home (``_default_dir()`` → ``config_dir()``, non-atomic append). Tests
-    that emit events via the default ``sel()`` would otherwise pollute that real
-    file and, under ``pytest -n auto``, share it across worker processes. Redirect
-    the module-level default accessor to a per-session tmp dir. Session-scoped so
-    we don't churn SEL's background writer thread per test; tests that manage
-    their own ``SecurityEventLog`` (test_sel.py resets ``_instance`` + passes
-    ``base_dir``) are unaffected.
-
-    Patches the ``_default_dir()`` accessor (not a captured constant): the module
-    now resolves its default lazily so importing ``kiro_crew.sel`` never triggers
-    the one-time data-home migration as an import side effect.
-    """
-    orig_fn = _sel._default_dir
-    orig_inst = _sel.SecurityEventLog._instance
-    _sel_dir = tmp_path_factory.mktemp("sel")
-    _sel._default_dir = lambda: _sel_dir
-    _sel.SecurityEventLog._instance = None
-    yield
-    _sel._default_dir = orig_fn
-    _sel.SecurityEventLog._instance = orig_inst
+#: ``_isolate_sel_default_dir`` lives in the ROOTDIR ``conftest.py`` too, and for a
+#: sharper reason than the data home: SEL's writer is a DAEMON THREAD on a process
+#: singleton, so it outlives the test that first called ``sel()`` and keeps writing to
+#: the directory that test resolved.
 
 
 class MockSlackClient(SlackClientOps):

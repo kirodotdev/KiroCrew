@@ -50,7 +50,7 @@ in the **same commit** when you change what it documents.
 | themes | [themes](docs/system-specs/modules/themes.md) + [theming-contract](website/docs/theming-contract.md) |
 | anything under `website/` | [`website/AGENTS.md`](website/AGENTS.md) |
 | user-facing strings, dates, numbers, sort order | [i18n-catalog](website/docs/i18n-catalog.md) (authoring) + [i18n-gates](docs/ci/i18n-gates.md) (CI) |
-| tests: flakes, speed, fixtures, sharding | [testing-conventions](docs/system-specs/common/testing-conventions.md) |
+| tests: flakes, speed, fixtures, sharding, side effects, conftest isolation | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill |
 | browser E2E | [e2e-gate](docs/ci/e2e-gate.md) |
 | CI, PR flow, review gates | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
 | constants, magic numbers, where a limit lives | [code-style](docs/system-specs/common/code-style.md) |
@@ -258,6 +258,27 @@ for the five flake classes and the one correct fix for each. In particular, a ti
 test that asserts algorithmic **complexity** must bound the doubling RATIO, not an
 absolute duration: CI enables coverage on 3.12 only, and that multiplier made one shard
 fail on 3.12 and pass on 3.10 at the same commit.
+
+**A test must not touch the operator's machine, and the floor you stand on is not the
+same in every testpath.** `testpaths` collects three trees, and only `test/` gets
+`test/conftest.py`; the ~108 test modules under `src/kiro_crew/apps/builtins/*/tests/`
+see the **rootdir** `conftest.py`, plus that app's own `tests/conftest.py` where one
+exists (three of the eight apps ship one). So the rootdir conftest carries the
+host floor: `KIROCREW_HOME` pinned per test, the import-time `~/.kiro` bindings pinned
+(that directory is kiro-cli's own home, shared with the real installed agent, and a
+separate isolation axis from the data home), the SEL default dir pinned session-wide,
+`tempfile`'s base redirected with residue reported, and the checkout failed on residue.
+Before adding isolation, decide which floor it belongs to; before writing a test, read
+the [writing-tests skill](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md).
+Two traps are worth naming here because neither is visible when reading the test:
+
+- **A child process inherits pytest's CWD, the repo root**, so a spawn that may create a
+  file needs `cwd=` under `tmp_path` — and the assertion must be scoped to where that
+  child actually ran, not to where you hoped it wrote.
+- **A singleton with a daemon thread beats every filesystem cleanup.** It captures the
+  directory the first caller resolved and re-creates it after a test's own teardown
+  deleted it, so the fix is a session-scoped directory owned by no test, never tidier
+  cleanup.
 
 ## Code style
 
