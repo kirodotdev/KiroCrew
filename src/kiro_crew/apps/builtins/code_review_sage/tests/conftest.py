@@ -31,8 +31,8 @@ def _mute_shared_runner_audit(monkeypatch):
 
     ``discovery.run_gh_json`` / ``current_login`` / ``pipeline.list_open_prs``
     now route through ``github_runner.run_gh``, which emits a real SEL event
-    per spawn. ``KIROCREW_HOME`` is isolated below, but ``config_dir()`` caches
-    the resolved home at its FIRST call in the process, so a suite that
+    per spawn. ``KIROCREW_HOME`` is pinned by the rootdir ``conftest.py``, but
+    ``config_dir()`` caches the resolved home at its FIRST call in the process, so a suite that
     imported something touching it before the isolation fixture ran would
     write through the cached REAL data dir. The audit is not under test here
     (``test/test_github_runner.py`` covers it against a mocked SEL), so mute

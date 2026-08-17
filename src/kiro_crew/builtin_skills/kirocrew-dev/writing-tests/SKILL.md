@@ -166,21 +166,14 @@ cutover path must stub **both** `_run_cmd` and `_dropin_path`.
 Never "fix" a flake with a rerun, a longer `sleep`, a weakened assertion, or a skip.
 Full detail and examples: testing-conventions § Determinism.
 
-Each class has ONE correct fix, and they are written out with examples in
+The five classes, the tell that identifies each, and the ONE correct fix for each are in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
-§ Determinism. What this skill adds is the routing — the symptom you actually have in front
-of you, and which class it belongs to:
+§ Determinism. Read the section matching your symptom before changing anything: four of the five
+have a fix that looks like the obvious one and is not.
 
-| The tell you are looking at | The class it is |
-|---|---|
-| `os.urandom` / `random` / `uuid4` / `now()` feeding an assertion the RNG or clock does not guarantee | nondeterministic input |
-| an assertion on a rate, a sample count, or an elapsed duration the host controls | wall-clock race |
-| `RuntimeWarning: coroutine ... never awaited`, blamed on an innocent later test | leaked async object |
-| passes alone, fails in the suite | order dependence / shared state |
-| a timing test that splits by **Python version** rather than by machine load | absolute time budget on an instrumented run |
-
-Read the matching section before you change anything: four of the five have a fix that looks
-like the obvious one and is not.
+What this skill adds is when to go looking — a test that passes alone and fails in the suite, or
+one that splits by Python version rather than by machine load, is one of those five and not a
+mystery. Do not reach for a rerun, a longer `sleep`, a weakened assertion, or a skip.
 
 A sixth, adjacent trap: **a patch target that misses.** Patch the namespace whose
 globals the code under test actually reads. It fails in both directions — patching a
