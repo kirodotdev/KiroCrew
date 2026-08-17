@@ -34,7 +34,13 @@ describe('capability panes reach the card edge below the breakpoint', () => {
     // 358px row shared with the title and the info icon, so every label wrapped and
     // the row stood 50px tall. Stacked below md each button is one line (358x30).
     const s = await src('overview', 'SkillsTab.tsx')
-    expect(s).toMatch(/mt-4 mb-2 flex flex-wrap items-center gap-2/)
+    // The header's TOP margin is deliberately not pinned here: the pane that
+    // hosts this tab owns the gap under the tab strip, and
+    // SidePanelLayout.narrowPaneTopInset.test.tsx asserts this heading carries no
+    // margin of its own. Pinning `mt-4` in this row's literal would make the two
+    // tests contradict each other over a spacing token that is not this test's
+    // subject — which is whether the three buttons get their own line.
+    expect(s).toMatch(/mb-2 flex flex-wrap items-center gap-2/)
     expect(s).toMatch(
       /className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center/)
     expect(s, 'ml-auto without a width switch keeps the buttons on the title line')

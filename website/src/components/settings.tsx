@@ -207,7 +207,16 @@ interface SettingsSectionProps {
 export function SettingsSection({ title, badge, children }: SettingsSectionProps) {
   return (
     <>
-      <div className="flex items-center gap-2 mt-4 mb-2">
+      {/* `mt-4` separates one section from the previous section's controls, so it
+        * is load-bearing between sections — but the FIRST section on a tab has
+        * nothing above it except the pane, which already owns the gap under the
+        * narrow tab strip (SidePanelLayout's `pt-3`) and under the desktop header
+        * (`pb-3`). `first:mt-0` drops it in exactly that case: the fragment adds
+        * no DOM node, so every section's header is a sibling in one parent and
+        * only the leading one matches. When a tab renders something of its own
+        * above the first section, the header is no longer first and keeps the
+        * margin — which is what it should do, because now something IS above it. */}
+      <div className="flex items-center gap-2 mt-4 mb-2 first:mt-0">
         <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
         {badge}
       </div>

@@ -215,7 +215,7 @@ export default function SkillsTab() {
   }
 
   if (isLoading) return (<>
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text={i18nT('pages.overview.skillsTab.on_demand_skills_loaded_when_the_agent_determine')} /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
+    <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text={i18nT('pages.overview.skillsTab.on_demand_skills_loaded_when_the_agent_determine')} /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3"><div className="h-8 max-w-[480px] flex-1 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5 }} /></div>
       <div className={PANE_SHELL_CLASS}>
@@ -240,7 +240,15 @@ export default function SkillsTab() {
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    {/* No top margin: the pane that hosts this tab owns the gap under the tab
+      * strip (SidePanelLayout's narrow `pt-3`, the desktop header's `pb-3`).
+      * A margin here would stack on top of it and put this tab further from the
+      * divider than the tabs whose first element is a Card. Dropped outright
+      * rather than with `first:mt-0`, because `PendingSkillsPanel` above returns
+      * null when nothing is pending — this heading moves in and out of
+      * `:first-child` with the pending count, so a positional rule would make
+      * the gap depend on it. */}
+    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <p className="text-[12px] text-muted mb-2"><Trans i18nKey="pages.overview.skillsTab.auto_create_hint" components={{ settingRef: <SettingRef configKey="skills.auto_create_from_sessions" /> }} /></p>
     <Card>
       <div className="flex items-center gap-2 mb-3">
@@ -648,8 +656,14 @@ function PendingSkillsPanel() {
   // already resolved lands on a Skills tab that looks completely normal, and
   // the user is left hunting for a row that no longer exists.
   if (pending.length === 0 && !reviewMissing) return null
+  // No top margin on the root, for the same reason as the tab's heading below:
+  // this panel is the Skills tab's FIRST in-flow element whenever it renders,
+  // and the pane already owns the gap under the tab strip. It is also WHY that
+  // heading drops its margin outright instead of using `first:mt-0` — this panel
+  // returns null when there is nothing pending, so the heading moves in and out
+  // of `:first-child` with the pending count.
   return (
-    <div className="mt-4 mb-2">
+    <div className="mb-2">
       {/* Suppressed when the ONLY thing to show is the resolved-candidate
           notice: a "Pending review (0)" heading over a sentence explaining
           there is nothing to review reads like a broken count. */}

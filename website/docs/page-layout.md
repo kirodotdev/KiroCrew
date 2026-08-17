@@ -179,6 +179,42 @@ phase-advance controls leaves the phone user unable to advance the phase at all.
 (a split, a resizable rail, an embedded panel), measure the PANE with a `ResizeObserver`
 rather than calling `useIsMobile()`. A 1280px window can hold a 200px pane.
 
+**A tabbed shell's pane needs its own top inset once the header goes away — and it
+must be the only one.** `SidePanelLayout` drops the desktop header block below `md` —
+the block whose `pb-3` put 12px between a tab's title and its content — and replaces it
+with a pill strip that ends in a drawn `border-b`. The pane kept no inset of its own, so
+a tab whose first element is a `Card` or a `StatCard` rendered that element's own border
+ON the divider: two lines touching, measured at a 0px gap on four of Agent Capabilities'
+seven tabs and on seven of Developer's eight renderable ones at 390px. The pane carries
+`pt-3` on the narrow branch only — desktop must stay at 0 or the two insets stack.
+
+That inset is shared by all three pages built on the shell (Agent Capabilities,
+Developer, Settings), which makes the second half of the rule as load-bearing as the
+first: **a tab must not add a top margin to its own first element.** Doing so stacks on
+the pane and lands that tab 28px down while its siblings sit at 12px — the inconsistency
+reads as sloppiness precisely because the tabs are one keystroke apart. Two shapes, and
+the difference is whether the heading can ever have a sibling above it:
+
+- **A heading at the tab's root** (`SkillsTab`, `SteeringTab`) drops the margin outright.
+  Do NOT reach for `first:mt-0` here: `SkillsTab` renders `PendingSkillsPanel` above the
+  heading, and that panel returns `null` when nothing is pending — so the heading moves in
+  and out of `:first-child` with the pending count, and a positional rule would make the
+  gap depend on it. (A conditionally rendered `Modal` does NOT have this effect: it
+  `createPortal`s to `document.body` and never occupies a sibling slot.)
+- **A heading that repeats within one tab** (`SettingsSection`, used many times per
+  Settings tab; `LocalStorageDebug`'s section headings) keeps `mt-4`, because the gap
+  between two sections is real, and pairs it with `first:mt-0`. The fragment adds no DOM
+  node, so every section header is a sibling in one parent and only the leading one
+  matches — and when a tab renders something of its own above the first section, the
+  header stops being first and correctly keeps the margin.
+
+Measured at 390px with `website/scripts/capture-side-panel-pane-inset.mjs`, which reports
+the divider→first-in-flow-box distance per tab: all 31 renderable tabs across the three
+pages now read 12px. Residual differences in where the first *pixel* lands (21px on
+Connections, on Developer > System, on Settings > Instances) are a control's own internal
+padding — a sub-tab's or a segmented button's tap target — not stacked page padding, and
+tightening those would shrink a touch target.
+
 **An unbounded action cluster leaves the text row; it does not shrink it.** A row of
 actions whose count depends on state (enabled, updatable, uninstallable) and that carries
 `shrink-0` takes its natural width, and the text column gets the remainder — measured at

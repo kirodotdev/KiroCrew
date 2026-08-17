@@ -258,7 +258,8 @@ export default function SteeringTab() {
       </div>
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
+    {/* No top margin — see the same note in SkillsTab: the hosting pane owns the
+      * gap under the tab strip, and a margin here would stack on it. */}    <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
       {i18nT('pages.overview.steeringTab.steering_count', { count: files.length })}
       <InfoTip text={i18nT('pages.overview.steeringTab.always_on_markdown_conventions_injected_into_eve')} />
       <span className="ml-auto">
