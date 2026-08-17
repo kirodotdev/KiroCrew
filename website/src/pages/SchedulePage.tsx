@@ -16,6 +16,7 @@ import InfoTip from '../components/InfoTip'
 import type { CronJob } from '../types'
 import { useAgents } from '../hooks/useAgents'
 import { useCronActions } from '../hooks/useCronActions'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useAppSelector } from '../store'
 import { SaveCreateLabel } from '../utils/cronUtils'
 import { useSortableTable } from '../hooks/useSortableTable'
@@ -314,6 +315,18 @@ export default function SchedulePage() {
   useEffect(() => { if (refreshTrigger > 0) { load(); refreshFolders() } }, [refreshTrigger, load, refreshFolders])
 
   const { running, actionError, setActionError, runNow, openInChat, cancelling, cancelRun } = useCronActions(load)
+  // Measured overflow state for the jobs table's scroller — drives the fade cue
+  // at the pinned Actions column's edge. Measured, not breakpoint-inferred: the
+  // table overflows whenever the CONTAINER is narrower than its min-width,
+  // which a resizable nav rail can cause at any viewport size.
+  const [attachJobsScroller, jobsTableEdges] = useScrollEdges<HTMLElement>()
+  // Stable wrapper, like the hook's own callback ref: an inline arrow would be
+  // a new function every render, and React detaches/reattaches a changed ref —
+  // each detach writes edge state, which re-renders, which loops.
+  const attachJobsTable = useCallback(
+    (el: HTMLTableElement | null) => attachJobsScroller(el?.parentElement ?? null),
+    [attachJobsScroller],
+  )
 
   // ── Cron Folder handlers (depend on load) ──
   const handleNewFolder = useCallback(async (moveTo?: boolean): Promise<string | undefined> => {
@@ -679,7 +692,14 @@ export default function SchedulePage() {
                   enough for the 14px chevron and a one-line preview. A narrower
                   container scrolls the table, which is honest; voiding a column
                   silently is not. */}
-            <Table className="table-fixed min-w-[1120px]">
+            <div className="relative">
+            {/* The scroller is the shadcn Table's own wrapper (the table's
+                parentElement — `relative w-full overflow-x-auto` in
+                ui/table.tsx); `sticky right-0` on the Actions cells resolves
+                against it, so the overflow measurement must read the same box.
+                `className` stays the FIRST attribute: the columnContract test
+                anchors on the literal `<Table className="table-fixed` opener. */}
+            <Table className="table-fixed min-w-[1120px]" ref={attachJobsTable}>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">
@@ -707,8 +727,23 @@ export default function SchedulePage() {
                       controls (Run/Cancel, Delete, the ⋯ menu) measure 176px, and
                       the 12px shortfall was being hidden by the shadcn wrapper's
                       overflow-x-auto — i.e. a horizontal scrollbar, which this
-                      table must never need. */}
-                  <TableHead className="w-[176px]">{i18nT('pages.schedulePage.actions')}</TableHead>
+                      table must never need.
+
+                      `sticky right-0`: Actions is the last of ten columns, so in
+                      a container narrower than the table's min-width it starts
+                      past the scroll edge and every Run/Delete costs a horizontal
+                      scroll. Pinning it to the scrollport's right edge keeps row
+                      actions reachable while the other columns scroll under it —
+                      which is why the cell needs an OPAQUE `bg-card` (the Card's
+                      own surface): the default cell background is transparent and
+                      the scrolling columns would show through. Sticky changes
+                      paint position, not column width, so the `w-[176px]`
+                      contract above still holds. The pinned edge carries no
+                      static border: the seam cue is the measured gradient
+                      painted after the table, shown only while the scroller
+                      actually hides columns, so a full-width desktop table is
+                      byte-identical to the unpinned rendering at rest. */}
+                  <TableHead className="sticky right-0 w-[176px] bg-card">{i18nT('pages.schedulePage.actions')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>{jobs.length === 0
@@ -750,7 +785,7 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
-              <TableRow key={j.id} className={`cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} onClick={() => openDetail(j)}>
+              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -780,8 +815,16 @@ export default function SchedulePage() {
                 <TableCell className="text-muted">{fmtAgo(j.last_run_ts)}</TableCell>
                 <TableCell className="text-muted" title={j.next_run_ts ? fmtDateTimeNumeric(j.next_run_ts) : ''}>{fmtIn(j.next_run_ts)}</TableCell>
                 {/* Two controls plus the overflow menu. Anything wider than this
-                    is what pushed the column off screen; see CronRowActions. */}
-                <TableCell className="whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                    is what pushed the column off screen; see CronRowActions.
+                    Pinned like the header cell above, on an OPAQUE `bg-card`.
+                    The row's hover/selected tints live on the <tr>, which the
+                    opaque base would hide, so the overlay div re-applies the
+                    SAME tokens above the base and below the controls (`-z-10`
+                    inside the stacking context every sticky cell creates):
+                    `--accent-subtle` is translucent, so composited over
+                    `bg-card` it matches the rest of the row exactly. */}
+                <TableCell className="sticky right-0 whitespace-nowrap bg-card" onClick={e => e.stopPropagation()}>
+                  <div aria-hidden className={`absolute inset-0 -z-10 transition-colors group-hover/jobrow:bg-bg-hover ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} />
                   <div className="flex items-center gap-1.5">
                     {j.is_running
                       ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>
@@ -813,6 +856,20 @@ export default function SchedulePage() {
                   )
                 })
               })()}</TableBody></Table>
+            {/* Seam cue for the pinned Actions column, same measured treatment
+                as the strips that already ship it (SessionRefStrip, FollowUpBar,
+                SidePanelLayout): a gradient says columns continue beneath the
+                pinned cell, because the opaque base otherwise hard-clips its
+                neighbour mid-word with no sign the table scrolls. Anchored to
+                the non-scrolling wrapper (a child of the scroller would travel
+                with the content) at the pinned column's left edge, and painted
+                ONLY while the scroller actually hides columns — a full-width
+                table shows nothing. `from-card` blends the clipped content into
+                the pinned cell's own surface. */}
+            {jobsTableEdges.right && (
+              <div aria-hidden="true" data-testid="jobs-table-cue-right" className="pointer-events-none absolute right-[176px] top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />
+            )}
+            </div>
             </Card>
             </>)}
           </>)}
