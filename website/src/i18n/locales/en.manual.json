@@ -1349,6 +1349,9 @@
       "steer_act_on_this_right_away_desc": "Act on this right away"
     },
     "chatPane": {
+      "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
+      "earlier_messages_open_session": "Earlier messages — open full session (closes split)",
+      "earlier_messages_unavailable": "Earlier messages are no longer available in this session's history.",
       "forked_from": "Forked from {{name}}"
     },
     "cliPanel": {

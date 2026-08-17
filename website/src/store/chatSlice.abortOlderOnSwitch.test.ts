@@ -225,9 +225,45 @@ describe('an abort is distinguishable from a real failure', () => {
 
     // The catch must return on an abort BEFORE reaching the notice.
     const guard = src.indexOf('if (isSupersededPagingRejection(err)) return')
-    const notice = src.indexOf("setPinNotice(i18nT('pages.chat.pins.message_unavailable'))", guard)
+    const notice = src.indexOf('setPinNotice(loadFailedNotice)', guard)
     expect(guard).toBeGreaterThan(-1)
     expect(notice).toBeGreaterThan(guard)
+  })
+
+  it('picks the notice from the entry point, so the earlier-messages row avoids pin copy', async () => {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+
+    // Both entry points must tag themselves; `origin` is a required field, so a
+    // future caller that forgets cannot silently inherit pin wording.
+    expect(src).toContain("origin: 'pin'")
+    expect(src).toContain("origin: 'earlier'")
+    expect(src).toContain("pendingPinnedJump.origin === 'earlier'")
+    expect(src).toContain("i18nT('components.chatPane.earlier_messages_unavailable')")
+
+    // Every notice inside the shared effect resolves through the selection, so
+    // none of them can reach the raw pin string.
+    const effect = src.slice(src.indexOf('if (!pendingPinnedJump) return'))
+    const body = effect.slice(0, effect.indexOf('const handleTogglePinForMessage'))
+    expect(body).not.toContain("setPinNotice(i18nT('pages.chat.pins.message_unavailable'))")
+    // A fetch error is transient. Only the two genuinely-gone branches may claim
+    // the history no longer holds the row; the catch gets its own copy.
+    expect(body.match(/setPinNotice\(notFoundNotice\)/g)).toHaveLength(2)
+    expect(body.match(/setPinNotice\(loadFailedNotice\)/g)).toHaveLength(1)
+    const catchGuard = body.indexOf('if (isSupersededPagingRejection(err)) return')
+    expect(body.indexOf('setPinNotice(notFoundNotice)', catchGuard)).toBe(-1)
+  })
+
+  it('keeps the pin entry point on its own copy, so the transient string cannot regress it', async () => {
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+
+    // The transient string is scoped to the earlier-messages origin; the pin
+    // origin has no paging-error string, so it falls back to its own wording.
+    expect(src).toContain("? i18nT('components.chatPane.earlier_messages_load_failed')")
+    expect(src).toContain(': notFoundNotice')
   })
 
   it('also covers a refused dispatch, which is not an unreachable pin either', () => {

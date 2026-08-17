@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
-import chatReducer, { sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
 
 // Track markSlotUnread dispatches
@@ -398,7 +398,9 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
     ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
 
     act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'chat-other' } }) })
-    expect(api.chatSlotDetail).toHaveBeenCalledWith('chat-other')
+    // The background warm is bounded (see PANE_HYDRATE_LIMIT); the active slot
+    // still hydrates unbounded.
+    expect(api.chatSlotDetail).toHaveBeenCalledWith('chat-other', PANE_HYDRATE_LIMIT)
     unmount()
   })
 

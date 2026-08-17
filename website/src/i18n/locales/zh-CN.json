@@ -4875,6 +4875,9 @@
     "chatPane": {
       "agent_list": "代理列表",
       "close_pane": "关闭窗格",
+      "earlier_messages_load_failed": "无法加载更早的消息。滚动到对话顶部即可重试。",
+      "earlier_messages_open_session": "更早的消息 — 打开完整会话（关闭分屏）",
+      "earlier_messages_unavailable": "更早的消息在此会话的历史记录中不再可用。",
       "forked_from": "分叉自 {{name}}",
       "model_list": "模型列表",
       "session_ready_type_a_message_to_start": "会话就绪。输入消息即可开始。",

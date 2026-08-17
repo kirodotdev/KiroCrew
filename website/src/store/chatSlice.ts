@@ -291,6 +291,12 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.followups, state.folderSuggestions,
   state.pendingQuestions, state.subagentQueued, state.goalLoops,
+  // A surviving pane marker makes a recreated slot's hydrate early-return into
+  // nothing, so these must die with the transcript they describe. The retained
+  // server count belongs with them: kept past an eviction it would read as a
+  // fall against a recreated slot's first fetch and drop a legitimate tail.
+  state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
+  state.slotServerTotalSeq,
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
@@ -728,6 +734,40 @@ interface ChatState {
   slotSide: Record<string, SideState>
   slotSideClosed: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
+  /** Fresh `has_more` for a BACKGROUND pane, written by every bounded warm.
+   *  The pane's own query is staleTime:Infinity, so its has_more freezes at
+   *  mount while a later warm can truncate the cache past the bound. */
+  slotPaneHasMore: Record<string, boolean>
+  /** Row count of a bounded pane hydrate, so the unbounded refetch a starting
+   *  turn issues can supersede it and still keep the rows it never fetched.
+   *  Absent once superseded, so the upgrade happens at most once per slot. */
+  slotPaneBounded: Record<string, number>
+  /** The server's own message count for a slot, as of the last slot-detail fetch.
+   *
+   *  This exists to tell two indistinguishable populations apart at the warm
+   *  merge. Both are rows this pane holds after the anchor that the fetched page
+   *  omits, and neither position, `meta.mid`, `ts` nor the optimistic flag
+   *  separates them:
+   *
+   *    - a row that arrived by live stream after the page was built -- the server
+   *      HAS it, so its count did not fall, and the row must be kept;
+   *    - a row another client rewound or regenerated away -- the server no longer
+   *      has it, so its count FELL, and the row must not be put back on screen.
+   *
+   *  A fall in this count is therefore the truncation signal. It is retained per
+   *  slot because a single response cannot show a delta, and it is written by
+   *  every slot-detail reducer so the value a warm compares against is the last
+   *  one actually observed rather than a stale figure from an earlier pane.
+   *
+   *  Residual, stated rather than implied: a rewind followed by enough new turns
+   *  to restore the count before this pane is warmed again reads as unchanged, so
+   *  that interleaving is not covered. Absent a retained count there is nothing
+   *  to compare and the merge declines to discriminate, keeping the rescue. */
+  slotServerTotal: Record<string, number>
+  /** Dispatch order of the warm whose response set `slotServerTotal`. Present
+   *  only when that count came from a warm carrying one, so an absent entry
+   *  means the ordering is unknown and the merge must not act on it. */
+  slotServerTotalSeq: Record<string, number>
   /** Path B: per-slot live stream state so a non-active pane shows its own
    *  streaming/tool/idle indicator (mirrors slotActivity for tool events). */
   slotRun: Record<string, { state: SlotState; lastChunkSeq?: number }>
@@ -821,6 +861,10 @@ const initialState: ChatState = {
   mcpApps: {},
   slotActivity: seedSlotActivity(),
   slotMessages: {},
+  slotPaneHasMore: {},
+  slotPaneBounded: {},
+  slotServerTotal: {},
+  slotServerTotalSeq: {},
   slotRun: {},
   slotHydrated: {},
   slotLoading: false,
@@ -1094,9 +1138,129 @@ export function isSupersededPagingRejection(err: unknown): boolean {
   return name === 'AbortError' || name === 'ConditionError'
 }
 
-async function fetchSlotDetail(key: string) {
-  // No limit → backend returns all chained history (across gateway restarts).
-  const d = await api.chatSlotDetail(key)
+/** Messages a background pane hydrates. Bounds both pane hydrate paths: the
+ *  pane's own query and `warmSlotCache`, so `has_more` matches what it holds. */
+export const PANE_HYDRATE_LIMIT = 50
+
+/** Every identity a transcript row carries, for recognising two copies as one.
+ *
+ *  Server rows carry `meta.mid`, stamped once per row by the backend. A row the
+ *  user just sent may not have been echoed yet, so it carries only the one-shot
+ *  `meta.sendId` the send generated -- and the backend stores the client meta
+ *  opaquely before stamping its own id, so the server's copy of that row carries
+ *  BOTH. Returning both is what makes the pre-echo window matchable: the local
+ *  copy is known only by `sendId` while the server copy is also known by `mid`,
+ *  so preferring one id would compare the two rows on keys that cannot agree.
+ *
+ *  Prefixed so the two id spaces cannot collide. */
+function rowIdentities(m: ChatMessage): string[] {
+  const meta = m.meta as Record<string, unknown> | undefined
+  const ids: string[] = []
+  const mid = meta?.mid
+  if (typeof mid === 'string' && mid) ids.push(`mid:${mid}`)
+  const sendId = meta?.sendId
+  if (typeof sendId === 'string' && sendId) ids.push(`send:${sendId}`)
+  return ids
+}
+
+/** Rows of `tail` that `page` does not already carry, by identity.
+ *
+ *  A row with NO identity is kept: dropping a local row on the strength of a
+ *  guess is the failure this exists to prevent, and the same "decline, not
+ *  guess" rule the warm merge's cut already follows. */
+function tailNotInPage(tail: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+  const seen = new Set<string>()
+  for (const m of page) for (const id of rowIdentities(m)) seen.add(id)
+  return tail.filter(m => !rowIdentities(m).some(id => seen.has(id)))
+}
+
+/** Epoch ms for a transcript `ts`, or `null` when it cannot be read.
+ *
+ *  One transcript can carry both offset-aware and naive rows — current builds
+ *  write an offset, older ones left a bare local-time value. So the raw strings
+ *  order by their TEXT rather than by instant: `17:00:00+09:00` is 08:00Z, yet
+ *  sorts after `12:00:00Z`. The server parses before ordering for exactly this
+ *  reason, and a client-side string compare would disagree with it.
+ *
+ *  `null` means decline, not guess — the same rule `rowIdentities` and
+ *  `tailNotInPage` follow when a row carries no identity. */
+function tsEpoch(ts: string | undefined): number | null {
+  if (!ts) return null
+  const ms = Date.parse(ts)
+  return Number.isNaN(ms) ? null : ms
+}
+
+/** The ONE writer of a slot's pane transcript and its "has older history" marker.
+ *
+ *  The two must describe the SAME array. A `true` beside a complete transcript
+ *  renders an earlier-messages row that fetches nothing; a `false` beside a
+ *  bounded page hides history the pane really is missing. Four reducers fill
+ *  this array, and enforcing the pair at each one separately is what let a path
+ *  ship writing the array and neither flag.
+ *
+ *  `hasMore` of `undefined` means "this write does not describe the marker" —
+ *  the array is a merge of a bounded page onto retained older rows, so the
+ *  page's own flag is not true of the result. The existing marker is left alone
+ *  rather than guessed at.
+ *
+ *  Both maps are keyed through `safeKey`, so a poisoned key cannot land the
+ *  array and the flag on different entries.
+ *
+ *  `boundedLen` is how many leading rows of `messages` came from a bounded page,
+ *  and it is an INDEX INTO the array being written -- so replacing the array
+ *  invalidates it. Every write therefore sets it or clears it, decided on this
+ *  call's own argument rather than on what the key already holds. Leaving that to
+ *  callers is what let three writers replace the array behind a stale index. */
+function writeSlotPage(
+  state: ChatState,
+  key: string,
+  messages: ChatMessage[],
+  hasMore: boolean | undefined,
+  boundedLen?: number,
+): void {
+  const k = safeKey(key)
+  state.slotMessages[k] = messages
+  if (!state.slotPaneBounded) state.slotPaneBounded = {}
+  if (boundedLen === undefined) delete state.slotPaneBounded[k]
+  else state.slotPaneBounded[k] = boundedLen
+  if (hasMore === undefined) return
+  if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
+  state.slotPaneHasMore[k] = hasMore
+}
+
+/** SINGLE writer for the retained per-slot server count, so the three reducers
+ *  that consume a slot-detail payload cannot drift apart on it. A warm reads this
+ *  to tell a truncated row from one the page was merely built too early to carry,
+ *  which only works if whichever fetch ran last left its count behind. A count of
+ *  0 is written like any other: the server reporting an empty slot is a fact, and
+ *  treating it as absent would read a later non-zero count as growth.
+ *
+ *  A count from a RUNNING response is refused, because it is not comparable with
+ *  a settled one: the server counts raw rows, so a streaming response is inflated
+ *  by rows that collapse when the turn ends. Retaining it makes the next warm read
+ *  that ordinary collapse as a truncation and suppress the rescue, dropping a live
+ *  row -- the opposite direction to the re-append the baseline exists to prevent.
+ *  Refusing leaves no baseline rather than a wrong one, which is the same
+ *  "decline, not guess" rule the merge's cut and `tsEpoch` already follow. */
+function retainServerTotal(state: ChatState, key: string, total: number | undefined, running?: boolean, seq?: number): void {
+  if (running) return
+  if (typeof total !== 'number' || !Number.isFinite(total)) return
+  if (!state.slotServerTotal) state.slotServerTotal = {}
+  if (!state.slotServerTotalSeq) state.slotServerTotalSeq = {}
+  const priorSeq = state.slotServerTotalSeq[safeKey(key)]
+  // An older response must not lower the baseline a newer one already set, or
+  // the next warm compares against a count that was never the newest view.
+  if (typeof seq === 'number' && typeof priorSeq === 'number' && seq < priorSeq) return
+  state.slotServerTotal[safeKey(key)] = total
+  // Only an ORDERED response moves the order: clearing it on an unordered write
+  // erased the field the staleness check reads, so a late warm read as a truncation.
+  if (typeof seq === 'number') state.slotServerTotalSeq[safeKey(key)] = seq
+}
+
+async function fetchSlotDetail(key: string, limit?: number) {
+  // A limit takes the handler's most-recent-N slice, all a background pane shows.
+  // Omit the arg when unbounded so existing callers keep their one-argument shape.
+  const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string }
   return { key, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
@@ -1381,12 +1545,21 @@ export const refreshSlot = createAsyncThunk(
  *  this to reconcile a background pane's optimistic/streamed/echoed messages to
  *  the server's canonical history at end-of-turn (replaces the earlier
  *  reconcileSlot thunk, which did the same job). */
+let warmSeqCounter = 0
+const nextWarmSeq = (): number => ++warmSeqCounter
+
 export const warmSlotCache = createAsyncThunk(
   'chat/warmSlotCache',
   async (key: string, { getState }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot === key) return null
-    return fetchSlotDetail(key)
+    // The server's limit slices RAW rows, and a streaming response is many chunk
+    // rows that only collapse afterwards -- bounding it would keep just the tail.
+    const streaming = (state.slotRun[key]?.state ?? 'idle') !== 'idle'
+    // Captured BEFORE the fetch: two warms for one slot resolve in any order,
+    // and the later-dispatched response is the newer view of the transcript.
+    const warmSeq = nextWarmSeq()
+    return { ...(await fetchSlotDetail(key, streaming ? undefined : PANE_HYDRATE_LIMIT)), warmSeq }
   },
 )
 
@@ -2389,16 +2562,46 @@ const chatSlice = createSlice({
      *  via `??= []` on the first WS frame, so `cur` can be non-empty before this
      *  hydrate fetch resolves. A dedicated `slotHydrated` flag makes it fire
      *  exactly once, so a racing frame can't make us silently drop history.
+     *
+     *  One exception to "exactly once": a pane that mounts idle fetches a BOUNDED
+     *  page, and the slot can start a turn before that page lands. The pane then
+     *  refetches unbounded, and a flat one-shot would discard the wider result and
+     *  strand the pane on 50 rows. So a bounded page may be superseded once by an
+     *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
+     *  again, so this cannot loop.
      *  No-op for the active slot (its mirror is already live). */
-    hydrateSlotMessages(state, action: PayloadAction<{ slot: string; messages: ChatMessage[] }>) {
-      const { slot, messages } = action.payload
+    hydrateSlotMessages(state, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean }>) {
+      const { slot, messages, hasMore, bounded, total, running } = action.payload
       if (isUnsafeKey(slot)) return
       if (slot === state.activeSlot) return
-      if (state.slotHydrated?.[slot]) return
+      const k = safeKey(slot)
+      // Only retainer that can seed a BACKGROUND slot -- the others sit behind an
+      // activeSlot guard. Accept paths only: a declined page is not evidence.
+      if (state.slotHydrated?.[slot]) {
+        // Keep the rows the bounded page never fetched: it was written as
+        // [page, ...priorRows], so everything past its length is a live tail.
+        const boundedLen = state.slotPaneBounded?.[k]
+        if (bounded || boundedLen === undefined) return
+        const prior = state.slotMessages[k] ?? []
+        // The wider page is a fresh server snapshot, so it can already carry rows
+        // that tail holds -- a just-sent row persists before its send is acked.
+        const tail = tailNotInPage(prior.slice(boundedLen), messages)
+        // Reasoning is broadcast-only so the wider page never carries it back.
+        // Scoped to the REPLACED region: `tail` already keeps the live tail's own.
+        writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail]), hasMore)
+        retainServerTotal(state, slot, total, running)
+        return
+      }
       const cur = state.slotMessages[slot] ?? []
-      state.slotMessages[safeKey(slot)] = [...messages, ...cur]
       if (!state.slotHydrated) state.slotHydrated = {}
-      state.slotHydrated[safeKey(slot)] = true
+      state.slotHydrated[k] = true
+      // Only a page write records a marker, so its presence means `cur` is a
+      // loaded transcript, and prepending a bounded tail onto that reorders it.
+      if (state.slotPaneHasMore?.[k] !== undefined) return
+      // Seeded frames are NEWER rows appended after the page, so the page's
+      // has-more still describes what precedes it; dropping it hid the marker.
+      writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined)
+      retainServerTotal(state, slot, total, running)
     },
     setVoicePlaying(state, action: PayloadAction<boolean>) { state.voicePlaying = action.payload },
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
@@ -3597,6 +3800,9 @@ const chatSlice = createSlice({
         state.historyOffset = offset + sessions.length
       })
       .addCase(switchSlot.pending, (state, action) => {
+        // Must precede the reassignment below: true while the active slot's own
+        // switch is in flight, i.e. while `slotHasMore` is still the old chat's.
+        const viewIsProvisional = state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot
         // This fetch replaces the cursor, so it is stale from here until it lands
         // -- including a same-key switch, where the key alone still looks valid.
         state.slotCursorKey = null
@@ -3608,7 +3814,12 @@ const chatSlice = createSlice({
         }
         // Cache current slot's messages before switching
         if (state.activeSlot && state.messages.length > 0) {
-          state.slotMessages[state.activeSlot] = state.messages
+          // Once its switch has landed the view is the whole transcript, so its own
+          // has_more is the marker; before that, preserve what the pane already had.
+          const k = safeKey(state.activeSlot)
+          writeSlotPage(state, state.activeSlot, state.messages,
+            viewIsProvisional ? undefined : state.slotHasMore,
+            viewIsProvisional ? state.slotPaneBounded?.[k] : undefined)
         }
         // Always strip target from history: activeSlot ∉ slotHistory
         state.slotHistory = state.slotHistory.filter(k => k !== action.meta.arg)
@@ -3650,6 +3861,7 @@ const chatSlice = createSlice({
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
+        retainServerTotal(state, key, action.payload.total, running)
         state.slotState = running ? 'streaming' : 'idle'
         // Mark stale permissions as resolved so ApprovalBar ignores them
         if (!running) {
@@ -3736,8 +3948,9 @@ const chatSlice = createSlice({
         // Switching back to an already-loaded slot re-fetches a history that is
         // usually identical; skipping the write keeps every existing reference.
         if (!sameTranscript(existing, next)) state.messages = next
-        // Update cache and clear loading state
-        state.slotMessages[safeKey(key)] = state.messages
+        // Update cache and clear loading state. This is the active view, so the
+        // marker is slotHasMore -- writing the array alone left a stale flag.
+        writeSlotPage(state, key, state.messages, hasMore)
         state.slotLoading = false
         seedContextUsage(state, key, action.payload.context)
       })
@@ -3755,6 +3968,7 @@ const chatSlice = createSlice({
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
+        retainServerTotal(state, key, action.payload.total, running)
         // Merge permission messages: prefer state perms (have frontend resolved flags)
         // but include API perms for any we don't have locally (e.g. arrived while disconnected)
         const statePerms = new Map<string, typeof state.messages[0]>()
@@ -3799,12 +4013,13 @@ const chatSlice = createSlice({
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, queue } = action.payload
+        const { key, messages, queue, hasMore, total, running, warmSeq } = action.payload
         if (isUnsafeKey(key)) return
         // Slot became active between dispatch and fulfilment — switchSlot now
         // owns its messages, so leave the cache for it to manage.
         if (state.activeSlot === key) return
         if (!state.slotMessages) state.slotMessages = {}
+        if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
         // Preserve permission flags resolved client-side but not yet reflected
         // in the refetched history (a grid pane can resolve an approval between
         // the server snapshot and this warm), then collapse the pane's
@@ -3828,16 +4043,106 @@ const chatSlice = createSlice({
         // in-flight turn (the bubbles only reappeared on a later full fetch).
         // Routing every slot-detail reducer through the one helper is what keeps
         // this from silently diverging from switchSlot/refreshSlot again.
-        // mergePreservedThinking for the same reason: a slot the user switched
-        // AWAY from mid-turn has its reasoning in this cache (switchSlot.pending
-        // caches `state.messages` wholesale), and this warm is driven by that
-        // slot's own chat_done — so overwriting with server history, which never
-        // holds a thinking row, dropped every block instead of only misplacing
-        // the later ones.
-        state.slotMessages[safeKey(key)] = hydrateQueuedBubbles(
-          mergePreservedThinking(state.slotMessages[key] || [], hydrated),
-          queue,
-        )
+        const warmed = hydrateQueuedBubbles(hydrated, queue)
+        // A bounded warm replacing the array wholesale deletes scrollback under a
+        // reader, so keep any older head that sits above the warm's first row.
+        // The server queue is authoritative for every pane, so a branch that
+        // keeps prior rows must not keep the stale queued ones alongside it.
+        const priorAll = hydrateQueuedBubbles(state.slotMessages[safeKey(key)] ?? [], queue)
+        // Reasoning is broadcast-only and never persisted, so it is not a SERVER
+        // row and must not drive this reconciliation: it carries no identity, so
+        // the rescue below would keep it under "decline, not guess" and append a
+        // second copy of a block the helper re-places at the end. Held out here
+        // and restored by that helper, which appends any block it cannot anchor,
+        // so holding it out cannot lose one.
+        const prior = priorAll.filter(m => m.role !== 'thinking')
+        // Identity is meta.mid only: two rows can share a ts, so a ts match can
+        // cut at the wrong row and drop one. No mid means decline, not guess.
+        const warmOldestMid = warmed[0]?.meta?.mid
+        const cutIdx = typeof warmOldestMid === 'string' && warmOldestMid
+          ? prior.findIndex(m => m.meta?.mid === warmOldestMid)
+          : -1
+        const olderHead = cutIdx > 0 ? prior.slice(0, cutIdx) : []
+        // Disjoint-and-behind means a disconnect, not legacy rows: a strict ts
+        // ORDER test on PARSED instants (not raw strings, not an identity match).
+        const priorNewestTs = tsEpoch(prior[prior.length - 1]?.ts)
+        const warmOldestTs = tsEpoch(warmed[0]?.ts)
+        const longerPrior = cutIdx < 0 && prior.length > warmed.length
+        const priorEndsBeforePage = longerPrior
+          && priorNewestTs !== null && warmOldestTs !== null && priorNewestTs < warmOldestTs
+        // No identity to cut on (legacy rows carry no mid), so replacing would drop
+        // scrollback the pane already loaded -- keep the longer array instead.
+        const keptPrior = longerPrior && !priorEndsBeforePage
+        // Anchor on the newest prior row the warm still represents; rows after it
+        // are newer than the page. The warm's own newest row can carry no identity.
+        const warmIds = new Set<string>()
+        for (const m of warmed) for (const id of rowIdentities(m)) warmIds.add(id)
+        let anchorIdx = -1
+        for (let i = prior.length - 1; i >= 0; i--) {
+          if (rowIdentities(prior[i]).some(id => warmIds.has(id))) { anchorIdx = i; break }
+        }
+        // A fall in the server's own count means history was truncated between
+        // that fetch and this one, so a row this pane still holds after the
+        // anchor was DISCARDED rather than merely missed by an early page. No
+        // retained count means no delta to read, so decline and keep the rescue.
+        const priorTotal = state.slotServerTotal?.[safeKey(key)]
+        // A count from a response that PREDATES the one which set the baseline is
+        // stale, not a truncation. Unknown order still suppresses -- decline, not guess.
+        const priorSeq = state.slotServerTotalSeq?.[safeKey(key)]
+        const staleTotal = typeof warmSeq === 'number' && typeof priorSeq === 'number'
+          && warmSeq < priorSeq
+        const serverShrank = typeof priorTotal === 'number' && typeof total === 'number'
+          && total < priorTotal && !staleTotal
+        const rescuable = anchorIdx >= 0 && !serverShrank
+          ? tailNotInPage(prior.slice(anchorIdx + 1), warmed)
+          : []
+        // A rewrite REPLACES a reply, so the count holds while the post-anchor rows
+        // differ. Equal tail LENGTH is what separates that from a real newer row.
+        const anchorIds = anchorIdx >= 0 ? rowIdentities(prior[anchorIdx]) : []
+        const warmAnchorIdx = warmed.findIndex(m => rowIdentities(m).some(id => anchorIds.includes(id)))
+        const sameCountRewrite = rescuable.length > 0 && warmAnchorIdx >= 0 && !staleTotal
+          && typeof priorTotal === 'number' && typeof total === 'number' && total === priorTotal
+          && prior.length - anchorIdx === warmed.length - warmAnchorIdx
+        const newerTail = sameCountRewrite ? [] : rescuable
+        // A confirmed shrink means those rows were REMOVED, so the disjoint branches
+        // below would restore them. It sits after the head: `cutIdx > 0` vs `< 0`.
+        const base = olderHead.length
+          ? [...olderHead, ...warmed]
+          : serverShrank
+            ? warmed
+            : priorEndsBeforePage
+              ? [...prior, ...tailNotInPage(warmed, prior)]
+              : keptPrior ? prior : warmed
+        // The rescued tail recovers prior rows the base DROPPED, so a base already
+        // carrying all of prior must not append it again -- that duplicates rows.
+        const keepsAllPrior = keptPrior || priorEndsBeforePage
+        const mergedRaw = newerTail.length && !keepsAllPrior ? [...base, ...newerTail] : base
+        // A queued row has no identity, so both merge branches keep one the warm
+        // already re-added; collapsing once dedupes it and restores queued-last.
+        const merged = hydrateQueuedBubbles(mergedRaw, queue)
+        // Restore the preserved reasoning onto the reconciled list. A slot the
+        // user switched AWAY from mid-turn holds its blocks only in this cache
+        // (switchSlot.pending caches `state.messages` wholesale) and this warm is
+        // driven by that slot's own chat_done, so rebuilding from server history
+        // -- which never holds a thinking row -- dropped every block instead of
+        // only misplacing the later ones.
+        const revived = mergePreservedThinking(priorAll, merged)
+        // Omitting boundedLen DELETES the marker, while omitting hasMore keeps the
+        // OLD value -- and its presence is what stops a late hydrate prepending.
+        const warmIsPrefix = base === warmed
+        // The marker is an INDEX INTO the array written, and reviving inserts rows
+        // above it, so it is re-derived against `revived` rather than taken as
+        // `warmed.length`. The helper pushes incoming rows by reference, so the
+        // warm's own last row locates the boundary; a miss falls back to the
+        // unrevived length rather than guessing.
+        // Queued bubbles are not server page rows and the collapse above moves
+        // them past the tail, so the boundary tracks the page's own last row.
+        const pageRows = warmed.filter(m => m.role !== 'queued')
+        const boundaryIdx = pageRows.length ? revived.indexOf(pageRows[pageRows.length - 1]) : -1
+        const boundedLen = boundaryIdx >= 0 ? boundaryIdx + 1 : pageRows.length
+        writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
+          warmIsPrefix && hasMore ? boundedLen : undefined)
+        retainServerTotal(state, key, total, running, warmSeq)
         // Clear the per-slot run indicator (the _done frame already idles it;
         // this is belt-and-braces for the fetch-completes-after-_done ordering).
         const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })

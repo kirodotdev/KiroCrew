@@ -44,7 +44,7 @@ export default function SessionGridView({
   onClose: () => void
   /** Down to a single session pane → return to the native single-chat surface on
    *  that session (the grid never shows a 1-pane chrome). */
-  onCollapse: (slot: string) => void
+  onCollapse: (slot: string, anchorTs?: string, anchorMid?: string) => void
   seedSlot?: string | null
 }) {
   const grid = useSessionGrid(seedSlot)
@@ -133,6 +133,7 @@ export default function SessionGridView({
           onRemove={() => grid.closeLeaf(leaf.id)}
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
+          onOpenFull={onCollapse}
         />
       )
     }

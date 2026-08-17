@@ -980,6 +980,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const cursorIsForActiveSlot = useAppSelector(s => s.chat.slotCursorKey === s.chat.activeSlot)
   const loadingOlder = useAppSelector(s => s.chat.loadingOlder)
   const olderFailed = useAppSelector(s => s.chat.slotOlderError)
+  // switchSlot.pending seeds the active view from the pane cache, which for a
+  // background pane is a BOUNDED page; the record is present only while it is.
+  const activeViewIsBoundedPage = useAppSelector(s => activeSlot ? s.chat.slotPaneBounded?.[activeSlot] !== undefined : false)
   const history = useAppSelector(s => s.chat.history)
   const historyHasMore = useAppSelector(s => s.chat.historyHasMore)
 
@@ -5533,6 +5536,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     slotKey: string
     messageTs: string
     mid?: string
+    // Required, not optional: the two entry points render different copy, and a
+    // new caller that omitted it would silently show pin wording.
+    origin: 'pin' | 'earlier'
   } | null>(null)
   const pinnedJumpPageLoadsRef = useRef(0)
   const jumpToLoadedPinnedMessage = useCallback((messageTs: string, mid?: string): boolean => {
@@ -5558,7 +5564,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
       pinnedJumpPageLoadsRef.current = 0
       setPinNotice(null)
-      setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid })
+      setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid, origin: 'pin' })
       return
     }
     setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
@@ -5570,9 +5576,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingPinnedJump(null)
       return
     }
+    // Captured per effect run so the async branches below report the entry point
+    // this jump came from, not whichever one ran last.
+    const notFoundNotice = pendingPinnedJump.origin === 'earlier'
+      ? i18nT('components.chatPane.earlier_messages_unavailable')
+      : i18nT('pages.chat.pins.message_unavailable')
+    // A fetch that errored is transient, so the not-found copy would tell the
+    // reader their history is gone. Pin origin has no paging-error string.
+    const loadFailedNotice = pendingPinnedJump.origin === 'earlier'
+      ? i18nT('components.chatPane.earlier_messages_load_failed')
+      : notFoundNotice
     if (jumpToLoadedPinnedMessage(pendingPinnedJump.messageTs, pendingPinnedJump.mid)) {
       pinnedJumpPageLoadsRef.current = 0
-      setPendingPinnedJump(null)
+      // A jump resolved against the bounded page is provisional: the full
+      // transcript prepends older rows, so re-resolve once it has replaced it.
+      if (!activeViewIsBoundedPage) setPendingPinnedJump(null)
       return
     }
     // The cursor still describes the chat we left; wait for the switch to settle
@@ -5580,7 +5598,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!cursorIsForActiveSlot) return
     if (!slotHasMore || slotOldestIndex <= 0) {
       pinnedJumpPageLoadsRef.current = 0
-      setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
+      setPinNotice(notFoundNotice)
       setPendingPinnedJump(null)
       return
     }
@@ -5591,7 +5609,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     void dispatch(loadOlderMessages()).unwrap().then(result => {
       if (!cancelled && result === null) {
         pinnedJumpPageLoadsRef.current = 0
-        setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
+        setPinNotice(notFoundNotice)
         setPendingPinnedJump(null)
       }
     }).catch(err => {
@@ -5600,13 +5618,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (isSupersededPagingRejection(err)) return
       if (!cancelled) {
         pinnedJumpPageLoadsRef.current = 0
-        setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
+        setPinNotice(loadFailedNotice)
         setPendingPinnedJump(null)
       }
     })
     return () => { cancelled = true }
   }, [
     activeSlot,
+    activeViewIsBoundedPage,
     cursorIsForActiveSlot,
     dispatch,
     jumpToLoadedPinnedMessage,
@@ -6380,7 +6399,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           <SessionGridView
             seedSlot={splitAnchor ?? activeSlot}
             onClose={() => setSplitMode(false)}
-            onCollapse={(slot) => { dispatch(switchSlot(slot)); setSplitMode(false) }}
+            onCollapse={(slot, anchorTs, anchorMid) => {
+              dispatch(switchSlot(slot))
+              setSplitMode(false)
+              // switchSlot.pending sets activeSlot synchronously, so the pending-jump
+              // effect pages back to the anchor instead of landing on the newest turn.
+              if (anchorTs) setPendingPinnedJump({ slotKey: slot, messageTs: anchorTs, mid: anchorMid, origin: 'earlier' })
+            }}
           />
         ) : !activeSlot ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 px-8">

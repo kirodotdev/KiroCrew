@@ -4951,6 +4951,9 @@
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
       "close_pane": "প্যান বন্ধ করুন",
+      "earlier_messages_load_failed": "আগের বার্তা লোড করা যায়নি। আবার চেষ্টা করতে কথোপকথনের শুরুতে স্ক্রোল করুন।",
+      "earlier_messages_open_session": "পূর্ববর্তী বার্তা — সম্পূর্ণ সেশন খুলুন (বিভক্ত ভিউ বন্ধ হবে)",
+      "earlier_messages_unavailable": "পূর্ববর্তী বার্তাগুলি এই সেশনের ইতিহাসে আর পাওয়া যাচ্ছে না।",
       "forked_from": "{{name}} থেকে ফর্ক করা হয়েছে",
       "model_list": "মডেল তালিকা",
       "session_ready_type_a_message_to_start": "সেশন প্রস্তুত। শুরু করতে একটি বার্তা লিখুন।",

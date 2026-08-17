@@ -4951,6 +4951,9 @@
     "chatPane": {
       "agent_list": "Agenten-Liste",
       "close_pane": "Bereich schließen",
+      "earlier_messages_load_failed": "Frühere Nachrichten konnten nicht geladen werden. Zum Anfang der Unterhaltung scrollen, um es erneut zu versuchen.",
+      "earlier_messages_open_session": "Frühere Nachrichten — vollständige Sitzung öffnen (schließt die geteilte Ansicht)",
+      "earlier_messages_unavailable": "Frühere Nachrichten sind im Verlauf dieser Sitzung nicht mehr verfügbar.",
       "forked_from": "Verzweigt von {{name}}",
       "model_list": "Modellliste",
       "session_ready_type_a_message_to_start": "Sitzung bereit. Geben Sie eine Nachricht ein, um zu beginnen.",

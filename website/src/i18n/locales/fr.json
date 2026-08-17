@@ -5027,6 +5027,9 @@
     "chatPane": {
       "agent_list": "Liste des agents",
       "close_pane": "Fermer le volet",
+      "earlier_messages_load_failed": "Impossible de charger les messages précédents. Faites défiler jusqu'au début de la conversation pour réessayer.",
+      "earlier_messages_open_session": "Messages précédents — ouvrir la session complète (ferme la vue divisée)",
+      "earlier_messages_unavailable": "Les messages précédents ne sont plus disponibles dans l’historique de cette session.",
       "forked_from": "Dérivé de {{name}}",
       "model_list": "Liste des modèles",
       "session_ready_type_a_message_to_start": "Session prête. Saisissez un message pour commencer.",

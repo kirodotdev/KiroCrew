@@ -5027,6 +5027,9 @@
     "chatPane": {
       "agent_list": "Lista de agentes",
       "close_pane": "Fechar painel",
+      "earlier_messages_load_failed": "Não foi possível carregar as mensagens anteriores. Role até o início da conversa para tentar novamente.",
+      "earlier_messages_open_session": "Mensagens anteriores — abrir a sessão completa (fecha a visualização dividida)",
+      "earlier_messages_unavailable": "As mensagens anteriores não estão mais disponíveis no histórico desta sessão.",
       "forked_from": "Fork de {{name}}",
       "model_list": "Lista de modelos",
       "session_ready_type_a_message_to_start": "Sessão pronta. Digite uma mensagem para começar.",

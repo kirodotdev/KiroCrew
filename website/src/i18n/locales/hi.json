@@ -4951,6 +4951,9 @@
     "chatPane": {
       "agent_list": "एजेंट सूची",
       "close_pane": "फलक बंद करें",
+      "earlier_messages_load_failed": "पुराने संदेश लोड नहीं हो सके। फिर कोशिश करने के लिए बातचीत के शुरू तक स्क्रॉल करें।",
+      "earlier_messages_open_session": "पुराने संदेश — पूरा सत्र खोलें (विभाजित दृश्य बंद हो जाएगा)",
+      "earlier_messages_unavailable": "पुराने संदेश इस सत्र के इतिहास में अब उपलब्ध नहीं हैं।",
       "forked_from": "{{name}} से फ़ोर्क किया गया",
       "model_list": "मॉडल सूची",
       "session_ready_type_a_message_to_start": "सेशन तैयार है। शुरू करने के लिए कोई संदेश टाइप करें।",

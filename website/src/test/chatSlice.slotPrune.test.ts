@@ -141,6 +141,8 @@ describe('slot teardown parity', () => {
       folderSuggestions: Object.fromEntries(keys.map(k => [k, { folderId: 'f', folderName: 'F', breadcrumb: 'F', ts: 1 }])),
       subagentQueued: Object.fromEntries(keys.map(k => [k, 2])),
       goalLoops: Object.fromEntries(keys.map(k => [k, { cycle_count: 1, max_cycles: 5 }])),
+      slotPaneHasMore: Object.fromEntries(keys.map(k => [k, true])),
+      slotPaneBounded: Object.fromEntries(keys.map(k => [k, 50])),
     }
   }
 
@@ -148,6 +150,7 @@ describe('slot teardown parity', () => {
     'slotMessages', 'slotActivity', 'slotRun', 'slotHydrated', 'slotSide',
     'slotSideClosed', 'slotStatusDetail', 'slotContextPct', 'slotContextTokens',
     'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued', 'goalLoops',
+    'slotPaneHasMore', 'slotPaneBounded',
   ] as const
 
   const keysOf = (state: unknown, map: string) =>
