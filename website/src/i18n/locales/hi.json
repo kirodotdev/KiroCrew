@@ -7924,7 +7924,6 @@
         "send": "भेजें",
         "send_enter": "भेजें (Enter)",
         "steered_into_the_running_turn": "चल रहे टर्न में निर्देशित किया गया",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "संदेश पिन करें",
         "unpin_message": "संदेश अनपिन करें"
       },

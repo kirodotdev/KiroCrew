@@ -7822,7 +7822,6 @@
         "send": "보내기",
         "send_enter": "보내기 (Enter)",
         "steered_into_the_running_turn": "실행 중인 턴에 추가되었습니다",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "Pin message",
         "unpin_message": "Unpin message"
       },

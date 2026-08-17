@@ -5358,7 +5358,6 @@
         "send": "Send",
         "send_enter": "Send (Enter)",
         "steered_into_the_running_turn": "Steered into the running turn",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "Pin message",
         "unpin_message": "Unpin message"
       },

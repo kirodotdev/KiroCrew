@@ -2,18 +2,19 @@
  * The single-chat composer's optimistic bubble is confirmed by the send's OWN
  * HTTP response (#4131).
  *
- * The 30s "Message not confirmed - may not have been delivered" indicator keys
- * on `meta.optimistic` surviving, and the only other thing that clears it is
- * `reconcileOptimisticEcho`, driven by a `chat_message` user echo. That echo is
- * never broadcast for a dashboard send: `DashboardState.append` defaults
- * `broadcast_user=False` precisely BECAUSE the composer already rendered the
- * bubble, and the composer's persistence point does not override it (only a row
- * replayed from a CHANNEL transcript opts in). So without a response-driven
- * confirmation every message the user types is flagged 30s later, mid-turn, and
- * un-flagged only as a side effect of `chat_done`'s transcript refresh.
+ * `meta.optimistic` marks a bubble as awaiting confirmation, and the only other
+ * thing that clears it is `reconcileOptimisticEcho`, driven by a `chat_message`
+ * user echo. That echo is never broadcast for a dashboard send:
+ * `DashboardState.append` defaults `broadcast_user=False` precisely BECAUSE the
+ * composer already rendered the bubble, and the composer's persistence point
+ * does not override it (only a row replayed from a CHANNEL transcript opts in).
+ * So without a response-driven confirmation every message the user types stays
+ * pending forever — which is why this reducer exists, and why the 30s wall-clock
+ * indicator that once read that state flagged every message rather than lost
+ * ones, and was removed.
  *
  * These tests pin both directions: an accepted response retires the pending
- * state, a rejected one leaves it for the sweep.
+ * state, a refused one leaves it alone.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
@@ -24,7 +25,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { sweepStaleOptimistic, OPTIMISTIC_TIMEOUT_MS } from '../store/chatSlice'
+import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -138,7 +139,7 @@ beforeEach(() => {
 })
 
 describe('send() confirms its own optimistic bubble from the response', { timeout: 20_000 }, () => {
-  it('retires the pending state on an accepted send, so the sweep never flags it', async () => {
+  it('retires the pending state on an accepted send', async () => {
     sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
     const store = makeStore()
     await renderPage(store)
@@ -149,10 +150,6 @@ describe('send() confirms its own optimistic bubble from the response', { timeou
     // The correlation id survives so a late echo (channel-linked slot) still
     // updates this row in place instead of pushing a duplicate bubble.
     expect(userRow(store)?.meta?.sendId).toMatch(/^s-/)
-
-    // Even aged well past the timeout, a confirmed bubble cannot go stale.
-    store.dispatch(sweepStaleOptimistic())
-    expect(userRow(store)?.meta?.stale).toBeUndefined()
   })
 
   it('does NOT count a queued acceptance as delivery for this bubble', async () => {
@@ -176,11 +173,9 @@ describe('send() confirms its own optimistic bubble from the response', { timeou
     await sendText('this one was refused')
 
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
-    // A refused send is exactly what the indicator is for: the flags stay, and
-    // the sweep can flag it once the timeout passes.
-    const row = userRow(store)
-    expect(row?.meta?.optimistic).toBe(true)
-    expect(typeof row?.meta?.optimisticTs).toBe('number')
-    expect(OPTIMISTIC_TIMEOUT_MS).toBeGreaterThan(0)
+    // A refusal is not a receipt, so the pending flag stays put. What the user
+    // is told is not this flag: the refusal path appends its own error row and
+    // hands the text back to the composer, immediately and by name.
+    expect(userRow(store)?.meta?.optimistic).toBe(true)
   })
 })

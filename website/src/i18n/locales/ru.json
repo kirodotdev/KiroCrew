@@ -8128,7 +8128,6 @@
         "send": "Отправить",
         "send_enter": "Отправить (Enter)",
         "steered_into_the_running_turn": "Направлено в выполняющийся ход",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "Закрепить сообщение",
         "unpin_message": "Открепить сообщение"
       },

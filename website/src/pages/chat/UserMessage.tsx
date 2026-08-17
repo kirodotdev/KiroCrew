@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, Target, Pin, PinOff, AlertCircle } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, Target, Pin, PinOff } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
@@ -212,14 +212,6 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           </motion.div>
         </>
       ) : bubble}
-      {/* Stale optimistic indicator — shown when the server echo never arrived
-          within the timeout window (#3898 item 3). */}
-      {!!(meta?.stale && meta?.optimistic) && (
-        <div className="inline-flex items-center gap-1 text-[12px] text-warning mt-0.5 pr-1" role="status" aria-label={i18nT('pages.chat.userMessage.message_unconfirmed') as string}>
-          <AlertCircle size={12} className="shrink-0" />
-          <span>{i18nT('pages.chat.userMessage.message_unconfirmed') as string}</span>
-        </div>
-      )}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px
           icon + 10px padding); hover-capable pointers keep the reveal-on-hover

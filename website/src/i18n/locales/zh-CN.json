@@ -7822,7 +7822,6 @@
         "send": "发送",
         "send_enter": "发送 (Enter)",
         "steered_into_the_running_turn": "已引导到正在运行的这一轮",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "置顶消息",
         "unpin_message": "取消置顶"
       },

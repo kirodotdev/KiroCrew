@@ -138,10 +138,6 @@ function reconcileOptimisticEcho(
   return false
 }
 
-/** Timeout (ms) after which an unconfirmed optimistic bubble is marked stale.
- *  The UI renders a retry affordance for stale messages (#3898 item 3). */
-export const OPTIMISTIC_TIMEOUT_MS = 30_000
-
 /** Frame roles that retire a slot's pending STATELESS question card.
  *
  *  Deliberately NARROWER than "every role that starts a turn". The card's
@@ -1989,10 +1985,8 @@ const chatSlice = createSlice({
       // send time) that serves as both the optimistic marker and the correlation
       // ID for reconciliation. The `optimistic` flag is kept as a simple boolean
       // so the reconcile scan knows this bubble is pending confirmation.
-      // `optimisticTs` records when the bubble was created so the UI can show a
-      // retry affordance after OPTIMISTIC_TIMEOUT_MS (#3898 item 3).
       if (m.role === 'user' && !m.meta?.steer && m.meta?.sendId) {
-        m.meta = { ...(m.meta || {}), optimistic: true, optimisticTs: (m.meta as Record<string, unknown>)?.optimisticTs ?? Date.now() }
+        m.meta = { ...(m.meta || {}), optimistic: true }
       }
       state.messages.push(ensureMsgId(m))
     },
@@ -2064,7 +2058,7 @@ const chatSlice = createSlice({
       // Mark non-steer user bubbles as optimistic so the sseChatMessage
       // reconcile can distinguish them from channel-replayed messages (#2845).
       if (message.role === 'user' && !message.meta?.steer && message.meta?.sendId) {
-        message.meta = { ...(message.meta || {}), optimistic: true, optimisticTs: (message.meta as Record<string, unknown>)?.optimisticTs ?? Date.now() }
+        message.meta = { ...(message.meta || {}), optimistic: true }
       }
       msgs.push(ensureMsgId(message))
     },
@@ -2080,24 +2074,6 @@ const chatSlice = createSlice({
       else { state.messages.push({ role: 'assistant', content: payload.content, cls: 'msg msg-a', ts: payload.ts }) }
     },
     removeThinking(state) { state.messages = state.messages.filter(m => m.role !== 'thinking') },
-    /** Mark optimistic bubbles older than OPTIMISTIC_TIMEOUT_MS as stale so the
-     *  UI can show a "retry" affordance. Called periodically from useWebSocket's
-     *  client-side interval timer (10s). Does not remove — the bubble stays in
-     *  place. (#3898, #3973) */
-    sweepStaleOptimistic(state) {
-      const now = Date.now()
-      const sweep = (msgs: ChatMessage[]) => {
-        for (const m of msgs) {
-          if (m.meta?.optimistic && m.meta?.optimisticTs && !m.meta?.stale) {
-            if (now - (m.meta.optimisticTs as number) > OPTIMISTIC_TIMEOUT_MS) {
-              m.meta = { ...(m.meta || {}), stale: true }
-            }
-          }
-        }
-      }
-      sweep(state.messages)
-      for (const msgs of Object.values(state.slotMessages)) sweep(msgs)
-    },
     /** Retire a bubble's "pending confirmation" state once the send's own HTTP
      *  response accepted it (`ok` or `queued`).
      *
@@ -2130,8 +2106,6 @@ const chatSlice = createSlice({
           if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
           const meta = { ...(m.meta || {}) }
           delete meta.optimistic
-          delete meta.optimisticTs
-          delete meta.stale
           m.meta = meta
           return true
         }
@@ -3663,7 +3637,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, sweepStaleOptimistic, confirmOptimisticSend, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,

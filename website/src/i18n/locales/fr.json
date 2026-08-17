@@ -8026,7 +8026,6 @@
         "send": "Envoyer",
         "send_enter": "Envoyer (Enter)",
         "steered_into_the_running_turn": "Réorienté dans le tour en cours",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "Épingler le message",
         "unpin_message": "Désépingler le message"
       },

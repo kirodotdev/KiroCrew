@@ -7924,7 +7924,6 @@
         "send": "Senden",
         "send_enter": "Senden (Enter)",
         "steered_into_the_running_turn": "In den laufenden Zug eingesteuert",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "Nachricht anheften",
         "unpin_message": "Nachricht loslösen"
       },

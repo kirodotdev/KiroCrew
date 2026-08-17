@@ -8026,7 +8026,6 @@
         "send": "Enviar",
         "send_enter": "Enviar (Enter)",
         "steered_into_the_running_turn": "Redirigido al turno en curso",
-        "message_unconfirmed": "Message not confirmed — may not have been delivered",
         "pin_message": "Fijar mensaje",
         "unpin_message": "Desfijar mensaje"
       },
