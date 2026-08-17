@@ -134,13 +134,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   if (editing) {
     return (
-      <div data-role="user" className="group/msg flex flex-col items-end">
+      <div data-role="user" className="group/msg flex flex-col items-end max-w-full">
         {/* `edit-grow` is a CSS grid auto-sizer: a hidden ::after mirror (fed by
             data-replicated-value) drives the grid track so the textarea grows
             with its own content — width AND height — exactly like the read-only
-            bubble it replaces, capped by max-w-[550px]. No JS measurement. */}
+            bubble it replaces, capped at 550px or the column, whichever is
+            smaller. No JS measurement. */}
         <div
-          className="edit-grow px-4 py-1.5 text-sm leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 max-w-[550px] outline outline-2 -outline-offset-2 outline-accent/60"
+          className="edit-grow px-4 py-1.5 text-sm leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 max-w-[min(550px,100%)] outline outline-2 -outline-offset-2 outline-accent/60"
           data-replicated-value={draft}
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
         >
@@ -170,13 +171,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   const bubble = (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
-    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-1.5 text-sm leading-relaxed rounded-xl overflow-hidden min-w-0 max-w-[550px] ${isSteer ? 'bg-accent-subtle text-text' : 'bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-1.5 text-sm leading-relaxed rounded-xl overflow-hidden min-w-0 max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       {renderContent(content, meta)}
     </div>
   )
 
   return (
-    <div data-role="user" className="group/msg flex flex-col items-end">
+    // Every box between the content column and the bubble is a fit-content flex
+    // item, so a percentage cap only bites once ALL of them carry one.
+    <div data-role="user" className="group/msg flex flex-col items-end max-w-full">
       {/* User-typed line breaks (Shift+Enter) are preserved at the markdown
           level, NOT via container `white-space: pre-wrap`. renderUserContentCb
           renders user content through MarkdownRenderer with `softBreaks`, which
@@ -194,7 +197,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
           <motion.div
-            className="relative"
+            className="relative max-w-full"
             initial={playSteer ? { opacity: 0, x: 16 } : false}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.32, ease: 'easeOut' }}
