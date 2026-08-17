@@ -34,7 +34,7 @@ const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', tri
  * dynamic chrome. The `vh` declaration stays as the fallback for browsers
  * without `svh`, matching the shell's own `supports-[height:100dvh]` pattern.
  */
-const PANE_SHELL_CLASS = 'flex gap-3 max-md:-mx-2.5 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
+const PANE_SHELL_CLASS = 'flex gap-3 -mx-2.5 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 /** Humanize a kebab/snake-case skill name for display. */
 const displayName = (s: Skill) => s.name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -216,7 +216,7 @@ export default function SkillsTab() {
 
   if (isLoading) return (<>
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text={i18nT('pages.overview.skillsTab.on_demand_skills_loaded_when_the_agent_determine')} /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
-    <Card className="max-md:px-2.5">
+    <Card>
       <div className="flex items-center gap-2 mb-3"><div className="h-8 max-w-[480px] flex-1 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5 }} /></div>
       <div className={PANE_SHELL_CLASS}>
         <div className="w-[240px] shrink-0 space-y-1">{Array.from({ length: 6 }).map((_, i) => (
@@ -240,9 +240,9 @@ export default function SkillsTab() {
       <SkillForm data={formData} onChange={setFormData} />
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center max-md:[&>button]:justify-center gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <p className="text-[12px] text-muted mb-2"><Trans i18nKey="pages.overview.skillsTab.auto_create_hint" components={{ settingRef: <SettingRef configKey="skills.auto_create_from_sessions" /> }} /></p>
-    <Card className="max-md:px-2.5">
+    <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
           <SearchInput placeholder={i18nT('pages.overview.skillsTab.filter_skills')} value={skillFilter} onChange={e => setSkillFilter(e.target.value)} />

@@ -119,7 +119,7 @@ export default function NotificationsPage() {
           the stat grid stacks several rows tall, so height-locking would pin
           the feed/detail to the sliver left under the grid; the page scrolls as
           a whole instead (the standard page skeleton). */}
-      <div ref={scrollRef} className={`px-6 pb-8 flex-1 min-h-0 flex flex-col ${isMobile ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+      <div ref={scrollRef} className={`px-2 md:px-6 pb-8 flex-1 min-h-0 flex flex-col ${isMobile ? 'overflow-y-auto' : 'overflow-hidden'}`}>
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(120px,1fr))] mb-4 shrink-0">
           <StatCard label={i18nT('pages.notificationsPage.total')} value={items.length} accent />
           <StatCard label={i18nT('pages.notificationsPage.unread')} value={unread} />

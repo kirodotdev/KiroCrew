@@ -648,7 +648,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   return (
     <>
       {!embedded && <PageHeader title={i18nT('pages.agentsPage.agent_templates')} subtitle={i18nT('pages.agentsPage.what_a_crew_starts_from_its_model_skills_tools_mc')} />}
-      <div className={`${embedded ? '' : 'px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
+      <div className={`${embedded ? '' : 'px-2 md:px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
         {/* Which template a session boots from when nothing names one — CLI
             chat, a chat-channel thread, a warm-pool process. A dashboard chat
             goes through a crew and never reads this, so the bar says what the

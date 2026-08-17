@@ -12,35 +12,10 @@ const src = async (...seg: string[]) => {
 const PANE_FILES = ['SkillsTab.tsx', 'SteeringTab.tsx']
 
 describe('capability panes reach the card edge below the breakpoint', () => {
-  it('pulls the pane out by EXACTLY the card inset it has to cancel', async () => {
-    // The two numbers are one number. The negative margin exists only to undo the
-    // card's own horizontal inset, so changing the inset without changing the margin
-    // pushes the pane past the border (or leaves it short of it) -- which is why this
-    // asserts the relationship, not two independent literals.
-    for (const file of PANE_FILES) {
-      const s = await src('overview', file)
-      const pane = s.match(/const PANE_SHELL_CLASS = 'flex gap-3 max-md:-mx-([\d.]+)/)
-      expect(pane, `${file} should full-bleed the pane shell below md`).toBeTruthy()
-      const cards = [...s.matchAll(/<Card className="max-md:px-([\d.]+)">/g)].map(m => m[1])
-      expect(cards.length, `${file} should have at least one inset-halved card`)
-        .toBeGreaterThan(0)
-      for (const inset of cards) {
-        expect(inset, `${file}: pane -mx-${pane![1]} must match card px-${inset}`)
-          .toBe(pane![1])
-      }
-    }
-  })
-
-  it('keeps the card SOME horizontal inset -- the toolbar shares it', async () => {
-    // Measured at 390px: removing it entirely put the search field's rounded border
-    // flush against the card's border (0px gap). Halved reads as 10px, which is the
-    // shipped value; zero is the defect.
-    for (const file of PANE_FILES) {
-      const s = await src('overview', file)
-      expect(s, 'a flushed card takes the filter row gutter with it')
-        .not.toMatch(/<Card className="max-md:px-0">/)
-    }
-  })
+  // The pane/Card inset pairing and the 'Card keeps SOME inset' assertion moved to
+  // cardInsetYield.test.tsx, which READS Card's inset from a render instead of from
+  // ui.tsx's source. The source regex here silently stopped matching the moment that
+  // inset moved into a variable, so it was pinning nothing.
 
   it('keeps the pane row its OWN padding, which is load-bearing', async () => {
     // The rows inside these panes are NOT the shape page-layout.md gates: an

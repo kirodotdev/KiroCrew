@@ -7,8 +7,31 @@ import { i18nT } from '../i18n/t'
 /* ── Shared UI primitives ── */
 
 export function Card({ children, className = '', ...rest }: Omit<React.ComponentPropsWithoutRef<'div'>, 'dangerouslySetInnerHTML'>) {
+  // Written narrow-first, like the rest of the layout: the unprefixed inset is
+  // the phone one (10px horizontal, 20px vertical) and `md:` widens it. Only the
+  // HORIZONTAL value changes, because horizontal is the axis a phone cannot
+  // spare and a vertical change would move every card's height. This inset
+  // stacks on the page gutter — the budget both serve is in
+  // website/docs/page-layout.md.
+  //
+  // A caller that sets padding OWNS that axis, and the base inset for it is
+  // dropped rather than merged. This is not a convenience: the base inset is
+  // breakpoint-scoped (`md:px-5`) and twMerge only collapses classes colliding
+  // at the SAME breakpoint, so a caller's bare `p-3` would sit BESIDE `md:px-5`
+  // and the card would silently widen back to 20px from `md` up. Dropping the
+  // base is what makes `p-3` mean 12px at every width, the way a reader of that
+  // call site would assume.
+  //
+  // Deciding it from the final string, at render time, is deliberate: a lexical
+  // test cannot see a computed `className={cond ? 'p-3' : ''}`, and two such
+  // `Card` call sites already exist. `md:`-prefixed overrides need no help —
+  // they collide with the base at their own breakpoint, so twMerge resolves them.
+  const owned = className.split(/\s+/)
+  const ownsX = owned.some((c) => /^(?:p|px)-/.test(c))
+  const ownsY = owned.some((c) => /^(?:p|py)-/.test(c))
+  const inset = [ownsX ? '' : 'px-2.5 md:px-5', ownsY ? '' : 'py-5'].filter(Boolean).join(' ')
   return (
-    <div className={twMerge('card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all', className)} {...rest}>
+    <div className={twMerge(`card-glow border border-border bg-card rounded-lg ${inset} mb-4 animate-rise shadow-sm transition-all`, className)} {...rest}>
       {children}
     </div>
   )
@@ -345,7 +368,20 @@ export function PanelSectionHeader({ label, count, trailing, className }: {
 
 export function PageHeader({ title, subtitle, actions }: { title: React.ReactNode; subtitle?: string; actions?: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-6 pt-2 pb-3" data-testid="page-header">
+    // 8px below `md`, the SAME gutter as the page content container, so the title
+    // shares its left edge with the cards and rows it labels. That shared edge is
+    // the page's content column, and the title belongs to the content -- not to the
+    // chrome above it.
+    //
+    // The top bar is a separate layer and does NOT have to match: its icon buttons
+    // carry their own 8px inside a 12px header inset, so its glyphs land at 20px.
+    // An earlier round moved this header to 20px to meet them, which read worse --
+    // the title then sat 12px inside the cards directly beneath it. The real defect
+    // was in the top bar, where a redundant mobile-only `px-2` had pushed the
+    // hamburger glyph out to 28px; that class is gone (see `.tb-left` in App.tsx).
+    //
+    // Measured budget and the full rationale: website/docs/page-layout.md.
+    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-2 md:px-6 pt-2 pb-3" data-testid="page-header">
       <div className="min-w-0">
         <div className="text-2xl font-bold tracking-tight text-text-strong" data-testid="page-title">{title}</div>
         {subtitle && <div className="text-muted text-sm mt-1" data-testid="page-subtitle">{subtitle}</div>}

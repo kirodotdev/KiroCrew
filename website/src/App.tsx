@@ -1820,7 +1820,16 @@ export default function App() {
             visibility rule — it renders nothing unless >=1 remote instance
             exists, so the common single-instance header-left is empty (only the
             macOS traffic-light clearance remains). */}
-        <div className={`tb-left relative h-full ${isMobile ? 'px-2' : ''}`}>
+        {/* No mobile-only `px-2` here on purpose. The icon buttons inside carry
+            their own 8px, so this padding stacked on top of the header's `pl-3`
+            and pushed the hamburger GLYPH to 28px -- 20px right of the page title,
+            which is why the hamburger read as indented against every page's left
+            edge. Dropping it lands the glyph at 12 + 8 = 20px, the line the title
+            and the card text also sit on. Deliberately only the LEFT cluster:
+            `.tb-right` carries a padding/negative-margin pair that keeps the
+            notification badge's 4px overhang from being clipped, and re-tuning
+            that needs a real WebKit check, not a local one. */}
+        <div className="tb-left relative h-full">
           {/* Windows only: the application menu shares this cluster. It needs no
               width reservation of its own: the identity group is sized by its own
               grid track, and the menu growing from the hamburger to its six

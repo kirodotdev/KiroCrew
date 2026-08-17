@@ -574,7 +574,7 @@ export default function AppDetailPage() {
   return (
     <>
       <PageHeader title={i18nT('pages.appDetailPage.apps')} subtitle={appDisplayName(app)} />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Back link */}
         <button className="flex items-center gap-1.5 text-[13px] text-muted hover:text-text mb-5 bg-transparent border-none cursor-pointer p-0 font-body transition-colors" onClick={() => navigate('/apps')}>
           <ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}

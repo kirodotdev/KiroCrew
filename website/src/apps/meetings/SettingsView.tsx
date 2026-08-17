@@ -167,7 +167,7 @@ export default function SettingsView({ onBack, notify }: Props) {
           </Btn>
         }
       />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <Card>
           <CardTitle>
             <ListChecks className="lucide-inline" />

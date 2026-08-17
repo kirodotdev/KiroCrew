@@ -582,8 +582,8 @@ export default function ChannelPage() {
   return (
     <>
       <PageHeader title={i18nT('pages.channelPage.channels')} subtitle={i18nT('pages.channelPage.multi_agent_collaboration_spaces')} />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-    <div className={`flex h-full relative ${isMobile ? '-mx-6 -mb-8' : ''}`}>
+      <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+    <div className={`flex h-full relative ${isMobile ? '-mx-2 -mb-8' : ''}`}>
       {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel} />}
 
       {/* Error modal */}
