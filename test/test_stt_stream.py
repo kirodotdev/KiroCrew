@@ -1029,7 +1029,32 @@ class TestSttProviderGating:
         monkeypatch.setattr(
             apple_speech, "availability", lambda: apple_speech.Availability(False, "pinned off")
         )
-        assert core._stt_providers() == ["whisper", "mlx", "transcribe"]
+        # `parakeet` is gated the same way as `mlx` (Apple-Silicon-only), so both
+        # are present here.
+        assert core._stt_providers() == ["whisper", "mlx", "parakeet", "transcribe"]
+
+    def test_stt_providers_calls_is_apple_silicon_exactly_once(self, monkeypatch):
+        """`parakeet` reuses the `mlx` gate's already-computed Apple-Silicon
+        result rather than re-probing. Off Apple Silicon (e.g. under Rosetta),
+        `_is_apple_silicon()` shells out to `sysctl` synchronously, and
+        `_stt_providers()` runs on the dashboard's event loop (GET/PUT
+        /api/config/stt) -- a second call would double that blocking cost on
+        every request."""
+        from kiro_crew import apple_speech
+        from kiro_crew.dashboard.handlers import core
+
+        calls = []
+
+        def fake_is_apple_silicon():
+            calls.append(1)
+            return True
+
+        monkeypatch.setattr(core, "_is_apple_silicon", fake_is_apple_silicon)
+        monkeypatch.setattr(
+            apple_speech, "availability", lambda: apple_speech.Availability(False, "pinned off")
+        )
+        core._stt_providers()
+        assert len(calls) == 1
 
     def test_providers_exclude_mlx_off_apple_silicon(self, monkeypatch):
         from kiro_crew import apple_speech
@@ -1050,7 +1075,7 @@ class TestSttProviderGating:
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(apple_speech, "availability", lambda: apple_speech.Availability(True))
-        assert core._stt_providers() == ["whisper", "mlx", "apple", "transcribe"]
+        assert core._stt_providers() == ["whisper", "mlx", "apple", "parakeet", "transcribe"]
 
     def test_providers_exclude_apple_when_toolchain_missing(self, monkeypatch):
         """A host that could run the framework but has no Swift toolchain must not be

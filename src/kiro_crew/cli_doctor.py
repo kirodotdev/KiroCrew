@@ -73,7 +73,7 @@ from kiro_crew.service import common as common_service
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as service_linux
 from kiro_crew.session_pid_sig import signing_health
-from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
+from kiro_crew.transcribe import _find_parakeet_mlx, _find_whisper, ensure_ffmpeg_in_path
 
 logger = logging.getLogger(__name__)
 
@@ -1536,6 +1536,19 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         except ImportError:
             print("  boto3:       ⏹ optional AWS SDK not installed")
             print("               Install: pip install 'kirocrew[voice]'")
+
+    # Parakeet (NVIDIA Parakeet via parakeet-mlx) is Apple-Silicon-only and, like
+    # mlx_whisper, installed out-of-band — so report its CLI the same way.
+    if stt_active and cfg.stt.provider == "parakeet":
+        parakeet_bin = _find_parakeet_mlx()
+        if parakeet_bin:
+            print(f"  parakeet:    ✅ {parakeet_bin}")
+        else:
+            mark = "❌" if stt_fatal else "⚠️ "
+            print(f"  parakeet:    {mark} parakeet-mlx not found")
+            print("               Fix: pipx install parakeet-mlx  (Apple Silicon only)")
+            if stt_fatal:
+                issues.append("parakeet-mlx")
 
     # ── Slack (optional) ──
     print("\nSlack Integration")

@@ -244,7 +244,8 @@ from the dashboard — see each channel's doc for keys and credentials.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `stt.enabled` | Enable voice-memo transcription | `true` |
-| `stt.provider` | `"whisper"` (local), `"mlx"` (local, Apple silicon), or `"transcribe"` (AWS, needs the `voice` extra) | `"whisper"` |
+| `stt.provider` | `"whisper"` (local), `"mlx"` (local, Apple silicon), `"parakeet"` (local, Apple silicon, NVIDIA Parakeet), `"apple"` (local, macOS 26+), or `"transcribe"` (AWS, needs the `voice` extra) | `"whisper"` |
+| `stt.parakeet_model` | Hugging Face repo for the parakeet-mlx model (parakeet provider only) | `"mlx-community/parakeet-tdt-0.6b-v3"` |
 | `stt.streaming` | Stream partial transcripts live into the dashboard input. Transcribe provider only | `false` |
 | `stt.transcribe_region` | AWS region for the Transcribe API (transcribe provider only) | `"us-east-1"` |
 | `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR` | `"en-US"` |

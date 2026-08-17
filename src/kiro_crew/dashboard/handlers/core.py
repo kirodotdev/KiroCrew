@@ -444,6 +444,14 @@ _STT_MLX_MODELS: dict[str, str] = {
     "mlx-community/whisper-large-v3-turbo": "~809 MB",
 }
 
+# Curated parakeet-mlx model repos surfaced in the STT picker and accepted on
+# PUT. Maps Hugging Face repo -> approximate on-disk download size. Parakeet TDT
+# 0.6b v3 is multilingual (25 languages) and streams far faster than Whisper for
+# a fraction of the RAM, which is why it is the default.
+_STT_PARAKEET_MODELS: dict[str, str] = {
+    "mlx-community/parakeet-tdt-0.6b-v3": "~600 MB",
+}
+
 
 def _is_apple_silicon() -> bool:
     """True if running on Apple Silicon hardware.
@@ -475,12 +483,22 @@ def _stt_providers() -> list[str]:
     ``mlx`` (Whisper on Apple's MLX framework) only runs on Apple Silicon, and
     ``apple`` (the on-device SpeechAnalyzer framework) needs macOS 26 or later plus
     a Swift toolchain — both are omitted entirely elsewhere rather than being shown
-    as unusable options. This is the single source of truth for which providers are
-    advertised (GET) and accepted (PUT).
+    as unusable options. ``parakeet`` (NVIDIA Parakeet via parakeet-mlx) is likewise
+    Apple-Silicon-only and gated the same way as ``mlx``. This is the single source
+    of truth for which providers are advertised (GET) and accepted (PUT).
     """
     providers = list(_VALID_STT_PROVIDERS)
-    if not _is_apple_silicon() and "mlx" in providers:
+    is_apple_silicon = _is_apple_silicon()
+    if not is_apple_silicon and "mlx" in providers:
         providers.remove("mlx")
+    # `parakeet` shares the exact same Apple-Silicon gate as `mlx`. Reuse the
+    # result computed above rather than calling `_is_apple_silicon()` again —
+    # off Apple Silicon (e.g. under Rosetta) that call shells out to `sysctl`
+    # synchronously, and `_stt_providers()` runs on the dashboard's event loop
+    # (GET/PUT /api/config/stt), so a second call doubles that blocking cost
+    # on every request.
+    if not is_apple_silicon and "parakeet" in providers:
+        providers.remove("parakeet")
     if "apple" in providers:
         from kiro_crew import apple_speech
 
@@ -555,6 +573,12 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 and body["mlx_model"] in _STT_MLX_MODELS
             ):
                 stt["mlx_model"] = body["mlx_model"]
+            if (
+                "parakeet_model" in body
+                and isinstance(body["parakeet_model"], str)
+                and body["parakeet_model"] in _STT_PARAKEET_MODELS
+            ):
+                stt["parakeet_model"] = body["parakeet_model"]
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
@@ -601,6 +625,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "provider": provider,
             "model": cfg.stt.model,
             "mlx_model": cfg.stt.mlx_model,
+            "parakeet_model": cfg.stt.parakeet_model,
             "available": available,
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
@@ -610,6 +635,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "language_code": cfg.stt.language_code,
             "models": _STT_MODEL_SIZES,
             "mlx_models": _STT_MLX_MODELS,
+            "parakeet_models": _STT_PARAKEET_MODELS,
             "providers": _stt_providers(),
             # Which of those providers can stream partial results. Served from the
             # backend's own `_STREAMING_PROVIDERS` so the Settings UI gates the
@@ -724,9 +750,9 @@ def _ffmpeg_install_commands() -> list[str]:
 def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
     """Return shell commands the user must run manually (need sudo/GUI).
 
-    The ``mlx`` provider has its own lightweight prerequisite (``pipx install
-    mlx-whisper``) and only needs ffmpeg beyond that — it does not require the
-    system-python/whisper toolchain.
+    The ``mlx`` and ``parakeet`` providers have their own lightweight prerequisite
+    (``pipx install mlx-whisper`` / ``pipx install parakeet-mlx``) and only need
+    ffmpeg beyond that — they do not require the system-python/whisper toolchain.
     """
     if provider == "transcribe":
         # AWS Transcribe's availability is "boto3 + amazon-transcribe importable
@@ -762,13 +788,13 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
     cmds = []
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
-    if provider == "mlx":
-        # mlx is only advertised on Apple Silicon (see _stt_providers); on any
-        # other platform there are no prerequisites to surface.
+    if provider in ("mlx", "parakeet"):
+        # mlx/parakeet are only advertised on Apple Silicon (see _stt_providers);
+        # on any other platform there are no prerequisites to surface.
         if not _is_apple_silicon():
             return []
         # The Install button (see _build_stt_install_script) installs ffmpeg,
-        # pipx, and mlx-whisper itself. The only thing it cannot bootstrap
+        # pipx, and the mlx-based CLI itself. The only thing it cannot bootstrap
         # non-interactively is Homebrew, so that is the sole manual prereq —
         # listing the others here would duplicate the button. ``find_brew``
         # rather than ``shutil.which``: the desktop app's gateway inherits
@@ -938,6 +964,11 @@ async def api_stt_install(request: web.Request) -> web.Response:
                 _stt_install_status = {"step": "installing_whisper", "detail": line, "error": ""}
             elif "Installing mlx-whisper" in line:
                 _stt_install_status = {"step": "installing_mlx", "detail": line, "error": ""}
+            elif "Installing parakeet-mlx" in line:
+                # Reuse the mlx progress step: same pipx phase and bar position.
+                # The detail line carries the accurate "parakeet-mlx" text, so a
+                # dedicated step (and its 14-locale i18n key) is not warranted.
+                _stt_install_status = {"step": "installing_mlx", "detail": line, "error": ""}
             elif "No suitable python3" in line:
                 _stt_install_status = {"step": "installing_python", "detail": line, "error": ""}
             elif "Using:" in line:
@@ -1032,6 +1063,7 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
     """Shell script that installs the runtime for the selected STT provider.
 
     - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
+    - ``parakeet``: installs parakeet-mlx via pipx (Apple Silicon only) plus ffmpeg.
     - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
 
     The pip fallback deliberately targets a SYSTEM python with ``--user`` (never
@@ -1043,8 +1075,12 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
     wheel otherwise reports itself as a compiler error.
     """
     prelude = _stt_install_path_prelude()
-    if provider == "mlx":
-        return prelude + r"""
+    if provider in ("mlx", "parakeet"):
+        pipx_pkg = "parakeet-mlx" if provider == "parakeet" else "mlx-whisper"
+        verify_bin = "parakeet-mlx" if provider == "parakeet" else "mlx_whisper"
+        return (
+            prelude
+            + rf"""
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -1057,14 +1093,15 @@ brew install ffmpeg 2>&1 || true
 
 if ! command -v pipx >/dev/null 2>&1; then
     echo "Installing pipx via brew..."
-    brew install pipx 2>&1 || { echo "ERROR: pipx install failed"; exit 1; }
+    brew install pipx 2>&1 || {{ echo "ERROR: pipx install failed"; exit 1; }}
 fi
 
-echo "Installing mlx-whisper via pipx..."
-pipx install --force mlx-whisper 2>&1 || { echo "ERROR: pipx install mlx-whisper failed"; exit 1; }
+echo "Installing {pipx_pkg} via pipx..."
+pipx install --force {pipx_pkg} 2>&1 || {{ echo "ERROR: pipx install {pipx_pkg} failed"; exit 1; }}
 
-echo "Done. mlx_whisper=$(command -v mlx_whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
+echo "Done. {verify_bin}=$(command -v {verify_bin} 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
+        )
     return prelude + r"""
 # Pick up ffmpeg from ~/ffmpeg if installed there
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"

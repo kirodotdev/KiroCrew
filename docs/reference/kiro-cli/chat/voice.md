@@ -112,6 +112,27 @@ Measured on a 32-vCPU Graviton3 host with an 11-second clip, 16 threads beat 31
 than raw speed: 8 threads measured 4.9–5.0s across repeats, while taking all 32
 ranged 8.1–68.4s depending on how busy the machine was.
 
+### Parakeet provider (Apple Silicon GPU)
+
+On Apple Silicon Macs, the `parakeet` provider runs NVIDIA's
+[Parakeet](https://github.com/senstella/parakeet-mlx) ASR models on the Metal
+GPU via MLX. Parakeet TDT 0.6b v3 is multilingual (25 languages), streams much
+faster than Whisper, and needs only about 600 MB of memory, which makes it a
+strong local default. Like `mlx`, the `parakeet` provider is selectable on every
+platform but only *available* on arm64 macOS.
+
+1. In the Speech-to-Text card, set **Provider** to `parakeet`.
+2. Click **📦 Install**, which runs `pipx install parakeet-mlx` plus `ffmpeg`
+   (the provider-aware install button installs the right runtime for whichever
+   provider is selected).
+3. The Parakeet model (`parakeet_model`, default
+   `mlx-community/parakeet-tdt-0.6b-v3`) downloads from Hugging Face on first
+   transcription and is cached under `~/.cache/huggingface/hub/`.
+
+`parakeet-mlx` is installed out-of-band via `pipx` for the same arm64-only
+reason as `mlx-whisper`; Kiro Crew invokes the `parakeet-mlx` CLI as a
+subprocess, reusing the same runner as the `whisper` and `mlx` providers.
+
 ## Voice Output (Text-to-Speech)
 
 Kiro Crew can speak responses aloud using Amazon Polly. Two modes are available:

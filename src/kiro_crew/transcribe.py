@@ -196,6 +196,12 @@ _MLX_WHISPER_SEARCH_PATHS = [
     "/usr/local/bin/mlx_whisper",
 ]
 
+_PARAKEET_MLX_SEARCH_PATHS = [
+    os.path.expanduser("~/.local/bin/parakeet-mlx"),
+    "/opt/homebrew/bin/parakeet-mlx",
+    "/usr/local/bin/parakeet-mlx",
+]
+
 # Homebrew installs its ``brew`` shim at a fixed prefix per platform, and none of
 # those prefixes are on the PATH a GUI-launched gateway inherits: the desktop app
 # (Dock / Finder / launchd) starts with ``/usr/bin:/bin:/usr/sbin:/sbin``, so
@@ -271,6 +277,41 @@ def _find_mlx_whisper() -> str | None:
     return None
 
 
+def _find_parakeet_mlx() -> str | None:
+    """Return the parakeet-mlx binary path or None if not found.
+
+    parakeet-mlx runs NVIDIA's Parakeet ASR models on Apple Silicon via MLX. Like
+    mlx_whisper it is installed out-of-band (``pipx install parakeet-mlx`` or
+    ``uv tool install parakeet-mlx``) rather than as a package dependency, because
+    the ``mlx`` wheel only exists for arm64 and would break installs on every
+    other architecture. We therefore locate and invoke the CLI as a subprocess,
+    largely mirroring ``_find_mlx_whisper`` — but see the note below on why it
+    deliberately skips that finder's system-Python scripts-dir fallback.
+    """
+    found = shutil.which("parakeet-mlx")
+    if found:
+        return found
+    # Same venv gap as `_find_whisper` — see `_own_scripts_dir`.
+    own_bin = _own_scripts_dir()
+    if own_bin:
+        found_own = _find_script_in_dir(own_bin, "parakeet-mlx")
+        if found_own:
+            return found_own
+    # No system-Python scripts-dir probe here (unlike `_find_whisper`/
+    # `_find_mlx_whisper`): that fallback exists for `pip install --user`,
+    # which is how `openai-whisper` lands outside PATH. `parakeet-mlx` is
+    # installed via `pipx` (see `_build_stt_install_script`), which always
+    # puts its shim on PATH or in one of `_PARAKEET_MLX_SEARCH_PATHS` below —
+    # so the probe would never find anything here, while still paying its
+    # cost: it shells out to a system Python synchronously (`subprocess.
+    # check_output`, 5s timeout) on the event loop this function runs on
+    # (dashboard GET/PUT /api/config/stt), which can stall the gateway.
+    for p in _PARAKEET_MLX_SEARCH_PATHS:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
 def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
     """Check if STT is enabled in config and a provider is usable."""
     if stt_config is None:
@@ -296,6 +337,9 @@ def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
     if provider == "mlx":
         ensure_ffmpeg_in_path()
         return _find_mlx_whisper() is not None
+    if provider == "parakeet":
+        ensure_ffmpeg_in_path()
+        return _find_parakeet_mlx() is not None
     if provider == "apple":
         from kiro_crew import apple_speech
 
@@ -350,6 +394,9 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
     elif provider == "mlx":
         await asyncio.to_thread(ensure_ffmpeg_in_path)
         result = await _transcribe_mlx(audio_path, stt_config)
+    elif provider == "parakeet":
+        await asyncio.to_thread(ensure_ffmpeg_in_path)
+        result = await _transcribe_parakeet(audio_path, stt_config)
     elif provider == "apple":
         result = await _transcribe_apple(audio_path, stt_config)
     else:
@@ -752,6 +799,51 @@ async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: i
         ],
         stt_config.timeout_secs,
         label="mlx_whisper",
+    )
+
+
+async def _transcribe_parakeet(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """Transcribe using the parakeet-mlx CLI (NVIDIA Parakeet, Apple Silicon).
+
+    parakeet-mlx is installed out-of-band (the ``mlx`` wheel is arm64-only), and
+    shares mlx_whisper's hyphenated flags (``--output-dir``/``--output-format``)
+    plus its ``<filename>.txt`` output convention, so it reuses the same
+    ``_run_whisper_cli`` runner and ``.txt`` collection. ``parakeet_model`` is
+    validated against the shared HuggingFace ``owner/repo`` regex for the same
+    defense-in-depth reason as ``mlx_model`` (a hand-edited config could inject
+    an arbitrary value passed straight to the subprocess).
+    """
+    parakeet_bin = await asyncio.to_thread(_find_parakeet_mlx)
+    if not parakeet_bin:
+        logger.error("parakeet-mlx not found — install: pipx install parakeet-mlx")
+        return None
+
+    model = stt_config.parakeet_model
+    # `model or ""` only substitutes on a falsy value (None, ""); a non-string
+    # truthy value (e.g. an int from a hand-edited config.json) would reach
+    # `_MLX_MODEL_RE.match()` as-is and raise TypeError there instead of
+    # producing the clean "invalid parakeet_model" refusal below.
+    if not isinstance(model, str) or not _MLX_MODEL_RE.match(model or ""):
+        logger.error(
+            "Refusing to run parakeet-mlx: invalid parakeet_model %r "
+            "(expected a HuggingFace 'owner/repo' id)",
+            model,
+        )
+        return None
+
+    return await _run_whisper_cli(
+        parakeet_bin,
+        lambda out_dir: [
+            audio_path,
+            "--model",
+            model,
+            "--output-dir",
+            out_dir,
+            "--output-format",
+            "txt",
+        ],
+        stt_config.timeout_secs,
+        label="parakeet-mlx",
     )
 
 

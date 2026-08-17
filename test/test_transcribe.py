@@ -17,6 +17,7 @@ from kiro_crew.transcribe import (
     _WHISPER_THREAD_CEILING,
     BREW_PATH_DIRS,
     _find_mlx_whisper,
+    _find_parakeet_mlx,
     _find_whisper,
     _is_openai_whisper,
     _ProfileCredentialResolver,
@@ -425,6 +426,51 @@ class TestFindMlxWhisper:
 
 
 # ---------------------------------------------------------------------------
+# _find_parakeet_mlx
+# ---------------------------------------------------------------------------
+
+
+class TestFindParakeetMlx:
+    def test_found_on_path(self):
+        with patch(
+            "kiro_crew.transcribe.shutil.which", return_value="/usr/local/bin/parakeet-mlx"
+        ):
+            assert _find_parakeet_mlx() == "/usr/local/bin/parakeet-mlx"
+
+    def test_not_found(self, monkeypatch):
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr(
+                "kiro_crew.transcribe._PARAKEET_MLX_SEARCH_PATHS", ["/nonexistent"]
+            )
+            assert _find_parakeet_mlx() is None
+
+    def test_found_in_search_paths(self, tmp_path, monkeypatch):
+        binary = tmp_path / "parakeet-mlx"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            monkeypatch.setattr(
+                "kiro_crew.transcribe._PARAKEET_MLX_SEARCH_PATHS", [str(binary)]
+            )
+            assert _find_parakeet_mlx() == str(binary)
+
+    def test_never_probes_system_python(self, monkeypatch):
+        """Unlike `_find_whisper`/`_find_mlx_whisper`, this finder must NOT fall
+        back to a system-Python scripts-dir probe: `parakeet-mlx` is installed
+        via pipx (always on PATH or a fixed search path), so that probe would
+        never find anything here while still paying its cost -- a synchronous
+        subprocess spawn on the event loop this function runs on (dashboard
+        GET/PUT /api/config/stt)."""
+        with patch("kiro_crew.transcribe.shutil.which", return_value=None):
+            with patch("kiro_crew.transcribe._python3_bin_dir") as py3_bin_dir:
+                monkeypatch.setattr(
+                    "kiro_crew.transcribe._PARAKEET_MLX_SEARCH_PATHS", ["/nonexistent"]
+                )
+                assert _find_parakeet_mlx() is None
+            py3_bin_dir.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # find_brew
 # ---------------------------------------------------------------------------
 class TestFindBrew:
@@ -498,6 +544,18 @@ class TestIsAvailable:
     def test_mlx_unavailable_when_binary_missing(self):
         cfg = SttConfig(enabled=True, provider="mlx")
         with patch("kiro_crew.transcribe._find_mlx_whisper", return_value=None):
+            assert is_available(cfg) is False
+
+    def test_parakeet_available_when_binary_found(self):
+        cfg = SttConfig(enabled=True, provider="parakeet")
+        with patch(
+            "kiro_crew.transcribe._find_parakeet_mlx", return_value="/usr/bin/parakeet-mlx"
+        ):
+            assert is_available(cfg) is True
+
+    def test_parakeet_unavailable_when_binary_missing(self):
+        cfg = SttConfig(enabled=True, provider="parakeet")
+        with patch("kiro_crew.transcribe._find_parakeet_mlx", return_value=None):
             assert is_available(cfg) is False
 
 
@@ -817,6 +875,132 @@ class TestTranscribeAudio:
         mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
 
         with patch("kiro_crew.transcribe._find_mlx_whisper", return_value="/usr/bin/mlx_whisper"):
+            with patch(
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+            ):
+                with patch(
+                    "kiro_crew.transcribe.asyncio.wait_for", side_effect=asyncio.TimeoutError
+                ):
+                    result = await transcribe_audio(str(audio), cfg)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# parakeet provider (parakeet-mlx CLI)
+# ---------------------------------------------------------------------------
+
+
+class TestTranscribeParakeet:
+    @pytest.mark.asyncio
+    async def test_parakeet_no_binary_returns_none(self, tmp_path):
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True, provider="parakeet")
+        with patch("kiro_crew.transcribe._find_parakeet_mlx", return_value=None):
+            result = await transcribe_audio(str(audio), cfg)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_parakeet_invalid_model_rejected_before_subprocess(self, tmp_path):
+        """A malformed parakeet_model (e.g. from a hand-edited config) must be
+        rejected before it is ever passed to the subprocess."""
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(
+            enabled=True, provider="parakeet", parakeet_model="; rm -rf ~", timeout_secs=10
+        )
+        with patch(
+            "kiro_crew.transcribe._find_parakeet_mlx", return_value="/usr/bin/parakeet-mlx"
+        ):
+            with patch("kiro_crew.transcribe.asyncio.create_subprocess_exec") as spawn:
+                result = await transcribe_audio(str(audio), cfg)
+        assert result is None
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parakeet_non_string_model_rejected_cleanly(self, tmp_path):
+        """A non-string parakeet_model (e.g. a numeric value from a hand-edited
+        config.json) must be rejected with the same clean refusal as a malformed
+        string, not raise TypeError out of the regex match."""
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True, provider="parakeet", timeout_secs=10)
+        cfg.parakeet_model = 12345  # type: ignore[assignment]
+        with patch(
+            "kiro_crew.transcribe._find_parakeet_mlx", return_value="/usr/bin/parakeet-mlx"
+        ):
+            with patch("kiro_crew.transcribe.asyncio.create_subprocess_exec") as spawn:
+                result = await transcribe_audio(str(audio), cfg)
+        assert result is None
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parakeet_successful_transcription(self, tmp_path):
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(
+            enabled=True,
+            provider="parakeet",
+            parakeet_model="mlx-community/parakeet-tdt-0.6b-v3",
+            timeout_secs=10,
+        )
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        captured: dict = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"] = args
+            out_dir = args[args.index("--output-dir") + 1]
+            Path(out_dir).joinpath("test.txt").write_text("Hola mundo")
+            return mock_proc
+
+        with patch(
+            "kiro_crew.transcribe._find_parakeet_mlx", return_value="/usr/bin/parakeet-mlx"
+        ):
+            with patch(
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", side_effect=fake_exec
+            ):
+                result = await transcribe_audio(str(audio), cfg)
+        assert result == "Hola mundo"
+        # The configured HF repo must be passed via --model, and the CLI uses the
+        # hyphenated mlx-style output flags.
+        assert "mlx-community/parakeet-tdt-0.6b-v3" in captured["args"]
+        assert "--output-dir" in captured["args"]
+        assert "--output-format" in captured["args"]
+
+    @pytest.mark.asyncio
+    async def test_parakeet_failure_returns_none(self, tmp_path):
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True, provider="parakeet", timeout_secs=10)
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"boom"))
+
+        with patch(
+            "kiro_crew.transcribe._find_parakeet_mlx", return_value="/usr/bin/parakeet-mlx"
+        ):
+            with patch(
+                "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
+            ):
+                result = await transcribe_audio(str(audio), cfg)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_parakeet_timeout_returns_none(self, tmp_path):
+        audio = tmp_path / "test.webm"
+        audio.write_text("fake audio")
+        cfg = SttConfig(enabled=True, provider="parakeet", timeout_secs=1)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        with patch(
+            "kiro_crew.transcribe._find_parakeet_mlx", return_value="/usr/bin/parakeet-mlx"
+        ):
             with patch(
                 "kiro_crew.transcribe.asyncio.create_subprocess_exec", return_value=mock_proc
             ):

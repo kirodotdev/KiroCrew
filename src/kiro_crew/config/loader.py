@@ -3869,7 +3869,7 @@ class ChannelConfig:
         )
 
 
-_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "transcribe")
+_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "parakeet", "transcribe")
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
@@ -4148,6 +4148,13 @@ class SttConfig:
         metadata=_meta(
             "MLX Model",
             "Hugging Face repo for the mlx_whisper model (mlx provider only).",
+        ),
+    )
+    parakeet_model: str = field(
+        default="mlx-community/parakeet-tdt-0.6b-v3",
+        metadata=_meta(
+            "Parakeet Model",
+            "Hugging Face repo for the parakeet-mlx model (parakeet provider only).",
         ),
     )
     device: str = field(
@@ -6478,6 +6485,9 @@ class KiroCrewConfig:
                 # (809M vs 74M, but much better latency).
                 model=stt_data.get("model", "turbo"),
                 mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
+                parakeet_model=stt_data.get(
+                    "parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"
+                ),
                 device=stt_data.get("device", "cpu"),
                 timeout_secs=stt_data.get("timeout_secs", 300),
                 transcribe_region=stt_data.get("transcribe_region", "us-east-1"),
