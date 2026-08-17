@@ -598,6 +598,12 @@ _WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
 #: card whose answer channel is already gone (server retired, client did not).
 #: Widening coverage is a data edit here.
 _QUESTION_RETIRING_ROLES = frozenset({"user", "nudge"})
+#: Roles that carry an inbound PROMPT -- the rows that ask this session to do
+#: something, as opposed to the rows produced while it works. ``user`` is a human
+#: send from any surface; ``inject`` is automation delivering a cron notification
+#: or a subagent completion event. Used to rank a session by when its work was
+#: requested while the answer is still streaming (``to_dict``'s ``last_turn_ts``).
+_PROMPT_ROLES = frozenset({"user", "inject"})
 _MAX_SOURCE_LINKS_PER_SLOT = 64
 # How many source links each slot payload actually serializes (the sidebar
 # renders at most this many chips). Shared with the periodic check-status
@@ -2267,6 +2273,28 @@ class _ChatSlot:
             if found_conv and last_msg and last_activity_ts:
                 break
         pending_approval = any(not f.done() for f in self._approval_futures.values())
+        # Ordering instant for the session list: the last time this session
+        # SETTLED -- a prompt arrived, or a turn finished. Deliberately not
+        # ``last_ts``, which is the newest row of ANY role and therefore advances
+        # on every streamed tool call: a list ranked by that reshuffles
+        # continuously whenever several sessions are working, so rows swap under
+        # the pointer. A turn in flight instead holds the rank of the prompt that
+        # started it, and the single re-rank lands when the turn ends -- at which
+        # point the newest row IS the completion.
+        #
+        # The prompt scan is running-only, so an idle slot (the common case in a
+        # long sidebar) costs nothing, and a running one is bounded by the rows
+        # its current turn has emitted.
+        last_turn_ts = last_ts
+        if self.running:
+            last_turn_ts = next(
+                (
+                    m.get("ts") or ""
+                    for m in reversed(self.messages)
+                    if m.get("role") in _PROMPT_ROLES
+                ),
+                "",
+            )
         # waiting_for_input: turn ended (not running), no options, no approval,
         # and the last conversational message is from the assistant (not user).
         waiting_for_input = (
@@ -2372,6 +2400,7 @@ class _ChatSlot:
             "wait_state": self._wait_state,
             "created": self.created_at,
             "last_ts": last_ts,
+            "last_turn_ts": last_turn_ts,
             "last_message": last_msg,
             "source_links": [
                 {

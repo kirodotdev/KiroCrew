@@ -71,7 +71,7 @@ import {
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
 import { focusSiblingSessionRow } from './chat/sessionRowNav'
 import { focusComposer } from './chat/composerFocus'
-import { compareBySort, comparePinnedThenSort, fmtRelativeTime } from './chat/sessionOrder'
+import { compareBySort, comparePinnedThenSort, fmtRelativeTime, slotActivityTs } from './chat/sessionOrder'
 import type { SortKey } from './chat/sessionOrder'
 
 import { i18nT } from '../i18n/t'
@@ -446,6 +446,10 @@ interface Slot {
   workspace?: string
   created?: string
   last_ts?: string
+  // Settled activity instant: the last prompt or turn completion, NOT every
+  // streamed row. What the list is ordered, segmented and labelled by — see
+  // `slotActivityTs`.
+  last_turn_ts?: string
   last_message?: string
   slack_linked?: boolean
   links?: SessionLink[]
@@ -1286,10 +1290,10 @@ function ChatSidebar({
   const enrichedSlots = useMemo<Slot[]>(() => {
     // Snapshot `now` once per recompute so every slot's recency is measured
     // against the same instant. The last-activity timestamp mirrors the
-    // date-sort comparator (`last_ts` ISO, else `created` ISO).
+    // date-sort comparator (`slotActivityTs`).
     const now = Date.now()
     return slots.map(s => {
-      const recent = isWithinRecentWindow(s.last_ts || s.created, now, recentWindowMs)
+      const recent = isWithinRecentWindow(slotActivityTs(s), now, recentWindowMs)
       // A slot with a live dynamic-workflow run counts as running so the
       // "In progress" filter (and its count) surfaces it, even though the
       // parent turn has ended while the run executes in the background.
@@ -1464,7 +1468,7 @@ function ChatSidebar({
 
   // Pinned: derived from server-persisted slot.pinned
   const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
-  // Ranks up to the configured count of sessions by recency (last_ts) for the sidebar tint —
+  // Ranks up to the configured count of sessions by settled recency for the sidebar tint —
   // see ../utils/recencyTint. Count = server-side dashboard.recent_tint_count (shared
   // kirocrewConfig query); recomputes when the slots or the configured count change.
   const { data: mcCfg } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
@@ -2838,9 +2842,9 @@ function ChatSidebar({
                *  both read as a stutter. Folder membership is carried by the tree
                *  itself in folder view; in flat view the row's own context menu
                *  still names it. */}
-              {s.last_ts || s.created || pinned.has(s.key) ? (
+              {slotActivityTs(s) || pinned.has(s.key) ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
-                  {(s.last_ts || s.created) && <span className="text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(s.last_ts || s.created!)}</span>}
+                  {slotActivityTs(s) && <span className="text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
                   {/* Last in the row: the pin is a state marker, not a label, so
                    *  it sits after the text that reads left-to-right rather than
                    *  pushing the agent name off its own start edge. */}
@@ -3614,7 +3618,7 @@ function ChatSidebar({
                           {archivable.map(s => (
                             <div key={s.key} className="text-[12px] text-muted truncate py-0.5 px-1">
                               {s.title && s.title !== s.key ? s.title : s.key}
-                              {(s.last_ts || s.created) && <span className="ml-1 text-[11px] opacity-60">{fmtRelativeTime(s.last_ts || s.created!)}</span>}
+                              {slotActivityTs(s) && <span className="ml-1 text-[11px] opacity-60">{fmtRelativeTime(slotActivityTs(s))}</span>}
                             </div>
                           ))}
                         </div>
@@ -3956,7 +3960,7 @@ function ChatSidebar({
               // guard as the history pane), and pinned rows render first
               // without segments since pinning overrides date order.
               const isDateSort = sortKey === 'date-desc' || sortKey === 'date-asc'
-              const segOf = (s: Slot) => isDateSort && !pinned.has(s.key) ? dateSegment(s.last_ts || s.created) : ''
+              const segOf = (s: Slot) => isDateSort && !pinned.has(s.key) ? dateSegment(slotActivityTs(s)) : ''
               let prevSeg = ''
               return flatSlots.map((s, i) => {
                 const seg = segOf(s)

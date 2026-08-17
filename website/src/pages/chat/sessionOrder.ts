@@ -14,13 +14,27 @@ import { compareText, fmtDateFields } from '../../i18n/format'
 export type SortKey = 'date-desc' | 'date-asc' | 'created-desc' | 'created-asc' | 'name-asc' | 'name-desc'
 
 /** The subset of a session either surface needs in order to rank it. Active
- *  slots carry ISO `last_ts`; history items carry epoch-seconds `modified`. */
+ *  slots carry ISO `last_turn_ts` / `last_ts`; history items carry epoch-seconds
+ *  `modified`. */
 export interface Sortable {
   title?: string
   key: string
   created?: string
+  last_turn_ts?: string
   last_ts?: string
   modified?: number
+}
+
+/** Settled activity instant of an ACTIVE slot, as the ISO string the backend
+ *  sent. `last_turn_ts` moves only when a prompt arrives or a turn ends, whereas
+ *  `last_ts` is the newest row of any role and advances on every streamed tool
+ *  call — ranking or labelling a row by that makes the list churn while agents
+ *  work. Display, date segmenting and the recency tint all read THIS so a row's
+ *  visible timestamp cannot disagree with the position it was sorted into. */
+export function slotActivityTs(
+  slot: { last_turn_ts?: string; last_ts?: string; created?: string },
+): string | undefined {
+  return slot.last_turn_ts || slot.last_ts || slot.created
 }
 
 /** Last-activity instant in epoch SECONDS, with the fallback ladder both
@@ -28,9 +42,13 @@ export interface Sortable {
  *  sorts it last under `date-desc`. */
 export function lastActivityEpoch(item: Sortable): number {
   if (item.modified != null) return item.modified
-  if (item.last_ts) return new Date(item.last_ts).getTime() / 1000
-  if (item.created) return new Date(item.created).getTime() / 1000
-  return 0
+  const iso = slotActivityTs(item)
+  if (!iso) return 0
+  const ms = new Date(iso).getTime()
+  // An unparseable timestamp ranks as "no timestamp" rather than poisoning the
+  // comparator: NaN makes every comparison false, which leaves the whole list in
+  // an arbitrary order rather than just misplacing the one broken row.
+  return Number.isNaN(ms) ? 0 : ms / 1000
 }
 
 /** Shared comparator for both active sessions and history items. */
@@ -53,7 +71,8 @@ export function compareBySort(a: Sortable, b: Sortable, key: SortKey): number {
     const cmp = ca < cb ? -1 : ca > cb ? 1 : 0
     return key === 'created-desc' ? -cmp : cmp
   }
-  // date-desc / date-asc: last activity (modified epoch, last_ts ISO, or created ISO)
+  // date-desc / date-asc: last SETTLED activity (modified epoch, else the
+  // last_turn_ts → last_ts → created ISO ladder)
   const ta = lastActivityEpoch(a)
   const tb = lastActivityEpoch(b)
   return key === 'date-desc' ? tb - ta : ta - tb

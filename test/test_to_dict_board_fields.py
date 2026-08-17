@@ -97,6 +97,69 @@ def test_last_activity_ts_from_tool_call():
     assert d["last_activity_ts"] == "t4"
 
 
+# ── last_turn_ts ──
+# The instant the session list is ORDERED by: the last prompt or turn
+# completion, never a mid-turn row. `last_ts` (newest row of any role) advances
+# on every streamed tool call, so ranking by it reshuffles the sidebar
+# continuously while several sessions work.
+
+
+def test_last_turn_ts_is_last_row_when_idle():
+    # Turn over: the newest row IS the completion.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "t1"},
+        {"role": "tool_call", "content": "grep ...", "ts": "t2"},
+        {"role": "assistant", "content": "done", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "t3"
+    assert d["last_ts"] == "t3"
+
+
+def test_last_turn_ts_holds_the_prompt_while_running():
+    # The whole point: rows keep arriving (t3, t4) and the ordering key does not
+    # move off the prompt that asked for the work.
+    s = _slot(
+        {"role": "assistant", "content": "earlier answer", "ts": "t1"},
+        {"role": "user", "content": "do it", "ts": "t2"},
+        {"role": "tool_call", "content": "grep ...", "ts": "t3"},
+        {"role": "tool_result", "content": "found", "ts": "t4"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "t2"
+    assert d["last_ts"] == "t4"
+
+
+def test_last_turn_ts_counts_an_injected_prompt():
+    # A cron notification / subagent completion event asks for work just as a
+    # human send does, so it settles the rank of the turn it starts.
+    s = _slot(
+        {"role": "user", "content": "earlier", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+        {"role": "inject", "content": "[Cron notification]", "ts": "t3"},
+        {"role": "tool_call", "content": "gh pr view", "ts": "t4"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "t3"
+
+
+def test_last_turn_ts_empty_when_running_with_no_prompt_row():
+    # Nothing to rank by — the frontend falls back down its own ladder rather
+    # than receiving a bogus instant.
+    s = _slot({"role": "assistant", "content": "streaming…", "ts": "t1"})
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["last_turn_ts"] == ""
+
+
+def test_last_turn_ts_empty_for_empty_slot():
+    d = _slot().to_dict()
+    assert d["last_turn_ts"] == ""
+    assert d["last_ts"] == ""
+
+
 def test_prompt_preview_truncation():
     long_text = "x" * 300 + "\n[OPTIONS: A | B]"
     s = _slot({"role": "assistant", "content": long_text, "ts": "t1"})

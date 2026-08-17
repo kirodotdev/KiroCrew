@@ -5,19 +5,39 @@ const iso = (min: number) => `2026-07-09T20:${String(min).padStart(2, '0')}:00Z`
 const shadow = (w: number, op: number) => `inset ${w}px 0 0 color-mix(in srgb, var(--accent) ${op}%, transparent)`
 
 describe('computeRecentRank', () => {
-  it('ranks by last_ts descending (1 = most recent)', () => {
+  it('ranks by settled activity descending (1 = most recent)', () => {
     const r = computeRecentRank([
-      { key: 'a', last_ts: iso(10) },
-      { key: 'b', last_ts: iso(30) },
-      { key: 'c', last_ts: iso(20) },
+      { key: 'a', last_turn_ts: iso(10) },
+      { key: 'b', last_turn_ts: iso(30) },
+      { key: 'c', last_turn_ts: iso(20) },
     ], 5)
     expect(r.get('b')).toBe(1)
     expect(r.get('c')).toBe(2)
     expect(r.get('a')).toBe(3)
   })
 
+  it('reads last_turn_ts over last_ts, so a mid-turn row does not repaint the stripe', () => {
+    // The tint must mark the rows the sidebar actually SORTED to the top. Ranking
+    // by last_ts would hand rank 1 to the running session while it sits second.
+    const r = computeRecentRank([
+      { key: 'running', last_turn_ts: iso(10), last_ts: iso(40) },
+      { key: 'idle', last_turn_ts: iso(20), last_ts: iso(20) },
+    ], 5)
+    expect(r.get('idle')).toBe(1)
+    expect(r.get('running')).toBe(2)
+  })
+
+  it('falls back to last_ts for a payload without the settled field', () => {
+    const r = computeRecentRank([
+      { key: 'a', last_ts: iso(10) },
+      { key: 'b', last_ts: iso(30) },
+    ], 5)
+    expect(r.get('b')).toBe(1)
+    expect(r.get('a')).toBe(2)
+  })
+
   it('keeps only the `count` most-recent and excludes the rest', () => {
-    const slots = Array.from({ length: 8 }, (_, i) => ({ key: `s${i}`, last_ts: iso(i + 1) }))
+    const slots = Array.from({ length: 8 }, (_, i) => ({ key: `s${i}`, last_turn_ts: iso(i + 1) }))
     const r = computeRecentRank(slots, 5)
     expect(r.size).toBe(5)
     expect(r.get('s7')).toBe(1)     // newest (minute 8)
@@ -25,12 +45,12 @@ describe('computeRecentRank', () => {
     expect(r.has('s2')).toBe(false) // 6th newest — beyond the count
   })
 
-  it('excludes sessions with missing or unparseable last_ts', () => {
+  it('excludes sessions with missing or unparseable timestamps', () => {
     const r = computeRecentRank([
-      { key: 'a', last_ts: iso(10) },
+      { key: 'a', last_turn_ts: iso(10) },
       { key: 'b' },
-      { key: 'c', last_ts: '' },
-      { key: 'd', last_ts: 'not-a-date' },
+      { key: 'c', last_turn_ts: '' },
+      { key: 'd', last_turn_ts: 'not-a-date' },
     ], 5)
     expect(r.size).toBe(1)
     expect(r.get('a')).toBe(1)
@@ -40,7 +60,7 @@ describe('computeRecentRank', () => {
   })
 
   it('returns an empty map when count is 0 (tint disabled)', () => {
-    expect(computeRecentRank([{ key: 'a', last_ts: iso(10) }], 0).size).toBe(0)
+    expect(computeRecentRank([{ key: 'a', last_turn_ts: iso(10) }], 0).size).toBe(0)
   })
 
   it('RECENT_TINT_COUNT defaults to 0 and MAX_RECENT_TINT_COUNT is 50', () => {

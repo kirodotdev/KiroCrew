@@ -89,11 +89,52 @@ describe('dashboardSlice', () => {
       expect(state.slots.find(s => s.key === 'chat-2')?.last_ts).toBeUndefined()
     })
 
+    it('leaves the ORDERING key alone for un-settled activity', () => {
+      // Agent output moves last_ts but must not re-rank the sidebar: a session
+      // streaming tool calls would otherwise climb over its neighbours on every
+      // event, swapping rows under the pointer while several agents work.
+      const withSlots = reducer(initial, sseSlots([slot1]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T22:00:00Z' }))
+      expect(state.slots[0].last_turn_ts).toBeUndefined()
+    })
+
+    it('bumps last_turn_ts too when the activity is settled', () => {
+      // An inbound prompt SHOULD move the session to the top immediately — the
+      // user just acted on it.
+      const withSlots = reducer(initial, sseSlots([slot1]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T22:00:00Z', settled: true }))
+      expect(state.slots[0].last_turn_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots[0].last_ts).toBe('2026-07-09T22:00:00Z')
+    })
+
     it('is a no-op for an unknown slot key', () => {
       const withSlots = reducer(initial, sseSlots([slot1]))
       const state = reducer(withSlots, touchSlotActivity({ key: 'missing', ts: '2026-07-09T22:00:00Z' }))
       expect(state.slots).toHaveLength(1)
       expect(state.slots[0].last_ts).toBeUndefined()
+    })
+
+    it('never moves either field backwards', () => {
+      // An authoritative slots snapshot can land between an event being buffered
+      // and dispatched; an older arrival time must not undo it.
+      const withSlots = reducer(initial, sseSlots([
+        { ...slot1, last_ts: '2026-07-09T22:00:00Z', last_turn_ts: '2026-07-09T21:00:00Z' },
+      ]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T20:00:00Z', settled: true }))
+      expect(state.slots[0].last_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots[0].last_turn_ts).toBe('2026-07-09T21:00:00Z')
+    })
+
+    it('applies a settling bump that is older than last_ts but newer than last_turn_ts', () => {
+      // Mid-turn the two fields diverge: last_ts is a streamed tool row, so a
+      // prompt arriving behind it is still the newest SETTLED instant. A shared
+      // monotonic check would silently drop it.
+      const withSlots = reducer(initial, sseSlots([
+        { ...slot1, last_ts: '2026-07-09T22:00:00Z', last_turn_ts: '2026-07-09T20:00:00Z' },
+      ]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T21:00:00Z', settled: true }))
+      expect(state.slots[0].last_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots[0].last_turn_ts).toBe('2026-07-09T21:00:00Z')
     })
   })
 

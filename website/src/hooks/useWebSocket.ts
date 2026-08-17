@@ -218,9 +218,12 @@ export function useWebSocket() {
   const chunkRafRef = useRef<number | null>(null)
   const chunkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Slot-recency coalescing: last ts seen per slot, flushed once per frame.
+  // Slot-recency coalescing: last ts seen per slot, flushed once per frame, plus
+  // whether the burst contained a SETTLING row (a prompt) — one settled event
+  // anywhere in the burst settles the flush, since the reducer's settled bump is
+  // additive rather than a toggle.
   // Last-seen wins — the reducer is last-write-wins, so this is the burst's end state.
-  const slotActivityBufRef = useRef<Map<string, string>>(new Map())
+  const slotActivityBufRef = useRef<Map<string, { ts: string; settled: boolean }>>(new Map())
   const slotActivityFlushScheduledRef = useRef(false)
   const slotActivityRafRef = useRef<number | null>(null)
   const slotActivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -489,13 +492,12 @@ export function useWebSocket() {
     // refetch is authoritative. Unmount sets closingRef and still flushes deliberately.
     const ws = wsRef.current
     if (!closingRef.current && (!ws || ws.readyState !== WebSocket.OPEN)) { buf.clear(); return }
-    const slots = store.getState().dashboard.slots
-    for (const [key, ts] of buf) {
-      // Never move last_ts backwards: an authoritative slots snapshot can land between
-      // buffering and this flush, and overwriting it with our arrival time reorders the sidebar.
-      const current = slots.find(s => s.key === key)?.last_ts
-      if (current && Date.parse(current) > Date.parse(ts)) continue
-      dispatch(touchSlotActivity({ key, ts }))
+    // Every buffered bump is dispatched: the "never move a timestamp backwards"
+    // rule lives in the reducer, which holds both fields. It has to be per-field —
+    // mid-turn `last_ts` runs ahead of `last_turn_ts`, so one shared check would
+    // drop a settling bump whose ts is older than the newest streamed row.
+    for (const [key, { ts, settled }] of buf) {
+      dispatch(touchSlotActivity({ key, ts, settled }))
     }
     buf.clear()
   }, [dispatch])
@@ -506,6 +508,17 @@ export function useWebSocket() {
     if (typeof requestAnimationFrame === 'function') slotActivityRafRef.current = requestAnimationFrame(() => flushSlotActivity())
     else slotActivityTimerRef.current = setTimeout(() => flushSlotActivity(), 16)
   }, [flushSlotActivity])
+
+  /** Buffer one slot-recency bump for the next frame.
+   *  Keeps the NEWEST ts of the burst, and `settled` is sticky: one prompt
+   *  anywhere in a burst settles the flush, so the settling row surviving the
+   *  agent output it triggered does not depend on arrival order. */
+  const bufferSlotActivity = useCallback((slot: string, ts: string, settled: boolean) => {
+    const prev = slotActivityBufRef.current.get(slot)
+    const newest = prev && Date.parse(prev.ts) > Date.parse(ts) ? prev.ts : ts
+    slotActivityBufRef.current.set(slot, { ts: newest, settled: settled || !!prev?.settled })
+    scheduleSlotActivityFlush()
+  }, [scheduleSlotActivityFlush])
 
   const connect = useCallback(() => {
     // Guard against double-connect in StrictMode (dev) — if we already
@@ -880,13 +893,18 @@ export function useWebSocket() {
           case 'chat_message':
             flushChunks()
             dispatch(sseChatMessage(data))
-            // Re-rank the sidebar recency tint the instant a session sees any message —
-            // user sends as well as agent output (assistant/tool) — matching last_ts (last
-            // message of any role), instead of waiting for the next full slots push. Fallback
-            // ts is computed here so the touchSlotActivity reducer stays pure (Redux contract).
-            if (data.slot && (data.role === 'user' || data.role === 'assistant' || data.role === 'tool_call' || data.role === 'tool_result')) {
-              slotActivityBufRef.current.set(data.slot, data.ts || new Date().toISOString())
-              scheduleSlotActivityFlush()
+            // Re-rank the sidebar the instant a session sees a message, instead of waiting
+            // for the next full slots push. `last_ts` moves for agent output too (it feeds
+            // "last message" reads); the ORDERING key moves only for an inbound prompt —
+            // user or inject — so a running turn holds its position instead of shuffling the
+            // list on every tool call. Fallback ts is computed here so the touchSlotActivity
+            // reducer stays pure (Redux contract).
+            if (data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'assistant' || data.role === 'tool_call' || data.role === 'tool_result')) {
+              bufferSlotActivity(
+                data.slot,
+                data.ts || new Date().toISOString(),
+                data.role === 'user' || data.role === 'inject',
+              )
             }
             if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) dispatch(markSlotUnread(data.slot))
             // Theme audio: an agent reply arriving is the `message-received`
@@ -914,6 +932,12 @@ export function useWebSocket() {
             break
           case 'queue_push':
             dispatch(appendQueuedMessage(data))
+            // A send that lands behind a busy turn is still user input, so it
+            // settles the session's rank now rather than only when the queue pops
+            // — otherwise typing into a working session leaves it where it was.
+            if (data.slot) {
+              bufferSlotActivity(data.slot, (data as { ts?: string }).ts || new Date().toISOString(), true)
+            }
             break
           case 'steer_push':
             // Mid-turn steer echo: show the user's steered text inline in the
@@ -1434,7 +1458,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordRetiredId])
+  }, [dispatch, flushChunks, scheduleChunkFlush, bufferSlotActivity, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordRetiredId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes

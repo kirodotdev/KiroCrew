@@ -80,9 +80,19 @@ function seedStore() {
 const lastTs = (key: string) =>
   globalStore.getState().dashboard.slots.find(s => s.key === key)?.last_ts
 
+/** The key the sidebar ORDERS by — moves only on a settled event. */
+const lastTurnTs = (key: string) =>
+  globalStore.getState().dashboard.slots.find(s => s.key === key)?.last_turn_ts
+
 const msg = (slot: string, ts?: string) => ({
   type: 'chat_message',
   data: { slot, role: 'assistant', content: 'x', ts },
+})
+
+/** An inbound prompt: the one kind of row that settles a session's rank. */
+const prompt = (slot: string, ts?: string) => ({
+  type: 'chat_message',
+  data: { slot, role: 'user', content: 'go', ts },
 })
 
 describe('useWebSocket slot-activity coalescing', () => {
@@ -313,5 +323,70 @@ describe('useWebSocket slot-activity coalescing', () => {
     expect(ts).toBeDefined()
     expect(ts).not.toBe('2000-01-01T00:00:00Z')
     expect(Date.parse(ts!)).toBeGreaterThan(Date.parse('2000-01-01T00:00:00Z'))
+  })
+
+  it('leaves the ordering key untouched for a burst of agent output', () => {
+    // The churn fix: a streaming turn moves last_ts many times and must not
+    // re-rank the sidebar even once.
+    seedStore()
+    const { ws } = mount()
+
+    act(() => {
+      for (let i = 0; i < 5; i++) ws.simulateMessage(msg('slot-1', `2026-08-10T16:00:0${i}Z`))
+    })
+    runFrames()
+
+    expect(lastTs('slot-1')).toBe('2026-08-10T16:00:04Z')
+    expect(lastTurnTs('slot-1')).toBeUndefined()
+  })
+
+  it('settles the ordering key when the burst contains an inbound prompt', () => {
+    // A prompt anywhere in the burst settles the coalesced flush — the buffer
+    // keeps one entry per slot, so the settling role must survive being followed
+    // by the agent output it triggered.
+    seedStore()
+    const { ws } = mount()
+
+    act(() => {
+      ws.simulateMessage(prompt('slot-1', '2026-08-10T17:00:00Z'))
+      ws.simulateMessage(msg('slot-1', '2026-08-10T17:00:01Z'))
+    })
+    runFrames()
+
+    expect(lastTs('slot-1')).toBe('2026-08-10T17:00:01Z')
+    expect(lastTurnTs('slot-1')).toBe('2026-08-10T17:00:01Z')
+  })
+
+  it('settles the ordering key for a send that queues behind a busy turn', () => {
+    // A queued send emits queue_push, not chat_message: without this the session
+    // the user just typed into would stay where it was until the queue popped.
+    seedStore()
+    const { ws } = mount()
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'queue_push',
+        data: { slot: 'slot-1', content: 'later', ts: '2026-08-10T18:00:00Z', queue_id: 'q1' },
+      })
+    })
+    runFrames()
+
+    expect(lastTurnTs('slot-1')).toBe('2026-08-10T18:00:00Z')
+  })
+
+  it('keeps the newest ts when a settling event arrives before older output', () => {
+    // The buffer holds one entry per slot, so an out-of-order pair must not walk
+    // the timestamp backwards while still settling the rank.
+    seedStore()
+    const { ws } = mount()
+
+    act(() => {
+      ws.simulateMessage(prompt('slot-1', '2026-08-10T19:00:05Z'))
+      ws.simulateMessage(msg('slot-1', '2026-08-10T19:00:01Z'))
+    })
+    runFrames()
+
+    expect(lastTs('slot-1')).toBe('2026-08-10T19:00:05Z')
+    expect(lastTurnTs('slot-1')).toBe('2026-08-10T19:00:05Z')
   })
 })

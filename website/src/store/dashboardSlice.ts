@@ -111,14 +111,28 @@ const dashboardSlice = createSlice({
       const slot = (state.slots ?? []).find(s => s.key === action.payload.slot)
       if (slot) slot.todo = action.payload.todo
     },
-    // Bump a slot's recency timestamp (last_ts) on live message activity so the sidebar
-    // recency tint re-ranks immediately off the finer-grained chat_message stream (vs
-    // waiting for the next full sseSlots push). last_ts is the last message of any role,
-    // so this covers user sends as well as agent output. Reducer stays pure — the caller
-    // supplies ts (falling back to now at the dispatch site).
-    touchSlotActivity(state, action: PayloadAction<{ key: string; ts: string }>) {
-      const slot = state.slots.find(s => s.key === action.payload.key)
-      if (slot) slot.last_ts = action.payload.ts
+    // Bump a slot's recency timestamps on live message activity so the sidebar
+    // re-ranks immediately off the finer-grained chat_message stream (vs waiting
+    // for the next full sseSlots push). `last_ts` is the last message of any role,
+    // so it moves for agent output too. `last_turn_ts` — the key the list is
+    // ORDERED by — moves only when `settled` is set (an inbound prompt), because a
+    // list that re-ranks on every streamed tool call swaps rows under the pointer
+    // while several sessions work. A turn ENDING re-ranks via the slots push that
+    // already carries the running-flag flip.
+    //
+    // Neither field may move BACKWARDS: an authoritative slots snapshot can land
+    // between a caller buffering the event and dispatching it, and overwriting
+    // that with an older arrival time reorders the sidebar. The two are guarded
+    // separately because mid-turn `last_ts` is ahead of `last_turn_ts`, so a
+    // shared check would discard a legitimate settling bump. Reducer stays pure —
+    // the caller supplies ts (falling back to now at the dispatch site).
+    touchSlotActivity(state, action: PayloadAction<{ key: string; ts: string; settled?: boolean }>) {
+      const { key, ts, settled } = action.payload
+      const slot = state.slots.find(s => s.key === key)
+      if (!slot) return
+      const t = Date.parse(ts)
+      if (!slot.last_ts || Date.parse(slot.last_ts) <= t) slot.last_ts = ts
+      if (settled && (!slot.last_turn_ts || Date.parse(slot.last_turn_ts) <= t)) slot.last_turn_ts = ts
     },
     setChannelTrusted(state, action: PayloadAction<boolean>) { state.channelTrusted = action.payload },
     sseSlotTitle(state, action: PayloadAction<{ key: string; title: string }>) {
