@@ -895,6 +895,8 @@ describe('ArtifactsPage — session document filters', () => {
 })
 
 // ── Library drag and drop ────────────────────────────────────────────────
+// Driven with MOUSE events: the library's sensors are MouseSensor (6px
+// distance) + TouchSensor (250ms hold). A pointerdown activates neither.
 describe('ArtifactsPage — dragging a card', () => {
   it('raises a drag ghost naming the artifact, and clears it when the drag is cancelled', async () => {
     seed({ artifacts: [mkArtifact('cr-queue')], folders: [mkFolder('ops', 'Ops')] })
@@ -902,8 +904,8 @@ describe('ArtifactsPage — dragging a card', () => {
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
 
     const card = screen.getByText('cr queue').closest('[role="button"]') as HTMLElement
-    fireEvent.pointerDown(card, { pointerId: 1, clientX: 0, clientY: 0, isPrimary: true, button: 0 })
-    fireEvent.pointerMove(document, { pointerId: 1, clientX: 40, clientY: 40 })
+    fireEvent.mouseDown(card, { clientX: 0, clientY: 0, button: 0 })
+    fireEvent.mouseMove(document, { clientX: 40, clientY: 40 })
 
     // The overlay ghost is a second rendering of the artifact's name.
     await waitFor(() => expect(screen.getAllByText('cr queue').length).toBeGreaterThan(1))
@@ -918,14 +920,37 @@ describe('ArtifactsPage — dragging a card', () => {
     renderWithProviders(<ArtifactsPage />)
     const card = await screen.findByRole('button', { name: 'Open folder Ops' })
 
-    fireEvent.pointerDown(card, { pointerId: 1, clientX: 0, clientY: 0, isPrimary: true, button: 0 })
-    fireEvent.pointerMove(document, { pointerId: 1, clientX: 40, clientY: 40 })
+    fireEvent.mouseDown(card, { clientX: 0, clientY: 0, button: 0 })
+    fireEvent.mouseMove(document, { clientX: 40, clientY: 40 })
 
     await waitFor(() => expect(screen.getAllByText('Ops').length).toBeGreaterThan(1))
 
-    fireEvent.pointerUp(document, { pointerId: 1, clientX: 40, clientY: 40 })
+    fireEvent.mouseUp(document, { clientX: 40, clientY: 40 })
 
     await waitFor(() => expect(screen.getAllByText('Ops')).toHaveLength(1))
+  })
+
+  it('hands a finger SWIPE back to the browser instead of picking the card up', async () => {
+    // The reported bug: a swipe that began on a card was swallowed by the drag
+    // sensor, so the gallery did not pan (while a swipe beginning in the gap
+    // between cards did). TouchSensor's DELAY constraint cancels the sensor as
+    // soon as the finger travels past the tolerance, so no drag starts and the
+    // browser keeps the gesture. jsdom cannot pan, so what is asserted is the
+    // observable half: no ghost is raised.
+    seed({ artifacts: [mkArtifact('cr-queue')], folders: [] })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+
+    const card = screen.getByText('cr queue').closest('[role="button"]') as HTMLElement
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 0, clientY: 0 }] })
+    // Well past the 5px tolerance, well under the 250ms hold — a scroll gesture.
+    fireEvent.touchMove(document, { touches: [{ identifier: 1, clientX: 0, clientY: 60 }] })
+
+    // Give the ghost every chance to appear before concluding it did not.
+    await new Promise(r => setTimeout(r, 60))
+    expect(screen.getAllByText('cr queue')).toHaveLength(1)
+
+    fireEvent.touchEnd(document, { touches: [] })
   })
 })
 
