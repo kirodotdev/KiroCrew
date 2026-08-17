@@ -23,6 +23,7 @@ loop offloads it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -206,17 +207,139 @@ def _cached_browser_names() -> set[str] | None:
         return None
 
 
+# playwright-core ships this manifest beside its entry point, listing the browser
+# revision each engine needs. It is the file `install-browser` consults, so it is
+# the authority on what "present" means for THIS installed CLI. Reading it is a
+# plain file read, which keeps `detect()` subprocess-free.
+_BROWSERS_MANIFEST = "browsers.json"
+_PLAYWRIGHT_CORE_PKG = "playwright-core"
+
+
+def _browsers_manifest_path() -> Path | None:
+    """Locate the installed ``playwright-core/browsers.json``, or ``None``.
+
+    Anchored on the resolved CLI so it finds the manifest for the SAME install
+    the launch will use, not some other copy on the host. Two on-disk layouts
+    reach the same sibling ``node_modules``:
+
+    * ``npm install -g`` leaves ``playwright-cli`` as a symlink into
+      ``.../node_modules/@playwright/cli/playwright-cli.js``; resolving the link
+      lands inside the package tree.
+    * the standalone launcher is a shell script at ``<root>/bin/playwright-cli``
+      whose sibling is ``<root>/node_modules``.
+
+    Both are covered by walking up from the resolved path and, at each ancestor,
+    probing ``<ancestor>/node_modules/playwright-core/browsers.json`` as well as a
+    ``<ancestor>/playwright-core/browsers.json`` (the ancestor already being a
+    ``node_modules`` dir, as when the resolved symlink sits inside the package).
+    """
+    cli = cli_path()
+    if cli is None:
+        return None
+    try:
+        # Follow a symlink (npm-global) to the real entry point; a shell-script
+        # launcher resolves to itself, which is fine -- its ancestors still hold
+        # the sibling node_modules.
+        anchor = Path(cli).resolve()
+    except OSError:
+        return None
+    for parent in [anchor, *anchor.parents]:
+        for candidate in (
+            parent / "node_modules" / _PLAYWRIGHT_CORE_PKG / _BROWSERS_MANIFEST,
+            parent / _PLAYWRIGHT_CORE_PKG / _BROWSERS_MANIFEST,
+        ):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _required_revisions() -> dict[str, str] | None:
+    """Required revision per engine, read from ``browsers.json``, or ``None``.
+
+    ``None`` means the required revision cannot be determined -- the manifest is
+    absent, unreadable, or not the shape this expects. Callers treat that as
+    "cannot confirm a revision" and fall back to the older presence-only check
+    rather than turning a working browser into a reported-broken one.
+
+    Keyed by the manifest's own engine names (``chromium``,
+    ``chromium-headless-shell``, ``firefox``, ``webkit``, ...). Only entries with
+    a string ``name`` and ``revision`` are kept, so a malformed row is skipped
+    rather than crashing the read.
+    """
+    path = _browsers_manifest_path()
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    browsers = data.get("browsers") if isinstance(data, dict) else None
+    if not isinstance(browsers, list):
+        return None
+    revisions: dict[str, str] = {}
+    for entry in browsers:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        revision = entry.get("revision")
+        if isinstance(name, str) and isinstance(revision, (str, int)):
+            revisions[name] = str(revision)
+    return revisions or None
+
+
+def _cache_dir_names_for(engine: str, revision: str) -> tuple[str, ...]:
+    """Cache directory names that satisfy *engine* at *revision*.
+
+    Playwright names a cache dir ``<manifest-name>-<revision>``, and separately
+    stores ``<manifest-name>_headless_shell-<revision>`` with the hyphens in the
+    manifest name turned to underscores (e.g. ``chromium-headless-shell`` ->
+    ``chromium_headless_shell-1232``). Accept the underscore form of the same
+    name too, so a manifest name that carries hyphens still matches its dir.
+    """
+    return (f"{engine}-{revision}", f"{engine.replace('-', '_')}-{revision}")
+
+
 def browsers_present() -> dict[str, bool]:
-    """Which engines have a downloaded build, keyed by engine name.
+    """Which engines have a build for the REVISION the installed CLI needs.
 
     Reported per engine rather than as one boolean so the panel can offer each
     download separately: a user who wants to check a page in Firefox should not
     have to discover that "browser installed" only ever meant Chromium.
+
+    A cache dir carries the revision (``chromium-1232``), and playwright-core
+    launches only the exact revision bound to its own version. A prefix match
+    (``name.startswith(engine)``) ignores that revision, so a stale
+    ``chromium-1208`` left over from before a CLI upgrade reads as present while
+    the launch fails ``Browser "chromium" is not installed`` -- and because the
+    gate reads ready, the panel never offers the download that would fix it. So
+    ``browsers.json`` supplies the required revision and the match is exact.
+
+    Degradation: when the required revision cannot be determined (manifest
+    absent/unreadable -- see :func:`_required_revisions`), fall back to the older
+    prefix match rather than reporting a browser broken on missing metadata. A
+    missing manifest is an unknown, not evidence of a stale cache.
     """
     names = _cached_browser_names()
     if names is None:
         return {engine: False for engine in BROWSER_ENGINES}
-    return {engine: any(name.startswith(engine) for name in names) for engine in BROWSER_ENGINES}
+    required = _required_revisions()
+    if required is None:
+        # Cannot confirm a revision: preserve the historical presence-only
+        # behaviour rather than failing closed on absent metadata.
+        return {
+            engine: any(name.startswith(engine) for name in names) for engine in BROWSER_ENGINES
+        }
+    result: dict[str, bool] = {}
+    for engine in BROWSER_ENGINES:
+        revision = required.get(engine)
+        if revision is None:
+            # The engine is not in the manifest at all: we cannot say which
+            # revision it needs, so degrade to presence-only for this one engine.
+            result[engine] = any(name.startswith(engine) for name in names)
+            continue
+        wanted = set(_cache_dir_names_for(engine, revision))
+        result[engine] = bool(wanted & names)
+    return result
 
 
 def _browser_present() -> bool:
