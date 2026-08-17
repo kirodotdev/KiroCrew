@@ -725,14 +725,21 @@ Four narrow Protocols, each with a shipped default, following the CPP pattern in
 
 | Protocol | Question | Public adapters |
 |---|---|---|
-| `SignalSource` | What is firing? | `cloudwatch`, `pagerduty`, `datadog`, `github-issues`, `webhook` |
-| `RotationSource` | Who is on shift? | `pagerduty`, `always-on` (default) |
-| `ActionSink` | Ack / resolve / comment / silence | `pagerduty`, `datadog`, `github-issues`, `noop` (default) |
+| `SignalSource` | What is firing? | `cloudwatch`, `pagerduty`, `incidentio`, `datadog`, `github-issues`, `webhook` |
+| `RotationSource` | Who is on shift? | `pagerduty`, `incidentio`, `always-on` (default) |
+| `ActionSink` | Ack / resolve / comment / silence | `pagerduty`, `incidentio`, `datadog`, `github-issues`, `noop` (default) |
 | `EvidenceSource` | Surrounding context | `cloudwatch-evidence`, `datadog-evidence` |
 
 Split four ways rather than one fat interface because real providers cover
 different subsets — CloudWatch has alarms and metrics but no rotation and nothing
 to resolve.
+
+A sink also covers only the verbs its provider actually has. `incidentio` offers
+`resolve` and `comment` and nothing else: an incident.io alert's status is a strict
+`firing`/`resolved` enum with no acknowledged state, and the API has no snooze, mute
+or suppress call for a single alert (a maintenance window is account-level config).
+Advertising a verb the provider cannot perform would pass the autonomy gate and then
+fail at execute time, after the board had recorded the action as granted.
 
 ### Evidence is brokered to the agent, never delegated
 
@@ -1308,7 +1315,7 @@ reporting `on_shift=False` refused the write; `enabled: false` returned "granted
 cloudwatch" for the same signal.
 
 \#5 is fenced exactly like #1 (`policy_store.PAGERDUTY_USER_KEY`, dropped from `config_fields`,
-written by `PUT /settings`). Both identities are reported back on `GET /rotation` under
+written by `PUT /settings`). All three identities are reported back on `GET /rotation` under
 `identities` so Settings can render and edit them — the provider catalog no longer carries them,
 and an operator who cannot see which identity is stored cannot tell a wrong one from an unset
 one. An identity is not a credential, and `roster.me` already publishes the resolved login.
@@ -2065,8 +2072,12 @@ in the adapter:
   assigned issues) so the post-filter count is not the truncation signal.
 - **PagerDuty** reads its response `more` flag — 100 is that endpoint's maximum `limit`, so a
   `limit + 1` request would be clamped and read back as a full page.
+- **incident.io** follows the `pagination_meta.after` cursor and derives the verdict after the
+  walk from the final count, because a page can both overshoot the cap and be terminal; a page
+  ceiling (`_MAX_ALERT_PAGES`) refuses a cursor walk that never terminates rather than reporting
+  a partial estate as complete.
 
-All four return `providers.base.TruncatedSignals` (a `list` subclass) when the source had more
+All five return `providers.base.TruncatedSignals` (a `list` subclass) when the source had more
 than a poll can carry, and `poll_all` marks the poll non-authoritative — the same
 `snapshot=False` channel, honoured even when a client-side filter brought the surviving count back
 under the cap. Found in review (GPT 5.6).

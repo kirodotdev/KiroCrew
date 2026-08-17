@@ -64,17 +64,81 @@ import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import {
   opsApi,
+  OpsApiError,
   type AutonomyRule,
   type CompanionInfo,
   type LedgerSyncStatus,
   type NotifyOutStatus,
   type OperatingMode,
   type ProviderInfo,
+  type RotationIdentities,
   type RotationRoster,
   type SlackOutStatus,
   type SweepWindows,
 } from './api'
 import { useImeGuard } from '../../hooks/useImeGuard'
+
+/**
+ * Operator-facing message for a failed settings write.
+ *
+ * The error contract puts a machine `code` on every error body so callers can
+ * speak task vocabulary instead of the raw reason — which for the keystone's
+ * OSError-backed 503 is `str(exc)` ("[Errno 13] Permission denied") and for the
+ * validation 400s names the snake_case settings key. `subject` picks the
+ * sentence's subject (an identity field vs a settings change); both refusal
+ * strings name the settings store as the refuser, so a persistently failing
+ * retry has a diagnosis. Uncoded failures keep their backend reason verbatim.
+ */
+function settingsRefusalMessage(error: unknown, subject: 'identity' | 'change'): string {
+  if (error instanceof OpsApiError) {
+    if (error.code === 'policy_store_unwritable') {
+      return subject === 'identity'
+        ? i18nT('apps.opsMissionControl.settingsPanel.identity_save_refused')
+        : i18nT('apps.opsMissionControl.settingsPanel.change_save_refused')
+    }
+    if (error.code === 'value_too_long') {
+      return i18nT('apps.opsMissionControl.settingsPanel.value_too_long_refused')
+    }
+  }
+  return (error as Error).message
+}
+
+/**
+ * Fenced rotation identities by provider id — the keystone-backed field a
+ * rotation-capable provider row renders. Keys only: the labels are resolved
+ * through `i18nT` at render so a locale switch re-translates them. Field name
+ * and settings key coincide by construction (`RotationIdentities` mirrors the
+ * keystone keys), so one name serves both.
+ */
+const FENCED_IDENTITY_FIELDS: Record<
+  string,
+  { labelKey: string; helpKey: string; settingsKey: keyof RotationIdentities }
+> = {
+  pagerduty: {
+    labelKey: 'apps.opsMissionControl.settingsPanel.your_pagerduty_user_id',
+    helpKey: 'apps.opsMissionControl.settingsPanel.pagerduty_user_id_help',
+    settingsKey: 'pagerduty_user_id',
+  },
+  incidentio: {
+    labelKey: 'apps.opsMissionControl.settingsPanel.your_incident_io_user_id',
+    helpKey: 'apps.opsMissionControl.settingsPanel.incidentio_user_id_help',
+    settingsKey: 'incidentio_user_id',
+  },
+}
+
+function fencedIdentityFor(
+  providerId: string,
+  identities: RotationIdentities | undefined,
+): { label: string; settingsKey: string; value: string; help: string } | undefined {
+  const field = FENCED_IDENTITY_FIELDS[providerId]
+  if (!field) return undefined
+  return {
+    label: i18nT(field.labelKey),
+    settingsKey: field.settingsKey,
+    value: identities?.[field.settingsKey] ?? '',
+    help: i18nT(field.helpKey),
+  }
+}
 
 /** Module-level frozen empty so the render-time fallback is referentially stable. */
 const EMPTY_COMPANIONS: readonly CompanionInfo[] = Object.freeze([])
@@ -224,6 +288,19 @@ function ProviderRow({
               {i18nT('apps.opsMissionControl.settingsPanel.save')}
             </SendBtn>
           </label>
+          {identityMutation.isError ? (
+            <>
+              {/* No hand-off: the unsaved provider identity typed into
+                  `omc-${provider.id}-fenced-identity` (`identityDraft`) is still in the
+                  input — it is cleared only on success, so the refusal must not offer an
+                  agent hand-off over a value the keystone never accepted. A refused
+                  keystone write comes back as a coded 503 precisely so the operator is
+                  not left guessing whether the identity landed. */}
+              <ErrorNotice
+                message={settingsRefusalMessage(identityMutation.error, 'identity')}
+              />
+            </>
+          ) : null}
           <p className="text-[12px] text-muted">{fencedIdentity.help}</p>
         </div>
       ) : null}
@@ -990,7 +1067,7 @@ shifts:
           </p>
           {/* No hand-off: the GitHub login typed into `omc-schedule-login` is unsaved. */}
           {loginMutation.isError ? (
-            <ErrorNotice message={(loginMutation.error as Error).message} />
+            <ErrorNotice message={settingsRefusalMessage(loginMutation.error, 'identity')} />
           ) : null}
         </div>
       ) : null}
@@ -1466,7 +1543,10 @@ export default function SettingsPanel() {
         {/* No hand-off: this page also holds the provider rows' identity, login and
             secret drafts, which the navigation would discard. */}
         {settingsMutation.isError ? (
-          <ErrorNotice className="mt-2" message={(settingsMutation.error as Error).message} />
+          <ErrorNotice
+            className="mt-2"
+            message={settingsRefusalMessage(settingsMutation.error, 'change')}
+          />
         ) : null}
       </Card>
 
@@ -1497,16 +1577,7 @@ export default function SettingsPanel() {
             <ProviderRow
               key={p.id}
               provider={p}
-              fencedIdentity={
-                p.id === 'pagerduty'
-                  ? {
-                    label: i18nT('apps.opsMissionControl.settingsPanel.your_pagerduty_user_id'),
-                    settingsKey: 'pagerduty_user_id',
-                    value: rotationQuery.data?.identities?.pagerduty_user_id ?? '',
-                    help: i18nT('apps.opsMissionControl.settingsPanel.pagerduty_user_id_help'),
-                  }
-                  : undefined
-              }
+              fencedIdentity={fencedIdentityFor(p.id, rotationQuery.data?.identities)}
             />
           ))
         )}

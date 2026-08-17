@@ -25,6 +25,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+import { OpsApiError } from '../apps/ops-mission-control/api'
 import type {
   AutonomyRule,
   BoardState,
@@ -46,7 +47,13 @@ const mockApi = vi.hoisted(() => ({
   putSecret: vi.fn(),
   deleteSecret: vi.fn(),
 }))
-vi.mock('../apps/ops-mission-control/api', () => ({ opsApi: mockApi }))
+// Spread the real module so value exports (`OpsApiError`) keep their identity —
+// the identity refusal branch narrows with `instanceof`, and a bare factory would
+// hand the component `undefined` for the class.
+vi.mock('../apps/ops-mission-control/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../apps/ops-mission-control/api')>()),
+  opsApi: mockApi,
+}))
 
 const SettingsPanel = (await import('../apps/ops-mission-control/SettingsPanel')).default
 
@@ -586,6 +593,55 @@ describe('the fenced rotation identity', () => {
 
     fireEvent.keyDown(await findField(/Your PagerDuty user ID/), { key: 'Enter' })
     expect(mockApi.putSettings).not.toHaveBeenCalled()
+  })
+
+  it('maps a coded keystone refusal to task vocabulary, keeping the draft', async () => {
+    pagerduty()
+    // The 503's `error` field is the raw OSError text — the operator-facing notice
+    // must say what happened in task terms, and name the refuser so a persistently
+    // failing retry has a diagnosis. Found in review (UX).
+    mockApi.putSettings.mockRejectedValue(
+      new OpsApiError('[Errno 13] Permission denied', 'policy_store_unwritable'),
+    )
+    renderPanel()
+
+    const input = await findField(/Your PagerDuty user ID/)
+    fireEvent.change(input, { target: { value: 'PREFUSED' } })
+    fireEvent.click(commitIn(/Your PagerDuty user ID/))
+
+    await screen.findByText('Your ID was not saved — the settings store refused the write. Retry.')
+    expect(screen.queryByText(/Errno 13/)).not.toBeInTheDocument()
+    // The draft survives the refusal — cleared only on success.
+    expect(input).toHaveValue('PREFUSED')
+  })
+
+  it('maps the overlong-value validation refusal off its snake_case reason', async () => {
+    pagerduty()
+    // The 400's `error` names the settings key ("pagerduty_user_id is too long") —
+    // machine text at an operator field. Found in review (UX).
+    mockApi.putSettings.mockRejectedValue(
+      new OpsApiError('pagerduty_user_id is too long', 'value_too_long'),
+    )
+    renderPanel()
+
+    const input = await findField(/Your PagerDuty user ID/)
+    fireEvent.change(input, { target: { value: 'P'.repeat(129) } })
+    fireEvent.click(commitIn(/Your PagerDuty user ID/))
+
+    await screen.findByText('That value is too long, so it was not saved.')
+    expect(screen.queryByText(/pagerduty_user_id/)).not.toBeInTheDocument()
+  })
+
+  it('shows an uncoded failure verbatim — the backend reason is the message', async () => {
+    pagerduty()
+    mockApi.putSettings.mockRejectedValue(new Error('identity too long (max 128 chars)'))
+    renderPanel()
+
+    const input = await findField(/Your PagerDuty user ID/)
+    fireEvent.change(input, { target: { value: 'PLONG' } })
+    fireEvent.click(commitIn(/Your PagerDuty user ID/))
+
+    await screen.findByText('identity too long (max 128 chars)')
   })
 })
 
