@@ -46,7 +46,10 @@ logger = logging.getLogger("kirocrew.app.papyrus")
 
 #: A clone URL must match a known transport. Modern git already refuses an
 #: option-shaped URL, but the check is free and closes the door on every version.
-GIT_URL_RE = re.compile(r"^(?:https?|git|ssh)://[^\s]+$|^git@[\w.-]+:[^\s]+$")
+#: Anchored at ``\Z`` in both alternations: Python's ``$`` matches before a
+#: trailing newline, so a ``$`` anchor would accept ``"https://host/repo\n"``
+#: and hand the newline through to git's argv.
+GIT_URL_RE = re.compile(r"^(?:https?|git|ssh)://[^\s]+\Z|^git@[\w.-]+:[^\s]+\Z")
 
 #: Wall-clock ceilings, by operation cost.
 CLONE_TIMEOUT_SEC = 120.0

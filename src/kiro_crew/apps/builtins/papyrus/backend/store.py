@@ -55,7 +55,10 @@ MAIN_FILE_CANDIDATES = ("main.tex", "paper.tex", "article.tex", "manuscript.tex"
 #: A project name must be one lowercase slug segment. Anything else (a slash, a
 #: dot, a leading dash) is refused rather than sanitized, because a "cleaned up"
 #: name silently addresses a different project than the one the user typed.
-PROJECT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+#: Anchored at ``\Z``: Python's ``$`` matches before a trailing newline, so a
+#: ``$`` anchor would accept ``"name\n"`` and mint a directory whose name
+#: carries the newline into every later ``git``/``pdflatex`` argv.
+PROJECT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\Z")
 
 #: Ceiling on how many files ``list_files`` will walk/return. A cloned repo can
 #: contain a build tree; an unbounded walk would be both a slow response and an
