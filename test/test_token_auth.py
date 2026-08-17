@@ -763,6 +763,52 @@ async def test_internal_path_non_loopback_wrong_secret_denied() -> None:
 
 
 @pytest.mark.asyncio
+async def test_internal_path_non_loopback_distinguishes_empty_from_wrong_secret(
+    monkeypatch,
+) -> None:
+    """The non-loopback mixed-path deny site must fingerprint-distinguish an
+    EMPTY X-Internal-Secret header from a WRONG one, same as the loopback arm
+    already does -- otherwise the two causes (caller found no credential file
+    vs. caller reached the wrong gateway) collapse into one audit label and
+    cannot be told apart after the fact."""
+    import kiro_crew.dashboard.token_auth as ta
+
+    calls: list[dict] = []
+
+    class _FakeSel:
+        def log_api_access(self, **kw):
+            calls.append(kw)
+
+    monkeypatch.setattr(ta, "_sel_fn", lambda: _FakeSel())
+    mw = ta.token_auth_middleware(
+        internal_paths=frozenset({"/api/spawn"}), internal_secret="real", local_only=False
+    )
+
+    token = generate_token("testuser", ttl_seconds=300)
+    empty_req = _make_request(
+        path="/api/spawn",
+        remote="10.0.0.1",
+        headers={"X-Internal-Secret": ""},
+        cookies={"mc_token_5476": token},
+    )
+    resp = await mw(empty_req, _ok_handler)
+    assert resp.status == 403
+    assert "received=absent" in calls[-1]["error"]
+
+    calls.clear()
+    wrong_req = _make_request(
+        path="/api/spawn",
+        remote="10.0.0.1",
+        headers={"X-Internal-Secret": "wrong"},
+        cookies={"mc_token_5476": token},
+    )
+    resp = await mw(wrong_req, _ok_handler)
+    assert resp.status == 403
+    assert "received=absent" not in calls[-1]["error"]
+    assert "len=5" in calls[-1]["error"]  # len("wrong") == 5
+
+
+@pytest.mark.asyncio
 async def test_internal_path_non_loopback_valid_secret_and_cookie_granted() -> None:
     """Both valid secret and valid cookie on non-loopback → granted."""
     token = generate_token("testuser", ttl_seconds=300)
