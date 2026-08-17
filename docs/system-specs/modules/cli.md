@@ -131,7 +131,8 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew config set --file <path>` | Replace config from a JSON file |
 | `kirocrew config edit` | Open config in `$EDITOR` |
 | `kirocrew memory list/search/stats/audit` | Inspect vector memory (entries, semantic search, counts, suspicious-content scan) |
-| `kirocrew memory export/import/migrate` | Export memory to JSON, import it back, or migrate legacy markdown memory into the vector store |
+| `kirocrew memory show [preferences\|projects\|history]` | Read the markdown memory layer (all three when no target given); `--format md\|json`, `--since YYYY-MM-DD` for history |
+| `kirocrew memory export/import/migrate` | Export memory to JSON (`--include-markdown` adds the markdown layer), import it back, or migrate legacy markdown memory into the vector store |
 | `kirocrew policy show/validate/explain/profile` | Inspect the effective enterprise security policy, load-check it and all profiles, explain one tool/scope decision for a surface, or print a profile. `show` also summarizes the built-in denied-command catalog as grouped counts (`--ids` lists each category's rule ids), on every install regardless of whether an enterprise policy is active — the one place an agent can learn a class of work is hard-denied before planning around it. |
 | `kirocrew pod up/down/ls/status/token/url/logs/exec/install/provision` | Isolated worktree test gateways (**Linux `systemd --user` only** — every systemd-touching verb refuses with a one-line message on macOS/Windows). See `src/kiro_crew/pod/README.md`. |
 | `kirocrew knowledge dedup [--apply]` | Collapse cross-source duplicate knowledge documents (dry-run unless `--apply`) |

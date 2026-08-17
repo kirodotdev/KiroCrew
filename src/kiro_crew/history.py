@@ -5151,7 +5151,24 @@ class HistoryConsolidator:
                             len(prefs),
                         )
                     elif prefs.strip() != current_prefs.strip():
-                        memory.write_preferences(prefs)
+                        # Offloaded like append_history above (blocking file
+                        # I/O on the event loop thread). expected_baseline is
+                        # the compare-and-swap guard: this whole-file result
+                        # was merged from current_prefs, read BEFORE the
+                        # minutes-long LLM call — if a dashboard Save landed
+                        # in that window, writing would silently revert it,
+                        # so the store skips the stale write instead.
+                        wrote = await run_in_embed_pool(
+                            lambda: memory.write_preferences(
+                                prefs, expected_baseline=current_prefs
+                            )
+                        )
+                        if not wrote:
+                            logger.info(
+                                "Consolidated preferences for %s discarded: file "
+                                "changed during consolidation",
+                                key,
+                            )
 
                 if projects := result.get("projects_update"):
                     if not _is_plausible_memory_file(projects, "# Active Projects"):
@@ -5162,7 +5179,17 @@ class HistoryConsolidator:
                             len(projects),
                         )
                     elif projects.strip() != current_projects.strip():
-                        memory.write_projects(projects)
+                        wrote = await run_in_embed_pool(
+                            lambda: memory.write_projects(
+                                projects, expected_baseline=current_projects
+                            )
+                        )
+                        if not wrote:
+                            logger.info(
+                                "Consolidated projects for %s discarded: file "
+                                "changed during consolidation",
+                                key,
+                            )
 
             # Lesson extraction: _save_lessons calls write_lesson which embeds
             # each rule (+ up to 5 lazy backfills) via blocking urllib to Ollama.

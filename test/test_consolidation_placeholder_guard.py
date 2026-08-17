@@ -166,8 +166,12 @@ class TestConsolidatePlaceholderGuard:
             }
             await c._consolidate("k", include_history=False)
 
-        memory.write_preferences.assert_called_once_with(new_prefs)
-        memory.write_projects.assert_called_once_with(new_projects)
+        memory.write_preferences.assert_called_once_with(
+            new_prefs, expected_baseline="# User Preferences\n\n- old\n"
+        )
+        memory.write_projects.assert_called_once_with(
+            new_projects, expected_baseline="# Active Projects\n\n## Old\n"
+        )
 
     @pytest.mark.asyncio
     async def test_shrunk_but_valid_update_is_written(self):
@@ -182,7 +186,7 @@ class TestConsolidatePlaceholderGuard:
             llm.return_value = {"projects_update": trimmed}
             await c._consolidate("k", include_history=False)
 
-        memory.write_projects.assert_called_once_with(trimmed)
+        memory.write_projects.assert_called_once_with(trimmed, expected_baseline=bloated)
 
     @pytest.mark.asyncio
     async def test_omitted_update_keys_write_nothing(self):

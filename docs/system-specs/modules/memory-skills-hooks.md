@@ -359,7 +359,9 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 
 ### CLI
 
-`kirocrew memory {list,search,stats,audit,export,migrate,import}` — manage vector memory from command line:
+`kirocrew memory {list,search,show,stats,audit,export,migrate,import}` — manage memory from the command line:
+- `show [preferences|projects|history]` — read the markdown layer through `MemoryStore` (all three targets when none given); `--format md|json` (json entries carry `path`, `updated_at` mtime in UTC ISO-8601, `content`), `--since YYYY-MM-DD` filters history days. Missing/empty files print as empty rather than erroring
+- `export` — vector-store collections; `--include-markdown` opts in a `markdown` collection (`preferences`/`projects` entries + per-day `history` list from `MemoryStore.markdown_snapshot()`) without changing the default payload shape
 - `migrate` — one-time markdown → structured migration (preferences.md → semantic, history/*.md → episodic)
 - `import <file>` — restore from JSON export with full validation
 - `kirocrew security audit` also scans vector memory for injection patterns

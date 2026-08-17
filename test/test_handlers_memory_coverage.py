@@ -167,6 +167,40 @@ class TestPreferencesProjectsHistory:
         mem.write_preferences.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_preferences_put_write_runs_off_the_event_loop_thread(self) -> None:
+        """The atomic write is synchronous file I/O; run inline it stalls every
+        other gateway task on a slow filesystem, so the handler must offload it."""
+        import threading
+
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+        mem = MagicMock()
+        mem.write_preferences.side_effect = lambda _c: write_threads.append(
+            threading.get_ident()
+        )
+        state = _make_state(memory=mem)
+        req = _make_request(state, method="PUT", json_body={"content": "- new"})
+        resp = await mem_mod.api_memory_preferences(req)
+        assert resp.status == 200
+        assert write_threads and write_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_projects_put_write_runs_off_the_event_loop_thread(self) -> None:
+        import threading
+
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+        mem = MagicMock()
+        mem.write_projects.side_effect = lambda _c: write_threads.append(
+            threading.get_ident()
+        )
+        state = _make_state(memory=mem)
+        req = _make_request(state, method="PUT", json_body={"content": "## P"})
+        resp = await mem_mod.api_memory_projects(req)
+        assert resp.status == 200
+        assert write_threads and write_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
     async def test_projects_get_returns_stored_content(self) -> None:
         mem = MagicMock()
         mem.read_projects.return_value = "## Proj"
@@ -204,9 +238,14 @@ class TestPreferencesProjectsHistory:
         target = tmp_path / "history" / "2026-01-01.md"
         mem = MagicMock()
         mem._today_history_file.return_value = target
+        # The handler must route through the store's atomic, symlink-safe
+        # writer — a raw write_text would follow a planted dated symlink and
+        # tear under concurrent PUTs.
+        mem._atomic_write_text.side_effect = lambda p, c: p.write_text(c, encoding="utf-8")
         state = _make_state(memory=mem)
         req = _make_request(state, method="PUT", json_body={"content": "entry"})
         assert (await mem_mod.api_memory_history(req)).status == 200
+        mem._atomic_write_text.assert_called_once_with(target, "entry")
         assert target.read_text(encoding="utf-8") == "entry"
 
     @pytest.mark.asyncio

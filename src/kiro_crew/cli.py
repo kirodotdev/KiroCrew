@@ -1947,15 +1947,39 @@ Examples:
     art_ver.add_argument("slug", help="Artifact slug")
 
     # Memory
-    mem_parser = sub.add_parser("memory", help="Manage vector memory system")
+    mem_parser = sub.add_parser("memory", help="Manage memory (vector store + markdown layer)")
     mem_sub = mem_parser.add_subparsers(dest="mem_action")
     mem_sub.add_parser("list", help="Show semantic memory entries")
     mem_search = mem_sub.add_parser("search", help="Search episodic memories")
     mem_search.add_argument("query", help="Search query text")
+    mem_show = mem_sub.add_parser(
+        "show", help="Show the markdown memory layer (preferences, projects, daily history)"
+    )
+    mem_show.add_argument(
+        "target",
+        nargs="?",
+        choices=["preferences", "projects", "history"],
+        help="Layer to show (default: all three)",
+    )
+    mem_show.add_argument(
+        "--format",
+        choices=["md", "json"],
+        default="md",
+        help="Output format: raw markdown or structured JSON (default: md)",
+    )
+    mem_show.add_argument(
+        "--since",
+        help="History only: include days on or after DATE (YYYY-MM-DD)",
+    )
     mem_sub.add_parser("stats", help="Show memory statistics")
     mem_sub.add_parser("audit", help="Scan memory for suspicious content")
     mem_export = mem_sub.add_parser("export", help="Export all memory to JSON")
     mem_export.add_argument("--output", "-o", help="Output file (default: stdout)")
+    mem_export.add_argument(
+        "--include-markdown",
+        action="store_true",
+        help="Also include the markdown layer (preferences, projects, daily history)",
+    )
     mem_sub.add_parser("migrate", help="Migrate legacy markdown memory to vector store")
     mem_import = mem_sub.add_parser("import", help="Import memory from JSON file")
     mem_import.add_argument("file", help="Path to JSON file (export format)")

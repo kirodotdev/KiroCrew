@@ -54,6 +54,16 @@ from .cron import _recognize_session
 
 logger = logging.getLogger(__name__)
 
+# Per-endpoint write serialization for the offloaded markdown saves below.
+# asyncio.to_thread hands each PUT to an executor worker, and workers can
+# acquire the store's file lock OUT OF REQUEST ORDER — a rapid pair of saves
+# could commit the older content last. The event loop used to serialize these
+# accidentally (inline writes); these locks restore that ordering explicitly
+# while keeping the blocking I/O off the loop.
+_prefs_write_lock = asyncio.Lock()
+_projects_write_lock = asyncio.Lock()
+_history_write_lock = asyncio.Lock()
+
 # Bounded because a wedged native load has no cancellation: without a deadline
 # the progress tracker would sit at `applying` forever and every later apply
 # would 409. Safe to bound ONLY because the candidate is gated — an abandoned
@@ -77,7 +87,18 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         content = body.get("content", "")
-        mem.write_preferences(content)
+        # Offloaded to a worker thread: write_preferences does synchronous
+        # atomic file I/O plus an FTS index update, and this handler runs on
+        # the gateway event loop — inline, a slow filesystem stalls every
+        # other gateway task. asyncio.to_thread (not the embed pool): this
+        # write does no embedding, and the embed bulkhead's workers can all
+        # be parked behind a hung embedding endpoint, which would make a
+        # Memory-tab Save wait on unrelated embed traffic. The endpoint lock
+        # keeps rapid successive saves committing in request order (workers
+        # can otherwise acquire the store's file lock out of order — see
+        # module top).
+        async with _prefs_write_lock:
+            await asyncio.to_thread(mem.write_preferences, content)
         return web.json_response({"ok": True})
     return web.json_response({"content": mem.read_preferences()})
 
@@ -92,7 +113,9 @@ async def api_memory_projects(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         content = body.get("content", "")
-        mem.write_projects(content)
+        # Offloaded for the same reason as api_memory_preferences above.
+        async with _projects_write_lock:
+            await asyncio.to_thread(mem.write_projects, content)
         return web.json_response({"ok": True})
     return web.json_response({"content": mem.read_projects()})
 
@@ -107,10 +130,16 @@ async def api_memory_history(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         content = body.get("content", "")
-        # Write to today's history file
+        # Write to today's history file. Offloaded like the two handlers
+        # above (synchronous file I/O on the event loop stalls every other
+        # gateway task), and routed through the store's atomic writer:
+        # write_text would follow a planted symlink at the dated name and
+        # tear under concurrent PUTs; the atomic replace commits whole
+        # versions and never traverses a link at the temp path.
         today_path = mem._today_history_file()
         today_path.parent.mkdir(parents=True, exist_ok=True)
-        today_path.write_text(content, encoding="utf-8")
+        async with _history_write_lock:
+            await asyncio.to_thread(mem._atomic_write_text, today_path, content)
         return web.json_response({"ok": True})
     return web.json_response({"content": mem.read_recent_history()})
 

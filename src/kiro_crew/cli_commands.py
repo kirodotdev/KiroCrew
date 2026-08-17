@@ -64,6 +64,7 @@ from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.memory import MemoryStore
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.security import (
     BUILTIN_DENIED_RULES,
@@ -1508,7 +1509,9 @@ def _learn(args: argparse.Namespace) -> None:
                     # the dashboard's JSONL path: a blank/legacy category gets
                     # the store's own "knowledge" default instead of printing [].
                     category = normalize_lesson_category(le.category, strict=False)
-                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}")
+                    print(
+                        f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}"
+                    )
 
         elif action == "remove":
             if vs.get_lessons() and vs.delete_lesson(args.query):
@@ -1524,14 +1527,71 @@ def _learn(args: argparse.Namespace) -> None:
         vs.close()
 
 
+def _markdown_memory_store() -> MemoryStore:
+    """MemoryStore anchored where the DEFAULT runtime writer writes.
+
+    The markdown layer this surface exposes is written by the gateway's
+    consolidator, which is constructed over a bare ``MemoryStore()`` (the
+    hard-coded ``workspace`` dir under the data home). The reader must resolve
+    identically or an install whose config maps the default workspace
+    elsewhere would export a tree the consolidator never writes to. In a stock
+    config this is the same directory ``workspace_dir_for()`` returns; when
+    they diverge, the writer wins.
+    """
+    return MemoryStore()
+
+
+def _memory_show(args: argparse.Namespace) -> None:
+    """Read-only view of the markdown memory layer (preferences/projects/history).
+
+    Routes through :class:`MemoryStore`'s own readers so consumers depend on an
+    interface rather than the on-disk layout. A missing or empty file is a
+    normal state and prints as empty rather than erroring. Validation failures
+    go to stderr with a non-zero exit so scheduled (non-TTY) consumers get a
+    real failure signal instead of non-JSON text on stdout.
+    """
+    target = getattr(args, "target", None)
+    since_raw = getattr(args, "since", None)
+    since = None
+    if since_raw:
+        if target not in (None, "history"):
+            print("--since applies only to history", file=sys.stderr)
+            sys.exit(1)
+        try:
+            since = datetime.strptime(since_raw, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"Invalid --since date (expected YYYY-MM-DD): {since_raw}", file=sys.stderr)
+            sys.exit(1)
+    snapshot = _markdown_memory_store().markdown_snapshot(since=since)
+    if getattr(args, "format", "md") == "json":
+        payload = snapshot[target] if target else snapshot
+        print(json.dumps(payload, indent=2))
+        return
+    parts: list[str] = []
+    for key in [target] if target else ["preferences", "projects", "history"]:
+        if key == "history":
+            parts.extend(e["content"].strip() for e in snapshot[key] if e["content"].strip())
+        elif snapshot[key]["content"].strip():
+            parts.append(snapshot[key]["content"].strip())
+    text = "\n\n".join(parts)
+    if text:
+        # The markdown layer is consolidator (LLM) written — strip terminal
+        # control sequences before printing, same policy as `memory list`.
+        print(_TERMINAL_CTRL_RE.sub("", text))
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
-    """Manage vector memory system."""
+    """Manage the memory system (vector store + markdown layer)."""
+    action = getattr(args, "mem_action", None)
+    # "show" reads only the markdown layer — don't open (or create) the
+    # vector store for it.
+    if action == "show":
+        _memory_show(args)
+        return
     cfg = KiroCrewConfig.load()
     store = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim)
     store.init()
     try:
-        action = getattr(args, "mem_action", None)
-
         if action == "list":
             entries = store.get_all_semantic()
             if not entries:
@@ -1548,7 +1608,9 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                 if str(e["key"]).startswith("lesson."):
                     val = _lesson_display_text(val) or val
                 safe_val = _TERMINAL_CTRL_RE.sub("", str(val))
-                print(f"  {e['key']}: {safe_val}  (confidence={e['confidence']}, source={e['source']})")
+                print(
+                    f"  {e['key']}: {safe_val}  (confidence={e['confidence']}, source={e['source']})"
+                )
 
         elif action == "search":
             results = store.search_episodic(query_text=args.query, limit=10)
@@ -1591,11 +1653,15 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                 print("✅ No suspicious content in memory.")
 
         elif action == "export":
-            data = {
+            data: dict[str, object] = {
                 "semantic": store.get_all_semantic(),
                 "episodic": store.get_episodic_list(limit=10000),
                 "events": store.get_events(limit=1000),
             }
+            if getattr(args, "include_markdown", False):
+                # Opt-in so the default payload shape stays byte-identical
+                # for existing consumers.
+                data["markdown"] = _markdown_memory_store().markdown_snapshot()
             output = json.dumps(data, indent=2, default=str)
             out_file = getattr(args, "output", None)
             if out_file:
@@ -1626,9 +1692,17 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(f"  Semantic: {counts['semantic']}")
             print(f"  Episodic: {counts['episodic']}")
             print(f"  Skipped:  {counts['skipped']}")
+            if "markdown" in data:
+                # The markdown collection is export-only: the markdown layer is
+                # consolidator-owned, so import never writes it. Say so rather
+                # than letting a backup/restore silently drop it.
+                print(
+                    "Note: the 'markdown' collection is export-only and was NOT imported "
+                    "(the markdown memory layer has no write path here)."
+                )
 
         else:
-            print("Usage: kirocrew memory {list|search|stats|audit|export|migrate|import}")
+            print("Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|import}")
     finally:
         store.close()
 

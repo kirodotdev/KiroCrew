@@ -93,8 +93,22 @@ Kiro Crew automatically consolidates conversations into memory:
 
 No manual action needed — it happens in the background.
 
+## Reading Memory Programmatically
+
+The markdown layer is readable through the CLI, so consumers depend on an
+interface rather than the on-disk layout:
+
+- `kirocrew memory show [preferences|projects|history]` — print the markdown
+  layer (all three when no target is given). `--format json` returns structured
+  entries with `path`, `updated_at`, and `content`; `--since YYYY-MM-DD` limits
+  history to days on or after that date.
+- `kirocrew memory export --include-markdown` — add a `markdown` collection to
+  the JSON export. Without the flag the export shape is unchanged.
+
+Both run non-interactively (no TTY or editor needed), so they work from
+scheduled jobs.
+
 ## Editing Memory
 
 - **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
-- **CLI**: `kirocrew memory show` / `kirocrew memory edit`
 - **Chat**: ask Kiro Crew to update its memory files directly
