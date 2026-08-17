@@ -8027,6 +8027,7 @@
       "collapse_knowledge_context": "Wissenskontext einklappen",
       "connection_error": "Verbindungsfehler",
       "continue_a_previous_chat": "Einen früheren Chat fortsetzen?",
+      "could_not_continue": "Fortsetzen fehlgeschlagen",
       "could_not_regenerate": "Neu erstellen fehlgeschlagen",
       "could_not_set_the_agent_default_model": "Standardmodell des Agenten konnte nicht festgelegt werden",
       "could_not_switch_variant": "Versionswechsel fehlgeschlagen",

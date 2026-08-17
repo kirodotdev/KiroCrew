@@ -7924,6 +7924,7 @@
       "collapse_knowledge_context": "지식 컨텍스트 접기",
       "connection_error": "연결 오류",
       "continue_a_previous_chat": "이전 채팅을 계속할까요?",
+      "could_not_continue": "계속할 수 없습니다",
       "could_not_regenerate": "다시 생성할 수 없습니다",
       "could_not_set_the_agent_default_model": "에이전트의 기본 모델을 설정할 수 없습니다",
       "could_not_switch_variant": "버전을 전환할 수 없습니다",

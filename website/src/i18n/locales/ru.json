@@ -8233,6 +8233,7 @@
       "collapse_knowledge_context": "Свернуть контекст знаний",
       "connection_error": "Ошибка соединения",
       "continue_a_previous_chat": "Продолжить предыдущий чат?",
+      "could_not_continue": "Не удалось продолжить",
       "could_not_regenerate": "Не удалось сгенерировать заново",
       "could_not_set_the_agent_default_model": "Не удалось назначить модель по умолчанию для агента",
       "could_not_switch_variant": "Не удалось переключить версию",

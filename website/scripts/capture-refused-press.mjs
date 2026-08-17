@@ -28,6 +28,10 @@ const SCENES = [
   { name: 'regenerate-dark', scene: 'regenerate', theme: 'dark', notice: true, title: "Couldn't regenerate", refusal: 'slot is running' },
   { name: 'regenerate-light', scene: 'regenerate', theme: 'light', notice: true, title: "Couldn't regenerate", refusal: 'slot is running' },
   { name: 'switch-variant-dark', scene: 'switch_variant', theme: 'dark', notice: true, title: "Couldn't switch version", refusal: 'no variants' },
+  // Continue also renders the error card and the composer's Resume button, so
+  // these two frames double as the before/after for that pair.
+  { name: 'continue-dark', scene: 'continue', theme: 'dark', notice: true, title: "Couldn't continue", refusal: 'sub-agents are running' },
+  { name: 'continue-light', scene: 'continue', theme: 'light', notice: true, title: "Couldn't continue", refusal: 'sub-agents are running' },
 ]
 
 const browser = await chromium.launch()

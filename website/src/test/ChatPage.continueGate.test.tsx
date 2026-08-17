@@ -19,7 +19,7 @@
  * common state, so the old gate showed it almost always.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, waitFor } from '@testing-library/react'
+import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -57,6 +57,7 @@ vi.mock('../api/client', () => ({
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
     slackChannels: vi.fn().mockResolvedValue([]),
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
+    continueSlot: vi.fn().mockResolvedValue({ ok: true }),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -221,5 +222,28 @@ describe('ChatPage — Continue appears only on an interrupted turn', { timeout:
     ])
 
     expect(screen.getByTestId('composer-continue')).toBeTruthy()
+  })
+})
+
+/**
+ * A successful Continue says nothing.
+ *
+ * The refusal path lives in `ChatPage.refusedPress.test.tsx` alongside the other
+ * two presses that share that surface — one file owns the invariant "a refused
+ * press becomes pixels". What belongs HERE is its complement: pressing Continue
+ * on a slot the server accepts must not leave a notice behind, so the surface
+ * cannot drift into firing on the happy path.
+ */
+describe('ChatPage — an accepted Continue is silent', { timeout: 15_000 }, () => {
+  it('says nothing when the continue succeeds', async () => {
+    const { api } = await import('../api/client')
+    const continueSlot = api.continueSlot as unknown as ReturnType<typeof vi.fn>
+    continueSlot.mockResolvedValueOnce({ ok: true })
+
+    await renderWith([{ role: 'user', content: 'do the thing', cls: '' }])
+
+    await act(async () => { fireEvent.click(screen.getByTestId('composer-continue')) })
+
+    expect(screen.queryByTestId('refused-press-error')).toBeNull()
   })
 })

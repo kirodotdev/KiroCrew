@@ -748,6 +748,7 @@ export function isBrowseCommand(preview: string | undefined | null): boolean {
 // `showRefusedPress` from its catch — the `as const` map keeps every key
 // statically resolvable for the catalog-key gate.
 const REFUSED_PRESS_TITLE_KEYS = {
+  continue: 'pages.chatPage.could_not_continue',
   regenerate: 'pages.chatPage.could_not_regenerate',
   switch_variant: 'pages.chatPage.could_not_switch_variant',
 } as const
@@ -4894,6 +4895,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const continuable = useAppSelector(selectContinuable)
   const interrupted = useAppSelector(selectTurnInterrupted)
   const [continuing, setContinuing] = useState(false)
+  // Why the refusal is rendered rather than logged: the server re-checks under
+  // the slot lock and can refuse a press the client believed was available
+  // (`slot_running`, `slot_subagents_running`, an approval still pending). Left
+  // in the console, that refusal reached the user as the button flicking to
+  // disabled and straight back — a control that promises recovery and then says
+  // nothing at all. `showRefusedPress` is the shared surface for exactly that.
   useEffect(() => { setContinuing(false) }, [activeSlot])
   // The turn taking over is the success signal; clear the spinner then.
   useEffect(() => { if (continuing && slotRunning) setContinuing(false) }, [continuing, slotRunning])
@@ -4911,11 +4918,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // an `inject` row and the WS `slots` update flips `running`, so the UI
     // converges from the server. Nothing to roll back on failure.
     api.continueSlot(activeSlot).catch((e: unknown) => {
-      // eslint-disable-next-line no-console -- surface continue failures for debugging
-      console.warn('continue failed', e)
+      showRefusedPress('continue', e)
       setContinuing(false)
     })
-  }, [activeSlot, continuing, continuable])
+  }, [activeSlot, continuing, continuable, showRefusedPress])
   // Index of the newest error row. Only that one gets the action: an error
   // further up the transcript belongs to a turn that has already been
   // superseded, and offering to "continue" it would resume the wrong thing.

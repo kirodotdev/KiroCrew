@@ -8130,6 +8130,7 @@
       "collapse_knowledge_context": "Recolher o contexto de conhecimento",
       "connection_error": "Erro de conexão",
       "continue_a_previous_chat": "Continuar um chat anterior?",
+      "could_not_continue": "Não foi possível continuar",
       "could_not_regenerate": "Não foi possível gerar novamente",
       "could_not_set_the_agent_default_model": "Não foi possível definir o modelo padrão do agente",
       "could_not_switch_variant": "Não foi possível trocar de versão",

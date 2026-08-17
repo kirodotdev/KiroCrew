@@ -95,8 +95,10 @@ async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None
       nothing.
 
     Ordinary sends are deliberately NOT gated: they mutate nothing up front, so a
-    stale latch must not block them (see the module docstring). A missing or
-    invalid service fails closed here.
+    stale latch must not block them (see the module docstring). That includes
+    ``POST /api/chat/slots/{slot}/continue``, which only queues a synthetic
+    continuation for the runner to dispatch — it is a send with a machine-written
+    body, not a fourth class. A missing or invalid service fails closed here.
 
     These callers must not trust the latch in EITHER direction, so this uses
     :func:`kiro_verified_ready` — a stale ``ready=True`` is as dangerous as a

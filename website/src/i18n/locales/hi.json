@@ -8027,6 +8027,7 @@
       "collapse_knowledge_context": "ज्ञान संदर्भ समेटें",
       "connection_error": "कनेक्शन त्रुटि",
       "continue_a_previous_chat": "पिछली चैट जारी रखें?",
+      "could_not_continue": "जारी नहीं रख सके",
       "could_not_regenerate": "पुनः नहीं बना सके",
       "could_not_set_the_agent_default_model": "एजेंट का डिफ़ॉल्ट मॉडल सेट नहीं हो सका",
       "could_not_switch_variant": "संस्करण नहीं बदल सके",

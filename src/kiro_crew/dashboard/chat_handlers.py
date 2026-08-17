@@ -66,7 +66,6 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import (
     _MAX_PENDING_CONTEXT,
     DashboardState,
@@ -2026,10 +2025,18 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     browser tab acting on a stale cache, would otherwise dispatch a duplicate
     turn against one slot — real tokens, real tool calls, real repo writes. Every
     other dispatch route guards the same way (see ``api_chat_slot_regenerate``).
+
+    NOT readiness-gated, and that is deliberate — see
+    ``kiro_readiness.reject_if_kiro_unverified``. Continue is an ordinary send: it
+    queues one synthetic message and lets the runner dispatch it, mutating nothing
+    durable up front, so the ACP attempt is its authority and a signed-out install
+    reports ``AcpAuthRequired`` in the transcript. Gating it instead put the
+    button behind a latch that is refreshed by re-probing ``kiro-cli``, and a
+    probe that merely TIMES OUT reads as signed-out: on a host where that probe is
+    slow the press was refused with a 503 forever while typing the same request by
+    hand worked. The unequal treatment of two paths that dispatch the same turn is
+    the bug; the transcript's own error card is the report either way.
     """
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)

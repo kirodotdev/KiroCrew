@@ -5410,6 +5410,7 @@
       "agent_selector": "Agent selector",
       "chat_messages": "Chat messages",
       "continue_a_previous_chat": "Continue a previous chat?",
+      "could_not_continue": "Couldn't continue",
       "could_not_regenerate": "Couldn't regenerate",
       "could_not_set_the_agent_default_model": "Could not set the agent's default model",
       "could_not_switch_variant": "Couldn't switch version",

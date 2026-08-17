@@ -44,6 +44,7 @@ type Msg = { role: string; content: string; variants?: { content: string; ts?: s
 const detail = vi.hoisted(() => ({ messages: [] as Msg[] }))
 const regenerateSlot = vi.hoisted(() => vi.fn())
 const switchVariant = vi.hoisted(() => vi.fn())
+const continueSlot = vi.hoisted(() => vi.fn())
 vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
@@ -57,6 +58,7 @@ vi.mock('../api/client', () => ({
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     regenerateSlot: (...a: unknown[]) => regenerateSlot(...a),
     switchVariant: (...a: unknown[]) => switchVariant(...a),
+    continueSlot: (...a: unknown[]) => continueSlot(...a),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -134,9 +136,13 @@ const variantTurn: Msg[] = [
   },
 ]
 
+/** Nothing came back at all — the shape that offers Continue in the composer. */
+const interruptedTurn: Msg[] = [{ role: 'user', content: 'do the thing' }]
+
 beforeEach(() => {
   regenerateSlot.mockReset()
   switchVariant.mockReset()
+  continueSlot.mockReset()
 })
 
 describe('refused presses render the notice above the composer', () => {
@@ -164,6 +170,23 @@ describe('refused presses render the notice above the composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(screen.queryByTestId('refused-press-error')).toBeNull())
+  })
+
+  it('a refused continue shows the server reason with its own title', async () => {
+    // Continue is the third press on this surface. It is refused by the same
+    // slot-lock re-check as the other two (sub-agents still delivering, a queued
+    // message, a pending approval), and before this it was the loudest silent
+    // failure of the three: the button sits on the error card of a turn that
+    // already failed, so "nothing happened" reads as the recovery itself being
+    // broken.
+    continueSlot.mockRejectedValue(new Error('sub-agents are running'))
+    await renderWith(interruptedTurn)
+
+    fireEvent.click(screen.getByTestId('composer-continue'))
+
+    const notice = await screen.findByTestId('refused-press-error')
+    expect(notice.textContent).toContain("Couldn't continue")
+    expect(notice.textContent).toContain('sub-agents are running')
   })
 
   it('a turn taking over retires the refusal', async () => {

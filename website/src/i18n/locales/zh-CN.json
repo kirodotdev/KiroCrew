@@ -7924,6 +7924,7 @@
       "collapse_knowledge_context": "折叠知识上下文",
       "connection_error": "连接错误",
       "continue_a_previous_chat": "继续之前的聊天？",
+      "could_not_continue": "无法继续",
       "could_not_regenerate": "无法重新生成",
       "could_not_set_the_agent_default_model": "无法设置代理的默认模型",
       "could_not_switch_variant": "无法切换版本",

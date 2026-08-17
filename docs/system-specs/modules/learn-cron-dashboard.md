@@ -963,11 +963,22 @@ never start a session) for a state the dashboard cannot keep current. The error
 card is in-context, appears only when the user actually tries to use the agent,
 and is self-explanatory, so it fully replaces that chrome.
 
-Ordinary send paths (main chat, prompt optimization, side turns) no longer reject
+Ordinary send paths (main chat, prompt optimization, side turns, and
+`POST /api/chat/slots/{slot}/continue`) no longer reject
 on readiness — a stale latch must not
 block a send the CLI would serve, and they mutate nothing before the turn, so a
 failed turn costs only an error card. A queued successor turn runs rather than
 parking on readiness.
+
+`continue` belongs in that list because it IS a send: it queues one synthetic
+continuation and lets the runner dispatch it, so the ACP attempt is its authority
+exactly as for a typed message. Gating it produced the sharpest form of the
+stuck case this section describes — the latch behind
+`verified_ready` is refreshed by re-probing `kiro-cli`, and a probe that merely
+TIMES OUT is indistinguishable from signed-out, so on a host where the
+`--version` probe runs slow the Continue button was refused with a 503 forever
+while typing the same request by hand still worked. `test_not_readiness_gated`
+pins it.
 
 **The destructive reruns are the exception and still fail closed.** `regenerate`,
 `edit-resend`, and `rewind` truncate `slot.messages` and **persist** the result

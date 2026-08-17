@@ -8027,6 +8027,7 @@
       "collapse_knowledge_context": "নলেজ কনটেক্সট সংকুচিত করো",
       "connection_error": "কানেকশন ত্রুটি",
       "continue_a_previous_chat": "আগের কোনো চ্যাট চালিয়ে যাবেন?",
+      "could_not_continue": "চালিয়ে যাওয়া যায়নি",
       "could_not_regenerate": "পুনরায় তৈরি করা যায়নি",
       "could_not_set_the_agent_default_model": "এজেন্টের ডিফল্ট মডেল সেট করা যায়নি",
       "could_not_switch_variant": "সংস্করণ পরিবর্তন করা যায়নি",

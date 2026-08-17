@@ -44,16 +44,18 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
 
 @pytest.fixture
 def _patched(monkeypatch):
-    """Neutralize SEL, the readiness latch, and the real turn dispatcher."""
+    """Neutralize SEL and the real turn dispatcher.
+
+    Deliberately does NOT stub a readiness gate: Continue is an ordinary send and
+    is not readiness-gated (``test_not_readiness_gated`` pins that). Stubbing one
+    here is what hid the defect where a slow ``kiro-cli`` probe refused every
+    press with a 503.
+    """
     mock_sel = MagicMock()
     mock_sel.log_tool_invocation = MagicMock()
     started = AsyncMock(return_value=True)
     with (
         patch("kiro_crew.dashboard.chat_handlers.sel", return_value=mock_sel),
-        patch(
-            "kiro_crew.dashboard.chat_handlers.reject_if_kiro_unverified",
-            AsyncMock(return_value=None),
-        ),
         patch("kiro_crew.dashboard.chat_handlers._start_next_queued_turn", started),
     ):
         yield started
@@ -308,6 +310,33 @@ class TestChatSlotContinue:
             resp = await client.post("/api/chat/slots/s/continue")
             assert resp.status == 409
             assert (await resp.json())["code"] == "slot_empty"
+
+    @pytest.mark.asyncio
+    async def test_not_readiness_gated(self, _patched):
+        """A not-ready readiness service must not refuse Continue.
+
+        Continue is an ordinary send: it queues one synthetic message and lets the
+        runner dispatch it, so the ACP attempt is its authority and a signed-out
+        install reports ``AcpAuthRequired`` in the transcript. The gate that used
+        to sit here authorized on a re-probe of ``kiro-cli`` whose TIMEOUT reads as
+        signed-out, so on a host with a slow probe every press answered 503
+        ``kiro_prerequisite_required`` while typing the same request by hand
+        worked. The service is wired both ways ``kiro_readiness._service`` resolves
+        it, so re-adding the gate fails here rather than in production.
+        """
+        service = MagicMock()
+        service.session_ready = AsyncMock(return_value=False)
+        service.verified_ready = AsyncMock(return_value=False)
+        slot = _ChatSlot("s")
+        slot.append("user", "do the thing", "msg msg-u")
+        state = _mock_state(slot)
+        state.kiro_prerequisite_service = service
+        app = _make_app(state)
+        app["kiro_prerequisite_service"] = service
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200, await resp.text()
+        _patched.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_interrupted_turn_queues_the_continuation_and_dispatches(self, _patched):
