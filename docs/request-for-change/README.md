@@ -10,14 +10,16 @@ that, read the code, or the `status` field described below.
 Last audited **2026-08-03** against main `0ab6ed48`. Every status below was
 verified against the code (definitions *and* callers) and against merged/open PR
 history, not taken from the document's own claims. The `rfc-tailnet-dashboard-access`
-row was added later and re-verified against `429cbad8`; the other twelve rows have
+row was added later and re-verified against `429cbad8`, and `rfc-session-address-model`
+was added later still and verified against `b23ab77af`; the other rows have
 not been re-audited since 2026-08-03.
 
 | Document | Status | What is actually on main |
 |---|---|---|
 | [rfc-issue-radar-crews.md](rfc-issue-radar-crews.md) | `draft` | Nothing. Design of record only; `crew_brief.md` and `crew_ledger_spec.md` sit beside the Issue Radar backend as companion specs, also unimplemented |
 | [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md) | `in-progress` | Nothing yet — all of it is in open PR [#1295](https://github.com/kirodotdev/KiroCrew/pull/1295) (`feat/crew-mode`) |
-| [rfc-channel-plugin-architecture.md](rfc-channel-plugin-architecture.md) | `partial` | Shared turn pipeline shipped; **4 of 7** channels adopted. Registry/seam collapse, telegram+discord, Feishu unstarted |
+| [rfc-channel-plugin-architecture.md](rfc-channel-plugin-architecture.md) | `partial` | Shared turn pipeline shipped; **4 of 7** channels adopted. Registry/seam collapse, telegram+discord, Feishu unstarted. Its §9 address rule is separately half-shipped — audit this row alongside [rfc-session-address-model.md](rfc-session-address-model.md) |
+| [rfc-session-address-model.md](rfc-session-address-model.md) | `partial` | The dashboard half of the channel-plugin RFC's §9 rule 1 shipped ([#1366](https://github.com/kirodotdev/KiroCrew/pull/1366) plus four follow-ups): a chat-app conversation opened in a dashboard tab is no longer copied into a second session, and `has_dashboard_surface` (7 callers) replaced the name-prefix capability tests. All four phases it proposes are unstarted — 23 named key converters and 5 copies of the session-type ladder remain, surface capability is still one boolean, and an unbound channel tab still starts a second session against the same transcript file |
 | [rfc-local-notification-bus.md](rfc-local-notification-bus.md) | `partial` | Phases 1/3/4 complete. Phase 2 wired but has no producer; Phase 5 shipped 2 of 3 |
 | [rfc-federated-app-platform.md](rfc-federated-app-platform.md) | `partial` | Phase 1 substantially shipped, Phase 3 half-built. Phase 2, Phase 1's removals, Phase 4, Phase 5 unstarted |
 | [rfc-workspace-config-evolution.md](rfc-workspace-config-evolution.md) | `partial` | Phases 1–2 shipped. Phase 3's vector isolation was **reversed** on purpose; Phase 4 unstarted |
