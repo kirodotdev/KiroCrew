@@ -299,3 +299,113 @@ class TestDesignReviewBlocks:
         # The wildcard (errored / no verdict) branch must not fail.
         tail = gate.split("BLOCK)")[1]
         assert "exit 0" in tail, "an incomplete review must never block"
+
+
+REVIEW_PROMPTS = Path(__file__).resolve().parents[1] / ".github" / "review-prompts"
+
+UX_LANES = ["ux-review.yml", "fork-ux-review.yml"]
+DESIGN_LANES = ["design-review.yml", "fork-design-review.yml"]
+FP_CONTRACT = "first-principles.md"
+
+
+def _read_prompt(name: str) -> str:
+    return (REVIEW_PROMPTS / name).read_text(encoding="utf-8")
+
+
+def _flat(text: str) -> str:
+    """Collapse whitespace so an assertion survives prompt re-wrapping."""
+    return " ".join(text.split())
+
+
+class TestAdvisoryLanesStateTheirRealAuthority:
+    """A lane told its verdict is inert calibrates every borderline case down.
+
+    Each of these prompts opened by disclaiming authority the workflow does in
+    fact grant: a BLOCK verdict turns the lane's own check red, and for Design
+    it also fails `PR Readiness`. A reviewer that believes a BLOCK changes
+    nothing has no reason to spend one, so decidable defects settle on
+    CONCERNS -- the tier nothing gates on. The two families differ and the
+    prompts must not be levelled: Design blocks readiness, UX and First
+    Principles only redden their own check (`pr-readiness.yml` buckets both as
+    `passed (advisory)`), so claiming otherwise would swap one lie for another.
+    """
+
+    @pytest.mark.parametrize("name", UX_LANES + DESIGN_LANES)
+    def test_workflow_prompt_does_not_disclaim_its_own_authority(self, name):
+        wf = _flat(_read(name))
+        assert "Nothing you emit blocks the merge" not in wf
+        assert "do not gate" not in wf
+        assert "does NOT block the merge" not in wf
+
+    def test_first_principles_contract_does_not_disclaim_its_authority(self):
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "Nothing you emit blocks the merge" not in contract
+        assert "do not gate" not in contract
+        assert "does NOT block the merge" not in contract
+
+    @pytest.mark.parametrize("name", DESIGN_LANES)
+    def test_design_prompt_says_a_block_reaches_readiness(self, name):
+        assert "blocks PR readiness" in _flat(_read(name))
+
+    @pytest.mark.parametrize("name", UX_LANES)
+    def test_ux_prompt_claims_a_red_check_but_not_a_readiness_gate(self, name):
+        wf = _flat(_read(name))
+        assert "does not by itself gate PR readiness" in wf
+        assert "blocks PR readiness" not in wf
+
+    def test_first_principles_claims_a_red_check_but_not_a_readiness_gate(self):
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "does not by itself gate PR readiness" in contract
+        assert "blocks PR readiness" not in contract
+
+    def test_first_principles_routes_a_block_grade_subtraction_to_blockers(self):
+        # The observed failure: a conclusion meeting this lane's own strongest
+        # BLOCK criterion ("an item's zero option costs nobody anything") was
+        # written into `### Subtractions`, which carries no verdict, so the
+        # verdict stayed CONCERNS and nothing was required to act on it.
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "belongs under Blockers" in contract
+
+
+class TestDecidableFindingsExitTheTieBreaker:
+    """`prefer CONCERNS` is a one-way ratchet until something exits it.
+
+    Preferring the lower tier is right for a matter of taste and wrong for a
+    fact read off the diff. With no exception, a mechanically decidable defect
+    lands on the advisory tier exactly like a preference does, and the two
+    become indistinguishable to whoever reads the verdict.
+    """
+
+    @pytest.mark.parametrize("name", UX_LANES)
+    def test_ux_tie_breaker_carries_a_closed_exception_list(self, name):
+        wf = _flat(_read(name))
+        assert "Tie-breaker: when torn between BLOCK and CONCERNS" in wf
+        assert "The tie-breaker does NOT apply to the two below" in wf
+        assert "hedges about state the code already holds" in wf
+        assert "assert what happened" in wf
+
+    @pytest.mark.parametrize("name", UX_LANES + DESIGN_LANES)
+    def test_every_mandated_block_carries_a_falsification_step(self, name):
+        # The design lanes established the precedent that raising the stakes of
+        # BLOCK requires a matching precision bar. An exception list that
+        # MANDATES a BLOCK raises them for that path, so it owes the same step:
+        # a rule admitted for being readable off the diff has to be read off the
+        # diff, or it becomes a licence to spend the verdict on a resemblance.
+        assert "FALSIFY BEFORE YOU BLOCK" in _flat(_read(name))
+
+    def test_first_principles_exception_carries_a_falsification_step(self):
+        assert "FALSIFY BEFORE YOU BLOCK" in _flat(_read_prompt(FP_CONTRACT))
+
+    def test_first_principles_tie_breaker_exempts_the_rider_combination(self):
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "Tie-breaker: when torn between BLOCK and CONCERNS" in contract
+        assert "The tie-breaker does NOT apply to one combination" in contract
+        assert "an item is riding along" in contract
+        assert "When all four hold at once" in contract
+
+    def test_first_principles_lower_the_concern_names_the_exception(self):
+        # `When unsure, LOWER the concern` sits far from the tie-breaker and
+        # would otherwise re-impose the ratchet the exception just lifted.
+        contract = _flat(_read_prompt(FP_CONTRACT))
+        assert "When unsure, LOWER the concern" in contract
+        assert "The single exception is the combination" in contract

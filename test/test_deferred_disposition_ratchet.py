@@ -73,3 +73,56 @@ def test_every_disposition_enumeration_offers_the_decision_branch() -> None:
         "These lines disposition a concern as deferred work without offering "
         f"`{DECISION}` alongside it: " + ", ".join(stale)
     )
+
+
+# --- Disposition scope --------------------------------------------------------
+#
+# The vocabulary above says WHICH disposition a concern gets. These pin WHAT ONE
+# disposition may cover, which is the other half and had no test at all.
+#
+# `codex-review.yml` scopes a ruling's coverage by its recorded rationale and
+# never parses `target=`, so one comment carrying one rationale and several
+# finding bullets claims every one of them -- across lanes, since the lane in
+# `target=` is text nobody reads. The skill has forbidden the blanket line since
+# it was written ("never one blanket 'addressed feedback' line for a batch") and
+# nothing enforced it, so a single "out of scope for this fix" answered four
+# findings from three lanes and the PR went green. Prose that only a model or an
+# agent reads is the failure mode; these assertions are the ratchet.
+
+ONE_LANE = "One comment covers exactly one lane"
+ONE_RATIONALE = "one rationale covers exactly one finding"
+
+
+def test_disposition_step_scopes_a_comment_to_one_lane() -> None:
+    """`target=` names a lane, so a second lane's concern needs its own comment."""
+    text = PREPARE_PR.read_text(encoding="utf-8")
+    assert ONE_LANE in text, (
+        f"{PREPARE_PR.name} no longer says a disposition comment covers one lane. "
+        "Nothing parses `target=`, so without this rule one GPT-targeted comment "
+        "silently answers the Design, UX and First Principles concerns too."
+    )
+
+
+def test_disposition_step_scopes_a_rationale_to_one_finding() -> None:
+    """Coverage is scoped by rationale, so a shared rationale claims every finding."""
+    text = PREPARE_PR.read_text(encoding="utf-8")
+    assert ONE_RATIONALE in text, (
+        f"{PREPARE_PR.name} no longer says one rationale covers one finding. The "
+        "adjudication ledger widens a ruling to everything its rationale fits, so "
+        "one reused reason downgrades findings it was never checked against."
+    )
+
+
+def test_the_disposition_step_offers_the_whole_vocabulary() -> None:
+    """The step that writes the comment must not offer a stale shorter set.
+
+    The enumeration in Core Concepts and the one in the Phase 3 step are read by
+    the same agent at different moments; a three-name copy in the step is what it
+    follows while writing, so `accepted-and-deferred` and `needs-a-decision`
+    silently collapse into a bare `accepted`.
+    """
+    text = PREPARE_PR.read_text(encoding="utf-8")
+    assert "`fixed`/`rebutted`/`accepted` " not in text, (
+        f"{PREPARE_PR.name} carries a stale three-disposition enumeration. Every "
+        "place that lists the vocabulary must list all four."
+    )

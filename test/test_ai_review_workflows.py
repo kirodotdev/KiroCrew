@@ -1004,7 +1004,13 @@ class TestPreparePrPreSubmitReview:
         assert disposition < next_review
         assert "<!-- ai-review-disposition target=gpt head=<prior-reviewed-sha> -->" in skill
         assert "scopes the ruling to the commit it judged" in skill
-        assert "`fixed`/`rebutted`/`accepted`" in skill
+        # All four dispositions, in the step that actually writes the comment.
+        # A shorter copy here is what the agent follows in the moment, so
+        # `accepted-and-deferred` and `needs-a-decision` collapse into a bare
+        # `accepted` -- see test_deferred_disposition_ratchet.py, which owns the
+        # vocabulary ratchet across every surface.
+        for word in ("`fixed`", "`rebutted`", "`accepted-and-deferred`", "`needs-a-decision`"):
+            assert word in skill
         # A writer-authored disposition feeds the reviewer's adjudication
         # ledger: it may downgrade the REPEAT of an adjudicated finding, but it
         # never waives a new defect and never substitutes for an override.
