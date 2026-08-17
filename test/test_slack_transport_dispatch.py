@@ -771,3 +771,155 @@ class TestHydrationBeforeHook:
         assert saved == []
         assert _handler.is_thread_incognito(canonical_key(_MSG_TS)) is True
         _handler._thread_incognito.pop(canonical_key(_MSG_TS), None)
+
+
+class TestConversationLogAgentMetadata:
+    """The transport's user-turn write creates the session file — its metadata
+    header records the agent only when that creating append supplies it.
+    Pre-fix, the dashboard listed every Slack-spawned session as the "default"
+    agent even though the turn ran under the resolved agent (issue: agent chip
+    shows "default" for Slack sessions)."""
+
+    def test_transport_turn_records_agent_in_session_metadata(self, monkeypatch, tmp_path):
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+        slack = RecordingSlackClient()
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        sessions = _CapturingSessions(provider)
+        log = ConversationLog(base_dir=tmp_path)
+
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=log,
+                agent_override=None,
+            )
+        )
+
+        listed = log.list_sessions()
+        assert listed, "transport turn should have persisted a session file"
+        # The session the dashboard lists must carry the agent the turn ran
+        # under — not fall back to "default" because the header omitted it.
+        assert listed[0].get("agent") == "sales-agent"
+
+    def test_options_stamp_fallback_records_agent_when_receipt_write_failed(
+        self, monkeypatch, tmp_path
+    ):
+        """The options-stamp fallback write is file-creating exactly when the
+        user-turn receipt write failed — it must supply the agent for the same
+        reason the receipt write does, or the session is pinned to "default"."""
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+        slack = RecordingSlackClient()
+        provider = ScriptedProvider(
+            [
+                # An [OPTIONS:] trailer makes the renderer invoke stamp_options,
+                # routing persistence through _persist_and_stamp.
+                make_event(EVENT_TEXT_CHUNK, text="Pick one.\n\n[OPTIONS: A | B]"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        sessions = _CapturingSessions(provider)
+        log = ConversationLog(base_dir=tmp_path)
+
+        # Fail the FIRST append (the user-turn receipt) so the stamp fallback
+        # becomes the write that creates the session file.
+        real_append = log.append
+        state = {"failed": False}
+
+        def _flaky_append(*args, **kwargs):
+            if not state["failed"]:
+                state["failed"] = True
+                raise OSError("simulated receipt-write failure")
+            return real_append(*args, **kwargs)
+
+        monkeypatch.setattr(log, "append", _flaky_append)
+
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=log,
+                agent_override=None,
+            )
+        )
+
+        listed = log.list_sessions()
+        assert listed, "options-stamp fallback should have persisted a session file"
+        assert listed[0].get("agent") == "sales-agent"
+
+    def test_hook_reply_write_records_agent_in_session_metadata(self, monkeypatch, tmp_path):
+        """A hook-answered FIRST message is the write that creates the session
+        file — it runs before session acquisition, so the agent must be
+        resolved early (native handler parity) or the session is pinned to
+        "default" forever."""
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.hooks import HookResult
+
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+        slack = RecordingSlackClient()
+        sessions = _CapturingSessions(self._noop_provider())
+        cb = _CapturingCtxBuilder(hook_result=HookResult.reply("canned answer"))
+        log = ConversationLog(base_dir=tmp_path)
+
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="ping",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=log,
+                agent_override=None,
+            )
+        )
+
+        # The hook short-circuited the turn — no LLM session was spawned.
+        assert sessions.agents == []
+        listed = log.list_sessions()
+        assert listed, "hook auto-reply should have persisted a session file"
+        assert listed[0].get("agent") == "sales-agent"
+
+    @staticmethod
+    def _noop_provider():
+        return ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )

@@ -504,7 +504,7 @@ class TelegramDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new)
+                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new, agent)
             except Exception:
                 logger.warning(
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True
@@ -1547,14 +1547,19 @@ class TelegramDispatcher:
         await self._reply(chat_id, reply, thread=self._route_thread(route))
 
     def _persist_turn(
-        self, session_key: str, user_text: str, reply_text: str, is_new: bool
+        self,
+        session_key: str,
+        user_text: str,
+        reply_text: str,
+        is_new: bool,
+        agent: str | None = None,
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text)
+        self.conv_log.append(session_key, "user", user_text, agent=agent)
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text)
+            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Telegram"
             self.conv_log.set_title(session_key, title)

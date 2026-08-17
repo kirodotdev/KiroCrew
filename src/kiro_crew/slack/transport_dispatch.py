@@ -214,6 +214,21 @@ async def handle_message_transport(
     _hydrate_thread_overrides(session_key, conversation_log)
     _hydrate_conv_flags(sessions, session_key)
 
+    # Resolve the agent early so ALL persist paths can forward it — including
+    # the hook auto-reply below, whose write CREATES the session file when a
+    # hook answers the first message in a thread (the metadata header records
+    # the agent only on the creating append, so a missed site pins the session
+    # to "default" forever). Mirrors native handle_message, which resolves
+    # _agent right after hydration for exactly this reason. Re-resolved again
+    # at session acquisition below, after the late ownership re-resolution can
+    # move session_key.
+    _agent = (
+        _thread_agents.get(session_key)
+        or agent_override
+        or _get_default_agent()
+        or _DEFAULT_KIROCREW_AGENT
+    )
+
     # Entry marker: lets operators confirm the NEW transport path handled a
     # message (grep gateway.log for "transport_dispatch: handling"). Fires for
     # every message including the status/ping shortcuts below.
@@ -243,6 +258,7 @@ async def handle_message_transport(
                     hook_result.text,
                     source_thread=session_key,
                     source_user=user_id,
+                    agent=_agent,
                 )
             return
 
@@ -378,7 +394,10 @@ async def handle_message_transport(
             # renderer and driver hold, so re-pointing it here is sufficient.
             decider.session_key = session_key
 
-        # Resolve the kiro-cli agent. Thread override (set via !agent), then the
+        # Re-resolve the kiro-cli agent: the early resolution above serves the
+        # pre-acquisition persist paths (hook auto-reply), but the ownership
+        # re-resolution just above can move session_key, and a !agent override
+        # may have landed since. Thread override (set via !agent), then the
         # per-channel override (slack.channels.<id>.agent), then the configured
         # default win; otherwise fall back to the canonical "kirocrew" agent so
         # the session loads kirocrew-core (spawn_run) rather than kiro-cli's bare
@@ -466,6 +485,12 @@ async def handle_message_transport(
                     text,
                     source_thread=session_key,
                     source_user=user_id,
+                    # This is the write that creates the session file, and the
+                    # metadata header records the agent only when the creating
+                    # append supplies it — omit it and the dashboard forever
+                    # shows this session as "default" even though the turn ran
+                    # under ``_agent`` (see ConversationLog.append docstring).
+                    agent=_agent,
                 )
                 _logged_user_turn = True
             except Exception:
@@ -571,6 +596,7 @@ async def handle_message_transport(
                             final_text,
                             source_thread=session_key,
                             source_user=user_id,
+                            agent=_agent,
                         )
                         return _log.last_row_ts(session_key)
 
@@ -583,6 +609,12 @@ async def handle_message_transport(
                     final_text,
                     source_thread=session_key,
                     source_user=user_id,
+                    # This branch runs exactly when the user-turn receipt write
+                    # failed, so THIS write is the one that creates the session
+                    # file — without the agent the metadata header pins the
+                    # session to "default" forever (same reasoning as the
+                    # receipt write above).
+                    agent=_agent,
                 )
             _stamped_turn = True
             # The asker is the conversation that RAN this turn. Resolving the
@@ -691,6 +723,7 @@ async def handle_message_transport(
                             accumulated,
                             source_thread=session_key,
                             source_user=user_id,
+                            agent=_agent,
                         )
                 else:
                     await save_conversation_turn_off_loop(
@@ -700,6 +733,7 @@ async def handle_message_transport(
                         accumulated,
                         source_thread=session_key,
                         source_user=user_id,
+                        agent=_agent,
                     )
                 await _refresh_dashboard_tab(session_key)
         except Exception:

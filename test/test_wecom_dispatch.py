@@ -152,7 +152,7 @@ class FakeConvLog:
         self.appended: list[tuple[str, str, str]] = []
         self.titles: dict[str, str] = {}
 
-    def append(self, key, role, text) -> None:
+    def append(self, key, role, text, agent=None) -> None:
         self.appended.append((key, role, text))
 
     def set_title(self, key, title) -> None:

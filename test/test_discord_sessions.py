@@ -277,7 +277,7 @@ class _ConversationLog:
             rows = [row for row in rows if row.get("role") in roles]
         return rows[-max_messages:]
 
-    def append(self, key: str, role: str, content: str) -> None:
+    def append(self, key: str, role: str, content: str, agent: str | None = None) -> None:
         self.messages.setdefault(key, []).append({"role": role, "content": content})
 
     def set_title(self, key: str, title: str) -> None:

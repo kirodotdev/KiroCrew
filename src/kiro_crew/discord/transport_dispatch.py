@@ -467,6 +467,7 @@ class DiscordDispatcher:
                     accumulated,
                     is_new_own_session,
                     mirrored,
+                    agent=agent,
                 )
             except Exception:
                 logger.warning(
@@ -1129,6 +1130,7 @@ class DiscordDispatcher:
         reply_text: str,
         is_new: bool,
         mirrored: bool = False,
+        agent: str | None = None,
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart).
 
@@ -1139,13 +1141,13 @@ class DiscordDispatcher:
         if self.conv_log is None:
             return
         if mirrored:
-            self.conv_log.append_if_absent(session_key, "user", user_text)
+            self.conv_log.append_if_absent(session_key, "user", user_text, agent=agent)
             if reply_text:
-                self.conv_log.append_if_absent(session_key, "assistant", reply_text)
+                self.conv_log.append_if_absent(session_key, "assistant", reply_text, agent=agent)
         else:
-            self.conv_log.append(session_key, "user", user_text)
+            self.conv_log.append(session_key, "user", user_text, agent=agent)
             if reply_text:
-                self.conv_log.append(session_key, "assistant", reply_text)
+                self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Discord"
             self.conv_log.set_title(session_key, title)

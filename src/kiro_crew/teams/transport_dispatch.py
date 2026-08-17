@@ -164,7 +164,7 @@ class TeamsDispatcher:
                 approval_mode=self.approval_mode,
                 decider=None,  # Teams can't render approve/deny buttons (MVP)
                 persist=lambda user_text, reply, is_new: self._persist_turn(
-                    session_key, user_text, reply, is_new
+                    session_key, user_text, reply, is_new, agent
                 ),
                 notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                 audit_caller=f"teams:{email}",
@@ -232,14 +232,19 @@ class TeamsDispatcher:
         )
 
     def _persist_turn(
-        self, session_key: str, user_text: str, reply_text: str, is_new: bool
+        self,
+        session_key: str,
+        user_text: str,
+        reply_text: str,
+        is_new: bool,
+        agent: str | None = None,
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text)
+        self.conv_log.append(session_key, "user", user_text, agent=agent)
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text)
+            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "Teams"
             self.conv_log.set_title(session_key, title)
