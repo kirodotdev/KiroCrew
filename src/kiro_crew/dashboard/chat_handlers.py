@@ -1114,31 +1114,58 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # and drops done, so their count is not the span consumed here.
         next_before = start
 
-    prepared = _prepare_messages(messages, slot.running)
+    # Snapshot every slot field the response needs BEFORE leaving the event
+    # loop: the render below runs in a worker thread, and it must not read
+    # attributes the loop keeps mutating mid-turn. `messages` is already a
+    # fresh top-level list in both branches above; the message dicts inside it
+    # are shared with live mutation, which _prepare_messages tolerates by the
+    # same snapshot discipline the flush-thread save path relies on.
+    key = slot.key
+    running = slot.running
+    stopping = slot._stopping
+    display_title = slot.display_title
+    queue_snapshot = [{"id": q["id"], "content": q["content"]} for q in slot._queue]
+    context_fields = await _context_snapshot_fields(state, slot)
 
-    return web.json_response(
-        {
-            "key": slot.key,
-            # Redacted at emit like every sibling path (_ChatSlot.to_dict does the
-            # same for the sidebar payload). Titles can be LLM-generated or set by
-            # a rename, so they are content, not configuration.
-            "title": _redact_for_display(slot.display_title),
-            "running": slot.running,
-            "stopping": slot._stopping,
-            "messages": prepared,
-            "queue": [
-                {"id": q["id"], "content": _redact_for_display(q["content"])} for q in slot._queue
-            ],
-            "total": total,
-            "has_more": has_more,
-            "next_before": next_before,
-            # Seeds the context meter on open. Turn-scoped WS frames alone leave
-            # it empty for a session reopened in a new tab; omitted entirely
-            # (not zeroed) when genuinely unknown, so the frontend can tell
-            # "no reading" from "0% used".
-            **(await _context_snapshot_fields(state, slot)),
-        }
-    )
+    def _render() -> str:
+        # Off-loop on purpose. _prepare_messages applies a regex-heavy
+        # redaction battery to the ENTIRE history; on a multi-MB session that
+        # blocked the event loop past the loop-stall watchdog's exit budget
+        # and hard-exited the gateway. json.dumps of the same payload is a
+        # second loop-blocking cost, so it lives in the thread too.
+        prepared = _prepare_messages(messages, running)
+        return json.dumps(
+            {
+                "key": key,
+                # Redacted at emit like every sibling path (_ChatSlot.to_dict
+                # does the same for the sidebar payload). Titles can be
+                # LLM-generated or set by a rename, so they are content, not
+                # configuration.
+                "title": _redact_for_display(display_title),
+                "running": running,
+                "stopping": stopping,
+                "messages": prepared,
+                "queue": [
+                    {"id": q["id"], "content": _redact_for_display(q["content"])}
+                    for q in queue_snapshot
+                ],
+                "total": total,
+                "has_more": has_more,
+                "next_before": next_before,
+                # Seeds the context meter on open. Turn-scoped WS frames alone
+                # leave it empty for a session reopened in a new tab; omitted
+                # entirely (not zeroed) when genuinely unknown, so the frontend
+                # can tell "no reading" from "0% used".
+                **context_fields,
+            }
+        )
+
+    # Per-slot single-flight: concurrent refetches of the same slot (WS
+    # reconnect + switchSlot + chat_done all refetch) queue here instead of
+    # each burning a worker thread on the same multi-MB redaction pass.
+    async with slot._detail_render_lock:
+        body = await asyncio.to_thread(_render)
+    return web.Response(text=body, content_type="application/json")
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:

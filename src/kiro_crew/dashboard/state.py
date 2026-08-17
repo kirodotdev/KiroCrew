@@ -1029,6 +1029,7 @@ class _ChatSlot:
         "_title_retry_pending",
         "_summary_in_flight",
         "_summary_turn_mark",
+        "_detail_render_lock",
         "_last_stop_reason",
         "_artifact",
         "_channel_folder_filed",
@@ -1196,6 +1197,13 @@ class _ChatSlot:
         # summary pass outlives the turn that triggered it, so a fast follow-up
         # turn would otherwise start a second pass over the same transcript.
         self._summary_in_flight: bool = False
+        # Serializes the slot-detail render offload (see api_chat_slot_detail):
+        # rendering redacts the ENTIRE history with a regex battery, so on a
+        # multi-MB session two concurrent refetches (WS reconnect + switchSlot)
+        # would burn that CPU twice in parallel worker threads for the same
+        # payload. The lock queues them instead; each holder re-renders from
+        # fresh state, so a queued waiter never serves a stale response.
+        self._detail_render_lock = asyncio.Lock()
         # User-turn count at the last successful summary, so the configured
         # regeneration cadence can be honored without re-reading the sidecar.
         self._summary_turn_mark: int = 0
