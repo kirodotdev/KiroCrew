@@ -801,7 +801,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
         {/* Stacked while narrow: side by side, the 236px sidebar took the
             width out of the column holding the summary, description, files and
             timeline, leaving it unreadable on a phone. */}
-        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 sm:flex-1 sm:min-h-0 sm:items-stretch">
+        <div className="flex flex-col sm:flex-row gap-6 px-2 md:px-6 py-5 sm:flex-1 sm:min-h-0 sm:items-stretch">
           {/* Scroll ownership is transferred WHOLE at the breakpoint. Keeping an
               unconditional flex-1 + overflow-y-auto here would clamp this column
               to the space a shrink-0 metadata block left over and then hide the

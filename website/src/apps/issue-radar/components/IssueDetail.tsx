@@ -801,7 +801,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
             out of the column holding the summary, description and timeline: at
             390px that column measured 34px and clipped its text to two or three
             characters a line. The metadata reads fine full-width underneath. */}
-        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 sm:flex-1 sm:min-h-0 sm:items-stretch">
+        <div className="flex flex-col sm:flex-row gap-6 px-2 md:px-6 py-5 sm:flex-1 sm:min-h-0 sm:items-stretch">
           {/* Main column — AI summary, the pinned description, linked refs,
               then the activity timeline (newest-first). */}
           {/* Scroll ownership is transferred WHOLE at the breakpoint. Keeping an
