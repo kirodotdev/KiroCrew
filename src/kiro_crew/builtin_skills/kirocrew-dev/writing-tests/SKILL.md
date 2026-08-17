@@ -80,8 +80,12 @@ Two shapes escape the env var:
   shared with the real installed agent — `~/.kiro/settings/mcp.json` is the live
   agent's MCP server list. `_isolate_shared_kiro_paths` redirects these from a table,
   and `test/test_host_isolation_floor.py` **fails when `src/` grows a new one**. That
-  ratchet covers IMPORT-TIME bindings only: a lazy resolver such as
-  `config.paths.kiro_home()` still names the real `~/.kiro`, so isolate that yourself.
+  ratchet covers IMPORT-TIME bindings only. The lazy resolver
+  `config.paths.kiro_home()` — and so `kiro_agents_dir()` / `kiro_sessions_dir()` — is
+  yours to isolate, with `KIRO_HOME` or by patching `Path.home()`; they are not
+  interchangeable, because the env var outranks the other. A test that skipped this
+  projected the developer's *installed* agent specs and failed with an
+  `AcpRuntimeError` naming a prompt file in an unrelated worktree.
 
   Two entries are excluded because they must *never* be redirected —
   `security._EXTRACT_INTO_TRUST_ROOT_RE` and `kiro_usage_api._CLI_SQLITE_DBS` are
@@ -125,6 +129,24 @@ The fix was not better cleanup. It was giving the singleton a **session-scoped**
 directory belonging to no individual test. When you touch a subsystem with a background
 worker, ask: *which directory did its thread capture, and does anything delete that
 directory underneath it?*
+
+**The same shape, one level up: a stub that replaces a `shutdown`/`close`/`stop` is
+not a stop.** Three tests needed to observe *that* the metrics provider's `shutdown`
+was called, so they replaced it with a recorder — and the real `shutdown` is what stops
+OpenTelemetry's exporter thread. That thread then survived for the life of the worker,
+and because the OTel SDK reinstalls it in every fork child via `os.register_at_fork`,
+the sandbox's userns probe forked a MULTITHREADED child. `unshare(CLONE_NEWUSER)`
+implies `CLONE_THREAD`, which the kernel refuses with EINVAL unless the caller is
+single-threaded, and EINVAL is indistinguishable from "no `CONFIG_USER_NS`" — so the
+worker cached "this host has no sandbox backend" and every later sandboxed spawn failed
+closed. 19 red tests in two app suites, each passing alone, none of them a metrics test.
+**Spy and delegate; never replace a lifecycle method.** The rootdir conftest now fails
+the test that leaves an exporter thread running.
+
+Two general lessons worth carrying out of that one: a thread whose target is a bound
+method keeps its own object alive, so dropping references never collects it; and
+anything registered with `os.register_at_fork` runs inside `os.fork()`, before it
+returns, so a fork child is not reliably single-threaded.
 
 Related traps in the same family:
 
@@ -189,6 +211,13 @@ package re-export when the caller reads its own defining module, or patching
 Either way the real function runs, the assertion passes for the wrong reason, and the
 test pays real time. **Treat an unexpectedly slow "mocked" test as evidence the mock
 missed.**
+
+A seventh: **the host is an input, and a "surely-unused" number is not a constant.**
+`999999` reads as an impossible PID and is not — `pid_max` is 4194304, so on a
+long-running host it names a live process. That broke two tests in opposite ways: one
+stopped pruning an entry whose owner "must be dead", and one accused a planted `ps` shim
+of executing when it had not. If the code *probes* the PID, pin the probe; if the number
+must never appear in real output, pick one no OS can allocate (`99999999999`).
 
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 

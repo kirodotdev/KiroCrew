@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_state
+from chat_test_helpers import _make_state, drain_background_tasks
 
 
 def _make_slack_app(state):
@@ -65,6 +65,7 @@ class TestSlackLink:
         async with TestClient(TestServer(_make_slack_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/slack-link", json={})
             assert resp.status == 200
+            await drain_background_tasks(state)
             data = await resp.json()
             assert data["ok"] is True
             assert data["thread_ts"] == "ts123"
@@ -240,6 +241,7 @@ class TestSlackLinkUnlinkRoundTrip:
         async with TestClient(TestServer(_make_slack_app(state))) as client:
             link = await client.post("/api/chat/slots/s1/slack-link", json={})
             assert link.status == 200
+            await drain_background_tasks(state)
             link_data = await link.json()
             ts = link_data["thread_ts"]
             assert state.sessions.get_session_for_thread(ts) == "dashboard:s1"
@@ -357,6 +359,7 @@ class TestSlackLinkAnchorTitleFallback:
         async with TestClient(TestServer(_make_slack_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/slack-link", json={})
             assert resp.status == 200
+            await drain_background_tasks(state)
 
     def _anchor_text(self, state) -> str:
         return state.slack_client.post_message.await_args_list[0].args[1]

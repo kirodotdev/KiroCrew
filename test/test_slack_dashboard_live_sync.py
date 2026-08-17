@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from chat_test_helpers import _make_state
+from chat_test_helpers import _make_state, drain_background_tasks
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
 from kiro_crew.dashboard.channel_slots import refresh_channel_window, surface_channel_session
@@ -172,6 +172,7 @@ class TestCTheMirrorIsResolvableInbound:
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/slack-link", json={})
             assert resp.status == 200
+            await drain_background_tasks(state)
 
         # The inbound Slack path resolves a thread through get_linked_slot. The
         # old hand-assignment left this index empty, so a reply in the mirrored

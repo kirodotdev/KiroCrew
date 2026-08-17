@@ -622,7 +622,22 @@ class TestConsentRecheck:
             live_provider = provider_mod._provider
             assert live_provider is not None
             flushed = threading.Event()
-            monkeypatch.setattr(live_provider, "shutdown", lambda *a, **k: flushed.set())
+
+            # SPY, never a replacement. A stub that only records leaves the
+            # provider's PeriodicExportingMetricReader ticker thread running for the
+            # life of the process, and OTel restarts that thread in every fork child
+            # via `os.register_at_fork` -- which makes the sandbox userns probe's
+            # child multithreaded, and `unshare(CLONE_NEWUSER)` then returns EINVAL
+            # (it implies CLONE_THREAD). That verdict is cached as "this host has no
+            # sandbox backend", so every later sandboxed spawn on the worker fails
+            # closed: 19 failures across two app suites, none of them here.
+            _real_shutdown = live_provider.shutdown
+
+            def _observed_shutdown(*a, **k):
+                flushed.set()
+                return _real_shutdown(*a, **k)
+
+            monkeypatch.setattr(live_provider, "shutdown", _observed_shutdown)
 
             done = _worker_event(monkeypatch)
             _patch_config(monkeypatch, enabled=False)
@@ -662,11 +677,17 @@ class TestConsentRecheck:
             released = threading.Event()
             flush_entered = threading.Event()
 
-            def _slow_shutdown(*_a, **_k):
+            _real_shutdown = live_provider.shutdown
+
+            def _slow_shutdown(*a, **k):
                 seen["thread"] = threading.get_ident()
                 flush_entered.set()
                 released.wait(timeout=10)  # stands in for the 30s join + final POST
                 seen["done"] = True
+                # Then do the real thing: the stand-in models the DELAY, and
+                # skipping the shutdown leaks the reader's ticker thread (see the
+                # sibling test above for what that thread goes on to break).
+                return _real_shutdown(*a, **k)
 
             monkeypatch.setattr(live_provider, "shutdown", _slow_shutdown)
             done = _worker_event(monkeypatch)
@@ -934,9 +955,12 @@ class TestConsentRecheck:
             in_flush = threading.Event()
             release = threading.Event()
 
-            def _slow_shutdown(*_a, **_k):
+            _real_shutdown = live_provider.shutdown
+
+            def _slow_shutdown(*a, **k):
                 in_flush.set()
                 release.wait(timeout=5)  # stands in for the reader join + final POST
+                return _real_shutdown(*a, **k)
 
             monkeypatch.setattr(live_provider, "shutdown", _slow_shutdown)
             worker = threading.Thread(target=provider_shutdown, daemon=True)

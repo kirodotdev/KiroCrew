@@ -2133,6 +2133,17 @@ class TestSweepSparesLiveProcess:
             with (
                 # Cmdline check passes (as it did in the real incident).
                 patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+                # The owning gateway (999999) must read as DEAD, or `_skip_tagged`
+                # keeps the entry and the prune assertion below fails. Pinned rather
+                # than assumed: 999999 is a perfectly ordinary live PID on a host
+                # whose counter has passed it (`pid_max` is 4194304 here), which made
+                # this a load-dependent flake rather than a constant failure. Only
+                # that one PID is faked -- every other, the live victim included,
+                # still goes to the real probe.
+                patch(
+                    "kiro_crew.session_pid.platform_compat.pid_exists",
+                    side_effect=lambda p: p != 999999 and platform_compat.pid_exists(p),
+                ),
                 # Grace disabled: isolate the identity check as the sole guard.
                 patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
                 patch("kiro_crew.session_pid._cleanup_orphaned_mcp_servers", return_value=0),

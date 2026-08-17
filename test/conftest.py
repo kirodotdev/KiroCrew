@@ -213,24 +213,11 @@ def pytest_configure(config: pytest.Config) -> None:
 
     assert hasattr(tracemalloc, "get_object_traceback")
 
-    # ── Sandbox probe prewarm ───────────────────────────────────────────────
-    # Production processes (gateway, gatewayd) call prewarm_backend() at boot so
-    # the sandbox probe cache is populated off-loop before any on-loop handler
-    # runs.  pytest-xdist workers have no equivalent boot path, so whichever
-    # aiohttp-route test first exercises wrap_argv() on a cold worker hits the
-    # "never probe on event loop" guard and gets a transient failure.  Mirror the
-    # production prewarm here: one synchronous detect_backend() per worker
-    # process, populating the cache before any test runs.
-    #
-    # Tests that intentionally reset_backend() in their own fixtures
-    # (test_sandbox_backend_cache.py) are unaffected — they manage their own
-    # cache state.
-    try:
-        from kiro_crew.sandbox import detect_backend
-
-        detect_backend()
-    except Exception:
-        pass  # Probe failure must not break unrelated tests.
+    # The sandbox probe prewarm moved to the ROOTDIR conftest's
+    # ``pytest_runtest_setup``. A once-per-worker prewarm here reached neither the
+    # in-package app suites (which never load this file) nor any test that followed
+    # one of the ``test_sandbox_*.py`` files, both of which then hit the
+    # never-probe-on-the-loop guard and read it as "this host has no sandbox".
 
 
 _MAX_WORKERS_ENV = "KIROCREW_MAX_TEST_WORKERS"

@@ -126,13 +126,30 @@ It also pins the other real host paths a test must not reach: the subagent regis
 running gateway sweeps stray entries there as orphans), the 610MB embedding-model
 download, and the agent-state sidecar.
 
+Two members are there for a different reason — a **process-global** that any testpath
+can poison for every test after it, which is the same failure shape as host mutation
+one scope down:
+
+* `pytest_runtest_setup` warms `sandbox._backend` when it is cold. A cold cache reached
+  from a running event loop deliberately refuses to probe (the probe forks and waits)
+  and answers "none", so the first async test to spawn through `wrap_argv` gets a hard
+  refusal on a host whose sandbox works. Warming at setup rather than once per session
+  is what makes it order-independent: the six `test_sandbox_*.py` files legitimately
+  reset that cache in their own teardown.
+* `_no_leaked_telemetry_exporter` fails the test that leaves an OTel exporter thread
+  running. See the Rules entry — that thread makes the sandbox probe's fork child
+  multithreaded, which the kernel answers with an EINVAL the probe used to cache as
+  "this host has no sandbox backend".
+
 `test/conftest.py` holds the rest: suite-specific isolation (Slack thread state, the
 model-window cache, the platform context, …), the Windows collect-ignore list, and the
 xdist worker budget.
 
 When you add isolation, put it in the rootdir conftest **only** if a test in any
-testpath could damage the host without it. Otherwise it belongs in `test/conftest.py`,
-where it costs the in-package suites nothing.
+testpath could damage the host — or poison a process global for every later test —
+without it. Otherwise it belongs in `test/conftest.py`, where it costs the in-package
+suites nothing. Both of the entries above started life in `test/conftest.py` and were
+silently absent from the ~1490 in-package tests, which is how each was found.
 
 ## Rules
 
@@ -163,10 +180,28 @@ where it costs the in-package suites nothing.
      `test/test_host_isolation_floor.py::TestTheSharedKiroPathRatchet` fails when
      `src/kiro_crew` grows a module-level `Path.home()` binding that is neither in the
      table nor explicitly excluded with a reason. The guarantee is exactly that:
-     **import-time bindings**. A LAZY resolver (`config.paths.kiro_home()` and its
-     callers) still names the operator's real `~/.kiro` — the floor pins neither
-     `Path.home()` nor `$HOME` — so a test that reaches one of those must isolate it
-     itself.
+     **import-time bindings**.
+
+     The LAZY half is **yours to isolate**, and the floor deliberately does not do it
+     for you. `config.paths.kiro_home()` resolves on every call, so `kiro_agents_dir()`
+     and `kiro_sessions_dir()` name the operator's real, machine-wide kiro-cli home.
+     There are two levers and they are not interchangeable: `KIRO_HOME` (the documented
+     production override, which also moves kiro-cli's session storage) outranks
+     `Path.home()`, so pinning it at the floor would defeat the ~35 tests that isolate
+     this resolver with `patch("pathlib.Path.home", return_value=tmp_path)` — they would
+     read an empty directory instead of the tree they had just built. Use whichever the
+     code path under test actually needs, per test.
+
+     Getting this wrong is not loud. `test_kas_spawn.py` projected the developer's
+     *installed* agent specs, so its verdict depended on which agents were present and
+     whether their `file://` prompt files still resolved; it failed with an
+     `AcpRuntimeError` naming a prompt file in an unrelated worktree. It is a write path
+     too — `ensure_agent_materialized` targets that directory, and only its
+     ephemeral-instance refusal ("This instance will use the existing specs instead")
+     keeps tests out of the operator's live `~/.kiro/agents/`.
+
+     The floor pins neither `Path.home()` nor `$HOME` either, so a path built from
+     either without going through a resolver is also yours.
 
      Two exclusions are excluded for **opposite** reasons, and the distinction
      matters: the launchd paths are excluded because another fixture already
@@ -206,6 +241,43 @@ where it costs the in-package suites nothing.
   no individual test (`_isolate_sel_default_dir`, in the rootdir conftest). When you
   add a subsystem with a background worker, ask which directory its thread captured
   and whether anything deletes that directory underneath it.
+
+- **When you stub a lifecycle method, SPY and delegate — never replace.** A stub that
+  only records the call leaves whatever that method was supposed to stop still running.
+  The worked example cost 19 failures in files that contain no metrics code at all:
+  three tests in `test/metrics/test_provider.py` needed to observe *that* the provider's
+  `shutdown` was called and on which thread, so they replaced it with a recorder. The
+  real `shutdown` is what stops OpenTelemetry's `PeriodicExportingMetricReader`, so its
+  exporter thread stayed alive for the life of the xdist worker — and it cannot be
+  cleaned up by dropping references, because the thread's target is a bound method of
+  the reader it keeps alive.
+
+  What that one thread then broke is the part worth remembering, because nothing about
+  it is local: the OTel SDK registers an `os.register_at_fork(after_in_child=…)` hook
+  that **restarts** the exporter thread in every fork child. The sandbox's userns probe
+  forks, and `unshare(CLONE_NEWUSER)` implies `CLONE_THREAD`, which the kernel refuses
+  with **EINVAL unless the caller is single-threaded**. EINVAL is indistinguishable from
+  a kernel built without `CONFIG_USER_NS`, which is permanent, so the worker cached
+  "this host has no sandbox backend" and every later sandboxed spawn on it failed
+  closed. Diagnosis went: 19 `SandboxUnavailableError`s in two app suites → each file
+  passes alone → the probe child had 2 threads, every time.
+
+  Two guards came out of it. The rootdir conftest fails the test that leaves an
+  exporter thread running (`_no_leaked_telemetry_exporter`, reported once per worker so
+  one defect cannot red the shard), and the probe reports a multithreaded child as its
+  own transient condition instead of letting an ambiguous EINVAL be cached as a verdict
+  about the host. Neither replaces the rule: **anything you start, something must
+  stop — and a stub is not a stop.**
+
+- **A handler that answers before its work finishes must be awaited, not slept on.**
+  `api_chat_slot_slack_link` returns 200 as soon as the link is persisted and hands the
+  Slack backfill to `asyncio.create_task`, tracked in `state._background_tasks`. Six
+  tests asserted on what that task did without awaiting it, which passes or fails purely
+  on how the loop was scheduled: on a loaded CI shard it surfaced as
+  `'NoneType' object has no attribute 'args'` on a **different test each run** (#4130),
+  which reads as a flaky suite rather than as a missing `await`. Use
+  `chat_test_helpers.drain_background_tasks(state)`, which awaits to a fixed point and
+  re-raises; exiting the `TestClient` block is not a synchronisation point.
 - Tests MUST NOT reconfigure or restart a real host service. This is enforced,
   not just asked for: the **rootdir** `conftest.py` (distinct from
   `test/conftest.py`, which only applies to `test/` — `testpaths` also collects
@@ -403,6 +475,16 @@ Fix: seed it. `random.Random(_SEED).randbytes(n)` keeps the payload high-entropy
 which is usually the property under test, while fixing the outcome. Verify the chosen
 seed against the real predicate, and say in a comment that you did.
 
+**The host is an input too, and a PID is the one that catches people.** `999999` is
+not an impossible PID: Linux `pid_max` is 4194304, so on a long-running host it names
+an ordinary live process. Two tests asserted its absence — one as "a dead gateway
+whose entry must be pruned", one as "a value only a planted `ps` shim could have
+produced" — and both went red on a host whose counter had passed it, the second while
+accusing the shim of running when it had not. Fix by kind: for a PID the code *probes*,
+pin the probe (`patch(..., "pid_exists", side_effect=lambda p: p != 999999)`); for a
+PID that must never appear in real output, use a number no OS can allocate
+(`99999999999`) rather than one that merely looks unused.
+
 ```python
 # WRONG: ~1% of runs match a credential prefix and the exemption assert fails
 body = os.urandom(20_000)
@@ -431,6 +513,11 @@ while not observed():
 
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
+
+The commonest shape here is not a rate but **an unawaited task**: a handler that
+answers before its work finishes leaves the assertion racing the loop. There is a
+synchronisation point, so use it — `drain_background_tasks(state)` — and see the Rules
+entry for what it looks like when you do not (a different test failing each run).
 
 ### 3. Leaked async objects
 

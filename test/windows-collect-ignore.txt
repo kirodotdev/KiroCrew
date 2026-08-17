@@ -24,6 +24,7 @@
 test_harness.py                    # spawns real gateways; PGID + socketpair plumbing
 test_sandbox_argv.py               # OS sandbox is POSIX-only
 test_sandbox_cc_mode.py            # OS sandbox is POSIX-only
+test_sandbox_hardlink_scan.py      # OS sandbox is POSIX-only (launcher uses getuid)
 test_sandbox_nested_tier.py        # OS sandbox is POSIX-only (launcher uses getuid; env at /usr/bin)
 test_pid_lifecycle.py              # process-group semantics
 test_pid_sweep_helpers.py          # process-group semantics

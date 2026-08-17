@@ -2389,13 +2389,19 @@ def test_parent_map_ignores_a_planted_ps_earlier_on_path(tmp_path, monkeypatch):
     if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
         pytest.skip("POSIX binary resolution")
 
+    # The sentinel must be a number NO real process table can contain, because the
+    # assertion below reads its absence as proof the shim did not run. A plausible
+    # PID cannot do that job: `pid_max` is 4194304 on Linux, so a host whose counter
+    # has passed 999999 has a live process with that id and the test failed with
+    # "planted PATH shim was executed" while the shim had not run at all.
+    unreachable_pid = 99999999999
     shim = tmp_path / "ps"
-    shim.write_text("#!/bin/sh\necho '999999 999998'\n")
+    shim.write_text(f"#!/bin/sh\necho '{unreachable_pid} {unreachable_pid - 1}'\n")
     shim.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
 
     parent_map = platform_compat._posix_process_parent_map()
-    assert 999999 not in parent_map, "planted PATH shim was executed"
+    assert unreachable_pid not in parent_map, "planted PATH shim was executed"
     # A real snapshot still came back, so this is not passing by returning {}.
     assert os.getpid() in parent_map
 

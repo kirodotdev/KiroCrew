@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,13 @@ from aiohttp import web
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+#: Draining is a LOOP because a drained task may register another -- not because any
+#: current one does (``chat_slack`` has a single ``create_task``, and the backfill
+#: posts sequentially). Bounded rather than `while` so a task that re-arms itself
+#: forever fails the test instead of hanging until the 120s pytest timeout, whose
+#: report names the timeout and not the task.
+_DRAIN_ROUNDS = 20
 
 
 def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
@@ -25,6 +33,46 @@ def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
     """
     path = log._path(key)
     os.utime(path, (sig + 1, sig + 1))
+
+
+async def drain_background_tasks(state) -> None:
+    """Await every task *state* spawned, so an assertion cannot race one.
+
+    Handlers that must answer the request before their work finishes hand it to
+    ``asyncio.create_task`` and register it in ``state._background_tasks`` — the
+    Slack link-time backfill (``_spawn_slack_backfill``) is the one this exists for.
+    The response arriving therefore proves only that the task was CREATED, so reading
+    the Slack mock straight afterwards races it: it usually wins on an idle machine and
+    loses under load. That flake surfaces as a plain count mismatch (``assert 0 == 2``)
+    or as ``'NoneType' object has no attribute 'args'``, on a DIFFERENT test in the
+    class each run, and names neither the task nor the race (#4130).
+
+    Awaiting the not-yet-done members is an exact wait on the real completion
+    condition rather than a sleep. An empty set means the task already finished; a
+    done-callback discards each task, so the set is snapshotted before awaiting.
+
+    Never a ``sleep``: a sleep long enough to be reliable on the slowest runner is
+    paid by every run, and it is still only a guess.
+
+    Exceptions are re-raised, so a task that died silently fails its own test
+    instead of surfacing later as an unretrieved-exception warning.
+
+    Scope: this awaits EVERY task in ``state._background_tasks``, which several other
+    handlers also register (``handlers/sessions.py``, ``taskrunner.py``,
+    ``handlers/mcp.py``). That is right for a state a test built and will discard, and
+    wrong for one carrying a long-lived task -- a subscription or a poller would never
+    complete and the wait would run to the pytest timeout. Drain a specific task
+    directly in that case.
+    """
+    for _ in range(_DRAIN_ROUNDS):
+        pending = [t for t in list(getattr(state, "_background_tasks", ())) if not t.done()]
+        if not pending:
+            return
+        await asyncio.gather(*pending)
+    raise AssertionError(
+        f"background tasks still pending after {_DRAIN_ROUNDS} drain rounds: "
+        f"{sorted(t.get_name() for t in state._background_tasks if not t.done())}"
+    )
 
 
 class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):

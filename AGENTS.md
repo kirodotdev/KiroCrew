@@ -281,6 +281,13 @@ Two traps are worth naming here because neither is visible when reading the test
   directory the first caller resolved and re-creates it after a test's own teardown
   deleted it, so the fix is a session-scoped directory owned by no test, never tidier
   cleanup.
+- **A stub is not a stop: SPY on a `shutdown`/`close`/`stop` and delegate.** A stub that
+  only records leaves the thing running for the whole worker. Replacing the metrics
+  provider's `shutdown` left an OpenTelemetry exporter thread alive, and because that SDK
+  reinstalls it in every fork child via `os.register_at_fork`, the sandbox probe's child
+  became multithreaded — `unshare(CLONE_NEWUSER)` implies `CLONE_THREAD` and fails EINVAL
+  there, which was cached as "this host has no sandbox backend" and failed every later
+  sandboxed spawn closed. 19 red tests, none of them a metrics test.
 
 ## Code style
 

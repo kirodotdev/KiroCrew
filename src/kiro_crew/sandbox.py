@@ -238,6 +238,12 @@ _WARM_JOIN_TIMEOUT_SECS = 2.0
 # reported transient forever — still gets told which sysctl to raise.
 _PROBE_STEP_NEWUSER = "unshare(CLONE_NEWUSER)"
 _PROBE_STEP_NEWNS = "unshare(CLONE_NEWNS)"
+#: Wire step the probe child sends INSTEAD of "U" when its ``CLONE_NEWUSER`` EINVAL
+#: is explained by the child having been multithreaded, carrying the thread count.
+#: The parent classifies it exactly as it classifies a plain EINVAL -- the step
+#: exists to carry the explanation, not to change the verdict. See
+#: ``_probe_child_thread_count``.
+_PROBE_STEP_MULTITHREADED = "M"
 
 # A probe child that vanished mid-handshake is a harness failure, not a kernel
 # verdict, so it must not be cached as "this host has no sandbox". Kept separate
@@ -518,6 +524,40 @@ def _probe_child_unshare(libc: ctypes.CDLL, flags: int) -> int:
     return ctypes.get_errno() or errno.EPERM
 
 
+def _probe_child_thread_count() -> int:
+    """Live threads in the probe child, or 0 when it cannot be determined.
+
+    ``unshare(CLONE_NEWUSER)`` implies ``CLONE_THREAD``, which the kernel refuses
+    with **EINVAL** unless the caller's thread group holds exactly one task. A
+    ``fork()`` child is single-threaded by construction, so this normally reads 1 --
+    but ``os.register_at_fork`` handlers run INSIDE ``os.fork()``, before it
+    returns, and a library can start a thread there. OpenTelemetry's metric SDK does
+    exactly that: its ``PeriodicExportingMetricReader`` registers an
+    ``after_in_child`` hook that restarts its exporter thread in every child.
+
+    Used ONLY to explain an EINVAL, never to reclassify one. EINVAL is genuinely
+    ambiguous here -- a kernel built without ``CONFIG_USER_NS`` returns it too, and a
+    multithreaded child cannot tell the two apart, because it never gets far enough to
+    ask. Calling it transient would be just as wrong as calling it permanent, and it
+    would additionally withhold the ``no_backend`` opt-in (``sandbox_allow_unsandboxed_exec``)
+    from a host that really has no user namespaces. So the classification stays exactly
+    as it was and the REASON names the thread, which is the part a reader cannot infer:
+    a bare "errno 22 (EINVAL)" sends them to check their kernel config, which is the
+    wrong place. Making such a process probe successfully needs a single-threaded
+    child, i.e. a different spawn mechanism, and that is its own change.
+
+    ``st_nlink`` of ``/proc/self/task`` is ``2 + threads`` (each thread is a
+    subdirectory), so this is one ``stat`` and no list: the probe child of a threaded
+    process must not allocate, because another thread may have owned the allocator lock
+    at fork time and no longer exists to release it. Linux-only, like the rest of the
+    probe.
+    """
+    try:
+        return max(0, os.stat("/proc/self/task").st_nlink - 2)
+    except OSError:
+        return 0
+
+
 def _probe_write_identity_maps(pid: int, uid: int, gid: int) -> tuple[str, int] | None:
     """Write the probe child's identity maps, exactly as the launcher's parent does.
 
@@ -649,7 +689,14 @@ def _probe_child_sequence(
         # dashboard listen socket) open and pin the home. Only the handshake
         # ends and the standard streams survive. (#3150)
         _close_fd_ranges(sweep_ranges)
+        # Read BEFORE the unshare: it is the only moment the count is the one the
+        # kernel judged. Reported only alongside an EINVAL, and only to explain it --
+        # see _probe_child_thread_count for why it must not change the verdict.
+        threads = _probe_child_thread_count()
         err = _probe_child_unshare(libc, _CLONE_NEWUSER)
+        if err == errno.EINVAL and threads > 1:
+            os.write(c2p_w, b"M:%d\n" % threads)
+            os._exit(0)
         os.write(c2p_w, b"U:%d\n" % err)
         if err:
             os._exit(0)
@@ -672,6 +719,20 @@ def _probe_parent_sequence(
         death = _probe_child_death(pid)
         return (False, True, f"probe child {death}; no {_PROBE_STEP_NEWUSER} result", "")
     step, err = report
+    if step == _PROBE_STEP_MULTITHREADED:
+        # Same classification and same remedy as a plain EINVAL -- deliberately, see
+        # _probe_child_thread_count. Only the reason gains the thread count, because
+        # that is the one part a reader cannot infer from the errno.
+        ok, transient, reason, remedy = _probe_failure(_PROBE_STEP_NEWUSER, errno.EINVAL)
+        return (
+            ok,
+            transient,
+            f"{reason}; the probe child had {err} threads, which alone makes it "
+            "return EINVAL (CLONE_NEWUSER implies CLONE_THREAD) -- an "
+            "os.register_at_fork hook started one, so the kernel's own verdict is "
+            "unobtainable from this child",
+            remedy,
+        )
     if step != "U":
         return (False, True, f"probe child sent unexpected step {step!r}", "")
     if err:
@@ -1230,6 +1291,7 @@ sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
 import ctypes.util
 import os
+import stat
 import tempfile
 
 _CLONE_NEWUSER = 0x10000000
@@ -1600,6 +1662,17 @@ def main():
         # a stderr warning rather than failing closed: /tmp on a busy host can
         # exceed any fixed budget from ordinary telemetry/cache churn, and
         # exiting here would break every sandbox spawn on such hosts.
+        #
+        # REGULAR FILES ONLY, and that guard is what keeps the walk rare. Linux
+        # does not allow a hardlink to a directory, so nlink > 1 says nothing
+        # about a directory — and every directory has nlink >= 2 for `.` and
+        # `..`. `SENSITIVE_FILES` deliberately carries every hidden path of BOTH
+        # kinds (the hiding loops classify per entry, see `_build_launcher_script`),
+        # so without this check two ordinary directories — `~/.kiro/crew-auth-staging`
+        # and `~/.gnupg` on the measuring host — seeded the match set on every
+        # spawn. The 100k-entry walk of $CWD and /tmp then ran every time, costing
+        # 1.5s per sandboxed spawn and emitting the truncation warning constantly,
+        # while no credential had an alias at all.
         _protected_inodes = set()
         for _pd in SENSITIVE_DIRS:
             if os.path.isdir(_pd):
@@ -1607,7 +1680,7 @@ def main():
                     for _fname in _files_scan:
                         try:
                             _st = os.stat(os.path.join(_root, _fname))
-                            if _st.st_nlink > 1:
+                            if stat.S_ISREG(_st.st_mode) and _st.st_nlink > 1:
                                 _protected_inodes.add((_st.st_dev, _st.st_ino))
                         except OSError:
                             pass
@@ -1615,7 +1688,7 @@ def main():
         for _pf in SENSITIVE_FILES:
             try:
                 _st = os.stat(_pf)
-                if _st.st_nlink > 1:
+                if stat.S_ISREG(_st.st_mode) and _st.st_nlink > 1:
                     _protected_inodes.add((_st.st_dev, _st.st_ino))
             except OSError:
                 pass

@@ -70,6 +70,7 @@ and tolerate an ImportError so a partial checkout cannot break collection.
 from __future__ import annotations
 
 import asyncio.base_events
+import contextlib
 import getpass
 import importlib
 import os
@@ -78,6 +79,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import warnings
 
 import pytest
@@ -500,6 +502,168 @@ def pytest_runtest_teardown(item, nextitem):
     try:
         os.chdir(_SESSION_CWD)
     except OSError:  # pragma: no cover - the starting directory would have to be gone
+        pass
+
+
+# ── no test may leave a telemetry exporter running ────────────────────
+
+#: Thread-name marker for OpenTelemetry's periodic metric exporter. Matched on the
+#: name because the SDK is an optional import: naming the class would make this
+#: guard depend on it being installed.
+_OTEL_THREAD_MARKER = "Otel"
+
+
+def _live_exporter_threads() -> set:
+    """The exporter threads alive right now, as OBJECTS.
+
+    Objects, not names: the SDK gives every ``PeriodicExportingMetricReader`` ticker
+    the same name, so a name-keyed set makes a second leak indistinguishable from the
+    first one still running.
+    """
+    return {
+        t for t in threading.enumerate() if _OTEL_THREAD_MARKER in t.name and t.is_alive()
+    }
+
+
+def _stop_leaked_exporter(thread) -> None:
+    """Best-effort: stop *thread* through the reader that owns it.
+
+    The reader is unreachable from ``metrics.provider`` by this point -- a stubbed
+    ``shutdown`` is exactly what orphans it -- but the thread's target is the
+    reader's own bound method, so the thread still knows its owner. Reaching through
+    ``__self__`` is the only handle left, and stopping the thread is what keeps one
+    leak from reddening everything that follows it on this worker.
+
+    A thread we cannot reach is WARNED about rather than passed over: it means the
+    guard reported the leak and then left it running, which is the state that
+    corrupts every later fork child on the worker, so it must not be silent.
+    """
+    owner = getattr(getattr(thread, "_target", None), "__self__", None)
+    if owner is None:
+        warnings.warn(
+            f"telemetry exporter thread {thread.name!r} cannot be stopped: its target "
+            "exposes no owning reader, so it will keep running for the rest of this "
+            "worker and every later fork child will be multithreaded",
+            stacklevel=2,
+        )
+        return
+    try:
+        owner.shutdown(timeout_millis=1)
+    except Exception as exc:  # pragma: no cover - SDK-shape dependent
+        warnings.warn(
+            f"could not stop telemetry exporter thread {thread.name!r}: {exc!r}",
+            stacklevel=2,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_telemetry_exporter():
+    """Fail the test that leaves an OTel exporter thread alive, then clean up.
+
+    A leaked ``PeriodicExportingMetricReader`` is not just an idle thread. The SDK
+    registers an ``os.register_at_fork(after_in_child=...)`` hook that RESTARTS that
+    thread in every fork child, so from then on the sandbox's userns probe forks a
+    child that is multithreaded -- and ``unshare(CLONE_NEWUSER)`` implies
+    ``CLONE_THREAD``, which the kernel refuses with EINVAL unless the caller is
+    single-threaded. EINVAL is classified permanent, so the worker caches "this host
+    has no sandbox backend" and every later sandboxed spawn fails closed. Measured:
+    one leak reddened 19 tests across two app suites, all of which pass alone, and
+    none of which is a metrics test.
+
+    The thread also keeps its own reader alive (its target is a bound method), so no
+    amount of dropping references clears it; only a real ``shutdown()`` does. That is
+    why a test that observes the shutdown call must SPY on it and delegate, never
+    replace it.
+
+    Attributed by DIFFERENCE, not by observation: a thread alive at setup was left by
+    an earlier test, so only threads that appeared during this one are reported. That
+    is what makes the message name the culprit. The first version reported whatever
+    test was running when a leak was first seen, which on a Windows shard blamed three
+    tests in ``test_perf_boot_path.py`` that run every line of their subject in a
+    SUBPROCESS and cannot leak a thread into the worker at all.
+
+    Cleaning up after failing is deliberate: the leak damages every LATER test, so
+    letting it stand would turn one defect into a red suite -- and with cleanup, the
+    difference cannot double-report either.
+    """
+    before = _live_exporter_threads()
+    yield
+    leaked = _live_exporter_threads() - before
+    if not leaked:
+        return
+    provider = sys.modules.get("kiro_crew.metrics.provider")
+    if provider is not None:
+        with contextlib.suppress(Exception):
+            provider.reset_for_testing()
+    for thread in leaked:
+        _stop_leaked_exporter(thread)
+    raise AssertionError(
+        "this test STARTED a telemetry exporter thread and left it running: "
+        f"{sorted(t.name for t in leaked)}. A metrics provider must be shut down for "
+        "real (reset_for_testing()), and a test that stubs `shutdown` must delegate "
+        "to it -- see "
+        "conftest._no_leaked_telemetry_exporter."
+    )
+
+
+# ── the sandbox probe cache is warm for every test, in every testpath ──
+
+
+#: The verdict this worker's ONE real probe produced, so a later test that finds the
+#: cache cold can be handed the same answer instead of paying another probe. ``None``
+#: means "not established" -- either the probe has not run yet, or it came back
+#: transient and left nothing to cache.
+_probe_verdict: str | None = None
+_probe_attempted = False
+
+
+def pytest_runtest_setup(item):
+    """Keep ``sandbox._backend`` warm for every test, at one probe per worker.
+
+    ``detect_backend()`` reached from a running event loop with a COLD cache
+    deliberately refuses to probe -- the probe forks and waits, which must never
+    happen on the loop -- and returns "none" with a self-described transient reason.
+    Production fills the cache at gateway boot so that path is not reachable; a
+    pytest worker has no boot, so the first async test to spawn through
+    ``wrap_argv`` gets a hard ``SandboxUnavailableError`` reading "this host has no
+    OS sandbox backend" on a host whose sandbox works perfectly.
+
+    This lived in ``test/conftest.py``, which the in-package app suites never load,
+    so the ~1490 tests under ``src/kiro_crew/apps/builtins/*/tests/`` had no warm
+    cache at all -- 19 of them failed that way in a full run while every one passed
+    when its own file was run alone. Whether an app test file happened to land on an
+    xdist worker that had already run something under ``test/`` decided the verdict.
+
+    Acting at SETUP rather than once per session is what makes it order-independent:
+    the six ``test_sandbox_*.py`` files reset the cache in their own teardown
+    (correctly -- they test the cache), and a session-scoped prewarm cannot undo that
+    for whatever runs next on the worker.
+
+    **RESTORING the first verdict, not re-probing.** A probe is not cheap on every
+    host and its cost is not portable: it forks and then closes every inherited
+    descriptor, which is O(``RLIMIT_NOFILE``) -- measured 1ms at a 1024 limit, 102ms
+    at 524288 -- and on macOS it spawns a real ``sandbox-exec``. Re-probing per reset
+    took ``test_sandbox_argv.py`` from 3.7s to 18.6s across its 145 tests. The answer
+    cannot change within a process, so the second and later tests get the recorded
+    one by assignment.
+
+    Probing at most ONCE also bounds the transient case, which is the one that would
+    otherwise be unbounded: a transient verdict is deliberately never cached, so
+    "probe whenever cold" on a fork-starved host means two forks and a 50ms sleep for
+    every test in the run. A probe failure is swallowed either way -- a host genuinely
+    without a sandbox must still run the tests that do not need one.
+    """
+    global _probe_verdict, _probe_attempted
+    try:
+        from kiro_crew import sandbox
+
+        if not _probe_attempted:
+            _probe_attempted = True
+            sandbox.detect_backend()
+            _probe_verdict = sandbox._backend
+        elif sandbox._backend is None and _probe_verdict is not None:
+            sandbox._backend = _probe_verdict
+    except Exception:  # pragma: no cover - never let the warm-up fail a test
         pass
 
 
@@ -974,6 +1138,15 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     ``KIROCREW_DEV_MODE`` / ``KIROCREW_STRICT_ON_LOOP_PERSIST`` are cleared so a
     developer who exports them does not flip the off-loop-IO guards strict for the
     whole suite.
+
+    ``KIRO_HOME`` is deliberately NOT pinned here, even though the lazy
+    ``config.paths.kiro_home()`` does name the operator's real machine-wide kiro-cli
+    home. The env var takes precedence over ``Path.home()`` by design, and ~35 tests
+    isolate that resolver the other way round -- ``patch("pathlib.Path.home",
+    return_value=tmp_path)`` -- so pinning the variable overrides their own isolation
+    and they read an empty directory instead of the tree they just built. A test that
+    reaches ``kiro_home()`` therefore isolates it itself, with whichever of the two
+    levers it already uses.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(_isolation_dirs("kirocrew-home")))
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard.handlers import worktree as wt_mod
 from kiro_crew.dashboard.handlers.worktree import (
     _FILTER_PROBE_FAILED,
     SandboxUnavailable,
@@ -1064,3 +1066,122 @@ class TestRepoAllowList:
             assert resp.status == 403
             assert "outside" in (await resp.json())["error"]
         assert not (repo.parent / "proj-wt-x").exists()
+
+
+class TestLauncherAdvisoryIsNotARefusal:
+    """A sandbox launcher WARNING must never be read as "no sandbox backend".
+
+    The launcher's pre-exec hardlink scan degrades OPEN when it exhausts its
+    per-root file budget: /tmp on a busy host passes that budget from ordinary
+    churn, and failing closed would break every sandboxed spawn on such a host. It
+    says so on the child's stderr and execs the child anyway.
+
+    Reading that advisory as a refusal broke the endpoint on exactly those hosts,
+    because git commands here exit non-zero as a matter of course -- ``rev-parse
+    --verify --quiet`` on a branch that does not exist is the probe behind "does
+    this branch already exist", so the answer became "your host cannot sandbox
+    git" for every create.
+
+    Deliberately does NOT take the ``repo`` fixture. That fixture skips wherever
+    isolation cannot be established, which is every CI platform -- Windows has no
+    backend at all and ubuntu-latest denies ``unshare(NEWNS)`` under AppArmor -- so
+    the guard for the bug above would never run where it matters. Nothing here needs
+    a repo or a sandbox: ``run_limited`` is stubbed, the spawn goes through
+    ``_passthrough_spawn`` (the file's existing device for exactly this), and the cwd
+    only has to be a real directory.
+    """
+
+    _WARNING = (
+        "sandbox: WARNING — pre-exec hardlink scan truncated at 100000 files in "
+        "/tmp; scan incomplete (control degrades open)"
+    )
+    _FATAL = "sandbox: unshare(NEWNS) failed: errno 1"
+
+    @pytest.fixture(autouse=True)
+    def _spawn_passthrough(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
+
+    def _completed(self, returncode: int, stderr: str):
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=returncode, stdout="", stderr=stderr
+        )
+
+    def test_a_warning_on_a_non_zero_exit_is_returned_as_data(self, tmp_path, monkeypatch):
+        """The non-zero exit is the ANSWER here, not an error to translate."""
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        stderr = self._WARNING + "\n"
+        monkeypatch.setattr(wt, "run_limited", lambda *a, **k: self._completed(1, stderr))
+        proc = _run_git(["rev-parse", "--verify", "--quiet", "refs/heads/nope"], str(tmp_path))
+
+        assert proc.returncode == 1
+
+    def test_a_fatal_launcher_line_still_refuses(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        stderr = self._FATAL + "\n"
+        monkeypatch.setattr(wt, "run_limited", lambda *a, **k: self._completed(1, stderr))
+
+        with pytest.raises(SandboxUnavailable):
+            _run_git(["rev-parse", "HEAD"], str(tmp_path))
+
+    def test_a_fatal_line_a_warning_precedes_is_still_found(self, tmp_path, monkeypatch):
+        """Order must not decide it: ``startswith`` on the whole stderr missed this."""
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        stderr = f"{self._WARNING}\n{self._FATAL}\n"
+        monkeypatch.setattr(wt, "run_limited", lambda *a, **k: self._completed(1, stderr))
+
+        with pytest.raises(SandboxUnavailable) as excinfo:
+            _run_git(["rev-parse", "HEAD"], str(tmp_path))
+
+        # The FATAL line alone, not the whole stderr: the message reaches the user as
+        # the reason the create was refused, and leading it with an advisory about
+        # /tmp names the wrong cause.
+        assert str(excinfo.value) == self._FATAL
+
+    @pytest.mark.skipif(
+        not hasattr(os, "getuid"),
+        reason="the namespace launcher is POSIX-only: _build_launcher_script reads "
+        "os.getuid(), which Windows has not got",
+    )
+    def test_the_launcher_emits_no_severity_the_classifier_does_not_know(self):
+        """Ratchet the coupling: `_WARNING` above is a hand-typed copy of the real text.
+
+        The classifier decides fatal-vs-advisory from one prefix, so a launcher line
+        that is neither -- a reworded advisory (``sandbox: note - ...``), or a second
+        non-fatal kind -- is read as a refusal, and on a busy-/tmp host every git
+        command that legitimately exits non-zero again reports "this host has no OS
+        sandbox backend". Nothing else pins that, because the tests above feed the
+        classifier their own strings.
+
+        Pinned as the SET of severities the launcher can emit, so adding one is a
+        deliberate edit here plus a decision about which side of the prefix it falls
+        on -- rather than a silent reclassification.
+        """
+        from kiro_crew.sandbox import _build_launcher_script
+
+        severities = {
+            token.split()[0]
+            for token in re.findall(
+                r"sandbox: ([^'\"%\\\n]+)", _build_launcher_script("strict")
+            )
+        }
+
+        assert severities == {"unshare(NEWUSER)", "unshare(NEWNS)", "BLOCKED", "WARNING"}
+        # And the one advisory is spelled the way the classifier looks for it.
+        assert self._WARNING.startswith(wt_mod._SANDBOX_LAUNCHER_WARNING_PREFIX)
+        assert wt_mod._SANDBOX_LAUNCHER_WARNING_PREFIX.startswith(
+            wt_mod._SANDBOX_LAUNCHER_PREFIX
+        ), "the advisory prefix must be a refinement of the launcher prefix, not a rival"
+
+    def test_gits_own_error_is_never_mistaken_for_a_refusal(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import worktree as wt
+
+        stderr = "fatal: not a git repository (or any of the parent directories): .git\n"
+        monkeypatch.setattr(wt, "run_limited", lambda *a, **k: self._completed(128, stderr))
+        proc = _run_git(["rev-parse", "HEAD"], str(tmp_path))
+
+        assert proc.returncode == 128

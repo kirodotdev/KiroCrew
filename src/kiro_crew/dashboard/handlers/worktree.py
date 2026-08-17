@@ -144,6 +144,13 @@ _SANDBOX_REFUSAL = (
 # established" from a genuine git error.
 _SANDBOX_LAUNCHER_PREFIX = "sandbox: "
 
+# The launcher prints this prefix for an ADVISORY it emits while still going on to
+# exec the child, so it must never be read as a refusal. Only one exists today: the
+# pre-exec hardlink scan degrades OPEN when it exhausts its per-root file budget,
+# because /tmp on a busy host exceeds any fixed budget from ordinary churn and
+# failing closed there would break every sandboxed spawn on such a host.
+_SANDBOX_LAUNCHER_WARNING_PREFIX = "sandbox: WARNING"
+
 # STRICT, not the "standard" default. `_checkout_filter` runs `git config
 # --includes`, and `include.path` is repo-controlled: a hostile checkout can point
 # it at `~/.aws/credentials` (or `~/.netrc`, `~/.git-credentials`) and have git
@@ -236,9 +243,35 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     # runs, so without this the non-zero exit is misread downstream as "not a git
     # repository" or "cannot list worktrees". Surface it as the same refusal a
     # missing backend gets, so the user is told the truth.
-    if proc.returncode != 0 and (proc.stderr or "").startswith(_SANDBOX_LAUNCHER_PREFIX):
-        raise SandboxUnavailable((proc.stderr or "").strip())
+    launcher_failure = _launcher_failure_line(proc.stderr or "")
+    if proc.returncode != 0 and launcher_failure:
+        raise SandboxUnavailable(launcher_failure)
     return proc
+
+
+def _launcher_failure_line(stderr: str) -> str:
+    """The sandbox launcher's FATAL line in *stderr*, or ``""`` when it did not fail.
+
+    Line-wise and WARNING-aware, and both properties are load-bearing.
+
+    The launcher degrades OPEN on a truncated pre-exec hardlink scan and prints
+    ``sandbox: WARNING — …`` before exec'ing the child anyway. Reading the whole
+    stderr with ``startswith`` classified that advisory as a refusal, so on any host
+    with more than the scan budget of files under /tmp — ordinary telemetry and cache
+    churn reaches it — every git command that legitimately exits non-zero was
+    reported as "this host has no OS sandbox backend". ``rev-parse --verify --quiet``
+    on a branch that does not exist is exactly that shape, which made a plain
+    "does this branch exist" probe answer "your host cannot sandbox git".
+
+    Scanning per line rather than only the head also catches the opposite order: a
+    real fatal line that an advisory happens to precede.
+    """
+    for line in stderr.splitlines():
+        if line.startswith(_SANDBOX_LAUNCHER_PREFIX) and not line.startswith(
+            _SANDBOX_LAUNCHER_WARNING_PREFIX
+        ):
+            return line.strip()
+    return ""
 
 
 def _dir_slug(branch: str) -> str:

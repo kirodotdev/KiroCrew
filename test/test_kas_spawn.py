@@ -40,6 +40,7 @@ token callback by shelling out to kiro-cli). ``agent.acp_backend`` accepts ``kas
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -63,6 +64,7 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
 )
+from kiro_crew.config.paths import kiro_agents_dir
 
 
 class TestAssetResolution:
@@ -262,9 +264,38 @@ for line in sys.stdin:
 '''
 
 
+#: The one agent spec ``session/new`` projects onto KAS. Minimal on purpose: this
+#: file tests the SPAWN contract; the projection itself is covered elsewhere.
+_STUB_AGENT_SPEC = {
+    "name": "kirocrew",
+    "description": "spawn-contract stub",
+    "prompt": "You are a test agent.",
+    "tools": [],
+    "allowedTools": [],
+}
+
+
 @pytest.fixture
 def kas_stub(tmp_path, monkeypatch):
-    """Point the KAS asset overrides at a stub agent run by this interpreter."""
+    """Point the KAS asset overrides at a stub agent run by this interpreter.
+
+    Redirects the kiro agent home and puts a spec in it, because the projection reads
+    one and nothing in a test can make production write it: ``ensure_agent_materialized``
+    REFUSES to write the shared agent home from an ephemeral instance -- a checkout plus
+    a temp data home, which describes every test -- and logs "This instance will use the
+    existing specs instead". Without the redirect, "the existing specs" are the
+    developer's own installed agents, so this test's verdict depended on which of them
+    were present and whether their ``file://`` prompt files still resolved: it failed
+    with an ``AcpRuntimeError`` naming a prompt file in an unrelated worktree.
+
+    ``KIRO_HOME`` rather than patching ``Path.home()``: it is the documented override
+    and it reaches the resolver this path uses. Note its scope caveat
+    (``config/paths.py``) -- today only the agents directory follows it, so it moves
+    where kiro-cli WRITES without moving where Kiro Crew reads. That is enough here,
+    because the agents directory is the whole dependency. The rootdir conftest does NOT
+    pin it: the variable outranks ``Path.home()``, and many tests isolate this resolver
+    by patching that instead.
+    """
     script = tmp_path / "kas_stub.py"
     script.write_text(_STUB_AGENT)
     launcher = tmp_path / "node-stub"
@@ -274,6 +305,12 @@ def kas_stub(tmp_path, monkeypatch):
     launcher.chmod(0o755)
     monkeypatch.setenv(ENV_KAS_NODE, str(launcher))
     monkeypatch.setenv(ENV_KAS_SCRIPT, str(script))
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
+    agents_dir = kiro_agents_dir()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{_STUB_AGENT_SPEC['name']}.json").write_text(
+        json.dumps(_STUB_AGENT_SPEC), encoding="utf-8"
+    )
     return launcher
 
 

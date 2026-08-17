@@ -516,8 +516,14 @@ class TestHardlinkScanBudget:
         # common healthy-host spawn pays nothing (and emits no truncation
         # warning). Both collection loops (SENSITIVE_DIRS and
         # SENSITIVE_FILES) carry the gate.
+        #
+        # REGULAR FILES only, and that half is not cosmetic: every directory has
+        # nlink >= 2, and SENSITIVE_FILES carries directories on purpose, so a bare
+        # nlink test armed the walk on every spawn. Behaviour is covered in
+        # test_sandbox_hardlink_scan.py; this is the source-level pin that both
+        # collection loops still carry the gate.
         script = _build_launcher_script("strict")
-        assert script.count("if _st.st_nlink > 1:") == 2
+        assert script.count("if stat.S_ISREG(_st.st_mode) and _st.st_nlink > 1:") == 2
 
     def test_per_root_budget_covers_a_busy_tmp(self):
         # The budget only applies once a credential inode is actually
