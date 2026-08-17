@@ -27,7 +27,7 @@ from typing import Any, Mapping, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.executors import maintenance_executor
+from kiro_crew.executors import image_executor, maintenance_executor
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
     CALLER_META_KEY,
@@ -42,6 +42,11 @@ from kiro_crew.mcp_gateway.apps import (
     extract_ui_resource_uri,
     strip_model_hidden_tools,
     write_spool,
+)
+from kiro_crew.mcp_gateway.image_budget import (
+    line_may_carry_image_block,
+    parse_image_bearing_frame,
+    rewrite_image_frame,
 )
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
@@ -1043,6 +1048,48 @@ class Backend:
                     continue
                 if not line:
                     break
+                # Enforce the inline-image budget on tool results BEFORE the
+                # spill step: a downscaled image both shrinks what spill writes
+                # to disk and, more importantly, keeps an oversized image block
+                # out of kiro-cli's conversation history, where it would be
+                # replayed to the model on every later turn and wedge the
+                # session (see kiro_crew.imaging MAX_IMAGE_EDGE_PX). Two
+                # stages on two pools: the byte probe admits every frame that
+                # COULD carry an image block (its negative is provable, but
+                # any escaped non-ASCII text also matches), so a cheap
+                # parse-confirm runs on the maintenance pool first -- like the
+                # spill rewrite -- and only genuinely image-bearing frames
+                # reach the image pool, where seconds-long Pillow decodes
+                # from one server would otherwise head-of-line block every
+                # other server's text-only results behind the probe's false
+                # positives.
+                if line_may_carry_image_block(line):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        image_msg = await loop.run_in_executor(
+                            maintenance_executor(),
+                            parse_image_bearing_frame,
+                            line,
+                        )
+                        if image_msg is not None:
+                            line = await loop.run_in_executor(
+                                image_executor(),
+                                rewrite_image_frame,
+                                image_msg,
+                                line,
+                                self.pool_key.server_name,
+                            )
+                    except Exception:
+                        # The rewrite never RAN (executor shutdown/saturation);
+                        # per-block fail-closed lives inside the hook. Routing
+                        # the raw line keeps co-pooled tenants alive, but the
+                        # frame may carry an unverified image -- log loudly
+                        # enough to diagnose a wedge that follows.
+                        logger.warning(
+                            "image-budget rewrite could not run for %s; routing raw line",
+                            self.pool_key.server_name,
+                            exc_info=True,
+                        )
                 # Spill oversized (but under the read limit) responses to a
                 # sidecar file and truncate inline, so a large-but-legitimate
                 # tool result doesn't balloon the shared daemon's memory or the
