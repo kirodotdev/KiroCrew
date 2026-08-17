@@ -4270,6 +4270,20 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "运行中",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "无法加载这个 Crew 的定时任务，因此不知道什么会唤醒它。",
+      "no_schedules_run_this_crew_automatically": "没有定时任务会自动运行这个 Crew。",
+      "open_schedule": "打开定时任务",
+      "pause_named": "暂停 {{name}}",
+      "paused": "已暂停",
+      "resume_named": "恢复 {{name}}",
+      "run_named_now": "立即运行 {{name}}",
+      "running": "执行中",
+      "schedule": "定时",
+      "schedules_that_run_this_crew_without_you_asking": "会在你不开口的情况下运行这个 Crew 的定时任务。与上面的 Triggers 不同，后者只决定编排器何时选中这个 Crew。",
+      "what_wakes_this_crew": "什么会唤醒这个 Crew"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "账户详情暂不可用",
       "checking_account": "正在检查账户…",
@@ -6575,6 +6589,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "取消任务失败",
+      "failed_to_pause_job": "暂停任务失败",
+      "failed_to_resume_job": "恢复任务失败",
       "failed_to_open_in_chat": "在聊天中打开失败",
       "failed_to_run_job": "运行任务失败"
     },

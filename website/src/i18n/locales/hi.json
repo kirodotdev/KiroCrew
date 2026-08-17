@@ -4334,6 +4334,20 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "चालू",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "इस Crew के शेड्यूल लोड नहीं हो सके, इसलिए इसे क्या जगाता है यह अज्ञात है।",
+      "no_schedules_run_this_crew_automatically": "कोई शेड्यूल इस Crew को अपने आप नहीं चलाता।",
+      "open_schedule": "शेड्यूल खोलो",
+      "pause_named": "{{name}} रोको",
+      "paused": "रुका हुआ",
+      "resume_named": "{{name}} फिर शुरू करो",
+      "run_named_now": "{{name}} अभी चलाओ",
+      "running": "चल रहा है",
+      "schedule": "शेड्यूल",
+      "schedules_that_run_this_crew_without_you_asking": "वे शेड्यूल जो तुम्हारे कहे बिना इस Crew को चलाते हैं। ऊपर दिए Triggers से अलग, जो केवल यह तय करता है कि ऑर्केस्ट्रेटर इस Crew को कब चुनेगा।",
+      "what_wakes_this_crew": "इस Crew को क्या जगाता है"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "खाता विवरण उपलब्ध नहीं है",
       "checking_account": "खाता जाँचा जा रहा है…",
@@ -6663,6 +6677,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "जॉब रद्द करने में विफल",
+      "failed_to_pause_job": "जॉब रोकने में विफल",
+      "failed_to_resume_job": "जॉब फिर शुरू करने में विफल",
       "failed_to_open_in_chat": "चैट में खोलने में विफल",
       "failed_to_run_job": "जॉब चलाने में विफल"
     },

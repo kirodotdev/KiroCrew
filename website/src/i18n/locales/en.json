@@ -3244,6 +3244,14 @@
     }
   },
   "components": {
+    "crewWakeSection": {
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Could not load this crew's schedules, so what wakes it is unknown.",
+      "no_schedules_run_this_crew_automatically": "No schedules run this crew automatically.",
+      "open_schedule": "Open Schedule",
+      "schedule": "schedule",
+      "schedules_that_run_this_crew_without_you_asking": "Schedules that run this crew without you asking. Separate from Triggers above, which only decides when the orchestrator picks this crew.",
+      "what_wakes_this_crew": "What wakes this crew"
+    },
     "agentDropdownList": {
       "no_matches": "No matches"
     },

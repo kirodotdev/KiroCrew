@@ -1126,6 +1126,14 @@
     }
   },
   "components": {
+    "crewWakeSection": {
+      "active": "active",
+      "pause_named": "Pause {{name}}",
+      "paused": "paused",
+      "resume_named": "Resume {{name}}",
+      "run_named_now": "Run {{name}} now",
+      "running": "running"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
       "checking_account": "Checking account…",
@@ -2250,6 +2258,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Failed to cancel job",
+      "failed_to_pause_job": "Failed to pause job",
+      "failed_to_resume_job": "Failed to resume job",
       "failed_to_open_in_chat": "Failed to open in chat",
       "failed_to_run_job": "Failed to run job"
     },

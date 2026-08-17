@@ -4462,6 +4462,20 @@
     "viewPr": "Пул-реквест"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "активно",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Не удалось загрузить расписания этой crew, поэтому неизвестно, что её запускает.",
+      "no_schedules_run_this_crew_automatically": "Ни одно расписание не запускает эту crew автоматически.",
+      "open_schedule": "Открыть расписание",
+      "pause_named": "Приостановить {{name}}",
+      "paused": "на паузе",
+      "resume_named": "Возобновить {{name}}",
+      "run_named_now": "Запустить {{name}} сейчас",
+      "running": "выполняется",
+      "schedule": "расписание",
+      "schedules_that_run_this_crew_without_you_asking": "Расписания, запускающие эту crew без вашего участия. Отличается от Triggers выше, который лишь определяет, когда оркестратор выбирает эту crew.",
+      "what_wakes_this_crew": "Что запускает эту crew"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Сведения об аккаунте недоступны",
       "checking_account": "Проверка аккаунта…",
@@ -6839,6 +6853,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Не удалось отменить задание",
+      "failed_to_pause_job": "Не удалось приостановить задачу",
+      "failed_to_resume_job": "Не удалось возобновить задачу",
       "failed_to_open_in_chat": "Не удалось открыть в чате",
       "failed_to_run_job": "Не удалось запустить задание"
     },

@@ -4398,6 +4398,20 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "ativo",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Não foi possível carregar os agendamentos deste crew, então não se sabe o que o aciona.",
+      "no_schedules_run_this_crew_automatically": "Nenhum agendamento executa este crew automaticamente.",
+      "open_schedule": "Abrir Agendamentos",
+      "pause_named": "Pausar {{name}}",
+      "paused": "pausado",
+      "resume_named": "Retomar {{name}}",
+      "run_named_now": "Executar {{name}} agora",
+      "running": "em execução",
+      "schedule": "agendamento",
+      "schedules_that_run_this_crew_without_you_asking": "Agendamentos que executam este crew sem você pedir. Diferente de Triggers acima, que só decide quando o orquestrador seleciona este crew.",
+      "what_wakes_this_crew": "O que aciona este crew"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Os detalhes da conta não estão disponíveis",
       "checking_account": "Verificando a conta…",
@@ -6751,6 +6765,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Falha ao cancelar o job",
+      "failed_to_pause_job": "Falha ao pausar o trabalho",
+      "failed_to_resume_job": "Falha ao retomar o trabalho",
       "failed_to_open_in_chat": "Falha ao abrir no chat",
       "failed_to_run_job": "Falha ao executar o job"
     },

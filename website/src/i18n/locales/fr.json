@@ -4398,6 +4398,20 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "actif",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Impossible de charger les planifications de ce crew : ce qui le réveille est donc inconnu.",
+      "no_schedules_run_this_crew_automatically": "Aucune planification n’exécute ce crew automatiquement.",
+      "open_schedule": "Ouvrir la planification",
+      "pause_named": "Mettre {{name}} en pause",
+      "paused": "en pause",
+      "resume_named": "Reprendre {{name}}",
+      "run_named_now": "Exécuter {{name}} maintenant",
+      "running": "en cours",
+      "schedule": "planification",
+      "schedules_that_run_this_crew_without_you_asking": "Planifications qui exécutent ce crew sans que vous le demandiez. Distinct de Triggers ci-dessus, qui décide seulement quand l'orchestrateur sélectionne ce crew.",
+      "what_wakes_this_crew": "Ce qui réveille ce crew"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Les détails du compte ne sont pas disponibles",
       "checking_account": "Vérification du compte…",
@@ -6751,6 +6765,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Échec de l’annulation de la tâche",
+      "failed_to_pause_job": "Échec de la mise en pause de la tâche",
+      "failed_to_resume_job": "Échec de la reprise de la tâche",
       "failed_to_open_in_chat": "Échec de l’ouverture dans le chat",
       "failed_to_run_job": "Échec de l’exécution de la tâche"
     },

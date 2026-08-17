@@ -4270,6 +4270,20 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "実行中",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "このクルーのスケジュールを読み込めなかったため、何が起動するかは不明です。",
+      "no_schedules_run_this_crew_automatically": "このクルーを自動で実行するスケジュールはありません。",
+      "open_schedule": "スケジュールを開く",
+      "pause_named": "{{name}} を一時停止",
+      "paused": "一時停止中",
+      "resume_named": "{{name}} を再開",
+      "run_named_now": "{{name}} を今すぐ実行",
+      "running": "実行しています",
+      "schedule": "スケジュール",
+      "schedules_that_run_this_crew_without_you_asking": "あなたが頼まなくてもこのクルーを実行するスケジュール。上のトリガーとは別で、あちらはオーケストレーターがこのクルーを選ぶ条件だけを決めます。",
+      "what_wakes_this_crew": "このクルーを起動するもの"
+    },
     "agentDropdownList": {
       "active_in_this_session": "このセッションでアクティブ",
       "could_not_change_the_default_agent": "デフォルトエージェントを変更できませんでした",
@@ -6575,6 +6589,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "ジョブのキャンセルに失敗しました",
+      "failed_to_pause_job": "ジョブを一時停止できませんでした",
+      "failed_to_resume_job": "ジョブを再開できませんでした",
       "failed_to_open_in_chat": "チャットで開くのに失敗しました",
       "failed_to_run_job": "ジョブの実行に失敗しました"
     },

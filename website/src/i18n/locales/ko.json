@@ -4270,6 +4270,20 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "활성",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "이 크루의 일정을 불러올 수 없어 무엇이 깨우는지 알 수 없습니다.",
+      "no_schedules_run_this_crew_automatically": "이 크루를 자동으로 실행하는 일정이 없습니다.",
+      "open_schedule": "일정 열기",
+      "pause_named": "{{name}} 일시중지",
+      "paused": "일시중지됨",
+      "resume_named": "{{name}} 재개",
+      "run_named_now": "{{name}} 지금 실행",
+      "running": "실행 중",
+      "schedule": "일정",
+      "schedules_that_run_this_crew_without_you_asking": "요청하지 않아도 이 크루를 실행하는 일정입니다. 위의 트리거와는 별개로, 트리거는 오케스트레이터가 이 크루를 선택할 시점만 결정합니다.",
+      "what_wakes_this_crew": "이 크루를 깨우는 것"
+    },
     "agentDropdownList": {
       "active_in_this_session": "이 세션에서 활성",
       "could_not_change_the_default_agent": "기본 에이전트를 변경할 수 없습니다",
@@ -6575,6 +6589,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "작업을 취소하지 못했습니다",
+      "failed_to_pause_job": "작업을 일시중지할 수 없습니다",
+      "failed_to_resume_job": "작업을 재개할 수 없습니다",
       "failed_to_open_in_chat": "채팅에서 열지 못했습니다",
       "failed_to_run_job": "작업을 실행하지 못했습니다"
     },

@@ -18,6 +18,7 @@ import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar from '../components/CrewAvatar'
+import CrewWakeSection from '../components/CrewWakeSection'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 
@@ -978,6 +979,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             </div>
           )}
         </section>
+
+        {!creating && <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} />}
 
         {!creating && editing !== defaultAgent && (
           <section className="flex flex-col gap-3">

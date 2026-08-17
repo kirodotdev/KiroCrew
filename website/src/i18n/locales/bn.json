@@ -4334,6 +4334,20 @@
     "viewPr": "পুল রিকোয়েস্ট"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "সক্রিয়",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "এই Crew-এর সময়সূচি লোড করা যায়নি, তাই কী এটি জাগায় তা অজানা।",
+      "no_schedules_run_this_crew_automatically": "কোনো সময়সূচি এই Crew স্বয়ংক্রিয়ভাবে চালায় না।",
+      "open_schedule": "সময়সূচি খুলুন",
+      "pause_named": "{{name}} বিরতি দিন",
+      "paused": "বিরতিতে",
+      "resume_named": "{{name}} আবার শুরু করুন",
+      "run_named_now": "{{name}} এখনই চালান",
+      "running": "চলছে",
+      "schedule": "সময়সূচি",
+      "schedules_that_run_this_crew_without_you_asking": "যে সময়সূচিগুলো আপনি না বললেও এই Crew চালায়। উপরের Triggers থেকে আলাদা, যা কেবল ঠিক করে অর্কেস্ট্রেটর কখন এই Crew বেছে নেবে।",
+      "what_wakes_this_crew": "এই Crew-কে কী জাগায়"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "অ্যাকাউন্টের বিবরণ পাওয়া যাচ্ছে না",
       "checking_account": "অ্যাকাউন্ট যাচাই করা হচ্ছে…",
@@ -6663,6 +6677,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "জব বাতিল করা যায়নি",
+      "failed_to_pause_job": "কাজটি বিরতি দেওয়া যায়নি",
+      "failed_to_resume_job": "কাজটি আবার শুরু করা যায়নি",
       "failed_to_open_in_chat": "চ্যাটে খোলা যায়নি",
       "failed_to_run_job": "জব চালানো যায়নি"
     },

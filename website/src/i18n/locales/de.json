@@ -4334,6 +4334,20 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "aktiv",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Die Zeitpläne dieser Crew konnten nicht geladen werden, daher ist unbekannt, was sie weckt.",
+      "no_schedules_run_this_crew_automatically": "Kein Zeitplan führt diese Crew automatisch aus.",
+      "open_schedule": "Zeitplan öffnen",
+      "pause_named": "{{name}} pausieren",
+      "paused": "pausiert",
+      "resume_named": "{{name}} fortsetzen",
+      "run_named_now": "{{name}} jetzt ausführen",
+      "running": "läuft",
+      "schedule": "Zeitplan",
+      "schedules_that_run_this_crew_without_you_asking": "Zeitpläne, die diese Crew ausführen, ohne dass du fragst. Getrennt von Triggers oben, das nur entscheidet, wann der Orchestrator diese Crew auswählt.",
+      "what_wakes_this_crew": "Was diese Crew weckt"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Kontodetails sind nicht verfügbar",
       "checking_account": "Konto wird geprüft…",
@@ -6663,6 +6677,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Job konnte nicht abgebrochen werden",
+      "failed_to_pause_job": "Job konnte nicht pausiert werden",
+      "failed_to_resume_job": "Job konnte nicht fortgesetzt werden",
       "failed_to_open_in_chat": "Öffnen im Chat fehlgeschlagen",
       "failed_to_run_job": "Job konnte nicht ausgeführt werden"
     },
