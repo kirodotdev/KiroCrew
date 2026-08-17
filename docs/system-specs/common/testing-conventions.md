@@ -395,6 +395,21 @@ evidence the mock missed.
 
 ### Verify an optimization did not weaken the test
 
+**Prefer the command.** `prove.py` in the `prepare-pr` skill does this for a whole
+change and cannot cost you work: it reverts the change's production hunks inside a
+throwaway git worktree, so your tree is never mutated and nothing needs restoring,
+and it refuses to run while a file under proof carries uncommitted edits.
+
+```bash
+python3 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/prove.py
+# 0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red
+# add --per-hunk to name the hunks no test catches
+```
+
+The hand-typed form below remains correct for a single line you want to probe
+in isolation, and its two footguns are why the command exists.
+
+
 A fix that makes a test faster by making it check less is a regression. Mutate the
 production code the test covers and confirm the test still **fails**:
 
