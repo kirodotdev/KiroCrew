@@ -718,7 +718,14 @@ async def _run_json(
             "OS-level provider sandboxing is unavailable."
         )
     try:
-        resolved_executable = _resolve_provider_executable(executable)
+        # Off the loop: resolution walks every candidate dir and stats the whole
+        # parent chain of each hit (github_runner.validate_provider_executable),
+        # and a miss re-walks all of PATH. The sidebar chip refresh reaches this
+        # on a timer with no user present, so on the loop thread one slow
+        # filesystem freezes every task -- including the liveness heartbeat --
+        # until the loop watchdog kills the gateway and the supervisor respawns
+        # into the same condition.
+        resolved_executable = await asyncio.to_thread(_resolve_provider_executable, executable)
     except SourceProviderError:
         _audit_provider_cli(executable, "denied", "executable_untrusted")
         raise
