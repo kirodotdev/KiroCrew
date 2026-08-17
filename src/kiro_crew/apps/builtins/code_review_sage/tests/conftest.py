@@ -47,16 +47,5 @@ def _mute_shared_runner_audit(monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
-def _isolate_app_home(monkeypatch, tmp_path):
-    """Point ``$KIROCREW_HOME`` at a tmp dir so the suite never touches the real one.
-
-    ``store.app_root()`` derives from ``crew_home()``, so without this every test
-    that reaches ``load_config()`` reads the DEVELOPER'S live app config -- and
-    seeds one into their real data directory when it is absent, because
-    ``load_config`` calls ``ensure_layout`` on a miss. Both are wrong: a machine
-    with ``review.max_concurrent`` configured fails assertions that CI passes
-    (CI has no config, so it sees the seeded default), and a machine without one
-    gets files written outside the test's tmp dir.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-home"))
+#: The rootdir ``conftest.py`` pins ``$KIROCREW_HOME`` for every testpath, which is what
+#: keeps this suite off the real data home: ``store.app_root()`` derives from ``crew_home()``.

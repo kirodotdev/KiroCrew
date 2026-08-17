@@ -1,6 +1,6 @@
 ---
 name: writing-tests
-description: "How to write a Kiro Crew backend test that has NO side effects and does not flake. Use when adding, editing, reviewing, or debugging a pytest test in the Kiro Crew source repo: which conftest is under your file, what leaks (temp dirs, the real data home, ~/.kiro, cron, threads, child processes), the five flake classes and the one correct fix for each, and the cross-platform traps on macOS/Linux/Windows and arm64. Also covers diagnosing a residue failure and keeping the parallel suite fast."
+description: "How to write a Kiro Crew backend test that has NO side effects and does not flake. Use when adding, editing, reviewing, or debugging a pytest test in the Kiro Crew source repo: which conftest is under your file, what leaks (temp dirs, the real data home, ~/.kiro, cron, threads, child processes), how to tell which of the five flake classes you have and where each one's fix is written, and the cross-platform traps on macOS/Linux/Windows and arm64. Also covers diagnosing a residue failure and keeping the parallel suite fast."
 triggers: write a test, add a test, fix a flaky test, test is flaky, test side effect, temp dir residue, tmp residue, kirocrew test, pytest kirocrew, test isolation, conftest, xdist, test leaked
 repo_scope: src/kiro_crew
 ---
@@ -166,13 +166,21 @@ cutover path must stub **both** `_run_cmd` and `_dropin_path`.
 Never "fix" a flake with a rerun, a longer `sleep`, a weakened assertion, or a skip.
 Full detail and examples: testing-conventions § Determinism.
 
-| Class | Tell | The one fix |
-|---|---|---|
-| Nondeterministic input | `os.urandom`/`random`/`uuid4`/`now()` feeding an assertion the RNG does not guarantee | Seed it (`random.Random(SEED).randbytes(n)`), or freeze the clock. Verify the seed against the real predicate and say in a comment that you did |
-| Wall-clock race | asserting a rate, a sample count, or an elapsed duration the host controls | Poll for the condition with a generous deadline, keeping the assertion. Where a timeout should *expire*, set it to `0` |
-| Leaked async object | `RuntimeWarning: coroutine ... never awaited`, blamed on an innocent later test | `MagicMock` for a **sync** method (`StreamWriter.write`, `stdin.close`); `await` the task after `cancel()` |
-| Order dependence / shared state | passes alone, fails in the suite | Mutate globals through `monkeypatch` — raw assignment does not revert when the test fails. `@pytest.mark.xdist_group` only when a test genuinely cannot share a worker |
-| Absolute time budget | a timing test that splits by **Python version** rather than by load | Bound the doubling **RATIO**, not a duration. CI enables coverage on 3.12 only, so an absolute ceiling is version-dependent: the same code measured ~1.7s bare and >5s instrumented |
+Each class has ONE correct fix, and they are written out with examples in
+[testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
+§ Determinism. What this skill adds is the routing — the symptom you actually have in front
+of you, and which class it belongs to:
+
+| The tell you are looking at | The class it is |
+|---|---|
+| `os.urandom` / `random` / `uuid4` / `now()` feeding an assertion the RNG or clock does not guarantee | nondeterministic input |
+| an assertion on a rate, a sample count, or an elapsed duration the host controls | wall-clock race |
+| `RuntimeWarning: coroutine ... never awaited`, blamed on an innocent later test | leaked async object |
+| passes alone, fails in the suite | order dependence / shared state |
+| a timing test that splits by **Python version** rather than by machine load | absolute time budget on an instrumented run |
+
+Read the matching section before you change anything: four of the five have a fix that looks
+like the obvious one and is not.
 
 A sixth, adjacent trap: **a patch target that misses.** Patch the namespace whose
 globals the code under test actually reads. It fails in both directions — patching a

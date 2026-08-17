@@ -96,6 +96,13 @@ def _isolated_app_data_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     path it migrates a legacy home, writes a recovery breadcrumb outside ``~/.kiro/``,
     and sweeps archive leftovers. Pointing the variable at a temp directory redirects
     every reader of the home, including the ones no fixture knows about.
+
+    Kept even though the rootdir conftest now pins ``KIROCREW_HOME`` for every testpath,
+    because this fixture pins something STRICTER that the floor does not: the home lands
+    under THIS test's ``tmp_path``, beside the app's own data dir, so the two coincide and
+    a fixture path is coherent across both. ``test_data_home_isolation.py::
+    test_the_config_home_resolver_is_the_tests_temp_dir`` fails without it — the floor's
+    home is under its own isolation root, which is a tmp dir but not this one.
     """
     data = tmp_path / "app-data-home"
     data.mkdir(parents=True, exist_ok=True)
