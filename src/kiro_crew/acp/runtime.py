@@ -95,6 +95,12 @@ from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.metrics.events import (
+    CHILD_PERMISSION_DENIED,
+    CHILD_PERMISSION_ROUTED,
+    DROPPED_FRAMES,
+    emit_counter,
+)
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -1447,6 +1453,13 @@ class AcpRuntime:
             _tc = _params.get("toolCall")
             _raw = _tc.get("title") if isinstance(_tc, dict) else None
             title = redact_text(str(_raw)[:4096])[:120] if _raw else "<unknown>"
+        # Hang-resilience series: every runtime-side denial funnels through
+        # here, so one emit covers unroutable/between-turns/cap/send-failure
+        # denials. ``reason`` is the closed SEL enum (low-cardinality).
+        emit_counter(
+            CHILD_PERMISSION_DENIED,
+            {"surface": "runtime", "reason": reason},
+        )
         request_id = msg.id if isinstance(msg.id, (str, int)) else ""
         # SNAPSHOT the attribution key NOW: the audit closure runs later on a
         # worker thread, and `_subagent_owner` is mutable (unregister/session
@@ -1490,6 +1503,18 @@ class AcpRuntime:
         that keeps a wrong-typed value from raising in the shared reader.
         """
         key = (_drop_key_part(session_id), _drop_key_part(method))
+        # Hang-resilience series: classify the drop by method so dashboards
+        # can alert on the pre-fix hang signature. ``method_class`` is a
+        # closed 3-value enum — the raw method (backend-controlled) never
+        # becomes an attribute value.
+        _m = method if isinstance(method, str) else ""
+        if _m == METHOD_REQUEST_PERMISSION:
+            _mclass = "permission"
+        elif _m == METHOD_SESSION_UPDATE:
+            _mclass = "update"
+        else:
+            _mclass = "other"
+        emit_counter(DROPPED_FRAMES, {"method_class": _mclass})
         now = time.monotonic()
         if self._dropped_frames_flushed_at == 0.0:
             # First drop of this runtime's life opens the window. __init__ cannot
@@ -1764,6 +1789,16 @@ class AcpRuntime:
                             # accumulates blocked tasks and trips the cap.
                             await asyncio.sleep(0)
                         else:
+                            # Hang-resilience series: a child permission
+                            # request delivered to the mode-parity pipeline —
+                            # each one is a request that, before #3786, was
+                            # silently dropped and wedged its crew for 2h.
+                            if msg.id is not None and msg.is_method(
+                                METHOD_REQUEST_PERMISSION
+                            ):
+                                emit_counter(
+                                    CHILD_PERMISSION_ROUTED, {"surface": "runtime"}
+                                )
                             await next(iter(self._session_queues.values())).put(msg)
                     elif msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
                         # Unannounced or ambiguous: nobody on this client can

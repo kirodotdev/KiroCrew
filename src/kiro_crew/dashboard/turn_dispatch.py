@@ -253,6 +253,27 @@ def finish_turn_task(
         logger.warning(
             "Chat turn in slot %s hit the %.0fs ceiling", getattr(slot, "key", "?"), timeout_secs
         )
+        # Hang-resilience series: THE deadline path for the 2h-ceiling hang
+        # class — _bounded_turn cancels _run_chat before any EVENT_COMPLETE,
+        # so the in-turn emit never fires here. _run_chat's finally stashed
+        # the attribution snapshot on the slot just before teardown.
+        try:
+            from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
+
+            emit_counter(
+                TURN_TIMEOUT_CAUSE,
+                {
+                    "path": "dashboard_ceiling",
+                    "awaiting_permission": bool(
+                        getattr(slot, "_last_turn_awaiting_permission", False)
+                    ),
+                    "children_announced": bool(
+                        getattr(slot, "_last_turn_children_announced", False)
+                    ),
+                },
+            )
+        except Exception:
+            logger.debug("timeout-cause metric emit failed", exc_info=True)
         try:
             # slot.append persists the card AND broadcasts it once; do not also
             # broadcast_ws here or the UI renders a duplicate.

@@ -103,6 +103,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -1036,6 +1037,15 @@ class AcpSessionHandle:
         """
         safe_title = redact_text(str(title)[:4096])[:120] if title else "<unknown>"
         rid = request_id if isinstance(request_id, (str, int)) else ""
+        # Hang-resilience series: handle-owned denials (fail-close fidelity
+        # gate, pre-turn drain). CHILD-origin only — the pre-turn drain also
+        # answers abandoned PARENT-turn requests (sub_session_id empty), and
+        # counting those would corrupt the child-denial series.
+        if sub_session_id:
+            emit_counter(
+                CHILD_PERMISSION_DENIED,
+                {"surface": "session_handle", "reason": error},
+            )
 
         def _audit() -> None:
             try:

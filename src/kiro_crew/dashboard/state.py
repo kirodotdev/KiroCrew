@@ -1457,6 +1457,8 @@ class _ChatSlot:
         "_active_turn_session_key",
         "_side",
         "_acp_client",
+        "_last_turn_awaiting_permission",
+        "_last_turn_children_announced",
         "_steer_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
@@ -1869,6 +1871,11 @@ class _ChatSlot:
         # dashboard steer handler) reach the running session's client to inject
         # a mid-turn steer. None when idle.
         self._acp_client = None
+        # Hang-attribution snapshot stashed by _run_chat's finally just before
+        # _acp_client is dropped; read by finish_turn_task when the dashboard
+        # ceiling cut the turn (kirocrew.turn.timeout.cause).
+        self._last_turn_awaiting_permission = False
+        self._last_turn_children_announced = False
         # Sync callable published by _run_chat alongside _acp_client (cleared in
         # the same finally): flushes the turn's accumulated text as a finalized
         # assistant segment NOW. The steer handler calls it right BEFORE
