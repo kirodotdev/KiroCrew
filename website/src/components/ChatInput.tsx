@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, mem
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
 import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
 import type { AudioSample } from '../hooks/mic'
@@ -459,17 +460,31 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
   )
 }
 
-function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void }) {
+/** Stable default so an omitted `dirs` prop does not re-run the remeasure
+ *  effect on every render (a fresh [] literal changes deps each time). */
+const NO_DIRS: string[] = []
+
+function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemoveDir }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void }) {
+  const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
+  // Chips are added and removed while the strip stays mounted (a paste, a
+  // remove), and the scroller keeps its own box through those changes, so the
+  // ResizeObserver never fires and no scroll event lands. Without this the cue
+  // goes stale: dark over a row that now fits, or absent over one that clips.
+  useEffect(() => { remeasure() }, [files, dirs, remeasure])
   const imgs = files.filter(p => IMG_EXT.test(p))
   const nonImgs = files.filter(p => !IMG_EXT.test(p))
   if (!imgs.length && !nonImgs.length && !dirs.length) return null
   return (
-    // NOTE: rendered height must match FILE_PREVIEW_H / FILE_PREVIEW_H_RESIZED,
-    // update them together.
-    // items-start, not items-end: a chip carrying a resize pill is taller than a
-    // plain one, and bottom-alignment would spend that difference staggering the
-    // THUMBNAILS (the thing being compared) instead of letting the pills hang.
-    <div className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
+    // The wrapper exists for the edge cues: absolutely-positioned children of
+    // the scroller itself would travel with the scrolled content, so the fades
+    // anchor to a non-scrolling parent, same shape as the sibling strips.
+    <div className="relative">
+      {/* NOTE: rendered height must match FILE_PREVIEW_H / FILE_PREVIEW_H_RESIZED,
+          update them together.
+          items-start, not items-end: a chip carrying a resize pill is taller than a
+          plain one, and bottom-alignment would spend that difference staggering the
+          THUMBNAILS (the thing being compared) instead of letting the pills hang. */}
+      <div ref={attachScroller} data-testid="preview-strip" className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
       {imgs.map((path, i) => {
         const src = `/api/file-raw?path=${encodeURIComponent(path)}`
         const resize = resizedInfo?.[path]
@@ -499,7 +514,12 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
                   panorama makes a wide chip and scrolls its siblings out of view
                   in this overflow-x-auto strip, but nobody has reported that. */}
               <img src={src} alt={path} className="h-16 min-w-12 rounded border border-border object-contain bg-bg-hover hover:opacity-80 transition-opacity"
-                data-lightbox-image="" />
+                data-lightbox-image=""
+                // A thumbnail widens when its bytes arrive (h-16 + intrinsic
+                // ratio), which grows scrollWidth without resizing the
+                // scroller's own box — no ResizeObserver fires and no scroll
+                // lands, so only this load signal can refresh the cue.
+                onLoad={remeasure} />
             </button>
             {onRemove && (
               <button
@@ -546,6 +566,19 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
         </div>
         ))
       })()}
+      </div>
+      {/* Edge cues, same treatment as the sibling strips (SidePanelLayout's
+          tab strip, FollowUpBar's scroll row): a gradient says content
+          continues past the clipped edge, because the overlay scrollbar on
+          macOS/iOS leaves no visible sign while idle. from-bg-elevated matches
+          the composer surface the strip sits on. z-10 keeps the fade above the
+          chips' own z-10 badges; pointer-events-none keeps those interactive. */}
+      {edges.left && (
+        <div aria-hidden="true" data-testid="preview-strip-cue-left" className="pointer-events-none absolute left-0 top-px bottom-0 w-6 z-10 bg-gradient-to-r from-bg-elevated to-transparent" />
+      )}
+      {edges.right && (
+        <div aria-hidden="true" data-testid="preview-strip-cue-right" className="pointer-events-none absolute right-0 top-px bottom-0 w-6 z-10 bg-gradient-to-l from-bg-elevated to-transparent" />
+      )}
     </div>
   )
 }
