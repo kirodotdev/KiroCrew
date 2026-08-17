@@ -7787,14 +7787,22 @@
         "continue_hint": "Reprendre là où ça s’est arrêté. Le travail déjà écrit sur le disque reste intact."
       },
       "folderPanel": {
+        "clear_search": "Effacer la recherche",
         "empty_folder": "Dossier vide",
+        "includes_subfolders": "sous-dossiers inclus",
         "loading": "Chargement…",
+        "matches": "Correspondances",
         "no_changes": "Arbre de travail sans modifications",
+        "no_files_match": "Aucun fichier correspondant",
         "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
         "open_in_finder": "Ouvrir dans le Finder",
         "parent_folder": "Dossier parent",
         "refresh": "Actualiser",
+        "search_failed": "Échec de la recherche",
+        "search_files": "Rechercher des fichiers",
+        "searching": "Recherche…",
         "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
+        "showing_first_matches": "Affichage des {{shown}} premières correspondances",
         "unable_to_list_folder": "Impossible de lister le dossier"
       },
       "knowledgePicker": {

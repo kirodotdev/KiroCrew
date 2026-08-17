@@ -7583,14 +7583,22 @@
         "continue_hint": "从中断处继续。已经写入磁盘的改动都还在。"
       },
       "folderPanel": {
+        "clear_search": "清除搜索",
         "empty_folder": "空目录",
+        "includes_subfolders": "包含子文件夹",
         "loading": "正在加载…",
+        "matches": "匹配项",
         "no_changes": "工作区无更改",
+        "no_files_match": "没有匹配的文件",
         "open_in_file_explorer": "在文件资源管理器中打开",
         "open_in_finder": "在 Finder 中打开",
         "parent_folder": "上级目录",
         "refresh": "刷新",
+        "search_failed": "搜索失败",
+        "search_files": "搜索文件",
+        "searching": "正在搜索…",
         "show_in_file_manager": "在文件管理器中显示",
+        "showing_first_matches": "显示前 {{shown}} 个匹配项",
         "unable_to_list_folder": "无法列出目录内容"
       },
       "knowledgePicker": {

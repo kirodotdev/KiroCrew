@@ -7787,14 +7787,22 @@
         "continue_hint": "Retomar de onde parou. O trabalho já gravado no disco permanece intacto."
       },
       "folderPanel": {
+        "clear_search": "Limpar pesquisa",
         "empty_folder": "Pasta vazia",
+        "includes_subfolders": "inclui subpastas",
         "loading": "Carregando…",
+        "matches": "Correspondências",
         "no_changes": "Árvore de trabalho sem alterações",
+        "no_files_match": "Nenhum arquivo corresponde",
         "open_in_file_explorer": "Abrir no Explorador de Arquivos",
         "open_in_finder": "Abrir no Finder",
         "parent_folder": "Pasta pai",
         "refresh": "Atualizar",
+        "search_failed": "A pesquisa falhou",
+        "search_files": "Pesquisar arquivos",
+        "searching": "Pesquisando…",
         "show_in_file_manager": "Mostrar no gerenciador de arquivos",
+        "showing_first_matches": "Mostrando as primeiras {{shown}} correspondências",
         "unable_to_list_folder": "Não foi possível listar a pasta"
       },
       "knowledgePicker": {

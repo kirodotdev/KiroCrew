@@ -7889,14 +7889,22 @@
         "continue_hint": "Продолжить с места остановки. Уже записанные на диск изменения не тронуты."
       },
       "folderPanel": {
+        "clear_search": "Очистить поиск",
         "empty_folder": "Пустая папка",
+        "includes_subfolders": "включая подпапки",
         "loading": "Загрузка…",
+        "matches": "Совпадения",
         "no_changes": "Рабочее дерево без изменений",
+        "no_files_match": "Нет подходящих файлов",
         "open_in_file_explorer": "Открыть в проводнике",
         "open_in_finder": "Открыть в Finder",
         "parent_folder": "Родительская папка",
         "refresh": "Обновить",
+        "search_failed": "Поиск не удался",
+        "search_files": "Поиск файлов",
+        "searching": "Поиск…",
         "show_in_file_manager": "Показать в файловом менеджере",
+        "showing_first_matches": "Показаны первые {{shown}} совпадений",
         "unable_to_list_folder": "Не удалось получить список папки"
       },
       "knowledgePicker": {

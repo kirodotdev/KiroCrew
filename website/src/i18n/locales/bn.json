@@ -7685,14 +7685,22 @@
         "continue_hint": "যেখানে থেমেছিল সেখান থেকে চালান। ডিস্কে লেখা কাজ অপরিবর্তিত থাকে।"
       },
       "folderPanel": {
+        "clear_search": "অনুসন্ধান মুছুন",
         "empty_folder": "খালি ফোল্ডার",
+        "includes_subfolders": "সাবফোল্ডার সহ",
         "loading": "লোড হচ্ছে…",
+        "matches": "মিল",
         "no_changes": "ওয়ার্কিং ট্রিতে কোনো পরিবর্তন নেই",
+        "no_files_match": "কোনো ফাইল মেলে না",
         "open_in_file_explorer": "File Explorer-এ খুলুন",
         "open_in_finder": "Finder-এ খুলুন",
         "parent_folder": "প্যারেন্ট ফোল্ডার",
         "refresh": "রিফ্রেশ",
+        "search_failed": "অনুসন্ধান ব্যর্থ",
+        "search_files": "ফাইল খুঁজুন",
+        "searching": "খোঁজা হচ্ছে…",
         "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
+        "showing_first_matches": "প্রথম {{shown}}টি মিল দেখানো হচ্ছে",
         "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
       },
       "knowledgePicker": {

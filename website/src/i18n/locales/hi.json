@@ -7685,14 +7685,22 @@
         "continue_hint": "जहाँ रुका था वहीं से फिर शुरू करें। डिस्क पर लिखा हुआ काम जैसा है वैसा रहेगा।"
       },
       "folderPanel": {
+        "clear_search": "खोज साफ़ करें",
         "empty_folder": "खाली फ़ोल्डर",
+        "includes_subfolders": "सबफ़ोल्डर सहित",
         "loading": "लोड हो रहा है…",
+        "matches": "मिलान",
         "no_changes": "कार्यक्षेत्र में कोई परिवर्तन नहीं",
+        "no_files_match": "कोई फ़ाइल मेल नहीं खाती",
         "open_in_file_explorer": "File Explorer में खोलें",
         "open_in_finder": "Finder में खोलें",
         "parent_folder": "पैरेंट फ़ोल्डर",
         "refresh": "रिफ़्रेश करें",
+        "search_failed": "खोज विफल",
+        "search_files": "फ़ाइलें खोजें",
+        "searching": "खोज रहे हैं…",
         "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
+        "showing_first_matches": "पहले {{shown}} मिलान दिखा रहे हैं",
         "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी"
       },
       "knowledgePicker": {

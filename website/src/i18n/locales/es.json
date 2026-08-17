@@ -7787,14 +7787,22 @@
         "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera."
       },
       "folderPanel": {
+        "clear_search": "Borrar búsqueda",
         "empty_folder": "Carpeta vacía",
+        "includes_subfolders": "incluye subcarpetas",
         "loading": "Cargando…",
+        "matches": "Coincidencias",
         "no_changes": "Árbol de trabajo sin cambios",
+        "no_files_match": "Ningún archivo coincide",
         "open_in_file_explorer": "Abrir en el Explorador de archivos",
         "open_in_finder": "Abrir en Finder",
         "parent_folder": "Carpeta superior",
         "refresh": "Actualizar",
+        "search_failed": "La búsqueda falló",
+        "search_files": "Buscar archivos",
+        "searching": "Buscando…",
         "show_in_file_manager": "Mostrar en el gestor de archivos",
+        "showing_first_matches": "Mostrando las primeras {{shown}} coincidencias",
         "unable_to_list_folder": "No se puede listar la carpeta"
       },
       "knowledgePicker": {

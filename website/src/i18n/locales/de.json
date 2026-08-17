@@ -7685,14 +7685,22 @@
         "continue_hint": "Ab der Unterbrechung fortsetzen. Bereits auf die Festplatte geschriebene Arbeit bleibt unberührt."
       },
       "folderPanel": {
+        "clear_search": "Suche löschen",
         "empty_folder": "Leerer Ordner",
+        "includes_subfolders": "einschließlich Unterordner",
         "loading": "Wird geladen…",
+        "matches": "Treffer",
         "no_changes": "Arbeitsverzeichnis ohne Änderungen",
+        "no_files_match": "Keine Dateien gefunden",
         "open_in_file_explorer": "Im Explorer öffnen",
         "open_in_finder": "Im Finder öffnen",
         "parent_folder": "Übergeordneter Ordner",
         "refresh": "Aktualisieren",
+        "search_failed": "Suche fehlgeschlagen",
+        "search_files": "Dateien suchen",
+        "searching": "Suche…",
         "show_in_file_manager": "Im Dateimanager anzeigen",
+        "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
         "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
       },
       "knowledgePicker": {

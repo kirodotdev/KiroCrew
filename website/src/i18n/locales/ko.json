@@ -7583,14 +7583,22 @@
         "continue_hint": "중단된 지점부터 다시 시작합니다. 이미 디스크에 기록된 작업은 그대로 유지됩니다."
       },
       "folderPanel": {
+        "clear_search": "검색 지우기",
         "empty_folder": "빈 폴더",
+        "includes_subfolders": "하위 폴더 포함",
         "loading": "불러오는 중…",
+        "matches": "일치",
         "no_changes": "작업 트리에 변경 사항 없음",
+        "no_files_match": "일치하는 파일 없음",
         "open_in_file_explorer": "파일 탐색기에서 열기",
         "open_in_finder": "Finder에서 열기",
         "parent_folder": "상위 폴더",
         "refresh": "새로 고침",
+        "search_failed": "검색 실패",
+        "search_files": "파일 검색",
+        "searching": "검색 중…",
         "show_in_file_manager": "파일 관리자에서 보기",
+        "showing_first_matches": "처음 {{shown}}개의 일치 항목 표시 중",
         "unable_to_list_folder": "폴더 목록을 표시할 수 없습니다"
       },
       "knowledgePicker": {

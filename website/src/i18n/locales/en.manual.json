@@ -2676,14 +2676,22 @@
         "link": "Link"
       },
       "folderPanel": {
+        "clear_search": "Clear search",
         "empty_folder": "Empty folder",
+        "includes_subfolders": "includes subfolders",
         "loading": "Loading…",
+        "matches": "Matches",
         "no_changes": "Working tree clean",
+        "no_files_match": "No files match",
         "open_in_file_explorer": "Open in File Explorer",
         "open_in_finder": "Open in Finder",
         "parent_folder": "Parent folder",
         "refresh": "Refresh",
+        "search_failed": "Search failed",
+        "search_files": "Search files",
+        "searching": "Searching…",
         "show_in_file_manager": "Show in file manager",
+        "showing_first_matches": "Showing the first {{shown}} matches",
         "unable_to_list_folder": "Unable to list folder"
       },
       "knowledgePicker": {

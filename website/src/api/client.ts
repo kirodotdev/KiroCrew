@@ -2243,10 +2243,15 @@ export const api = {
   simulateUpdate: (opts?: { delay?: number; fail_at?: string }) => post('/api/update/simulate', opts || {}).then(j),
   pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,
   fileDiff: (path: string) => fetch('/api/file-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' }>,
-  /** Fuzzy file search for @-mention picker. `kind` distinguishes folder hits from files. */
-  fileSearch: (q: string, project?: string, signal?: AbortSignal) => {
+  /** Fuzzy file search for @-mention picker. `kind` distinguishes folder hits from files.
+   *  `kinds` narrows the result set server-side — 'files' or 'dirs'; omitted returns both.
+   *  Filtering server-side rather than dropping unwanted hits here matters because the
+   *  backend caps results BEFORE the response, so a client-side filter would silently
+   *  shrink an already-capped list. */
+  fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs') => {
     const p = new URLSearchParams({ q })
     if (project) p.set('project', project)
+    if (kinds) p.set('kinds', kinds)
     return fetch(`/api/file-search?${p}`, signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
   },
   /** Upload files via browser File API (cross-platform) */

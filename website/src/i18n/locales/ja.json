@@ -7583,14 +7583,22 @@
         "continue_hint": "停止した箇所から再開します。ディスクに書き込まれた作業内容はそのまま残ります。"
       },
       "folderPanel": {
+        "clear_search": "検索をクリア",
         "empty_folder": "空のフォルダー",
+        "includes_subfolders": "サブフォルダーを含む",
         "loading": "読み込み中…",
+        "matches": "一致",
         "no_changes": "作業ツリーに変更はありません",
+        "no_files_match": "一致するファイルがありません",
         "open_in_file_explorer": "エクスプローラーで開く",
         "open_in_finder": "Finder で開く",
         "parent_folder": "親フォルダー",
         "refresh": "更新",
+        "search_failed": "検索に失敗しました",
+        "search_files": "ファイルを検索",
+        "searching": "検索中…",
         "show_in_file_manager": "ファイルマネージャーに表示",
+        "showing_first_matches": "最初の {{shown}} 件の一致を表示しています",
         "unable_to_list_folder": "フォルダーを一覧表示できません"
       },
       "knowledgePicker": {
