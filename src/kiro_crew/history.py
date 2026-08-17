@@ -1,6 +1,6 @@
 """Persistent conversation history — JSONL per session + LLM consolidation.
 
-Session files: ~/.kirocrew/sessions/{safe_key}.jsonl
+Session files: ~/.kiro/crew/sessions/{safe_key}.jsonl
 Each entry tracks provenance (source_thread, source_user) for citation.
 Files auto-rotate at 512KB, keeping last 200 lines.
 """

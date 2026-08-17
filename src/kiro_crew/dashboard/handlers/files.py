@@ -466,7 +466,13 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
             downstream_service="slack",
             error=f"path_not_allowed: {file_path}",
         )
-        return web.json_response({"error": "file_path must be under ~/.kirocrew/"}, status=403)
+        return web.json_response(
+            {
+                "error": "file_path must be under the outbox directory or the workspace root",
+                "code": "path_not_allowed",
+            },
+            status=403,
+        )
     try:
         raw = safe_read_file_bytes(str(resolved))
     except FileTooLargeError as e:
