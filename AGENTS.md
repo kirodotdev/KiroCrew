@@ -255,9 +255,11 @@ Gates you will trip:
 Never fix a flake with a rerun, a longer `sleep`, or a weakened assertion. Read
 [testing-conventions](docs/system-specs/common/testing-conventions.md) § Determinism
 for the five flake classes and the one correct fix for each. In particular, a timing
-test that asserts algorithmic **complexity** must bound the doubling RATIO, not an
-absolute duration: CI enables coverage on 3.12 only, and that multiplier made one shard
-fail on 3.12 and pass on 3.10 at the same commit.
+test that asserts algorithmic **complexity** must assert the shape, not a duration —
+deterministically where the code has structure to observe (pin the linear path, require
+an identical invocation trace when the input doubles), and by a generously-bounded
+doubling ratio only where it does not: absolute ceilings split by Python version (CI
+enables coverage on 3.12 only), and tight timed ratios false-red on shared runners.
 
 **A test must not touch the operator's machine, and the floor you stand on is not the
 same in every testpath.** `testpaths` collects three trees, and only `test/` gets

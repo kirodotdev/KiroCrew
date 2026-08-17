@@ -467,16 +467,27 @@ commit**. The tell is a timing test that splits by Python version rather than by
 `time.process_time` fixes only the other half: it removes co-tenant scheduling noise, but CPU time
 still includes the instrumentation, so an absolute ceiling stays version-dependent.
 
-Fix: assert the **shape**, not the magnitude. Measure at `n` and `2n` and bound the ratio — a
-roughly constant multiplier cancels, so one threshold holds instrumented or not. Raising the budget
-instead banks the overhead as headroom and hides the next real regression.
+Fix: assert the **shape**, not the magnitude — and prefer asserting it *deterministically*.
+When the code under test has an instrumentation surface (a routing decision, a memoized
+matcher, a countable set of engine invocations), assert on that: pin that the linear path
+is the one taken, wrap the primitives, and require the invocation trace to be IDENTICAL
+when the input doubles. That fails only on the property, never on the runner. A *timed*
+doubling ratio is version-independent (a constant multiplier cancels) but still
+runner-dependent: even on `thread_time`, frequency scaling and co-tenant cache contention
+on a shared runner inflated a measured 3.0-bounded ratio to 3.2x with the property intact.
+Reserve a measured ratio for code with no observable structure, and make its bound
+generous — a real complexity regression is orders of magnitude, so a wide bound still
+catches it. Raising an absolute budget instead banks the overhead as headroom and hides
+the next real regression.
 
 ```python
 # WRONG: passes bare, fails under --cov, and the margin shrinks as the catalog grows
 assert self._elapsed(build(8000)) < 5.0
-# RIGHT: linear is ~2x when the input doubles; the mutated (catastrophic) matcher measured 11.5x
-ratio = self._doubling_ratio(build, 2000)
-assert ratio < 3.0, f"cost grew {ratio:.1f}x when the input doubled"
+# WRONG on shared runners: a timed doubling ratio — even thread-CPU — false-reds under
+# frequency scaling / co-tenant contention (measured 3.2x against a 3.0 bound)
+# RIGHT: doubling the input must not change WHAT the engine executes; only each single
+# linear scan gets longer (see test_mid_dotstar_chain_spam_stays_linear)
+assert traced(build(4000)) == traced(build(2000))
 ```
 
 Keep a *small*-`n` absolute assertion alongside it so a uniform slowdown is still caught, and
