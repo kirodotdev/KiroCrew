@@ -3,6 +3,17 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The composer reserves space for its attachment strips by measuring them,
+  not by predicting their height.** Three hand-computed constants stood in for
+  the rendered height of the file-preview and session-reference strips -- `81`
+  read off `h-16 + py-2 + border-t`, and two more like it -- each derived from
+  Tailwind classes living in a different file, with nothing enforcing the
+  correspondence. Changing a padding or a chip's type scale silently made the
+  reservation wrong, and the failure was quiet: only a reader who had manually
+  resized the composer saw the strip eat into the textarea or leave a gap. The
+  strips are now measured with a ResizeObserver, so the reservation follows the
+  render, and the third constant -- added because a resize pill makes the strip
+  taller -- is gone along with the special case that selected it.
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
