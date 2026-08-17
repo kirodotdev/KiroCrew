@@ -6101,6 +6101,11 @@
       "undo_remove": "Entfernen rückgängig machen",
       "will_be_removed_on_save": "Wird beim Speichern entfernt."
     },
+    "selectionToolbar": {
+      "ask": "Im Seitenchat fragen",
+      "copy": "Kopieren",
+      "quote": "Zitieren"
+    },
     "sendToInstanceSubmenu": {
       "failed": "Fehlgeschlagen",
       "not_connected": "nicht verbunden",
@@ -6269,7 +6274,7 @@
       "desc_prompts": "Gespeicherte Prompts & Agenten-SOPs auflisten oder aufrufen",
       "desc_quit": "Die Chat-Sitzung beenden",
       "desc_reply": "Auf die letzte Assistentennachricht antworten",
-      "desc_side": "Ein Nebenchat-Panel öffnen",
+      "desc_side": "Seitenchat öffnen – fragen, ohne zu unterbrechen",
       "desc_tangent": "Eine Nebenunterhaltung starten",
       "desc_todos": "Aufgabenliste anzeigen oder verwalten",
       "desc_tools": "Verfügbare Werkzeuge anzeigen",
@@ -6727,7 +6732,7 @@
       "links": "Links",
       "logs": "Protokolle",
       "pins": "Angeheftet",
-      "side": "Nebenchat",
+      "side": "Seitenchat",
       "subagents": "Subagenten",
       "summary": "Zusammenfassung",
       "workflows": "Workflows"
@@ -7596,7 +7601,7 @@
         "running_tool": "Werkzeug läuft",
         "search_files": "Nach Label oder URL suchen…",
         "show_all_count": "Alle anzeigen ({{count}})",
-        "side": "Nebenchat",
+        "side": "Seitenchat",
         "starting": "Wird gestartet…",
         "stopped": "Gestoppt",
         "subagent": "Subagent {{label}}",
@@ -7767,8 +7772,8 @@
       "sideChat": {
         "ago": "her",
         "ask_a_side_question": "Nebenfrage stellen",
-        "ask_a_side_question_2": "Stelle eine Nebenfrage…",
-        "ask_a_side_question_main_agent_keeps_working": "Starte eine Nebenunterhaltung, ohne die aktive Ausführung zu unterbrechen.",
+        "ask_a_side_question_2": "Nebenfrage stellen…",
+        "ask_a_side_question_main_agent_keeps_working": "Stelle eine Nebenfrage, ohne die aktive Ausführung zu unterbrechen. Nichts davon wird im Chat gespeichert.",
         "context_from": "Kontext von",
         "question_too_long": "Frage zu lang — kürze sie auf unter etwa {{max}} Zeichen (deine: {{current}})",
         "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",
@@ -7808,8 +7813,8 @@
         "menu_logs_desc": "Gateway-Protokollstream",
         "menu_pins": "Angeheftet",
         "menu_pins_desc": "Nachrichten, die du in dieser Sitzung angeheftet hast",
-        "menu_side": "Nebenchat",
-        "menu_side_desc": "Parallel laufender Chat, gemeinsamer Kontext",
+        "menu_side": "Seitenchat",
+        "menu_side_desc": "Fragen, ohne den Hauptagenten zu unterbrechen",
         "menu_subagents": "Subagenten",
         "menu_subagents_desc": "Live-Agentenaktivität & Transkripte",
         "menu_summary": "Zusammenfassung",

@@ -36,18 +36,18 @@ describe('Select-to-Ask', () => {
 
   it('useSelectionActions exposes an Ask action only when onAsk is provided', () => {
     renderWithProviders(<ToolbarHarness onAsk={() => {}} />)
-    expect(screen.getByRole('button', { name: 'Ask in Side' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask in Side Chat' })).toBeInTheDocument()
   })
 
   it('omits the Ask action when onAsk is absent', () => {
     renderWithProviders(<ToolbarHarness />)
-    expect(screen.queryByRole('button', { name: 'Ask in Side' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask in Side Chat' })).not.toBeInTheDocument()
   })
 
   it('clicking Ask invokes the handler with the selected text', () => {
     const onAsk = vi.fn()
     renderWithProviders(<ToolbarHarness onAsk={onAsk} />)
-    act(() => { screen.getByRole('button', { name: 'Ask in Side' }).click() })
+    act(() => { screen.getByRole('button', { name: 'Ask in Side Chat' }).click() })
     expect(onAsk).toHaveBeenCalledWith('hi', expect.anything())
   })
 

@@ -6013,6 +6013,11 @@
       "undo_remove": "削除を取り消し",
       "will_be_removed_on_save": "保存時に削除されます。"
     },
+    "selectionToolbar": {
+      "ask": "サイドチャットで質問",
+      "copy": "コピー",
+      "quote": "引用"
+    },
     "sendToInstanceSubmenu": {
       "failed": "失敗",
       "not_connected": "未接続",
@@ -6180,7 +6185,7 @@
       "desc_prompts": "保存されたプロンプトとエージェントSOPをリストまたは呼び出す",
       "desc_quit": "チャットセッションを終了する",
       "desc_reply": "最後のアシスタントメッセージに返信する",
-      "desc_side": "サイド会話パネルを開く",
+      "desc_side": "サイドチャットを開く — 中断せずに質問",
       "desc_tangent": "接線会話を開始する",
       "desc_todos": "タスクリストを表示または管理する",
       "desc_tools": "利用可能なツールを表示する",
@@ -6638,7 +6643,7 @@
       "links": "リンク",
       "logs": "ログ",
       "pins": "ピン",
-      "side": "サイド",
+      "side": "サイドチャット",
       "subagents": "サブエージェント",
       "summary": "サマリー",
       "workflows": "ワークフロー"
@@ -7495,7 +7500,7 @@
         "running_tool": "ツール実行中",
         "search_files": "ラベルまたは URL で検索…",
         "show_all_count": "すべて表示({{count}})",
-        "side": "サイド",
+        "side": "サイドチャット",
         "starting": "開始中…",
         "stopped": "停止",
         "subagent": "サブエージェント {{label}}",
@@ -7666,7 +7671,7 @@
         "ago": "前",
         "ask_a_side_question": "サイドで質問",
         "ask_a_side_question_2": "サイドで質問…",
-        "ask_a_side_question_main_agent_keeps_working": "アクティブな実行を中断せずにサイド会話を開始します。",
+        "ask_a_side_question_main_agent_keeps_working": "実行中の処理を止めずにサイドで質問できます。ここの内容はチャットには保存されません。",
         "context_from": "コンテキスト元",
         "question_too_long": "質問が長すぎます — 約 {{max}} 文字未満に短くしてください（現在は {{current}} 文字）",
         "queue_cancel_failed": "キューに入っている質問をキャンセルできませんでした",
@@ -7705,8 +7710,8 @@
         "menu_logs_desc": "ゲートウェイのログストリーム",
         "menu_pins": "ピン",
         "menu_pins_desc": "このセッションでピン留めしたメッセージ",
-        "menu_side": "サイド",
-        "menu_side_desc": "コンテキストを共有する並行チャット",
+        "menu_side": "サイドチャット",
+        "menu_side_desc": "メインエージェントを止めずに質問",
         "menu_subagents": "サブエージェント",
         "menu_subagents_desc": "エージェントのライブ活動とトランスクリプト",
         "menu_summary": "サマリー",

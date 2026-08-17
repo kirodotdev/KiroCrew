@@ -6101,6 +6101,11 @@
       "undo_remove": "সরানো আনডু করুন",
       "will_be_removed_on_save": "সেভ করলে সরিয়ে দেওয়া হবে।"
     },
+    "selectionToolbar": {
+      "ask": "সাইড চ্যাটে প্রশ্ন করুন",
+      "copy": "কপি করুন",
+      "quote": "উদ্ধৃতি"
+    },
     "sendToInstanceSubmenu": {
       "failed": "ব্যর্থ",
       "not_connected": "সংযুক্ত নয়",
@@ -6269,7 +6274,7 @@
       "desc_prompts": "সেভ করা প্রম্পট ও এজেন্ট SOP দেখাও বা চালাও",
       "desc_quit": "চ্যাট সেশন বন্ধ করো",
       "desc_reply": "সহকারীর শেষ মেসেজে উত্তর দাও",
-      "desc_side": "পাশে একটি কথাবার্তার প্যানেল খোলো",
+      "desc_side": "সাইড চ্যাট খুলুন — না থামিয়ে প্রশ্ন করুন",
       "desc_tangent": "একটি ট্যানজেন্ট কথাবার্তা শুরু করো",
       "desc_todos": "টাস্কের তালিকা দেখাও বা পরিচালনা করো",
       "desc_tools": "যে টুলগুলো আছে তা দেখাও",
@@ -6727,7 +6732,7 @@
       "links": "লিংক",
       "logs": "লগ",
       "pins": "পিন",
-      "side": "সাইড",
+      "side": "সাইড চ্যাট",
       "subagents": "সাবএজেন্ট",
       "summary": "সারসংক্ষেপ",
       "workflows": "ওয়ার্কফ্লো"
@@ -7596,7 +7601,7 @@
         "running_tool": "চলমান টুল",
         "search_files": "লেবেল বা URL দিয়ে খুঁজুন…",
         "show_all_count": "সব দেখান ({{count}})",
-        "side": "সাইড",
+        "side": "সাইড চ্যাট",
         "starting": "শুরু হচ্ছে…",
         "stopped": "থামানো হয়েছে",
         "subagent": "সাবএজেন্ট {{label}}",
@@ -7767,8 +7772,8 @@
       "sideChat": {
         "ago": "আগে",
         "ask_a_side_question": "একটি সাইড প্রশ্ন করুন",
-        "ask_a_side_question_2": "একটি সাইড প্রশ্ন করো…",
-        "ask_a_side_question_main_agent_keeps_working": "সক্রিয় রান ব্যাহত না করে একটি পার্শ্ব কথোপকথন শুরু করো।",
+        "ask_a_side_question_2": "একটি সাইড প্রশ্ন করুন…",
+        "ask_a_side_question_main_agent_keeps_working": "সক্রিয় রান না থামিয়ে একটি সাইড প্রশ্ন করুন। এখানের কিছুই চ্যাটে সেভ হয় না।",
         "context_from": "কনটেক্সটের উৎস",
         "question_too_long": "প্রশ্নটি খুব দীর্ঘ — প্রায় {{max}} অক্ষরের মধ্যে ছোট করো (তোমার: {{current}})",
         "queue_cancel_failed": "সেই কিউ করা প্রশ্নটি বাতিল করা যায়নি",
@@ -7808,8 +7813,8 @@
         "menu_logs_desc": "গেটওয়ে লগ স্ট্রিম",
         "menu_pins": "পিন",
         "menu_pins_desc": "এই সেশনে আপনি পিন করা বার্তা",
-        "menu_side": "সাইড",
-        "menu_side_desc": "সমান্তরাল চ্যাট, একই কনটেক্সট",
+        "menu_side": "সাইড চ্যাট",
+        "menu_side_desc": "মূল এজেন্টকে না থামিয়ে প্রশ্ন করুন",
         "menu_subagents": "সাবএজেন্ট",
         "menu_subagents_desc": "লাইভ এজেন্ট অ্যাক্টিভিটি ও ট্রান্সক্রিপ্ট",
         "menu_summary": "সারসংক্ষেপ",

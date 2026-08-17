@@ -210,6 +210,9 @@
     "apps.designCritique.scopingPicker.pick_at_least_one_screen": "Disabled label of the scoping step's start button, shown while the user has picked nothing yet. It says what to do next, not what the button does.",
     "components.gitPanel.title": "Title of the Git side panel showing the project repository state (branch, uncommitted changes, recent commits). \"Git\" is the version-control tool's proper name - do not translate.",
     "hooks.usePanelTabs.git": "Tab label for the Git side-panel view in the chat right panel. \"Git\" is the version-control tool's proper name - do not translate.",
-    "pages.chat.sidePanel.menu_git": "Menu entry in the side panel \"+\" menu that opens the Git view. \"Git\" is the version-control tool's proper name - do not translate."
+    "pages.chat.sidePanel.menu_git": "Menu entry in the side panel \"+\" menu that opens the Git view. \"Git\" is the version-control tool's proper name - do not translate.",
+    "components.selectionToolbar.copy": "Button on the floating toolbar over selected chat text: copies the selection to the clipboard. A VERB (\"copy this\"), not the noun \"a copy\" — several languages use different words for the two. Sits in a row of short buttons, so keep it brief.",
+    "components.selectionToolbar.quote": "Button on the floating toolbar over selected chat text: inserts the selection into the main composer as a quotation to reply to. A VERB (\"quote this\"), not the noun \"a quote\" and not a price quotation. Sits in a row of short buttons, so keep it brief.",
+    "components.selectionToolbar.ask": "Button on the floating toolbar that appears over selected chat text, beside Quote and Copy: sends the selection to the Side Chat panel as a question, without touching the main conversation. \"Ask\" is a VERB, not the noun (\"an ask\"), and \"Side Chat\" is the panel's own name, so translate it the same way as pages.chat.sidePanel.menu_side. It sits in a row of short buttons -- if the full phrase does not fit your language, drop the panel name rather than abbreviating it into something unrecognisable."
   }
 }

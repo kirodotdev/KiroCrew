@@ -6189,6 +6189,11 @@
       "undo_remove": "Annulla la rimozione",
       "will_be_removed_on_save": "Verrà rimosso al salvataggio."
     },
+    "selectionToolbar": {
+      "ask": "Chiedi in Chat laterale",
+      "copy": "Copia",
+      "quote": "Cita"
+    },
     "sendToInstanceSubmenu": {
       "failed": "Non riuscito",
       "not_connected": "non connesso",
@@ -6358,7 +6363,7 @@
       "desc_prompts": "Elenca o richiama i prompt salvati e le SOP degli agenti",
       "desc_quit": "Chiudi la sessione di chat",
       "desc_reply": "Rispondi all’ultimo messaggio dell’assistente",
-      "desc_side": "Apri un pannello di conversazione laterale",
+      "desc_side": "Apri Chat laterale — chiedi senza interrompere",
       "desc_tangent": "Avvia una conversazione tangente",
       "desc_todos": "Mostra o gestisci l’elenco delle attività",
       "desc_tools": "Mostra gli strumenti disponibili",
@@ -6816,7 +6821,7 @@
       "links": "Collegamenti",
       "logs": "Log",
       "pins": "Fissati",
-      "side": "Laterale",
+      "side": "Chat laterale",
       "subagents": "Subagenti",
       "summary": "Riepilogo",
       "workflows": "Workflow"
@@ -7697,7 +7702,7 @@
         "running_tool": "Strumento in esecuzione",
         "search_files": "Cerca per etichetta o URL…",
         "show_all_count": "Mostra tutti ({{count}})",
-        "side": "Laterale",
+        "side": "Chat laterale",
         "starting": "Avvio…",
         "stopped": "Arrestato",
         "subagent": "Subagente {{label}}",
@@ -7870,7 +7875,7 @@
         "ago": "fa",
         "ask_a_side_question": "Fai una domanda a parte",
         "ask_a_side_question_2": "Fai una domanda a parte…",
-        "ask_a_side_question_main_agent_keeps_working": "Avvia una conversazione laterale senza interrompere l’esecuzione attiva.",
+        "ask_a_side_question_main_agent_keeps_working": "Fai una domanda a parte senza interrompere l’esecuzione attiva. Niente di tutto questo viene salvato nella chat.",
         "context_from": "Contesto da",
         "question_too_long": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}})",
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
@@ -7911,8 +7916,8 @@
         "menu_logs_desc": "Flusso dei log del gateway",
         "menu_pins": "Fissati",
         "menu_pins_desc": "Messaggi che hai fissato in questa sessione",
-        "menu_side": "Laterale",
-        "menu_side_desc": "Chat parallela, contesto condiviso",
+        "menu_side": "Chat laterale",
+        "menu_side_desc": "Chiedi senza interrompere l’agente principale",
         "menu_subagents": "Subagenti",
         "menu_subagents_desc": "Attività degli agenti in tempo reale e trascrizioni",
         "menu_summary": "Riepilogo",

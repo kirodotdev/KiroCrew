@@ -6013,6 +6013,11 @@
       "undo_remove": "삭제 취소",
       "will_be_removed_on_save": "저장할 때 삭제됩니다."
     },
+    "selectionToolbar": {
+      "ask": "사이드 채팅에서 질문",
+      "copy": "복사",
+      "quote": "인용"
+    },
     "sendToInstanceSubmenu": {
       "failed": "실패",
       "not_connected": "연결되지 않음",
@@ -6180,7 +6185,7 @@
       "desc_prompts": "저장된 프롬프트와 에이전트 SOP를 나열하거나 호출합니다",
       "desc_quit": "채팅 세션을 종료합니다",
       "desc_reply": "마지막 어시스턴트 메시지에 답장합니다",
-      "desc_side": "사이드 대화 패널을 엽니다",
+      "desc_side": "사이드 채팅 열기 — 중단 없이 질문",
       "desc_tangent": "곁가지 대화를 시작합니다",
       "desc_todos": "작업 목록을 표시하거나 관리합니다",
       "desc_tools": "사용할 수 있는 도구를 표시합니다",
@@ -6638,7 +6643,7 @@
       "links": "링크",
       "logs": "로그",
       "pins": "핀",
-      "side": "사이드",
+      "side": "사이드 채팅",
       "subagents": "서브에이전트",
       "summary": "요약",
       "workflows": "워크플로"
@@ -7495,7 +7500,7 @@
         "running_tool": "도구 실행 중",
         "search_files": "라벨 또는 URL로 검색…",
         "show_all_count": "전체 표시({{count}})",
-        "side": "사이드",
+        "side": "사이드 채팅",
         "starting": "시작 중…",
         "stopped": "중지됨",
         "subagent": "서브에이전트 {{label}}",
@@ -7666,7 +7671,7 @@
         "ago": "전",
         "ask_a_side_question": "사이드 질문하기",
         "ask_a_side_question_2": "사이드 질문하기…",
-        "ask_a_side_question_main_agent_keeps_working": "활성 실행을 중단하지 않고 사이드 대화를 시작합니다.",
+        "ask_a_side_question_main_agent_keeps_working": "실행 중인 작업을 멈추지 않고 사이드에서 질문할 수 있습니다. 여기 내용은 대화에 저장되지 않습니다.",
         "context_from": "컨텍스트 출처",
         "question_too_long": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}})",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
@@ -7705,8 +7710,8 @@
         "menu_logs_desc": "게이트웨이 로그 스트림",
         "menu_pins": "핀",
         "menu_pins_desc": "이 세션에서 핀으로 표시한 메시지",
-        "menu_side": "사이드",
-        "menu_side_desc": "컨텍스트를 공유하는 병렬 채팅",
+        "menu_side": "사이드 채팅",
+        "menu_side_desc": "메인 에이전트를 멈추지 않고 질문",
         "menu_subagents": "서브에이전트",
         "menu_subagents_desc": "실시간 에이전트 활동과 기록",
         "menu_summary": "요약",

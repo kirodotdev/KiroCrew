@@ -6101,6 +6101,11 @@
       "undo_remove": "हटाना पूर्ववत करें",
       "will_be_removed_on_save": "सहेजने पर हटा दिया जाएगा।"
     },
+    "selectionToolbar": {
+      "ask": "साइड चैट में पूछें",
+      "copy": "कॉपी करें",
+      "quote": "उद्धरण"
+    },
     "sendToInstanceSubmenu": {
       "failed": "विफल",
       "not_connected": "कनेक्ट नहीं है",
@@ -6269,7 +6274,7 @@
       "desc_prompts": "सहेजे गए प्रॉम्प्ट और एजेंट SOP सूचीबद्ध करें या चलाएँ",
       "desc_quit": "चैट सत्र छोड़ें",
       "desc_reply": "असिस्टेंट के आख़िरी मैसेज का जवाब दें",
-      "desc_side": "साइड बातचीत पैनल खोलें",
+      "desc_side": "साइड चैट खोलें — बाधित किए बिना पूछें",
       "desc_tangent": "टैंजेंट बातचीत शुरू करें",
       "desc_todos": "कार्य सूची दिखाएँ या प्रबंधित करें",
       "desc_tools": "उपलब्ध टूल दिखाएँ",
@@ -6727,7 +6732,7 @@
       "links": "लिंक",
       "logs": "लॉग",
       "pins": "पिन",
-      "side": "साइड",
+      "side": "साइड चैट",
       "subagents": "सब-एजेंट",
       "summary": "सारांश",
       "workflows": "वर्कफ़्लो"
@@ -7596,7 +7601,7 @@
         "running_tool": "चल रहा टूल",
         "search_files": "लेबल या URL से खोजें…",
         "show_all_count": "सभी दिखाएँ ({{count}})",
-        "side": "साइड",
+        "side": "साइड चैट",
         "starting": "शुरू हो रहा है…",
         "stopped": "रुका हुआ",
         "subagent": "सबएजेंट {{label}}",
@@ -7768,7 +7773,7 @@
         "ago": "पहले",
         "ask_a_side_question": "एक साइड प्रश्न पूछें",
         "ask_a_side_question_2": "एक साइड प्रश्न पूछें…",
-        "ask_a_side_question_main_agent_keeps_working": "सक्रिय रन को बाधित किए बिना एक साइड बातचीत शुरू करो।",
+        "ask_a_side_question_main_agent_keeps_working": "सक्रिय रन को बाधित किए बिना एक साइड प्रश्न पूछें। यहाँ की बातें चैट में सेव नहीं होतीं।",
         "context_from": "संदर्भ:",
         "question_too_long": "प्रश्न बहुत लंबा है — लगभग {{max}} अक्षरों से कम करो (तुम्हारा: {{current}})",
         "queue_cancel_failed": "कतार में लगे उस प्रश्न को रद्द नहीं किया जा सका",
@@ -7808,8 +7813,8 @@
         "menu_logs_desc": "गेटवे लॉग स्ट्रीम",
         "menu_pins": "पिन",
         "menu_pins_desc": "इस सेशन में पिन किए गए संदेश",
-        "menu_side": "साइड",
-        "menu_side_desc": "समानांतर चैट, साझा कॉन्टेक्स्ट",
+        "menu_side": "साइड चैट",
+        "menu_side_desc": "मुख्य एजेंट को बाधित किए बिना पूछें",
         "menu_subagents": "सब-एजेंट",
         "menu_subagents_desc": "लाइव एजेंट गतिविधि और ट्रांसक्रिप्ट",
         "menu_summary": "सारांश",

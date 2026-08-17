@@ -6189,6 +6189,11 @@
       "undo_remove": "Annuler la suppression",
       "will_be_removed_on_save": "Sera supprimé à l'enregistrement."
     },
+    "selectionToolbar": {
+      "ask": "Demander dans le Chat annexe",
+      "copy": "Copier",
+      "quote": "Citer"
+    },
     "sendToInstanceSubmenu": {
       "failed": "Échec",
       "not_connected": "non connecté",
@@ -6358,7 +6363,7 @@
       "desc_prompts": "Lister ou invoquer les prompts enregistrés et les SOP d’agent",
       "desc_quit": "Quitter la session de chat",
       "desc_reply": "Répondre au dernier message de l’assistant",
-      "desc_side": "Ouvrir un panneau de conversation annexe",
+      "desc_side": "Ouvrir le Chat annexe — poser une question sans interrompre",
       "desc_tangent": "Démarrer une conversation en aparté",
       "desc_todos": "Afficher ou gérer la liste des tâches",
       "desc_tools": "Afficher les outils disponibles",
@@ -6816,7 +6821,7 @@
       "links": "Liens",
       "logs": "Journaux",
       "pins": "Épinglés",
-      "side": "Annexe",
+      "side": "Chat annexe",
       "subagents": "Sous-agents",
       "summary": "Résumé",
       "workflows": "Workflows"
@@ -7697,7 +7702,7 @@
         "running_tool": "Outil en cours",
         "search_files": "Rechercher par étiquette ou URL…",
         "show_all_count": "Tout afficher ({{count}})",
-        "side": "Annexe",
+        "side": "Chat annexe",
         "starting": "Démarrage…",
         "stopped": "Arrêté",
         "subagent": "Sous-agent {{label}}",
@@ -7870,7 +7875,7 @@
         "ago": "auparavant",
         "ask_a_side_question": "Poser une question annexe",
         "ask_a_side_question_2": "Poser une question annexe…",
-        "ask_a_side_question_main_agent_keeps_working": "Lance une conversation parallèle sans interrompre l’exécution active.",
+        "ask_a_side_question_main_agent_keeps_working": "Posez une question annexe sans interrompre l’exécution active. Rien ici n’est enregistré dans la conversation.",
         "context_from": "Contexte de",
         "question_too_long": "Question trop longue — réduis-la à moins d'environ {{max}} caractères (la tienne : {{current}})",
         "queue_cancel_failed": "Impossible d'annuler cette question en file d'attente",
@@ -7911,8 +7916,8 @@
         "menu_logs_desc": "Flux de journaux de la passerelle",
         "menu_pins": "Épinglés",
         "menu_pins_desc": "Messages que vous avez épinglés dans cette session",
-        "menu_side": "Annexe",
-        "menu_side_desc": "Chat parallèle, contexte partagé",
+        "menu_side": "Chat annexe",
+        "menu_side_desc": "Poser une question sans interrompre l’agent principal",
         "menu_subagents": "Sous-agents",
         "menu_subagents_desc": "Activité des agents en direct et transcriptions",
         "menu_summary": "Résumé",

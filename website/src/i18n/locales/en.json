@@ -4224,6 +4224,11 @@
       "undo_remove": "Undo remove",
       "will_be_removed_on_save": "Will be removed on save."
     },
+    "selectionToolbar": {
+      "ask": "Ask in Side Chat",
+      "copy": "Copy",
+      "quote": "Quote"
+    },
     "sendToInstanceSubmenu": {
       "failed": "Failed",
       "not_connected": "not connected",
@@ -5281,7 +5286,7 @@
       "sideChat": {
         "ago": "ago",
         "ask_a_side_question": "Ask a side question",
-        "ask_a_side_question_main_agent_keeps_working": "Start a side conversation without interrupting the active run.",
+        "ask_a_side_question_main_agent_keeps_working": "Ask a side question without interrupting the active run. Nothing here is saved to the chat.",
         "context_from": "Context from",
         "refresh_context": "Refresh context",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",

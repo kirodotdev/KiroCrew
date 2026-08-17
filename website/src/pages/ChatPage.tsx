@@ -4849,16 +4849,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // openActivityToTab('side') bridge, then hands the selection to SideChat via a
   // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab —
   // no new prop-drilling, no backend change). No transit
-  // animation: the popup routes the selection straight to the Side panel
+  // animation: the popup routes the selection straight to the Side Chat panel
   // (matches Codex's "Ask in side chat" behavior).
   const handleAsk = useCallback((text: string) => {
     dispatch(openActivityToTab('side'))
-    // The Side panel (and its `side-seed` listener) mounts asynchronously once
-    // the panel opens. Poll a few frames for the Side input as a mount signal,
+    // The Side Chat panel (and its `side-seed` listener) mounts asynchronously
+    // once the panel opens. Poll a few frames for its input as a mount signal,
     // then dispatch the seed. Fall back to dispatching after a cap so the
     // feature still works even if the input never resolves.
     const trySeed = (attempt = 0) => {
-      const mounted = document.querySelector('textarea[aria-label="Ask a side question"]')
+      const mounted = document.querySelector('textarea[data-side-chat-input]')
       if (mounted || attempt >= 20) {
         window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
       } else {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
+import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
@@ -879,7 +879,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
     { key: 'workflows', label: i18nT('pages.chat.activityViewer.workflows'), icon: <Workflow size={13} />, count: wfRunningCount },
     { key: 'logs', label: i18nT('pages.chat.activityViewer.logs'), icon: <ScrollText size={13} /> },
-    { key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon: <MessageSquare size={13} /> },
+    { key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon: <MessageCircleQuestionMark size={13} /> },
   ]
 
   return (

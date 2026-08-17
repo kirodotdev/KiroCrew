@@ -6189,6 +6189,11 @@
       "undo_remove": "Deshacer la eliminación",
       "will_be_removed_on_save": "Se eliminará al guardar."
     },
+    "selectionToolbar": {
+      "ask": "Preguntar en Chat lateral",
+      "copy": "Copiar",
+      "quote": "Citar"
+    },
     "sendToInstanceSubmenu": {
       "failed": "Falló",
       "not_connected": "no conectado",
@@ -6358,7 +6363,7 @@
       "desc_prompts": "Listar o invocar los prompts guardados y los procedimientos operativos del agente",
       "desc_quit": "Cerrar la sesión de chat",
       "desc_reply": "Responder al último mensaje del asistente",
-      "desc_side": "Abrir un panel de conversación lateral",
+      "desc_side": "Abrir Chat lateral — preguntar sin interrumpir",
       "desc_tangent": "Iniciar una conversación tangencial",
       "desc_todos": "Mostrar o gestionar la lista de tareas",
       "desc_tools": "Mostrar las herramientas disponibles",
@@ -6816,7 +6821,7 @@
       "links": "Enlaces",
       "logs": "Registros",
       "pins": "Fijados",
-      "side": "Lateral",
+      "side": "Chat lateral",
       "subagents": "Subagentes",
       "summary": "Resumen",
       "workflows": "Flujos de trabajo"
@@ -7697,7 +7702,7 @@
         "running_tool": "Herramienta en ejecución",
         "search_files": "Buscar por etiqueta o URL…",
         "show_all_count": "Mostrar todo ({{count}})",
-        "side": "Lateral",
+        "side": "Chat lateral",
         "starting": "Iniciando…",
         "stopped": "Detenido",
         "subagent": "Subagente {{label}}",
@@ -7869,8 +7874,8 @@
       "sideChat": {
         "ago": "atrás",
         "ask_a_side_question": "Hacer una pregunta paralela",
-        "ask_a_side_question_2": "Haz una pregunta paralela…",
-        "ask_a_side_question_main_agent_keeps_working": "Inicia una conversación secundaria sin interrumpir la ejecución activa.",
+        "ask_a_side_question_2": "Hacer una pregunta paralela…",
+        "ask_a_side_question_main_agent_keeps_working": "Haz una pregunta paralela sin interrumpir la ejecución activa. Nada de esto se guarda en el chat.",
         "context_from": "Contexto de",
         "question_too_long": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}})",
         "queue_cancel_failed": "No se pudo cancelar esa pregunta en cola",
@@ -7911,8 +7916,8 @@
         "menu_logs_desc": "Flujo de registros del gateway",
         "menu_pins": "Fijados",
         "menu_pins_desc": "Mensajes que fijaste en esta sesión",
-        "menu_side": "Lateral",
-        "menu_side_desc": "Chat paralelo, contexto compartido",
+        "menu_side": "Chat lateral",
+        "menu_side_desc": "Pregunta sin interrumpir al agente principal",
         "menu_subagents": "Subagentes",
         "menu_subagents_desc": "Actividad y transcripciones del agente en vivo",
         "menu_summary": "Resumen",

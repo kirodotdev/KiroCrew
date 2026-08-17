@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Send, MessageSquare, RotateCcw } from 'lucide-react'
+import { Send, MessageCircleQuestionMark, RotateCcw } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -557,8 +557,11 @@ export default function SideChat({ slot }: { slot: string }) {
       )}
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
         {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2 py-8">
-            <span className="text-[24px]"><MessageSquare className="lucide-inline" /></span>
+          <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
+            {/* The icon is decoration and stays faint; the sentence is the only
+                place the UI states that this transcript is discarded, so it reads
+                at full muted contrast rather than inheriting the icon's /30. */}
+            <span className="text-[24px] text-muted/30"><MessageCircleQuestionMark className="lucide-inline" /></span>
             <span className="text-[13px]">{i18nT('pages.chat.sideChat.ask_a_side_question_main_agent_keeps_working')}</span>
           </div>
         ) : (
@@ -609,6 +612,11 @@ export default function SideChat({ slot }: { slot: string }) {
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
+          /* Mount signal for Select-to-Ask, which polls for this input before
+             dispatching its `side-seed` event. An attribute, not the aria-label:
+             the label is translated, so a selector built from its English text
+             matches in one language out of twelve. */
+          data-side-chat-input=""
           aria-label={i18nT('pages.chat.sideChat.ask_a_side_question')}
           placeholder={i18nT('pages.chat.sideChat.ask_a_side_question_2')}
           rows={2}

@@ -6013,6 +6013,11 @@
       "undo_remove": "撤销移除",
       "will_be_removed_on_save": "保存时将被移除。"
     },
+    "selectionToolbar": {
+      "ask": "随手问",
+      "copy": "复制",
+      "quote": "引用"
+    },
     "sendToInstanceSubmenu": {
       "failed": "失败",
       "not_connected": "未连接",
@@ -6180,7 +6185,7 @@
       "desc_prompts": "列出或调用已保存的提示词与代理 SOP",
       "desc_quit": "结束聊天会话",
       "desc_reply": "回复最后一条助手消息",
-      "desc_side": "打开旁支对话面板",
+      "desc_side": "打开“随手问”——不打断当前运行",
       "desc_tangent": "开始一段支线对话",
       "desc_todos": "显示或管理任务清单",
       "desc_tools": "显示可用工具",
@@ -6638,7 +6643,7 @@
       "links": "链接",
       "logs": "日志",
       "pins": "置顶",
-      "side": "旁支",
+      "side": "随手问",
       "subagents": "子代理",
       "summary": "摘要",
       "workflows": "工作流"
@@ -7495,7 +7500,7 @@
         "running_tool": "工具运行中",
         "search_files": "按标签或 URL 搜索…",
         "show_all_count": "显示全部（{{count}}）",
-        "side": "旁支",
+        "side": "随手问",
         "starting": "正在启动…",
         "stopped": "已停止",
         "subagent": "子代理 {{label}}",
@@ -7664,9 +7669,9 @@
       },
       "sideChat": {
         "ago": "前",
-        "ask_a_side_question": "问一个旁支问题",
-        "ask_a_side_question_2": "问一个旁支问题…",
-        "ask_a_side_question_main_agent_keeps_working": "开启旁路对话，不中断当前运行。",
+        "ask_a_side_question": "随手问一句",
+        "ask_a_side_question_2": "随手问一句…",
+        "ask_a_side_question_main_agent_keeps_working": "随手问一句，不会打断正在运行的任务。这里的内容不会存进对话。",
         "context_from": "上下文来自",
         "question_too_long": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}）",
         "queue_cancel_failed": "无法取消排队中的这个问题",
@@ -7705,8 +7710,8 @@
         "menu_logs_desc": "网关日志流",
         "menu_pins": "置顶",
         "menu_pins_desc": "你在这个会话里标记的消息",
-        "menu_side": "旁支",
-        "menu_side_desc": "并行聊天，共享上下文",
+        "menu_side": "随手问",
+        "menu_side_desc": "不打断主 agent，随手问一句",
         "menu_subagents": "子代理",
         "menu_subagents_desc": "实时代理活动与记录",
         "menu_summary": "摘要",

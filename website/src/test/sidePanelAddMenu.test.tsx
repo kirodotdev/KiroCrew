@@ -79,7 +79,7 @@ describe('side panel + menu (shadcn dropdown)', () => {
     expect(screen.queryByRole('menu')).toBeNull()
     openMenu()
     expect(screen.getByRole('menu')).toBeTruthy()
-    for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side', 'Browser']) {
+    for (const label of ['Pins', 'Issues', 'Subagents', 'Workflows', 'Side Chat', 'Browser']) {
       expect(screen.getByRole('menuitem', { name: label })).toBeTruthy()
     }
     // Pinned views are auto-managed and must never be offered here.
