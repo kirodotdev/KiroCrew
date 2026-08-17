@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import (
@@ -363,10 +363,12 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
         _host, port = parse_dashboard_url(cfg.dashboard.url)
         api_base = f"http://localhost:{port}"
 
-        # Read internal secret for auth
+        # Credential for the port this function DIALS (parsed just above), not for
+        # whichever gateway an ambient lookup would name -- those can differ on a
+        # multi-gateway host, which is the desync being closed.
         secret = ""
         try:
-            secret = (config_dir() / ".local_secret").read_text().strip()
+            secret = read_local_secret(port)
         except Exception:
             pass
 

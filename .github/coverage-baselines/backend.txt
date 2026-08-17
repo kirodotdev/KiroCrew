@@ -23,7 +23,6 @@ src/kiro_crew/apps/builtins/auto_improvement/spine/bug_gate.py 20.7   # 12/58
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py 19.1   # 22/115
 src/kiro_crew/apps/builtins/auto_improvement/spine/git_safety.py 46.4   # 45/97
 src/kiro_crew/apps/builtins/auto_improvement/spine/pr_pipeline.py 28.7   # 35/122
-src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py 77.1   # 330/428
 src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py 0.0   # 0/6
 src/kiro_crew/apps/builtins/crew_companion/backend/routes.py 62.9   # 112/178
 src/kiro_crew/apps/builtins/file_explorer/server.py 71.9   # 396/551

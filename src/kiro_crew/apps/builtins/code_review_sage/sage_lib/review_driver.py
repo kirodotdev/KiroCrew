@@ -119,7 +119,17 @@ DEFAULT_REPORT_RETENTION = 20    # keep the N most-recent report artifacts; prun
 
 def _api_request(method: str, path: str, body: dict | None = None, timeout: int = 30) -> dict:
     """Authenticated loopback call to the gateway API. Never raises."""
-    base, secret = _gateway_base(), _local_secret()
+    base = _gateway_base()
+    # The credential belongs to the gateway this call DIALS, so it is read for the
+    # port carried by the resolved base rather than from the home-wide file, which
+    # names whichever generation wrote it last. An unparseable base leaves no dial
+    # target to name, and a credential for an unknown gateway is not a thing that
+    # exists -- so that is an error, not a reason to fall back to a home-wide read.
+    try:
+        base_port = int(base.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return {"error": f"could not read a port from the gateway base {base!r}"}
+    secret = _local_secret(base_port)
     if not secret:
         return {"error": "gateway IPC secret unavailable"}
     headers = {"X-Internal-Secret": secret}
@@ -522,8 +532,23 @@ _RESOLVED_BASE: str | None = None
 
 
 def _candidate_ports() -> list[int]:
-    """Ports to try for the live gateway: KIROCREW_PORT, config.json dashboard.url,
-    then the common gateway range (the gateway may be on 5477+ if 5476 was taken)."""
+    """Ports this process can claim as ITS OWN gateway, in order of authority.
+
+    Only self-declared sources are eligible: ``KIROCREW_BOUND_PORT`` (exported by
+    the parent gateway once its listener is bound), then ``KIROCREW_PORT``, then this
+    home's ``config.json`` ``dashboard.url``. The bound port leads because it carries
+    the port actually held: a gateway asked for 5476 but given 5477 has the truth
+    only there, and a ``--port auto`` gateway has no other numeric source at all.
+    A pod deliberately drops it so it never inherits its parent's listener.
+
+    A blind sweep of the common gateway range is deliberately NOT included, because
+    every probe carries that port's own credential -- so a sweep would authenticate
+    against whichever sibling gateway answered first and this app would then create
+    and delete review artifacts in that instance's store. A port we cannot justify
+    as ours is not a discovery candidate; when no source names one the caller falls
+    back to the default and the request errors clearly, which fails closed instead
+    of writing to a stranger.
+    """
     out: list[int] = []
 
     def _add(v) -> None:
@@ -534,6 +559,7 @@ def _candidate_ports() -> list[int]:
         if 1 <= p <= 65535 and p not in out:
             out.append(p)
 
+    _add(os.environ.get("KIROCREW_BOUND_PORT"))
     _add(os.environ.get("KIROCREW_PORT"))
     try:
         cfg = store.crew_home() / "config.json"
@@ -545,8 +571,6 @@ def _candidate_ports() -> list[int]:
                 _add(m.group(1))
     except Exception:
         pass
-    for p in (5476, 5477, 5478, 5479, 5480, 5486):
-        _add(p)
     return out
 
 
@@ -575,19 +599,50 @@ def _gateway_base() -> str:
     global _RESOLVED_BASE
     if _RESOLVED_BASE:
         return _RESOLVED_BASE
-    secret = _local_secret()
     ports = _candidate_ports()
     for port in ports:
         base = f"http://localhost:{port}"
-        if _probe(base, secret):
+        # Each candidate is probed with ITS OWN credential. A single secret read
+        # before the loop comes from the home-wide file, which holds one slot per
+        # data home: on a host running more than one gateway that names whichever
+        # generation wrote last, so every probe against the others 403s and the
+        # resolution falls through to a guess.
+        if _probe(base, _local_secret(port)):
             _RESOLVED_BASE = base
             return base
-    # best guess; the request will error clearly if wrong
-    return f"http://localhost:{ports[0] if ports else '5476'}"
+    # No candidate answered. Fall back only to a port a source positively NAMED
+    # (ports[0]); do NOT invent 5476. An unnamed default is a guess, and dialing it
+    # with its own credential is how a report write lands in whatever SIBLING gateway
+    # happens to own that port. When no source names a port at all, there is no base
+    # to justify -- return empty so _api_request fails closed with a clear error
+    # rather than authenticating against a stranger.
+    return f"http://localhost:{ports[0]}" if ports else ""
 
 
-def _local_secret() -> str:
-    """Read the gateway IPC secret (same mechanism the MCP server uses)."""
+def _local_secret(port: int) -> str:
+    """Credential for the gateway on *port*, via the shared resolver.
+
+    The per-port-then-shared order lives in ``config.loader.read_local_secret``;
+    duplicating it here would give this surface its own copy to drift. Only the
+    fallback differs: this app addresses its data home through ``store.crew_home()``,
+    so a home-wide read is retried against that when the shared resolver finds
+    nothing.
+
+    *port* is required for the same reason it is required there: the credential is
+    only valid for the gateway it belongs to, so the dial target is never inferred.
+    """
+    try:
+        # Optional dependency, so function-local: this app also runs STANDALONE,
+        # outside the Kiro Crew package, where this import raises and the
+        # crew_home() read below is the only resolution available. A module-scope
+        # import would make the module itself unimportable there.
+        from kiro_crew.config.loader import read_local_secret
+
+        secret = read_local_secret(port)
+        if secret:
+            return secret
+    except Exception:
+        pass
     try:
         return (store.crew_home() / ".local_secret").read_text(encoding="utf-8").strip()
     except Exception:

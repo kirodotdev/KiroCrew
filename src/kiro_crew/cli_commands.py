@@ -44,7 +44,6 @@ from kiro_crew.apps.scaffold import scaffold_app
 from kiro_crew.cli_server import _marker_port, resolve_client_port
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
-    DASHBOARD_PORT,
     ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
@@ -65,6 +64,7 @@ from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.security import (
     BUILTIN_DENIED_RULES,
     BUILTIN_DENY_PATTERNS,
@@ -974,7 +974,10 @@ def _cron(args: argparse.Namespace) -> None:
             print(f"Job not found: {args.job_id}")
 
     elif action == "trigger":
-        port = DASHBOARD_PORT
+        # Instance-aware, for the same reason as the MCP trigger: DASHBOARD_PORT reads
+        # KIROCREW_PORT only, so on a --port auto gateway it names a sibling, and the
+        # paired credential would let that sibling run the job.
+        port, _evidence_backed = resolve_client_port_ex(None)
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(args.job_id, port, secret_path)
         print(msg)

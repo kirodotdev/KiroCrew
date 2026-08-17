@@ -593,13 +593,37 @@ def oauth_endpoints_path() -> Path:
     return config_dir() / "oauth_endpoints.json"
 
 
-def read_local_secret() -> str:
-    """Read ``<config_dir>/.local_secret`` (the gateway IPC secret), or ``""``.
+def read_local_secret(port: int) -> str:
+    """Read the internal-API credential for the gateway on *port*.
 
-    Single home for the secret-file read that callers (cron scripts, MCP tool
-    bridges, CLI) need to authenticate to the gateway's internal API. Returns
-    empty string if the file is absent/unreadable.
+    Single home for the secret read that callers (cron scripts, MCP tool bridges,
+    CLI) need to authenticate to the gateway's internal API. Returns empty string
+    when no credential can be read.
+
+    Resolution is per LISTENER first: ``run/gateway-<port>.secret``, then the
+    shared ``.local_secret``. That order is the invariant, and it lives here rather
+    than in each reader because the credential identifies ONE gateway generation
+    while the shared file has one slot per data home, last-writer-wins. A caller
+    that reads the shared file while a different generation owns the port it dials
+    gets 403 on every internal call.
+
+    *port* is REQUIRED, and deliberately so: the credential is a function of the
+    dial target, so inferring the target here would let a caller dial one gateway
+    while authenticating for another -- the exact desync this helper exists to
+    close, reintroduced one call site at a time and invisible at the call site. A
+    caller with no port must resolve one explicitly and pass it, where the choice
+    is reviewable.
     """
+    # Function-local: port_resolution imports this module, so a module-level
+    # import would be circular.
+    from kiro_crew.instances import run_marker
+
+    try:
+        per_port = run_marker.read_secret(int(port))
+    except Exception:
+        per_port = ""
+    if per_port:
+        return per_port
     try:
         return (config_dir() / ".local_secret").read_text().strip()
     except OSError:

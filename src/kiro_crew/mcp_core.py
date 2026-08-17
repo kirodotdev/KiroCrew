@@ -39,6 +39,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
     outbox_dir,
+    read_local_secret,
     resolve_agent_bindings,
 )
 from kiro_crew.context_management import summarize_result
@@ -291,9 +292,14 @@ def _list_tools() -> list[dict[str, Any]]:
 
 
 def _internal_secret() -> str:
-    """Read the per-session secret for IPC authentication."""
+    """Credential for the gateway this client will dial, paired to its port.
+
+    Thin wrapper over ``config.loader.read_local_secret``, which owns the
+    per-listener-then-shared order. The port is passed rather than re-resolved
+    because ``_api_port`` already resolved and cached it for this process.
+    """
     try:
-        return (config_dir() / ".local_secret").read_text().strip()
+        return read_local_secret(_api_port())
     except Exception:
         return ""
 
@@ -990,6 +996,23 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             pass
     message, _ = redact_exfiltration_urls(message)
     message, _ = redact_credentials(message)
+    if code == "internal_auth_mismatch":
+        # Every internal tool receives the auth layer's bare "Forbidden", which
+        # reads as a permission decision about the tool's own subject and sends
+        # the reader after the wrong bug. It is an instance mix-up: the credential
+        # this client read does not belong to the gateway generation that owns the
+        # port it dialled. Rewritten HERE because all tool call sites already flow
+        # through this decoder, so one mapping covers them instead of one branch
+        # per tool -- and it is keyed on the CODE, since a genuine permission
+        # denial produces the same body and must not be given this explanation.
+        message = (
+            "this client authenticated against the wrong Kiro Crew instance. "
+            "The credential it read does not match the gateway now serving that "
+            "port, usually because a second gateway started on this machine and "
+            "replaced the shared credential file. Restart the gateway (or target "
+            "the instance you meant) and retry; the gateway's security event log "
+            "records both credential fingerprints for the mismatch."
+        )
     out: dict = {"error": message}
     if counted:
         out["counted"] = True

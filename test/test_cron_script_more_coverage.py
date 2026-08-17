@@ -917,13 +917,29 @@ class TestPathAndSecretResolution:
 
     def test_internal_secret_prefers_the_environment(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "env-secret")
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda: "file-secret")
-        assert _resolve_internal_secret() == "env-secret"
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-secret")
+        assert _resolve_internal_secret(5476) == "env-secret"
 
     def test_internal_secret_falls_back_to_the_local_secret_file(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda: "file-secret")
-        assert _resolve_internal_secret() == "file-secret"
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-secret")
+        assert _resolve_internal_secret(5476) == "file-secret"
+
+    def test_internal_secret_reads_the_port_it_is_given(self, monkeypatch):
+        # The credential is only valid for the gateway it belongs to, and the caller
+        # resolves the dial port ONCE and passes it here, so the same port reaches
+        # both the credential read and the child env -- a mid-startup --port auto
+        # bind cannot split them into a mismatched pair that 403s the callback.
+        monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
+        seen = {}
+
+        def _fake_read(port):
+            seen["port"] = port
+            return "file-secret"
+
+        monkeypatch.setattr(cron_script, "read_local_secret", _fake_read)
+        assert _resolve_internal_secret(7811) == "file-secret"
+        assert seen["port"] == 7811
 
 
 # ── run_script_sandboxed ──
@@ -939,7 +955,7 @@ def script_run(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
-    monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda: "unit-secret")
+    monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "unit-secret")
     restricted: list[str] = []
     monkeypatch.setattr(
         cron_script.platform_compat, "restrict_to_owner", restricted.append
@@ -960,6 +976,29 @@ def script_run(monkeypatch, tmp_path):
 
 
 class TestRunScriptSandboxed:
+    def test_the_dial_port_is_resolved_exactly_once(self, script_run, monkeypatch):
+        # The credential write and the child's _KIROCREW_DIAL_PORT must come from
+        # ONE resolution. Two calls are a TOCTOU: a --port auto gateway binding
+        # between them would pair a credential with the wrong port and 403 the
+        # callback. So run_script_sandboxed must call _resolve_dial_port once and
+        # thread the value through, not resolve independently at each use.
+        calls = []
+        real = cron_script._resolve_dial_port
+
+        def _counting():
+            calls.append(1)
+            return real()
+
+        monkeypatch.setattr(cron_script, "_resolve_dial_port", _counting)
+        # Do NOT stub _resolve_internal_secret here (the fixture does): we want the
+        # real credential path so a second internal resolution would be counted.
+        monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "s")
+        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+
+        run_script_sandboxed("spec:run", "job-once")
+
+        assert len(calls) == 1, f"_resolve_dial_port called {len(calls)} times, expected 1"
+
     def test_ok_result_and_temp_file_cleanup(self, script_run):
         script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
 

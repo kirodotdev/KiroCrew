@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 _MARKER_PREFIX = "gateway-"
 _MARKER_SUFFIX = ".bin"
 _PID_SUFFIX = ".pid"
+_SECRET_SUFFIX = ".secret"
 
 
 def _run_dir() -> Path:
@@ -93,6 +94,42 @@ def pid_path(port: int) -> Path:
     ``gateway-<port>.pid``.
     """
     return _run_dir() / f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
+
+
+def secret_path(port: int) -> Path:
+    """Path of the internal-API credential for the gateway serving *port*.
+
+    The credential is a property of ONE gateway generation: it is generated at
+    startup and held in memory as the value the auth middleware compares
+    against. Keying its file by port keeps it paired with the listener a client
+    actually dials, which the single shared ``.local_secret`` cannot do -- that
+    file is last-writer-wins per data home, so a second gateway starting in the
+    same home silently replaces the credential of the process that owns the
+    port, and every internal call then fails 403 until something restarts.
+
+    Lives beside the marker and the pid sidecar, inside the ``0700`` ``run/``
+    dir on the ``is_sensitive_path`` floor, and is written ``0600``.
+    """
+    return _run_dir() / f"{_MARKER_PREFIX}{int(port)}{_SECRET_SUFFIX}"
+
+
+def read_secret(port: int) -> str:
+    """Internal-API credential recorded for *port*, or ``""`` when absent.
+
+    Read-only: never creates ``run/`` (mirrors :func:`read_pid`, so a client
+    merely looking for a gateway materialises no state). An empty return means
+    "no per-port credential here" -- the caller falls back to the shared
+    ``.local_secret`` for gateways predating the per-port file. Presence is NOT
+    proof the recorded gateway still owns the port; that remains
+    ``port_resolution._gateway_owns_port``'s job.
+    """
+    try:
+        raw = (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{_SECRET_SUFFIX}").read_text(
+            encoding="utf-8"
+        )
+    except (OSError, ValueError):
+        return ""
+    return raw.strip()
 
 
 def read_pid(port: int) -> int | None:
@@ -243,24 +280,59 @@ def write_marker(port: int) -> None:
 
 
 def prune_markers(*, keep_port: int) -> None:
-    """Remove run-markers for every port except *keep_port*.
+    """Remove run-markers for every port except *keep_port* and any LIVE sibling.
 
-    A gateway is a singleton per data home (``gateway.lock``), so any marker
-    naming a *different* port belongs to an earlier run that crashed before
-    :func:`clear_marker` could fire. Left alone they accumulate one per port ever
-    used, and each one costs a client command a listener lookup — making
-    discovery slower the longer a dev box churns ports. The live gateway is the
-    right place to reap them: it knows which port is current, and it is the only
-    writer.
+    Stale markers accumulate one per port ever used, and each one costs a client
+    command a listener lookup, so the live gateway reaps them: it knows which port
+    is current, and it is the only writer.
+
+    What it must NOT reap is a sibling that is still serving. ``gateway.lock``
+    makes a gateway a singleton per data home only when every start goes through
+    it; in practice one machine runs several -- a second gateway launched by hand,
+    one started from another checkout that inherits the default data home, a
+    cutover overlapping its predecessor -- and those really do share a home. A
+    blanket prune then deletes a LIVE gateway's marker and pid sidecar, which
+    makes it undiscoverable to `token` / `status` / `stop` and removes the very
+    evidence the credential writer uses to avoid clobbering that gateway's
+    credential. So each candidate is checked against the same ownership proof its
+    readers use (recorded pid, holds the port, same uid, argv looks like a
+    gateway) and skipped when it passes.
 
     Best-effort and never raises: a marker we fail to remove only costs a future
     lookup, and the ownership check still rejects it.
+
+    It removes the marker and pid sidecar but NEVER the credential, because
+    ``_gateway_owns_port`` cannot tell a dead gateway from an unprovable one. It
+    fails closed by RETURNING FALSE -- non-POSIX returns False outright, and a
+    missing or throwing listener-lookup tool is folded into False as well -- so
+    False means "ownership not proven", not "process gone". Deleting on False
+    would therefore delete a LIVE incumbent's credential on every Windows host
+    and on any host without listener tooling; its clients would fall back to the
+    shared ``.local_secret`` that a newcomer may have replaced, and the prune
+    would CAUSE the 403 the per-port credential exists to prevent.
+
+    A credential left behind is the safe residue: it is only reachable for a port
+    whose gateway is gone, which is already unreachable. Deletion belongs to
+    :func:`clear_marker`, where the gateway is authoritatively done with the port.
     """
+    # Function-local: port_resolution imports this module, so a module-level
+    # import would be circular.
+    from kiro_crew import port_resolution
+
     try:
         stale = [p for p in marker_ports() if p != int(keep_port)]
     except Exception:
         return
     for port in stale:
+        try:
+            if port_resolution._gateway_owns_port(int(port)):
+                logger.info(
+                    "Keeping gateway run-marker for port %s: that gateway is still live",
+                    port,
+                )
+                continue
+        except Exception:
+            logger.debug("Ownership check failed for port %s", port, exc_info=True)
         for path in (marker_path(port), pid_path(port)):
             try:
                 path.unlink(missing_ok=True)
@@ -270,8 +342,14 @@ def prune_markers(*, keep_port: int) -> None:
 
 
 def clear_marker(port: int) -> None:
-    """Best-effort removal of the run-marker + pid sidecar (on graceful shutdown)."""
-    for path in (marker_path(port), pid_path(port)):
+    """Best-effort removal of the run-marker, pid sidecar and credential.
+
+    The credential goes with them: it names a generation that no longer owns the
+    port, so leaving it behind would let a client authenticate with a value the
+    next owner never had. A crash still leaves all three (nothing runs), which is
+    why every consumer verifies ownership rather than trusting presence.
+    """
+    for path in (marker_path(port), pid_path(port), secret_path(port)):
         try:
             path.unlink(missing_ok=True)
         except OSError:

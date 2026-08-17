@@ -295,6 +295,42 @@ def resolve_client_port_ex(cli_port: int | None) -> tuple[int, bool]:
     return _DEFAULT_PORT, False
 
 
+def resolve_serving_port() -> int:
+    """The port THIS gateway process is serving, for its own in-process callers.
+
+    Distinct from :func:`resolve_client_port_ex` in ONE way that matters:
+    ``KIROCREW_BOUND_PORT`` is consulted BEFORE ``KIROCREW_PORT``. The client
+    resolver reads ``KIROCREW_PORT`` first, which is correct for a CLI client --
+    there the variable means "talk to that instance". This resolver is for code
+    running INSIDE the gateway (the frame relay, cron dial-port minting, the cron
+    trigger endpoint): there the port the process actually bound is ground truth,
+    and ``KIROCREW_PORT`` is a request that may be stale or merely inherited. A
+    shell that exported ``KIROCREW_PORT=5476`` and then started a second gateway
+    with ``--port auto`` leaves both set; the client order would pick 5476, a
+    SIBLING, and an in-gateway caller pairing a credential with that port
+    authenticates against the wrong instance.
+
+    Reordering the client resolver instead would fix these callers by breaking
+    every CLI client's ability to aim at a chosen instance, so the two resolvers
+    stay separate. After the bound port, the remaining precedence (``KIROCREW_PORT``
+    -> configured -> marker -> default) is shared with the client resolver, so a
+    gateway with no bound port exported still honours a dev instance's
+    ``KIROCREW_PORT``.
+
+    Returns the port only. Every in-gateway caller reads a per-port credential for
+    the returned value, and an unresolved credential reads empty and is refused by
+    the strict ingress (fail-closed), so no separate evidence flag is needed.
+    """
+    bound_port = os.environ.get("KIROCREW_BOUND_PORT")
+    if bound_port:
+        try:
+            return int(bound_port)
+        except ValueError:
+            pass  # malformed value is no evidence; fall through to the client order
+    port, _evidence_backed = resolve_client_port_ex(None)
+    return port
+
+
 # Subcommands that launch a long-running Kiro Crew *server* process which
 # ``kirocrew stop`` may need to terminate. These mirror the entry-point
 # subcommands dispatched in ``cli.py`` (``gateway`` / ``dashboard``; ``start``

@@ -856,9 +856,80 @@ file-permission argument does not hold, so Windows users keep `--port` /
 `KIROCREW_PORT`. This module deliberately offers no bare "is something
 listening" helper, so no caller can mistake reachability for identity.
 
-The live gateway prunes markers naming other ports on startup: a gateway is a
-singleton per data home, so any other marker belongs to a crashed earlier run,
-and each stale one costs a future client command a listener lookup.
+The live gateway prunes markers naming other ports on startup, EXCEPT any whose
+gateway passes the same ownership proof its readers use. `gateway.lock` makes a
+gateway a singleton per data home only when every start goes through it, and in
+practice one machine runs several that share a home (a second gateway launched by
+hand, one started from another checkout that inherits the default data home, a
+cutover overlapping its predecessor). A blanket prune deletes a LIVE gateway's
+marker and pid sidecar, which makes it undiscoverable to `token` / `status` /
+`stop` and destroys the evidence section 12.1 depends on. The ownership check fails
+closed by RETURNING FALSE rather than raising -- non-POSIX returns False outright,
+and a missing or throwing listener-lookup tool is folded into False as well -- so a
+False answer means "ownership not proven", NOT "process gone", and the two cases are
+indistinguishable from the caller. Such a marker still prunes, so markers do not
+accumulate forever -- but the prune removes only the marker and pid sidecar, never
+the credential, because treating False as death would strip a LIVE incumbent's
+credential on every Windows host and push its clients onto a shared file a newcomer
+may have replaced. `clear_marker()` owns credential deletion.
+
+### 12.1 The internal-API credential is keyed by port
+
+`<data-home>/run/gateway-<port>.secret` holds the internal-API credential of the
+gateway serving that port, written `0600` beside the marker and removed by
+`clear_marker()` with it.
+
+The credential is generated per gateway start (`os.urandom(16).hex()`) and kept in
+memory as the value the auth middleware compares against, so it identifies ONE
+generation. Published only to the single shared `<data-home>/.local_secret`, it
+was last-writer-wins per home: a second gateway starting in the same home replaced
+the file while the first kept serving the port, the incumbent went on comparing
+against its own in-memory value, and every internal caller then sent the
+newcomer's credential to the incumbent. The whole internal channel answers 403
+with a body of exactly `Forbidden` until one of them restarts: `learn_add`,
+`spawn`, `session-keepalive`, artifact writes, the task runner, all at once, with
+no warning and no metric.
+
+Two rules keep the two halves paired:
+
+- **The writer** (`dashboard.server._write_instance_credentials`) always writes the
+  per-port file, and writes the shared `.local_secret` only when no other gateway
+  in the home is verifiably alive on a different port. The shared file is still
+  written in the single-instance case because pre-per-port readers (an older CLI,
+  a cron script from a previous install) know only that path.
+- **The reader** is ONE shared helper, `config.loader.read_local_secret(port)`: it
+  returns the credential for the port the caller is about to dial and falls back to
+  `.local_secret` when no per-port file exists. It lives there rather than in each
+  reader because every surface that implements its own read reintroduces the bug for
+  itself. **`port` is required.** An optional port would resolve the dial target from
+  process context, so a converted call site could read the credential for one gateway
+  while dialing another -- the same desync, reintroduced one call site at a time and
+  invisible in the hunk under review. A caller with no port resolves one explicitly
+  and passes it, where the choice is reviewable. `mcp_core`, `mcp_shared`,
+  `cron_script`, `computer_use/screencast` and the Sage review driver each name their
+  dial target; a test greps for a no-argument call so the shape cannot come back.
+- **The dialed port's own credential outranks any path a caller names.**
+  `cron_trigger.trigger_cron_job` reads the per-port credential for the port it posts
+  to FIRST, and falls back to the `secret_path` its caller named only when that is
+  absent. The order is deliberate and is dictated by the callers: both of them pass
+  `config_dir() / ".local_secret"`, the home-wide file, which is exactly the file a
+  second gateway generation replaces -- so preferring the named path would reinstate
+  the defect this module exists to prevent.
+  The cost of that order, stated rather than hidden: a crash-orphaned
+  `run/gateway-<port>.secret` (the prune never deletes credentials, see section 12)
+  is preferred over a correct named path, so a caller that genuinely names another
+  home's credential for a port this home once served would send the stale one and get
+  a 403. No caller does that today -- both name the ambient home-wide file -- and
+  closing it properly means the credential-path parameter going away rather than the
+  order flipping.
+
+A denial carries a machine-readable `code` (`internal_auth_mismatch`) beside the
+prose, because a genuine permission denial produces the same `Forbidden` body and a
+consumer matching on text misdiagnoses one as the other. It also names both sides by
+fingerprint (a short SHA-256 prefix plus length, never the value), so a
+cross-generation mismatch is distinguishable from a forged header and from a caller
+that had no credential at all; without it a real desync is unattributable from the
+log.
 
 ### Why `run/` is on the sensitive-path floor
 

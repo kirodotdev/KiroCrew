@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import model_registry
-from kiro_crew.config.loader import DASHBOARD_PORT, config_dir
+from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import (
     CronJob,
     CronService,
@@ -41,6 +41,7 @@ from kiro_crew.mcp_core import _resolve_session_key
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import _AGENT_DENIED_ENV_KEYS
 from kiro_crew.security import (
     _SENSITIVE_HOME_DIRS,
@@ -1824,7 +1825,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         own_err = _check_cron_job_ownership(svc, jid)
         if own_err:
             return own_err
-        port = DASHBOARD_PORT
+        # Resolve through the gateway-side serving resolver, not DASHBOARD_PORT and
+        # not the client resolver: DASHBOARD_PORT reads KIROCREW_PORT only, and the
+        # client resolver reads it FIRST -- both give 5476 on a --port auto gateway,
+        # a SIBLING. resolve_serving_port prefers the bound port, so the credential
+        # is paired to the instance actually serving and the job runs here.
+        port = resolve_serving_port()
         secret_path = config_dir() / ".local_secret"
         ok, msg = trigger_cron_job(jid, port, secret_path)
         sel().log_api_access(

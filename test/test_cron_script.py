@@ -1468,7 +1468,7 @@ class TestResolveInternalSecret:
             "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
             (tmp_path / ".local_secret").write_text("fromfile")
-            assert _resolve_internal_secret() == "fromenv"
+            assert _resolve_internal_secret(5476) == "fromenv"
 
     def test_falls_back_to_local_secret_file(self, tmp_path):
         (tmp_path / ".local_secret").write_text("filesecret\n")
@@ -1476,21 +1476,21 @@ class TestResolveInternalSecret:
         with patch.dict(os.environ, env, clear=True), patch(
             "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            assert _resolve_internal_secret() == "filesecret"
+            assert _resolve_internal_secret(5476) == "filesecret"
 
     def test_empty_when_neither_present(self, tmp_path):
         env = {k: v for k, v in os.environ.items() if k != "KIROCREW_INTERNAL_SECRET"}
         with patch.dict(os.environ, env, clear=True), patch(
             "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            assert _resolve_internal_secret() == ""
+            assert _resolve_internal_secret(5476) == ""
 
     def test_env_empty_string_falls_back_to_file(self, tmp_path):
         (tmp_path / ".local_secret").write_text("filesecret")
         with patch.dict(os.environ, {"KIROCREW_INTERNAL_SECRET": ""}), patch(
             "kiro_crew.config.loader.config_dir", return_value=tmp_path
         ):
-            assert _resolve_internal_secret() == "filesecret"
+            assert _resolve_internal_secret(5476) == "filesecret"
 
     def test_run_script_writes_local_secret_to_sandbox_when_env_unset(self, tmp_path):
         """End-to-end: run_script_sandboxed hands the sandbox the .local_secret value."""
