@@ -143,7 +143,7 @@ beforeEach(() => {
   HTMLCanvasElement.prototype.getBoundingClientRect = rect
   HTMLCanvasElement.prototype.getContext = vi.fn(stubCtx) as unknown as HTMLCanvasElement['getContext']
   apiMocks.chatSlotDetail.mockResolvedValue({ messages: [] })
-  apiMocks.sendChat.mockResolvedValue({ body: { cancel: vi.fn().mockResolvedValue(undefined) } })
+  apiMocks.sendChat.mockResolvedValue({ json: vi.fn().mockResolvedValue({ ok: true }) })
   apiMocks.steerChat.mockResolvedValue({})
   apiMocks.resolveApproval.mockResolvedValue({})
   apiMocks.createChatSlot.mockResolvedValue({})
@@ -612,10 +612,46 @@ describe('useSceneInteraction — composer', () => {
     ).toHaveValue('')
   })
 
-  it('swallows a rejected stream cancel and still reports the send', async () => {
-    apiMocks.sendChat.mockResolvedValue({
-      body: { cancel: () => Promise.reject(new Error('already closed')) },
-    })
+  it('reaches failed when the server refuses the send — a 4xx/5xx resolves, not rejects (#4198)', async () => {
+    // The receipt is the verdict: `{ok:false}` from a refused send RESOLVES.
+    // Before the receipt check this fell through to 'sent', asserting the
+    // opposite of what happened for precisely the errors that matter.
+    apiMocks.sendChat.mockResolvedValue({ json: vi.fn().mockResolvedValue({ ok: false, error: 'slot agent mismatch' }) })
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+
+    fireEvent.change(messageBox(), { target: { value: 'ship it' } })
+    fireEvent.click(sendButton())
+    await flush()
+
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+    // The payload is handed back, and the refused message is NOT echoed into
+    // the mini thread as if it were delivered.
+    expect(messageBox()).toHaveValue('ship it')
+    expect(screen.queryByText('ship it')).not.toBeInTheDocument()
+  })
+
+  it('treats an unreadable receipt as a failure, not a success', async () => {
+    // An HTML error page (proxy 502) makes json() reject: no `ok`, no `queued`
+    // — the send is unconfirmed and must not report 'sent'.
+    apiMocks.sendChat.mockResolvedValue({ json: vi.fn().mockRejectedValue(new Error('not json')) })
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+
+    fireEvent.change(messageBox(), { target: { value: 'ship it' } })
+    fireEvent.click(sendButton())
+    await flush()
+
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+    expect(messageBox()).toHaveValue('ship it')
+  })
+
+  it('treats a queued acceptance as sent', async () => {
+    apiMocks.sendChat.mockResolvedValue({ json: vi.fn().mockResolvedValue({ queued: true }) })
     renderScene({ sources: [] })
     await clickAt(100, 100)
 
@@ -629,8 +665,274 @@ describe('useSceneInteraction — composer', () => {
     await act(async () => { vi.advanceTimersByTime(1600) })
   })
 
+  it('keeps text typed while awaiting the receipt when the send is accepted', async () => {
+    // The payload is cleared at send START; everything typed after that is
+    // newer work. An acceptance-time clear would erase it to acknowledge an
+    // older send.
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'first' } })
+    fireEvent.click(sendButton())
+    expect(messageBox()).toHaveValue('')
+    fireEvent.change(messageBox(), { target: { value: 'second thought' } })
+
+    await act(async () => {
+      finishSend({ json: () => Promise.resolve({ ok: true }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('second thought')
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.message_sent') }),
+    ).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(1600) })
+  })
+
+  it('appends the failed payload after a REPLACED draft instead of clobbering it', async () => {
+    // The regression class PR #4180 hit: recovering the older payload must not
+    // overwrite the newer text typed while the POST was in flight — and must
+    // not drop the payload either. Newer text first, failed payload appended.
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'first thought' } })
+    fireEvent.click(sendButton())
+    fireEvent.change(messageBox(), { target: { value: 'newer thought' } })
+
+    await act(async () => {
+      finishSend({ json: () => Promise.resolve({ ok: false }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('newer thought first thought')
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+  })
+
+  it('appends the payload even when the new draft contains its words', async () => {
+    // "do not deploy yet" CONTAINS "deploy", but the failed payload is still
+    // a distinct retryable message — any containment heuristic here guesses
+    // about intent and silently drops it. Equality-only: append.
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'deploy' } })
+    fireEvent.click(sendButton())
+    fireEvent.change(messageBox(), { target: { value: 'do not deploy yet' } })
+
+    await act(async () => {
+      finishSend({ json: () => Promise.resolve({ ok: false }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('do not deploy yet deploy')
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not duplicate a payload the user deliberately retyped', async () => {
+    // The draft is cleared at send start; if it exactly equals the payload
+    // again, the user retyped it — appending would double it.
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'ship it' } })
+    fireEvent.click(sendButton())
+    fireEvent.change(messageBox(), { target: { value: 'ship it' } })
+
+    await act(async () => {
+      finishSend({ json: () => Promise.resolve({ ok: false }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('ship it')
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+  })
+
+  it('still restores a payload that is only a substring of the new draft', async () => {
+    // 'go' is a substring of 'ongoing work' but NOT a whole occurrence: the
+    // replacement draft does not contain the payload as typed, so treating it
+    // as already-restored would silently lose the message the Retry state is
+    // telling the user to retry.
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'go' } })
+    fireEvent.click(sendButton())
+    fireEvent.change(messageBox(), { target: { value: 'ongoing work' } })
+
+    await act(async () => {
+      finishSend({ json: () => Promise.resolve({ ok: false }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('ongoing work go')
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+  })
+
+  it('appends the payload after a punctuation-extended draft', async () => {
+    // 'go' → 'go, please' typed after send start is NEW text, not the
+    // payload: equality-only restore appends the retryable 'go' after it.
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'go' } })
+    fireEvent.click(sendButton())
+    fireEvent.change(messageBox(), { target: { value: 'go, please' } })
+
+    await act(async () => {
+      finishSend({ json: () => Promise.resolve({ ok: false }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('go, please go')
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not flag the new target when a send fails after the popover retargets', async () => {
+    // The failure belongs to the agent the message was typed to. After a
+    // retarget the composer is the NEW agent's: no failed flag, no payload
+    // spliced into its draft.
+    let rejectSend: (e: Error) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise((_res, rej) => { rejectSend = rej }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'in flight' } })
+    fireEvent.click(sendButton())
+    await clickAt(300, 200)
+
+    await act(async () => {
+      rejectSend(new Error('boom'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const betaBox = screen.getByRole('textbox', {
+      name: i18nT('hooks.useSceneInteraction.message', { name: 'Beta' }),
+    })
+    expect(betaBox).toHaveValue('')
+    expect(
+      screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('leaves a reopened composer alone when a stale outcome lands for the same agent', async () => {
+    // The agent id alone cannot tell "same composer" from "closed and
+    // reopened": a stale failure matching only on id would splice the old
+    // payload into the reopened composer's fresh draft (or a stale success
+    // would erase it). The per-open epoch makes the outcome a no-op.
+    let rejectSend: (e: Error) => void = () => {}
+    apiMocks.sendChat.mockImplementation(() => new Promise((_res, rej) => { rejectSend = rej }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'in flight' } })
+    fireEvent.click(sendButton())
+    // Close (same agent click toggles off) and reopen the SAME popover.
+    await clickAt(100, 100)
+    await clickAt(100, 100)
+    fireEvent.change(messageBox(), { target: { value: 'fresh thought' } })
+
+    await act(async () => {
+      rejectSend(new Error('boom'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(messageBox()).toHaveValue('fresh thought')
+    expect(
+      screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('surfaces the framed server reason as a visible status line', async () => {
+    apiMocks.sendChat.mockResolvedValue({ json: vi.fn().mockResolvedValue({ ok: false, error: 'slot agent mismatch' }) })
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+
+    fireEvent.change(messageBox(), { target: { value: 'ship it' } })
+    fireEvent.click(sendButton())
+    await flush()
+
+    // Visible (role=status), not a hover-only tooltip, and FRAMED so the raw
+    // backend reason reads as a refused send rather than an agent error.
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent(
+      i18nT('pages.chatPage.send_failed_with_error', { error: 'slot agent mismatch' }) as string,
+    )
+  })
+
+  it('lets a stale sent-reset expire without clobbering a later in-flight send', async () => {
+    // Send 1 is accepted and arms the 1.5s sent→idle reset; send 2 starts
+    // before it fires. An unconditional reset would flip send 2's 'sending'
+    // back to 'idle', re-enabling submit while its request is in flight.
+    let finishSecond: (v: { json: () => Promise<unknown> }) => void = () => {}
+    apiMocks.sendChat
+      .mockResolvedValueOnce({ json: vi.fn().mockResolvedValue({ ok: true }) })
+      .mockImplementationOnce(() => new Promise(res => { finishSecond = res }))
+
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+
+    fireEvent.change(messageBox(), { target: { value: 'first' } })
+    fireEvent.click(sendButton())
+    await flush()
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.message_sent') }),
+    ).toBeInTheDocument()
+
+    // Second send while the first's reset timer is still pending (Enter — the
+    // button's accessible name is still 'message sent' at this instant).
+    fireEvent.change(messageBox(), { target: { value: 'second' } })
+    fireEvent.keyDown(messageBox(), { key: 'Enter' })
+    await act(async () => { vi.advanceTimersByTime(1600) })
+
+    // Still 'sending' — the stale timer must not have reset it to idle.
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.sending_message') }),
+    ).toBeInTheDocument()
+
+    await act(async () => {
+      finishSecond({ json: () => Promise.resolve({ ok: true }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.message_sent') }),
+    ).toBeInTheDocument()
+    await act(async () => { vi.advanceTimersByTime(1600) })
+  })
+
   it('drops the optimistic echo when the popover retargets mid-send', async () => {
-    let finishSend: (v: { body: { cancel: () => Promise<void> } }) => void = () => {}
+    let finishSend: (v: { json: () => Promise<unknown> }) => void = () => {}
     apiMocks.sendChat.mockImplementation(() => new Promise(res => { finishSend = res }))
 
     renderScene({ sources: [] })
@@ -640,7 +942,7 @@ describe('useSceneInteraction — composer', () => {
     await clickAt(300, 200)
 
     await act(async () => {
-      finishSend({ body: { cancel: () => Promise.resolve() } })
+      finishSend({ json: () => Promise.resolve({ ok: true }) })
       await Promise.resolve()
       await Promise.resolve()
       vi.advanceTimersByTime(1600)
