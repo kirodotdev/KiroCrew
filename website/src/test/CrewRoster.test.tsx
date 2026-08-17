@@ -513,6 +513,10 @@ describe('crew editor — opening', () => {
     // Create mode has no crew to edit yet, so the bindings start on the defaults.
     expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('default')
     expect(within(sheet).getByRole('combobox', { name: 'Memory Store' })).toHaveTextContent('default')
+    // The Agent Template is the exception: it has NO safe default, because
+    // pre-filling the built-in made a new crew an alias for the default agent.
+    expect(within(sheet).getByRole('combobox', { name: 'Agent Template' }))
+      .toHaveTextContent('Select an agent template…')
   })
 })
 
@@ -529,7 +533,7 @@ describe('crew editor — create', () => {
     expect(screen.getByRole('dialog', { name: 'Create a new crew' })).toBeInTheDocument()
   })
 
-  it('creates the crew with the chosen bindings', async () => {
+  it('refuses a crew with no Agent Template chosen, without calling the api', async () => {
     await renderRoster()
     const sheet = await openCreate()
 
@@ -537,10 +541,32 @@ describe('crew editor — create', () => {
     await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
     fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
 
+    // The template used to be pre-filled with 'kirocrew', so a crew created
+    // this way became an alias for the DEFAULT agent and the chat picker
+    // appeared to "fall back to default" (#1684). It is now an explicit choice.
+    expect(await within(sheet).findByText('Agent Template is required')).toBeInTheDocument()
+    expect(mockApi.createKirocrewAgent).not.toHaveBeenCalled()
+  })
+
+  it('creates the crew with the chosen bindings', async () => {
+    await renderRoster()
+    const sheet = await openCreate()
+
+    const user = userEvent.setup()
+    await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
+    // The template must be picked deliberately — nothing pre-fills it.
+    // Keyboard-driven: a POINTER click on the Radix select inside this dialog
+    // recurses in happy-dom's blur handling (RangeError: Maximum call stack size
+    // exceeded), which then wedges React's act queue for every later test here.
+    const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
+    fireEvent.keyDown(template, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
+
     await waitFor(() =>
       expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith({
         name: 'staging',
-        kiro_agent: 'kirocrew',
+        kiro_agent: 'oncall-agent',
         workspace: 'default',
         memory_store: 'default',
         triggers: '',

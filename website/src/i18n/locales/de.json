@@ -8714,6 +8714,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Eine eindeutige Kennung für diesen Workspace. Agenten verweisen über den Namen auf Workspaces.",
       "additional_stores_coming_with_memory_v2": "Derzeit ist nur der Standardspeicher verfügbar – Unterstützung für weitere Speicher folgt bald.",
+      "agent_template_is_required": "Agent-Template ist erforderlich",
       "agents": "Crews",
       "also_used_by_these_crews": "Wird auch von {{crews}} verwendet. Crews mit gemeinsamem Speicher können die Dateien und die Erinnerung der anderen lesen.",
       "bindings_preview_info": "Vorschau. Eine eigene Erinnerung pro Crew wird noch gebaut. Eine Crew hat ihren eigenen Ordner, aber semantisches Gedächtnis, der Rückgriff auf frühere Gespräche und globale Lektionen erreichen jede Crew, deshalb trennt eine Änderung hier nicht, woran sich eine Crew erinnert.",
@@ -8767,6 +8768,7 @@
       "routing": "Routing",
       "runtime_binding": "Was diese Crew verwendet",
       "save_changes": "Änderungen speichern",
+      "select_an_agent_template": "Agent-Template auswählen…",
       "shared_lower": "geteilt",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Unterverzeichnis in ~/.kiro/crew, in dem dieser Workspace seine Daten speichert (Chat-Verlauf, Lektionen, Projekte). Jeder Workspace erhält sein eigenes isoliertes Verzeichnis.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "Die Grundeinstellung, mit der diese Crew startet — ihre Tools, ihre Verbindungen und ihre Anweisungen.",

@@ -3229,6 +3229,7 @@
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "A unique identifier for this workspace. Agents reference workspaces by name.",
+      "agent_template_is_required": "Agent Template is required",
       "copy_the_contents_of_an_existing_workspace_into": "Copy the contents of an existing workspace into the new one. Leave as '— none —' to start fresh.",
       "creating": "Creating…",
       "failed_to_create_agent": "Failed to create agent",
@@ -3236,6 +3237,7 @@
       "failed_to_delete_agent": "Failed to delete agent",
       "failed_to_update_agent": "Failed to update agent",
       "name_is_required": "Name is required",
+      "select_an_agent_template": "Select an agent template…",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Subdirectory inside ~/.kiro/crew where this workspace stores its data (chat history, lessons, projects). Each workspace gets its own isolated directory.",
       "workspace_name_is_required": "Workspace name is required"
     },

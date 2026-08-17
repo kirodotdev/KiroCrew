@@ -8824,6 +8824,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identifiant unique pour cet espace de travail. Les agents référencent les espaces de travail par leur nom.",
       "additional_stores_coming_with_memory_v2": "Seul le magasin par défaut est disponible pour l’instant ; la prise en charge d’autres magasins de mémoire arrive bientôt.",
+      "agent_template_is_required": "Le modèle d'agent est obligatoire",
       "agents": "Crews",
       "also_used_by_these_crews": "Aussi utilisé par {{crews}}. Les crews qui partagent un stockage peuvent lire les fichiers et la mémoire des autres.",
       "bindings_preview_info": "Aperçu. La mémoire isolée par crew est encore en construction. Un crew a son propre dossier, mais la mémoire sémantique, le rappel des conversations passées et les leçons globales atteignent tous les crews, donc changer ceci ne sépare pas ce dont un crew se souvient.",
@@ -8877,6 +8878,7 @@
       "routing": "Routing",
       "runtime_binding": "Ce que ce crew utilise",
       "save_changes": "Enregistrer les modifications",
+      "select_an_agent_template": "Sélectionner un modèle d'agent…",
       "shared_lower": "en commun",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Sous-répertoire dans ~/.kiro/crew où cet espace de travail stocke ses données (historique des chats, leçons, projets). Chaque espace de travail dispose de son propre répertoire isolé.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "La configuration de départ de ce crew — ses outils, ses connexions et ses instructions.",

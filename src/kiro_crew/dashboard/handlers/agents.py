@@ -65,6 +65,7 @@ from kiro_crew.sandbox import (
     create_subprocess_limited,
     wrap_argv,
 )
+from kiro_crew.validation import _AGENT_NAME_RE
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
 
@@ -1677,12 +1678,64 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     name = body.get("name", "").strip()
     if not name:
         return web.json_response({"error": "Agent name is required"}, status=400)
+    # The template pointer must be EXPLICIT. It used to default to "kirocrew",
+    # which made every crew created without naming a template an alias for the
+    # DEFAULT agent: dispatch flattens an alias to its `kiro_agent`
+    # (config.loader.resolve_agent_bindings), so the crew was offered in the chat
+    # picker and then the default answered — the "picker reverts to default"
+    # report behind #1684. "kirocrew" is still a perfectly valid CHOICE here (a
+    # crew booting the built-in agent against its own workspace/memory store is
+    # the common case); only the silent default is refused.
+    kiro_agent = str(body.get("kiro_agent") or "").strip()
+    if not kiro_agent:
+        return web.json_response(
+            {
+                "error": "kiro_agent is required — name the agent this crew boots "
+                "from (pass 'kirocrew' for the built-in agent)",
+                "code": "kiro_agent_required",
+            },
+            status=400,
+        )
+    # Grammar-checked before the name is persisted or used to look anything up.
+    # This is the one shared agent-name grammar every other boundary uses, so a
+    # value that cannot name an agent (path separators, traversal, wildcards,
+    # over-length) is refused here rather than stored as a dangling pointer.
+    if not _AGENT_NAME_RE.match(kiro_agent):
+        return web.json_response(
+            {"error": "invalid kiro_agent name", "code": "invalid_kiro_agent_name"},
+            status=400,
+        )
+    # Existence is resolved through `list_agents()`, which reads every spec via the
+    # hardened reader: it resolves symlinks, refuses a spec whose REAL target is
+    # sensitive, and goes through the same gate as every other dashboard file read.
+    # A direct filename probe here called `Path.read_text()` itself, so a namespaced
+    # agent file symlinked at a credentials path would have been read outside that
+    # gate. `list_agents()` is also the broader and more accurate notion of
+    # existence: it includes edition-provided rows that are ACP-resolvable with no
+    # on-disk file, which is what "will this actually dispatch" means.
+    # Off the loop: it scans and parses the agent directories.
+    known_agents = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), lambda: {a.name for a in list_agents()}
+    )
+    template_missing = kiro_agent not in known_agents
+    # Unknown-but-accepted: an edition may resolve a row this listing cannot see,
+    # so refusing here would break a legitimate crew. WARN instead — the same
+    # posture, and for the same reason, as the sync path's EXECUTABLE INVARIANT
+    # check — so a crew that will fail at spawn leaves a trace rather than
+    # failing silently later.
+    if template_missing:
+        logger.warning(
+            "creating crew %r against template %r, which is not in the installed "
+            "agent listing — if it is not ACP-resolvable the crew will fail at spawn",
+            name,
+            kiro_agent,
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name in cfg.agents:
             return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
         cfg.agents[name] = KiroCrewAgentConfig(
-            kiro_agent=body.get("kiro_agent", "kirocrew"),
+            kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),
             memory_store=body.get("memory_store", "default"),
             # Passed RAW, not str()-coerced: normalize_agent_model is total and

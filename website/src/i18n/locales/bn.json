@@ -8714,6 +8714,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "এই ওয়ার্কস্পেসের জন্য একটি অনন্য শনাক্তকারী। এজেন্ট নাম দিয়ে ওয়ার্কস্পেস উল্লেখ করে।",
       "additional_stores_coming_with_memory_v2": "এখন কেবল ডিফল্ট স্টোর উপলব্ধ — আরও মেমরি স্টোরের সমর্থন শীঘ্রই আসছে।",
+      "agent_template_is_required": "এজেন্ট টেমপ্লেট দেওয়া বাধ্যতামূলক",
       "agents": "Crews",
       "also_used_by_these_crews": "{{crews}}-ও এটি ব্যবহার করে। একই স্টোর ভাগ করা Crew একে অন্যের ফাইল ও মেমরি পড়তে পারে।",
       "bindings_preview_info": "প্রিভিউ। প্রতি Crew-এর জন্য আলাদা মেমরি এখনও তৈরি হচ্ছে। Crew-এর নিজের ওয়ার্কস্পেস ফোল্ডার আছে, কিন্তু সিমান্টিক মেমরি, আগের কথাবার্তার স্মরণ এবং গ্লোবাল শিক্ষা প্রতিটি Crew-তেই পৌঁছায়, তাই এটি বদলালেও Crew যা মনে রাখে তা আলাদা হয় না।",
@@ -8767,6 +8768,7 @@
       "routing": "Routing",
       "runtime_binding": "এই Crew কী ব্যবহার করে",
       "save_changes": "পরিবর্তন সংরক্ষণ করুন",
+      "select_an_agent_template": "এজেন্ট টেমপ্লেট নির্বাচন করুন…",
       "shared_lower": "শেয়ার করা",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew-এর ভিতরের সাবডিরেক্টরি, যেখানে এই ওয়ার্কস্পেস তার ডেটা রাখে (চ্যাট ইতিহাস, শিক্ষা, প্রজেক্ট)। প্রতিটি ওয়ার্কস্পেস নিজের আলাদা ডিরেক্টরি পায়।",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "এই Crew যে শুরুর সেটআপ ব্যবহার করে — এর টুল, সংযোগ ও নির্দেশনা।",

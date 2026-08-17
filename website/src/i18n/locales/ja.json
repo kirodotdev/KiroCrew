@@ -8604,6 +8604,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",
       "additional_stores_coming_with_memory_v2": "現在はデフォルトストアのみが利用可能です — より多くのメモリストアのサポートは近日予定です。",
+      "agent_template_is_required": "エージェントテンプレートは必須です",
       "agents": "クルー",
       "also_used_by_these_crews": "{{crews}}でも使用されています。ストアを共有するクルーは相互にファイルとメモリを読むことができます。",
       "bindings_preview_info": "プレビュー。クルーごとに分離されたメモリはまだ開発中です。クルーには自分のワークスペースフォルダーがありますが、意味記憶、過去の会話の想起、グローバルなレッスンはすべてのクルーに届くため、ここを変えてもクルーが記憶する内容はまだ分離されません。",
@@ -8657,6 +8658,7 @@
       "routing": "ルーティング",
       "runtime_binding": "このクルーが使用するもの",
       "save_changes": "変更を保存",
+      "select_an_agent_template": "エージェントテンプレートを選択…",
       "shared_lower": "共有",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew内のサブディレクトリで、このワークスペースがそのデータ（チャット履歴、レッスン、プロジェクト）を保存します。各ワークスペースには独自の分離されたディレクトリがあります。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "このクルーが使用する開始設定 — ツール、接続、指示。",

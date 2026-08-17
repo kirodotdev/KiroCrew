@@ -8824,6 +8824,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identificador único para este espacio de trabajo. Los agentes hacen referencia a los espacios de trabajo por su nombre.",
       "additional_stores_coming_with_memory_v2": "Por ahora solo está disponible el almacén predeterminado; pronto habrá más almacenes de memoria.",
+      "agent_template_is_required": "La plantilla de agente es obligatoria",
       "agents": "Crews",
       "also_used_by_these_crews": "También lo usan {{crews}}. Los crews que comparten un almacén pueden leer los archivos y la memoria de los demás.",
       "bindings_preview_info": "Vista previa. La memoria aislada por crew aún se está construyendo. Un crew tiene su propia carpeta, pero la memoria semántica, el recuerdo de conversaciones anteriores y las lecciones globales llegan a todos los crews, así que cambiar esto no separa lo que un crew recuerda.",
@@ -8877,6 +8878,7 @@
       "routing": "Routing",
       "runtime_binding": "Qué usa este crew",
       "save_changes": "Guardar los cambios",
+      "select_an_agent_template": "Selecciona una plantilla de agente…",
       "shared_lower": "en común",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Subdirectorio dentro de ~/.kiro/crew donde este espacio de trabajo guarda sus datos (historial de chat, lecciones, proyectos). Cada espacio de trabajo tiene su propio directorio aislado.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "La configuración inicial que usa este crew — sus herramientas, sus conexiones y sus instrucciones.",

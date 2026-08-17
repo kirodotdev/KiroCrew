@@ -8604,6 +8604,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "此工作区的唯一标识符。代理通过名称引用工作区。",
       "additional_stores_coming_with_memory_v2": "目前仅提供默认存储，更多记忆存储即将推出。",
+      "agent_template_is_required": "Agent 模板为必填项",
       "agents": "Crew",
       "also_used_by_these_crews": "{{crews}} 也在用。共用一个存储的 Crew 可以互相读取对方的文件和记忆。",
       "bindings_preview_info": "预览。每个 Crew 独立的记忆还在开发中。Crew 有自己的工作区文件夹，但语义记忆、过往对话回溯以及全局经验都会进入每个 Crew，所以改这里还不能分开它记住的内容。",
@@ -8657,6 +8658,7 @@
       "routing": "Routing",
       "runtime_binding": "这个 Crew 用什么",
       "save_changes": "保存更改",
+      "select_an_agent_template": "选择 Agent 模板…",
       "shared_lower": "共用",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew 下用于存放此工作区数据（聊天历史、经验、项目）的子目录。每个工作区都有各自独立的目录。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "这个 Crew 的起始设置 — 自带的工具、连接和指令。",

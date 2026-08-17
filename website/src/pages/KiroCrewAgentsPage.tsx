@@ -271,11 +271,20 @@ function BindingFields({
   memoryStoreOptions: string[]; memoryStore: string; setMemoryStore: (v: string) => void
   modelOptions?: string[]; model?: string; setModel?: (v: string) => void
 }) {
-  const withCurrent = (opts: string[], cur: string) => (opts.includes(cur) ? opts : [...opts, cur])
+  // An EMPTY current value means "nothing selected" and must NOT be appended as
+  // an option: SimpleSelect treats an options list containing '' as making empty
+  // selectable, which suppresses the trigger placeholder and adds a blank row.
+  const withCurrent = (opts: string[], cur: string) => (!cur || opts.includes(cur) ? opts : [...opts, cur])
   return (
     <>
       <Field label={templateLabel} hint={i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')}>
-        <SimpleSelect options={withCurrent(kiroAgentOptions, kiroAgent)} value={kiroAgent} onChange={setKiroAgent} aria-label={templateLabel} />
+        <SimpleSelect
+          options={withCurrent(kiroAgentOptions, kiroAgent)}
+          value={kiroAgent}
+          onChange={setKiroAgent}
+          triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
+          aria-label={templateLabel}
+        />
       </Field>
       <Field
         label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
@@ -537,7 +546,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [error, setError] = useState('')
   const [sheet, setSheet] = useState<SheetTarget>(null)
   const [name, setName] = useState('')
-  const [kiroAgent, setKiroAgent] = useState('kirocrew')
+  // Starts UNSELECTED, not at the built-in 'kirocrew'. Pre-filling the built-in
+  // made every crew created without touching this field an alias for the DEFAULT
+  // agent: the crew is offered in the chat picker, then dispatch flattens the
+  // alias to its `kiro_agent` pointer and the default answers — indistinguishable
+  // from "the picker reverted to default" (#1684). An empty value forces the
+  // choice to be explicit and is rejected by `create()` below.
+  const [kiroAgent, setKiroAgent] = useState('')
   const [workspace, setWorkspace] = useState('default')
   const [memoryStore, setMemoryStore] = useState('default')
   const [triggers, setTriggers] = useState('')
@@ -575,7 +590,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     sheetEpoch.current += 1
     setError('')
     setConfirmDelete(false)
-    setName(''); setKiroAgent('kirocrew'); setWorkspace('default'); setMemoryStore('default')
+    setName(''); setKiroAgent(''); setWorkspace('default'); setMemoryStore('default')
     setTriggers('')
     setSheet({ mode: 'create' })
   }, [])
@@ -650,6 +665,10 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setError('')
     const n = name.trim()
     if (!n) { setError(i18nT('pages.kiroCrewAgentsPage.name_is_required')); return }
+    // Refuse an unset template rather than letting the server apply its
+    // 'kirocrew' default: that default is what silently turns a new crew into an
+    // alias for the DEFAULT agent (#1684).
+    if (!kiroAgent) { setError(i18nT('pages.kiroCrewAgentsPage.agent_template_is_required')); return }
     createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, epoch: sheetEpoch.current })
   }
 

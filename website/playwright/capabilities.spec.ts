@@ -100,10 +100,13 @@ test.describe('Capabilities Page — /capabilities', () => {
       await expect(createSheet).toBeVisible({ timeout: 5000 })
 
       // The Name field's label is a <span>, not a <label for>, so the input has
-      // no accessible name — the placeholder is its stable handle. Template,
-      // workspace and memory store keep their defaults: this test is about the
-      // create/delete round-trip, not about the bindings.
+      // no accessible name — the placeholder is its stable handle. Workspace and
+      // memory store keep their defaults; the Agent Template does NOT have one and
+      // must be chosen, because pre-filling it made a new crew a silent alias for
+      // the default agent, so Create now refuses until it is set.
       await createSheet.getByPlaceholder('e.g. oncall').fill(agentName)
+      await createSheet.getByRole('combobox', { name: 'Agent Template' }).click()
+      await page.getByRole('option', { name: 'kirocrew', exact: true }).click()
       await createSheet.getByRole('button', { name: 'Create', exact: true }).click()
 
       // A successful create closes the sheet and refetches the roster.

@@ -8604,6 +8604,7 @@
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "이 워크스페이스의 고유 식별자입니다. 에이전트는 이름으로 워크스페이스를 참조합니다.",
       "additional_stores_coming_with_memory_v2": "현재는 기본 저장소만 사용할 수 있습니다 — 더 많은 메모리 저장소 지원이 곧 제공됩니다.",
+      "agent_template_is_required": "에이전트 템플릿은 필수입니다",
       "agents": "크루",
       "also_used_by_these_crews": "{{crews}}에서도 사용합니다. 저장소를 공유하는 크루는 서로의 파일과 메모리를 읽을 수 있습니다.",
       "bindings_preview_info": "미리 보기 기능입니다. 크루별 격리 메모리는 아직 개발 중입니다. 크루는 자체 워크스페이스 폴더를 갖지만 의미 기억, 지난 대화 회상, 전역 학습 내용은 모든 크루에 전달되므로, 이 설정을 바꿔도 크루가 기억하는 내용은 아직 분리되지 않습니다.",
@@ -8657,6 +8658,7 @@
       "routing": "라우팅",
       "runtime_binding": "이 크루가 사용하는 것",
       "save_changes": "변경 사항 저장",
+      "select_an_agent_template": "에이전트 템플릿 선택…",
       "shared_lower": "공유",
       "subdirectory_inside_kiro_crew_where_this_workspa": "이 워크스페이스가 데이터(채팅 기록, 레슨, 프로젝트)를 저장하는 ~/.kiro/crew 내부 하위 디렉터리입니다. 각 워크스페이스는 격리된 자체 디렉터리를 갖습니다.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "이 크루가 사용하는 시작 설정 — 도구, 연결, 지침입니다.",
