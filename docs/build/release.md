@@ -438,16 +438,38 @@ and restarts the gateway; neither path consumes the channel feed.
 ## Client auto-update
 
 The desktop updater is `electron-updater` in `website/electron/auto-update.js`.
-It runs in packaged macOS and Linux builds only: `SUPPORTED_PLATFORMS` is exactly
-`{darwin, linux}`. The NSIS target removes the packaging blocker, since
-electron-updater's win32 path is `NsisUpdater`, but win32 stays out until a
-`latest.yml` feed is published and Authenticode signing is active: `NsisUpdater`
-verifies signatures fail-closed, so an unsigned installer would make every update
-fail rather than warn.
+It runs in packaged macOS, Linux and Windows builds: `SUPPORTED_PLATFORMS` is
+exactly `{darwin, linux, win32}`.
 On macOS electron-updater's `MacUpdater` downloads the archive itself and serves
 it to Electron's built-in `autoUpdater` (Squirrel.Mac) over a loopback proxy, so
 the atomic bundle swap is unchanged and `NSURLCache` is no longer in the feed
-path. On Linux it replaces the AppImage in place.
+path. On Linux it replaces the AppImage in place. On Windows `NsisUpdater` reads
+`latest.yml` and runs the NSIS installer, verifying the download's Authenticode
+signature **fail-closed** against the `publisherName` pinned in
+`website/electron/package.json`. That verification is why `publish-windows.yml`
+refuses to publish an installer whose signature or signer does not check out: a
+bad publish would not degrade updates, it would fail every client's update at
+once.
+
+Two Windows details do not generalise from the other platforms:
+
+- **Windows has exactly one channel file, whatever the arch.**
+  `Provider.getChannelFilePrefix()` appends an arch suffix for linux alone and
+  returns `""` for win32, so `NsisUpdater` always requests `latest.yml`. A second
+  Windows arch is a second entry inside that one file, never a second feed, and
+  it also has to contend with `Provider.findFile()` disambiguating entries by
+  matching `process.arch` against the URL path.
+- **`quitAndInstall` passes `isSilent` on win32 only.** `NsisUpdater` adds `/S`
+  only when silent, and the installer is assisted (`nsis.oneClick: false`), so
+  without it the app would quit and then wait for the user to click through a
+  setup wizard rather than swapping silently the way macOS and Linux do.
+
+`SUPPORTED_PLATFORMS` is necessary but not sufficient: a platform can have a lane
+on some channels and not others. `WINDOWS_CHANNELS` restricts Windows to
+`{nightly, insider}` because stable has no Windows lane (see below), and a client
+resolving a channel with no feed reports `disabled: "channel"` rather than
+arming an updater that can only 404. `test_windows_signing_contract.py` pins that
+set to the callers that actually invoke the lane, so the two cannot drift.
 
 The client resolves `{feedBase}/{channel}/` as a **directory** (the trailing
 slash matters: without it `new URL("latest-mac.yml", base)` replaces the last
@@ -514,12 +536,68 @@ natural quit through a `before-quit` hook in the same stop-gateway-first order.
 `build-windows.yml` builds and **Authenticode-signs** the NSIS `Setup.exe`
 through AWS Signer during the build (signing profile `KiroCrewWindowsExe`),
 whenever `AWS_WINDOWS_SIGNING_ROLE_ARN` is present and the caller passed
-`use_prod_environment: true`. The lane is **installer-only**: it publishes
-nothing, and electron-builder emits the installer flat into `dist/`. Because no publish
-lane consumes them, the artifacts are not attested yet; provenance will land
-in-lane the way `publish-linux.yml` does it. win32 auto-update stays disabled in
-the client. The supported Windows install path is source: see
-[../guides/windows-install.md](../guides/windows-install.md).
+`use_prod_environment: true`. Signing happens inside the build because the NSIS
+installer compresses its own already-signed executables.
+
+`publish-windows.yml` then publishes that installer on the **nightly and insider
+channels**, following the same contract as `publish-linux.yml`: an immutable
+versioned key, then the feed, then the mutable `latest/` alias.
+
+    desktop/<channel>/<version>/KiroCrew-Setup.exe            immutable
+    desktop/<channel>/<version>/KiroCrew-Setup.exe.blockmap   immutable
+    desktop/<channel>/latest/KiroCrew-Setup.exe               pointer, max-age=300
+    feed/<channel>/latest.yml                                 pointer, max-age=300
+
+Three things about this lane are deliberate rather than incidental:
+
+- **It verifies before it publishes.** `scripts/verify_windows_installer.py`
+  refuses an installer whose certificate table is empty, whose SIGNER
+  certificate is not the pinned publisher, or which carries no RFC3161
+  timestamp. It matches the signer alone because that is what the client checks,
+  so a build whose leaf is wrong but whose issuer happens to carry our name
+  cannot pass here and then be refused by every client. `build-windows.yml`
+  skips signing cleanly when its secret is absent, so "a working but unsigned
+  installer" is a state that actually occurs, and `NsisUpdater` verifies
+  fail-closed. Publishing one would break every client's update simultaneously.
+  The guard checks signature metadata, not the Authenticode digest: byte
+  identity from the build artifact to the CDN is already established by the
+  write-once versioned key and the feed step's read-back comparison.
+- **There is deliberately no architecture check**, and the analogy to
+  `publish-linux.yml`'s ELF-machine check does not transfer. An AppImage IS its
+  payload, so its ELF header describes what the user runs. An NSIS installer is
+  a stub that unpacks a payload, and NSIS ships only a 32-bit stub: the signed
+  x64 nightly reports COFF machine `0x014c` with a PE32 optional header. So the
+  header says nothing about the packaged architecture, and asserting `0x8664`
+  rejects every genuine installer. Architecture is bound by artifact identity
+  instead: the lane accepts `x64` alone and consumes the artifact the x64 build
+  job uploaded, by name.
+- **It does not trust `build-windows`'s job result.** That caller runs with
+  `soft_fail`, so its result is `success` even when the build failed and uploaded
+  nothing. The lane probes for the artifact and skips cleanly when it is absent,
+  which keeps a Windows-only failure from blocking the mac and Linux lanes. The
+  probe checks the listing's own exit status separately from the match, so an API
+  error is never laundered into "nothing to publish". It retries the listing
+  before giving up, because failing closed here also fails the run, and
+  `release_promotion.py` then refuses to promote that commit at all -- a single
+  API blip should not cost stable promotion of the mac, Linux and CLI artifacts
+  the same run already published, while a sustained failure still must. Asking the Actions API what this run uploaded needs `actions: read`,
+  which the reusable workflow and both caller jobs grant; without it the probe
+  403s and, because it fails closed, the lane aborts rather than publishing.
+- **The stable channel is not wired.** Stable republishes the immutable
+  promotion bundle that `scripts/release_promotion.py` verifies byte for byte,
+  and its `ARTIFACT_NAMES` table has no Windows role. Adding one would make a
+  stable release depend on a successful Windows build, which is the coupling
+  `soft_fail` exists to prevent, so giving Windows a promotion role is a separate
+  decision. Until it is made, Windows users track nightly or insider, and the
+  client refuses to offer stable updates rather than pointing at a feed nobody
+  wrote; the mechanism above is unchanged for stable once the bundle learns about
+  Windows.
+
+The `KiroCrew-Setup.exe` basename is a public contract: it is what
+`manualDownloadUrl()` hands a user whose in-app update failed, which is why it
+carries neither the version nor electron-builder's spaces. The blockmap must
+travel with the installer or electron-updater silently falls back to a full
+download for every update.
 
 Linux arm64 is no longer open: `build-desktop.yml` builds it on `ubuntu-22.04-arm`
 and `release.yml`/`nightly.yml` each call `publish-linux.yml` twice, once per arch.

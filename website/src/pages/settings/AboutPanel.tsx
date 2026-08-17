@@ -940,7 +940,15 @@ export function AboutPanel() {
                   ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_translocated')
                   : updatesDisabled === 'volume'
                     ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_volume')
-                    : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
+                    : updatesDisabled === 'channel'
+                      // Distinct from the platform message because the fix is
+                      // different and it is in this same panel: the platform has
+                      // an update lane, just not on the channel this install
+                      // tracks, so switching channels above restores updates.
+                      // Falling through to the platform string would blame the
+                      // OS and hide the way back.
+                      ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_channel')
+                      : i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_platform')}
             </p>
           ) : (
             <div className="flex flex-col gap-2.5">

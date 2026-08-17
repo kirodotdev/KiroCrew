@@ -98,6 +98,20 @@ class TestNightlyPermissions:
                 "id-token": "write",
                 "attestations": "write",
             }
+        # The Windows lane publishes S3 objects (OIDC) and attests the exact
+        # installer bytes it uploads. It does NOT hold a signing identity --
+        # signing already happened in build-windows -- so the grant is the same
+        # publish-shaped one the Linux lanes carry, and never contents:write.
+        assert _permission_block(lines, "  publish-windows-x64:") == {
+            "contents": "read",
+            # actions:read is load-bearing, not hygiene: the lane's artifact
+            # probe queries the Actions API, a called workflow cannot exceed its
+            # caller's grants, and the probe fails closed -- so omitting it here
+            # aborts the lane rather than merely narrowing it.
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
         # The Docker lane pushes to ghcr.io with the workflow's own
         # GITHUB_TOKEN: packages:write is required for the push and MUST
         # stay scoped to this caller job (never workflow-level -- a
@@ -159,6 +173,17 @@ class TestReleasePermissions:
                 "id-token": "write",
                 "attestations": "write",
             }
+        # Windows publish lane: same publish-shaped grant as Linux (see nightly).
+        assert _permission_block(lines, "  publish-windows-x64:") == {
+            "contents": "read",
+            # actions:read is load-bearing, not hygiene: the lane's artifact
+            # probe queries the Actions API, a called workflow cannot exceed its
+            # caller's grants, and the probe fails closed -- so omitting it here
+            # aborts the lane rather than merely narrowing it.
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
         # Docker lane: ghcr.io push via GITHUB_TOKEN (packages:write scoped
         # to this job only) + in-lane provenance (see nightly note).
         assert _permission_block(lines, "  publish-docker:") == {
@@ -250,6 +275,56 @@ class TestReusableWorkflowPermissions:
             "id-token": "write",
             "attestations": "write",
         }
+
+    def test_publish_windows_declares_exact_capabilities(self) -> None:
+        """The Windows publish lane uploads to S3 (OIDC) and attests the
+        installer it uploads -- and nothing else.
+
+        It holds no signing identity: build-windows.yml already signed the
+        installer, and keeping the two apart means a compromise of the publish
+        lane cannot mint a signature. contents:write must never appear."""
+        assert _workflow_permissions("publish-windows.yml") == {
+            "contents": "read",
+            "actions": "read",
+            "id-token": "write",
+            "attestations": "write",
+        }
+
+    def test_the_windows_publish_callers_pass_one_secret_not_the_whole_set(self) -> None:
+        """`secrets: inherit` hands a reusable workflow EVERY repository secret.
+
+        The Windows lane assumes a role and writes the public installer, feed
+        and `latest/` alias, so its blast radius is worth bounding to the one
+        credential it uses. The reusable workflow declares that secret
+        explicitly and both callers pass only it; this pins the arrangement so a
+        later edit cannot quietly widen it back to the full set."""
+        windows = yaml.safe_load(
+            (WORKFLOWS / "publish-windows.yml").read_text(encoding="utf-8")
+        )
+        # PyYAML resolves the bare key `on` to the boolean True (YAML 1.1), so
+        # the trigger block is not reachable under the string "on".
+        triggers = windows[True] if True in windows else windows["on"]
+        declared = triggers["workflow_call"]["secrets"]
+        assert set(declared) == {"AWS_SIGNING_ROLE_ARN"}
+        # Not required: an empty value is how a fork without the secret skips the
+        # lane cleanly instead of failing the workflow call.
+        assert declared["AWS_SIGNING_ROLE_ARN"]["required"] is False
+
+        for name in ("nightly.yml", "release.yml"):
+            workflow = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+            job = next(
+                j
+                for j in workflow["jobs"].values()
+                if str(j.get("uses", "")).endswith("publish-windows.yml")
+            )
+            secrets = job.get("secrets")
+            assert secrets != "inherit", (
+                f"{name} inherits every repository secret into the Windows publish lane"
+            )
+            assert set(secrets) == {"AWS_SIGNING_ROLE_ARN"}, (
+                f"{name} passes {sorted(secrets)} to the Windows publish lane, "
+                "which consumes AWS_SIGNING_ROLE_ARN alone"
+            )
 
     def test_publish_docker_declares_exact_capabilities(self) -> None:
         """The Docker lane pushes to ghcr.io (packages:write via

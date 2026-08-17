@@ -152,6 +152,9 @@
         "sign": "./scripts/sign-windows.js",
         "signingHashAlgorithms": [
           "sha256"
+        ],
+        "publisherName": [
+          "Amazon Web Services, Inc."
         ]
       }
     },

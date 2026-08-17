@@ -227,6 +227,36 @@ jobs:
       appimage_artifact: build-linux-arm64
     secrets: inherit
 
+  # ── Windows installer publish ─────────────────────────────────────────
+  # Depends on build-windows rather than build-desktop: the installer is
+  # Authenticode-signed DURING its build (an NSIS installer compresses its own
+  # already-signed executables), so it comes from that lane's artifact.
+  #
+  # build-windows carries soft_fail, which means its job `result` is `success`
+  # even when the build failed and uploaded nothing. This job therefore does
+  # not trust the result: publish-windows.yml probes for the artifact and skips
+  # cleanly when it is absent. That keeps a Windows-only failure from blocking
+  # the mac and Linux lanes, which is the same per-platform independence
+  # soft_fail exists to protect.
+  publish-windows-x64:
+    name: Publish Windows Desktop (nightly channel · x64)
+    needs: [version, build-windows]
+    permissions:
+      contents: read
+      # A called workflow cannot exceed the caller job's grants, so the probe's
+      # actions:read has to be granted here too or the lane 403s.
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-windows.yml
+    with:
+      channel: nightly
+      version: ${{ needs.version.outputs.nightly_version }}
+      publish: true
+      installer_artifact: build-windows-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
   # ── Docker image publish ──────────────────────────────────────────────
   # Builds the multi-arch gateway image FROM THE SAME WHEEL publish-cli
   # ships and pushes it to ghcr.io (GITHUB_TOKEN only — no AWS credentials,

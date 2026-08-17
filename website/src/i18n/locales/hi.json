@@ -10155,6 +10155,7 @@
         "auto_update_on_restart": "पुनरारंभ पर स्वतः-अपडेट",
         "automatic_updates_are_unavailable_in_this_build": "इस बिल्ड में स्वचालित अपडेट उपलब्ध नहीं हैं",
         "automatic_updates_unavailable_dev_build": "इस बिल्ड में स्वचालित अपडेट उपलब्ध नहीं हैं (डेवलपमेंट बिल्ड)।",
+        "automatic_updates_unavailable_channel": "स्वचालित अपडेट उपलब्ध नहीं हैं क्योंकि इस रिलीज़ चैनल में आपके प्लेटफ़ॉर्म के लिए अभी कोई बिल्ड नहीं है। अपडेट पाने के लिए ऊपर चैनल बदलें।",
         "automatic_updates_unavailable_platform": "इस प्लैटफ़ॉर्म पर इस बिल्ड में स्वचालित अपडेट उपलब्ध नहीं हैं।",
         "automatic_updates_unavailable_translocated": "स्वचालित अपडेट उपलब्ध नहीं हैं क्योंकि macOS इस ऐप को एक अस्थायी रीड-ओनली कॉपी से चला रहा है। इसे अपने Applications फ़ोल्डर में ले जाएँ और फिर से खोलें।",
         "automatic_updates_unavailable_volume": "स्वचालित अपडेट उपलब्ध नहीं हैं क्योंकि यह ऐप एक रीड-ओनली डिस्क इमेज से चल रहा है। इसे अपने Applications फ़ोल्डर में ले जाएँ और फिर से खोलें।",

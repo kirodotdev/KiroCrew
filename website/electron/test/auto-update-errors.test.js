@@ -194,6 +194,29 @@ test("manualDownloadUrl: per-platform artifact on the byte host", () => {
     manualDownloadUrl("insider", "darwin"),
     `${DOWNLOAD_BASE}/desktop/insider/latest/KiroCrew.dmg`,
   );
+  assert.strictEqual(
+    manualDownloadUrl("nightly", "win32", "x64"),
+    `${DOWNLOAD_BASE}/desktop/nightly/latest/KiroCrew-Setup.exe`,
+  );
+});
+
+test("manualDownloadUrl: Windows publishes x64 on nightly and insider only", () => {
+  // The published basename is publish-windows.yml's contract.
+  assert.strictEqual(
+    manualDownloadUrl("insider", "win32", "x64"),
+    `${DOWNLOAD_BASE}/desktop/insider/latest/KiroCrew-Setup.exe`,
+  );
+  // Stable has no Windows lane, so a link there would be a 404. Offering
+  // nothing beats offering a dead link.
+  assert.strictEqual(manualDownloadUrl("stable", "win32", "x64"), null);
+  // Only x64 is built; arm64 has no lane and no feed entry, so no link either.
+  assert.strictEqual(manualDownloadUrl("insider", "win32", "arm64"), null);
+  assert.strictEqual(manualDownloadUrl("insider", "win32", "ia32"), null);
+  // The gate is Windows-only: the other platforms keep stable.
+  assert.strictEqual(
+    manualDownloadUrl("stable", "darwin"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew.dmg`,
+  );
 });
 
 test("manualDownloadUrl: Linux picks the AppImage for the running arch", () => {
@@ -216,11 +239,10 @@ test("manualDownloadUrl: Linux picks the AppImage for the running arch", () => {
 });
 
 test("manualDownloadUrl: null wherever there is no publish lane", () => {
-  // A dev build has no channel lane, and Windows has none until
-  // publish-windows.yml lands -- offering a 404 is worse than offering nothing.
+  // A dev build has no channel lane -- offering a 404 is worse than offering
+  // nothing.
   assert.strictEqual(manualDownloadUrl("dev", "darwin"), null);
   assert.strictEqual(manualDownloadUrl("", "darwin"), null);
-  assert.strictEqual(manualDownloadUrl("nightly", "win32"), null);
   assert.strictEqual(manualDownloadUrl(undefined, undefined), null);
   // A Linux arch with no published AppImage returns null rather than guessing
   // x86_64: a wrong-arch binary is a worse answer than no link.

@@ -10033,6 +10033,7 @@
         "auto_update_on_restart": "재시작 시 자동 업데이트",
         "automatic_updates_are_unavailable_in_this_build": "이 빌드에서는 자동 업데이트를 사용할 수 없습니다",
         "automatic_updates_unavailable_dev_build": "이 빌드에서는 자동 업데이트를 사용할 수 없습니다 (개발 빌드).",
+        "automatic_updates_unavailable_channel": "이 릴리스 채널에는 아직 사용 중인 플랫폼용 빌드가 없어 자동 업데이트를 사용할 수 없습니다. 위에서 채널을 변경하면 업데이트를 받을 수 있습니다.",
         "automatic_updates_unavailable_platform": "이 플랫폼의 이 빌드에서는 자동 업데이트를 사용할 수 없습니다.",
         "automatic_updates_unavailable_translocated": "macOS가 이 앱을 임시 읽기 전용 사본에서 실행하고 있어 자동 업데이트를 사용할 수 없습니다. Applications 폴더로 옮긴 뒤 다시 여세요.",
         "automatic_updates_unavailable_volume": "이 앱이 읽기 전용 디스크 이미지에서 실행되고 있어 자동 업데이트를 사용할 수 없습니다. Applications 폴더로 옮긴 뒤 다시 여세요.",

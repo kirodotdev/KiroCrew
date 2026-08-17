@@ -10276,6 +10276,7 @@
         "auto_update_on_restart": "Actualizar automáticamente al reiniciar",
         "automatic_updates_are_unavailable_in_this_build": "Las actualizaciones automáticas no están disponibles en esta compilación",
         "automatic_updates_unavailable_dev_build": "Las actualizaciones automáticas no están disponibles en esta compilación (compilación de desarrollo).",
+        "automatic_updates_unavailable_channel": "Las actualizaciones automáticas no están disponibles porque este canal de lanzamiento aún no tiene compilaciones para tu plataforma. Cambia de canal arriba para recibir actualizaciones.",
         "automatic_updates_unavailable_platform": "Las actualizaciones automáticas no están disponibles en esta compilación en esta plataforma.",
         "automatic_updates_unavailable_translocated": "Las actualizaciones automáticas no están disponibles porque macOS está ejecutando esta app desde una copia temporal de solo lectura. Muévela a tu carpeta Aplicaciones y vuelve a abrirla.",
         "automatic_updates_unavailable_volume": "Las actualizaciones automáticas no están disponibles porque esta app se está ejecutando desde una imagen de disco de solo lectura. Muévela a tu carpeta Aplicaciones y vuelve a abrirla.",

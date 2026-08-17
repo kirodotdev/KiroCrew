@@ -379,12 +379,12 @@ test("#709 contract: the library adds its own no-cache query when no headers are
     "isAddNoCacheQuery is gone -- the client-side cache-bust that replaced our feedNonce no longer exists",
   );
 });
-// win32 has none yet (#598) and must come back disabled -- WITHOUT touching
-// the updater at all. Dev (unpackaged) builds have no update lane either.
+// Dev (unpackaged) builds have no update lane, and must come back disabled
+// WITHOUT touching the updater at all.
 // ---------------------------------------------------------------------------
 
-test("SUPPORTED_PLATFORMS is exactly {darwin, linux}", () => {
-  assert.deepStrictEqual([...SUPPORTED_PLATFORMS].sort(), ["darwin", "linux"]);
+test("SUPPORTED_PLATFORMS is exactly {darwin, linux, win32}", () => {
+  assert.deepStrictEqual([...SUPPORTED_PLATFORMS].sort(), ["darwin", "linux", "win32"]);
 });
 
 test("darwin initialises the updater (not disabled)", () => {
@@ -403,15 +403,53 @@ test("linux initialises the updater (not disabled)", () => {
   assert.strictEqual(deps.autoUpdater.autoDownload, false, "policy flags applied");
 });
 
-test("win32 returns disabled:'platform' and never touches the updater", () => {
-  const { deps, calls } = makeDeps({ osPlatform: "win32" });
+// Windows publishes nightly and insider only, so these drive a nightly-stamped
+// version. The stable case is asserted separately below.
+const WIN_NIGHTLY = "1.0.0-nightly.20260817t170500";
+
+test("win32 initialises the updater (not disabled)", () => {
+  const { deps, calls } = makeDeps({ osPlatform: "win32", appVersion: WIN_NIGHTLY });
   const u = initAutoUpdate(deps);
-  assert.strictEqual(u.disabled, "platform");
+  assert.strictEqual(u.disabled, undefined);
+  assert.ok(calls.setFeedURL.length >= 1, "feed must be configured at init");
+  assert.strictEqual(deps.autoUpdater.autoDownload, false, "policy flags applied");
+});
+
+// autoInstallOnAppQuit stays false on every platform, and off darwin that flag
+// is what keeps BaseUpdater from registering a quit handler. On win32 that
+// matters more than on Linux: NsisUpdater's quit handler would spawn the NSIS
+// installer while the Python gateway is still running, so the deliberate
+// stop-gateway-then-install ordering in applyUpdateAndRestart is the only path
+// that may install.
+test("win32 never arms install-on-quit", () => {
+  const { deps } = makeDeps({ osPlatform: "win32", appVersion: WIN_NIGHTLY });
+  initAutoUpdate(deps);
+  assert.strictEqual(deps.autoUpdater.autoInstallOnAppQuit, false);
+});
+
+// The lane gap is per CHANNEL, not per platform: stable republishes an immutable
+// promotion bundle that carries no Windows installer, so pointing a stable
+// Windows client at feed/stable/latest.yml would 404 on every check and hand the
+// user a manual-download link to an object that does not exist. Reporting it as
+// disabled is what makes About say "unavailable" instead of offering a Check
+// button that can only ever fail.
+test("win32 on stable is disabled for want of a lane, without touching the updater", () => {
+  const { deps, calls } = makeDeps({ osPlatform: "win32", appVersion: "1.0.0" });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, "channel");
   assert.strictEqual(calls.setFeedURL.length, 0);
   assert.strictEqual(deps.autoUpdater.autoDownload, undefined, "policy flags must not be applied");
   // The disabled surface must still be safely callable.
   assert.strictEqual(typeof u.check, "function");
   assert.strictEqual(typeof u.getInfo, "function");
+});
+
+// macOS and Linux keep every channel: only Windows is gated.
+test("darwin on stable keeps its lane", () => {
+  const { deps, calls } = makeDeps({ osPlatform: "darwin", appVersion: "1.0.0" });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, undefined);
+  assert.ok(calls.setFeedURL.length >= 1);
 });
 
 test("dev (unpackaged) build returns disabled:'dev'", () => {

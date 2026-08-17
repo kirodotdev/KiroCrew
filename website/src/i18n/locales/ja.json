@@ -10033,6 +10033,7 @@
         "auto_update_on_restart": "再起動時に自動更新",
         "automatic_updates_are_unavailable_in_this_build": "このビルドでは自動更新を利用できません",
         "automatic_updates_unavailable_dev_build": "このビルドでは自動更新を利用できません（開発ビルド）。",
+        "automatic_updates_unavailable_channel": "このリリースチャネルにはお使いのプラットフォーム向けのビルドがまだないため、自動更新は利用できません。上でチャネルを切り替えると更新を受け取れます。",
         "automatic_updates_unavailable_platform": "このビルドはこのプラットフォーム上で自動更新を利用できません。",
         "automatic_updates_unavailable_translocated": "macOS がこのアプリを一時的な読み取り専用コピーから実行しているため、自動更新を利用できません。Applications フォルダーに移動して再度開いてください。",
         "automatic_updates_unavailable_volume": "このアプリが読み取り専用ディスクイメージから実行しているため、自動更新を利用できません。Applications フォルダーに移動して再度開いてください。",

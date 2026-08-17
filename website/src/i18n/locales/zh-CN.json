@@ -10033,6 +10033,7 @@
         "auto_update_on_restart": "重启时自动更新",
         "automatic_updates_are_unavailable_in_this_build": "此构建版本不支持自动更新",
         "automatic_updates_unavailable_dev_build": "此构建版本不支持自动更新（开发版本）。",
+        "automatic_updates_unavailable_channel": "自动更新不可用，因为该发布通道尚未提供适用于你所在平台的构建。在上方切换通道即可恢复更新。",
         "automatic_updates_unavailable_platform": "此构建版本在此平台上不支持自动更新。",
         "automatic_updates_unavailable_translocated": "自动更新不可用：macOS 正在从临时只读副本运行此应用。请将其移动到“应用程序”文件夹后重新打开。",
         "automatic_updates_unavailable_volume": "自动更新不可用：此应用正在从只读磁盘映像运行。请将其移动到“应用程序”文件夹后重新打开。",

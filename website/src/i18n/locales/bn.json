@@ -10155,6 +10155,7 @@
         "auto_update_on_restart": "রিস্টার্টে স্বয়ংক্রিয় আপডেট",
         "automatic_updates_are_unavailable_in_this_build": "এই বিল্ডে স্বয়ংক্রিয় আপডেট উপলব্ধ নয়",
         "automatic_updates_unavailable_dev_build": "এই বিল্ডে স্বয়ংক্রিয় আপডেট উপলব্ধ নয় (ডেভেলপমেন্ট বিল্ড)।",
+        "automatic_updates_unavailable_channel": "স্বয়ংক্রিয় আপডেট উপলব্ধ নয়, কারণ এই রিলিজ চ্যানেলে আপনার প্ল্যাটফর্মের জন্য এখনও কোনো বিল্ড নেই। আপডেট পেতে উপরে চ্যানেল পরিবর্তন করুন।",
         "automatic_updates_unavailable_platform": "এই প্ল্যাটফর্মে এই বিল্ডের জন্য স্বয়ংক্রিয় আপডেট উপলব্ধ নয়।",
         "automatic_updates_unavailable_translocated": "macOS এই অ্যাপটি একটি সাময়িক রিড-অনলি কপি থেকে চালাচ্ছে, তাই স্বয়ংক্রিয় আপডেট উপলব্ধ নয়। এটি আপনার Applications ফোল্ডারে সরিয়ে আবার খুলুন।",
         "automatic_updates_unavailable_volume": "এই অ্যাপটি একটি রিড-অনলি ডিস্ক ইমেজ থেকে চলছে, তাই স্বয়ংক্রিয় আপডেট উপলব্ধ নয়। এটি আপনার Applications ফোল্ডারে সরিয়ে আবার খুলুন।",

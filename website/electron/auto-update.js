@@ -68,18 +68,39 @@ const LAUNCH_CHECK_DELAY_MS = 30 * 1000; // let startup settle first
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
 
 /**
- * Platforms with a working publish lane + updater. win32 is packaged as NSIS
- * (which NsisUpdater can drive) but still waits on a published latest.yml feed
- * and active Authenticode signing -- NsisUpdater verifies fail-closed, so an
- * unsigned installer would fail every update rather than warn (#598).
+ * Platforms with a working publish lane + updater.
+ *
+ * win32 is packaged as NSIS and driven by NsisUpdater, which reads `latest.yml`
+ * from the same per-channel feed directory the other platforms use and verifies
+ * the downloaded installer's Authenticode signature fail-closed. Both of its
+ * prerequisites are in place: publish-windows.yml writes that feed, and it
+ * refuses to publish an installer whose signature or publisher does not verify,
+ * so the fail-closed check cannot be handed bytes it will reject.
  */
-const SUPPORTED_PLATFORMS = new Set(["darwin", "linux"]);
+const SUPPORTED_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 
 // Byte host for human (manual) downloads -- deliberately the same CDN the
 // updater pulls from, so a manual reinstall lands on identical artifacts.
 const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
 // Channels with a desktop publish lane. "dev" has none.
 const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
+// Channels with a WINDOWS publish lane. publish-windows.yml is wired into
+// nightly.yml and release.yml's insider path only: stable republishes the
+// immutable promotion bundle, whose artifact roles do not include a Windows
+// installer, so no stable Windows feed or installer exists to point at.
+//
+// Without this set a Windows user who selects Stable resolves
+// feed/stable/latest.yml and desktop/stable/latest/KiroCrew-Setup.exe, neither
+// of which is published: every check fails and the manual-download escape hatch
+// is a 404. Offering nothing is the honest answer until stable has a lane.
+const WINDOWS_CHANNELS = new Set(["nightly", "insider"]);
+
+/** Whether this platform publishes artifacts for this channel. */
+function channelHasLane(channel, osPlatform) {
+  if (!KNOWN_CHANNELS.has(channel)) return false;
+  if (osPlatform === "win32") return WINDOWS_CHANNELS.has(channel);
+  return true;
+}
 
 /**
  * Map the build flavor ("beta" | "stable") to an update channel. Retained
@@ -190,7 +211,7 @@ function buildFeedBase({ base, channel }) {
  * @returns {string|null}
  */
 function manualDownloadUrl(channel, osPlatform, osArch = process.arch) {
-  if (!KNOWN_CHANNELS.has(channel)) return null;
+  if (!channelHasLane(channel, osPlatform)) return null;
   // The mac DMG is universal, so darwin needs no arch. Linux has no universal
   // binary: publish-linux.yml publishes one AppImage per arch under the
   // basenames below, so handing a user the wrong one is an immediate
@@ -198,11 +219,18 @@ function manualDownloadUrl(channel, osPlatform, osArch = process.arch) {
   // exists to avoid. An arch with no published lane returns null rather than
   // guessing x86_64.
   const linuxFile = { x64: "KiroCrew-x86_64.AppImage", arm64: "KiroCrew-aarch64.AppImage" }[osArch];
+  // Windows ships x64 only. build-windows.yml has no arm64 leg, and Windows has
+  // exactly one channel file whatever the arch (electron-updater appends an arch
+  // suffix for linux alone), so a second arch means another entry in the same
+  // latest.yml rather than another feed.
+  const windowsFile = { x64: "KiroCrew-Setup.exe" }[osArch];
   const file = osPlatform === "darwin"
     ? "KiroCrew.dmg"
     : osPlatform === "linux"
       ? linuxFile || null
-      : null;
+      : osPlatform === "win32"
+        ? windowsFile || null
+        : null;
   if (!file) return null;
   return `${DOWNLOAD_BASE}/desktop/${channel}/latest/${file}`;
 }
@@ -460,6 +488,20 @@ function initAutoUpdate(deps) {
     log.info(`[update] ${osPlatform} — auto-update disabled (no publish lane yet)`);
     return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "platform" };
   }
+  // A platform can have a lane on some channels and not others: Windows
+  // publishes nightly and insider but not stable (see WINDOWS_CHANNELS). Arming
+  // the updater against a channel with no feed makes every check fail on a 404
+  // and leaves the manual-download link pointing at nothing, so report it the
+  // same way the dev and platform paths do -- About then shows "unavailable"
+  // instead of a Check button that can only ever error.
+  //
+  // Evaluated once at init, while currentChannel() is read per check: switching
+  // channels in Settings mid-session surfaces the ordinary failure card until
+  // the next launch, which the UI already handles.
+  if (!channelHasLane(currentChannel(), osPlatform)) {
+    log.info(`[update] ${osPlatform} has no ${currentChannel()} publish lane — auto-update disabled`);
+    return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "channel" };
+  }
   // The macOS install is an IN-PLACE replacement of the running .app:
   // electron-updater's MacUpdater hands the downloaded zip to Electron's
   // built-in autoUpdater (Squirrel.Mac) over a loopback server, and ShipIt
@@ -671,10 +713,18 @@ function initAutoUpdate(deps) {
     arm();
   }
 
-  // isSilent=false (no installer UI to suppress on these platforms),
   // isForceRunAfter=true so the user lands back in the app after the swap.
+  //
+  // isSilent is platform-dependent, and on Windows it decides whether this is an
+  // automatic update at all. NsisUpdater passes /S only when isSilent, and the
+  // installer is assisted (nsis.oneClick=false), so isSilent=false shows the
+  // full NSIS wizard: the app would quit and then sit waiting for the user to
+  // click through a setup dialog, which is not the silent swap macOS and Linux
+  // perform. macOS and Linux have no installer UI to suppress, and passing
+  // isSilent there would change which relaunch flag BaseUpdater honours, so the
+  // flag is set only for win32.
   function quitAndInstall() {
-    autoUpdater.quitAndInstall(false, true);
+    autoUpdater.quitAndInstall(osPlatform === "win32", true);
   }
 
   async function applyUpdateAndRestart() {
