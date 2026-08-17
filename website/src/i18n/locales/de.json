@@ -7963,6 +7963,10 @@
         "unpin": "Loslösen",
         "jump_to_message": "Zur Nachricht springen"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Frühere Nachrichten laden",
+        "error_retry": "Frühere Nachrichten konnten nicht geladen werden — erneut versuchen"
+      },
       "sessionSummary": {
         "empty_body": "Die Zusammenfassung entsteht am Ende eines Zugs. Sende eine Nachricht, um eine für diese Sitzung zu erhalten.",
         "empty_generate_body": "Diese Sitzung wurde noch nicht zusammengefasst.",

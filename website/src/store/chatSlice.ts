@@ -545,6 +545,8 @@ interface ChatState {
   /** Slot the in-flight switch targets; it only installs a cursor for that one. */
   slotSwitchTarget: string | null
   loadingOlder: boolean
+  /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
+  slotOlderError: boolean
   lastChunkSeq: number | undefined
   _wsChunkedDuringFetch: boolean
   /** How many `chat_message` frames were dropped as redeliveries (see
@@ -701,6 +703,7 @@ const initialState: ChatState = {
   slotSwitchRequestId: null,
   slotSwitchTarget: null,
   loadingOlder: false,
+  slotOlderError: false,
   lastChunkSeq: undefined,
   _wsChunkedDuringFetch: false,
   _redeliveredFramesDropped: 0,
@@ -986,6 +989,9 @@ function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number)
   state.slotHasMore = hasMore
   state.slotOldestIndex = hasMore ? nextBefore : 0
   state.slotCursorKey = state.activeSlot
+  // One global flag describes a per-slot fetch, so a re-base clears it here: the
+  // next slot must not inherit the previous slot's red retry state.
+  state.slotOlderError = false
 }
 
 export function isSupersededPagingRejection(err: unknown): boolean {
@@ -1409,7 +1415,7 @@ export const deleteHistorySession = createAsyncThunk(
 
 export const loadOlderMessages = createAsyncThunk(
   'chat/loadOlder',
-  async (_, { getState }) => {
+  async (_, { getState, rejectWithValue }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
@@ -1420,6 +1426,11 @@ export const loadOlderMessages = createAsyncThunk(
     try {
       const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex, controller.signal)
       return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    } catch (e) {
+      // Rethrow a cancellation so the reducer can tell it from a real failure;
+      // a genuine failure names its slot, because a switch may have moved on.
+      if (isSupersededPagingRejection(e)) throw e
+      return rejectWithValue({ slot })
     } finally {
       // Only clear our own handle: a newer fetch may already have replaced it.
       if (_abortLoadOlder === abort) _abortLoadOlder = null
@@ -3302,6 +3313,9 @@ const chatSlice = createSlice({
         // Set activeSlot immediately so WS events for the new slot are accepted.
         // Restore cached messages if available (instant switch), otherwise show loading.
         state.activeSlot = action.meta.arg
+        // The older-history error belongs to the outgoing chat and ownership moves
+        // here, so it must clear now rather than when the fetch settles.
+        state.slotOlderError = false
         const cachedMsgs = state.slotMessages[action.meta.arg]
         if (cachedMsgs) {
           state.messages = cachedMsgs
@@ -3592,6 +3606,8 @@ const chatSlice = createSlice({
       })
       .addCase(loadOlderMessages.pending, (state) => {
         state.loadingOlder = true
+        // A retry clears the red state without re-basing the cursor, so the helper cannot.
+        state.slotOlderError = false
       })
       .addCase(loadOlderMessages.fulfilled, (state, action) => {
         state.loadingOlder = false
@@ -3609,8 +3625,10 @@ const chatSlice = createSlice({
           setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
         }
       })
-      .addCase(loadOlderMessages.rejected, (state) => {
+      .addCase(loadOlderMessages.rejected, (state, action) => {
         state.loadingOlder = false
+        const failed = action.payload as { slot?: string } | undefined
+        if (failed?.slot === state.activeSlot) state.slotOlderError = true
       })
   },
 })

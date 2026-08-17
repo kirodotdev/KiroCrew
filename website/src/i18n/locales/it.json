@@ -8065,6 +8065,10 @@
         "unpin": "Rimuovi",
         "jump_to_message": "Vai al messaggio"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Carica i messaggi precedenti",
+        "error_retry": "Impossibile caricare i messaggi precedenti — riprova"
+      },
       "sessionSummary": {
         "empty_body": "Il riepilogo viene scritto quando un turno finisce. Invia un messaggio per ottenerne uno per questa sessione.",
         "empty_generate_body": "Questa sessione non è ancora stata riassunta.",

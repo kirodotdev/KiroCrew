@@ -202,6 +202,24 @@ function captureTopAnchorFrom(
   return bestKey !== null ? { key: bestKey, top: bestTop } : null
 }
 
+/** Screen offset of the mounted row whose key matches, relative to the
+ *  scroller's top; null when it is not mounted. Pure over its inputs like the
+ *  capture above, so both anchor consumers resolve a row the same way. */
+function rowTopFrom(
+  el: HTMLDivElement,
+  entries: Iterable<[Element, number]>,
+  keyAt: (index: number) => string | null,
+  key: string,
+): number | null {
+  if (typeof el.getBoundingClientRect !== 'function') return null
+  for (const [node, idx] of entries) {
+    if (keyAt(idx) !== key) continue
+    const srTop = el.getBoundingClientRect().top
+    return (node as HTMLElement).getBoundingClientRect().top - srTop
+  }
+  return null
+}
+
 export function useVirtualChat<T>(
   opts: UseVirtualChatOptions<T>,
 ): UseVirtualChatReturn<T> {
@@ -216,6 +234,7 @@ export function useVirtualChat<T>(
     isSticky,
     externalScrollerRef,
     streamingIndex,
+    onTopReached,
   } = opts
 
   const itemCount = items.length
@@ -225,6 +244,13 @@ export function useVirtualChat<T>(
   // force the ResizeObserver to be torn down and reattached.
   const streamingIndexRef = useRef(streamingIndex)
   streamingIndexRef.current = streamingIndex
+
+  // Same reasoning for the IntersectionObserver effect: keeping the callback in a
+  // ref keeps it out of that effect's deps, so it never re-subscribes per render.
+  const onTopReachedRef = useRef(onTopReached)
+  useEffect(() => {
+    onTopReachedRef.current = onTopReached
+  }, [onTopReached])
 
   // ---- Streaming-settle grace ----
   // When `streamingIndex` goes undefined (the turn closed — `isStreaming`
@@ -372,6 +398,60 @@ export function useVirtualChat<T>(
   // reliance on overflow-anchor (it does not replace it — the CSS is owned by
   // ChatPage and left alone).
   const anchorPendingRef = useRef<{ key: string; top: number } | null>(null)
+
+  /**
+   * Prepend compensation (load-older history).
+   *
+   * A prepend shifts every index up, so pre-existing rows move down by the
+   * inserted height while scrollTop stays put — that IS the jump. The snapshot
+   * must be taken in the RENDER phase (getSnapshotBeforeUpdate idiom): a layout
+   * effect runs after commit, when the row has moved and the delta reads zero.
+   *
+   * Arithmetic is no alternative: `getH` prices an unmeasured row from the
+   * running MEAN of measured ones, so any measurement re-prices every unmeasured
+   * row and the next sync re-reads them all (measured: a 1000px insert displaced
+   * rows by 1500). These refs stay private rather than reusing `anchorPendingRef`,
+   * which the passive itemCount recompute overwrites with its own capture.
+   */
+  const prependAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  const prependCountRef = useRef(0)
+  const prependRefineRef = useRef(false)
+  /** Previous render's identity. `items` is held because `itemsRef` has already
+   *  advanced by the time the capture runs, while the mounted nodes still carry
+   *  the PREVIOUS commit's indices. */
+  const prependPrevRef = useRef<{ session: string; count: number; firstKey: string | null; items: T[] }>({
+    session: sessionId, count: itemCount, firstKey: null, items,
+  })
+  const prependPrev = prependPrevRef.current
+  const prependFirstKey = itemCount > 0 ? getKey(items[0], 0) : null
+  // A front-insert grows the count AND changes index 0's key. A slot switch does
+  // both, hence the session guard; a plain append leaves index 0 alone.
+  if (
+    itemCount > prependPrev.count &&
+    prependPrev.session === sessionId &&
+    prependPrev.firstKey !== null &&
+    prependFirstKey !== prependPrev.firstKey &&
+    !stickRef.current
+  ) {
+    const prependEl = scrollerRef.current
+    // A turn takes its LEAD item's key, so a prepended message joining the top turn
+    // renames that row: skip keys the new set retired and anchor on the next survivor.
+    const survivingKeys = new Set<string>()
+    for (let i = 0; i < items.length; i++) survivingKeys.add(getKey(items[i], i))
+    const prependAnchor = prependEl
+      ? captureTopAnchorFrom(prependEl, elIndexRef.current.entries(), (idx) => {
+          const it = prependPrev.items[idx]
+          if (!it) return null
+          const k = getKey(it, idx)
+          return survivingKeys.has(k) ? k : null
+        })
+      : null
+    if (prependAnchor) {
+      prependAnchorRef.current = prependAnchor
+      prependCountRef.current = itemCount - prependPrev.count
+    }
+  }
+  prependPrevRef.current = { session: sessionId, count: itemCount, firstKey: prependFirstKey, items }
 
   // Window range for what is currently mounted. Initial state is the TAIL of
   // the list (last ~overscan+1 items) — chat sessions always open at the
@@ -1214,6 +1294,7 @@ export function useVirtualChat<T>(
               if (a) anchorPendingRef.current = a
             }
             setWindowRange((prev) => expandWindowUp(prev, overscan))
+            onTopReachedRef.current?.()
           } else if (entry.target === bottomSentinelRef.current) {
             setWindowRange((prev) => expandWindowDown(prev, itemsRef.current.length, overscan))
           }
@@ -1265,6 +1346,58 @@ export function useVirtualChat<T>(
       writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
     }
   }, [windowRange, scrollerRef, writeScrollTop])
+
+  /**
+   * Prepend compensation, part 1: re-base the window by the inserted count so
+   * the rows being read stay mounted — including the anchor row, which part 2
+   * has to measure. Runs pre-paint, so the shifted-but-uncorrected frame is
+   * never shown.
+   */
+  useLayoutEffect(() => {
+    const inserted = prependCountRef.current
+    if (inserted <= 0) return
+    prependCountRef.current = 0
+    if (stickRef.current || !prependAnchorRef.current) {
+      prependAnchorRef.current = null
+      return
+    }
+    prependRefineRef.current = true
+    setWindowRange((r) => ({
+      start: Math.min(itemCount, r.start + inserted),
+      end: Math.min(itemCount, r.end + inserted),
+    }))
+  }, [itemCount])
+
+  /**
+   * Prepend compensation, part 2: re-read the anchor row in the shifted DOM and
+   * move scrollTop by however far it travelled, which holds the user's place
+   * whatever mix of inserted rows and re-estimated heights caused the shift.
+   *
+   * INVARIANT — the passive itemCount recompute runs BETWEEN these two layout
+   * effects; part 2 must re-derive the window after correcting scrollTop.
+   *
+   * Then recompute the window, because the passive itemCount recompute has
+   * already run by this point — React flushes it between these two layout
+   * effects — so it sized the window from the PRE-correction offset and its
+   * update lands after this write. Re-deriving from the corrected scrollTop is
+   * what stops that stale range being the one left committed.
+   */
+  useLayoutEffect(() => {
+    if (!prependRefineRef.current) return
+    prependRefineRef.current = false
+    const pending = prependAnchorRef.current
+    prependAnchorRef.current = null
+    const el = scrollerRef.current
+    if (!pending || !el || stickRef.current) return
+    const newTop = rowTopFrom(el, elIndexRef.current.entries(), (idx) => {
+      const it = itemsRef.current[idx]
+      return it ? getKeyRef.current(it, idx) : null
+    }, pending.key)
+    if (newTop === null) return
+    const delta = newTop - pending.top
+    if (Math.abs(delta) > 0.5) writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
+    recomputeWindow()
+  }, [windowRange, scrollerRef, writeScrollTop, recomputeWindow])
 
   // ---- Follow-output: pin to bottom when items append ----
   const prevItemCountRef = useRef(itemCount)

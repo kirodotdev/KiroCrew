@@ -65,6 +65,12 @@ export interface UseVirtualChatOptions<T> {
    * keep resizing for the duration of the turn.
    */
   streamingIndex?: number
+  /**
+   * Called when the top sentinel comes into view, alongside the upward window
+   * expansion. Lets the caller fetch history that lies behind the loaded slice;
+   * the virtualizer itself only ever widens the window over `items`.
+   */
+  onTopReached?: () => void
 }
 
 export interface VirtualItem<T> {

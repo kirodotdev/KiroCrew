@@ -46,6 +46,8 @@ import chatReducer, {
   sseChatMessage,
   resumeFromHistory,
   loadOlderMessages,
+  refreshSlot,
+  switchSlot,
 } from './chatSlice'
 import { api } from '../api/client'
 
@@ -183,5 +185,149 @@ describe('resume cursor', () => {
     await store.dispatch(resumeFromHistory({ key: 'active', title: 'active' }) as never)
     expect(store.getState().chat.slotHasMore).toBe(false)
     expect(store.getState().chat.slotOldestIndex).toBe(0)
+  })
+})
+
+// `loadOlderMessages.fulfilled` is deliberately NOT one of these reset sites:
+// `pending` always runs first, so a reset there would be unreachable dead code.
+describe('slotOlderError is scoped to the slot that failed', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  /** Store in the post-failure state: 'active' tried to page older history and
+   *  the fetch rejected, so its bar is showing the red retry label. */
+  function afterFailedOlderFetch() {
+    const store = makeStore()
+    resumed(store)
+    store.dispatch(loadOlderMessages.rejected(null, 'req-fail', undefined, { slot: 'active' }))
+    expect(store.getState().chat.slotOlderError).toBe(true)
+    return store
+  }
+
+  it('clears the flag when switchSlot re-bases history for another slot', () => {
+    const store = afterFailedOlderFetch()
+
+    store.dispatch(setActiveSlot('other'))
+    store.dispatch(
+      switchSlot.fulfilled(
+        {
+          key: 'other',
+          messages: HISTORY.slice(TOTAL - PAGE),
+          running: false,
+          hasMore: true,
+          total: TOTAL,
+          rawCount: PAGE,
+          queue: [],
+        } as never,
+        'req-switch',
+        'other',
+      ),
+    )
+
+    // hasMore true is what makes ChatPage render the bar at all, so this is the
+    // arrangement in which a stale flag is visible rather than merely present.
+    expect(store.getState().chat.slotHasMore).toBe(true)
+    expect(store.getState().chat.slotOlderError).toBe(false)
+  })
+
+  it('clears the flag when resumeFromHistory re-bases history for another slot', () => {
+    const store = afterFailedOlderFetch()
+
+    store.dispatch(
+      resumeFromHistory.fulfilled(
+        { ok: true, key: 'other', nextBefore: TOTAL - PAGE, messages: HISTORY.slice(TOTAL - PAGE), hasMore: true, total: TOTAL },
+        'req-resume-other',
+        { key: 'other', title: 'other' },
+      ),
+    )
+
+    expect(store.getState().chat.slotHasMore).toBe(true)
+    expect(store.getState().chat.slotOlderError).toBe(false)
+  })
+
+  // refreshSlot carries no reset of its own: the clear rides the cursor re-base,
+  // so this pins the invariant at a caller that never mentions the flag.
+  it('clears the flag when refreshSlot re-bases the active chat', () => {
+    const store = afterFailedOlderFetch()
+
+    store.dispatch(
+      refreshSlot.fulfilled(
+        { key: 'active', messages: HISTORY.slice(TOTAL - PAGE), running: false, hasMore: true, total: TOTAL, nextBefore: TOTAL - PAGE, queue: [] } as never,
+        'req-refresh',
+        'active',
+      ),
+    )
+
+    expect(store.getState().chat.slotHasMore).toBe(true)
+    expect(store.getState().chat.slotOlderError).toBe(false)
+  })
+
+  it('marks the chat failed when its OWN older fetch rejects', () => {
+    const store = makeStore()
+    resumed(store)
+    store.dispatch(loadOlderMessages.pending('req-own', undefined))
+    store.dispatch(loadOlderMessages.rejected(null, 'req-own', undefined, { slot: 'active' }))
+    const s = store.getState().chat
+    expect(s.slotOlderError).toBe(true)
+    expect(s.loadingOlder).toBe(false)
+  })
+
+  // The mirror of the switch-then-fail case: here the fetch is already in flight
+  // when the switch lands, so the rejection arrives against a chat it never ran on.
+  it('does NOT mark the new chat failed when the old chat fetch rejects after a switch', () => {
+    const store = makeStore()
+    resumed(store)
+    store.dispatch(loadOlderMessages.pending('req-cross', undefined))
+    expect(store.getState().chat.loadingOlder).toBe(true)
+
+    store.dispatch(switchSlot.pending('req-switch-cross', 'other'))
+    store.dispatch(loadOlderMessages.rejected(null, 'req-cross', undefined, { slot: 'active' }))
+
+    const s = store.getState().chat
+    expect(s.activeSlot).toBe('other')
+    expect(s.slotOlderError).toBe(false)
+    expect(s.loadingOlder).toBe(false)
+  })
+
+  // `pending` is the instant-switch arm: it moves activeSlot and restores a cached
+  // transcript, so the bar would paint before `fulfilled` re-bases the cursor.
+  it('clears the flag when switchSlot only reaches pending', () => {
+    const store = afterFailedOlderFetch()
+
+    store.dispatch(switchSlot.pending('req-switch-pending', 'other'))
+
+    const s = store.getState().chat
+    expect(s.activeSlot).toBe('other')
+    expect(s.slotOlderError).toBe(false)
+    // The cursor still describes the OUTGOING chat, so a switch de-keys it rather than
+    // zeroing it; the paging gate refuses while that key and the active slot disagree.
+    expect(s.slotCursorKey).toBeNull()
+  })
+
+  // A cancelled fetch rethrows its AbortError rather than naming a slot, so the
+  // reducer's slot check cannot match and the reader is shown no failure.
+  it('shows no error when a switch cancelled the fetch', async () => {
+    const store = makeStore()
+    resumed(store)
+    ;(api.chatSlotDetail as unknown as { mockRejectedValueOnce: (e: unknown) => void })
+      .mockRejectedValueOnce(new DOMException('Aborted', 'AbortError'))
+    const before = detail().mock.calls.length
+
+    await store.dispatch(loadOlderMessages())
+
+    // Guards against a vacuous pass: the gate must have let the fetch run.
+    expect(detail().mock.calls.length).toBe(before + 1)
+    expect(store.getState().chat.slotOlderError).toBe(false)
+  })
+
+  it('refuses a mid-switch older fetch instead of paging at the outgoing offset', async () => {
+    const store = afterFailedOlderFetch()
+    expect(store.getState().chat.slotOldestIndex).toBeGreaterThan(0)
+
+    store.dispatch(switchSlot.pending('req-switch-cursor', 'other'))
+    const before = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.length
+    const result = await store.dispatch(loadOlderMessages())
+
+    expect(result.meta.condition).toBe(true)
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before)
   })
 })

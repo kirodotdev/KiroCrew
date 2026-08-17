@@ -55,6 +55,8 @@ import McpToolsPanel from './chat/McpToolsPanel'
 import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
+import { shouldPaginateOlder } from './chat/pagination'
+import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens } from '../utils/fileTokens'
 import { classifyDrop } from '../utils/dropClassify'
@@ -949,6 +951,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const slotOldestIndex = useAppSelector(s => s.chat.slotOldestIndex)
   const cursorIsForActiveSlot = useAppSelector(s => s.chat.slotCursorKey === s.chat.activeSlot)
   const loadingOlder = useAppSelector(s => s.chat.loadingOlder)
+  const olderFailed = useAppSelector(s => s.chat.slotOlderError)
   const history = useAppSelector(s => s.chat.history)
   const historyHasMore = useAppSelector(s => s.chat.historyHasMore)
 
@@ -5111,6 +5114,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // window like any other item. See useVirtualChat call below for the
   // memory-vs-flicker trade-off rationale.)
 
+  // Reaching the top of a resumed transcript fetches the history behind the loaded slice.
+  const handleTopReached = useCallback(() => {
+    const chat = store.getState().chat
+    if (!shouldPaginateOlder({ loadingOlder: chat.loadingOlder, slotHasMore: chat.slotHasMore })) return
+    void dispatch(loadOlderMessages())
+  }, [dispatch])
+  // The click path needs no gate beyond the in-flight check the thunk already makes.
+  const handleLoadEarlier = useCallback(() => {
+    if (store.getState().chat.loadingOlder) return
+    void dispatch(loadOlderMessages())
+  }, [dispatch])
+
   const virt = useVirtualChat<DisplayItem>({
     items: displayItems,
     getKey: virtualKey,
@@ -5138,6 +5153,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // debouncing it into a stale-then-jump spacer (see the `streamingIndex`
     // option's doc and useVirtualChat.spacerLurch.test.tsx).
     streamingIndex: isStreaming && displayItems.length > 0 ? displayItems.length - 1 : undefined,
+    onTopReached: handleTopReached,
   })
 
   // Single scroll controller wiring: expose the virtualizer's follow API to
@@ -6476,6 +6492,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             >
               {/* Header spacer */}
               <div className="h-16" />
+              {/* Mid-switch `slotHasMore` still describes the outgoing chat, so the cursor
+                  key gates the bar to match the paging thunk's own precondition. */}
+              {slotHasMore && cursorIsForActiveSlot && (
+                <EarlierMessagesBar loading={loadingOlder} failed={olderFailed} onLoad={handleLoadEarlier} />
+              )}
               {/* Top sentinel: drives upward window expansion via virtualizer's IO. */}
               <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />
               {/* top-16 matches the h-16 header spacer above, so the pinned spinner

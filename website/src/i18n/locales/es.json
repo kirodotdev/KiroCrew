@@ -8065,6 +8065,10 @@
         "unpin": "Desfijar",
         "jump_to_message": "Ir al mensaje"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Cargar mensajes anteriores",
+        "error_retry": "No se pudieron cargar los mensajes anteriores — reintentar"
+      },
       "sessionSummary": {
         "empty_body": "El resumen se escribe cuando termina un turno. Envía un mensaje para obtener uno de esta sesión.",
         "empty_generate_body": "Esta sesión aún no se ha resumido.",

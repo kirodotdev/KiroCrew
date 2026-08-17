@@ -5394,6 +5394,10 @@
         "copy_link": "Copy link to message",
         "unpin": "Unpin",
         "jump_to_message": "Jump to message"
+      },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Load earlier messages",
+        "error_retry": "Couldn't load earlier messages — retry"
       }
     },
     "chatPage": {

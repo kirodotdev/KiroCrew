@@ -8065,6 +8065,10 @@
         "unpin": "Désépingler",
         "jump_to_message": "Aller au message"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Charger les messages précédents",
+        "error_retry": "Impossible de charger les messages précédents — réessayer"
+      },
       "sessionSummary": {
         "empty_body": "Le résumé est écrit à la fin d'un tour. Envoyez un message pour en obtenir un pour cette session.",
         "empty_generate_body": "Cette session n'a pas encore été résumée.",

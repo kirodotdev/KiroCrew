@@ -7861,6 +7861,10 @@
         "unpin": "取消置顶",
         "jump_to_message": "跳转到消息"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "加载更早的消息",
+        "error_retry": "无法加载更早的消息 — 重试"
+      },
       "sessionSummary": {
         "empty_body": "摘要在一轮对话结束时生成。发送一条消息即可为此会话生成摘要。",
         "empty_generate_body": "此会话尚未生成摘要。",

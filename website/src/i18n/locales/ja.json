@@ -7861,6 +7861,10 @@
         "unpin": "ピン留めを解除",
         "jump_to_message": "メッセージに移動"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "以前のメッセージを読み込む",
+        "error_retry": "以前のメッセージを読み込めませんでした — 再試行"
+      },
       "sessionSummary": {
         "empty_body": "サマリーはターンの終了時に作成されます。このセッションのサマリーを得るにはメッセージを送信してください。",
         "empty_generate_body": "このセッションのサマリーはまだ作成されていません。",
