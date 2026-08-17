@@ -851,6 +851,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "session_pid.py::find_orphan_mcp_candidates",
         "session_pid.py::kill_orphan_mcps",
         "slack/gateway.py::_auto_apply_update",
+        # Wheel/cli.sh auto-update: runs the signed installer command
+        # (composed locally from a validated channel name and https-pinned
+        # artifact base, never from feed data). The child is the cli.sh
+        # installer, which performs its own RSA-SHA256 signature verification.
+        # NOT sandbox-routed because the installer must write to the managed
+        # venv and symlink ~/.local/bin/kirocrew.
+        "slack/gateway.py::_auto_apply_wheel_update",
+        # Pluggable update provider: CommandProvider runs operator-configured
+        # shell commands from security_policy.json or config.json (sensitive
+        # home dirs the agent cannot write). The check command probes for a
+        # newer version; the apply command performs the update. Both are
+        # operator-authored, not agent-influenced. NOT sandbox-routed because
+        # the command must reach the host's package manager / registry.
+        "platform/update_provider.py::check",
+        "platform/update_provider.py::apply",
         "slack/gateway.py::_check_missing_deps",
         # The kiro-cli version probe, extracted from _init_services (issue
         # #3051). Fixed argv ("kiro-cli --version"), no agent-influenced

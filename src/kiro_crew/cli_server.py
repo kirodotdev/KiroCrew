@@ -965,6 +965,24 @@ def _update() -> None:
 
     print("👻 Updating Kiro Crew…\n")
 
+    # A policy-defined provider OWNS the update on this host. Checked before any
+    # layout dispatch so a manual `kirocrew update` cannot run the built-in
+    # git/CDN mechanism the administrator excluded.
+    from kiro_crew.platform.update_provider import apply_policy_update
+
+    applied = asyncio.run(apply_policy_update())
+    if applied is not None:
+        if applied:
+            print("\n✅ Update applied by the policy-defined update command.")
+            print("\n  Restart the gateway to use the new version:")
+            print("    kirocrew restart")
+        else:
+            print("\n❌ The policy-defined update command failed — see the log above.")
+            print("  Not falling back to the built-in updater: this host's policy")
+            print("  selects its own update mechanism.")
+            sys.exit(1)
+        return
+
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     proj_path = Path(proj) if proj else None
     is_git = proj_path is not None and (proj_path / ".git").exists()
@@ -1132,11 +1150,15 @@ def _update_wheel(layout) -> None:
     the standard state for ``curl | sh`` installs where the venv at
     ``~/.kiro/crew-venv`` has no source tree.
     """
-    import re
 
     from kiro_crew import __version__ as local_version
     from kiro_crew.platform.update_governance import update_blocked_reason
-    from kiro_crew.platform.update_layout import cdn_bases, release_channel, wheel_update_command
+    from kiro_crew.platform.update_layout import (
+        cdn_bases,
+        cdn_bases_are_safe,
+        release_channel,
+        wheel_update_command,
+    )
 
     channel = release_channel()
     feed_base, artifact_base = cdn_bases()
@@ -1154,8 +1176,7 @@ def _update_wheel(layout) -> None:
     # Shell safety: cdn_bases() reads KIROCREW_CDN_BASE which is operator-set.
     # Reject metacharacters that could enable command injection when the URL
     # flows through wheel_update_command() into ``sh -c``.
-    _SAFE_URL_RE = re.compile(r"^https://[A-Za-z0-9._/:%@~+\-]+$")
-    if not _SAFE_URL_RE.match(feed_base) or not _SAFE_URL_RE.match(artifact_base):
+    if not cdn_bases_are_safe():
         print("  ❌ CDN base URL contains disallowed characters")
         sys.exit(1)
 

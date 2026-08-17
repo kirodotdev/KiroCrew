@@ -786,6 +786,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "agent.py",
+        # Gate-side log hygiene: the update provider redacts an update command's
+        # stderr before writing it to the gateway log. It is a boot-time
+        # operational log line, not an output boundary bound for a human or a
+        # third party — the redaction is defensive so a credential-bearing
+        # installer error cannot leak into the log ring / /api/logs stream.
+        "platform/update_provider.py",
         # The shared recursive redactor helper itself — a pure scrubber, not an
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.

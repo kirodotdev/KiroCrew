@@ -146,15 +146,25 @@ class TestChannelResolution:
     def test_update_command_always_names_the_channel(self):
         # cli.sh defaults to stable and never reads the channel file, so a bare
         # re-run would silently move an insider install onto the stable lane.
+        # Asserts invariants, not a prefix: the shared builder now fetches to a
+        # temp file before running it (a pipe reported only sh's status, hiding a
+        # failed download), so the command no longer begins with curl.
         cmd = updates._wheel_update_command("insider", "https://download.example")
         assert "--channel insider" in cmd
-        assert cmd.startswith("curl -fsSL --proto '=https' https://download.example/cli.sh")
+        assert "curl -fsSL --proto '=https'" in cmd
+        assert "/cli.sh" in cmd
+        # The invariant is that the DOWNLOAD's failure fails the command.
+        # A pipe fed from an already-checked variable preserves that; only a
+        # bare `curl … | sh` would report just sh's status.
+        assert '_kc_body="$(curl' in cmd, "curl must not feed sh directly"
 
-    def test_update_command_pins_https(self):
-        # The string is copied into a shell and pipes an installer into `sh`, and
-        # the base is overridable via KIROCREW_CDN_BASE. Without --proto '=https'
-        # an http:// override yields a command that fetches a script in plaintext
-        # and executes it — an on-path attacker could swap the installer.
+    def test_update_command_pins_https(self, monkeypatch):
+        # The string is copied into a shell and runs an installer, and the base is
+        # overridable via KIROCREW_CDN_BASE. Without --proto '=https' an http://
+        # override yields a command that fetches a script in plaintext and
+        # executes it — an on-path attacker could swap the installer. curl
+        # refuses the scheme even when the override is plaintext.
+        monkeypatch.setenv("KIROCREW_CDN_BASE", "http://evil.example")
         cmd = updates._wheel_update_command("stable", "http://evil.example")
         assert "--proto '=https'" in cmd
 
@@ -547,6 +557,7 @@ class TestAutoApplyGuard:
         orch = object.__new__(GatewayOrchestrator)
         orch.dashboard_state = MagicMock()
         orch._auto_apply_update = AsyncMock()
+        orch._auto_apply_wheel_update = AsyncMock()
         return orch
 
     def _run(self, info: dict[str, object], *, auto_update: bool):
@@ -555,6 +566,7 @@ class TestAutoApplyGuard:
         orch = self._orchestrator()
         cfg = MagicMock()
         cfg.auto_update = auto_update
+        from kiro_crew.platform.governance import UpdatePins
         original = dict(handlers._update_info)
         try:
             handlers._update_info.clear()
@@ -565,7 +577,14 @@ class TestAutoApplyGuard:
                         "kiro_crew.platform.update_governance.update_required",
                         return_value=False,
                     ):
-                        asyncio.run(orch._check_for_updates())
+                        # No commands in the policy pins, so resolve_provider
+                        # returns None and the code falls through to the legacy
+                        # path under test.
+                        with patch(
+                            "kiro_crew.platform.governance.active_update_pins",
+                            return_value=UpdatePins(),
+                        ):
+                            asyncio.run(orch._check_for_updates())
         finally:
             handlers._update_info.clear()
             handlers._update_info.update(original)
@@ -573,11 +592,18 @@ class TestAutoApplyGuard:
 
     def test_wheel_install_notifies_instead_of_applying(self):
         orch = self._run(
-            {"available": True, "self_updatable": False, "install_kind": "wheel"},
+            {
+                "available": True,
+                "self_updatable": False,
+                "install_kind": "wheel",
+                "update_command": "curl -fsSL … | sh",
+            },
             auto_update=True,
         )
+        # The git apply must NOT run on a non-git tree.
         orch._auto_apply_update.assert_not_awaited()
-        orch.dashboard_state.push_refresh.assert_called_with("update_available")
+        # The wheel auto-apply IS called (new behavior).
+        orch._auto_apply_wheel_update.assert_awaited_once()
 
     def test_git_checkout_still_auto_applies(self):
         orch = self._run(

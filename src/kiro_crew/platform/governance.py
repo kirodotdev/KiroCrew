@@ -1184,6 +1184,20 @@ class UpdatePins:
     source: str = ""
     # The minimum version this fleet may run. Empty = no floor.
     min_version: str = ""
+    # The operator-authored shell commands for the command update provider. Their
+    # PRESENCE is what enables the provider (there is no mechanism selector): when
+    # either is set, resolve_provider() returns a CommandProvider. They live HERE
+    # (in the keystone-protected security_policy.json the agent cannot write),
+    # never in config.json, because a command provider executes unsandboxed code
+    # as the gateway — placing its commands in an agent-writable file would let a
+    # prompt-injected agent run arbitrary code. config.json has no path into this
+    # seam at all.
+    check_command: str = ""
+    apply_command: str = ""
+    # Per-platform command overrides, keyed by "{sys.platform}-{machine}"
+    # (e.g. "linux-x86_64", "darwin-arm64"). Falls back to the top-level
+    # check_command/apply_command when the current platform has no override.
+    platform_commands: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     def permits_source(self, url: str) -> bool:
         """Does *url* satisfy the source pin? An empty pin permits anything.
@@ -1224,15 +1238,58 @@ class UpdatePins:
 
     @staticmethod
     def from_dict(d: Mapping[str, object]) -> "UpdatePins":
-        _reject_unknown_keys(d, {"source", "min_version"}, "updates")
-        for key in ("source", "min_version"):
+        _reject_unknown_keys(
+            d,
+            {
+                "source",
+                "min_version",
+                "check_command",
+                "apply_command",
+                "platform_commands",
+            },
+            "updates",
+        )
+        for key in ("source", "min_version", "check_command", "apply_command"):
             # `str(raw or "")` would coerce `"source": false` to "" — silently
             # UNPINNING a policy that plainly meant to pin. Fail closed instead.
             if d.get(key) is not None and not isinstance(d[key], str):
                 raise PlatformCompositionError(f"updates.{key} must be a string")
+        raw_platform = d.get("platform_commands")
+        platform_commands: dict[str, dict[str, str]] = {}
+        if raw_platform is not None:
+            if not isinstance(raw_platform, Mapping):
+                raise PlatformCompositionError("updates.platform_commands must be a mapping")
+            for plat_key, plat_val in raw_platform.items():
+                if not isinstance(plat_key, str) or not isinstance(plat_val, Mapping):
+                    raise PlatformCompositionError(
+                        "updates.platform_commands entries must map a platform string "
+                        "to a command mapping"
+                    )
+                entry: dict[str, str] = {}
+                for cmd_key, cmd_val in plat_val.items():
+                    if cmd_key not in ("check_command", "apply_command"):
+                        raise PlatformCompositionError(
+                            f"updates.platform_commands.{plat_key} has unknown key {cmd_key!r}"
+                        )
+                    if not isinstance(cmd_val, str):
+                        raise PlatformCompositionError(
+                            f"updates.platform_commands.{plat_key}.{cmd_key} must be a string"
+                        )
+                    # Stripped like source/min_version above: a whitespace-only
+                    # command is truthy, so it would pass the presence check that
+                    # SELECTS the provider, and `sh -c "   "` exits 0. That reads
+                    # as a successful update, so the gateway restarts, the version
+                    # has not changed, the check still reports an update, and the
+                    # unattended path loops. Normalising here means absent and
+                    # blank are the same thing everywhere downstream.
+                    entry[cmd_key] = cmd_val.strip()
+                platform_commands[plat_key] = entry
         return UpdatePins(
             source=str(d.get("source") or "").strip(),
             min_version=str(d.get("min_version") or "").strip(),
+            check_command=str(d.get("check_command") or "").strip(),
+            apply_command=str(d.get("apply_command") or "").strip(),
+            platform_commands=platform_commands,
         )
 
 

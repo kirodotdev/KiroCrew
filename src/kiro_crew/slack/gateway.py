@@ -1695,9 +1695,14 @@ class GatewayOrchestrator:
             print("✅ Dependencies installed")
         else:
             print("❌ pip install failed — run manually: kirocrew update")
-            logger.error(
-                "Dep repair failed: %s", (stderr or b"").decode(errors="replace")[:500]
-            )
+            # pip stderr can echo an index URL with embedded credentials
+            # (https://user:token@internal-index/...), so redact before the
+            # volume cap: truncating first can bisect a token, and half a token
+            # no longer matches the redactors' patterns.
+            dep_err = (stderr or b"").decode(errors="replace")
+            dep_err, _ = redact_exfiltration_urls(dep_err)
+            dep_err, _ = redact_credentials(dep_err)
+            logger.error("Dep repair failed: %s", dep_err[:500])
 
     # ------------------------------------------------------------------
     # Service initialisation
@@ -6487,7 +6492,183 @@ class GatewayOrchestrator:
     # ------------------------------------------------------------------
 
     async def _check_for_updates(self) -> None:
-        """Blocking update check — auto-applies if enabled, otherwise notifies."""
+        """Blocking update check — auto-applies if enabled, otherwise notifies.
+
+        Delegates to the resolved :class:`~kiro_crew.platform.update_provider.CommandProvider`
+        when security_policy.json's ``updates`` block defines the update commands
+        (the enterprise escape hatch). When no policy-defined provider is active,
+        ``resolve_provider`` returns ``None`` and we fall through to the existing
+        layout-aware logic (backward compatible: no policy = existing behavior).
+        """
+        provider = None
+        try:
+            from kiro_crew.platform.update_provider import resolve_provider
+
+            provider = await asyncio.get_running_loop().run_in_executor(
+                None, resolve_provider
+            )
+        except Exception:
+            # ONLY resolution is tolerated here. If reading the policy fails we
+            # cannot know an operator selected a provider, so the built-in
+            # behaviour is the honest default.
+            logger.debug("Provider resolution failed, using legacy path", exc_info=True)
+
+        # A policy-defined provider (enterprise escape hatch) OWNS the update from
+        # here on. Its failures must NOT fall through to the legacy updater: doing
+        # so would run the built-in git/CDN update on a host whose administrator
+        # selected a different package manager, which is the bypass this seam
+        # exists to prevent. `_check_for_updates_via_provider` reports its own
+        # failures and leaves the install alone.
+        if provider is not None:
+            try:
+                await self._check_for_updates_via_provider(provider)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Contained, not swallowed and not retried elsewhere: the update
+                # check runs on the gateway's boot path, so an exception must not
+                # escape into it, and it must not reach the legacy updater either
+                # (that would run the built-in update the operator excluded).
+                logger.exception("Policy-defined update provider failed")
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "failed",
+                        "Update provider failed — see logs; run manually: kirocrew update",
+                    )
+            return
+
+        # Legacy path: existing behavior for builtin/git auto-detected installs.
+        await self._check_for_updates_legacy()
+
+    def _publish_provider_update_state(self, result: object) -> None:
+        """Mirror a provider's verdict into the dashboard's authoritative status.
+
+        The SSE snapshot renders the update badge from
+        ``dashboard/handlers/updates.py::_update_info["available"]``, which only
+        the LEGACY check writes. A provider carries its own
+        :class:`UpdateCheckResult`, so notifying without this leaves the badge
+        reading a stale (usually False) value and the operator never sees that a
+        policy-defined update is waiting.
+        """
+        from kiro_crew.dashboard.handlers.updates import _update_info
+
+        _update_info["available"] = bool(getattr(result, "available", False))
+        remote = str(getattr(result, "remote_version", "") or "")
+        if remote:
+            _update_info["remote_version"] = remote
+        _update_info["checked"] = True
+
+    async def _check_for_updates_via_provider(self, provider: object) -> None:
+        """Provider-delegated update check and apply."""
+        from kiro_crew import __version__ as _running_version
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.update_governance import min_version, update_required
+        from kiro_crew.platform.update_provider import UpdateProvider
+
+        assert isinstance(provider, UpdateProvider)
+
+        result = await provider.check()
+
+        # The mandatory floor is an enterprise ceiling and is evaluated FIRST,
+        # before any check-error early return: a host below min_version must
+        # still be updated even when the provider's check could not complete
+        # (a timed-out or misconfigured command must not strand the host below
+        # the policy floor).
+        if update_required(_running_version):
+            # Guard against an infinite update→restart loop: only apply when the
+            # check found a NEWER build available. If the floor is pinned above
+            # the highest installable build (a policy typo, or a floor set ahead
+            # of the current release), applying would reinstall the same version,
+            # restart, and re-enter this branch forever. When no newer build is
+            # available we notify and stop — the git path's no-new-commits early
+            # return is the equivalent guard.
+            if not result.available:
+                logger.warning(
+                    "Version compliance: running %s is below the policy minimum %s, "
+                    "but no newer build is available to apply — notifying, not looping",
+                    _running_version,
+                    min_version(),
+                )
+                self._publish_provider_update_state(result)
+                if self.dashboard_state:
+                    self.dashboard_state.push_refresh("update_available")
+                return
+            logger.warning(
+                "Version compliance: running %s is below the policy minimum %s — "
+                "applying mandatory update via provider (overrides auto_update)",
+                _running_version,
+                min_version(),
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "pulling", "Applying mandatory update…"
+                )
+            success = await provider.apply()
+            if success:
+                await self._restart_after_update()
+            else:
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "failed", "Update apply failed — run manually: kirocrew update"
+                    )
+            return
+
+        # Below the mandatory floor: a check error is a non-answer, not a
+        # verdict — report it and stop rather than treating it as "up to date".
+        if result.error:
+            logger.info("Update check did not complete (%s)", result.error)
+            return
+
+        if result.available:
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            if cfg.auto_update:
+                logger.info("Auto-update enabled — applying update via provider")
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "pulling", "Downloading update…"
+                    )
+                success = await provider.apply()
+                if success:
+                    await self._restart_after_update()
+                else:
+                    if self.dashboard_state:
+                        self.dashboard_state.push_update_progress(
+                            "failed", "Update apply failed — run manually: kirocrew update"
+                        )
+            else:
+                self._publish_provider_update_state(result)
+                if self.dashboard_state:
+                    self.dashboard_state.push_refresh("update_available")
+        else:
+            print("👻 Already on latest version")
+
+    async def _restart_after_update(self) -> None:
+        """Save state and restart the process after a successful update apply."""
+        logger.info("Update applied, restarting gateway")
+        if self.dashboard_state:
+            self.dashboard_state.push_update_progress("restarting", "Restarting server…")
+            from kiro_crew.dashboard.chat import save_all_slots_to_history
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(),
+                        save_all_slots_to_history,
+                        self.dashboard_state,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.debug(
+                    "Dashboard slot save before update restart failed",
+                    exc_info=True,
+                )
+        if self.sessions:
+            await self.sessions.close_all()
+        os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+
+    async def _check_for_updates_legacy(self) -> None:
+        """Legacy update check — the existing layout-aware logic."""
         try:
             from kiro_crew import __version__ as _running_version
             from kiro_crew.dashboard.handlers import _do_update_check, _update_info
@@ -6495,21 +6676,6 @@ class GatewayOrchestrator:
             await _do_update_check()
             from kiro_crew.platform.update_governance import min_version, update_required
 
-            # A policy-pinned minimum version makes the update MANDATORY: it
-            # overrides the user's auto_update=False, because user config sits
-            # under the enterprise ceiling and an operator opting out must not
-            # hold a fleet on a build the policy forbids.
-            #
-            # Checked BEFORE the `available` branch, and deliberately independent
-            # of it: the mandate is about whether THIS host satisfies the floor,
-            # not about whether a newer build was advertised. `_auto_apply_update`
-            # still applies the source pin and its own no-new-commits early
-            # return, so this cannot bypass the ceiling or loop.
-            #
-            # Not gated on `self_updatable`: a policy floor is an enterprise
-            # ceiling, and this branch has always attempted the git apply on every
-            # layout. Teaching it the wheel path (which needs the installer, not a
-            # git reset) is a separate change from making the CHECK honest.
             if update_required(_running_version):
                 # A mandatory floor is handled by layout, because "apply" means
                 # different things per install shape:
@@ -6532,22 +6698,32 @@ class GatewayOrchestrator:
                     )
                     await self._auto_apply_update()
                     return
-                if _update_info.get("update_command"):
+                if (
+                    _update_info.get("update_command")
+                    and _update_info.get("install_kind") == "wheel"
+                ):
+                    # Only apply when a NEWER build is available; otherwise the
+                    # installer reinstalls the same below-floor version and the
+                    # execv-restart re-enters this branch forever (the git path's
+                    # no-new-commits guard is the equivalent). A floor pinned
+                    # above the latest build must notify, not loop.
+                    if not _update_info.get("available"):
+                        logger.warning(
+                            "Version compliance: running %s is below the policy minimum %s, "
+                            "but no newer build is available — notifying, not looping",
+                            _running_version,
+                            min_version(),
+                        )
+                        if self.dashboard_state:
+                            self.dashboard_state.push_refresh("update_available")
+                        return
                     logger.warning(
-                        "Version compliance: running %s is below the policy minimum %s, "
-                        "but this install (%s) updates by re-running the installer — "
-                        "run `kirocrew update`",
+                        "Version compliance: running %s is below the policy minimum %s — "
+                        "applying mandatory update via installer (overrides auto_update)",
                         _running_version,
                         min_version(),
-                        _update_info.get("install_kind") or "unknown",
                     )
-                    # Light the badge: the SSE snapshot reads
-                    # `_update_info["available"]`, which the check may have left
-                    # False (a pre-release remote reads as not-newer) even though
-                    # the floor makes this update mandatory.
-                    _update_info["available"] = True
-                    if self.dashboard_state:
-                        self.dashboard_state.push_refresh("update_available")
+                    await self._auto_apply_wheel_update()
                     return
                 logger.warning(
                     "Version compliance: running %s is below the policy minimum %s, but this "
@@ -6563,28 +6739,29 @@ class GatewayOrchestrator:
                 from kiro_crew.config import KiroCrewConfig
 
                 cfg = KiroCrewConfig.load()
-                # `_auto_apply_update` replaces code with git fetch + reset, so it
-                # can only serve a GIT CHECKOUT. A wheel install replaces itself by
-                # re-running the installer, which this process must not do
-                # unattended — so notify instead. Without this guard, the wheel
-                # path in `_do_update_check` (which can now report `available`)
-                # would drive a git reset in a tree that has no `.git`.
                 if cfg.auto_update and _update_info.get("self_updatable"):
                     logger.info("Auto-update enabled — applying update")
                     await self._auto_apply_update()
+                elif (
+                    cfg.auto_update
+                    and _update_info.get("update_command")
+                    and _update_info.get("install_kind") == "wheel"
+                ):
+                    # Only a managed WHEEL install can be safely self-updated by
+                    # re-running the cli.sh installer: it replaces the same venv
+                    # the running interpreter lives in. A "source" install (cloud
+                    # tarball / EC2) also carries an update_command but the
+                    # installer would create a SEPARATE managed venv while this
+                    # source interpreter re-execs unchanged — an infinite
+                    # update→restart loop. Those notify instead.
+                    logger.info(
+                        "Auto-update enabled for wheel install — running installer"
+                    )
+                    await self._auto_apply_wheel_update()
                 else:
-                    if cfg.auto_update:
-                        logger.warning(
-                            "Auto-update is on, but this install (%s) updates by "
-                            "re-running the installer, not by git — notifying instead",
-                            _update_info.get("install_kind") or "unknown",
-                        )
                     if self.dashboard_state:
                         self.dashboard_state.push_refresh("update_available")
             elif _update_info.get("error"):
-                # A check that could not run is NOT "already on latest" — saying so
-                # is the exact false reassurance the honest-`checked` contract in
-                # `handlers/updates.py` exists to prevent.
                 logger.info("Update check did not complete (%s)", _update_info.get("error"))
             else:
                 print("👻 Already on latest version")
@@ -6763,7 +6940,11 @@ class GatewayOrchestrator:
             )
             pip_out, pip_err = await asyncio.wait_for(pip_install.communicate(), timeout=400)
             if pip_install.returncode != 0:
-                err_text = pip_err.decode(errors="replace")[:500]
+                # Same reasoning as the dep-repair path: redact first, cap last.
+                err_text = pip_err.decode(errors="replace")
+                err_text, _ = redact_exfiltration_urls(err_text)
+                err_text, _ = redact_credentials(err_text)
+                err_text = err_text[:500]
                 logger.error(
                     "Auto-update: pip install failed (rc=%d): %s",
                     pip_install.returncode,
@@ -6847,6 +7028,215 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress(
                     "failed", f"Restart failed — run: {restart_command_hint()}"
                 )
+
+    async def _auto_apply_wheel_update(self) -> None:
+        """Auto-apply a wheel/cli.sh update by re-running the signed installer.
+
+        The installer (``cli.sh``) handles the full security chain: RSA-SHA256
+        signature verification of the manifest against a pinned public key,
+        SHA-256 checksum of the downloaded wheel, and channel assertion. This
+        method simply invokes it as a subprocess, then restarts the gateway via
+        ``os.execv`` so the new code takes effect.
+
+        Preconditions (checked by the caller):
+        * ``auto_update`` is True in config.
+        * ``_update_info["update_command"]`` is set (the feed check succeeded
+          and composed the installer command locally from validated inputs).
+        * The install is NOT self_updatable (not a git checkout) and NOT
+          externally managed (not a desktop app or container).
+
+        The command is composed by :func:`_wheel_update_command` from a validated
+        channel name and a scheme-pinned artifact base URL (``--proto '=https'``),
+        never from feed data. A successful run replaces the venv in-place; a
+        failure leaves the existing install intact (cli.sh writes to a temp dir
+        and atomically replaces via ``ln -sf``).
+        """
+        from kiro_crew.dashboard.handlers import _update_info
+
+        update_cmd = _update_info.get("update_command")
+        if not update_cmd or not isinstance(update_cmd, str):
+            logger.warning("Auto-update (wheel): no update_command available")
+            return
+
+        # Platform guard: cli.sh is POSIX shell. Windows wheel installs do not
+        # exist in practice (install.ps1 makes Windows a thin client to a Linux
+        # gateway), but guard anyway.
+        if sys.platform == "win32":
+            logger.warning("Auto-update (wheel): not supported on Windows")
+            if self.dashboard_state:
+                self.dashboard_state.push_refresh("update_available")
+            return
+
+        # Source pin: the CDN bases that compose the installer command must
+        # satisfy the policy source pin, same check the git path applies to
+        # its remote. A pinned fleet's wheel installs cannot bypass the ceiling.
+        from kiro_crew.platform.update_governance import update_blocked_reason
+        from kiro_crew.platform.update_layout import cdn_bases, cdn_bases_are_safe
+
+        # The installer command embeds the CDN bases and is handed to a shell, and
+        # KIROCREW_CDN_BASE is operator-set: a metacharacter could close the URL
+        # and append a second command, and an http:// override would make the
+        # piped installer interceptable. Same gate `kirocrew update` applies.
+        if not cdn_bases_are_safe():
+            logger.error(
+                "Auto-update (wheel): CDN base contains disallowed characters "
+                "or is not HTTPS — refusing to run"
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_refresh("update_available")
+            return
+
+        feed_base, artifact_base = cdn_bases()
+        blocked = update_blocked_reason(feed_base)
+        if not blocked:
+            blocked = update_blocked_reason(artifact_base)
+        if blocked:
+            logger.warning("Auto-update (wheel) refused: %s", blocked)
+            if self.dashboard_state:
+                self.dashboard_state.push_refresh("update_available")
+            return
+
+        if self.dashboard_state:
+            self.dashboard_state.push_update_progress(
+                "pulling", "Downloading update from CDN…"
+            )
+
+        logger.info("Auto-update (wheel): running installer")
+        # Resolve sh through the trusted system dirs, not the gateway's PATH
+        # (which can lead with an agent-writable venv/bin), so a planted shim
+        # cannot hijack the installer spawn. Fail CLOSED if no trusted shell:
+        # a bare-name fallback would reopen the very hole this closes.
+        from kiro_crew.platform.update_provider import (
+            _kill_and_reap,
+            _read_bounded_output,
+            _trusted_path_env,
+        )
+        from kiro_crew.platform_compat import trusted_system_bin
+
+        _sh = trusted_system_bin("sh")
+        if not _sh:
+            logger.error("Auto-update (wheel): no trusted shell found — refusing to run")
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "failed", "No trusted shell — run manually: kirocrew update"
+                )
+            return
+        # Pinning the shell is only half of it: the installer line is
+        # ``curl … | sh``, so the child resolves `curl` (and its own inner shell)
+        # through the inherited PATH. Narrow the child's PATH to trusted system
+        # dirs, and fail CLOSED when there is none rather than handing over an
+        # agent-influenceable lookup.
+        _env = _trusted_path_env()
+        if _env is None:
+            logger.error("Auto-update (wheel): no trusted PATH — refusing to run")
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "failed", "No trusted PATH — run manually: kirocrew update"
+                )
+            return
+        proc: asyncio.subprocess.Process | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                _sh,
+                "-c",
+                update_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_env,
+                # Root, not the gateway's cwd, which can be an agent-writable
+                # checkout a relative command word would resolve inside.
+                cwd="/",
+                # Own session: the installer line is a pipeline, so the whole
+                # tree must be one killable group that cannot signal back into
+                # the gateway's own group.
+                start_new_session=platform_compat.IS_POSIX,
+            )
+            # Bounded: the installer's stdout is chatter and only a capped
+            # stderr is logged, so a verbose CDN script cannot exhaust the
+            # gateway's memory buffering it.
+            stdout, stderr = await _read_bounded_output(
+                proc, timeout=300, want_stdout=False
+            )
+        except asyncio.CancelledError:
+            # Shutdown (SIGTERM) cancels this task. Without this branch the
+            # installer keeps mutating the installation after the gateway exits,
+            # leaving a half-replaced venv nobody is supervising. Kill the whole
+            # TREE (the line is a pipeline) and reap under a bound, then re-raise
+            # so cancellation still propagates. ``proc`` is None when the
+            # cancellation landed during the spawn itself.
+            if proc is not None:
+                await _kill_and_reap(proc)
+            logger.warning("Auto-update (wheel): cancelled — installer child killed")
+            raise
+        except asyncio.TimeoutError:
+            # Terminate the whole tree and reap under a bound so nothing keeps
+            # modifying the installation after we return.
+            if proc is not None:
+                await _kill_and_reap(proc)
+            logger.error("Auto-update (wheel): installer timed out (5 min)")
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "failed", "Installer timed out — run manually: kirocrew update"
+                )
+            return
+        except OSError:
+            # OSError, not just FileNotFoundError: fd or process exhaustion
+            # raises a different OSError, and this runs on the boot path.
+            logger.exception("Auto-update (wheel): could not start the installer")
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "failed", "'sh' not available — run manually: kirocrew update"
+                )
+            return
+
+        if proc.returncode != 0:
+            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+            # Redact BEFORE truncating. Slicing first can cut a credential in
+            # half, and half a token no longer matches the redactors' patterns
+            # (an AWS key needs its full 20 chars to match), so the surviving
+            # fragment would reach gateway.log and /api/logs verbatim. The
+            # 500-char cap is for log volume, so it belongs last.
+            err_text = (stderr or b"").decode(errors="replace")
+            err_text, _ = redact_exfiltration_urls(err_text)
+            err_text, _ = redact_credentials(err_text)
+            err_text = err_text[:500]
+            logger.error(
+                "Auto-update (wheel): installer failed (rc=%d): %s",
+                proc.returncode,
+                err_text,
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "failed",
+                    f"Installer failed (exit {proc.returncode}) — "
+                    "run manually: kirocrew update",
+                )
+            return
+
+        logger.info("Auto-update (wheel): installer succeeded, restarting gateway")
+        if self.dashboard_state:
+            self.dashboard_state.push_update_progress("restarting", "Restarting server…")
+            from kiro_crew.dashboard.chat import save_all_slots_to_history
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(),
+                        save_all_slots_to_history,
+                        self.dashboard_state,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.debug(
+                    "Dashboard slot save before wheel auto-update restart failed",
+                    exc_info=True,
+                )
+        if self.sessions:
+            await self.sessions.close_all()
+        # Restart into the freshly-installed version.
+        os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
 
     # ------------------------------------------------------------------
     # Main run loop

@@ -328,13 +328,21 @@ def _wheel_update_command(channel: str, artifact_base: str) -> str:
     as untrusted display metadata.
 
     ``--proto '=https'`` is not decoration: this string is copied into a shell and
-    pipes an installer into ``sh``, and ``artifact_base`` is overridable via
+    runs an installer, and ``artifact_base`` is overridable via
     ``KIROCREW_CDN_BASE``. Without the restriction, an ``http://`` override would
     hand the user a command that fetches a script in plaintext and executes it, so
     an on-path attacker could swap the installer. curl refuses any other scheme,
     which is also exactly what ``cli.sh`` does for every fetch it makes itself.
+
+    Delegates to :func:`update_layout.wheel_update_command` rather than composing
+    a second copy: this string used to pipe curl into ``sh``, which reports only
+    the shell's status, so a failed download read as a successful update. Keeping
+    one builder is what stops the displayed command and the one the gateway runs
+    from drifting apart on that.
     """
-    return f"curl -fsSL --proto '=https' {artifact_base}/cli.sh | sh -s -- --channel {channel}"
+    from kiro_crew.platform.update_layout import wheel_update_command
+
+    return wheel_update_command(channel)
 
 
 def _set_update_info(**fields: object) -> None:
@@ -1104,6 +1112,31 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update — git pull, rebuild, restart gateway."""
     state: DashboardState = request.app["state"]
+
+    # A policy-defined provider OWNS the update on this host. Checked before the
+    # git precondition below so an authenticated operator clicking Update cannot
+    # run the built-in mechanism their own policy excluded. A dashboard token
+    # proves who the caller is, not that this host may update by git.
+    from kiro_crew.platform.update_provider import apply_policy_update
+
+    applied = await apply_policy_update()
+    if applied is not None:
+        if not applied:
+            # A configured provider's failure is a failure. Falling through to
+            # the git path would be the bypass the policy exists to prevent.
+            state.push_update_progress(
+                "failed", "Policy-defined update command failed — see logs"
+            )
+            return web.json_response(
+                {
+                    "error": "policy-defined update command failed",
+                    "code": "policy_update_failed",
+                    "governance": True,
+                },
+                status=500,
+            )
+        await _restart_gateway(state)
+        return web.json_response({"ok": True, "status": "updating"})
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     if not proj:
