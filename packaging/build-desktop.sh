@@ -495,20 +495,46 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   # which performs no retries -- fails the final rmdir with ENOTEMPTY and the
   # whole build aborts (electron-userland/electron-builder#6890). It is a
   # transient race, so retry from a swept, clean dir a bounded number of times.
+  #
+  # Transient network/TLS failures in electron-builder's own fetches:
+  # electron-builder downloads more than the electron zip -- the AppImage and
+  # NSIS/Squirrel targets pull their own tooling mid-build through `got`. A
+  # dropped connection there ("socket hang up") or a TLS-intercepted response
+  # ("self-signed certificate") aborts the whole build *after* the electron
+  # download has already reported progress=100%. Those are per-execution
+  # network events rather than build errors: the same commit passes on a plain
+  # re-run, and one matrix leg fails while its siblings go green on the same
+  # attempt. They share the bounded budget below, take a longer backoff than
+  # the local .DS_Store sweep, and still fail the build once it is exhausted --
+  # a real outage must stay visible.
   attempt=1; max_attempts=3
   while : ; do
     eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
     if CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "${EB_ARGS[@]}" 2>&1 | tee "$eb_log"; then
       rm -f "$eb_log"; break
     fi
-    if grep -q "ENOTEMPTY" "$eb_log" && [ "$attempt" -lt "$max_attempts" ]; then
-      echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
-      find dist -name .DS_Store -delete 2>/dev/null || true
-      rm -rf dist/*-temp 2>/dev/null || true
-      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep 2; continue
+    # Classify the failure before deciding: each transient class needs its own
+    # cleanup, and anything unrecognised must still abort on the first failure.
+    eb_transient=""
+    if grep -q "ENOTEMPTY" "$eb_log"; then
+      eb_transient="ds_store"
+    elif grep -qE "socket hang up|self[- ]signed certificate|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND" "$eb_log"; then
+      eb_transient="network"
+    fi
+    if [ -n "$eb_transient" ] && [ "$attempt" -lt "$max_attempts" ]; then
+      if [ "$eb_transient" = "ds_store" ]; then
+        echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
+        find dist -name .DS_Store -delete 2>/dev/null || true
+        rm -rf dist/*-temp 2>/dev/null || true
+        eb_backoff=2
+      else
+        echo "  ⚠ transient network/TLS failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
+        eb_backoff=$((attempt * 10))
+      fi
+      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep "$eb_backoff"; continue
     fi
     rm -f "$eb_log"
-    echo "❌ electron-builder failed (not the .DS_Store race, or retries exhausted)." >&2
+    echo "❌ electron-builder failed (not a known transient class, or retries exhausted)." >&2
     exit 1
   done
 )
