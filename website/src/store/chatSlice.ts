@@ -1013,6 +1013,20 @@ export const switchSlot = createAsyncThunk(
 const isTurnBoundaryUser = (m: { role: string; meta?: Record<string, unknown> }): boolean =>
   m.role === 'user' && !(m.meta?.steer && !m.meta?.optimistic)
 
+/** Rows a frame appends BELOW the turn's body rather than as part of it: an
+ *  approval request, a queued bubble, an error card, an OAuth banner, a stop
+ *  event. They are not turn progress, so they must not close a reasoning burst
+ *  the model is still emitting.
+ *
+ *  The list is deliberately a DENY list, not an allow list of progress roles:
+ *  anything unlisted counts as progress, so a role added later splits one burst
+ *  into two (cosmetic) instead of merging two bursts into one — the defect the
+ *  per-burst accumulation exists to prevent. It gates only the extend-vs-open
+ *  decision, never a row's position. */
+const OUT_OF_BAND_ROLES = new Set(['permission', 'queued', 'error', 'mcp_oauth'])
+const isOutOfBandRow = (m: { role: string; kind?: string }): boolean =>
+  OUT_OF_BAND_ROLES.has(m.role) || m.kind === 'stop_event'
+
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
  *  one fired on chat_done) would otherwise drop the thinking block the instant a
@@ -2853,22 +2867,56 @@ const chatSlice = createSlice({
     },
     /** Handle chat messages pushed via global SSE/WS (works after refresh). */
     /** Accumulate streamed model reasoning (`chat_thinking` WS event) into a
-     *  single content-bearing `thinking`-role message for the current turn.
-     *  Reasoning normally arrives before the visible answer, so the block sits
-     *  above the streamed assistant text. Scans back to the turn boundary (the
-     *  last non-steer user message) to keep one reasoning block per turn. */
+     *  content-bearing `thinking`-role message — ONE BLOCK PER REASONING BURST.
+     *  A turn that reasons, calls a tool, then reasons again therefore renders
+     *  two blocks, each above the step it explains. Scanning back to the turn
+     *  boundary instead appends every later burst into the FIRST burst's block,
+     *  so a multi-tool turn collapsed all of its reasoning under the opening one.
+     *
+     *  Placement is anchored on the turn's open `streaming` row, located
+     *  directly rather than inferred from the array tail: a turn's visible text
+     *  accumulates into ONE row that stays open across tool calls (the backend
+     *  flushes each segment without broadcasting), and reasoning belongs ABOVE
+     *  it, exactly as the `tool` branch inserts ahead of it. The tail is NOT the
+     *  end of the turn — an approval row, a queued bubble, a stop event, an
+     *  error card and a `file` card are all appended BELOW that open row, so
+     *  measuring from `length` would drop the block beneath the answer it
+     *  explains. With no open row (reasoning before any text) the block appends,
+     *  which is also correct: it lands after whatever opened the turn.
+     *
+     *  A CONFIRMED steer is injected into the running turn, so reasoning after
+     *  it continues the burst it interrupted; an unconfirmed (optimistic) steer
+     *  is a raced real turn and does close the burst — see isTurnBoundaryUser.
+     *
+     *  A `tool` row BELOW that open text row means the rows are already out of
+     *  emission order: the `tool` branch steps back over a trailing `streaming`
+     *  row but not over an approval row, so an approval-gated call lands beneath
+     *  the text. The tool is then the turn's latest step, so the burst that
+     *  preceded it is closed and the new one belongs after it — appending is the
+     *  only placement that satisfies both, and it is what stops a post-tool
+     *  burst being concatenated into the pre-tool block. */
     sseThinkingChunk(state, action: PayloadAction<{ slot: string; content: string }>) {
       const { slot, content } = action.payload
       if (slot !== state.activeSlot || !content) return
+      let at = state.messages.length
       for (let i = state.messages.length - 1; i >= 0; i--) {
-        if (state.messages[i].role === 'thinking') { state.messages[i].content += content; return }
-        // A confirmed steer does not start a new turn, so reasoning after it
-        // belongs to this turn's existing block. Treating it as a boundary mints
-        // a second block for one answer, and that block lands at the end of the
-        // array, below the answer.
-        if (isTurnBoundaryUser(state.messages[i])) break
+        if (state.messages[i].role === 'streaming') { at = i; break }
       }
-      state.messages.push({ role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
+      for (let i = at; i < state.messages.length; i++) {
+        if (state.messages[i].role === 'tool') { at = state.messages.length; break }
+      }
+      // Extend the burst the model is still emitting: an out-of-band row (an
+      // approval, a queued bubble) and a confirmed steer both interrupt it
+      // without ending it, so look through them for the open block.
+      let prev = at
+      while (prev > 0) {
+        const m = state.messages[prev - 1]
+        if (isOutOfBandRow(m) || (m.role === 'user' && !isTurnBoundaryUser(m))) { prev--; continue }
+        break
+      }
+      const open = prev > 0 ? state.messages[prev - 1] : undefined
+      if (open?.role === 'thinking') { open.content += content; return }
+      state.messages.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
     sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean }>) {
       const { slot, role, content, ts, seq, cls, meta, kind, batched } = action.payload
