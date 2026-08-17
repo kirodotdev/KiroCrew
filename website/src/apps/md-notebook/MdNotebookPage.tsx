@@ -64,6 +64,7 @@ import {
   loadPref,
   matchesShortcut,
   neighborAfterDelete,
+  noteDirPath,
   savePref,
   shiftListItem,
   targetsSameNote,
@@ -1188,6 +1189,10 @@ export default function MdNotebookPage() {
   }
 
   const activeVault = vaults.find(v => v.id === activeVaultId) ?? vaults[0]
+  // Directory of the open note, which is what resolves its relative image
+  // sources. Derived here rather than in `Preview` because the vault's local
+  // path lives in this page's state, not in the note body.
+  const noteDir = noteDirPath(activeVault, activePath)
   // `pending` means "differs from the last commit", which is only actionable when
   // there is a remote the note has not reached yet. On a local-only vault it has
   // no destination, clears itself on the next autosave, and reads as "not saved"
@@ -2027,6 +2032,7 @@ export default function MdNotebookPage() {
             >
               <Preview
                 content={content}
+                noteDir={noteDir}
                 onToggleCheckbox={toggleCheckbox}
                 editRange={editBlock}
                 onStartEdit={startBlockEdit}
