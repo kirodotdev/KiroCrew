@@ -5129,6 +5129,7 @@
       "invalid_json": "অবৈধ JSON:",
       "items": "আইটেম",
       "lines": "লাইন",
+      "media_preview_failed": "প্লেব্যাক ব্যর্থ হয়েছে। ব্রাউজার এই ফাইলটি ডিকোড করতে পারছে না।",
       "more": "আরও",
       "null": "null",
       "office_download_hint": "Office ডকুমেন্ট ইনলাইনে প্রিভিউ করা যায় না। Word, Excel, PowerPoint বা সামঞ্জস্যপূর্ণ কোনও ভিউয়ারে খুলতে ডাউনলোড করুন।",

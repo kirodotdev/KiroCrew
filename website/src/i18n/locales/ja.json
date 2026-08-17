@@ -5051,6 +5051,7 @@
       "invalid_json": "無効な JSON：",
       "items": "項目",
       "lines": "行",
+      "media_preview_failed": "再生に失敗しました。ブラウザーはこのファイルをデコードできません。",
       "more": "その他",
       "null": "null",
       "office_download_hint": "Office ドキュメントはインラインでプレビューできません。Word、Excel、PowerPoint、または互換ビューアーで開くには、ダウンロードしてください。",

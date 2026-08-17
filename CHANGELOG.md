@@ -4,6 +4,18 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **Video and audio files now play inline in the file viewer.** Opening
+  `.mp4`, `.webm`, `.mp3`, `.wav` and friends previously fell through to the
+  code renderer, which displayed the binary as mojibake. A new
+  `GET /api/file-stream` endpoint serves media with HTTP Range support
+  (seeking needs 206 Partial Content) through the same security envelope as
+  the other file endpoints -- path validation, sensitive-path block,
+  symlink-refusing open, content sniffing so the served bytes decide the
+  type, and bounded chunked reads so memory stays constant regardless of
+  file size. The viewer routes video to an inline `<video>` player and audio
+  to an `<audio>` bar; any playback failure degrades to the download card.
+  (#4021)
+
 - **A succeeded publish no longer renders as a blank error, and a failed
   re-publish no longer renders as a success.** The Publish panel recognized only
   the deploy-shaped `{url}` response, so a provider that hands its confirmed

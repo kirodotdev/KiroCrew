@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import ntpath
 import os
 import re
 import stat as _stat_mod
@@ -1485,23 +1486,18 @@ async def api_file_read(request: web.Request) -> web.Response:
 
     raw_path = request.query.get("path", "")
     # Resolve relative paths against project dir when resolve=1
-    if request.query.get("resolve") == "1" and raw_path and not raw_path.startswith(("/", "~")):
-        proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-        if not proj:
+    if request.query.get("resolve") == "1":
+        raw_path, _resolve_err = _resolve_project_relative(raw_path)
+        if _resolve_err == "cannot_resolve":
             return web.json_response(
                 {"error": "cannot resolve: no project dir configured"},
                 status=400,
             )
-        raw_path = os.path.join(proj, raw_path)
-        # Ensure resolved path stays within project directory
-        resolved = os.path.realpath(raw_path)
-        resolved_proj = os.path.realpath(proj)
-        if not (resolved == resolved_proj or resolved.startswith(resolved_proj + os.sep)):
+        if _resolve_err == "outside_project":
             return web.json_response(
                 {"error": "path outside project directory"},
                 status=400,
             )
-        raw_path = resolved
 
     try:
         validate_tool_args({"path": raw_path}, FILE_READ_SCHEMA)
@@ -1621,20 +1617,16 @@ async def api_file_download(request: web.Request) -> web.Response:
 
     raw_path = request.query.get("path", "")
     # Resolve relative paths against project dir when resolve=1 (mirrors api_file_read)
-    if request.query.get("resolve") == "1" and raw_path and not raw_path.startswith(("/", "~")):
-        proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-        if not proj:
+    if request.query.get("resolve") == "1":
+        raw_path, _resolve_err = _resolve_project_relative(raw_path)
+        if _resolve_err == "cannot_resolve":
             return web.json_response(
                 {"error": "cannot resolve: no project dir configured"}, status=400,
             )
-        raw_path = os.path.join(proj, raw_path)
-        resolved = os.path.realpath(raw_path)
-        resolved_proj = os.path.realpath(proj)
-        if not (resolved == resolved_proj or resolved.startswith(resolved_proj + os.sep)):
+        if _resolve_err == "outside_project":
             return web.json_response(
                 {"error": "path outside project directory"}, status=400,
             )
-        raw_path = resolved
 
     try:
         validate_tool_args({"path": raw_path}, FILE_READ_SCHEMA)
@@ -1817,6 +1809,318 @@ async def api_file_raw(request: web.Request) -> web.Response:
     if content_type == "image/svg+xml":
         headers["Content-Security-Policy"] = "script-src 'none'; style-src 'unsafe-inline'"
     return web.Response(body=data, headers=headers)
+
+
+# ── /api/file-stream: Range-capable audio/video serving ─────────────────────
+# The media cap is deliberately larger than _MAX_UPLOAD_BYTES: screen
+# recordings routinely exceed 50 MB, and unlike file-raw this endpoint never
+# materializes the file in memory -- Range streaming reads bounded chunks, so
+# the cap only bounds what one URL can address, not per-request memory.
+_STREAM_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_STREAM_CHUNK_BYTES = 256 * 1024
+# Text-exfiltration probe window. Real media is binary within the first
+# bytes; content that decodes as UTF-8 text this deep is a text file wearing
+# a media magic, which the redaction scan below must see.
+_STREAM_TEXT_PROBE_BYTES = 64 * 1024
+
+
+def _resolve_project_relative(raw: str) -> tuple[str, str | None]:
+    """Resolve a relative path against KIROCREW_PROJECT_DIR (resolve=1).
+
+    Returns (path, None) on success -- absolute and ~-paths pass through
+    unchanged -- or ("", error_code) with "cannot_resolve" (no project dir
+    configured) or "outside_project" (the joined path escapes the project
+    directory after realpath).
+    """
+    if not raw or raw.startswith(("/", "~")):
+        return raw, None
+    # Windows-absolute shapes (UNC \\server\share, drive C:\...) are not
+    # project-relative: pass them to the validator unchanged. Joining them
+    # would let os.path.realpath contact the named host (SMB round-trip)
+    # before any validation runs; the validator's own network-path gate
+    # sits BEFORE its realpath, so it is the safe place for these.
+    if raw.startswith("\\") or ntpath.splitdrive(raw)[0]:
+        return raw, None
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    if not proj:
+        return "", "cannot_resolve"
+    candidate = os.path.realpath(os.path.join(proj, raw))
+    resolved_proj = os.path.realpath(proj)
+    if not (candidate == resolved_proj or candidate.startswith(resolved_proj + os.sep)):
+        return "", "outside_project"
+    return candidate, None
+
+
+# Container signature -> Content-Type. Sniffed from the file's first bytes so
+# the endpoint serves media by CONTENT, not by extension claim (CWE-434 shape,
+# same posture as file-raw's image allowlist). Entries are (offset, magic,
+# mime). MP4-family uses the ftyp box at offset 4 (bytes 0-3 are the box
+# size); WebM and Matroska share the EBML magic and both play in <video>.
+_MEDIA_MAGIC: tuple[tuple[int, bytes, str], ...] = (
+    (4, b"ftyp", "video/mp4"),          # mp4 / m4v / m4a / mov (BMFF family)
+    (0, b"\x1a\x45\xdf\xa3", "video/webm"),  # webm / mkv (EBML)
+    (0, b"OggS", "audio/ogg"),          # ogg audio or video; <audio>/<video> both accept
+    (0, b"fLaC", "audio/flac"),
+    (0, b"ID3", "audio/mpeg"),          # mp3 with ID3v2 tag
+    (0, b"\xff\xfb", "audio/mpeg"),     # bare mp3 frame sync (MPEG1 layer3)
+    (0, b"\xff\xf3", "audio/mpeg"),
+    (0, b"\xff\xf2", "audio/mpeg"),
+)
+
+
+def _sniff_media_type(header: bytes) -> str | None:
+    """Return the media Content-Type for ``header`` bytes, or None."""
+    for offset, magic, mime in _MEDIA_MAGIC:
+        if header[offset:offset + len(magic)] == magic:
+            return mime
+    # WAV: RIFF....WAVE compound signature (offset 8 discriminates from WebP)
+    if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "audio/wav"
+    return None
+
+
+def _parse_range_header(value: str, size: int) -> tuple[int, int] | None:
+    """Parse a single-range ``bytes=`` header against ``size``.
+
+    Returns (start, end) inclusive, or None for an unsatisfiable or
+    malformed header. Multi-range requests are treated as malformed --
+    <audio>/<video> elements only ever issue single ranges, and multipart
+    responses would complicate the reader for no consumer.
+    """
+    if not value.startswith("bytes="):
+        return None
+    spec = value[len("bytes="):]
+    if "," in spec or "-" not in spec:
+        return None
+    start_s, _, end_s = spec.partition("-")
+    try:
+        if start_s == "":
+            # suffix form: last N bytes
+            suffix = int(end_s)
+            if suffix <= 0:
+                return None
+            start = max(0, size - suffix)
+            end = size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size or end < start:
+        return None
+    return start, min(end, size - 1)
+
+
+async def api_file_stream(request: web.Request) -> web.StreamResponse:
+    """GET /api/file-stream?path=... -- serve audio/video with Range support.
+
+    Powers inline <video>/<audio> playback in the file viewer. file-raw is
+    unsuitable for media: it whole-reads the file into memory, rejects
+    anything over the upload cap, and ignores Range headers -- and seeking in
+    a media element requires 206 Partial Content. This endpoint follows the
+    same security pattern (dashboard path validation, sensitive-path block,
+    symlink-refusing open, content sniffing before serving) but streams
+    bounded chunks off the event loop, so memory stays constant regardless
+    of file size. All reads go through the SAME fd the header was sniffed
+    from, so the served bytes cannot be swapped after the check.
+
+    Accepted gap (documented, not a defect): the redaction probe covers the
+    first 64 KiB. Complete coverage is unreachable for a Range endpoint --
+    the client controls byte offsets, so any pattern scan can be split
+    across range boundaries -- and the sibling binary-serving endpoint
+    (file-raw) performs no content scan at all. The probe exists to catch
+    the honest-mistake shape: a text file wearing a forged media magic.
+    """
+    import os  # noqa: F811
+
+    import kiro_crew.dashboard.handlers as _h  # noqa: F811
+
+    def _log(outcome: str, res: str) -> None:
+        _sel().log_tool_invocation(
+            session_key="dashboard", tool_name="file_stream", outcome=outcome, resources=res,
+        )
+
+    raw_path = request.query.get("path", "")
+    resolve_requested = request.query.get("resolve") == "1"
+
+    def _open_media(raw: str) -> tuple:
+        """Validate, open, and sniff the media file. Runs on a worker thread.
+
+        Everything filesystem-touching lives here: relative-path resolution
+        against the project dir (the resolve=1 contract shared with
+        file-read/file-download), realpath resolution inside the validator,
+        the sensitive-path check, existence probe, the symlink-refusing open,
+        fstat, and the header read. Returns either
+        ("ok", file_object, size, content_type, path) or a refusal tuple
+        ("refused", code, path_for_log). A malformed path (embedded NUL
+        makes realpath raise ValueError) is an invalid path, not a crash.
+        """
+        try:
+            if resolve_requested:
+                raw, resolve_err = _resolve_project_relative(raw)
+                if resolve_err:
+                    return ("refused", resolve_err, raw)
+            validated = _h._validate_dashboard_path(raw)
+        except ValueError:
+            validated = None
+        if not validated:
+            return ("refused", "invalid_path", raw)
+        from kiro_crew.security import is_sensitive_path as _isp  # noqa: F811
+        if _isp(validated):
+            return ("refused", "sensitive_path", validated)
+        if not os.path.isfile(validated):
+            return ("refused", "not_found", validated)
+        try:
+            fd = _open_rb_nofollow(validated)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return ("refused", "symlink_refused", validated)
+            return ("refused", "read_failed", validated)
+        fobj = os.fdopen(fd, "rb")
+        try:
+            size = os.fstat(fobj.fileno()).st_size
+            # fstat is authoritative for THIS fd; a file that grows afterwards
+            # only extends past the size we announce, never past the cap check.
+            if size > _STREAM_MAX_BYTES:
+                fobj.close()
+                return ("refused", "file_too_large", validated)
+            header = fobj.read(16)
+            content_type = _sniff_media_type(header)
+            if not content_type:
+                fobj.close()
+                return ("refused", "not_media", validated)
+            # Sibling-control parity: file-download refuses text content that
+            # redact() flags. Media magics can be weak (the bare mp3 frame
+            # sync is two bytes), so a credential-bearing TEXT file with a
+            # forged prefix must not stream out here. Decode with
+            # errors="replace" -- exactly as the download scan does -- so an
+            # invalid byte (including the forged magic itself) cannot skip
+            # the credential pass; replacement chars break no real credential
+            # pattern, and genuine binary media decodes to replacement-dense
+            # junk that redact() leaves unchanged. The scan is bounded to the
+            # probe window; the full-file scan remains the download path's.
+            probe = header + fobj.read(_STREAM_TEXT_PROBE_BYTES - len(header))
+            probe_text = probe.decode("utf-8", errors="replace")
+            if redact(probe_text) != probe_text:
+                fobj.close()
+                return ("refused", "content_redacted", validated)
+            fobj.seek(0)
+        except Exception:
+            with contextlib.suppress(Exception):
+                fobj.close()
+            return ("refused", "read_failed", validated)
+        return ("ok", fobj, size, content_type, validated)
+
+    result = await asyncio.to_thread(_open_media, raw_path)
+    if result[0] == "refused":
+        _, code, res = result
+        outcome = "not_found" if code == "not_found" else (
+            "failure" if code == "read_failed" else "denied"
+        )
+        _log(outcome, res)
+        # One literal response per refusal class: the error-response contract
+        # requires the {"error", "code"} body and the status to be statically
+        # checkable at each call site.
+        if code == "invalid_path":
+            return web.json_response(
+                {"error": "invalid or forbidden path", "code": "invalid_path"}, status=400
+            )
+        if code == "cannot_resolve":
+            return web.json_response(
+                {"error": "cannot resolve: no project dir configured", "code": "cannot_resolve"},
+                status=400,
+            )
+        if code == "outside_project":
+            return web.json_response(
+                {"error": "path outside project directory", "code": "outside_project"},
+                status=400,
+            )
+        if code == "sensitive_path":
+            return web.json_response(
+                {"error": "sensitive path blocked", "code": "sensitive_path"}, status=403
+            )
+        if code == "not_found":
+            return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+        if code == "symlink_refused":
+            return web.json_response(
+                {"error": "symlinks not allowed", "code": "symlink_refused"}, status=403
+            )
+        if code == "file_too_large":
+            return web.json_response(
+                {"error": "file too large", "code": "file_too_large"}, status=413
+            )
+        if code == "not_media":
+            return web.json_response(
+                {"error": "file content is not a supported media format", "code": "not_media"},
+                status=415,
+            )
+        if code == "content_redacted":
+            return web.json_response(
+                {"error": "file content was redacted; stream aborted",
+                 "code": "content_redacted"},
+                status=400,
+            )
+        return web.json_response(
+            {"error": "cannot read file", "code": "read_failed"}, status=500
+        )
+    _, f, size, content_type, path = result
+
+    try:
+        start, end = 0, size - 1
+        status = 200
+        range_header = request.headers.get("Range")
+        if range_header:
+            parsed = _parse_range_header(range_header, size)
+            if parsed is None:
+                _log("denied", path)
+                return web.json_response(
+                    {"error": "range not satisfiable", "code": "bad_range"},
+                    status=416,
+                    headers={"Content-Range": f"bytes */{size}"},
+                )
+            start, end = parsed
+            status = 206
+
+        resp = web.StreamResponse(status=status)
+        resp.content_type = content_type
+        resp.content_length = end - start + 1
+        resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        if status == 206:
+            resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        # SEL: record the ALLOW decision before any bytes move. prepare() and
+        # the write loop can be cancelled by a client disconnect, and a
+        # permitted read must never leave the audit trail empty because the
+        # client hung up first.
+        _log("success", path)
+        await resp.prepare(request)
+
+        await asyncio.to_thread(f.seek, start)
+        remaining = end - start + 1
+        while remaining > 0:
+            try:
+                chunk = await asyncio.to_thread(f.read, min(_STREAM_CHUNK_BYTES, remaining))
+            except OSError:
+                # A mid-stream filesystem error must leave a SEL outcome; the
+                # response is already streaming so all we can do is stop short.
+                _log("failure", path)
+                raise
+            if not chunk:
+                break  # file truncated under us; the announced length just ends short
+            remaining -= len(chunk)
+            try:
+                await resp.write(chunk)
+            except (ConnectionResetError, ConnectionError):
+                break  # client hung up (scrubbing, tab close) -- normal for media
+        with contextlib.suppress(Exception):
+            await resp.write_eof()
+        return resp
+    finally:
+        # close() can wait on the buffered-file lock while a worker-thread
+        # read is in flight (task cancellation), so it must not run on the
+        # event loop either.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(f.close)
 
 
 async def api_file_write(request: web.Request) -> web.Response:

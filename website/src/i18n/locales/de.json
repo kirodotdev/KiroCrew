@@ -5129,6 +5129,7 @@
       "invalid_json": "Ungültiges JSON:",
       "items": "Elemente",
       "lines": "Zeilen",
+      "media_preview_failed": "Wiedergabe fehlgeschlagen – der Browser kann diese Datei nicht dekodieren.",
       "more": "mehr",
       "null": "null",
       "office_download_hint": "Office-Dokumente können nicht inline vorangezeigt werden. Zum Öffnen in Word, Excel, PowerPoint oder einem kompatiblen Viewer herunterladen.",

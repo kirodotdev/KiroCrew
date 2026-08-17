@@ -1,13 +1,19 @@
 import { memo, useState, useMemo, useCallback, useRef } from 'react'
-import { Download, FileText } from 'lucide-react'
+import { Download, FileText, Film, Music } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
-import { fileDownloadUrl } from '../utils/fileReadUrl'
+import { fileDownloadUrl, fileStreamUrl } from '../utils/fileReadUrl'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
+// Media served through /api/file-stream (Range-capable). Split decides the
+// element: <video> renders a picture surface, <audio> a compact control bar.
+// .ogg goes to audio -- the extension is overwhelmingly audio in practice and
+// the .ogv variant exists for video.
+const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.ogv'])
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga'])
 const JSON_EXTS = new Set(['.json'])
 const JSONL_EXTS = new Set(['.jsonl'])
 const HTML_EXTS = new Set(['.html', '.htm'])
@@ -28,7 +34,7 @@ const OFFICE_EXTS = new Set([
   '.odt', '.ods', '.odp',
 ])
 
-export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'office' | 'code' | 'markdown'
+export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'video' | 'audio' | 'office' | 'code' | 'markdown'
 
 /**
  * Map a filesystem path to a FileType. Note: SVG files (path-backed) are
@@ -45,6 +51,8 @@ export function detectFileType(filePath: string): FileType {
   if (HTML_EXTS.has(ext)) return 'html'
   if (PDF_EXTS.has(ext)) return 'pdf'
   if (EXCALIDRAW_EXTS.has(ext)) return 'excalidraw'
+  if (VIDEO_EXTS.has(ext)) return 'video'
+  if (AUDIO_EXTS.has(ext)) return 'audio'
   if (OFFICE_EXTS.has(ext)) return 'office'
   if (['.md', '.markdown', '.mdx', '.txt', ''].includes(ext)) return 'markdown'
   return 'code'
@@ -308,6 +316,69 @@ export const OfficeViewer = memo(function OfficeViewer({ filePath }: { filePath:
           {i18nT('components.fileRenderers.download')}
         </a>
       </div>
+    </div>
+  )
+})
+
+/* ── Media player (inline video/audio via /api/file-stream) ── */
+export const MediaPlayer = memo(function MediaPlayer({ filePath, kind }: { filePath: string; kind: 'video' | 'audio' }) {
+  const [failed, setFailed] = useState(false)
+  const filename = filePath.split(/[\\/]/).pop() || filePath
+  const src = fileStreamUrl(filePath)
+  const Icon = kind === 'video' ? Film : Music
+  if (failed) {
+    // Endpoint refusal (unsupported container, oversize) or a codec the
+    // browser cannot decode -- same fallback contract as the other rich
+    // viewers: never render a broken surface, always offer the bytes.
+    return (
+      <div className="h-full flex items-center justify-center p-4 bg-bg-elevated rounded-md border border-border">
+        <div className="flex flex-col items-center gap-3 max-w-md text-center">
+          <Icon size={64} className="text-muted" strokeWidth={1.25} aria-hidden="true" />
+          <div className="text-sm text-text break-all">{filename}</div>
+          <div className="text-xs text-muted">
+            {i18nT('components.fileRenderers.media_preview_failed')}
+          </div>
+          <a
+            href={fileDownloadUrl(filePath)}
+            download={filename}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-white hover:opacity-90 no-underline"
+            aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+          >
+            <Download size={16} aria-hidden="true" />
+            {i18nT('components.fileRenderers.download')}
+          </a>
+        </div>
+      </div>
+    )
+  }
+  if (kind === 'video') {
+    return (
+      <div className="h-full flex items-center justify-center p-3 bg-bg-elevated">
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption -- local files carry no track sidecar; captions are out of scope */}
+        <video
+          controls
+          preload="metadata"
+          src={src}
+          className="max-h-full max-w-full rounded-md"
+          onError={() => setFailed(true)}
+          aria-label={filename}
+        />
+      </div>
+    )
+  }
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-3 p-4 bg-bg-elevated">
+      <Icon size={40} className="text-muted" strokeWidth={1.25} aria-hidden="true" />
+      <div className="text-sm text-text break-all text-center max-w-md">{filename}</div>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption -- local files carry no track sidecar; captions are out of scope */}
+      <audio
+        controls
+        preload="metadata"
+        src={src}
+        className="w-full max-w-md"
+        onError={() => setFailed(true)}
+        aria-label={filename}
+      />
     </div>
   )
 })

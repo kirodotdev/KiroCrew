@@ -236,7 +236,7 @@ const MonacoDiffEditor = lazy(async () => {
  * path-backed `.svg` to `image` and never returns `svg` here. `svg` is kept in the
  * list for the content-string SVG that artifacts render.
  */
-const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'office']
+const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'video', 'audio', 'office']
 
 /** Comment hint banner — shown once per session for markdown files */
 function CommentHint({ onDismiss }: { onDismiss: () => void }) {

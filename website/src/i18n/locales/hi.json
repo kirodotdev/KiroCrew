@@ -5129,6 +5129,7 @@
       "invalid_json": "अमान्य JSON:",
       "items": "आइटम",
       "lines": "पंक्तियाँ",
+      "media_preview_failed": "प्लेबैक विफल रहा। ब्राउज़र इस फ़ाइल को डिकोड नहीं कर सकता।",
       "more": "और",
       "null": "null",
       "office_download_hint": "Office दस्तावेज़ों का इनलाइन पूर्वावलोकन नहीं किया जा सकता। Word, Excel, PowerPoint या किसी संगत व्यूअर में खोलने के लिए डाउनलोड करें।",

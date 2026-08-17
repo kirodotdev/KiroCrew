@@ -5051,6 +5051,7 @@
       "invalid_json": "无效的 JSON：",
       "items": "项",
       "lines": "行",
+      "media_preview_failed": "播放失败：浏览器无法解码此文件。",
       "more": "更多",
       "null": "null",
       "office_download_hint": "无法在线预览 Office 文档。请下载后使用 Word、Excel、PowerPoint 或兼容的查看器打开。",

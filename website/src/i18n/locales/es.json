@@ -5207,6 +5207,7 @@
       "invalid_json": "JSON no válido:",
       "items": "elementos",
       "lines": "líneas",
+      "media_preview_failed": "Error de reproducción: el navegador no puede decodificar este archivo.",
       "more": "más",
       "null": "null",
       "office_download_hint": "Los documentos de Office no se pueden previsualizar en línea. Descárgalo para abrirlo en Word, Excel, PowerPoint o un visor compatible.",

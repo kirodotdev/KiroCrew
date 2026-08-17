@@ -5051,6 +5051,7 @@
       "invalid_json": "잘못된 JSON:",
       "items": "항목",
       "lines": "줄",
+      "media_preview_failed": "재생에 실패했습니다. 브라우저가 이 파일을 디코딩할 수 없습니다.",
       "more": "더 보기",
       "null": "null",
       "office_download_hint": "Office 문서는 인라인으로 미리 볼 수 없습니다. Word, Excel, PowerPoint 또는 호환 뷰어에서 열려면 다운로드하세요.",

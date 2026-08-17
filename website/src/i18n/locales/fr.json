@@ -5207,6 +5207,7 @@
       "invalid_json": "JSON non valide :",
       "items": "éléments",
       "lines": "lignes",
+      "media_preview_failed": "Échec de la lecture : le navigateur ne peut pas décoder ce fichier.",
       "more": "de plus",
       "null": "null",
       "office_download_hint": "Les documents Office ne peuvent pas être prévisualisés en ligne. Téléchargez-le pour l'ouvrir dans Word, Excel, PowerPoint ou une visionneuse compatible.",

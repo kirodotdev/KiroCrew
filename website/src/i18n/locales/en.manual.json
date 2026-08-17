@@ -1466,6 +1466,7 @@
       "video": "Video: {{name}}"
     },
     "fileRenderers": {
+      "media_preview_failed": "Playback failed — the browser cannot decode this file.",
       "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
       "showing_raw_content_count": "Showing raw content ({{count}} chars)",
       "showing_raw_content_truncated_count": "Showing raw content ({{count}} chars, first {{shown}} shown)"

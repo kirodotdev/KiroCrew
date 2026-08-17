@@ -329,6 +329,11 @@ export default [
               // a trailing `=`, so this still reports real copy.
               String.raw`^[?&][a-z_]+=$`,
 
+              // The same server contract with a FIXED flag value baked in, e.g.
+              // `&resolve=1`. The value class is a single digit or lowercase word
+              // (`=1`, `=true`) — never a sentence — so prose still cannot match.
+              String.raw`^[?&][a-z_]+=[a-z0-9]+$`,
+
               // A catalog KEY assembled at runtime, e.g.
               // `apps.crewCompanion.state.${slot}`. Translating a key would break the
               // lookup it performs — the value it resolves to is what gets translated.
