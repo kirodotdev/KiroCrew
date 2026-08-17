@@ -509,14 +509,6 @@ interface Slot {
   clean_mode?: boolean
   folder_id?: string
   pinned?: boolean
-  // Derived (not a payload field), like `unread`: true when the slot's last
-  // activity falls inside `RECENT_WINDOW_MS`. Computed in `enrichedSlots`.
-  recent?: boolean
-  // Derived: the RAW per-turn flag, preserved before `running` is widened to
-  // the "in progress" notion (live workflow run / active goal loop) for the
-  // session filter. Subtitle logic reads this to tell mid-turn from idle —
-  // an idle-between-cycles loop must show its last message, not "Thinking…".
-  midTurn?: boolean
   tags?: string[]
   forked_from?: string | null
   source_links?: Array<{
@@ -1333,7 +1325,7 @@ function ChatSidebar({
   const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
   // Heartbeat that re-evaluates recency even when nothing else re-renders.
   // Sidebar interactions (new messages, status changes, opening the menu) all
-  // recompute `enrichedSlots` for free, so this only matters when the sidebar
+  // recompute the recency lookup for free, so this only matters when the sidebar
   // sits idle with the Recent filter on — without it a stale session would
   // never age out of the list. Gated on the filter being active so we don't
   // wake an idle tab needlessly, mirroring the `staleTick` pattern in App.tsx.
@@ -1378,40 +1370,45 @@ function ChatSidebar({
     const id = setInterval(() => setRecentTick(t => t + 1), recentTickIntervalMs(recentWindowMs))
     return () => clearInterval(id)
   }, [recentFilterActive, recentWindowMs])
-  const enrichedSlots = useMemo<Slot[]>(() => {
-    // Snapshot `now` once per recompute so every slot's recency is measured
-    // against the same instant. The last-activity timestamp mirrors the
-    // date-sort comparator (`slotActivityTs`).
-    const now = Date.now()
-    return slots.map(s => {
-      // A running turn is recent BY DEFINITION, whatever its settled instant
-      // says. The ordering key deliberately stops advancing mid-turn, so a turn
-      // outliving the window — routine for unattended multi-step work — would
-      // otherwise age out of the Recent list while it is the busiest session on
-      // screen. `workflowActive` / `looping` below extend "running" the same way,
-      // hence the OR against the computed flag rather than `s.running`.
-      const recentByTs = isWithinRecentWindow(slotActivityTs(s), now, recentWindowMs)
-      // A slot with a live dynamic-workflow run counts as running so the
-      // "In progress" filter (and its count) surfaces it, even though the
-      // parent turn has ended while the run executes in the background.
-      // An active goal loop (auto-nudge) counts too: a looping session idles
-      // between cycles with running=false, but it is still mid-mission — its
-      // row shows "Loop N/M", so dropping it from "In progress" undercounts.
-      // Own-property read, matching the row renderer: the store normalizes
-      // writes through `safeKey`, so a bare index read could resolve a
-      // `__proto__`-like key to a truthy `Object.prototype`.
+  // Wider than the payload's `s.running`: a live workflow run or an active goal
+  // loop counts as in progress, so neither drops out of the filter or its count.
+  const runningSet = useMemo<Set<string>>(() => {
+    const out = new Set<string>()
+    for (const s of slots) {
+      // Own-property read: the store normalizes writes through `safeKey`, so a
+      // bare index read could resolve a `__proto__`-like key to a truthy value.
       const looping = Object.prototype.hasOwnProperty.call(goalLoops ?? {}, s.key)
-      const running = s.running || !!workflowActive[s.key] || looping
-      return { ...s, running, midTurn: s.running, unread: unreadSet.has(s.key), recent: running || recentByTs }
-    })
+      if (s.running || !!workflowActive[s.key] || looping) out.add(s.key)
+    }
+    return out
+  }, [slots, workflowActive, goalLoops])
+  // A running turn is recent BY DEFINITION: the ordering key stops advancing
+  // mid-turn, so a long turn would age out while it is the busiest row on screen.
+  const recentSet = useMemo<Set<string>>(() => {
+    // One `now` per recompute, so every slot is measured against the same instant.
+    // The last-activity timestamp mirrors the date-sort comparator.
+    const now = Date.now()
+    const out = new Set<string>()
+    for (const s of slots) {
+      if (runningSet.has(s.key) || isWithinRecentWindow(slotActivityTs(s), now, recentWindowMs)) out.add(s.key)
+    }
+    return out
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.
-  }, [slots, unreadSet, recentWindowMs, recentTick, workflowActive, goalLoops]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [slots, runningSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Exhaustive over `SessionFilterKey` on purpose: a new filter key becomes a
+  // type error here instead of a predicate that silently matches nothing.
+  const _derivedLookup = useMemo<Record<SessionFilterKey, (slot: Slot) => boolean>>(() => ({
+    unread: slot => unreadSet.has(slot.key),
+    running: slot => runningSet.has(slot.key),
+    pinned: slot => !!slot.pinned,
+    recent: slot => recentSet.has(slot.key),
+  }), [unreadSet, runningSet, recentSet])
   const filterCounts = useMemo(() => {
     const counts = {} as Record<SessionFilterKey, number>
-    for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = enrichedSlots.filter(slot => slot[filterDef.key]).length
+    for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = slots.filter(_derivedLookup[filterDef.key]).length
     return counts
-  }, [enrichedSlots])
+  }, [slots, _derivedLookup])
   // Ref mirror of `activeFilters` so the auto-drain effect can read the
   // current toggle state without depending on it. Keeps the effect from
   // re-firing on its own setState output.
@@ -1691,7 +1688,7 @@ function ChatSidebar({
     [filterTagIds, tagById],
   )
   /** Rows for the filter menu's Tags section, in the tag vocabulary's own order.
-   *  Counts come from `enrichedSlots`, NOT `filteredSlots`, so they describe the
+   *  Counts come from all `slots`, NOT `filteredSlots`, so they describe the
    *  vocabulary rather than the current selection — otherwise every unselected tag
    *  would read 0 the moment any tag was selected, which is the number a user
    *  consults precisely when deciding what to select next. */
@@ -1700,10 +1697,10 @@ function ChatSidebar({
       .sort((a, b) => a.order - b.order)
       .map(t => ({
         tag: t,
-        count: enrichedSlots.filter(s => (s.tags ?? []).includes(t.id)).length,
+        count: slots.filter(s => (s.tags ?? []).includes(t.id)).length,
         selected: filterTagIds.has(t.id),
       })),
-    [tags, enrichedSlots, filterTagIds],
+    [tags, slots, filterTagIds],
   )
   /** Names of the selected tags, in vocabulary order. Disjunction, not a comma
    *  join: selection is a union, so a screen reader should hear "Blocked or
@@ -1876,9 +1873,9 @@ function ChatSidebar({
     // palette). Pinning stays a reachability promise for browsing, not a
     // ranking hint inside explicit search results.
     const searchRanked = slotFilter.trim().length >= SEARCH_MIN_CHARS ? slotSearchRanks : null
-    const next = enrichedSlots
+    const next = slots
       .filter(slot => {
-        if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => slot[filterDef.key])) return false
+        if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot))) return false
         // Unlike the folder filter this does NOT go inert while searching: it is a
         // session property, so it behaves like the Unread/Pinned filters above.
         if (activeTagIds.size > 0 && !(slot.tags ?? []).some(id => activeTagIds.has(id))) return false
@@ -1895,7 +1892,7 @@ function ChatSidebar({
     frozenSlotsRef.current = next
     return next
   },
-    [enrichedSlots, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters, activeTagIds, dragFrozen]
+    [slots, _derivedLookup, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters, activeTagIds, dragFrozen]
   )
 
   // Folder IDs whose sessions are excluded from the flat lane because the
@@ -2694,19 +2691,18 @@ function ChatSidebar({
     // warn dot with an explicit "interrupted" instead. Guarded on the raw turn
     // flag plus workflow/subagent activity: while any of those run, the loop IS
     // working and `s.interrupted` only describes a superseded turn.
-    const goalLoopStalled = !!goalLoop && !!s.interrupted && !s.midTurn && !wfActive && subagentCount === 0
+    const goalLoopStalled = !!goalLoop && !!s.interrupted && !s.running && !wfActive && subagentCount === 0
     // Whatever this row would have said if no loop were running, reused as the
     // loop line's trailing detail. This is why the loop branch can outrank the
     // working signals below without swallowing them: live workflow/subagent/tool
     // status still shows, and between cycles it falls back to the last message.
-    // Reads `midTurn` (the raw turn flag), NOT `running`: enrichment widens
-    // `running` to include this very loop, and an idle-between-cycles row must
-    // say "Loop 7/24 · <last message>", not "Loop 7/24 · Thinking…".
+    // Reads the RAW `s.running`, not `runningSet`: the widened flag includes this
+    // very loop, and an idle-between-cycles row must show its last message.
     const goalLoopDetail = wfActive
       ? wfActive.label
       : subagentCount > 0
         ? subagentLabel
-        : s.midTurn
+        : s.running
           ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
@@ -2855,7 +2851,7 @@ function ChatSidebar({
         // with a definite direction, and rotation reads as progress where a
         // fading dot reads as a mere marker.
         key: 'running',
-        when: !!s.running,
+        when: runningSet.has(s.key),
         build: () => {
           const text = slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           return {
@@ -2879,7 +2875,7 @@ function ChatSidebar({
     // svg attribute, which is not a tooltip. It goes on the gutter element.
     const status: { glyph: React.ReactNode; label: string } | null = rowState
       ? { glyph: rowState.glyph, label: rowState.label }
-      : s.unread
+      : unreadSet.has(s.key)
         // A DOT, so it keeps its own size: `ROW_ICON_PX` sizes the lucide
         // glyphs, whose ink covers a fraction of their box, while a filled
         // disc covers all of it. At 10px it reads as heavier than every
