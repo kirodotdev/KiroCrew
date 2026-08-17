@@ -9,6 +9,7 @@ Commands:
   /unlink      — stop mirroring dashboard replies here
   /stop        — stop the current reply and clear the queue (alias: /cancel)
   /help        — show available commands
+  /kirocrew dashboard [<N>h|<N>m] — send a presigned dashboard login link
 
 Mid-turn overrides (prefix a message sent WHILE a reply is running; they
 override the global ``messaging.queue_mode`` for that one message):
@@ -42,6 +43,9 @@ _STOP_ALIASES = frozenset(("/stop", "/cancel"))
 # "the feature isn't installed" rather than "you typed it wrong".
 _MODEL_ALIASES = frozenset(("/model", "/models"))
 _YOLO_ALIASES = frozenset(("/yolo",))
+# Two-token command: ``/kirocrew dashboard [<TTL>]``. The bare ``/kirocrew``
+# token is deliberately NOT a command on its own (see parse_command).
+_DASHBOARD_ALIASES = frozenset(("/kirocrew",))
 
 # Telegram bot usernames: 5-32 chars, alphanumeric + underscore, by convention
 # ending in "bot" -- but any alnum/underscore run after @ is accepted here
@@ -91,11 +95,10 @@ def parse_command(text: str, bot_username: str = "") -> str | None:
     """
     stripped = text.strip()
     # Telegram commands always start with /
-    cmd = (
-        _strip_bot_mention(stripped.split()[0].lower(), bot_username)
-        if stripped.startswith("/")
-        else ""
-    )
+    if not stripped.startswith("/"):
+        return None
+    parts = stripped.split()
+    cmd = _strip_bot_mention(parts[0].lower(), bot_username)
     if cmd in _NEW_ALIASES:
         return "new"
     if cmd in _COMPACT_ALIASES:
@@ -112,6 +115,11 @@ def parse_command(text: str, bot_username: str = "") -> str | None:
         return "help"
     if cmd in _STOP_ALIASES:
         return "stop"
+    # /kirocrew dashboard [<TTL>] -- requires the explicit "dashboard"
+    # subcommand, so a bare "/kirocrew" (typo or menu tap) falls through as
+    # ordinary chat text instead of minting a login link.
+    if cmd in _DASHBOARD_ALIASES and len(parts) >= 2 and parts[1].lower() == "dashboard":
+        return "dashboard"
     return None
 
 
@@ -119,6 +127,38 @@ def parse_command_argument(text: str) -> str:
     """Return the text following a command token (``""`` when there is none)."""
     parts = text.strip().split(None, 1)
     return parts[1].strip() if len(parts) == 2 else ""
+
+
+def parse_dashboard_ttl(text: str) -> int:
+    """Parse the optional TTL from a ``/kirocrew dashboard [<N>h|<N>m]`` command.
+
+    Returns the session TTL in seconds. Defaults to 3600 (1 hour) when no
+    duration is given or the duration is unparseable.
+    """
+    from kiro_crew.dashboard.token_auth import parse_duration
+
+    parts = text.strip().split()
+    # Expected: ["/kirocrew", "dashboard", "<ttl>"]
+    if len(parts) >= 3:
+        parsed = parse_duration(parts[2].lower())
+        if parsed is not None:
+            return parsed
+    return 3600
+
+
+def format_ttl(ttl_secs: int) -> str:
+    """Render a TTL in seconds as a human duration ("2h", "90m" -> "1h 30m").
+
+    Never truncates: a non-hour-multiple >= 1h renders both components so the
+    reply reports exactly how long the login link stays live.
+    """
+    hours, rem = divmod(ttl_secs, 3600)
+    mins = rem // 60
+    if hours and mins:
+        return f"{hours}h {mins}m"
+    if hours:
+        return f"{hours}h"
+    return f"{mins}m"
 
 
 _QUEUE_ALIASES = frozenset(("/queue",))
@@ -173,7 +213,9 @@ def is_bare_mid_turn_override(text: str, bot_username: str = "") -> bool:
 #: rejects one. ``/queue`` and ``/steer`` are deliberately absent: the Telegram
 #: client SENDS a menu entry on tap, and a bare ``/queue`` has no message body
 #: to act on, so listing them would put a dead entry in the menu — they stay
-#: documented in the help card's footer instead.
+#: documented in the help card's footer instead. ``/kirocrew`` is absent for
+#: the same reason: a menu tap sends the bare token, which is not a command
+#: without its ``dashboard`` subcommand — it is documented in the footer.
 COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("new", "Start a fresh conversation"),
     ("compact", "Compress the context when it gets long"),
@@ -211,6 +253,8 @@ def bot_command_payload() -> list[dict[str, str]]:
 
 _HELP_HEADER = "🦞 Kiro Crew — Telegram"
 _HELP_FOOTER = (
+    "/kirocrew dashboard [<N>h|<N>m] — get a dashboard login link (DM only)\n"
+    "\n"
     "While a reply is running, prefix a message to control it:\n"
     "/queue <msg> — answer it after the current turn\n"
     "/steer <msg> — fold it into the running turn now\n"

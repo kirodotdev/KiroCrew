@@ -48,9 +48,11 @@ from kiro_crew.telegram.commands import (
     ConversationState,
     bot_command_payload,
     build_help_text,
+    format_ttl,
     is_bare_mid_turn_override,
     parse_command,
     parse_command_argument,
+    parse_dashboard_ttl,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import (
@@ -519,6 +521,19 @@ class TestParseCommand:
         assert is_bare_mid_turn_override("/new") is False
         assert is_bare_mid_turn_override("hello") is False
 
+    def test_dashboard_command(self) -> None:
+        """Dashboard command requires both /kirocrew and the 'dashboard' subcommand."""
+        assert parse_command("/kirocrew dashboard") == "dashboard"
+        assert parse_command("/kirocrew dashboard 2h") == "dashboard"
+        assert parse_command("/KIROCREW DASHBOARD") == "dashboard"
+        assert parse_command("  /kirocrew   dashboard  ") == "dashboard"
+
+    def test_dashboard_command_requires_subcommand(self) -> None:
+        """Bare /kirocrew without 'dashboard' is not a command."""
+        assert parse_command("/kirocrew") is None
+        assert parse_command("/kirocrew help") is None
+        assert parse_command("/kirocrew other") is None
+
 
 class TestBotMentionSuffix:
     """Telegram's own clients append @BotUsername to a slash command in any
@@ -598,6 +613,50 @@ class TestBotMentionSuffix:
         none should be treated as ours (fail closed, not open)."""
         assert parse_command("/new@KiroCrewBot") is None
         assert parse_command("/yolo@KiroCrewBot") is None
+
+    def test_dashboard_command_strips_bot_mention(self) -> None:
+        assert parse_command("/kirocrew@KiroCrewBot dashboard", "KiroCrewBot") == "dashboard"
+        # A mention naming a different bot is not ours -- fail closed.
+        assert parse_command("/kirocrew@OtherBot dashboard", "KiroCrewBot") is None
+
+
+class TestParseDashboardTtl:
+    def test_default_ttl(self) -> None:
+        """Default is 1 hour when no TTL specified."""
+        assert parse_dashboard_ttl("/kirocrew dashboard") == 3600
+
+    def test_hours(self) -> None:
+        assert parse_dashboard_ttl("/kirocrew dashboard 2h") == 7200
+        assert parse_dashboard_ttl("/kirocrew dashboard 5H") == 18000
+
+    def test_minutes(self) -> None:
+        assert parse_dashboard_ttl("/kirocrew dashboard 30m") == 1800
+        assert parse_dashboard_ttl("/kirocrew dashboard 90M") == 5400
+
+    def test_invalid_ttl_uses_default(self) -> None:
+        """Invalid TTL format falls back to 1 hour."""
+        assert parse_dashboard_ttl("/kirocrew dashboard xyz") == 3600
+        assert parse_dashboard_ttl("/kirocrew dashboard") == 3600
+
+
+class TestFormatTtl:
+    def test_exact_hours(self) -> None:
+        assert format_ttl(3600) == "1h"
+        assert format_ttl(7200) == "2h"
+
+    def test_minutes_only(self) -> None:
+        assert format_ttl(1800) == "30m"
+        assert format_ttl(60) == "1m"
+
+    def test_mixed_never_truncates(self) -> None:
+        """90m must NOT display as '1h' -- the link lives 1.5h."""
+        assert format_ttl(5400) == "1h 30m"
+        assert format_ttl(3660) == "1h 1m"
+
+    def test_sub_minute_floors_to_zero_minutes(self) -> None:
+        # parse_duration never yields <60s, but the formatter stays total.
+        assert format_ttl(0) == "0m"
+        assert format_ttl(59) == "0m"
 
 
 class TestCommandCatalogue:
