@@ -1,3 +1,11 @@
+/* Supplies the `animate-in` / `animate-out` pair the shadcn/ui primitives in
+ * `src/components/ui/` are written against. Its keyframes leave one endpoint
+ * implicit and compose translate+scale+rotate into a single var-driven
+ * `transform`, which is what makes them safe on an element positioned BY
+ * transform — see the note in `ui/dialog.tsx`.
+ */
+import tailwindcssAnimate from 'tailwindcss-animate'
+
 /** Alpha-aware theme color backed by a CSS variable.
  *
  * Theme tokens are CSS custom properties (hex strings resolved at runtime),
@@ -92,7 +100,6 @@ export default {
       },
       keyframes: {
         rise: { from: { opacity: '0', transform: 'translateY(8px)' }, to: { opacity: '1', transform: 'translateY(0)' } },
-        'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },
         'slide-up': { from: { opacity: '0', transform: 'translateY(12px)' }, to: { opacity: '1', transform: 'translateY(0)' } },
         'slide-in-right': { from: { opacity: '0', transform: 'translateX(16px)' }, to: { opacity: '1', transform: 'translateX(0)' } },
         'slide-in-left': { from: { opacity: '0', transform: 'translateX(-16px)' }, to: { opacity: '1', transform: 'translateX(0)' } },
@@ -117,17 +124,10 @@ export default {
         'nc-slide-out': { from: { marginRight: '0px' }, to: { marginRight: '-420px' } },
         'nc-slide-in-full': { from: { marginRight: '-100%' }, to: { marginRight: '0px' } },
         'nc-slide-out-full': { from: { marginRight: '0px' }, to: { marginRight: '-100%' } },
-        /* EXIT halves of `fade-in` / `scale-in`, for a Radix-driven overlay.
-           Radix `Presence` defers unmount until a CSS ANIMATION ends — it does
-           not observe transitions — so a closing dialog needs a real keyframe
-           or it vanishes instantly while its entrance is animated. */
-        'fade-out': { from: { opacity: '1' }, to: { opacity: '0' } },
-        'scale-out': { from: { opacity: '1', transform: 'scale(1)' }, to: { opacity: '0', transform: 'scale(.96)' } },
       },
       animation: {
         'sage-sweep': 'sage-sweep 1.4s ease-in-out infinite',
         rise: 'rise .35s cubic-bezier(.16,1,.3,1) backwards',
-        'fade-in': 'fade-in .2s ease',
         'slide-up': 'slide-up .3s cubic-bezier(.16,1,.3,1) backwards',
         'slide-in-right': 'slide-in-right .3s cubic-bezier(.16,1,.3,1) backwards',
         'slide-in-left': 'slide-in-left .25s cubic-bezier(.16,1,.3,1) backwards',
@@ -143,10 +143,8 @@ export default {
         'nc-slide-out': 'nc-slide-out .24s cubic-bezier(.3,0,.8,.15) forwards',
         'nc-slide-in-full': 'nc-slide-in-full .32s cubic-bezier(.16,1,.3,1) backwards',
         'nc-slide-out-full': 'nc-slide-out-full .24s cubic-bezier(.3,0,.8,.15) forwards',
-        'fade-out': 'fade-out .15s ease forwards',
-        'scale-out': 'scale-out .15s cubic-bezier(.3,0,.8,.15) forwards',
       },
     },
   },
-  plugins: [],
+  plugins: [tailwindcssAnimate],
 }

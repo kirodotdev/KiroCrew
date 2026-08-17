@@ -36,6 +36,12 @@ export default defineConfig({
     // assertions. Declaring en-US here makes that an explicit dependency
     // instead of an accident of the runner's environment.
     locale: 'en-US',
+    // Motion is deliberately NOT suppressed here. The suite must exercise the
+    // same animated path a real user gets, and `src/index.css` gives the
+    // reduced-motion branch its own `animation-duration: 0.01ms !important`
+    // override — pinning the whole suite inside that branch would leave the
+    // default path with no coverage at all. Reduced motion is covered by
+    // `reduced-motion.spec.ts`, which emulates the media query per test.
     trace: 'on-first-retry',
     video: process.env.PLAYWRIGHT_VIDEO === '1' ? 'on' : 'off',
     navigationTimeout: 10000, // 10 second navigation timeout

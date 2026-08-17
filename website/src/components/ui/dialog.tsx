@@ -19,12 +19,15 @@ import { i18nT } from '../../i18n/t'
  *     name, and warns when `aria-describedby` points at nothing. `DialogContent`
  *     therefore defaults `aria-describedby` to `undefined`; pass a
  *     `DialogDescription` and wire it explicitly if a description is wanted.
- *   - Animations use this repo's own `scale-in`/`scale-out` + `fade-in`/
- *     `fade-out` keyframes, NOT shadcn's stock `animate-in`/`zoom-in-95`. Those
- *     stock class names come from `tailwindcss-animate`, which is not installed
- *     here — they are inert in ui/select.tsx today, and making them real would
- *     silently start animating every dropdown, popover and context menu in the
- *     app.
+ *   - Animations are `tailwindcss-animate`'s `animate-in` / `animate-out` pair,
+ *     the same classes shadcn ships. They are load-bearing here rather than
+ *     decorative: `DialogContent` is centred with `-translate-x-1/2
+ *     -translate-y-1/2`, and a CSS animation that declares `transform` outranks
+ *     that class for as long as it runs. `animate-in`'s keyframe composes the
+ *     translate and the scale into ONE var-driven `transform`, so the
+ *     `slide-in-from-*` utilities re-supply the centring the zoom would
+ *     otherwise drop. The same plugin backs `ui/select.tsx`,
+ *     `ui/dropdown-menu.tsx`, `ui/popover.tsx` and `ui/context-menu.tsx`.
  */
 
 const Dialog = DialogPrimitive.Root
@@ -40,7 +43,8 @@ const DialogOverlay = React.forwardRef<
     ref={ref}
     className={cn(
       'fixed inset-0 z-[100] bg-bg/60 backdrop-blur-md',
-      'data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out',
+      'data-[state=open]:animate-in data-[state=closed]:animate-out',
+      'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
       className,
     )}
     {...props}
@@ -86,7 +90,18 @@ const DialogContent = React.forwardRef<
       className={cn(
         'fixed left-1/2 top-1/2 z-[101] flex w-[calc(100%-4rem)] -translate-x-1/2 -translate-y-1/2',
         'flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl outline-none',
-        'data-[state=open]:animate-scale-in data-[state=closed]:animate-scale-out',
+        // The centering lives in `transform`, so the enter/exit animation must
+        // CARRY that translate rather than replace it. `animate-in`'s keyframe
+        // composes translate+scale into one var-driven transform, and the
+        // `slide-*-1/2` / `-[48%]` pair is what re-supplies the -50%/-50% — a
+        // keyframe that declares a bare `transform: scale(...)` would drop the
+        // centering for the animation's whole duration, parking the dialog with
+        // its top-left corner at the viewport centre until the animation ends.
+        'duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
+        'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
+        'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',
+        'data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]',
+        'data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%]',
         className,
       )}
       {...props}
