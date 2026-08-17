@@ -184,6 +184,24 @@ def test_electron_builder_is_wired_to_the_signing_hook() -> None:
     assert SIGN_HOOK.is_file(), f"{sign} is configured but {SIGN_HOOK} does not exist"
 
 
+def test_only_one_hash_algorithm_is_signed() -> None:
+    # electron-builder's legacy signtool default is ["sha1", "sha256"], and it
+    # invokes the sign hook ONCE PER ALGORITHM. The signing profile is
+    # SHA256-only, so an unpinned list makes every file take a second round
+    # trip through S3 and the signing service that can only ever reproduce the
+    # first signature, doubling both the signing-job count and the build's
+    # wall-clock cost.
+    config = json.loads(ELECTRON_PACKAGE_JSON.read_text(encoding="utf-8"))
+    algorithms = config["build"]["win"]["signtoolOptions"].get(
+        "signingHashAlgorithms"
+    )
+    assert algorithms == ["sha256"], (
+        "signingHashAlgorithms must be pinned to exactly ['sha256']; found "
+        f"{algorithms!r}. Leaving it unset restores electron-builder's "
+        "sha1+sha256 default and signs every artifact twice."
+    )
+
+
 def test_local_certificate_discovery_stays_disabled() -> None:
     # There is no certificate on the runner; signing goes through the hook.
     env = _step("Build desktop app")["env"]
