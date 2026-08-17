@@ -571,6 +571,8 @@ export interface RotationIdentities {
   schedule_github_login: string
   /** This operator's PagerDuty user id, matched against the `oncalls` response. */
   pagerduty_user_id: string
+  /** This operator's incident.io user id, matched against the effective schedule. */
+  incidentio_user_id: string
 }
 
 export interface RotationInfo {
