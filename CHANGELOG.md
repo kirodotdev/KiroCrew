@@ -3,6 +3,20 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **A malformed `publish` section no longer silently reopens the destination
+  allowlist.** The gate answered "is the config usable" and "what did the
+  operator allow" from two independent reads. The probe only rejected a
+  non-object TOP level, so a `config.json` of `{"publish": []}` passed it — and
+  the loader then coerced the non-dict section to `{}`, so the allowlist came
+  back empty, which is indistinguishable from "no restriction configured". A
+  malformed section did not deny publishing; it removed the restriction, with
+  no error and no audit record. Re-reading the file could not fix this: `load()`
+  runs a migration that rewrites `config.json` in normalized form, so after the
+  first load the evidence is gone from disk. The loader now reports what it
+  discarded (`KiroCrewConfig.degraded_sections`, covering both an unreadable
+  file and a section coerced away), every one of its ~27 section reads records
+  through one helper, and the publish gate asks that single question. Same
+  two-reader shape as #3945. (#4057)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
