@@ -1833,7 +1833,7 @@ export default function App() {
               <Menu size={20} />
             </button>
           )}
-          {!isMobile && <InstanceTabBar variant="inline" />}
+          <InstanceTabBar variant="inline" />
         </div>
         {/* Centre track: the ⌘K trigger. A flow item, not an overlay — its width
             is the track's width, so it can never sit under a sibling cluster and

@@ -1665,6 +1665,37 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    container query — no JS branch here can observe the group's own width. */
 @container (min-width:531px){ .tb-narrow-only{display:none} }
 
+/* The identity group's own rung. The group holds the nav button (phone only) plus
+   the crew switcher -- active-crew chip, the pinned chips, then the dropdown --
+   and the dropdown TRAILS the chips, so it is the control that leaves the clip
+   box first when the group runs out of room. Losing it would leave a phone with
+   no way to switch crews at all.
+   Measured in the group's own CONTENT box, which is what a container query reads
+   and is 16px narrower than its track on a phone (`px-2` on the group): nav
+   button + gap + a `Local` chip + gap + dropdown = 139px, so the rung fires just
+   above that. Dropping the chip NAMES buys ~43px each and keeps every chip, its
+   state icon and its unread badge on screen; each chip carries the crew name in
+   `aria-label`/`title`, so nothing becomes unreachable.
+   Scoped to `.tb-left` because the chip markup is shared with the full-width
+   strip bar, which is not in this group and has room for its labels.
+   Deliberately NOT `display:none` on the chip row: the dropdown's aggregate
+   unread badge counts a pinned crew only when its chip is measured as cut off,
+   and a display:none row measures as zero-width chips at offset zero -- read as
+   "on screen", which would silently swallow their unread. */
+@container (max-width:152px){ .tb-left .tb-drop-crew-name{display:none} }
+/* Terminal rung for the identity group, the counterpart of the capsule's
+   dot-only one: below this the active-crew chip goes too and the group keeps just
+   the nav button and the dropdown -- which still names the crew on screen, with a
+   radio check on its row. The threshold is the WIDEST icons-only form, not the
+   narrowest: an icon-only chip is 30px bare but ~56px carrying an unread badge,
+   so bounding it at the bare width would let a badge push the dropdown out at
+   exactly the moment there is unread to reach. 36 + 8 + 56 + 4 + 24 = 128.
+   The pinned chip row is left in the flow rather than hidden, for the
+   measurement reason above: `min-width:0` lets it shrink to nothing on its own,
+   and shrinking (unlike `display:none`) is what its own measurement reads as cut
+   off, so those crews' unread rolls into the aggregate badge. */
+@container (max-width:128px){ .tb-left .tb-crew-active-chip{display:none} }
+
 /* ── Topbar glass ── */
 .topbar-glass{
   background:color-mix(in srgb, var(--chrome) 74%, transparent);
