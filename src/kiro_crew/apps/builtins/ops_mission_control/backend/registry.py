@@ -542,6 +542,7 @@ def _install_public_adapters(registry: OpsProviderRegistry) -> None:
         cloudwatch,
         datadog,
         github_issues,
+        incidentio,
         noop,
         pagerduty,
         schedule_file,
@@ -560,6 +561,11 @@ def _install_public_adapters(registry: OpsProviderRegistry) -> None:
     registry.register_signal_source(pd)
     registry.register_rotation_source(pd)
     registry.register_action_sink(pd)
+
+    inc = incidentio.IncidentIoAdapter()
+    registry.register_signal_source(inc)
+    registry.register_rotation_source(inc)
+    registry.register_action_sink(inc)
 
     dd = datadog.DatadogAdapter()
     registry.register_signal_source(dd)
