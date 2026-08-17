@@ -18,6 +18,7 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef(0)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const frameRef = useRef(0)
   const lastTimeRef = useRef(0)
 
@@ -59,14 +60,35 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
       if (frames < 1) frames = 1
 
       const interval = 1000 / fps
+      const drawFrame = () => {
+        ctx.clearRect(0, 0, frameWidth, frameHeight)
+        ctx.drawImage(img, frameRef.current * frameWidth, 0, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight)
+        frameRef.current = (frameRef.current + 1) % frames
+      }
+
+      // Static sprite: draw once, no animation loop at all.
+      if (frames === 1) {
+        drawFrame()
+        return
+      }
+
+      // Pace wakeups at the sprite's fps, not the display's refresh rate.
+      // A bare rAF loop wakes the renderer at 60-120Hz to draw at ~8fps, and
+      // (because an active rAF consumer keeps the compositor's BeginFrame
+      // stream running) holds the GPU process busy too — this window runs with
+      // backgroundThrottling disabled, so nothing ever throttles it. Instead,
+      // sleep out the inter-frame gap with a timer and use rAF only to align
+      // the actual draw with the next vsync.
       const animate = (time: number) => {
+        rafRef.current = 0
         if (time - lastTimeRef.current >= interval) {
           lastTimeRef.current = time
-          ctx.clearRect(0, 0, frameWidth, frameHeight)
-          ctx.drawImage(img, frameRef.current * frameWidth, 0, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight)
-          frameRef.current = (frameRef.current + 1) % frames
+          drawFrame()
         }
-        rafRef.current = requestAnimationFrame(animate)
+        const wait = Math.max(0, interval - (performance.now() - lastTimeRef.current))
+        timerRef.current = setTimeout(() => {
+          rafRef.current = requestAnimationFrame(animate)
+        }, wait)
       }
       rafRef.current = requestAnimationFrame(animate)
     }
@@ -75,6 +97,7 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
     return () => {
       img.removeEventListener('load', onLoad)
       cancelAnimationFrame(rafRef.current)
+      clearTimeout(timerRef.current)
     }
   }, [src, frameWidth, frameHeight, fps, totalFrames])
 
