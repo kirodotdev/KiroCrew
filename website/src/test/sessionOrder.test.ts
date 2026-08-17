@@ -12,9 +12,11 @@
  *      not shift with the app language.
  *  (5) A running session ranks by `last_turn_ts` (its prompt), so mid-turn rows
  *      moving `last_ts` cannot reshuffle the list.
+ *  (6) `fmtRelativeTime` shares one set of day boundaries across a whole list,
+ *      and rebuilds them when the clock leaves that day in either direction.
  */
-import { describe, it, expect } from 'vitest'
-import { compareBySort, comparePinnedThenSort, lastActivityEpoch, slotActivityTs } from '../pages/chat/sessionOrder'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { compareBySort, comparePinnedThenSort, fmtRelativeTime, lastActivityEpoch, slotActivityTs } from '../pages/chat/sessionOrder'
 import type { Sortable } from '../pages/chat/sessionOrder'
 
 const order = (items: Sortable[], key: Parameters<typeof compareBySort>[2] = 'date-desc') =>
@@ -157,5 +159,91 @@ describe('compareBySort created-*', () => {
     ]
     expect(order(items, 'created-desc')).toEqual(['created-first-active-last', 'created-last-active-first'])
     expect(order(items, 'date-desc')).toEqual(['created-last-active-first', 'created-first-active-last'])
+  })
+})
+
+/**
+ * Count `new Date(...)` constructions performed inside `fn`.
+ *
+ * The day-boundary cache is not visible in the string `fmtRelativeTime` returns,
+ * so the allocation count is the only direct evidence it is doing anything. The
+ * subclass is restored in `finally` so a failed assertion cannot leak it into a
+ * later test. `Date.now()` is a static and is inherited, so reading the clock is
+ * deliberately not counted — only allocation is.
+ */
+function countDateConstructions(fn: () => void): number {
+  const Real = globalThis.Date
+  let made = 0
+  class Counting extends Real {
+    constructor(...args: ConstructorParameters<typeof Date>) {
+      // @ts-expect-error variadic forwarding into the Date constructor overloads
+      super(...args)
+      made++
+    }
+  }
+  globalThis.Date = Counting as unknown as DateConstructor
+  try {
+    fn()
+  } finally {
+    globalThis.Date = Real
+  }
+  return made
+}
+
+describe('fmtRelativeTime day boundaries', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('builds the day boundaries once for a whole list, not once per row', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
+    const rows = Array.from({ length: 20 }, (_, i) => `2026-08-17T0${i % 9}:30:00Z`)
+
+    const cold = countDateConstructions(() => {
+      for (const ts of rows) fmtRelativeTime(ts)
+    })
+    const warm = countDateConstructions(() => {
+      for (const ts of rows) fmtRelativeTime(ts)
+    })
+
+    // A rebuild costs 5 (the clock reading plus four boundaries), so a cold list
+    // pays it once and a warm one not at all. Per-row it would be 5 every row.
+    expect(cold).toBeLessThanOrEqual(rows.length + 5)
+    expect(warm).toEqual(rows.length)
+  })
+
+  it('reclassifies a timestamp once the local day rolls over', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
+    const ts = '2026-08-17T10:00:00Z'
+    const asToday = fmtRelativeTime(ts)
+
+    vi.setSystemTime(new Date('2026-08-18T00:30:00Z'))
+    const asYesterday = fmtRelativeTime(ts)
+
+    expect(asYesterday).not.toEqual(asToday)
+    // The yesterday branch appends the same clock time, so this holds whatever
+    // the catalog renders for the label and whatever locale is active.
+    expect(asYesterday).toContain(asToday)
+  })
+
+  it('rebuilds when the clock moves backwards, so a future day is not reused', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
+    const asToday = fmtRelativeTime('2026-08-17T10:00:00Z')
+
+    vi.setSystemTime(new Date('2026-08-20T12:00:00Z'))
+    fmtRelativeTime('2026-08-20T10:00:00Z')
+
+    vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
+    // Held at the Aug 20 boundaries, Aug 17 would fall in the within-6-days
+    // branch and gain a weekday prefix.
+    expect(fmtRelativeTime('2026-08-17T10:00:00Z')).toEqual(asToday)
+  })
+
+  it('still returns empty for a missing or unparseable timestamp', () => {
+    expect(fmtRelativeTime(undefined)).toEqual('')
+    expect(fmtRelativeTime('not-a-date')).toEqual('')
   })
 })

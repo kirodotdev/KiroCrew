@@ -96,26 +96,56 @@ export function comparePinnedThenSort(
   return compareBySort(a, b, key)
 }
 
+/**
+ * The local-midnight instants `fmtRelativeTime` classifies against, in epoch ms.
+ *
+ * Every visible session row compares against the same boundaries, so they are
+ * built once per day rather than once per call. `dayEnd` is the next local
+ * midnight, which is when they stop being true.
+ *
+ * The lower bound matters as much as the upper one: a clock that moves BACKWARDS
+ * is also outside the cached day, and must not be served boundaries from a day
+ * that has not happened yet.
+ */
+let dayStart = 0
+let yesterdayStart = 0
+let sixDaysAgoStart = 0
+let dayEnd = 0
+let dayYear = 0
+
+function ensureDayBoundaries(nowMs: number): void {
+  if (nowMs >= dayStart && nowMs < dayEnd) return
+  const now = new Date(nowMs)
+  const y = now.getFullYear()
+  const m = now.getMonth()
+  const day = now.getDate()
+  // Day arithmetic goes through the Date constructor rather than ms subtraction
+  // because it has to survive DST: a local day is not always 86_400_000 ms long.
+  dayStart = new Date(y, m, day).getTime()
+  yesterdayStart = new Date(y, m, day - 1).getTime()
+  sixDaysAgoStart = new Date(y, m, day - 6).getTime()
+  dayEnd = new Date(y, m, day + 1).getTime()
+  dayYear = y
+}
+
 /** Relative timestamp for a session row.
  *  Accepts ISO string (active slots) or Unix epoch seconds (history `modified`). */
 export function fmtRelativeTime(ts: string | number | undefined): string {
   if (ts == null) return ''
   const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
-  if (isNaN(d.getTime())) return ''
-  const now = new Date()
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
-  const startOf6DaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
+  const at = d.getTime()
+  if (isNaN(at)) return ''
+  ensureDayBoundaries(Date.now())
   // Every branch read the BROWSER's locale before this, so a zh dashboard on an
   // en-US browser showed "3:04 PM" and "Jul 30". This is the twin of
   // `commandPalette/providers/recentsProvider.ts`; the two are now consistent.
   const time = fmtDateFields(d, { hour: '2-digit', minute: '2-digit' })
-  if (d >= startOfToday) return time
+  if (at >= dayStart) return time
   // The existing catalog key, NOT `fmtRelative`: CLDR returns a lowercase
   // "yesterday", which clashed with the capitalized group header in ChatSidebar
   // that already uses this same key. One key, one casing.
-  if (d >= startOfYesterday) return `${i18nT('pages.chatSidebar.yesterday')} ${time}`
-  if (d >= startOf6DaysAgo) return `${fmtDateFields(d, { weekday: 'short' })} ${time}`
-  if (d.getFullYear() === now.getFullYear()) return fmtDateFields(d, { month: 'short', day: 'numeric' })
+  if (at >= yesterdayStart) return `${i18nT('pages.chatSidebar.yesterday')} ${time}`
+  if (at >= sixDaysAgoStart) return `${fmtDateFields(d, { weekday: 'short' })} ${time}`
+  if (d.getFullYear() === dayYear) return fmtDateFields(d, { month: 'short', day: 'numeric' })
   return fmtDateFields(d, { year: 'numeric', month: 'short', day: 'numeric' })
 }
