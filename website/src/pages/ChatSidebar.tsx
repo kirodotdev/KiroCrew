@@ -6,7 +6,7 @@ import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, closestCenter, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
+import { DndContext, closestCenter, pointerWithin, KeyboardSensor, MouseSensor, TouchSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -417,8 +417,9 @@ function SortableFolderBlock({ folder, subtree, renderFolderBlock }: { folder: C
   // The whole folder header is the drag handle (pointer + touch): dragging the
   // row reorders the folder — no grip, consistent with session-card drag. Only
   // pointer listeners are forwarded (not attributes) so the header keeps
-  // its inner collapse/action buttons valid. The PointerSensor activation
-  // distance lets clicks through. setNodeRef stays on the block for sortable
+  // its inner collapse/action buttons valid. The MouseSensor activation
+  // distance lets clicks through, and the TouchSensor's press-and-hold delay
+  // lets touch swipes pan the list. setNodeRef stays on the block for sortable
   // positioning. While dragging, the body is force-collapsed so the source
   // shrinks to a single row — the drop-target gap (and the DragOverlay ghost)
   // stay compact.
@@ -2142,8 +2143,19 @@ function ChatSidebar({
   }, [folders, updateFolderMutation])
 
   // ── Folder drag-to-reorder ──
+  // Mouse and touch are split on purpose — a single PointerSensor with a
+  // distance constraint swallows touch swipes on WebKit: past the activation
+  // distance dnd-kit preventDefault()s every move via its non-passive window
+  // touchmove listener ("required for iOS Safari", TouchSensor.setup), so a
+  // swipe that begins on a row cannot pan the list. Chromium ignores
+  // preventDefault() on pointermove for panning, which is why it only shows on
+  // WebKit. The TouchSensor's DELAY constraint inverts the contention: moving
+  // past the tolerance CANCELS the sensor and hands the gesture back to the
+  // browser; only a stationary 250ms hold arms a drag. Same split as the Apps
+  // nav rail (App.tsx) and the artifact library.
   const dndSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
   // Tracks the item currently being dragged, for the DragOverlay preview.
