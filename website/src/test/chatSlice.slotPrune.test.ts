@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { deleteSlot } from '../store/chatSlice'
 import notifReducer, { addNotification, fetchNotifications, NOTIFICATIONS_RING_CAP } from '../store/notificationsSlice'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseSlots, sseConnected, fetchSlots } from '../store/dashboardSlice'
 import type { ChatMessage, ChatSlot, Notification } from '../types'
 import './mockApiClient'
 
@@ -52,6 +52,57 @@ describe('chatSlice sseSlots reconciliation', () => {
     expect(next.slotHistory).toEqual(['chat-1', 'chat-2'])
   })
 
+  it('reconciles an empty payload once a real snapshot has been seen (the last slot was deleted)', () => {
+    // The expensive half: this slice holds transcripts and MCP payloads, so
+    // skipping teardown here strands far more than the dashboard's small maps.
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
+
+    const next = chatReducer(state, sseSlots([]))
+
+    expect(Object.keys(next.slotMessages)).toEqual([])
+    expect(next.slotHistory).toEqual([])
+  })
+
+  it('ignores an empty payload after a reconnect, even once a snapshot was seen before it', () => {
+    // The gateway can restart before session restore and emit an empty frame.
+    // Without resetting the bit on connect, that frame reads as authoritative.
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
+    state = chatReducer(state, sseConnected())
+
+    const next = chatReducer(state, sseSlots([]))
+
+    expect(Object.keys(next.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
+    expect(next.slotHistory).toEqual(['chat-1', 'chat-2'])
+  })
+
+  it('tears down on the refetch that follows a reconnect, which is where an authoritative empty list arrives', () => {
+    // The SSE guard defers an empty reconnect frame rather than losing it:
+    // useWebSocket dispatches sseConnected then fetchSlots on every reconnect,
+    // and a request's reply is authoritative even when empty.
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
+    state = chatReducer(state, sseConnected())
+    state = chatReducer(state, sseSlots([]))
+    expect(Object.keys(state.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
+
+    const next = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [] })
+
+    expect(Object.keys(next.slotMessages)).toEqual([])
+    expect(next.slotHistory).toEqual([])
+  })
+
+  it('ignores a fetch reply once a live frame has been seen, since the reply may be older', () => {
+    // The reply can predate slots the stream created while it was in flight.
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
+
+    const next = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [slot('chat-1')] })
+
+    expect(Object.keys(next.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
+  })
+
   it('prunes keys present only in sibling maps (no slotMessages entry)', () => {
     const state = seeded(['chat-1'])
     state.slotRun['ghost'] = { state: 'idle' }
@@ -72,6 +123,76 @@ describe('chatSlice sseSlots reconciliation', () => {
     expect(next.slotContextPct['chat-2']).toBeUndefined()
     expect(next.slotContextTokens['chat-2']).toBeUndefined()
     expect(next.stopPressedAt['chat-2']).toBeUndefined()
+  })
+})
+
+describe('slot teardown parity', () => {
+  /** Seed every map the store keys per slot, so a teardown path that forgets
+   *  one of them leaves a visible entry behind. */
+  function richlySeeded(keys: string[]) {
+    const base = seeded(keys)
+    return {
+      ...base,
+      slotStatusDetail: Object.fromEntries(keys.map(k => [k, { kind: 'compacting' as const, text: 'Compacting…', ts: 1 }])),
+      slotContextPct: Object.fromEntries(keys.map(k => [k, 42])),
+      slotContextTokens: Object.fromEntries(keys.map(k => [k, { used: 1234, window: 200000 }])),
+      stopPressedAt: Object.fromEntries(keys.map(k => [k, 999])),
+      followups: Object.fromEntries(keys.map(k => [k, { items: [], ts: 1 }])),
+      folderSuggestions: Object.fromEntries(keys.map(k => [k, { folderId: 'f', folderName: 'F', breadcrumb: 'F', ts: 1 }])),
+      subagentQueued: Object.fromEntries(keys.map(k => [k, 2])),
+      goalLoops: Object.fromEntries(keys.map(k => [k, { cycle_count: 1, max_cycles: 5 }])),
+    }
+  }
+
+  const perSlotMaps = [
+    'slotMessages', 'slotActivity', 'slotRun', 'slotHydrated', 'slotSide',
+    'slotSideClosed', 'slotStatusDetail', 'slotContextPct', 'slotContextTokens',
+    'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued', 'goalLoops',
+  ] as const
+
+  const keysOf = (state: unknown, map: string) =>
+    Object.keys((state as Record<string, Record<string, unknown>>)[map]).sort()
+
+  it('deleting a slot leaves no entry in any per-slot map', () => {
+    const state = richlySeeded(['chat-1', 'chat-2'])
+    const next = chatReducer(state, { type: deleteSlot.fulfilled.type, payload: 'chat-2' })
+    for (const map of perSlotMaps) {
+      expect(keysOf(next, map)).toEqual(['chat-1'])
+    }
+    expect(next.slotHistory).toEqual(['chat-1'])
+  })
+
+  /** The two teardown paths read one shared list of per-slot maps; this fails
+   *  if a map is ever registered with only one of them. */
+  it('the reconcile evicts exactly what deleting evicts', () => {
+    const seed = richlySeeded(['chat-1', 'chat-2'])
+    const deleted = chatReducer(seed, { type: deleteSlot.fulfilled.type, payload: 'chat-2' })
+    const reconciled = chatReducer(seed, sseSlots([slot('chat-1')]))
+    for (const map of perSlotMaps) {
+      expect(keysOf(reconciled, map)).toEqual(keysOf(deleted, map))
+    }
+    expect(reconciled.slotHistory).toEqual(deleted.slotHistory)
+  })
+
+  /** Eviction parity is not reach parity: the reconcile also has to ENUMERATE
+   *  the safe-keyed maps, or a slot whose only residue lives there is never
+   *  visited and survives that path. */
+  it('the reconcile evicts a slot whose only residue is in a safe-keyed map', () => {
+    const state = { ...seeded(['chat-1']), subagentQueued: { ghost: 3 }, goalLoops: {}, pendingQuestions: {} }
+    const next = chatReducer(state, sseSlots([slot('chat-1')]))
+    expect(next.subagentQueued['ghost']).toBeUndefined()
+  })
+
+  it('the reconcile evicts a slot whose only residue is an MCP app payload', () => {
+    const state = { ...seeded(['chat-1']), mcpApps: { 'ghost\u001Ftool-1': { tool_call_id: 'tool-1' } } }
+    const next = chatReducer(state as never, sseSlots([slot('chat-1')]))
+    expect(Object.keys(next.mcpApps)).toEqual([])
+  })
+
+  it('keeps a live slot that is only present in a safe-keyed map', () => {
+    const state = { ...seeded(['chat-1']), subagentQueued: { 'chat-1': 3 }, goalLoops: {}, pendingQuestions: {} }
+    const next = chatReducer(state, sseSlots([slot('chat-1')]))
+    expect(next.subagentQueued['chat-1']).toBe(3)
   })
 })
 

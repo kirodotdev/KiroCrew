@@ -371,3 +371,95 @@ describe('dashboardSlice', () => {
     })
   })
 })
+
+describe('dashboardSlice per-slot sub-agent teardown', () => {
+  const seeded = () => {
+    const base = reducer(undefined, { type: '@@INIT' })
+    return {
+      ...base,
+      slots: [{ key: 'chat-1', messages: 0, running: false }, { key: 'chat-2', messages: 0, running: false }] as ChatSlot[],
+      subagentRunning: { 'chat-1': 1, 'chat-2': 2 },
+      subagentDetails: { 'chat-1': [], 'chat-2': [] },
+      subagentText: { 'chat-1': {}, 'chat-2': {} },
+    }
+  }
+
+  it('drains unread state for a slot that vanished from the authoritative list', () => {
+    const before = { ...seeded(), unreadSlots: ['chat-1', 'chat-2'] }
+
+    const next = reducer(before, sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
+
+    expect(next.unreadSlots).toEqual(['chat-1'])
+    expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual(['chat-1'])
+  })
+
+  it('leaves unread state alone when the frame still lists every unread slot', () => {
+    localStorage.removeItem('mc-unread-slots')
+    const before = { ...seeded(), unreadSlots: ['chat-1', 'chat-2'] }
+
+    const next = reducer(before, sseSlots([
+      { key: 'chat-1', messages: 0, running: false },
+      { key: 'chat-2', messages: 0, running: false },
+    ] as ChatSlot[]))
+
+    expect(next.unreadSlots).toEqual(['chat-1', 'chat-2'])
+    // Not rewritten, because this reducer runs on every slots frame.
+    expect(localStorage.getItem('mc-unread-slots')).toBeNull()
+  })
+
+  /** Optimistic removal runs before the delete is confirmed, and a slot whose
+   *  delete fails comes back via the next authoritative frame. Evicting here
+   *  would leave it alive but mute, because sseSubagentText drops frames for a
+   *  slot with no subagentRunning entry. */
+  it('keeps sub-agent state on optimistic removal, before the delete is confirmed', () => {
+    const next = reducer(seeded(), removeSlotOptimistic('chat-2'))
+    expect(next.subagentRunning['chat-2']).toBe(2)
+    expect(next.subagentDetails['chat-2']).toBeDefined()
+    expect(next.subagentText['chat-2']).toBeDefined()
+  })
+
+  it('drops a slot the live slots frame no longer carries', () => {
+    const next = reducer(seeded(), sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
+    expect(next.subagentRunning['chat-2']).toBeUndefined()
+    expect(next.subagentDetails['chat-2']).toBeUndefined()
+    expect(next.subagentText['chat-2']).toBeUndefined()
+    expect(next.subagentRunning['chat-1']).toBe(1)
+  })
+
+  it('treats an empty slots frame as a no-op before the list has loaded, since a reconnect delivers one first', () => {
+    const next = reducer(seeded(), sseSlots([]))
+    expect(next.subagentRunning['chat-1']).toBe(1)
+    expect(next.subagentRunning['chat-2']).toBe(2)
+  })
+
+  it('reconciles an empty frame once loaded, which is the last slot being deleted', () => {
+    const loaded = { ...seeded(), slotsLoaded: true, unreadSlots: ['chat-1', 'chat-2'] }
+
+    const next = reducer(loaded, sseSlots([]))
+
+    expect(next.subagentRunning['chat-1']).toBeUndefined()
+    expect(next.subagentRunning['chat-2']).toBeUndefined()
+    expect(next.unreadSlots).toEqual([])
+  })
+
+  it('withholds eviction from a fetch reply once the stream is live, but still drains unread', () => {
+    // The reply can be older than the live frames it raced, so eviction (not
+    // recoverable) is withheld while the unread drain (self-healing) still runs.
+    const loaded = { ...seeded(), slotsLoaded: true, unreadSlots: ['chat-1', 'chat-2'] }
+    const payload = [{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]
+
+    const next = reducer(loaded, { type: fetchSlots.fulfilled.type, payload })
+
+    expect(next.subagentRunning['chat-2']).toBe(2)
+    expect(next.unreadSlots).toEqual(['chat-1'])
+  })
+
+  it('drops a slot the authoritative refetch no longer carries', () => {
+    const payload = [{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]
+    const next = reducer(seeded(), { type: fetchSlots.fulfilled.type, payload })
+    expect(next.subagentRunning['chat-2']).toBeUndefined()
+    expect(next.subagentDetails['chat-2']).toBeUndefined()
+    expect(next.subagentText['chat-2']).toBeUndefined()
+    expect(next.subagentRunning['chat-1']).toBe(1)
+  })
+})

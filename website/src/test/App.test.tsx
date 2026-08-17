@@ -665,9 +665,15 @@ describe('App routing', () => {
   it('keeps the sub-agent bot and count in the expanded Sessions rail item', async () => {
     localStorage.removeItem('mc-nav')
     const store = createTestStore()
-    store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 }))
 
     renderWithProviders(<App />, { route: '/chat', store })
+
+    // Seed AFTER the mount fetch settles. `fetchSlots.fulfilled` is an
+    // authoritative slot-list writer, so queued-subagent state for a slot the
+    // fetched list does not name is residue and is evicted — seeding before the
+    // fetch would have this test depend on that eviction not happening.
+    expect(await screen.findByLabelText('Sessions')).toBeInTheDocument()
+    act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
 
     expect(await screen.findByLabelText('2 subagents in flight')).toBeInTheDocument()
   })

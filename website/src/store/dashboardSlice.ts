@@ -84,6 +84,50 @@ export const changeApprovalMode = createAsyncThunk(
   },
 )
 
+/** Drop one slot's live sub-agent state.
+ *
+ *  These three maps are keyed by the bare slot key and are otherwise cleared
+ *  only wholesale on reconnect, so a departed slot's counters and rows would
+ *  otherwise survive for the tab's lifetime.
+ *
+ *  Driven by the AUTHORITATIVE slot-list writers — `sseSlots` and
+ *  `fetchSlots.fulfilled` — and deliberately NOT by `removeSlotOptimistic`: that
+ *  reducer runs before the delete is confirmed, and `sseSubagentText` drops every
+ *  frame for a slot with no `subagentRunning` entry, so evicting optimistically
+ *  would leave a slot whose delete failed alive but permanently mute. */
+/** Reconcile per-slot dashboard state against an authoritative slot list. Both
+ *  authoritative writers (`sseSlots`, `fetchSlots.fulfilled`) drive teardown
+ *  through here, so the two cannot drift apart the way the eviction lists this
+ *  PR unified once did. `unreadSlots` is written back only when it actually
+ *  shrank, since the live-frame writer runs on every slots frame. */
+const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale = true): void => {
+  // `countUnreadByMode` deliberately keeps orphan unread keys contributing to
+  // the badge, on the premise that a reconcile drains them shortly. Draining on
+  // both writers is what keeps that premise true. Always run: a wrongly drained
+  // badge self-heals on the next unread event, and the refetch is the documented
+  // route by which a remotely deleted slot's badge is cleared.
+  const unread = state.unreadSlots ?? []
+  const drained = unread.filter(k => liveKeys.has(k))
+  if (drained.length !== unread.length) {
+    state.unreadSlots = drained
+    safeSet('mc-unread-slots', JSON.stringify(drained))
+  }
+  // Eviction is NOT recoverable, so it is skipped when the caller cannot vouch
+  // for the list's freshness: an HTTP reply in flight can be older than the live
+  // frames that arrived while it travelled, and would then delete a slot the
+  // stream has since created.
+  if (!evictStale) return
+  for (const key of Object.keys(state.subagentRunning ?? {})) {
+    if (!liveKeys.has(key)) evictSlotSubagents(state, key)
+  }
+}
+
+const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
+  delete state.subagentRunning[slotKey]
+  delete state.subagentDetails[slotKey]
+  delete state.subagentText[slotKey]
+}
+
 const dashboardSlice = createSlice({
   name: 'dashboard',
   initialState,
@@ -102,7 +146,21 @@ const dashboardSlice = createSlice({
     },
     sseConnected(state) { state.connected = true; state.slotsLoaded = false; state.subagentRunning = {}; state.subagentDetails = {}; state.subagentText = {} },
     sseDisconnected(state) { state.connected = false },
-    sseSlots(state, action: PayloadAction<ChatSlot[]>) { state.slots = action.payload; state.slotsLoaded = true },
+    sseSlots(state, action: PayloadAction<ChatSlot[]>) {
+      // Read before `slotsLoaded` is set: an empty frame is ambiguous, and this
+      // is what disambiguates it. Not yet loaded means a reconnect delivered it
+      // before the first real snapshot, so treating it as authoritative would
+      // evict every live slot's state. Already loaded means the list genuinely
+      // went empty — the last slot was deleted, possibly by another client —
+      // and skipping teardown there would strand its state permanently.
+      // Return BEFORE writing anything: assigning an empty `slots` would blank
+      // the sidebar until restoration finishes, and marking it loaded would
+      // claim a snapshot arrived when none has.
+      if (action.payload.length === 0 && !state.slotsLoaded) return
+      state.slots = action.payload
+      state.slotsLoaded = true
+      reconcileSlots(state, new Set(action.payload.map(s => s.key)))
+    },
     // Live TODO-list delta. Patched into the SAME slots array that sseSlots
     // populates rather than a parallel map, so the mid-turn push and the
     // reconnect snapshot can never disagree about a slot's list. A delta for an
@@ -245,9 +303,7 @@ const dashboardSlice = createSlice({
       // prototype would write through Object.prototype in the else-branch below.
       if (!slot || isUnsafeKey(slot)) return
       if (running <= 0) {
-        delete state.subagentRunning[slot]
-        delete state.subagentDetails[slot]
-        delete state.subagentText[slot]
+        evictSlotSubagents(state, slot)
       } else {
         state.subagentRunning[slot] = running
         if (agents) state.subagentDetails[slot] = agents.map(a => ({
@@ -309,11 +365,14 @@ const dashboardSlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(fetchSlots.fulfilled, (state, action) => {
+        // A reply in flight can be older than the live frames that arrived while
+        // it travelled, so it may omit a slot the stream has since created. The
+        // unread drain still runs — that is this path's documented job, and a
+        // badge self-heals — but eviction is withheld once the stream is live.
+        const fresh = !state.slotsLoaded
         state.slots = action.payload
         state.slotsLoaded = true
-        const liveKeys = new Set(action.payload.map((s: { key: string }) => s.key))
-        state.unreadSlots = state.unreadSlots.filter(k => liveKeys.has(k))
-        safeSet('mc-unread-slots', JSON.stringify(state.unreadSlots))
+        reconcileSlots(state, new Set(action.payload.map((s: { key: string }) => s.key)), fresh)
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })
   },

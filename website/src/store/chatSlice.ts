@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
-import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots } from './dashboardSlice'
+import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { gcSessionStorage } from '../utils/storageGc'
@@ -255,8 +255,10 @@ const safeKey = (key: string): string => (isUnsafeKey(key) ? `unsafe-key:${key}`
  *  eviction a prefix scan (the payloads carry multi-MB app HTML, so they must
  *  not outlive their slot). \u001F (unit separator) cannot appear in either
  *  component. */
+const MCP_APP_KEY_SEP = '\u001F'
+
 export const mcpAppKey = (sessionKey: string, toolCallId: string): string =>
-  `${sessionKey}\u001F${toolCallId}`
+  `${sessionKey}${MCP_APP_KEY_SEP}${toolCallId}`
 
 /** Max MCP App render payloads retained per slot (each carries multi-MB HTML);
  *  oldest are evicted past this bound. */
@@ -265,10 +267,78 @@ const MCP_APPS_PER_SLOT_MAX = 24
 /** Drop every MCP App render payload belonging to `sessionKey` (slot deleted
  *  or its conversation cleared — the tool rows the apps hang off are gone). */
 const evictMcpApps = (state: { mcpApps: Record<string, McpAppRenderPayload> }, sessionKey: string): void => {
-  const prefix = `${sessionKey}\u001F`
-  for (const k of Object.keys(state.mcpApps)) {
+  const prefix = `${sessionKey}${MCP_APP_KEY_SEP}`
+  // `?? {}` for the same reason every sibling enumeration here carries it: a
+  // preloaded state need not define every per-slot map, and teardown is now
+  // reachable from three writers rather than one.
+  for (const k of Object.keys(state.mcpApps ?? {})) {
     if (k.startsWith(prefix)) delete state.mcpApps[k]
   }
+}
+
+/** Chat state keyed by a slot.
+ *
+ *  Single owner of what is keyed per slot, read by every teardown path, so a new
+ *  per-slot map registered here is reached by all of them.
+ *
+ *  Spelling is mixed rather than uniform: several of these are written with the
+ *  bare key at some call sites and through `safeKey()` — which rewrites
+ *  prototype-polluting names — at others, so teardown removes both spellings
+ *  instead of assuming a clean split. `subagents` (keyed `dashboard:<slot>`) and
+ *  `workflowRuns` (keyed by run id) are absent because a slot key never matches
+ *  their entries; `mcpApps` carries the slot as a key PREFIX and is handled by
+ *  `evictMcpApps`. */
+const slotKeyedMaps = (state: ChatState) => [
+  state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
+  state.slotSide, state.slotSideClosed, state.slotStatusDetail,
+  state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
+  state.followups, state.folderSuggestions,
+  state.pendingQuestions, state.subagentQueued, state.goalLoops,
+].filter(Boolean)
+
+/** Every slot key that still has residue anywhere in chat state.
+ *
+ *  A reconcile can only evict a slot it visits, so this has to cover the same
+ *  surfaces `evictSlotState` clears — including the two that are not plain
+ *  slot-keyed maps: `mcpApps`, whose keys carry the slot as a prefix, and
+ *  `slotHistory`, where a slot can outlive every map entry. */
+const slotKeysWithResidue = (state: ChatState): Set<string> => new Set([
+  ...slotKeyedMaps(state).flatMap(m => Object.keys(m)),
+  ...Object.keys(state.mcpApps ?? {}).map(k => k.split(MCP_APP_KEY_SEP)[0]),
+  ...(state.slotHistory ?? []),
+])
+
+/** Drop every trace of one slot from chat state.
+ *
+ *  A local delete and a reconcile against the authoritative slot list both end
+ *  here, so the two cannot disagree about what a departing slot leaves behind.
+ *  Both spellings are removed: `safeKey` is identity for ordinary slot names and
+ *  a no-op on an already-rewritten key, so one pass covers a caller holding
+ *  either form. */
+/** Evict every slot carrying residue that the authoritative list does not name.
+ *  Both authoritative writers (`sseSlots`, `fetchSlots.fulfilled`) reconcile
+ *  through here, so neither can drift from the other. The active slot is never
+ *  pruned: its live `messages`/optimistic state must not be dropped out from
+ *  under the open pane. */
+const reconcileSlotResidue = (state: ChatState, payload: readonly { key: string }[]): void => {
+  const live = new Set(payload.map(s => s.key))
+  if (state.activeSlot) live.add(state.activeSlot)
+  // A live slot is protected under either spelling, since some writers store it
+  // rewritten by safeKey().
+  for (const key of [...live]) live.add(safeKey(key))
+  for (const key of slotKeysWithResidue(state)) {
+    if (live.has(key)) continue
+    evictSlotState(state, key)
+  }
+}
+
+const evictSlotState = (state: ChatState, slotKey: string): void => {
+  const spellings = [slotKey, safeKey(slotKey)]
+  for (const m of slotKeyedMaps(state)) {
+    for (const spelling of spellings) delete m[spelling]
+  }
+  evictMcpApps(state, slotKey)
+  state.slotHistory = (state.slotHistory ?? []).filter(k => k !== slotKey)
 }
 
 /** Read one slot's pending question card, or null.
@@ -656,6 +726,10 @@ interface ChatState {
   slotHydrated: Record<string, boolean>
   slotLoading: boolean
   slotHistory: string[]
+  /** Whether a non-empty slots frame has arrived. Distinguishes a reconnect's
+   *  empty frame, which must not tear anything down, from a genuinely empty
+   *  list, which must. */
+  slotsSnapshotSeen: boolean
   stopPressedAt: Record<string, number | null>
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
@@ -743,6 +817,7 @@ const initialState: ChatState = {
   slotSide: {},
   slotSideClosed: {},
   slotHistory: [],
+  slotsSnapshotSeen: false,
   pendingQuestions: {},
   followups: {},
   folderSuggestions: {},
@@ -3369,36 +3444,49 @@ const chatSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      /** A reconnect starts a new snapshot cycle: the gateway can restart before
+       *  session restore and emit an empty slots frame, so the bit must go back
+       *  to unseen or that frame reads as an authoritative empty list and tears
+       *  down every background slot. Mirrors `dashboardSlice`, where
+       *  `sseConnected` clears `slotsLoaded` for the same reason — reading the
+       *  bit without resetting it is what made this a defect. */
+      .addCase(sseConnected, (state) => {
+        state.slotsSnapshotSeen = false
+      })
       /** Reconcile per-slot caches against the authoritative slots list.
        *  Sessions that close/archive/delete vanish from the SSE `slots` REPLACE;
        *  without this reconcile their transcripts stay resident for the tab's
-       *  lifetime (only `deleteSlot.fulfilled` evicts) — the dominant retention
-       *  class behind multi-GB heaps on long-lived dashboard tabs.
-       *  Guards: an empty payload is a no-op (SSE reconnect can deliver an
-       *  empty frame before the first real snapshot), and the active slot is
-       *  never pruned (its live `messages`/optimistic state must not be
-       *  dropped out from under the open pane). `subagents`/`workflowRuns`
-       *  are intentionally excluded — different keyspaces (dashboard:<slot>,
-       *  run id), not bare slot keys. */
+       *  lifetime — the dominant retention class behind multi-GB heaps on
+       *  long-lived dashboard tabs.
+       *  Guards: an empty payload is a no-op only until the first real snapshot
+       *  has been seen, because a reconnect can deliver one before it. Once seen,
+       *  an empty list is authoritative — the last slot was deleted, possibly by
+       *  another client — and skipping teardown there would strand this slice's
+       *  transcripts and MCP payloads, the expensive half. This slice tracks the
+       *  bit itself rather than reading the dashboard's, which its reducer cannot
+       *  see. The active slot is never pruned (its live `messages`/optimistic
+       *  state must not be dropped out from under the open pane). */
       .addCase(sseSlots, (state, action) => {
-        if (action.payload.length === 0) return
-        const live = new Set(action.payload.map(s => s.key))
-        if (state.activeSlot) live.add(state.activeSlot)
-        const maps = [
-          state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
-          state.slotSide, state.slotSideClosed, state.slotStatusDetail,
-          state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
-          // Follow-up cards are per slot and can hold multi-KB prompts, so a
-          // deleted session's card must not outlive it.
-          state.followups,
-          state.folderSuggestions,
-        ].filter(Boolean)
-        const cached = new Set(maps.flatMap(m => Object.keys(m)))
-        for (const key of cached) {
-          if (live.has(key)) continue
-          for (const m of maps) delete m[key]
-        }
-        state.slotHistory = (state.slotHistory ?? []).filter(k => live.has(k))
+        const seenSnapshot = state.slotsSnapshotSeen === true
+        if (action.payload.length > 0) state.slotsSnapshotSeen = true
+        // An empty frame before the first real snapshot is a reconnect artifact.
+        // The authoritative empty case is not lost by skipping it: every
+        // reconnect dispatches `fetchSlots` right after `sseConnected`
+        // (`hooks/useWebSocket.ts`), and the case below reconciles that reply
+        // even when it is empty.
+        if (action.payload.length === 0 && !seenSnapshot) return
+        reconcileSlotResidue(state, action.payload)
+      })
+      /** The other authoritative slot-list writer. A request's reply is
+       *  authoritative even when empty — nothing to disambiguate — so this is
+       *  where "every slot was deleted while disconnected" is torn down. But a
+       *  reply in flight can be OLDER than the live frames that arrived while it
+       *  travelled, so it may omit a slot the stream has since created: evict
+       *  from here only while no live frame has been seen. Before that there is
+       *  no fresher state to destroy; after it the live frame owns teardown. */
+      .addCase(fetchSlots.fulfilled, (state, action) => {
+        if (state.slotsSnapshotSeen === true) return
+        reconcileSlotResidue(state, action.payload)
       })
       .addCase(fetchHistory.fulfilled, (state, action) => {
         const { sessions, hasMore, offset, append } = action.payload
@@ -3686,16 +3774,7 @@ const chatSlice = createSlice({
         setPagingCursor(state, false, 0)
       })
       .addCase(deleteSlot.fulfilled, (state, action) => {
-        delete state.slotActivity[action.payload]
-        delete state.slotMessages[action.payload]
-        delete state.slotRun[action.payload]
-        delete state.slotHydrated[action.payload]
-        delete state.slotSide[action.payload]
-        delete state.slotSideClosed[action.payload]
-        if (state.followups) delete state.followups[action.payload]
-        if (state.folderSuggestions) delete state.folderSuggestions[action.payload]
-        evictMcpApps(state, action.payload)
-        state.slotHistory = state.slotHistory.filter(k => k !== action.payload)
+        evictSlotState(state, action.payload)
         if (state.activeSlot === action.payload) {
           state.activeSlot = null
           state.messages = []
