@@ -4736,6 +4736,20 @@ function ChatSidebar({
                 // No search: skip the sort only when the backend already returns
                 // date-desc order.
                 const sortedHistory = (searchActive || sortKey === 'date-desc') ? filteredHistory : [...filteredHistory].sort((a, b) => compareBySort(a, b, sortKey))
+                // An empty pane is reachable whenever every session on disk is
+                // already open as a tab (the common case for a light user), so it
+                // needs to say so rather than render a search box over blank space.
+                // A filtered-to-nothing list is a different statement and reuses the
+                // wording the two sibling panes already use for it.
+                if (sortedHistory.length === 0) {
+                  return (
+                    <div className="px-3 py-4 text-[12px] text-muted text-center">
+                      {historyFilter
+                        ? i18nT('pages.chatSidebar.no_sessions_match')
+                        : i18nT('pages.chatSidebar.no_older_sessions')}
+                    </div>
+                  )
+                }
                 let prevSeg = ''
                 // Derive agent color the same way renderSessionRow does so history rows
                 // match the session-row visual language (agent name tinted by source).

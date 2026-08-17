@@ -40,6 +40,7 @@ import chatReducer, {
   reorderQueuedMessages,
   requestStop,
   resolveQuestionCard,
+  resumeFromHistory,
   retireStatelessQuestion,
   selectComposerBusy,
   selectContinuable,
@@ -1003,7 +1004,60 @@ describe('chatSlice thunks', () => {
     await store.dispatch(fetchHistory(true))
     expect(chat(store).history.map(s => s.key)).toEqual(['s1', 's2'])
     expect(chat(store).historyOffset).toBe(2)
-    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 1)
+    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 1, false, true)
+  })
+
+  it('asks the server to exclude sessions already open as tabs', async () => {
+    // Older sessions is the complement of the tab list above it. The exclusion
+    // has to happen server-side: historyOffset advances by the row count
+    // received, so dropping rows on the client desynchronises paging.
+    apiMock.sessions.mockResolvedValueOnce({ sessions: [], has_more: false })
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    expect(apiMock.sessions).toHaveBeenLastCalledWith(30, 0, false, true)
+  })
+
+  it('drops the resumed row from history so the pane stops listing it', async () => {
+    // Resuming turns the row into an open tab, so it leaves the complement.
+    // Keyed on meta.arg.key (the transcript name history is indexed by), not on
+    // payload.key (the slot key the resume returned).
+    apiMock.sessions.mockResolvedValueOnce({
+      sessions: [{ key: 'dashboard_chat-1' }, { key: 'dashboard_chat-2' }],
+      has_more: false,
+    })
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    expect(chat(store).history.map(s => s.key)).toEqual(['dashboard_chat-1', 'dashboard_chat-2'])
+
+    store.dispatch({
+      type: resumeFromHistory.fulfilled.type,
+      payload: { ok: true, key: 'chat-1', messages: [], hasMore: false, total: 0 },
+      meta: { arg: { key: 'dashboard_chat-1', title: 'Some session' } },
+    })
+    expect(chat(store).history.map(s => s.key)).toEqual(['dashboard_chat-2'])
+    // historyOffset counts rows consumed from the SERVER's list, and the server
+    // drops the resumed row too. Holding the old offset would ask for a window
+    // one past the end of a list that just shrank, skipping an unseen row.
+    expect(chat(store).historyOffset).toBe(1)
+  })
+
+  it('leaves the offset alone when the resumed row was not in the pane', async () => {
+    // A resume from a search hit or the command palette filters nothing here, so
+    // the server's list is unchanged from this client's point of view.
+    apiMock.sessions.mockResolvedValueOnce({
+      sessions: [{ key: 'dashboard_chat-1' }, { key: 'dashboard_chat-2' }],
+      has_more: true,
+    })
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+
+    store.dispatch({
+      type: resumeFromHistory.fulfilled.type,
+      payload: { ok: true, key: 'chat-9', messages: [], hasMore: false, total: 0 },
+      meta: { arg: { key: 'dashboard_chat-9', title: 'Never listed here' } },
+    })
+    expect(chat(store).history).toHaveLength(2)
+    expect(chat(store).historyOffset).toBe(2)
   })
 
   it('ignores a refresh or a warm that raced an active-slot change', async () => {

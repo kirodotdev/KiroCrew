@@ -8207,6 +8207,7 @@
       "new_folder": "नया फ़ोल्डर",
       "new_subfolder": "नया सबफ़ोल्डर",
       "no_inactive_sessions_to_archive": "आर्काइव करने के लिए कोई निष्क्रिय सेशन नहीं।",
+      "no_older_sessions": "कोई पुराना सत्र नहीं — बंद किए गए टैब यहाँ दिखेंगे",
       "no_sessions": "कोई सत्र नहीं",
       "no_sessions_match": "कोई सत्र मेल नहीं खाता",
       "older": "इससे पुराने",

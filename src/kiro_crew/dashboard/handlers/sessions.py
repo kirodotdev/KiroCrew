@@ -942,6 +942,43 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
     return web.json_response({"usage": _usage_cache})
 
 
+def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
+    """Every transcript key and filename stem a live slot could be reading.
+
+    A session in this set is reachable as an open tab. That single fact drives
+    two callers: the bulk delete must not touch it, and the Older-sessions list
+    must not repeat it (that list is the complement of the open tabs above it).
+
+    Resolved FROM the slot, never derived from its name. A channel-born slot's
+    transcript is its ``linked_session_key`` (``slack:<ts>``), so a hand-built
+    ``dashboard:<slot>`` name would miss every channel tab. ``list_sessions``
+    reports filename STEMS, so each candidate contributes its key AND its stem:
+    ``_safe_key`` is the function that produced the filename, and a single-colon
+    replace would leave a multi-colon channel key like
+    ``discord:kirocrew:direct:123`` mapped to a stem that does not exist.
+
+    Both candidates are included because a slot's write target and its DISPLAY
+    source can differ: a channel tab the dashboard could not bind runs under
+    ``dashboard:<stem>`` while the conversation on screen lives in the channel
+    transcript. Choosing between them would make the answer depend on provenance
+    resolving correctly, and provenance is exactly what a legacy transcript
+    cannot supply. Both names belong to the SAME slot, so covering both is safe
+    in either direction — it can only protect, or hide, a transcript that one
+    slot could itself be showing.
+    """
+    from kiro_crew.dashboard.chat_utils import slot_history_key, slot_transcript_key
+    from kiro_crew.history import _safe_key
+
+    keys: set[str] = set()
+    # Snapshot the values: a concurrent turn can add or remove a slot while this
+    # iterates, and a dict mutated mid-iteration raises.
+    for slot in list(state._slots.values()):
+        for candidate in (slot_history_key(slot), slot_transcript_key(slot.key)):
+            keys.add(candidate)
+            keys.add(_safe_key(candidate))
+    return keys
+
+
 async def api_sessions(request: web.Request) -> web.Response:
     """GET /api/sessions — list conversation session files.
 
@@ -951,6 +988,12 @@ async def api_sessions(request: web.Request) -> web.Response:
       - ``preview``: when truthy, attach a redacted last-message ``preview``
         to each returned session (bounded tail read; page-scoped so the
         default list stays a cheap metadata scan)
+      - ``exclude_open``: when truthy, drop sessions a live slot already holds
+        open. Opt-in, not the default: the full inventory is what the memory
+        "Consolidate all" action and the command palette's recents read, and
+        both would silently skip the user's active conversations if this
+        endpoint decided on their behalf. Only the caller rendering the
+        complement of the open tabs asks for it.
 
     Returns ``{sessions, total, has_more}`` for pagination.
     """
@@ -966,7 +1009,24 @@ async def api_sessions(request: web.Request) -> web.Response:
     except (TypeError, ValueError):
         offset = 0
     want_preview = (request.query.get("preview") or "").lower() in ("1", "true", "yes")
+    exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
     all_sessions = state.conversation_log.list_sessions()
+    if exclude_open:
+        open_keys = _open_slot_transcript_keys(state)
+        # Fold through ``_canonical_key`` as well: ``list_sessions`` deduplicates
+        # by canonical name but reports the RAW stem of whichever file won on
+        # mtime, so a resume round-trip's ``dashboard_dashboard_<name>`` file
+        # reaches here under a name no slot ever produces. Without the fold that
+        # session is listed as a second, separate conversation.
+        canon = state.conversation_log._canonical_key
+        all_sessions = [
+            s
+            for s in all_sessions
+            if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
+        ]
+    # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
+    # one list. The client advances its offset by the number of rows it received,
+    # so filtering on its side instead would skip or repeat rows across pages.
     total = len(all_sessions)
     page = all_sessions[offset : offset + limit]
     if want_preview:
@@ -1292,30 +1352,10 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
-    from kiro_crew.dashboard.chat_utils import slot_history_key, slot_transcript_key
-    from kiro_crew.history import _safe_key
-
-    protected: set[str] = set()
-    for slot in state._slots.values():
-        # Protect EVERY transcript this slot could be reading, not just the one
-        # it currently writes. ``list_sessions`` reports filename stems, so each
-        # candidate contributes its key AND its stem: ``_safe_key`` is the
-        # function that produced the filename, and a single-colon replace would
-        # leave a multi-colon channel key like ``discord:kirocrew:direct:123``
-        # mapped to a stem that does not exist, putting a live conversation
-        # outside ``protected`` so this bulk delete removes it.
-        #
-        # The union matters because a slot's write target and its DISPLAY source
-        # can differ: a channel tab the dashboard could not bind runs under
-        # ``dashboard:<stem>`` while the conversation on screen lives in the
-        # channel transcript. Choosing between them here would make deletion
-        # depend on provenance resolving correctly, and provenance is exactly
-        # what a legacy transcript cannot supply. Protection only ever PREVENTS
-        # a delete, so covering both candidates is the safe direction: the worst
-        # case is that Clear All skips a transcript nobody is reading.
-        for candidate in (slot_history_key(slot), slot_transcript_key(slot.key)):
-            protected.add(candidate)
-            protected.add(_safe_key(candidate))
+    # Same definition of "open as a tab" the Older-sessions list excludes on, so
+    # a session cannot be simultaneously hidden from that list and eligible for
+    # this delete.
+    protected = _open_slot_transcript_keys(state)
 
     sessions = state.conversation_log.list_sessions()
     count = 0

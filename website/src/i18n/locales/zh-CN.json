@@ -8100,6 +8100,7 @@
       "new_folder": "新建文件夹",
       "new_subfolder": "新建子文件夹",
       "no_inactive_sessions_to_archive": "没有可归档的闲置会话。",
+      "no_older_sessions": "没有较早的会话 —— 关闭的标签页会出现在这里",
       "no_sessions": "无会话",
       "no_sessions_match": "无匹配的会话",
       "older": "更早",

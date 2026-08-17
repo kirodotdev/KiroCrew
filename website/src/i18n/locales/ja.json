@@ -8101,6 +8101,7 @@
       "new_folder": "新しいフォルダー",
       "new_subfolder": "新しいサブフォルダー",
       "no_inactive_sessions_to_archive": "アーカイブする非アクティブなセッションはありません。",
+      "no_older_sessions": "以前のセッションはありません — 閉じたタブがここに表示されます",
       "no_sessions": "セッションなし",
       "no_sessions_match": "一致するセッションはありません",
       "older": "以前",

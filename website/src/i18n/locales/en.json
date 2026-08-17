@@ -5510,6 +5510,7 @@
       "new_chat_session": "New chat session",
       "new_folder": "New folder",
       "new_subfolder": "New subfolder",
+      "no_older_sessions": "No older sessions — closed tabs appear here",
       "no_sessions": "No sessions",
       "no_sessions_match": "No sessions match",
       "older_sessions": "Older sessions",

@@ -951,7 +951,11 @@ export const fetchHistory = createAsyncThunk(
   async (append: boolean, { getState }) => {
     const state = (getState() as { chat: ChatState }).chat
     const offset = append ? state.historyOffset : 0
-    const d = await api.sessions(30, offset)
+    // Older sessions is the complement of the open tabs listed above it, so the
+    // server drops anything a live slot already holds. Excluded server-side
+    // because `historyOffset` advances by the row count received: dropping rows
+    // here would desynchronise the offset and skip or repeat rows on the next page.
+    const d = await api.sessions(30, offset, false, true)
     return { sessions: (d.sessions || d) as SessionInfo[], hasMore: d.has_more || false, offset, append }
   },
 )
@@ -3613,6 +3617,24 @@ const chatSlice = createSlice({
       })
       .addCase(resumeFromHistory.fulfilled, (state, action) => {
         if (action.payload.ok) {
+          // The row just became an open tab, so it leaves the Older-sessions
+          // pane — that pane is the complement of the tab list, and leaving the
+          // row behind reproduces the listed-twice state via its own primary
+          // action. Keyed on the history row the user clicked (`meta.arg.key`),
+          // not on the slot key the resume returned: only the former is the
+          // transcript name `state.history` is indexed by.
+          const consumed = state.history.length
+          state.history = state.history.filter(s => s.key !== action.meta.arg.key)
+          if (state.history.length < consumed) {
+            // `historyOffset` counts rows consumed from the SERVER's list, and the
+            // server drops this row too now that a slot holds it. Leaving the
+            // offset where it was would ask for a window one row past the end of a
+            // list that just got shorter, so the next page would skip a row the
+            // user has never seen. Guarded on an actual removal: a resume that
+            // came from somewhere else (a search hit, the command palette) filters
+            // nothing here and must not move the offset.
+            state.historyOffset = Math.max(0, state.historyOffset - 1)
+          }
           state.slotHistory = state.slotHistory.filter(k => k !== action.payload.key)
           if (state.activeSlot) {
             state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }

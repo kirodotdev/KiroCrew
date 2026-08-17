@@ -8314,6 +8314,7 @@
       "new_folder": "Nueva carpeta",
       "new_subfolder": "Nueva subcarpeta",
       "no_inactive_sessions_to_archive": "No hay sesiones inactivas para archivar.",
+      "no_older_sessions": "No hay sesiones anteriores: las pestañas cerradas aparecen aquí",
       "no_sessions": "No hay sesiones",
       "no_sessions_match": "Ninguna sesión coincide",
       "older": "Anteriores",

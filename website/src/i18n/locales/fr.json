@@ -8314,6 +8314,7 @@
       "new_folder": "Nouveau dossier",
       "new_subfolder": "Nouveau sous-dossier",
       "no_inactive_sessions_to_archive": "Aucune session inactive à archiver.",
+      "no_older_sessions": "Aucune session antérieure — les onglets fermés apparaissent ici",
       "no_sessions": "Aucune session",
       "no_sessions_match": "Aucune session correspondante",
       "older": "Plus anciens",

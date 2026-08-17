@@ -2095,7 +2095,10 @@ export const api = {
   handoffChannels: () => fetch('/api/handoff-channels').then(j) as Promise<Record<string, string> | null>,
   handoffSlot: (slot: string, channel?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/handoff', channel ? { channel } : undefined).then(j),
   // Sessions (history)
-  sessions: (limit = 30, offset = 0, preview = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '')).then(j),
+  // `excludeOpen` drops sessions already open as a tab — for the sidebar's
+  // Older-sessions pane, which is the complement of the tab list above it.
+  // Off by default: every other caller wants the full inventory.
+  sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '')).then(j),
   sessionsSearch: (q: string, limit = 50) => fetch('/api/sessions/search?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
   // Federated session search across the local gateway + every CONNECTED remote
   // instance (backend rank-interleaves; remote rows carry instance_id/_name).

@@ -8100,6 +8100,7 @@
       "new_folder": "새 폴더",
       "new_subfolder": "새 하위 폴더",
       "no_inactive_sessions_to_archive": "아카이브할 비활성 세션이 없습니다.",
+      "no_older_sessions": "이전 세션이 없습니다 — 닫은 탭이 여기에 표시됩니다",
       "no_sessions": "세션 없음",
       "no_sessions_match": "일치하는 세션 없음",
       "older": "이전",

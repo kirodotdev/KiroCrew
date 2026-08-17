@@ -8421,6 +8421,7 @@
       "new_folder": "Новая папка",
       "new_subfolder": "Новая вложенная папка",
       "no_inactive_sessions_to_archive": "Нет неактивных сессий для архивации.",
+      "no_older_sessions": "Нет прежних сессий — закрытые вкладки появятся здесь",
       "no_sessions": "Нет сессий",
       "no_sessions_match": "Нет подходящих сессий",
       "older": "Ранее",

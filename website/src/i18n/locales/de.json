@@ -8207,6 +8207,7 @@
       "new_folder": "Neuer Ordner",
       "new_subfolder": "Neuer Unterordner",
       "no_inactive_sessions_to_archive": "Keine inaktiven Sitzungen zum Archivieren.",
+      "no_older_sessions": "Keine älteren Sitzungen – geschlossene Tabs erscheinen hier",
       "no_sessions": "Keine Sitzungen",
       "no_sessions_match": "Keine Sitzungen passen",
       "older": "Älter",
