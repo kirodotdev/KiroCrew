@@ -18,7 +18,7 @@
  */
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Workflow as WorkflowIcon, CheckCircle2, XCircle, Loader2, Ban, ListTree } from 'lucide-react'
+import { Workflow as WorkflowIcon, CheckCircle2, XCircle, Ban, ListTree, Loader } from 'lucide-react'
 import { Badge } from '../../components/ui'
 // Import shared view-model helpers from runModel directly (NOT from WorkflowsPage)
 // so this module and WorkflowsPage do not form an import cycle.
@@ -278,7 +278,7 @@ export default function WorkflowsRuns() {
                 }}
               >
                 {row.badge.active ? (
-                  <Loader2 size={14} className="text-accent animate-spin shrink-0" />
+                  <Loader size={14} className="text-accent animate-spin shrink-0" />
                 ) : row.status === 'finished' ? (
                   <CheckCircle2 size={14} className="text-green-500 shrink-0" />
                 ) : row.status === 'failed' ? (

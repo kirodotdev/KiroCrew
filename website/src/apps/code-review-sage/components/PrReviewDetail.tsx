@@ -8,9 +8,7 @@
 //
 // Every tab reads ONE query (see usePrSource), so switching is free and no tab
 // triggers its own provider call.
-import {
-  ExternalLink, FileText, GitPullRequest, Loader2, ScanSearch,
-} from 'lucide-react'
+import { ExternalLink, FileText, GitPullRequest, ScanSearch, Loader } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
 
 import { useSage } from '../context'
@@ -377,7 +375,7 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
             className="flex-shrink-0 inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-fg px-3 py-1.5 text-[12.5px] font-medium border-none cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default transition-colors"
           >
             {busy
-              ? <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
+              ? <Loader size={13} className="animate-spin motion-reduce:animate-none" />
               : <ScanSearch size={13} />}
             {running
               ? i18nT('apps.codeReviewSage.components.prReviewDetail.reviewing')

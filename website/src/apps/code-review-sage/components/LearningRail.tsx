@@ -4,7 +4,7 @@
 // because neither has anything to do with learned patterns — leaving them up kept
 // a repo picker and a PR list on screen while you read the reviewer's ruleset.
 // Selection works like the review list: pick one on the left, read it on the right.
-import { ChevronRight, Loader2, Plus, Trash2, X } from 'lucide-react'
+import { ChevronRight, Plus, Trash2, X, Loader } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -173,7 +173,7 @@ export default function LearningRail() {
                       className="inline-flex items-center gap-1 bg-transparent px-1 font-medium text-danger hover:underline disabled:opacity-40 cursor-pointer"
                     >
                       {deleteMut.isPending && (
-                        <Loader2 size={11} className="animate-spin motion-reduce:animate-none" />
+                        <Loader size={11} className="animate-spin motion-reduce:animate-none" />
                       )}
                       {i18nT('apps.codeReviewSage.components.learningRail.delete_2')}
                     </button>

@@ -16,9 +16,7 @@
 // identically. The keyboard behaviour — capture-phase Escape, the Tab trap and
 // focus restore — comes from the shared `useDialogFocusTrap` hook.
 import { AnimatePresence, motion } from 'framer-motion'
-import {
-  AlertCircle, Check, FolderGit2, GitBranch, Loader2, Lock, Plus, RefreshCw, Search, Star, Trash2, X,
-} from 'lucide-react'
+import { AlertCircle, Check, FolderGit2, GitBranch, Lock, Plus, RefreshCw, Search, Star, Trash2, X, Loader } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import Clickable from '../../../components/Clickable'
@@ -263,7 +261,7 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
             {loading && !setupRequired && (
               <>
                 <div className="inline-flex items-center gap-1.5 text-[12.5px] text-muted">
-                  <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
+                  <Loader size={13} className="animate-spin motion-reduce:animate-none" />
                   {i18nT('apps.codeReviewSage.components.addReposModal.reading_your_repos_from_github')}
                 </div>
                 <ListSkeleton count={5} />

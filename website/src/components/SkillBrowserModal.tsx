@@ -8,7 +8,7 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTriangle, ArrowLeft } from 'lucide-react'
+import { Download, Check, ExternalLink, Loader2, RefreshCw, FileText, AlertTriangle, ArrowLeft, Loader } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import { Btn } from './ui'
@@ -438,7 +438,7 @@ function SkillDetailPanel({
 
       {previewLoading ? (
         <div className="flex items-center gap-2 text-xs text-muted" role="status">
-          <Loader2 size={12} className="animate-spin" aria-hidden="true" /> {i18nT('components.skillBrowserModal.loading_preview')}
+          <Loader size={12} className="animate-spin" aria-hidden="true" /> {i18nT('components.skillBrowserModal.loading_preview')}
         </div>
       ) : preview?.content ? (
         <>

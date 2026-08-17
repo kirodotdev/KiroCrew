@@ -12,9 +12,7 @@
 // MarkdownRenderer (which sanitizes), the outbound PR link is validated with
 // safeHttpUrl, and code `snippet`s render verbatim in a <pre> (never markdown).
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
-import {
-  ChevronRight, ClipboardCheck, ExternalLink, Loader2, MessageSquarePlus, Share2, ShieldCheck,
-} from 'lucide-react'
+import { ChevronRight, ClipboardCheck, ExternalLink, MessageSquarePlus, Share2, ShieldCheck, Loader } from 'lucide-react'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import FindingCard from './FindingCard'
@@ -421,7 +419,7 @@ export default function ReportView({
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[12.5px] text-text hover:text-accent hover:border-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
           >
             {archiving
-              ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+              ? <Loader size={13} className="animate-spin" aria-hidden="true" />
               : <Share2 size={13} aria-hidden="true" />}
             {archiving
               ? i18nT('apps.codeReviewSage.components.reportView.sharing')

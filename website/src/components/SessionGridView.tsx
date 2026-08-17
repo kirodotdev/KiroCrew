@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
+import { X, Plus, GitFork, Circle, Loader } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { api } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
@@ -271,7 +271,7 @@ function PlaceholderPane({
           onClick={() => createSession.mutate()}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-accent bg-accent/10 rounded px-2 py-1.5 cursor-pointer border-none hover:bg-accent/20 disabled:opacity-50 transition-colors"
         >
-          {createSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} {i18nT('components.sessionGridView.new_session')}
+          {createSession.isPending ? <Loader size={13} className="animate-spin" /> : <Plus size={13} />} {i18nT('components.sessionGridView.new_session')}
         </button>
         <button
           disabled={!forkSourceSlot || forkSession.isPending}
@@ -279,7 +279,7 @@ function PlaceholderPane({
           title={forkSourceSlot ? i18nT('components.sessionGridView.fork_child_session', { name: forkSourceTitle || forkSourceSlot }) : i18nT('components.sessionGridView.no_session_to_fork_yet')}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
+          {forkSession.isPending ? <Loader size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
         </button>
       </div>
 

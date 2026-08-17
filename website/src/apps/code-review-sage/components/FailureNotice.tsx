@@ -4,7 +4,7 @@
 // report's body text, so a failed review looked like a review that found nothing.
 // This states the reason where the status is, and puts the retry next to it: a
 // failed run's most likely next action is running it again.
-import { AlertTriangle, Loader2, RotateCcw } from 'lucide-react'
+import { AlertTriangle, RotateCcw, Loader } from 'lucide-react'
 
 import type { Run } from '../lib/types'
 import { failureReason } from '../lib/format'
@@ -55,7 +55,7 @@ export default function FailureNotice({
             className="flex-shrink-0 inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-[12px] text-text hover:text-accent hover:border-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
           >
             {retrying
-              ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              ? <Loader size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
               : <RotateCcw size={12} aria-hidden="true" />}
             {retrying
           ? i18nT('apps.codeReviewSage.components.failureNotice.starting')

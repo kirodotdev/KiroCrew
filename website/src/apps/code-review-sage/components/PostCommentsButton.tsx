@@ -9,7 +9,7 @@
 // that this app cannot undo — the comments land as a GitHub review from your
 // account. So the first click states the count and asks; only the second sends.
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, Loader2, MessageSquarePlus } from 'lucide-react'
+import { AlertTriangle, Check, MessageSquarePlus, Loader } from 'lucide-react'
 
 import { relativeAge } from '../lib/format'
 import type { Run, RunReport } from '../lib/types'
@@ -90,7 +90,7 @@ export default function PostCommentsButton({
   if (posting) {
     return (
       <span className="inline-flex items-center gap-1.5 text-[12.5px] text-muted">
-        <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+        <Loader size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
         {i18nT('apps.codeReviewSage.components.postCommentsButton.posting')}
       </span>
     )

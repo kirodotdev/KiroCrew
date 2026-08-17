@@ -94,7 +94,7 @@ describe('the toolbar row obeys max-two-buttons-per-row', () => {
     // mutation ran. The menu closes on select, so without this the write has no
     // acknowledgment anywhere until the pill flips — a dead-tap read on latency.
     expect(menu, 'the trigger must render a spinner while pending')
-      .toMatch(/pending\s*\n?\s*\?\s*<Loader2/)
+      .toMatch(/pending\s*\n?\s*\?\s*<Loader/)
     const issue = bare(await src('components/IssueDetail.tsx'))
     expect(issue, 'the issue pane must feed the mutation state to the trigger')
       .toMatch(/<DetailOverflowMenu pending=\{[^}]*stateMutation\.isPending[^}]*\}>/)

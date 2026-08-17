@@ -6,7 +6,7 @@
 // came to read were two clicks deep and the repo picker stayed on screen above
 // them.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Brain, Loader2, Wand2 } from 'lucide-react'
+import { Brain, Wand2, Loader } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { sageApi } from '../api'
@@ -85,7 +85,7 @@ export function ConsolidateControl({
       )}
       {busy ? (
         <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted">
-          <Loader2 size={11} className="animate-spin motion-reduce:animate-none" />
+          <Loader size={11} className="animate-spin motion-reduce:animate-none" />
           {i18nT('apps.codeReviewSage.views.learningView.consolidating')}
         </span>
       ) : confirming ? (
@@ -188,7 +188,7 @@ export default function LearningView() {
 
         {learningsQuery.isLoading && (
           <div className="mt-6 inline-flex items-center gap-2 text-[13px] text-muted">
-            <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+            <Loader size={14} className="animate-spin motion-reduce:animate-none" />
             {i18nT('apps.codeReviewSage.views.learningView.loading_learnings')}
           </div>
         )}

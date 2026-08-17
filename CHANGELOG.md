@@ -4,6 +4,17 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **Small spinners read as motion again instead of as a broken ring.**
+  `LoaderCircle` draws one 2px-stroke arc spanning about 270 degrees of a
+  circle; at 10-14px that stroke is thick relative to the radius and the gap is
+  roughly a sixth of the glyph, so the mark looked like a chipped ring rather
+  than something turning. Every spinner with a declared size below 15px now uses
+  lucide `Loader`, whose eight discrete spokes stay legible at that size, and
+  15px and up keeps `LoaderCircle`, where the arc is unambiguous. The threshold
+  is one stated rule in the frontend layout guide with a test enforcing it in
+  both directions, so the glyph follows the size rather than per-call-site
+  taste.
+
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
   `kiro-cli` child holds its credential for the life of the session, so an

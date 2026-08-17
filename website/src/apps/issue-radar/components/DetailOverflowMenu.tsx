@@ -26,7 +26,7 @@
 // shape, including the labelled icon trigger that `icon-buttons-need-labels`
 // requires.
 import type { ReactNode } from 'react'
-import { MoreHorizontal, Loader2 } from 'lucide-react'
+import { MoreHorizontal, Loader } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
 } from '../../../components/ui/dropdown-menu'
@@ -52,7 +52,7 @@ export default function DetailOverflowMenu(
               invites a second one. The glyph is the only thing that changes, so
               the trigger's width — and the row's fit — is unaffected. */}
           {pending
-            ? <Loader2 size={14} className="animate-spin" />
+            ? <Loader size={14} className="animate-spin" />
             : <MoreHorizontal size={14} />}
         </Btn>
       </DropdownMenuTrigger>

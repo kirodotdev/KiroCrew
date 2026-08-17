@@ -1,17 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Copy,
-  Puzzle,
-  Download,
-  ExternalLink,
-  Globe,
-  HardDriveDownload,
-  KeyRound,
-  Loader2,
-} from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Copy, Puzzle, Download, ExternalLink, Globe, HardDriveDownload, KeyRound, Loader } from 'lucide-react'
 
 import { api, type BrowserInstallData } from '../../api/client'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
@@ -280,7 +269,7 @@ export function BrowserPanel() {
                           >
                             {installing && engineMut.variables === engine ? (
                               <>
-                                <Loader2 size={13} className="lucide-inline animate-spin" />
+                                <Loader size={13} className="lucide-inline animate-spin" />
                                 {i18nT('pages.settings.browserPanel.installing')}
                               </>
                             ) : (
@@ -469,7 +458,7 @@ export function BrowserPanel() {
                 >
                   {installing ? (
                     <>
-                      <Loader2 size={14} className="lucide-inline animate-spin" />
+                      <Loader size={14} className="lucide-inline animate-spin" />
                       {i18nT('pages.settings.browserPanel.installing')}
                     </>
                   ) : (
