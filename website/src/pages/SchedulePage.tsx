@@ -658,8 +658,28 @@ export default function SchedulePage() {
                 Actions column walks off the right edge — which is what happened
                 once cells stopped wrapping. Fixed layout makes horizontal
                 overflow structurally impossible: over-long values truncate with
-                a tooltip instead of pushing their neighbours. */}
-            <Table className="table-fixed min-w-[900px]">
+                a tooltip instead of pushing their neighbours.
+
+                Every column carries a px width EXCEPT Message, which is the sole
+                residual: it is the one column whose value has no natural length,
+                so it should absorb every pixel the viewport has spare. Two rules
+                keep that from turning into a collapse, both pinned by
+                `SchedulePage.columnContract.test.ts`:
+
+                - No PERCENTAGE widths. A percentage column grows with the table,
+                  so it takes a share of exactly the width the residual column
+                  needs. With the previous 15%/13%/12% the residual was
+                  `0.6 × width − 540px`, i.e. ZERO at the table's own 900px
+                  min-width — and a fixed layout does not shrink content to fit,
+                  it overlaps the next cell. That is what put the Message chevron
+                  and preview on top of the Status badge at phone widths, and on a
+                  1280px desktop with the nav rail open (measured 0px there too).
+                - `min-w` covers the nine px columns (940px, border-box, so the
+                  `p-2`/`px-2` is inside each) PLUS a 180px floor for Message —
+                  enough for the 14px chevron and a one-line preview. A narrower
+                  container scrolls the table, which is honest; voiding a column
+                  silently is not. */}
+            <Table className="table-fixed min-w-[1120px]">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">
@@ -674,9 +694,9 @@ export default function SchedulePage() {
                     />
                   </TableHead>
                   <TableHead className="w-[68px]">{i18nT('pages.schedulePage.id')}</TableHead>
-                  <SortableTableHead label={i18nT('pages.schedulePage.name')} sortKey="name" sort={schedSort} onToggle={toggleSchedSort} className="w-[15%]" />
-                  <TableHead className="w-[13%]">{i18nT('pages.schedulePage.type')}</TableHead>
-                  <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[12%]" />
+                  <SortableTableHead label={i18nT('pages.schedulePage.name')} sortKey="name" sort={schedSort} onToggle={toggleSchedSort} className="w-[160px]" />
+                  <TableHead className="w-[116px]">{i18nT('pages.schedulePage.type')}</TableHead>
+                  <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[124px]" />
                   <TableHead>{i18nT('pages.schedulePage.message')}</TableHead>
                   <SortableTableHead label={i18nT('pages.schedulePage.status')} sortKey="status" sort={schedSort} onToggle={toggleSchedSort} className="w-[86px]" />
                   <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[82px]" />
