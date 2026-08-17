@@ -68,8 +68,8 @@ describe('narrow-first layout baseline', () => {
   it('never half-converts a file: no bare px-6 left where the narrow gutter landed', async () => {
     // The original sweep matched the CONTAINER SIGNATURE (`px-6 pb-8`) rather than
     // the gutter VALUE, so sibling rows in the same page shells kept their 24px
-    // while the header and content moved to 8px -- five rows across four already
-    // converted files, plus a seventh page carrying the same
+    // while the header and content moved to the narrow gutter -- five rows across four
+    // already converted files, plus a seventh page carrying the same
     // `${embedded ? '' : 'px-6'}` template-literal form the sweep claimed to cover.
     //
     // Scope is deliberately per-file rather than repo-wide: a bare `px-6` in an
@@ -80,7 +80,7 @@ describe('narrow-first layout baseline', () => {
     const offenders: string[] = []
     for await (const file of walkSource(SRC)) {
       const src = await readFile(file, 'utf8')
-      if (!src.includes('px-2 md:px-6')) continue
+      if (!src.includes('px-4 md:px-6')) continue
       const stripped = src.replace(/(?<![\w:-])(?:md|sm|lg|xl):px-6/g, '')
       for (const [i, line] of stripped.split('\n').entries()) {
         if (/(?<![\w:-])px-6/.test(line)) {
@@ -150,12 +150,11 @@ describe('narrow-first layout baseline', () => {
   })
 
   it('leaves the top bar left cluster without a redundant mobile inset', async () => {
-    // `.tb-left`'s icon buttons carry their own 8px inside the header's 12px, so a
-    // mobile-only `px-2` on the cluster stacked to push the hamburger GLYPH out to
-    // 28px -- 20px right of the page title, which is what made it read as indented
-    // on every page. Measured at 390px and 320px: glyph 28px -> 20px with the class
-    // gone. The RIGHT cluster keeps its own padding/negative-margin pair, which
-    // exists to stop the notification badge's 4px overhang being clipped.
+    // `.tb-left`'s icon buttons carry their own 8px inside the header's inset, so a
+    // mobile-only `px-2` on the cluster stacked to push the hamburger out past the
+    // page's own left edge, which is what made it read as indented on every page.
+    // The RIGHT cluster keeps its own padding/negative-margin pair, which exists to
+    // stop the notification badge's 4px overhang being clipped.
     const app = await readFile(join(SRC, 'App.tsx'), 'utf8')
     const cluster = app.match(/className=[^\n]*tb-left[^\n]*/)
     expect(cluster, 'App.tsx should render the tb-left cluster').toBeTruthy()
@@ -163,5 +162,110 @@ describe('narrow-first layout baseline', () => {
       cluster![0],
       'a mobile-only inset here stacks on the header and pushes the hamburger out',
     ).not.toMatch(/isMobile[^\n]*px-/)
+  })
+
+  it('keeps the chat transcript on the same gutter as a page', async () => {
+    // The doc's claim is that one vertical line runs through the whole app: the
+    // hamburger glyph, a page title, a page row, a card's left edge and the agent's
+    // own text. Chat is the surface the rest was lined up WITH, so its gutter and
+    // `PageHeader`'s are one number -- asserted across the two files rather than as
+    // two literals, because a drift here is invisible to every other check: both
+    // sides still render, nothing overflows, and only the eye sees the step.
+    const chat = await readFile(join(SRC, 'pages', 'ChatPage.tsx'), 'utf8')
+    const row = chat.match(/className=\{`px-(\d+(?:\.\d+)?) mx-auto w-full py-1`\}/)
+    expect(row, 'ChatPage should render its message rows with an explicit gutter').toBeTruthy()
+
+    const input = await readFile(join(SRC, 'components', 'ChatInput.tsx'), 'utf8')
+    const composer = input.match(/`input-area px-(\d+(?:\.\d+)?) pb-1 /)
+    expect(composer, 'ChatInput should give the composer an explicit gutter').toBeTruthy()
+
+    const ui = await readFile(join(SRC, 'components', 'ui.tsx'), 'utf8')
+    const gutter = ui.match(/px-(\d+(?:\.\d+)?) md:px-\d+(?:\.\d+)? pt-2 pb-3/)
+    expect(gutter, 'PageHeader should carry a narrow-first gutter').toBeTruthy()
+
+    expect(
+      [row![1], composer![1]],
+      `transcript px-${row![1]} / composer px-${composer![1]} vs the page gutter `
+        + `px-${gutter![1]} -- chat and a page would read as two different columns`,
+    ).toEqual([gutter![1], gutter![1]])
+
+    // Pinning members by name is what let this drift twice. Round 2 lost a row because the
+    // scan wanted `pt-2`/`pb-2` and the row said `py-2`; Round 4 lost nine wrappers because
+    // the scan named two sites; Round 5 lost four more because the pattern demanded
+    // `px-N mx-auto w-full` ADJACENT and in that order, so `px-5 py-1 mx-auto w-full` and
+    // `mx-auto w-full px-5` both walked straight through it. Every one of those was a new
+    // SPELLING of the same element, so stop matching spellings: split each class list into
+    // tokens and ask what it IS -- a self-centring full-width wrapper -- then require its
+    // gutter to be the page's. Order, interleaving and future siblings are all covered,
+    // which is the only version of this test that stops needing another round.
+    const offenders: string[] = []
+    for await (const file of walkSource(SRC)) {
+      const src = await readFile(file, 'utf8')
+      for (const m of src.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
+        const tokens = (m[1] ?? m[2] ?? '').split(/\s+/)
+        if (!tokens.includes('mx-auto') || !tokens.includes('w-full')) continue
+        const px = tokens.find((t) => /^px-\d+(?:\.\d+)?$/.test(t))
+        if (px && px !== `px-${gutter![1]}`) {
+          offenders.push(`${file.slice(SRC.length + 1)}: ${px}`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      `these wrappers centre themselves in the chat content column but do not carry its `
+        + `gutter (px-${gutter![1]}), so they render a second left edge inside one column`,
+    ).toEqual([])
+  })
+
+  it('lands the top bar glyphs on the page gutter, derived not hand-typed', async () => {
+    // The hamburger, the page title and every card's left edge read as one vertical
+    // line. That line is arithmetic across three files, and what has to land on it is
+    // the glyph's INK, not the button's box: `Menu` is the one icon here whose artwork
+    // does not fill its viewBox, so a box sitting correctly on the gutter still draws
+    // 2.5px right of it. Asserted as a SUM rather than as literals, because every part
+    // of this failure is silent -- moving any one number just makes the chrome look
+    // indented, which no overflow or scroll assertion can see.
+    //
+    // The icon's own inset is re-derived from lucide's shipped path data rather than
+    // hand-typed, so upgrading lucide to a `Menu` drawn on different coordinates fails
+    // here instead of quietly making the correction wrong.
+    const app = await readFile(join(SRC, 'App.tsx'), 'utf8')
+    const header = app.match(/topbar topbar-glass relative pl-(\d+(?:\.\d+)?) /)
+    expect(header, 'App.tsx should give the topbar an explicit left inset').toBeTruthy()
+    const btn = app.match(/className="p-(\d+(?:\.\d+)?) rounded-md bg-transparent[^\n]*aria-label=\{i18nT\('app\.open_menu'\)\}/)
+      ?? app.match(/p-(\d+(?:\.\d+)?) rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0/)
+    expect(btn, 'the hamburger should carry its own padding').toBeTruthy()
+
+    const glyph = app.match(/<Menu size=\{(\d+)\} className="-translate-x-\[(\d+(?:\.\d+)?)px\]" \/>/)
+    expect(
+      glyph,
+      'the hamburger glyph should declare its size and its optical correction together',
+    ).toBeTruthy()
+    const [, sizePx, correction] = glyph!
+
+    const menuIcon = await readFile(
+      join(SRC, '..', 'node_modules', 'lucide-react', 'dist', 'esm', 'icons', 'menu.js'),
+      'utf8',
+    )
+    const startXs = [...menuIcon.matchAll(/d: "M(\d+(?:\.\d+)?)/g)].map((m) => Number(m[1]))
+    expect(startXs.length, "lucide's menu icon should expose its path data").toBeGreaterThan(0)
+    // lucide's default stroke is 2 units with a round cap, so the ink reaches half a
+    // stroke beyond the geometry; the viewBox is 24 units wide at any rendered size.
+    const inkInsetPx = (Math.min(...startXs) - 1) * (Number(sizePx) / 24)
+
+    const ui = await readFile(join(SRC, 'components', 'ui.tsx'), 'utf8')
+    const gutter = ui.match(/px-(\d+(?:\.\d+)?) md:px-\d+(?:\.\d+)? pt-2 pb-3/)
+    expect(gutter, 'PageHeader should carry a narrow-first gutter').toBeTruthy()
+
+    const px = (rem: string) => Number(rem) * 4
+    const boxLeft = px(header![1]) + px(btn![1])
+    const inkLeft = boxLeft - Number(correction) + inkInsetPx
+    expect(
+      inkLeft,
+      `topbar pl-${header![1]} + hamburger p-${btn![1]} puts the button box at ${boxLeft}px; `
+        + `less the ${correction}px correction plus Menu's own ${inkInsetPx}px of empty box, `
+        + `the GLYPH lands at ${inkLeft}px, but the page gutter is px-${gutter![1]} `
+        + `(${px(gutter![1])}px) -- the chrome would read as indented from the title`,
+    ).toBe(px(gutter![1]))
   })
 })

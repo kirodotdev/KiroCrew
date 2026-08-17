@@ -123,7 +123,7 @@ export default function OverviewView() {
   // screen. It also made this page the outlier inside its own app: the issue
   // and PR list columns have run an 8px gutter at every width all along.
   return (
-    <div className="px-2 md:px-6 pt-4 pb-6 flex flex-col gap-4">
+    <div className="px-4 md:px-6 pt-4 pb-6 flex flex-col gap-4">
       {/* First row: your personal queue + a compact refresh, flush to the top. */}
       <div className="flex items-start gap-3">
         {me ? (

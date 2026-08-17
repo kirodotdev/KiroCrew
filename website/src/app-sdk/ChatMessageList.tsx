@@ -140,7 +140,7 @@ const ChatMessageList = memo(function ChatMessageList({
   const renderMessage = useCallback((m: ChatMessage, i: number) => {
     const key = msgKey(m, i)
     const wrapper = (children: React.ReactNode, isUser = false) => (
-      <div key={key} className="px-5 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={key} className="px-4 mx-auto w-full py-1" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
         <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''}`}>
           <div className={`flex flex-col gap-0.5 min-w-0 overflow-hidden ${isUser ? 'items-end' : ''}`}>
             {children}
@@ -149,7 +149,7 @@ const ChatMessageList = memo(function ChatMessageList({
       </div>
     )
     const row = (children: React.ReactNode, tight = false) => (
-      <div key={key} className={`px-5 mx-auto w-full ${tight ? 'py-0.5' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={key} className={`px-4 mx-auto w-full ${tight ? 'py-0.5' : 'py-1'}`} style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
         {children}
       </div>
     )
@@ -189,7 +189,7 @@ const ChatMessageList = memo(function ChatMessageList({
       : undefined
 
     return (
-      <div key={'grp-' + item.startIdx} className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
+      <div key={'grp-' + item.startIdx} className="px-4 mx-auto w-full py-0.5" style={{ maxWidth: `var(--mc-content-width, ${contentWidth})` }}>
         <CollapsibleToolGroup
           count={nonPerm.length}
           autoExpand={running && item.startIdx >= messages.length - 5}

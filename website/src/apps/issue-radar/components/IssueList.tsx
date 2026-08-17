@@ -78,7 +78,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
     <section className="flex flex-col min-h-0 h-full">
       {/* Search box: bordered pill, leading glyph,
           transparent input, inline clear button. */}
-      <div className="px-2 pt-2 pb-1.5 flex-shrink-0">
+      <div className="px-4 pt-2 pb-1.5 flex-shrink-0">
         <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 transition-colors focus-within:border-accent">
           <Search size={14} className="flex-shrink-0 text-muted opacity-60" />
           <input
@@ -104,13 +104,13 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
       {/* Card list — a bottom gradient fades the last cards out. */}
       <div className="relative flex-1 min-h-0">
         {issuesLoading && (
-          <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+          <div className="absolute inset-0 overflow-y-auto scrollbar-none px-4 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
             <ListSkeleton />
           </div>
         )}
-        {issuesError && <div className="px-3 py-2 text-[14px] text-danger">{issuesError.message}</div>}
+        {issuesError && <div className="px-4 py-2 text-[14px] text-danger">{issuesError.message}</div>}
         {!issuesLoading && filteredIssues.length === 0 && (
-          <div className="px-2 pb-2">
+          <div className="px-4 pb-2">
             <ListEmptyState searching={Boolean(query.trim())} label={i18nT('apps.issueRadar.components.issueList.issues')} />
           </div>
         )}
@@ -119,7 +119,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             // Small list: a plain animated flow. Cheap, and the reorder/enter
             // animation is worth it. AnimatePresence needs all siblings mounted, so
             // this path is deliberately NOT virtualized (bounded by ANIM_CAP).
-            <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+            <div className="absolute inset-0 overflow-y-auto scrollbar-none px-4 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
               <AnimatePresence initial={false} mode="popLayout">
                 {sortedIssues.map((iss) => (
                   <motion.button
@@ -153,8 +153,8 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             // `position:absolute; top:0; width:100%` inside a `position:relative`
             // scroller, and it sets no `left`: so `left` falls back to the static
             // position (which respects padding-left) while `width:100%` resolves
-            // against the PADDING box. A `px-2` here would therefore make every row
-            // 16px wider than the visible column and push its right edge 8px off
+            // against the PADDING box. A `px-4` here would therefore make every row
+            // 32px wider than the visible column and push its right edge 16px off
             // screen — the left border would still line up, so it reads as "the
             // card's right border is missing" rather than as a padding bug. Vertical
             // padding on the scroller is swallowed outright (the viewport pins
@@ -167,7 +167,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
               data={sortedIssues}
               computeItemKey={(_i, iss) => iss.number}
               itemContent={(_i, iss) => (
-                <div className="px-2 pb-2">
+                <div className="px-4 pb-2">
                   <button
                     onClick={() => { setSelectedIssue(iss.number); listDetail.openDetail() }}
                     className={cardClass(selectedIssue === iss.number)}
@@ -185,7 +185,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
       </div>
 
       {/* Footer — count on the left, last-refresh time + refresh on the right. */}
-      <div className="flex-shrink-0 flex items-center gap-2 px-3 pt-2 pb-4 text-[12px] text-muted">
+      <div className="flex-shrink-0 flex items-center gap-2 px-4 pt-2 pb-4 text-[12px] text-muted">
         <span title={stateFilter === 'closed' && issues.length >= 100 ? i18nT('apps.issueRadar.components.issueList.closed_issues_are_capped_at_the_100_most_recentl') : undefined}>
           {i18nT('apps.issueRadar.components.issueList.issue', { count: filteredIssues.length })}
         </span>

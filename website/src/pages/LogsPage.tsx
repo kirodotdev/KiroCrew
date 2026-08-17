@@ -102,7 +102,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
     : { btn: 'px-3.5 py-[5px] text-[13px]', input: 'px-3 py-1.5 text-[13px]', row: 'text-[13px]', gap: 'gap-1.5 mb-3', label: 'text-[13px]' }
 
   return (
-    <div className={`flex-1 flex flex-col min-h-0 ${compact ? '' : 'px-2 md:px-6 pb-8'}`}>
+    <div className={`flex-1 flex flex-col min-h-0 ${compact ? '' : 'px-4 md:px-6 pb-8'}`}>
       <div className={`flex ${sz.gap} flex-wrap items-center`}>
         <span className={`${sz.label} text-muted mr-1`}>{i18nT('pages.logsPage.log_level')}</span>
         {LEVELS.map(l => (

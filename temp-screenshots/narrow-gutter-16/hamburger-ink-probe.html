@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #ffffff;
+    font-family: -apple-system,BlinkMacSystemFont,'Segoe WPC','Segoe UI',HelveticaNeue-Light,system-ui,Ubuntu,'Droid Sans',sans-serif; }
+  /* header.topbar: pl-2 pr-3  (App.tsx:1835) */
+  .topbar { padding-left: 8px; padding-right: 12px; height: 44px; display: flex; align-items: center; }
+  /* the hamburger button: p-2 (App.tsx:1859) */
+  .hamb { padding: 8px; background: transparent; border: none; cursor: pointer; display: flex;
+          color: #000; }
+  /* PageHeader: px-4 md:px-6 pt-2 pb-3 (ui.tsx:404) */
+  .pagehead { padding: 8px 16px 12px 16px; }
+  /* the title: text-2xl font-bold tracking-tight (ui.tsx:406) */
+  .title { font-size: 24px; font-weight: 700; letter-spacing: -0.025em; color: #000; line-height: 1.2; }
+</style></head><body>
+  <!-- the 16px content line every surface is supposed to start on -->
+  <div style="position:absolute;left:16px;top:0;bottom:0;width:1px;background:#e00;z-index:9"></div>
+  <header class="topbar">
+    <button class="hamb" aria-label="menu" id="hamb">
+      <!-- lucide-react v1.7.0 Menu, size=20 -->
+      <!-- Loaded as-is this is the BEFORE state (no correction): the ink draws at
+           18.5px while the box sits at 16px. The shipped code adds
+           `-translate-x-[2.5px]`; set it here to see the AFTER state. -->
+      <svg id="svg"
+           xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/>
+      </svg>
+    </button>
+  </header>
+  <div class="pagehead"><div class="title" id="title">Notifications</div></div>
+  <!-- a Card at the page gutter: its border is a HARD edge, no side bearing, so it is
+       the font-independent thing the hamburger is really compared against by eye -->
+  <div style="padding: 0 16px;">
+    <div id="card" style="border: 1px solid #000; border-radius: 8px; padding: 8px; height: 40px;">
+      <span id="cardtext" style="font-size: 14px;">Card body text</span>
+    </div>
+  </div>
+</body></html>

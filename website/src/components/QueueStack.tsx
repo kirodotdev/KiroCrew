@@ -64,7 +64,7 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
   if (count <= 0) return null
   return (
     <div
-      className="mx-auto w-full px-5"
+      className="mx-auto w-full px-4"
       style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
       data-testid="subagent-delivery-progress"
     >
@@ -222,7 +222,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
   }
 
   return (
-    <div className="px-5 mx-auto w-full relative" style={{ maxWidth: 'var(--mc-content-width, 900px)', zIndex: 0 }}>
+    <div className="px-4 mx-auto w-full relative" style={{ maxWidth: 'var(--mc-content-width, 900px)', zIndex: 0 }}>
       <motion.div
         className="relative cursor-pointer"
         animate={{ height: targetHeight }}

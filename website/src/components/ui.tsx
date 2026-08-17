@@ -29,7 +29,7 @@ export function Card({ children, className = '', ...rest }: Omit<React.Component
   const owned = className.split(/\s+/)
   const ownsX = owned.some((c) => /^(?:p|px)-/.test(c))
   const ownsY = owned.some((c) => /^(?:p|py)-/.test(c))
-  const inset = [ownsX ? '' : 'px-2.5 md:px-5', ownsY ? '' : 'py-5'].filter(Boolean).join(' ')
+  const inset = [ownsX ? '' : 'px-2 md:px-5', ownsY ? '' : 'py-5'].filter(Boolean).join(' ')
   return (
     <div className={twMerge(`card-glow border border-border bg-card rounded-lg ${inset} mb-4 animate-rise shadow-sm transition-all`, className)} {...rest}>
       {children}
@@ -389,20 +389,20 @@ export function PanelSectionHeader({ label, count, trailing, className }: {
 
 export function PageHeader({ title, subtitle, actions }: { title: React.ReactNode; subtitle?: string; actions?: React.ReactNode }) {
   return (
-    // 8px below `md`, the SAME gutter as the page content container, so the title
+    // 16px below `md`, the SAME gutter as the page content container, so the title
     // shares its left edge with the cards and rows it labels. That shared edge is
     // the page's content column, and the title belongs to the content -- not to the
     // chrome above it.
     //
-    // The top bar is a separate layer and does NOT have to match: its icon buttons
-    // carry their own 8px inside a 12px header inset, so its glyphs land at 20px.
-    // An earlier round moved this header to 20px to meet them, which read worse --
-    // the title then sat 12px inside the cards directly beneath it. The real defect
-    // was in the top bar, where a redundant mobile-only `px-2` had pushed the
-    // hamburger glyph out to 28px; that class is gone (see `.tb-left` in App.tsx).
+    // The top bar is now held to the same line rather than exempted from it: its
+    // hamburger's box is `pl-2` + `p-2` = 16px, plus a 2.5px transform that pulls
+    // the glyph's artwork onto the line too (`Menu` does not fill its own box).
+    // An earlier round instead moved THIS header out to meet a 20px top bar, which
+    // read worse -- the title then sat inside the cards directly beneath it. The
+    // defect was always in the chrome, not in the content column.
     //
     // Measured budget and the full rationale: website/docs/page-layout.md.
-    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-2 md:px-6 pt-2 pb-3" data-testid="page-header">
+    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-4 md:px-6 pt-2 pb-3" data-testid="page-header">
       <div className="min-w-0">
         <div className="text-2xl font-bold tracking-tight text-text-strong" data-testid="page-title">{title}</div>
         {subtitle && <div className="text-muted text-sm mt-1" data-testid="page-subtitle">{subtitle}</div>}

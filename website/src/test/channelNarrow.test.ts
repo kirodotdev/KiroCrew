@@ -78,12 +78,12 @@ describe('ChannelPage narrow viewport', () => {
     // `page-layout-pattern` names this container literally, and its stated harm is a
     // max-width wrapper breaking `overflow-y-auto`, not the gutter. So the container
     // stays as written and the narrow pane cancels the gutter itself. The pull-back
-    // is pinned to the gutter it cancels: -mx-2 against the recommended 8px narrow
+    // is pinned to the gutter it cancels: -mx-4 against the recommended 16px narrow
     // gutter. Widening one without the other pushes the pane past the screen edge,
     // which overflows nothing on a per-character-breaking script and so is invisible
     // to a scroll assertion.
-    expect(s).toMatch(/className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0"/)
-    expect(s).toMatch(/flex h-full relative \$\{isMobile \? '-mx-2 -mb-8' : ''\}/)
+    expect(s).toMatch(/className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0"/)
+    expect(s).toMatch(/flex h-full relative \$\{isMobile \? '-mx-4 -mb-8' : ''\}/)
     expect(s, 'gating the container itself is what the rule names')
       .not.toMatch(/isMobile \? 'px-0 pb-0' : 'px-6 pb-8'/)
     expect(s).toMatch(/isMobile \? 'px-0' : 'px-2'/)

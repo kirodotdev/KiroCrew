@@ -34,7 +34,7 @@ const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', tri
  * dynamic chrome. The `vh` declaration stays as the fallback for browsers
  * without `svh`, matching the shell's own `supports-[height:100dvh]` pattern.
  */
-const PANE_SHELL_CLASS = 'flex gap-3 -mx-2.5 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
+const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 /** Humanize a kebab/snake-case skill name for display. */
 const displayName = (s: Skill) => s.name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())

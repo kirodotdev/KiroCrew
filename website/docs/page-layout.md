@@ -14,13 +14,13 @@ conventions around them (a11y, data fetching, typography) live in
 ```tsx
 <>
   <PageHeader title="PageName" subtitle="Short description" />
-  <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+  <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
     {/* optional StatCard row, then Cards with tables/forms */}
   </div>
 </>
 ```
 
-`PageHeader` owns its own `px-2 md:px-6 pt-2 pb-3` — the SAME horizontal gutter as the
+`PageHeader` owns its own `px-4 md:px-6 pt-2 pb-3` — the SAME horizontal gutter as the
 content container below it, so the title shares a left edge with the cards and rows it
 labels. Keep them equal: a header that drifts off the container's gutter insets the
 title from its own content, and the top bar above is a separate layer that does not
@@ -34,8 +34,8 @@ row. Put page-level buttons there rather than in the first `Card`.
 
 ### Read every class here narrow-first
 
-**The unprefixed value is the PHONE's. `md:` adds the desktop.** `px-2 md:px-6` is a
-gutter that starts at 8px and widens; `p-5 max-md:px-2.5` is the same intent written
+**The unprefixed value is the PHONE's. `md:` adds the desktop.** `px-4 md:px-6` is a
+gutter that starts at 16px and widens; `p-5 max-md:px-4` is the same intent written
 backwards. Both render identically, and only the first one is maintainable.
 
 This is not a style preference. Tailwind is built narrow-first, so a rule whose
@@ -55,11 +55,13 @@ These are **recommendations for the narrow branch only** — nothing here change
 page from `md` up, and `AUTOSDE.yaml` does not enforce a gutter value. A page that
 keeps one gutter at every width is conformant.
 
-**Recommended below `md`: an 8px page gutter (`px-2`) and a 10px `Card` horizontal
-inset (`px-2.5 … md:px-5`)**, serving a budget of **no more than ~19px of stacked inset
-before body text** (8 + a 1px border + 10). 10px is the value the Skills and Steering cards have run since the
-card-flush work, so this makes the default match what was already reviewed on a phone
-rather than introducing a third number.
+**Recommended below `md`: a 16px page gutter (`px-4`) and an 8px `Card` horizontal
+inset (`px-2 … md:px-5`)**, serving a budget of **no more than ~25px of stacked inset
+before body text** (16 + a 1px border + 8). 16px is the screen margin Material, Apple
+HIG, Fluent, Carbon, Polaris, Primer and Atlassian all converge on, and two surfaces
+here already ran it before this was written down (`SidePanelLayout`, the Knowledge
+page), so the default is the number the rest of the industry and this app had already
+picked rather than a new one.
 
 Padding stacks, and the eye reads the SUM. The gutter is 24px from `md` up, where
 it is comfortable. At 390px the same 24px plus a 20px card inset put card text
@@ -69,29 +71,42 @@ the line that pays is the longest content in the card.
 Which layer yields is not arbitrary:
 
 - **Both layers yield, the one against a DRAWN border yields less.** `Card` goes to
-  10px horizontally — narrowed, never flushed. Its inset is often the only gutter its
+  8px horizontally — narrowed, never flushed. Its inset is often the only gutter its
   own rows have, so flushing a card to 0 is still wrong (see below). The VERTICAL
   inset stays 20px: horizontal is the axis a phone cannot spare, and changing the
   vertical would move every card's height.
 - **The layer against the SCREEN EDGE yields more.** A phone bezel is not a drawn
-  line, so 8px reads as intentional rather than cramped.
+  line, so a gutter narrower than the 24px desktop one reads as intentional rather
+  than cramped. 16px is where that stops being true in the other direction: this
+  was tried at 8px and then at 12px, and 8px read as content pressed against the
+  bezel rather than as a deliberately dense page. 16px keeps most of the width the
+  narrow gutter buys while leaving the page visibly inset.
 
-This deviates from the 16px screen margin that Material, Apple HIG, Fluent, Carbon,
-Polaris, Primer and Atlassian all converge on — deliberately, and in the direction
-those systems actually intend. Their 16px is content-to-edge for content that is
-**not already inside a bordered container**: a Material list item at a 16px margin
-puts its text at 16px, not at 36px. Matching the *effective text inset* is truer to
-that convergence than matching the gutter number and then stacking another inset on
-top of it. For reference, agent text in the chat transcript starts at 20px -- measured
-against the built stylesheet, not inferred -- and the Skills/Steering cards already run
-this 10px inset, so 19px matches this app's densest reviewed reading
-surface rather than going below it.
+This MATCHES the 16px screen margin that Material, Apple HIG, Fluent, Carbon,
+Polaris, Primer and Atlassian all converge on. Their 16px is content-to-edge for
+content that is **not already inside a bordered container**: a Material list item at
+a 16px margin puts its text at 16px, not at 36px. So this app hits that number
+exactly for content ON the gutter -- a heading, a row, a tab strip -- and a `Card`
+then charges its own 8px on top, putting card text at 25px. The chat transcript runs
+the SAME 16px -- its message row and its composer are both `px-4` -- so a page's
+uncontained content and the agent's own text sit on one vertical line across the whole
+app, and only a `Card` steps inside it. That a card cannot also land on 16px under one
+gutter is arithmetic, not an oversight: the card inset absorbs the difference, which is
+one more reason to reach for a `Card` less often on a phone (see below).
 
-Measured on a plain `Card` page (Notifications). At 390px the card goes from 342px
-to 374px wide and its text line from 300px to 352px, **+17.3%**; at 320px the card
-goes from 272px to 304px and the text line from 230px to 282px, **+22.6%**. Nothing
-changes from `md` up. The text-line figures subtract the card's 1px borders as well
-as its padding, because a border is opaque to text the same way padding is.
+At 390px the card goes from 342px wide (the 24px gutter) to 358px and its text line
+from 300px to 340px, **+13.3%**; at 320px the card goes from 272px to 288px and the
+text line from 230px to 270px, **+17.4%**. Nothing changes from `md` up.
+
+That is the comparison against the DESKTOP gutter. Against the 8px narrow gutter and
+10px card inset this replaced, the same card is 16px narrower and its text line 12px
+shorter (390px: 374 -> 358 wide, 352 -> 340 of text). Measured, not derived. The 12px
+buys a 16px screen margin on every uncontained surface and one shared left edge; a
+page that would rather have the width should drop the `Card`, not re-cut the gutter.
+Both sets of figures follow
+from the box arithmetic -- viewport minus two gutters, then minus two 1px borders and
+two card insets -- and the text-line figures subtract the borders because a border is
+opaque to text the same way padding is.
 
 The one exception is `OnboardingChapterShell`, a full-page surface with its own
 `sm:px-10` scale rather than a `PageHeader` + container page.
@@ -103,29 +118,54 @@ differ:
 
 | | narrow | made of |
 |---|---|---|
-| **content column** — `PageHeader`, page rows, `Card` boxes | **8px** | the page gutter, `px-2` |
-| `Card` body text | 19px | 8 + 1px border + the `Card`'s own 10 |
-| top bar glyphs (chrome) | 20px | header `pl-3` (12) + each icon button's own 8 |
+| **content column** — `PageHeader`, page rows, `Card` boxes | **16px** | the page gutter, `px-4` |
+| `Card` body text | 25px | 16 + 1px border + the `Card`'s own 8 |
+| top bar icon BOX (chrome) | 16px | header `pl-2` (8) + each icon button's own 8 |
+| top bar hamburger INK | 16px | that 16px box, less a 2.5px optical correction, plus `Menu`'s own 2.5px of empty box |
 
-The title shares the container's 8px so it sits directly above the left edge of the
-cards and rows it labels. This was tried the other way first — the header moved to
-20px to meet the top bar — and it read worse: the title then sat 12px *inside* the
-very cards beneath it, which is the misalignment a reader actually notices, because
-the title and the content are one column and the chrome is not part of it.
+The title shares the container's 16px so it sits directly above the left edge of the
+cards and rows it labels. That is the rule, and it is what decides the number: the
+title follows its CONTENT, never the chrome above it. An earlier round tried the
+opposite — moving the header out to meet the top bar — and it read worse, because the
+title then sat inside the very cards beneath it.
 
-What DID need fixing was the top bar. Its glyphs sit at 20px by construction (12px
-header inset plus each icon button's own 8px), but a redundant mobile-only `px-2` on
-the left cluster stacked on top of that and pushed the hamburger glyph out to **28px**
-— far enough from the content column to read as misaligned on every page. Removing
-that one class lands it at 20px. Only the LEFT cluster: `.tb-right` carries a
-padding/negative-margin pair that keeps the notification badge's 4px overhang from
-being clipped, and re-tuning it needs a real WebKit check rather than a local one.
+At 16px the chrome happens to land on the same line, and that is a consequence rather
+than the reason. The top bar's icon BOXES are header inset plus each icon button's own
+8px, so an 8px header inset puts them at 16px: the hamburger, the page title, the
+chat session-list toggle and every card's left edge become one vertical line. Only the
+LEFT cluster is tuned this way — `.tb-right` carries a padding/negative-margin pair
+that keeps the notification badge's 4px overhang from being clipped, and re-tuning it
+needs a real WebKit check rather than a local one. Two things make this line easy to
+break silently: a mobile-only `px-2` on the left cluster once stacked on the header's
+own inset and pushed the hamburger out past the page's own edge, and the glyph position
+is never the container's `className` — measure the rendered glyph with
+`getBoundingClientRect`, not the class.
 
-For scale, agent text in the chat transcript starts at 20px — the message row is
-`px-5` with no responsive variant, measured against the built stylesheet. Chat is
-where a phone user spends most of their time, so a page's own content column being
-tighter than that is deliberate: a page is a denser surface than a transcript, and the
-`Card` inset carries its text to 19px anyway.
+**A correctly placed box does not mean a correctly placed glyph.** An icon's artwork
+need not fill its own viewBox, and the eye sees the INK, not the box. `Menu` is the one
+icon here that does not fill it: lucide draws its three rules from `x=4` in a 24-unit
+viewBox and the round cap reaches half a stroke further, leaving 3 units — at `size={20}`
+that is 3 × 20/24 = **2.5px** — empty on the left. Measured at 390px, its box sat
+correctly at 16px while the visible glyph drew at 18.5px, reading as indented against a
+card border directly beneath it. It carries a `-translate-x-[2.5px]` correction so the
+ink lands at 16px; a transform rather than a margin, so the box, the hit target and the
+hover pill all stay on the 8px grid and no sibling in the cluster shifts.
+
+The correction is per-icon and most icons need none — the chat session-list toggle's
+`MessageSquare` starts at `x=2`, i.e. 0.67px at `size={16}`, which is already on the
+line. Do not generalise this into one shared offset. Note also what the correction
+trades: ink now agrees with hard edges (a card border, a divider) and sits ~2px left of
+the page TITLE's ink, because text carries its own left side bearing — 2px for `N` at
+24px bold. Two things cannot both be true at once, and hard edges won: a border is a
+crisp line the eye measures against, while a letter's bearing varies per glyph and per
+platform font.
+
+Chat is on this line too, not beside it: the transcript's message row and the composer
+are `px-4` with no responsive variant. So the hamburger glyph, the page title, a page
+row, a card's left edge and the agent's own text all start at 16px, and a `Card`'s body
+text is the one thing that steps inside (25px). Chat is where a phone user spends most
+of their time, which is why it is the surface the rest is lined up with rather than the
+other way round.
 
 `src/test/narrowFirstBaseline.test.ts` pins the header to the container gutter the
 skeleton above documents, and separately pins the top bar's left cluster against the
@@ -226,7 +266,7 @@ two characters per line. Judge a reading column by its WIDTH, not by whether any
 overflowed.
 
 **Two coupled numbers must be pinned by a test.** A negative margin that cancels an inset
-(`-mx-2.5 md:mx-0` against `Card`'s own `px-2.5`), or a pull-back sized to a tile's width plus a
+(`-mx-2 md:mx-0` against `Card`'s own `px-2`), or a pull-back sized to a tile's width plus a
 gap, is ONE number written twice. Changing one alone misaligns silently — nothing
 overflows, so only a test that asserts the pair catches it.
 
@@ -263,7 +303,7 @@ being a matter of taste: a 50px column at 13px holds three CJK glyphs, which is 
 you can state as a number.
 
 **Reach for a `Card` less often on a phone.** A card buys grouping with a drawn border
-plus its own inset — on a 390px screen that is 20px of width and a line the screen edge
+plus its own inset — on a 390px screen that is 16px of width and a line the screen edge
 already implies. Where a section is the only thing on the page, or where the grouping is
 already obvious from a heading, prefer a heading plus content and let the page gutter do
 the work. Cards earn their keep when several peer groups must be told apart on one
@@ -280,10 +320,10 @@ keeps the controls reachable, but it is an interim, not the answer.
 
 Padding stacks, and the eye reads the SUM. On a wide viewport a page gutter plus a card
 inset plus a row inset is comfortable; at 390px it is not. The skill-budget row measured
-16px (page) + 20px (`Card`) + 16px (row) = **52px** before its text, against 20px for the
+16px (page) + 20px (`Card`) + 16px (row) = **52px** before its text, against 16px for the
 same text in chat.
 
-The page container keeps the `px-2 md:px-6 pb-8` the skeleton above prescribes -- that is what
+The page container keeps the `px-4 md:px-6 pb-8` the skeleton above prescribes -- that is what
 `AUTOSDE.yaml`'s `page-layout-pattern` requires, and it is not the layer to change. The
 third layer is the one to drop:
 
@@ -315,23 +355,26 @@ loading skeleton share so the layout does not jump when data arrives. The two nu
 are ONE number -- changing the inset without the margin pushes the pane past the border:
 
 ```tsx
-const PANE_SHELL_CLASS = 'flex gap-3 -mx-2.5 md:mx-0 …'  /* cancels `Card`'s own px-2.5 */
+const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 …'  /* cancels `Card`'s own px-2 */
 ```
 
-Measured at 390px on the Skills tab: the pane goes from left 37 / width 316 to left 17 /
-width 356, so a row inside it starts at ~33px instead of ~54px, against 20px for the same
-text in chat.
+From the boxes at 390px on the Skills tab: the pane goes from left 25 / width 340 to
+left 17 / width 356, so a row inside it starts at ~34px instead of ~42px, against 16px
+for the same text in chat. (The pattern was first measured on a page that ran a 16px
+gutter and a 20px card inset, where the same pull-back moved the pane from left 37 /
+width 316 to left 17 / width 356.)
 
 **Do not flush the card itself** (a `px-0` override). Its padding is also the only gutter the
 toolbar above the pane has, and removing it puts the search field's rounded border
 directly against the card's border -- measured as a 0px gap, and the first thing a reader
-calls ugly. `Card`'s own narrow inset (`px-2.5`, a measured 10px) keeps the field off the border
+calls ugly. `Card`'s own narrow inset (`px-2`, 8px) keeps the field off the border
 while giving the row back most of the width. An inset toolbar above a full-bleed list is the ordinary phone pattern; the
 two do not need to share a left edge.
 
-This does not touch the page container's `px-2 md:px-6 pb-8`, which is what `AUTOSDE.yaml`'s
+This does not touch the page container's `px-4 md:px-6 pb-8`, which is what `AUTOSDE.yaml`'s
 `page-layout-pattern` names and is not the layer to change. For a pane that must reach the
-SCREEN edge, past the page gutter, cancel more inside the pane (`-mx-6` while narrow).
+SCREEN edge, past the page gutter, cancel the gutter itself inside the pane (`-mx-3` while
+narrow) -- the same one-number-written-twice pairing, so pin it with a test.
 
 **Status: a direction, not a description of the repo.** Two shapes are migrated --
 `SkillContextBudget` (direct-child rows) and the `SkillsTab` / `SteeringTab` split panes
@@ -444,7 +487,7 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 ## Do NOT
 
 - Wrap a page in `<div className="p-6 max-w-[960px] mx-auto">`. Use
-  `PageHeader` + the `px-2 md:px-6 pb-8` container.
+  `PageHeader` + the `px-4 md:px-6 pb-8` container.
 - Use a raw `<input>` / `<button>`. Use `Input`, `Btn`, `SendBtn`,
   `SearchInput`, `Checkbox`.
 - Use a native `<select>`. There is no styled wrapper for one any more — see

@@ -121,7 +121,7 @@ custom-rules:
       Why, on a desktop: the dashboard shell renders pages inside a flex column
       (`flex-1 min-h-0`). The old `p-6 max-w-[960px] mx-auto` wrapper breaks that
       contract — it prevents `overflow-y-auto` from working correctly, causing double
-      scrollbars or content clipping. The `PageHeader` + `px-2 md:px-6 pb-8
+      scrollbars or content clipping. The `PageHeader` + `px-4 md:px-6 pb-8
       overflow-y-auto flex-1 min-h-0` pattern was established in the HooksPage redesign
       to fix this.
 
@@ -137,7 +137,7 @@ custom-rules:
 
       Required structure:
       1. `<PageHeader title="..." subtitle="..." />` at top
-      2. `<div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">` as content
+      2. `<div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">` as content
          container. What this rule requires is the structure — `overflow-y-auto
          flex-1 min-h-0` plus a horizontal gutter, not a specific gutter value. The
          narrow gutter shown here is a RECOMMENDATION, not a requirement: see the

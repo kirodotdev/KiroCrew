@@ -6243,7 +6243,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   values on the same 320ms curve as the panel — an instant
                   class flip here reads as the title jumping sideways at the
                   start of the slide. */}
-              <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-5'}`}>
+              <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
                 {/* Divider between toggle and title — ALWAYS mounted and
                     absolute (zero width, no flex-gap participation) so it can
                     never change the row's layout; it rides the row (title
@@ -6503,7 +6503,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   const renderTurnItem = (it: TurnItem, _j: number) => {
                     // Skip hidden tool messages (✅/🚫 completions) to avoid empty py-1 wrappers
                     if (it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')) return null
-                    return <div key={it.kind === 'single' ? (it.msg.ts || it.idx) : `g-${it.startIdx}`} className={`px-5 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                    return <div key={it.kind === 'single' ? (it.msg.ts || it.idx) : `g-${it.startIdx}`} className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                       {it.kind === 'group' ? (() => {
                         const unresolvedPerms = it.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                         // Skip group entirely if it only contains unresolved permissions (handled by ApprovalBar)
@@ -6529,7 +6529,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   }
                   return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx}><TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={turnDisclosure[vi.key]} onDisclosureChange={(next: boolean) => setTurnDisclosureFor(vi.key, next)} /></div>
                 }
-                return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-5 mx-auto w-full py-1`} style={{
+                return <div key={vi.key} ref={virt.measureRef(vi.index)} data-display-index={displayIdx} className={`px-4 mx-auto w-full py-1`} style={{
                   maxWidth: 'var(--mc-content-width, 900px)',
                   // The pinned banner is styled as this row's own bubble and sits
                   // at the exact position and width the bubble had when its bottom
@@ -6659,7 +6659,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 />
               ) : null}
               {pendingQuestion && (
-                <div className="px-5 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <PendingQuestionCard
                     slotKey={activeSlot}
                     onFallbackSend={(text) => {
@@ -6689,7 +6689,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 </div>
               )}
               {pendingFollowup && activeSlot && (
-                <div className="px-5 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <FollowUpCard
                     items={pendingFollowup.items}
                     projectDir={currentSlot?.project || undefined}

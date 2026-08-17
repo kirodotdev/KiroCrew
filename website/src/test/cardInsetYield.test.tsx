@@ -18,7 +18,7 @@ describe('Card yields its own inset on whichever axis the caller sets', () => {
   it('keeps the narrow-first base inset when the caller sets no padding', () => {
     const { container } = render(<Card>x</Card>)
     const cls = classesOf(container.firstElementChild as HTMLElement)
-    expect(cls).toContain('px-2.5')
+    expect(cls).toContain('px-2')
     expect(cls).toContain('md:px-5')
     expect(cls).toContain('py-5')
   })
@@ -29,7 +29,7 @@ describe('Card yields its own inset on whichever axis the caller sets', () => {
     expect(cls).toContain('p-3')
     expect(cls, 'md:px-5 surviving is the 12px->20px desktop regression')
       .not.toContain('md:px-5')
-    expect(cls).not.toContain('px-2.5')
+    expect(cls).not.toContain('px-2')
     expect(cls).not.toContain('py-5')
   })
 
@@ -52,7 +52,7 @@ describe('Card yields its own inset on whichever axis the caller sets', () => {
       .container.firstElementChild as HTMLElement)
     expect(cls).toContain('md:px-8')
     expect(cls).not.toContain('md:px-5')
-    expect(cls, 'the narrow value is untouched by a md: override').toContain('px-2.5')
+    expect(cls, 'the narrow value is untouched by a md: override').toContain('px-2')
   })
 
   it('covers a COMPUTED className, which no source-text scan can see', () => {

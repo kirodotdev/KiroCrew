@@ -2033,7 +2033,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   return (
     <>
       <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
-      <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {(errMessage || mutErr || addError) && (
           <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
             <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>

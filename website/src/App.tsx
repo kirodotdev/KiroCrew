@@ -1832,18 +1832,20 @@ export default function App() {
 
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
-      <header className="topbar topbar-glass relative pl-3 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
+      <header className="topbar topbar-glass relative pl-2 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
         {/* Left: mobile menu toggle + inline instance selector. The brand now
             lives in the sidebar (item 1.1). The selector reuses InstanceTabBar's
             visibility rule — it renders nothing unless >=1 remote instance
             exists, so the common single-instance header-left is empty (only the
             macOS traffic-light clearance remains). */}
         {/* No mobile-only `px-2` here on purpose. The icon buttons inside carry
-            their own 8px, so this padding stacked on top of the header's `pl-3`
-            and pushed the hamburger GLYPH to 28px -- 20px right of the page title,
-            which is why the hamburger read as indented against every page's left
-            edge. Dropping it lands the glyph at 12 + 8 = 20px, the line the title
-            and the card text also sit on. Deliberately only the LEFT cluster:
+            their own 8px, so this padding stacked on top of the header's `pl-2`
+            and pushed the hamburger out past the page's own left edge. Dropping
+            it lands the button's BOX at 8 + 8 = 16px, the page gutter; the glyph
+            inside it then needs its own 2.5px correction because `Menu`'s artwork
+            does not fill its box (see the button below). Box and glyph together
+            put the hamburger, the page title and the chat session-list toggle on
+            one line. Deliberately only the LEFT cluster:
             `.tb-right` carries a padding/negative-margin pair that keeps the
             notification badge's 4px overhang from being clipped, and re-tuning
             that needs a real WebKit check, not a local one. */}
@@ -1857,7 +1859,19 @@ export default function App() {
 
           {isMobile && (
             <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
-              <Menu size={20} />
+              {/* `Menu` is the one icon in this app whose artwork does NOT fill its
+                  box: lucide draws its three rules from x=4 in a 24-unit viewBox, and
+                  the round cap adds half a stroke, so 3 units of the box are empty on
+                  the left. At size 20 that is 3 * 20/24 = 2.5px, which put the visible
+                  glyph at 18.5px while the button's box sat correctly on the 16px
+                  gutter -- reading as indented against a card border directly below it.
+                  A transform, not a margin: the box, the hit target and the hover pill
+                  stay on the 8px grid, and no sibling in the cluster shifts. Sized off
+                  the icon's own geometry, which `narrowFirstBaseline.test.ts` re-derives
+                  from lucide so a version bump that recentres `Menu` fails loudly.
+                  Icons that DO fill their box need none of this: the chat session
+                  toggle's `MessageSquare` starts at x=2, i.e. 0.67px at size 16. */}
+              <Menu size={20} className="-translate-x-[2.5px]" />
             </button>
           )}
           <InstanceTabBar variant="inline" />

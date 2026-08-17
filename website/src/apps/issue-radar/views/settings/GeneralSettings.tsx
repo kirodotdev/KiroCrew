@@ -35,7 +35,7 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
   // already had rather than folding it into the 24px the other pages use;
   // that difference predates this change and is not what is being fixed.
   return (
-    <div className="w-full max-w-6xl px-2 py-8 md:px-8">
+    <div className="w-full max-w-6xl px-4 py-8 md:px-8">
       <h1 className="text-[22px] font-semibold mb-1">{i18nT('apps.issueRadar.views.settings.generalSettings.settings')}</h1>
       <p className="text-[13px] text-muted mb-8">
         {i18nT('apps.issueRadar.views.settings.generalSettings.your')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.generalSettings.identity_and_the_repositories_issue_radar_watche')}

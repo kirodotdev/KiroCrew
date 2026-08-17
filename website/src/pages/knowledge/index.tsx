@@ -504,7 +504,7 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-start sm:items-end justify-between gap-3 sm:gap-4 px-4 sm:px-6 pt-2 pb-3">
+      <div className="flex items-start sm:items-end justify-between gap-3 sm:gap-4 px-4 md:px-6 pt-2 pb-3">
         <div className="min-w-0">
           <div className="text-xl sm:text-2xl font-bold tracking-tight text-text-strong flex items-center gap-2">
             <BookOpen size={22} className="shrink-0" /> {i18nT('pages.knowledge.index.knowledge_library')}
@@ -543,7 +543,7 @@ export default function KnowledgePage() {
 
       {/* Tabs — horizontally scrollable on narrow viewports so the active
           underline never spills past the container. */}
-      <div className="flex gap-1 px-4 sm:px-6 border-b border-border overflow-x-auto">
+      <div className="flex gap-1 px-4 md:px-6 border-b border-border overflow-x-auto">
         {TABS.map(t => (
           <button key={t} onClick={() => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }}
             className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
@@ -552,7 +552,7 @@ export default function KnowledgePage() {
         ))}
       </div>
 
-      <div className={`flex-1 px-4 sm:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
+      <div className={`flex-1 px-4 md:px-6 py-4 min-h-0 ${tab === 'graph' ? 'flex flex-col' : 'overflow-y-auto'}`} ref={listContainerRef}>
         <EmbeddingStatus />
         {isEmpty && tab === 'list' ? (
           <>
@@ -667,7 +667,7 @@ export default function KnowledgePage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="border-t border-border px-4 sm:px-6 py-2 flex gap-x-3 gap-y-0.5 sm:gap-4 flex-wrap text-[11px] sm:text-[12px] text-muted shrink-0">
+        <div className="border-t border-border px-4 md:px-6 py-2 flex gap-x-3 gap-y-0.5 sm:gap-4 flex-wrap text-[11px] sm:text-[12px] text-muted shrink-0">
           <span className="whitespace-nowrap">{stats.items} {i18nT('pages.knowledge.index.items_2')}</span>
           <span className="whitespace-nowrap">{stats.entities} {i18nT('pages.knowledge.index.entities')}</span>
           <span className="whitespace-nowrap">{stats.relations} {i18nT('pages.knowledge.index.relations')}</span>

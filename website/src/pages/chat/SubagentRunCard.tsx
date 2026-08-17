@@ -221,7 +221,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
 
   const idPreview = sanitizeLlmOutput(launch.ids.slice(0, 4).join(' · '))
 
-  // Row geometry -- the px-5 gutter and the --mc-content-width clamp -- belongs to
+  // Row geometry -- the px-4 gutter and the --mc-content-width clamp -- belongs to
   // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
   // result, and the shared registries wrap this card through ctx.row. Re-applying
   // it here nested one clamp inside another and inset the card by a second full

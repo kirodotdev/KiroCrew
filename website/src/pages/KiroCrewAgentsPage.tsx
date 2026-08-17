@@ -742,7 +742,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   return (
     <>
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
-      <div className={`${embedded ? '' : 'px-2 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
+      <div className={`${embedded ? '' : 'px-4 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
         {/* Says out loud what the bindings below cannot: a crew's workspace and
             memory store are shown and editable, but the isolation they imply is
             only partly built — every crew still reads one shared semantic

@@ -240,7 +240,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
 
   return (
     <section className="flex flex-col min-h-0 h-full">
-      <div className="px-2 pt-2 pb-1.5 flex-shrink-0">
+      <div className="px-4 pt-2 pb-1.5 flex-shrink-0">
         <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 transition-colors focus-within:border-accent">
           <Search size={14} className="flex-shrink-0 text-muted opacity-60" />
           <input
@@ -267,13 +267,13 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
 
       <div className="relative flex-1 min-h-0">
         {pullsLoading && (
-          <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+          <div className="absolute inset-0 overflow-y-auto scrollbar-none px-4 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
             <ListSkeleton />
           </div>
         )}
-        {pullsError && <div className="px-3 py-2 text-[14px] text-danger">{pullsError.message}</div>}
+        {pullsError && <div className="px-4 py-2 text-[14px] text-danger">{pullsError.message}</div>}
         {!pullsLoading && filteredPulls.length === 0 && (
-          <div className="px-2 pb-2">
+          <div className="px-4 pb-2">
             <ListEmptyState searching={Boolean(prQuery.trim())} label={terms.changeRequestPluralTitle} />
           </div>
         )}
@@ -281,7 +281,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
           animate ? (
             // Small list: plain animated flow (see IssueList — deliberately not
             // virtualized, AnimatePresence needs all siblings mounted; ANIM_CAP-bounded).
-            <div className="absolute inset-0 overflow-y-auto scrollbar-none px-2 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
+            <div className="absolute inset-0 overflow-y-auto scrollbar-none px-4 pb-2 flex flex-col gap-2" style={{ scrollbarWidth: 'none' }}>
               <AnimatePresence initial={false} mode="popLayout">
                 {sortedPulls.map((pr) => (
                   <motion.div
@@ -318,7 +318,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
             // the scroller — see the same block in `IssueList` for why: Virtuoso's
             // viewport is absolutely positioned with `width:100%` and no `left`, so
             // scroller padding-left is respected while the width is measured against
-            // the PADDING box, making every row 16px too wide and pushing its right
+            // the PADDING box, making every row 32px too wide and pushing its right
             // edge off screen.
             <Virtuoso
               className="absolute inset-0 scrollbar-none"
@@ -326,7 +326,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
               data={sortedPulls}
               computeItemKey={(_i, pr) => pr.number}
               itemContent={(_i, pr) => (
-                <div className="px-2 pb-2">
+                <div className="px-4 pb-2">
                   {row(pr, (
                     <button
                       onClick={() => { setSelectedPull(pr.number); listDetail.openDetail() }}
@@ -343,7 +343,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
         <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-bg to-transparent" />
       </div>
 
-      <div className="flex-shrink-0 flex items-center gap-2 px-3 pt-2 pb-4 text-[12px] text-muted">
+      <div className="flex-shrink-0 flex items-center gap-2 px-4 pt-2 pb-4 text-[12px] text-muted">
         <span title={
           prPersonFilterActive
             ? (prSearchTruncatedAt

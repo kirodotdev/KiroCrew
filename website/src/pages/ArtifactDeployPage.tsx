@@ -228,7 +228,7 @@ export default function ArtifactDeployPage() {
     <>
       {/* Deploy is a sub-surface of Artifacts: always give the way
           back to the gallery so the console never feels like a dead end. */}
-      <div className="px-2 md:px-6 pt-2">
+      <div className="px-4 md:px-6 pt-2">
         <button
           type="button"
           onClick={() => navigate('/artifacts')}
@@ -240,7 +240,7 @@ export default function ArtifactDeployPage() {
         </button>
       </div>
       <PageHeader title={i18nT('pages.artifactDeployPage.artifact_deploy')} subtitle={i18nT('pages.artifactDeployPage.one_console_for_deploying_artifacts_to_your_own')} />
-      <div className="px-2 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ color: 'var(--text)' }}>
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ color: 'var(--text)' }}>
 
       {/* Cloud deployment withheld: the PROVISIONING half of this console is
           hidden below, but the deployments table and its recall/destroy actions

@@ -108,7 +108,7 @@ export default function DetailHeader({
           back control itself is narrow-only — on a desktop both panes are on
           screen and there is nothing to return from. */}
       {back && (
-        <div className="sticky top-0 z-20 bg-bg flex items-center gap-2 px-2 md:px-6 min-h-11">
+        <div className="sticky top-0 z-20 bg-bg flex items-center gap-2 px-4 md:px-6 min-h-11">
           {back}
           {/* Decorative: the `<h1>` below is the real heading and stays in the
               DOM, so assistive tech reads the title once. It fades in only after
@@ -135,7 +135,7 @@ export default function DetailHeader({
           pane is already side by side with the 236px sidebar gets the tighter
           gutter too. That band is where the reading column is narrowest and can
           least afford 32px of edge. */}
-      <div ref={titleRef} data-testid="detail-title-block" className="px-2 md:px-6 pt-4 pb-3 sm:pt-5 sm:pb-0">
+      <div ref={titleRef} data-testid="detail-title-block" className="px-4 md:px-6 pt-4 pb-3 sm:pt-5 sm:pb-0">
         {awaitingFirstPaint ? skeleton : (<>
           <h1 className="text-[27px] font-bold leading-tight text-text-strong break-words">
             {title}
@@ -153,7 +153,7 @@ export default function DetailHeader({
           Left-aligned: no `ml-auto` on the actions, so state, the number and the
           actions read as one left-anchored toolbar at rest instead of splitting
           to opposite edges. */}
-      <header className="sticky sm:static top-11 sm:top-auto z-10 bg-bg border-b border-border px-2 md:px-6 py-2 sm:pt-4 sm:pb-4">
+      <header className="sticky sm:static top-11 sm:top-auto z-10 bg-bg border-b border-border px-4 md:px-6 py-2 sm:pt-4 sm:pb-4">
         <div className="flex items-center gap-2 flex-wrap">
           {/* Withheld until first paint, exactly like the title and meta above.
               `identity` carries the state pill, and `state` falls back to 'open'

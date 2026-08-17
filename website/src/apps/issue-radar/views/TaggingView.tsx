@@ -424,7 +424,7 @@ function TaggingDashboard() {
   // queue are both card-wrapped, so the old gutter cost 32px of the 390px
   // available before either could start.
   return (
-    <div className="px-2 md:px-6 pt-4 pb-6 flex flex-col gap-4">
+    <div className="px-4 md:px-6 pt-4 pb-6 flex flex-col gap-4">
       {/* KPI strip — this is the page header. Two numbers only: the size of the
         * queue, and the vocabulary available to clear it. "Analysed" and "Ready
         * to apply" are already legible from the rows and the Apply button. */}

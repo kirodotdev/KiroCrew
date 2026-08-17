@@ -39,7 +39,7 @@ export default function SessionRefStrip({ refs, onRemove }: {
       {/* NOTE: rendered height must match SESSION_REF_STRIP_H, update both together */}
       <div
         ref={attachScroller}
-        className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-center"
+        className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-center"
         data-testid="session-ref-strip"
       >
       {refs.map(ref => (

@@ -52,7 +52,7 @@ const MORPH_EASE = 'cubic-bezier(0.2,0,0,1)'
  * the session title.
  *
  * The card is a pixel-for-pixel copy of the user bubble's own box — same
- * `px-5 mx-auto` content column, right-aligned, `max-w-[550px]`, `px-4 py-1.5
+ * `px-4 mx-auto` content column, right-aligned, `max-w-[550px]`, `px-4 py-1.5
  * rounded-xl bg-card text-sm` with an inner `my-1.5 leading-relaxed` paragraph —
  * because the transcript row it represents is hidden while it is pinned (see
  * ChatPage's row `visibility`). For a one-line prompt the two are the same size
@@ -205,7 +205,7 @@ export default function PinnedPrompt({
 
   return (
     <div
-      className="relative px-5 py-1 mx-auto w-full pointer-events-none flex items-start justify-end"
+      className="relative px-4 py-1 mx-auto w-full pointer-events-none flex items-start justify-end"
       style={{
         maxWidth: 'var(--mc-content-width, 900px)',
         // Clip ONLY while collapsed AND being pushed. The clip is what reveals

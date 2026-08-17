@@ -484,7 +484,7 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
           items-start, not items-end: a chip carrying a resize pill is taller than a
           plain one, and bottom-alignment would spend that difference staggering the
           THUMBNAILS (the thing being compared) instead of letting the pills hang. */}
-      <div ref={attachScroller} data-testid="preview-strip" className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
+      <div ref={attachScroller} data-testid="preview-strip" className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
       {imgs.map((path, i) => {
         const src = `/api/file-raw?path=${encodeURIComponent(path)}`
         const resize = resizedInfo?.[path]
@@ -2155,7 +2155,7 @@ function ChatInput({
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
-    <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
+    <div className={`input-area px-4 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
       style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
 
       {/* Knowledge context chip */}

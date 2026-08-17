@@ -1806,7 +1806,7 @@ export default function DevFleetPage() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
-          <div className="flex-1 overflow-y-auto px-2 md:px-6 pb-8 min-h-0">
+          <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-8 min-h-0">
             {/* The how-to describes row actions; with no readable fleet there are
                 no rows, and instructions for absent controls read as a broken page. */}
             {!noFleet && (
