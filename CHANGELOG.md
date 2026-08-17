@@ -3,6 +3,17 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Disabling an app now stops its skills loading.** A builtin app's bundled
+  skill directory was never gated on the app's enabled state, so it stayed in
+  the global trigger-matching index after `kirocrew app disable <name>` and kept
+  firing into every turn's context on generic trigger words — e.g. a Firebase
+  deploy request still pulled in the whole `artifact-deploy` skill body for an
+  AWS app the user had switched off. That burned tokens on every affected turn,
+  polluted the prompt with instructions the agent then had to recognize and
+  ignore, and gave no hint why. Trigger matching now skips skills owned by a
+  disabled app. A skill owned by no app is never gated, and an unreadable app
+  registry hides nothing — that direction fails OPEN on purpose, so a transient
+  read error cannot silently strip an enabled app's skills. (#4023)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
