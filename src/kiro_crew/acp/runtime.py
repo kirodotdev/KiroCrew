@@ -74,6 +74,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_CLIENT_CAPABILITIES,
     KAS_AUTH_CALLBACK_ERROR_CODE,
     KAS_CLIENT_CAPABILITIES,
@@ -787,6 +788,18 @@ class AcpRuntime:
         return self._acp_backend
 
     @property
+    def uses_kiro_identity_store(self) -> bool:
+        """True when this runtime's process signs in from kiro-cli's own store.
+
+        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        H5/H14). ``AcpRuntime`` is not an ``LLMProvider``, but the identity-change
+        sweep reaches shared runtimes as well as session providers, so it
+        declares the same capability under the same name -- letting that sweep
+        ask both families one question instead of probing private attributes.
+        """
+        return self._acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+
+    @property
     def supports_image_prompt(self) -> bool:
         """True when the agent advertised ``promptCapabilities.image``.
 
@@ -857,6 +870,24 @@ class AcpRuntime:
         drop that session's in-flight prompt/response.
         """
         return bool(self._session_queues)
+
+    def has_active_or_initializing_sessions(self) -> bool:
+        """True if any session is registered OR still being created.
+
+        ``has_active_sessions`` sees only REGISTERED queues, and
+        ``create_session`` registers outside the runtime lock -- so a co-tenant
+        whose ``session/new`` is in flight is momentarily invisible to it. Callers
+        that recycle a stale runtime tolerate that window deliberately (their
+        ``create_session`` raises ``AcpRuntimeDead`` and a respawn loop backstops
+        it, costing one extra respawn).
+
+        A caller with NO such backstop must not: killing the runtime under an
+        initializing task session surfaces as ``AcpRuntimeDead`` on work the user
+        never connected to whatever prompted the kill. Those callers ask this
+        instead, which also counts ``_session_inits_in_flight``.
+        """
+
+        return bool(self._session_queues) or self._session_inits_in_flight > 0
 
     # ── Lifecycle ──
 

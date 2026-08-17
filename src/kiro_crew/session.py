@@ -224,6 +224,23 @@ def _provider_effectively_alive(provider: Any) -> bool:
     return alive
 
 
+def _provider_uses_kiro_identity_store(provider: Any) -> bool:
+    """Whether *provider*'s child authenticates from kiro-cli's identity store.
+
+    Reads the capability the object DECLARES (harness-parity H14) rather than
+    probing private attributes: ``LLMProvider`` declares it with a safe default of
+    False, ``AcpProvider`` / ``AcpSessionProvider`` grant it by membership in
+    ``ACP_BACKENDS_KIRO_IDENTITY_STORE``, and ``AcpRuntime`` declares the same
+    property under the same name because the sweep reaches shared runtimes too.
+
+    Fails CLOSED on anything that does not declare it -- a test double or a future
+    holder is left running rather than recycled on a store it may never read.
+    """
+
+    declared = getattr(provider, "uses_kiro_identity_store", False)
+    return declared is True
+
+
 def detect_provider_switch(session_map: "SessionMap", session_key: str, new_provider: str) -> bool:
     """Detect if the provider for a session differs from the stored one.
 
@@ -344,7 +361,11 @@ _STATELESS_PREFIXES = (
 # agent without forcing other background callers (chat-title, consolidator,
 # taskkeeper) to load the same MCP servers.
 BACKGROUND_KEY = "_bg"
-
+# Concurrent cold starts allowed by ``_start_sem``. Named rather than inline so the
+# identity sweep can ask how many starts are in flight (see
+# ``_cold_starts_in_flight``): a provider inside ``start()`` has not published a PID
+# yet, so the semaphore is the only evidence it exists.
+_MAX_CONCURRENT_COLD_STARTS = 4
 # Kiro agent the background session runs as. Named once because it is needed in
 # TWO places — the provider factory call AND the ``_Session`` record — and when
 # only the factory got it, ``_Session.agent`` stayed at its "" default, so every
@@ -664,6 +685,13 @@ class _Session:
     # real claimant under the per-session semaphore; a speculative claimant
     # reads without consuming.
     resumed_armed: bool = False
+    # Set when an identity sweep found this session BUSY and therefore left its
+    # in-flight turn alone. The child is authenticated as an account that is no
+    # longer signed in, so the NEXT turn on this key must not reuse it: the
+    # post-semaphore re-validate reads this and reports the session invalid, and
+    # the caller's existing stale-provider path evicts it and cold starts. Default
+    # False so every existing construction site is unaffected.
+    retire_on_identity_change: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
     # Bounded rather than plain: a release() call that lands on this object
@@ -891,7 +919,18 @@ class SessionManager:
         # snapshot can't slip in and later get killed mid-turn with its native
         # session lock held (Codex HIGH: drain-window race).
         self._closing = False
-        self._start_sem = asyncio.Semaphore(4)  # max 4 concurrent cold-starts
+        self._start_sem = asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
+        # Serializes identity sweeps. Without it two sweeps drain `_start_sem` one
+        # permit at a time and can hold-and-wait deadlock: with a warm-pool fill or
+        # eager spawn holding one permit, sweep A can hold 3 waiting for its 4th
+        # while sweep B holds 1 waiting for its 2nd -- all four taken, none free, and
+        # neither releases until it reaches four. The releases live in a `finally`
+        # that never runs because the acquisition loop itself never returns, and the
+        # wait is deliberately un-timed, so both turns hang forever AND every later
+        # cold start blocks on a permanently drained semaphore. Two concurrent
+        # sweeps are not exotic: at boot `_session_identity` is None, so every
+        # in-flight turn sees a change at once.
+        self._identity_sweep_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
         self._compacting: set[str] = set()
         # key -> the EXACT _Session object being torn down by the recycle
@@ -1474,8 +1513,17 @@ class SessionManager:
         await sess.semaphore.acquire()
         try:
             async with self._lock:
-                still_valid = self._sessions.get(key) is sess and _provider_effectively_alive(
-                    sess.provider
+                still_valid = (
+                    self._sessions.get(key) is sess
+                    # Marked when an identity sweep found this session BUSY: its
+                    # in-flight turn was allowed to finish, but the child is
+                    # authenticated as an account that is no longer signed in, so
+                    # this turn must not reuse it. Reported invalid here rather
+                    # than blocked or refused: the caller already knows how to
+                    # evict and cold start on a stale provider, so the turn simply
+                    # proceeds on a fresh child of the CURRENT account.
+                    and not sess.retire_on_identity_change
+                    and _provider_effectively_alive(sess.provider)
                 )
         except BaseException:
             # Cancelled (or errored) while awaiting self._lock AFTER acquiring the
@@ -3716,6 +3764,291 @@ class SessionManager:
             # runtime lives only in _subagent_runtimes and would otherwise leak.
             await self.release_subagent_runtime(key)
             logger.info("Removed session (map preserved): %s", key)
+
+    async def retire_kiro_identity_sessions(self) -> tuple[list[str], bool]:
+        """Retire every idle kiro-backed child so the next turn re-authenticates.
+
+        Called when kiro-cli's identity store starts naming a different account
+        than the running children loaded. Those children hold their credential in
+        memory and never re-read the store, so without this they keep answering
+        under the signed-out account until the gateway exits.
+
+        Returns ``(retired_keys, complete)``. ``complete`` is False when something
+        eligible was deliberately left running -- a BUSY session, a runtime hosting
+        active sessions, a child that would not shut down, or a provider still
+        between ``start()`` and registration. The caller must not record the
+        account change as reconciled unless it is True: advancing the baseline over
+        anything unswept would mean its next turn sees no change and reuses the
+        previous account, which is the entire defect this exists to prevent.
+
+        Covers FIVE holders. The session map is the obvious one; the others are
+        each independently sufficient to keep the old account alive:
+
+        * ``_warm_pool`` -- spawned before the change and handed to a BRAND-NEW
+          session afterwards, so that session runs as the old account despite
+          never having existed under it. Drained under ``_pool_fill_lock`` so a
+          fill already in flight cannot land a just-spawned child into a queue we
+          have already swept.
+        * ``_subagent_runtimes`` -- separate processes the session sweep cannot
+          reach.
+        * ``_bg_runtime`` -- one shared process serving background work, retired
+          under its own lock.
+        * companion runtimes keyed by a retired session, via
+          ``release_subagent_runtime``.
+
+        Registered sessions are retired with the same bookkeeping as
+        :meth:`remove`, so the session map is PRESERVED: the next turn cold starts
+        a fresh child and ``session/load`` restores the conversation from disk
+        losslessly. Retiring is a process recycle, not data loss.
+
+        A BUSY session is skipped rather than killed: its turn started under the
+        old account and killing it mid-stream would surface as an unexplained
+        failure. It is retired by the next turn's check, and ``complete=False``
+        keeps the change pending until then.
+        """
+
+        doomed: list[tuple[str, LLMProvider]] = []
+        skipped = False
+        # ONE sweep at a time. Draining `_start_sem` a permit at a time is only safe
+        # if no peer is doing the same: see `_identity_sweep_lock` for the
+        # hold-and-wait deadlock two concurrent sweeps would otherwise reach. A
+        # second sweep serializes behind this and then finds nothing left to retire,
+        # which is a cheap no-op -- and reconciling the same fingerprint twice is
+        # idempotent, so correctness does not depend on it bailing out early.
+        async with self._identity_sweep_lock:
+            # BARRIER FIRST, then scan. Checking for in-flight starts AFTER the scan
+            # cannot close the window: a cold start that began before the account
+            # changed and registers DURING the scan is missed by the session sweep (it
+            # was not there when we looked) and by any after-the-fact check (it is no
+            # longer starting). Nor can marking help, the way it does for a busy
+            # session -- at sweep time there is no session yet to mark.
+            #
+            # So every cold-start permit is acquired by WAITING. A partial barrier is
+            # not enough: reporting "incomplete" defers the baseline but does not stop
+            # THIS turn, so an eager session spawned under the previous account would
+            # still win registration and serve it. Waiting makes the scan
+            # authoritative -- anything that finished is registered, anything that has
+            # not cannot start.
+            #
+            # Waited WITHOUT a timeout on purpose. Cancelling an `acquire()` can lose a
+            # permit on some Python versions, permanently shrinking cold-start
+            # concurrency for the whole process -- a worse and far more confusing
+            # failure than waiting. The wait is bounded by OTHER sessions' cold starts,
+            # which carry their own timeouts, and never by this turn's own: its
+            # `get_or_create` runs after this returns and the permits are released.
+            held = 0
+            try:
+                for _ in range(_MAX_CONCURRENT_COLD_STARTS):
+                    await self._start_sem.acquire()
+                    held += 1
+                async with self._lock:
+                    # Select AND unregister in ONE lock hold. Choosing under the lock and
+                    # removing after an await would let a session picked as idle acquire a
+                    # turn in between, and the removal would then shut down a provider
+                    # mid-stream. Popping here is safe against a turn that is only
+                    # part-way through acquiring: the post-semaphore re-validate re-reads
+                    # _sessions under this same lock, sees the entry gone, releases and
+                    # cold-starts a replacement -- the designed stale path.
+                    for key in list(self._sessions):
+                        sess = self._sessions[key]
+                        if not _provider_uses_kiro_identity_store(sess.provider):
+                            continue
+                        if sess.semaphore.locked():
+                            # Its turn started under the old account and killing it
+                            # mid-stream would surface as an unexplained failure, so it
+                            # finishes. Marking it means the NEXT turn on this key does
+                            # not reuse it either -- without the mark, `get_or_create`
+                            # would simply wait for this turn's semaphore and hand the
+                            # same old-account provider to the next one.
+                            sess.retire_on_identity_change = True
+                            skipped = True
+                            continue
+                        del self._sessions[key]
+                        self._compact_cooldown_until.pop(key, None)
+                        self._origin_links.pop(key, None)
+                        doomed.append((key, sess.provider))
+            finally:
+                for _ in range(held):
+                    self._start_sem.release()
+
+        retired: list[str] = []
+        for key, provider in doomed:
+            try:
+                await provider.shutdown()
+                # Mirrors remove(): a companion subagent runtime keyed by this
+                # parent lives only in _subagent_runtimes and would otherwise leak.
+                await self.release_subagent_runtime(key)
+                retired.append(key)
+            except Exception:
+                logger.warning(
+                    "Failed to retire session %s after an identity change", key, exc_info=True
+                )
+                # A child we could not shut down may still be alive under the old
+                # account, so the change is not fully applied.
+                skipped = True
+
+        if not await self._retire_kiro_warm_pool():
+            skipped = True
+        if not await self._retire_kiro_subagent_runtimes():
+            skipped = True
+        if not await self._retire_kiro_bg_runtime():
+            skipped = True
+        if self._starting_pids:
+            # Belt-and-braces behind the barrier above: with every cold-start permit
+            # held during the scan, a PID here means something published one without
+            # going through `_start_sem`. Cheap, and fails toward re-sweeping.
+            skipped = True
+        return retired, not skipped
+
+    async def _retire_kiro_warm_pool(self) -> bool:
+        """Discard pre-spawned kiro-backed providers waiting in the warm pool.
+
+        They authenticated when they were spawned, so handing one to a session
+        created after an account change would run that session as the previous
+        account.
+
+        Held under ``_pool_fill_lock`` for the whole drain: a fill already in
+        flight has its spawn outstanding and would otherwise enqueue that child
+        AFTER the sweep read an empty queue, leaving a provider authenticated as
+        the old account waiting to be claimed. Taking the fill lock makes the
+        sweep and any fill mutually exclusive, so the queue cannot grow behind us.
+
+        Returns True when the pool is known to hold no kiro-backed provider.
+        Discarded PIDs are recorded in ``_pool_sweep_pids`` exactly as the health
+        sweep does, so the orphan sweep does not also chase them.
+        """
+
+        keep: list[tuple[LLMProvider, float]] = []
+        drop: list[LLMProvider] = []
+        complete = True
+        async with self._pool_fill_lock:
+            for _ in range(self._warm_pool.qsize()):
+                try:
+                    provider, spawn_time = self._warm_pool.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if _provider_uses_kiro_identity_store(provider):
+                    pid = getattr(getattr(provider, "client", None), "_pid", None)
+                    if isinstance(pid, int):
+                        self._pool_sweep_pids.add(pid)
+                    drop.append(provider)
+                else:
+                    keep.append((provider, spawn_time))
+            for entry in keep:
+                self._warm_pool.put_nowait(entry)
+            for provider in drop:
+                try:
+                    await provider.shutdown()
+                except Exception:
+                    logger.warning(
+                        "Failed to discard a pooled provider after an identity change",
+                        exc_info=True,
+                    )
+                    complete = False
+        if drop:
+            logger.info(
+                "Discarded %d pooled provider(s) started under the previous account", len(drop)
+            )
+        return complete
+
+    async def _retire_kiro_subagent_runtimes(self) -> bool:
+        """Kill idle kiro-backed companion subagent runtimes started under the old account.
+
+        They are separate processes held only in ``_subagent_runtimes``, so the
+        session sweep never reaches them; a subagent dispatched afterwards would
+        run as the previous account.
+
+        A runtime with sessions registered on it is SKIPPED, for the same reason a
+        busy session is: killing it drops a co-tenant's in-flight prompt and
+        surfaces as ``AcpRuntimeDead`` on work the user never connected to an
+        account change. The sweep reports incomplete so the change stays pending
+        and the runtime is retired once it drains.
+
+        A spawn already IN FLIGHT is likewise reported incomplete.
+        ``get_subagent_runtime`` holds the per-parent entry in
+        ``_subagent_runtime_locks`` across its spawn, so a runtime being created
+        right now is in neither the map scanned here nor anywhere else, while it
+        already holds whatever the store said when it started. Deferring is the
+        resolution rather than sweeping under those locks:
+        ``release_subagent_runtime`` acquires the same lock, so holding it here and
+        releasing through that path would deadlock on a non-reentrant
+        ``asyncio.Lock``. The next turn re-sweeps and catches it once installed.
+
+        Returns True when no kiro-backed companion runtime remains.
+        """
+
+        complete = True
+        for parent_key in list(self._subagent_runtimes):
+            runtime = self._subagent_runtimes.get(parent_key)
+            if runtime is None or not _provider_uses_kiro_identity_store(runtime):
+                continue
+            if runtime.has_active_or_initializing_sessions():
+                complete = False
+                continue
+            try:
+                await self.release_subagent_runtime(parent_key)
+            except Exception:
+                logger.warning(
+                    "Failed to retire subagent runtime for %s after an identity change",
+                    parent_key,
+                    exc_info=True,
+                )
+                complete = False
+        if any(lock.locked() for lock in self._subagent_runtime_locks.values()):
+            complete = False
+        # POST-CONDITION, not another window enumeration. The loop above works from
+        # a snapshot and the lock check runs after it, so a spawn that COMPLETES in
+        # between is in neither: its lock is already released and its runtime was
+        # not in the snapshot. Asserting instead that NO kiro-backed runtime is left
+        # catches anything installed while we swept, whatever the timing, and also
+        # covers the ones deliberately spared above.
+        if any(
+            runtime is not None and _provider_uses_kiro_identity_store(runtime)
+            for runtime in list(self._subagent_runtimes.values())
+        ):
+            complete = False
+        return complete
+
+    async def _retire_kiro_bg_runtime(self) -> bool:
+        """Retire the shared background runtime if it is idle and kiro-backed.
+
+        One process serves all background work, so it is not reachable from the
+        session map and outlives any single session. Left alive, later background
+        calls keep running as the previous account. Its creation is serialized by
+        ``_bg_runtime_lock``, so retirement takes the same lock -- otherwise a
+        lazy creation racing this sweep could install a runtime we have just
+        decided to discard, or be discarded midway through being installed.
+
+        Skipped while sessions are registered on it: this one process is shared by
+        every background caller, so killing it mid-flight drops work belonging to
+        callers unrelated to the account change.
+
+        Needs no "did one appear while we swept" post-condition of the kind the
+        companion-runtime sweep carries: creation of this runtime is serialized by
+        the same ``_bg_runtime_lock`` held here, so none can be installed during it.
+
+        Returns True when no kiro-backed background runtime remains.
+        """
+
+        async with self._bg_runtime_lock:
+            runtime = self._bg_runtime
+            if runtime is None or not _provider_uses_kiro_identity_store(runtime):
+                return True
+            if runtime.has_active_or_initializing_sessions():
+                return False
+            try:
+                await runtime.kill()
+            except Exception:
+                logger.warning(
+                    "Failed to retire the background runtime after an identity change",
+                    exc_info=True,
+                )
+                return False
+            # Cleared only after a successful kill, so a failure leaves the
+            # reference in place rather than orphaning a live process.
+            self._bg_runtime = None
+            logger.info("Retired the background runtime started under the previous account")
+            return True
 
     async def remove_if_unclaimed(self, key: str) -> bool:
         """Remove *key* only if its speculative session is still unclaimed.

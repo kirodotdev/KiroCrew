@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import hooks, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -205,6 +205,37 @@ _AUTH_IDENTITY_TABLES = ("auth_kv", "migrations")
 _AUTH_STATE_TABLE = "state"
 _AUTH_STATE_KEY_PREFIXES = ("auth.", "api.codewhisperer.")
 _AUTH_SQLITE_FILES = (_AUTH_SQLITE_DB,)
+# What :func:`identity_fingerprint` returns when the store names no identity --
+# signed out, absent, or unreadable. Not a hash, so it can never collide with a
+# real fingerprint.
+_AUTH_FINGERPRINT_ABSENT = ""
+# SEL audit label for the identity-fingerprint read. Registered in
+# hooks._AUDIT_ONLY_READ_IDS; an unregistered id is refused there, and this reader
+# fails closed on that refusal rather than reading unaudited.
+_IDENTITY_FINGERPRINT_READ_ID = "kiro_prerequisite.identity_fingerprint"
+# Blob fields that identify WHICH account is signed in and survive a token
+# refresh. An ALLOWLIST on purpose: the same blobs carry `access_token`,
+# `refresh_token`, `expires_at` and `client_secret`, and a denylist would admit
+# every field a future kiro-cli adds -- letting a new secret into the digest, or a
+# new rotating field cause an account change on every refresh. `client_id` is the
+# OIDC registration, which is replaced when the client re-registers; that costs one
+# cold start on re-registration and is what distinguishes two logins whose
+# start_url is identical.
+_IDENTITY_CLAIM_FIELDS = frozenset(
+    {
+        "client_id",
+        "oauth_flow",
+        "region",
+        "scopes",
+        "start_url",
+    }
+)
+# How long a computed fingerprint may be reused. Bounds both the SQLite reads and
+# the SEL audit events a poll storm can produce (N dashboard tabs poll status every
+# few seconds), so the store is observed per action rather than per poll. Read off
+# time.monotonic() rather than the service's injected clock: this is a real-time
+# rate bound, not part of the probe's testable timing contract.
+_AUTH_FINGERPRINT_CACHE_SECS = 5.0
 # Short: the projection is a handful of small reads against a local file, and a
 # stuck open must not hold up sign-in.
 _AUTH_SQLITE_TIMEOUT_SECS = 5.0
@@ -764,6 +795,210 @@ def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
         with contextlib.suppress(OSError):
             os.unlink(temporary)
         raise
+
+
+def kiro_identity_store_path(
+    platform_name: str,
+    home: Path,
+    environ: MutableMapping[str, str],
+) -> Path:
+    """Return kiro-cli's OWN live identity database path.
+
+    Deliberately not amazon-q's: that store often holds the same account but is a
+    different product's credential, so it cannot answer "which account is this
+    CLI signed in as".
+
+    Every platform resolves to a FIXED, home-anchored location, matching the
+    trusted live-store list in ``dashboard/handlers/kiro_usage_api.py``. No
+    environment variable is consulted -- not ``XDG_DATA_HOME`` on Linux, not
+    ``APPDATA`` or ``LOCALAPPDATA`` on Windows -- because the fence that makes
+    this store unwritable by agent file tools (``_SENSITIVE_HOME_DIRS``) is
+    anchored at exactly these paths. A redirected location either resolves to the
+    same place or falls OUTSIDE the fence, where an agent can author the rows
+    this function reads: it could then forge an identity that keeps matching and
+    the children signed in as the previous account would never be retired. A
+    fixed anchor cannot be pointed at something the agent may write.
+
+    The cost is that a host which relocates its data home is read as having no
+    identity, so the change is reported as "absent" -- which errs toward retiring
+    children, never toward trusting them. ``environ`` is kept in the signature so
+    callers need not know which platforms consult it, and so a future platform
+    that genuinely requires it does not change every call site.
+    """
+
+    if platform_name == "darwin":
+        return home / "Library" / "Application Support" / "kiro-cli" / _AUTH_SQLITE_DB
+    if platform_name == "win32":
+        return home / "AppData" / "Roaming" / "kiro-cli" / _AUTH_SQLITE_DB
+    return home / ".local" / "share" / "kiro-cli" / _AUTH_SQLITE_DB
+
+
+def identity_store_is_relocated(
+    platform_name: str,
+    home: Path,
+    environ: MutableMapping[str, str],
+) -> bool:
+    """Whether the CLI's data home is configured somewhere other than our anchor.
+
+    :func:`kiro_identity_store_path` deliberately reads a FIXED path, because the
+    fence that keeps agent file tools out of that store is home-anchored and a
+    redirected path can land outside it. But refusing to follow the redirection is
+    not the same as being safe: if the environment points the CLI elsewhere and a
+    LEFTOVER database still sits at the default location, reading it yields a
+    confident fingerprint of an account nobody is signed into. A logout in the real
+    store would then change nothing we can see, and the old-account child would be
+    reused -- strictly worse than reporting "cannot tell".
+
+    So a configured relocation is reported here, and the caller treats it as
+    absent: no read, no false confidence, and the absent path already means "never
+    reconciled, re-sweep every turn".
+
+    Only variables that actually move the store count. ``LOCALAPPDATA`` is not
+    consulted: the identity lives under Roaming. A variable set to exactly the
+    default location is not a relocation.
+    """
+
+    if platform_name == "win32":
+        configured = environ.get("APPDATA", "").strip()
+        if not configured:
+            return False
+        return Path(configured) != home / "AppData" / "Roaming"
+    if platform_name == "darwin":
+        # No standard variable relocates ~/Library/Application Support.
+        return False
+    configured = environ.get("XDG_DATA_HOME", "").strip()
+    if not configured:
+        return False
+    return Path(configured) != home / ".local" / "share"
+
+
+def identity_fingerprint(path: Path) -> str:
+    """Return a digest naming WHICH account an identity store is signed in as.
+
+    Two rules shape what participates.
+
+    **Stable claims only.** The credential blobs mix fields that identify an
+    account with fields that are replaced on every token refresh. Digesting a
+    rotating field would report an account change roughly hourly and retire
+    healthy sessions, so the rotating and secret ones -- ``access_token``,
+    ``refresh_token``, ``expires_at``, ``client_secret`` -- are excluded and the
+    identifying ones are kept: the SSO ``start_url``, ``region``, ``oauth_flow``,
+    ``scopes`` and the OIDC registration's ``client_id``. Key NAMES also
+    participate, so a change of credential kind counts even when no value moved.
+
+    **An allowlist, not a denylist** (:data:`_IDENTITY_CLAIM_FIELDS`). A field
+    added to these blobs by a future kiro-cli cannot join the fingerprint by
+    default -- which keeps both a new secret out of it and a new rotating field
+    from causing spurious retirement.
+
+    Values are hashed, never returned, so the fingerprint carries no credential.
+
+    The read is SEL-audited and FAILS CLOSED: this file holds live credential
+    material, so a read whose audit cannot be recorded returns "absent" rather
+    than an unaudited answer. "Absent" is also what a logout leaves behind, and
+    the caller treats it as "cannot confirm the running children" -- which errs
+    toward retiring them, never toward trusting them.
+    """
+
+    audit_ok = hooks.emit_internal_read_audit(_IDENTITY_FINGERPRINT_READ_ID, "invoked")
+    if not audit_ok:
+        # A logger line is not an SEL audit. Refuse rather than read.
+        logger.warning("Kiro identity fingerprint read denied: audit unavailable")
+        return _AUTH_FINGERPRINT_ABSENT
+    connection = _open_identity_db_readonly(path)
+    if connection is None:
+        hooks.emit_internal_read_audit(_IDENTITY_FINGERPRINT_READ_ID, "unreadable")
+        return _AUTH_FINGERPRINT_ABSENT
+    parts: list[str] = []
+    try:
+        with contextlib.closing(connection):
+            present = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"  # wokeignore:rule=master
+                ).fetchall()
+            }
+            if "auth_kv" in present:
+                for key, value in connection.execute("SELECT key, value FROM auth_kv").fetchall():
+                    claims = _identity_claims(str(key), value)
+                    if not claims:
+                        # A row carrying NO stable claim is deliberately skipped
+                        # ENTIRELY -- its key name is not recorded either. Recording
+                        # the name alone would make two different accounts stored
+                        # under the same key look identical, which is exactly the
+                        # false confidence to avoid: a social login (GitHub, Google)
+                        # has no SSO start_url, so account A and account B under
+                        # `kirocli:social:token` would fingerprint the same and the
+                        # child authenticated as A would never be retired.
+                        #
+                        # Contributing nothing means such a store can come out
+                        # ABSENT, which is never reconciled (see the caller) and so
+                        # re-sweeps every turn. "Cannot distinguish" is reported as
+                        # "cannot confirm" rather than as "unchanged".
+                        continue
+                    parts.append(f"k:{key}")
+                    parts.extend(claims)
+            if _AUTH_STATE_TABLE in present:
+                predicate = " OR ".join(["key LIKE ?"] * len(_AUTH_STATE_KEY_PREFIXES))
+                rows = connection.execute(
+                    f'SELECT key, value FROM "{_AUTH_STATE_TABLE}" WHERE {predicate}',
+                    tuple(f"{prefix}%" for prefix in _AUTH_STATE_KEY_PREFIXES),
+                ).fetchall()
+                for key, value in rows:
+                    parts.append(f"s:{key}={_claim_digest(value)}")
+    except sqlite3.Error:
+        hooks.emit_internal_read_audit(_IDENTITY_FINGERPRINT_READ_ID, "error")
+        return _AUTH_FINGERPRINT_ABSENT
+    if not parts:
+        # Schema present but zero identity rows reads as signed out, not as an
+        # identity whose fingerprint happens to be the digest of nothing.
+        hooks.emit_internal_read_audit(_IDENTITY_FINGERPRINT_READ_ID, "signed_out")
+        return _AUTH_FINGERPRINT_ABSENT
+    if not hooks.emit_internal_read_audit(_IDENTITY_FINGERPRINT_READ_ID, "success"):
+        # The read HAPPENED and its terminal audit could not be written, so the
+        # answer is unaudited. Discard it rather than let unaudited identity data
+        # drive retirement. The failure-shaped outcomes above need no such guard:
+        # they already return "absent" whatever their audit does.
+        logger.warning("Kiro identity fingerprint discarded: terminal audit unavailable")
+        return _AUTH_FINGERPRINT_ABSENT
+    return hashlib.sha256("\n".join(sorted(parts)).encode()).hexdigest()
+
+
+def _claim_digest(value: object) -> str:
+    """Hash one claim value so no credential material can leave the reader."""
+
+    raw = value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _identity_claims(key: str, value: object) -> list[str]:
+    """Return hashed STABLE claims from one ``auth_kv`` blob.
+
+    Anything that is not a JSON object contributes nothing: the row's key name is
+    already recorded by the caller, and guessing at an opaque value risks pulling
+    in a rotating one. Fields outside :data:`_IDENTITY_CLAIM_FIELDS` are skipped
+    whatever their name.
+    """
+
+    try:
+        blob = json.loads(value if isinstance(value, (str, bytes)) else str(value))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+    if not isinstance(blob, dict):
+        return []
+    claims: list[str] = []
+    for claim in sorted(_IDENTITY_CLAIM_FIELDS):
+        if claim not in blob:
+            continue
+        raw = blob[claim]
+        # Lists (``scopes``) are order-normalized so a reordered grant of the same
+        # scopes is not mistaken for a different account.
+        if isinstance(raw, list):
+            rendered = ",".join(sorted(str(item) for item in raw))
+        else:
+            rendered = str(raw)
+        claims.append(f"c:{key}:{claim}={_claim_digest(rendered)}")
+    return claims
 
 
 def _auth_store_mappings(
@@ -1669,6 +1904,22 @@ class KiroPrerequisiteService:
         self._last_probe_at = 0.0
         self._has_probed = False
         self._viable_binary = ""
+        # Which account the store named when the latch was last written.
+        # Comparing it against a fresh read is how an out-of-band `kiro-cli
+        # logout` (or a switch to another account) is noticed at all: nothing
+        # else on the host reports it, and the store's mtime is useless because
+        # ordinary chat traffic rewrites the database every few seconds.
+        self._probe_identity = _AUTH_FINGERPRINT_ABSENT
+        # The retirement consumer's own baseline: which account the RUNNING
+        # children were started under. Separate from _probe_identity because two
+        # consumers sharing one baseline means the first to observe a change
+        # advances it and the second never sees it (see
+        # identity_changed_since_sessions). None = never reconciled, which reports
+        # CHANGED: an unknown baseline must not resolve to "the children match".
+        self._session_identity: str | None = None
+        # Real-time cache bounding the store reads and their SEL audit events.
+        self._identity_cache = _AUTH_FINGERPRINT_ABSENT
+        self._identity_cache_at = 0.0
 
     @property
     def initial_setup_complete(self) -> bool:
@@ -1941,6 +2192,16 @@ class KiroPrerequisiteService:
             # Nothing has resolved yet (warm-up still pending or it failed).
             # One probe here is the boot probe, just arriving late.
             await self._probe()
+        elif await self.identity_changed_since_probe():
+            # The store now names a different account (or none) than the latch
+            # describes. This is the one condition under which an ORDINARY poll
+            # re-probes: without it the card keeps reporting the account the user
+            # signed out of until they happen to press Check again, and reports
+            # "not signed in" after a terminal sign-in for just as long. It stays
+            # cheap because the trigger is a local read, not a spawn, and it
+            # cannot loop -- the probe stamps the new identity, so the next poll
+            # compares equal.
+            await self._probe(force=True)
         result = await self._agent_spec_overlay(self._snapshot_dict())
 
         # The repair arm deliberately does NOT live here. This is an ``add_get``
@@ -1974,6 +2235,120 @@ class KiroPrerequisiteService:
         # than being served by the short cache off this synthetic transition.
         self._last_probe_at = 0.0
         logger.info("Kiro readiness latched to signed-out after an ACP auth failure")
+
+    async def current_identity_fingerprint(self, *, allow_cached: bool = True) -> str:
+        """Return the store's current identity fingerprint.
+
+        Off-loop: a read-only SQLite open plus a couple of small queries.
+
+        ``allow_cached`` decides whether a value read within
+        :data:`_AUTH_FINGERPRINT_CACHE_SECS` may be reused. The cache exists for
+        ONE caller -- the status surface, which N dashboard tabs poll every few
+        seconds, so without it a poll storm becomes one SQLite read and one SEL
+        audit event per tab per poll.
+
+        Anything ACTING on the answer passes ``allow_cached=False``. A cached
+        value is by definition up to a few seconds old, and a logout inside that
+        window would otherwise be invisible to the turn that follows it -- the
+        stale child would take the turn under the account just signed out. Turns
+        and probes are human-paced, so reading fresh for them costs nothing worth
+        having.
+
+        What this replaces either way is the expensive signal: a ``whoami`` spawn,
+        which is what the boot-only probe exists to keep off the send path.
+        """
+
+        now = time.monotonic()
+        if (
+            allow_cached
+            and self._identity_cache_at
+            and now - self._identity_cache_at < _AUTH_FINGERPRINT_CACHE_SECS
+        ):
+            return self._identity_cache
+        if identity_store_is_relocated(self._platform, self._home, self._environ):
+            # Do not read the default path: with the CLI pointed elsewhere, a
+            # leftover database there would fingerprint an account nobody is signed
+            # into, and a logout in the real store would change nothing we can see.
+            # Absent is never reconciled, so this re-sweeps every turn instead of
+            # trusting a stale file.
+            self._identity_cache = _AUTH_FINGERPRINT_ABSENT
+            self._identity_cache_at = now
+            return _AUTH_FINGERPRINT_ABSENT
+        path = kiro_identity_store_path(self._platform, self._home, self._environ)
+        try:
+            fingerprint = await asyncio.to_thread(identity_fingerprint, path)
+        except Exception:
+            # An unreadable store reports "no identity", matching
+            # identity_fingerprint's own contract, rather than "unchanged" --
+            # guessing "unchanged" is what keeps a stale account alive.
+            logger.warning("Kiro identity fingerprint could not be read", exc_info=True)
+            fingerprint = _AUTH_FINGERPRINT_ABSENT
+        self._identity_cache = fingerprint
+        self._identity_cache_at = now
+        return fingerprint
+
+    async def identity_changed_since_probe(self) -> bool:
+        """Whether the signed-in account differs from the one the LATCH describes.
+
+        The status surface's consumer. Advancing this baseline is
+        :meth:`_stamp_probe`'s business, so it must never be used to decide
+        whether a running child is stale -- see
+        :meth:`identity_changed_since_sessions` for why.
+
+        False while ``assume_ready`` holds (a test or offline gateway asserts its
+        own readiness and has no store to compare against) and false before the
+        first probe, when there is no recorded identity to differ from.
+        """
+
+        if self._assume_ready or not self._has_probed:
+            return False
+        return await self.current_identity_fingerprint() != self._probe_identity
+
+    async def identity_changed_since_sessions(self) -> tuple[bool, str]:
+        """Whether running children predate the account the store now names.
+
+        Returns ``(changed, live_fingerprint)``.
+
+        This tracks a SEPARATE baseline from :meth:`identity_changed_since_probe`
+        on purpose. One shared baseline has two consumers -- the status card and
+        session retirement -- and whichever observes the change first advances it,
+        so the other never sees it. In practice the dashboard polls status every
+        few seconds while turns are minutes apart, so a single baseline means the
+        poll re-probes, stamps the new identity, and the stale child is then never
+        retired: the cheap half silently consumes the signal the consequential
+        half exists to act on. A baseline per consumer removes the coupling.
+
+        An UNSET baseline reports changed. It means we do not know which account
+        the running children loaded, and "do not know" must not resolve to "they
+        match": readiness is probed a few seconds AFTER boot while a session can be
+        spawned eagerly before that, so a logout landing in the gap would otherwise
+        be recorded as the starting point and the pre-logout child would keep
+        answering as the previous account. Sweeping once when the baseline is unset
+        costs one cold start per gateway lifetime -- the conversation is restored
+        from disk -- and it is the only answer that cannot be silently wrong.
+
+        The baseline is therefore advanced ONLY by
+        :meth:`note_sessions_reconciled`, after a sweep that actually completed.
+        """
+
+        if self._assume_ready:
+            return (False, _AUTH_FINGERPRINT_ABSENT)
+        # Never cached: this answer decides whether a running child may take the
+        # next turn, and a value a few seconds old would let a logout inside that
+        # window pass unnoticed.
+        live = await self.current_identity_fingerprint(allow_cached=False)
+        if self._session_identity is None:
+            return (True, live)
+        return (live != self._session_identity, live)
+
+    def note_sessions_reconciled(self, fingerprint: str) -> None:
+        """Record that running children now match *fingerprint*.
+
+        Advanced ONLY by the retirement path, so no other consumer can retire
+        this baseline's signal on its behalf.
+        """
+
+        self._session_identity = fingerprint
 
     async def verified_ready(self, *, max_age_secs: float) -> bool:
         """Return readiness backed by a probe no older than *max_age_secs*.
@@ -2024,8 +2399,40 @@ class KiroPrerequisiteService:
 
         return bool(self._status.ready)
 
+    def _stamp_probe(self, identity: str) -> None:
+        """Record that the latch was just written, and for which account.
+
+        Every latch write in :meth:`_probe` goes through here so none can record
+        a verdict without the identity it belongs to -- a latch stamped with no
+        identity would read as "account changed" on the very next comparison and
+        retire healthy sessions forever.
+
+        Deliberately does NOT touch the retirement baseline. Seeding it here would
+        look like it anchors that baseline to the identity the running children
+        loaded, but the probe is delayed a few seconds after boot and a session can
+        be spawned eagerly before it, so a logout in that gap would be seeded as the
+        starting point and the pre-logout child would never be retired. That
+        baseline is advanced only by :meth:`note_sessions_reconciled`, after a
+        sweep -- and an unset one reports changed rather than assuming a match.
+        """
+
+        self._last_probe_at = self._clock()
+        self._has_probed = True
+        self._probe_identity = identity
+
     async def _probe(self, *, force: bool = False) -> PrerequisiteStatus:
         async with self._probe_lock:
+            # Read the identity BEFORE running whoami, and stamp that value on
+            # whatever verdict this probe reaches. The order matters: if the store
+            # changes between this read and whoami, the latch records the OLDER
+            # identity, so the next comparison sees a change and re-probes -- one
+            # wasted probe. Reading afterwards would stamp the NEW identity onto a
+            # verdict describing the OLD one, which hides the change instead.
+            probe_identity = (
+                _AUTH_FINGERPRINT_ABSENT
+                if self._assume_ready
+                else await self.current_identity_fingerprint(allow_cached=False)
+            )
             if self._assume_ready:
                 self._status = PrerequisiteStatus(
                     platform=_platform_label(self._platform),
@@ -2034,8 +2441,7 @@ class KiroPrerequisiteService:
                     ready=True,
                     initial_setup_complete=True,
                 )
-                self._last_probe_at = self._clock()
-                self._has_probed = True
+                self._stamp_probe(probe_identity)
                 return self._status
             now = self._clock()
             if self._has_probed and not force and now - self._last_probe_at < _PROBE_CACHE_SECS:
@@ -2119,8 +2525,7 @@ class KiroPrerequisiteService:
                         sandbox_detail=detail,
                         sandbox_remedy=remedy,
                     )
-                    self._last_probe_at = self._clock()
-                    self._has_probed = True
+                    self._stamp_probe(probe_identity)
                     return self._status
                 if (
                     version_probe is not None
@@ -2188,8 +2593,7 @@ class KiroPrerequisiteService:
                     platform=_platform_label(self._platform),
                     initial_setup_complete=self._initial_setup_complete,
                 )
-                self._last_probe_at = self._clock()
-                self._has_probed = True
+                self._stamp_probe(probe_identity)
                 return self._status
 
             # A viable binary answered ``--version``, so it can be signed into
@@ -2233,8 +2637,7 @@ class KiroPrerequisiteService:
                 rejected_agent_specs=rejected,
                 agent_spec_rejection_detail=rejection_detail,
             )
-            self._last_probe_at = self._clock()
-            self._has_probed = True
+            self._stamp_probe(probe_identity)
             return self._status
 
     async def _probe_spec_acceptance(self, executable: str) -> tuple[list[str], str]:

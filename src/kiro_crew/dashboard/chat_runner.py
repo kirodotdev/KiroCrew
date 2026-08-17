@@ -2599,6 +2599,73 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
     )
 
 
+async def _retire_sessions_on_identity_change(state: Any) -> None:
+    """Recycle kiro-backed children when the signed-in account has changed.
+
+    The counterpart to :func:`_mark_kiro_signed_out`, for the case that function
+    can never see: an external ``kiro-cli logout`` (or a switch to another
+    account) leaves a RUNNING child holding the old credential in memory. It
+    keeps refreshing and keeps answering, so no ACP auth failure ever occurs and
+    nothing reports the change -- turns simply continue under the account the user
+    believes they left.
+
+    This does NOT gate the send. A stale latch must never block a turn (see
+    ``dashboard/kiro_readiness.py``), and nothing here can: the check retires an
+    invalidated child and lets the send proceed on a fresh one, which is a
+    process recycle rather than a readiness verdict. It stays off the spawn path
+    too -- the trigger is a local database read, briefly cached, not a ``whoami``.
+
+    Best-effort: a failure here must not fail the turn, which would be a worse
+    outcome than the staleness it exists to correct.
+    """
+
+    service = getattr(state, "kiro_prerequisite_service", None)
+    sessions = getattr(state, "sessions", None)
+    if service is None or sessions is None:
+        return
+    try:
+        changed, live = await service.identity_changed_since_sessions()
+        if not changed:
+            return
+        retired, complete = await sessions.retire_kiro_identity_sessions()
+        # Advance THIS consumer's baseline ONLY on a complete sweep AND a real
+        # identity. Anything left running -- a busy session, a child that would not
+        # shut down, a start still in flight -- is still holding the previous
+        # account, so recording the change as handled would mean its next turn sees
+        # no change and reuses that account.
+        #
+        # An EMPTY fingerprint is refused for a different reason: it means the store
+        # could not be read (relocated, unreadable, or signed out), and reconciling
+        # it would make "cannot tell" the accepted steady state -- every later
+        # account switch would then compare equal to "" and go undetected while
+        # children keep running. Leaving it unreconciled means each turn re-sweeps,
+        # which bounds how long a child can outlive the account it loaded to a
+        # single turn. That is a real cost on a host whose store is not readable,
+        # and it is the correct direction to pay it in: the replacement child reads
+        # whatever the store now holds even when we cannot fingerprint it.
+        if complete and live:
+            service.note_sessions_reconciled(live)
+        # Narrow the latch ONLY on an actual sign-out (no identity on disk). On a
+        # switch to another valid account, narrowing would strand readiness: if a
+        # status poll observed the switch first it has already stamped the new
+        # identity, so the fingerprints now MATCH and no ordinary poll re-probes --
+        # the card would sit at "not signed in" until someone pressed Check again.
+        # A switch needs no narrowing anyway: the poll that stamped the new
+        # identity also refreshed the verdict for the account now in use, and the
+        # fail-closed gates carry their own freshness bound.
+        if not live:
+            service.mark_signed_out()
+        if retired or not complete:
+            logger.info(
+                "Kiro identity changed; retired %d session(s)%s: %s",
+                len(retired),
+                "" if complete else " (incomplete, will retry next turn)",
+                ", ".join(retired) or "none",
+            )
+    except Exception:
+        logger.debug("Could not apply a Kiro identity change", exc_info=True)
+
+
 def _mark_kiro_signed_out(state: Any) -> None:
     """Latch the prerequisite service to signed-out after an ACP auth failure.
 
@@ -4914,6 +4981,12 @@ async def _run_chat(
         # get_or_create or we'd reuse the stale session for one turn. Safe here:
         # no session lock is held yet, so reset() can't self-kill.
         await _consume_pending_reset(state, slot)
+        # Same "before get_or_create or we reuse a stale session for one turn"
+        # reasoning as the reset above, for a staleness the session map cannot
+        # see: the child is alive and healthy, but the account it authenticated
+        # as is gone. Retiring it here means this turn cold-starts on the current
+        # account instead of running as the previous one.
+        await _retire_sessions_on_identity_change(state)
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,

@@ -263,6 +263,19 @@ class LLMProvider(ABC):
         process. Default False — session sharing is opt-in, never inherited."""
         return False
 
+    @property
+    def uses_kiro_identity_store(self) -> bool:
+        """True when this provider's child authenticates from kiro-cli's own
+        identity store, so an external ``kiro-cli logout`` invalidates a process
+        that is already running and it must be retired.
+
+        Default False — a provider authenticated some other way must not be
+        recycled on a store it never reads, and a harness that has not stated
+        that it reads that store does not inherit the claim (harness-parity
+        H5/H14). Declared here rather than probed off the instance so the session
+        layer never has to guess from private attributes."""
+        return False
+
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
         picker. Default empty for a provider that advertises none."""

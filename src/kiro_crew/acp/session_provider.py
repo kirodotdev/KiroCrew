@@ -33,7 +33,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.session_handle import WatchdogSettings
-from kiro_crew.acp.types import STOP_REASON_END_TURN
+from kiro_crew.acp.types import ACP_BACKENDS_KIRO_IDENTITY_STORE, STOP_REASON_END_TURN
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
@@ -450,6 +450,17 @@ class AcpSessionProvider(LLMProvider):
         session under the kiro label.
         """
         return self._runtime.acp_backend
+
+    @property
+    def uses_kiro_identity_store(self) -> bool:
+        """True when this provider's child signs in from kiro-cli's own store.
+
+        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        H5/H14), read off the runtime's backend for the same reason
+        :attr:`backend` is: this provider fronts whichever backend the runtime
+        spawned.
+        """
+        return self._runtime.acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
 
     def has_active_turn(self) -> bool:
         """True if a prompt turn is currently in progress.
