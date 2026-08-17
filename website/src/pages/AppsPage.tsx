@@ -37,6 +37,7 @@ import SourcesPopover from '../components/appstore/SourcesPopover'
 import { categoryFor, categoryCounts, mergeCategoryOrder, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
 import { isVerified, normalizeInstalledApp, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
+import { isBuiltinServerRow } from '../components/appstore/mergeBuiltinRow'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
@@ -332,51 +333,59 @@ export default function AppsPage() {
 
   // ---- Discover data -------------------------------------------------------
 
-  // Browse catalog: all non-hidden builtins (each carrying its live enabled
-  // state, so Discover shows Enabled/Disabled rather than dropping enabled
-  // ones) merged with registry entries; installed apps enrich matching
-  // registry entries with local hero/screenshot metadata.
+  // EXPLORE HAS EXACTLY TWO SOURCES: the official registry and the user's own
+  // added registries. Both arrive as rows on `GET /api/apps/registry`, already
+  // carrying display copy, artwork, version and server-stamped trust/state, so
+  // this list is those rows — nothing is synthesized here.
+  //
+  // In particular a BUILT-IN appears on the shelf because the published catalog
+  // lists it, NOT because this client read the wheel's own manifests. Rendering
+  // built-ins from local manifests made the shelf a third source that only the
+  // client knew about, and every defect it caused followed from that: an author
+  // line the catalog had corrected but the client re-derived, a `version` taken
+  // from the wrong side, and a name-collision classification that existed purely
+  // to decide which local field to trust. Deleting the source deletes the class.
+  //
+  // The one local input that remains is a SUPPRESSION, not a source: a built-in
+  // its manifest marks `hidden` stays off the shelf even when the catalog lists
+  // it, because concealment is the wheel's call and a republished document must
+  // not be able to reveal an app this build deliberately hides.
+  //
+  // Offline, the shelf is whatever the server can still answer with — the
+  // catalog's cache, then the bundled seed. It is deliberately NOT topped up
+  // from local manifests: nothing is installable offline anyway, and installed
+  // built-ins remain fully visible and manageable under Library, which reads
+  // `GET /api/apps` locally.
   const browseApps: RegistryApp[] = useMemo(() => {
-    const builtinEntries: RegistryApp[] = apps
-      .filter(a => a.origin === 'builtin' && !a.manifest?.hidden)
-      .map(a => ({
-        name: a.name,
-        displayName: a.displayName || a.name,
-        description: a.manifest?.description || '',
-        version: a.version,
-        author: a.manifest?.author || 'kirocrew',
-        tags: a.manifest?.tags,
-        screenshots: a.manifest?.screenshots,
-        heroImage: a.manifest?.heroImage,
-        heroImageDark: a.manifest?.heroImageDark,
-        // Forwarded too: a builtin has no `registryEntry` (the core
-        // `app-registry.json` is empty), so anything omitted here is simply
-        // absent from the Discover catalog for every built-in app. The detail
-        // page reads these off the installed manifest and so happened to keep
-        // working, which is why the omission stayed invisible.
-        heroImageDetail: a.manifest?.heroImageDetail,
-        heroImageDetailDark: a.manifest?.heroImageDetailDark,
-        highlights: a.manifest?.highlights,
-        license: a.manifest?.license,
-        icon: a.manifest?.ui?.pages?.[0]?.icon || '',
-        iconUrl: a.manifest?.iconUrl || '',
-        installed: true,
-        enabled: a.enabled,
-        origin: 'builtin',
-        lifecycle: 'locked',
-        // Client-synthesized rows never pass through /api/apps/registry, so
-        // speak the server trust contract (_apply_trust_fields) directly.
-        provenance: 'builtin',
-        verified: true,
-      }))
-    const builtinNames = new Set(builtinEntries.map(a => a.name))
-    const enriched = registry.filter(r => !builtinNames.has(r.name)).map(r => {
-      const installed = apps.find(a => a.name === r.name)
-      return installed
-        ? { ...r, heroImage: r.heroImage || installed.manifest?.heroImage, heroImageDark: r.heroImageDark || installed.manifest?.heroImageDark, screenshots: r.screenshots || installed.manifest?.screenshots }
-        : r
-    })
-    return [...builtinEntries, ...enriched]
+    const hiddenBuiltins = new Set(
+      apps.filter(a => a.origin === 'builtin' && a.manifest?.hidden).map(a => a.name),
+    )
+    const installedNames = new Set(apps.map(a => a.name))
+    return registry
+      .filter(r => {
+        if (hiddenBuiltins.has(r.name)) return false
+        // A catalog-only BUILT-IN row — `source.type === 'builtin'` with nothing
+        // installed under that name — names an app this wheel does not ship. A
+        // built-in has no install coordinates, so the generic Install card would
+        // render a control that cannot work. Dropped until a
+        // `minClientVersion`-aware "needs a newer Kiro Crew" state exists to say
+        // so honestly. This reads `apps` purely as INSTALL STATE, never as a
+        // source of display copy.
+        if (
+          !installedNames.has(r.name) &&
+          (r as { source?: { type?: string } }).source?.type === 'builtin'
+        ) {
+          return false
+        }
+        return true
+      })
+      // `origin` is stamped from the INSTALLED app of the same name, so an
+      // EXTERNAL registry row named after an installed built-in arrives carrying
+      // `origin: "builtin"` while `_registry` / `provenance` still say external.
+      // The row's own copy is all that renders now, but the FIRST-PARTY LABEL and
+      // the Sources count still read `origin`, so a row that fails the trust test
+      // is demoted here rather than allowed to wear a badge it did not earn.
+      .map(r => (r.origin === 'builtin' && !isBuiltinServerRow(r) ? { ...r, origin: 'registry' } : r))
   }, [apps, registry])
 
   const featured = useMemo(() => pickFeatured(browseApps), [browseApps])

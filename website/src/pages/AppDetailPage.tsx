@@ -24,6 +24,7 @@ import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription, appHighlights } from '../components/appstore/appManifest'
+import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -239,40 +240,65 @@ export default function AppDetailPage() {
 
       if (installed) {
         const m = installed.manifest || {}
-        setApp({
-          name: installed.name,
-          displayName: installed.displayName || m.displayName || installed.name,
-          description: m.description || '',
-          version: registryEntry?.version || m.version || installed.version || '0.0.0',
-          author: m.author || registryEntry?.author || '',
-          // Built-in apps aren't in the registry feed, so registryEntry is
-          // undefined for them — their icon/hero metadata lives on the
-          // manifest. Fall back to it so built-in detail pages render the real
-          // icon and hero instead of the generic Package box.
-          icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
-          iconUrl: registryEntry?.iconUrl || m.iconUrl || m.ui?.pages?.[0]?.iconUrl || '',
-          iconUrlDark: registryEntry?.iconUrlDark || m.iconUrlDark || '',
-          tags: m.tags || registryEntry?.tags || [],
-          highlights: m.highlights || registryEntry?.highlights || [],
-          screenshots: registryEntry?.screenshots || m.screenshots || [],
-          screenshotsDark: registryEntry?.screenshotsDark || m.screenshotsDark || [],
-          heroImage: registryEntry?.heroImage || m.heroImage || '',
-          heroImageDark: registryEntry?.heroImageDark || m.heroImageDark || '',
-          heroImageDetail: registryEntry?.heroImageDetail || m.heroImageDetail || '',
-          heroImageDetailDark: registryEntry?.heroImageDetailDark || m.heroImageDetailDark || '',
-          repo: registryEntry?.repo || '',
-          installed: true,
-          installedVersion: installed.version,
-          enabled: installed.enabled,
-          managed: installed.managed,
-          source: installed.source,
-          installedAt: installed.installedAt,
-          origin: installed.origin,
-          resources: installed.resources,
-          lifecycle: installed.lifecycle,
-          updateAvailable: registryEntry?.updateAvailable || false,
-          manifest: m,
-        })
+        // A built-in the registry response carries goes through the SAME merge
+        // the browse list uses. Spelled separately, the two chains disagreed:
+        // this page preferred the manifest (`m.author || registryEntry?.author`)
+        // while the list preferred the row, so one app could read
+        // "Kiro Crew · Developer Tools" in the list and "kirocrew · Productivity"
+        // one click later. The catalog is the store's inventory on both surfaces
+        // or on neither.
+        if (registryEntry && isBuiltinServerRow(registryEntry)) {
+          setApp({
+            ...mergeBuiltinRow(registryEntry, { ...m, version: installed.version }),
+            name: installed.name,
+            installed: true,
+            installedVersion: installed.version,
+            enabled: installed.enabled,
+            managed: installed.managed,
+            source: installed.source,
+            installedAt: installed.installedAt,
+            origin: installed.origin,
+            resources: installed.resources,
+            lifecycle: installed.lifecycle,
+            updateAvailable: registryEntry.updateAvailable || false,
+            manifest: m,
+          })
+        } else {
+          setApp({
+            name: installed.name,
+            displayName: installed.displayName || m.displayName || installed.name,
+            description: m.description || '',
+            version: registryEntry?.version || m.version || installed.version || '0.0.0',
+            author: m.author || registryEntry?.author || '',
+            // A non-built-in installed app may have no registry entry at all (a
+            // local-directory install), so the manifest is the only source for
+            // icon/hero metadata; without this fallback the page renders the
+            // generic Package box.
+            icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
+            iconUrl: registryEntry?.iconUrl || m.iconUrl || m.ui?.pages?.[0]?.iconUrl || '',
+            iconUrlDark: registryEntry?.iconUrlDark || m.iconUrlDark || '',
+            tags: m.tags || registryEntry?.tags || [],
+            highlights: m.highlights || registryEntry?.highlights || [],
+            screenshots: registryEntry?.screenshots || m.screenshots || [],
+            screenshotsDark: registryEntry?.screenshotsDark || m.screenshotsDark || [],
+            heroImage: registryEntry?.heroImage || m.heroImage || '',
+            heroImageDark: registryEntry?.heroImageDark || m.heroImageDark || '',
+            heroImageDetail: registryEntry?.heroImageDetail || m.heroImageDetail || '',
+            heroImageDetailDark: registryEntry?.heroImageDetailDark || m.heroImageDetailDark || '',
+            repo: registryEntry?.repo || '',
+            installed: true,
+            installedVersion: installed.version,
+            enabled: installed.enabled,
+            managed: installed.managed,
+            source: installed.source,
+            installedAt: installed.installedAt,
+            origin: installed.origin,
+            resources: installed.resources,
+            lifecycle: installed.lifecycle,
+            updateAvailable: registryEntry?.updateAvailable || false,
+            manifest: m,
+          })
+        }
       } else if (registryEntry) {
         setApp({
           ...registryEntry,
