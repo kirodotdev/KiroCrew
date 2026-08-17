@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import threading
 import time
 import traceback
@@ -307,6 +308,348 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
 # a sink, smuggling a real-file write past the unsafe-shell check.
 _DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
 
+# ── Side effects reached through an allowlisted read-only verb ──
+#
+# The allowlist above names a verb and is matched as a prefix, so it vouches
+# for every flag, subcommand and operand that verb accepts. Some of those
+# write a file, change a ref or launch another program — and none of it goes
+# through a shell redirect, so `_UNSAFE_SHELL_RE` never sees it.
+#
+# The tables are keyed by verb because the same spelling is harmless
+# elsewhere: `ls -o` is a long listing format and `grep -o` prints only the
+# match, while `sort -o FILE` truncates and writes FILE.
+
+# Flags that make the program write a file named on its own command line.
+_WRITE_FLAGS: dict[str, tuple[str, ...]] = {
+    "sort": ("-o", "--output"),
+    # `-R` writes without being handed a filename: tree re-runs itself in every
+    # directory it descends into, adding `-o 00Tree.html` each time, so the file
+    # is named by tree rather than by the command line. Same outcome as `-o`, one
+    # step removed, which is why looking only for a filename-bearing flag missed
+    # it.
+    "tree": ("-o", "--output", "-R"),
+    "file": ("-C", "--compile"),
+    "uniq": ("-o",),
+    "git diff": ("--output",),
+    "git show": ("--output",),
+    "git log": ("--output",),
+    # A pager, and not on the prefix allowlist — but the PIPE-TARGET check runs
+    # this table too, and `cat f | less -O FILE` writes FILE from a segment whose
+    # leading verb is a read.
+    "less": ("-o", "-O", "--log-file", "--LOG-FILE"),
+}
+
+# Flags that hand control to a program the repository names, not the caller:
+# an external diff driver comes from the repo's config or .gitattributes.
+_EXEC_FLAGS: dict[str, tuple[str, ...]] = {
+    # `--textconv` is the same hand-off as `--ext-diff` through a different config
+    # key, and it was missing here while `git cat-file` below already listed it —
+    # the table gap, not the design, is what let `git diff --textconv` through.
+    #
+    # Scope, stated plainly: this stops the COMMAND LINE from selecting the
+    # program. It does not stop a textconv driver the user configured from being
+    # applied by default, because that name comes from git config, which is not
+    # part of a repository and is not something a checkout can add. Requiring
+    # `--no-textconv` would be the only way to cover that, and it would take plain
+    # `git diff` off the read-only path — the most common read there is.
+    "git diff": ("--ext-diff", "--textconv"),
+    "git show": ("--ext-diff", "--textconv"),
+    "git log": ("--ext-diff", "--textconv"),
+    # `--filters` runs the repository's clean/smudge filter — a command from
+    # `.gitattributes`, i.e. chosen by the checkout rather than by the caller.
+    # `--textconv` is the same hand-off through a different config key.
+    "git cat-file": ("--filters", "--textconv"),
+    # `sort` compresses its temporary files by running this program.
+    "sort": ("--compress-program",),
+    # A pager that runs a filter over its input, reachable as a pipe target.
+    "less": ("--filter",),
+}
+
+# `git branch` and `git tag` each carry a read mode and a write mode under one
+# subcommand, so the prefix match admits the destructive spellings. Some of
+# these also open `$EDITOR`, which runs a program of the environment's
+# choosing: `git branch --edit-description` always does, and `git tag <name>`
+# does whenever `tag.gpgSign` or `tag.forceSignAnnotated` is set.
+_GIT_REF_WRITE_FLAGS: dict[str, tuple[str, ...]] = {
+    "branch": (
+        "-d",
+        "-D",
+        "--delete",
+        "-m",
+        "-M",
+        "--move",
+        "-c",
+        "-C",
+        "--copy",
+        "-f",
+        "--force",
+        "-u",
+        "--set-upstream",
+        "--set-upstream-to",
+        "--unset-upstream",
+        "--edit-description",
+    ),
+    "tag": (
+        "-d",
+        "--delete",
+        "-a",
+        "--annotate",
+        "-s",
+        "--sign",
+        "-m",
+        "--message",
+        "-F",
+        "--file",
+        "-f",
+        "--force",
+        "--cleanup",
+    ),
+}
+
+# Why a bare operand needs TWO tables rather than one.
+#
+# `git branch <name>` creates a ref, so a bare operand is the signal. Deciding
+# when an operand is NOT that name was collapsed into a single "this flag eats
+# the next token" set, and that conflated two different things git keeps apart:
+#
+#   * whether the flag CONSUMES the following word, which git's own option
+#     parser decides by whether the argument is required or optional. A required
+#     argument is taken from the next word; an OPTIONAL one must be attached with
+#     `=`, and a separate word is left as an operand. `--color` is optional, so
+#     `git branch --color newbranch` still creates `newbranch` — while the guard
+#     read `newbranch` as the colour and passed the segment.
+#   * whether the command is in LIST mode, where an operand is a pattern to match
+#     rather than a ref to create. `git branch --list newbranch` lists, it does
+#     not create, so treating that operand as a creation would be a false denial.
+#
+# Splitting them keeps both answers right: `--color` is in neither set, and
+# `--list` is in the list-mode set only.
+
+# Flags whose argument is REQUIRED, so git takes it from the following word.
+_GIT_REF_VALUE_FLAGS: frozenset[str] = frozenset(("--points-at", "--format", "--sort"))
+# Flags that put `git branch` / `git tag` in list mode, where a bare operand is a
+# pattern. `--points-at` appears in both: it consumes its value AND selects.
+_GIT_REF_LIST_FLAGS: frozenset[str] = frozenset(
+    (
+        "-l",
+        "--list",
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+    )
+)
+
+# `git remote` subcommands that rewrite remote configuration. `set-url` is the
+# sharpest: it repoints the remote, so later fetches and pushes go elsewhere.
+_GIT_REMOTE_WRITE_SUBCOMMANDS: frozenset[str] = frozenset(
+    ("add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune", "update")
+)
+
+
+#: Shell expansions whose RESULT is the argument, while ``shlex`` hands this
+#: module the unexpanded text. Every check here is keyed on the token, so where
+#: the two disagree the guard inspects one string and the program receives
+#: another:
+#:
+#:     git diff $'--output=/tmp/pwned'       shlex: `$--output=…`     bash: `--output=…`
+#:     git diff $"--output=/tmp/pwned"       shlex: `$--output=…`     bash: `--output=…`
+#:     git diff ${HOME:+--output=/tmp/pwned} shlex: literal           bash: `--output=…`
+#:     git remote se${x}t-url …              shlex: `se${x}t-url`     bash: `set-url`
+#:     git diff --{out,out}put=/tmp/pwned    shlex: `--{out,out}put=` bash: `--output=…`
+#:
+#: Matched as ONE class rather than one spelling at a time. Closing ``$'`` alone
+#: left ``$"`` (locale translation) and ``${…}`` (parameter expansion) open on the
+#: identical path, and the remaining forms are bounded only by bash's grammar.
+#: Un-expanding them here would mean reimplementing that grammar, so a segment
+#: carrying one is refused instead: a read-only command has no need of any of
+#: them, and a rejected segment falls through to the human approval prompt.
+#:
+#: Brace expansion belongs to the same class even though it carries no ``$``: it
+#: is performed FIRST, before any other expansion, and it can assemble a flag out
+#: of fragments that match nothing here. Only the forms bash actually expands are
+#: matched — a comma list or a ``..`` range — so a lone ``{`` (a JSON argument, a
+#: Go template) is left alone.
+#:
+#: ``$(…)`` and backticks are already refused upstream by ``_UNSAFE_SHELL_RE``;
+#: this covers what that pattern does not reach.
+#:
+#: Matched on the raw segment, so a QUOTED occurrence is refused too even though
+#: bash would not expand it (``grep '*.{js,ts}' f``). That is the same trade the
+#: ``$`` forms already make, and it errs toward the prompt.
+_SHELL_EXPANSION_RE = re.compile(
+    r"\$['\"{]"
+    r"|\$[A-Za-z_][A-Za-z0-9_]*"
+    r"|\{[^{}\s]*,[^{}\s]*\}"
+    r"|\{[^{}\s]*\.\.[^{}\s]*\}"
+)
+#: Pathname-expansion metacharacters. NOT part of the class above, because a glob
+#: is usually the argument itself in a read-only command (`ls *.py`) — it is
+#: refused only in the positions where the spelling is what gets classified. See
+#: the note in `_side_effect_reason`.
+_GLOB_META_RE = re.compile(r"[*?\[]")
+
+
+def _matched_flag(tokens: list[str], flags: tuple[str, ...]) -> str:
+    """Return the first token in *tokens* that supplies one of *flags*.
+
+    Matches the flag on its own (``-o``), joined to its value (``--output=x``)
+    and bundled into a short-option cluster (``-uo`` supplies ``-o``), so the
+    check cannot be stepped around by respelling the same flag.
+    """
+    shorts = {f[1] for f in flags if len(f) == 2 and f[0] == "-"}
+    longs = [f for f in flags if f.startswith("--") and len(f) > 2]
+    for tok in tokens:
+        if tok in flags:
+            return tok
+        for flag in flags:
+            if tok.startswith(flag + "="):
+                return flag
+        # A GNU long option may be ABBREVIATED to any unambiguous prefix, so
+        # `--out=FILE` and `--outp=FILE` reach the same `--output` that exact
+        # matching missed. Accept any prefix of a known flag that is at least
+        # `--` plus one character: the parser this guards resolves it, so the
+        # guard has to as well. Over-matching here can only add a prompt.
+        head = tok.split("=", 1)[0]
+        if head.startswith("--") and len(head) > 2:
+            for flag in longs:
+                if flag.startswith(head):
+                    return flag
+        if shorts and len(tok) > 1 and tok[0] == "-" and tok[1] != "-":
+            for ch in tok[1:]:
+                if ch in shorts:
+                    return "-" + ch
+    return ""
+
+
+def _side_effect_reason(segment: str) -> str:
+    """Reason *segment* has a side effect, despite naming a read-only verb.
+
+    Returns "" when the segment is genuinely read-only. Called after the verb
+    has cleared the allowlist, because the allowlist only decides *which
+    program* runs — not what the rest of the command line asks it to do.
+    """
+    # ANSI-C quoting is stripped by `shlex` but honoured by bash, so the token
+    # this check inspects is not the token the shell runs: `git diff $'-o'` reaches
+    # `shlex` as `$-o` — matching no flag — while bash passes `-o`. The same trick
+    # hides a subcommand (`git remote $'set-url'`). It is a spelling with no
+    # legitimate use in a read-only command, so the segment is refused outright
+    # rather than un-quoted here, which would mean reimplementing bash's rules.
+    if _SHELL_EXPANSION_RE.search(segment):
+        return "a shell expansion hides the real argument"
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        # Cannot recover argv, so cannot vouch for the operands.
+        return "quoting cannot be resolved"
+    if not tokens:
+        return ""
+    # The verb is matched case-insensitively, like the allowlist does, so an
+    # unusual spelling cannot step past the table. Flags keep their case,
+    # because for these programs the case carries the meaning.
+    verb = tokens[0].rsplit("/", 1)[-1].lower()
+    args = tokens[1:]
+
+    # Pathname expansion is the one expansion that cannot be refused wholesale.
+    # Every other form in `_SHELL_EXPANSION_RE` has no place in a read-only
+    # command, but a glob usually IS the argument — `ls *.py`, `grep -rn TODO src/*`
+    # — so refusing the character outright would take the ordinary reads off this
+    # path.
+    #
+    # It still has to be refused where the SPELLING is what gets classified, since
+    # there bash resolves the glob against the filesystem and hands the program a
+    # word this module never saw:
+    #
+    #     git remote s?t-url origin https://evil   (a file named `set-url` nearby)
+    #     git diff --outp?t=/tmp/pwned
+    #
+    # Two positions, then: the git subcommand, and a flag NAME. A flag's VALUE is
+    # left alone, so `git log --grep='[abc]'` still passes.
+    for token in args:
+        head = token.split("=", 1)[0]
+        if token.startswith("-") and _GLOB_META_RE.search(head):
+            return "a glob in a flag name hides the real argument"
+
+    # The allowlist names `git <subcommand>`, so that is the unit to key on.
+    key = verb
+    if verb == "git" and args:
+        if _GLOB_META_RE.search(args[0]):
+            return "a glob in the subcommand hides the real argument"
+        subcommand = args[0].lower()
+        key = f"git {subcommand}"
+        args = args[1:]
+
+        if subcommand in _GIT_REF_WRITE_FLAGS:
+            hit = _matched_flag(args, _GIT_REF_WRITE_FLAGS[subcommand])
+            if hit:
+                return f"'git {subcommand} {hit}' changes a ref"
+            # A bare operand names a ref to create, unless the command is in list
+            # mode (where it is a pattern) or the operand is a required flag value.
+            #
+            # List mode is decided over the WHOLE argument list before the walk,
+            # because the selecting flag can come after the operand it makes into a
+            # pattern: `git branch newbranch --list` is still a list.
+            list_mode = any(
+                tok.split("=", 1)[0] in _GIT_REF_LIST_FLAGS
+                or (len(tok) > 1 and tok[0] == "-" and tok[1] != "-" and "l" in tok[1:])
+                for tok in args
+            )
+            previous = ""
+            operand_only = False
+            for tok in args:
+                # `--` ends the options. Everything after it is an operand, however
+                # it is spelled: `git tag -- -z` creates the tag `-z`, while a
+                # leading-dash test read it as one more option and passed.
+                if tok == "--":
+                    operand_only = True
+                    previous = ""
+                    continue
+                if not operand_only and tok.startswith("-"):
+                    # An ATTACHED value (`--sort=x`) takes nothing from the next
+                    # word, so it must not mark the following operand as consumed.
+                    previous = "" if "=" in tok else tok
+                    continue
+                if previous in _GIT_REF_VALUE_FLAGS:
+                    previous = ""
+                    continue
+                if list_mode:
+                    continue
+                return f"'git {subcommand} {tok}' creates a ref"
+
+        if subcommand == "remote":
+            # `git remote -v set-url …` puts an option BEFORE the subcommand, and
+            # git accepts it there. Keying on `args[0]` therefore saw `-v` and let
+            # the mutation through, so the leading options are skipped and the
+            # first non-option word is the subcommand — the same token git uses.
+            for tok in args:
+                if tok.startswith("-"):
+                    continue
+                if tok in _GIT_REMOTE_WRITE_SUBCOMMANDS:
+                    return f"'git remote {tok}' rewrites remote configuration"
+                # `git remote` has its OWN subcommand word, and it is classified by
+                # the same table, so a glob has to be refused here too: with a file
+                # named `set-url` nearby, `git remote s?t-url …` reaches this module
+                # as a word matching nothing and bash hands git the mutation.
+                if _GLOB_META_RE.search(tok):
+                    return "a glob in the subcommand hides the real argument"
+                break
+
+    hit = _matched_flag(args, _WRITE_FLAGS.get(key, ()))
+    if hit:
+        return f"'{key} {hit}' writes a file"
+    hit = _matched_flag(args, _EXEC_FLAGS.get(key, ()))
+    if hit:
+        return f"'{key} {hit}' runs a program named by the repository"
+
+    # `uniq INPUT OUTPUT` writes its second operand.
+    if verb == "uniq":
+        operands = [tok for tok in args if not tok.startswith("-")]
+        if len(operands) > 1:
+            return "'uniq INPUT OUTPUT' writes its second operand"
+
+    return ""
+
 
 def _classify_bash(cmd: str) -> str:
     """Single source of truth for read-only bash classification.
@@ -331,7 +674,12 @@ def _classify_bash(cmd: str) -> str:
         pipe_parts = [p.strip() for p in part.split("|") if p.strip()]
         if not pipe_parts:
             return "unsafe shell pattern"
-        first = pipe_parts[0].strip().lower()
+        # The verb is compared case-insensitively, but the side-effect check
+        # below needs the original spelling: flags are case-sensitive, and the
+        # two cases can mean opposite things (`file -C` compiles a magic file,
+        # `file -c` only prints one).
+        head = pipe_parts[0].strip()
+        first = head.lower()
         if not (
             first.endswith("--help")
             or first.endswith("--version")
@@ -339,10 +687,21 @@ def _classify_bash(cmd: str) -> str:
         ):
             base = first.split()[0] if first.split() else first
             return f"command '{base}' is not on the read-only allowlist"
+        # Clearing the allowlist only settles which program runs. The rest of
+        # the command line can still write a file, change a ref or start
+        # another program.
+        side_effect = _side_effect_reason(head)
+        if side_effect:
+            return f"not read-only: {side_effect}"
         for target in pipe_parts[1:]:
             if not _READ_ONLY_PIPE_RE.match(target):
                 tgt = target.split()[0] if target.split() else target
                 return f"pipe target '{tgt}' is not a read-only filter"
+            # The pipe allowlist matches only the leading verb, so a filter's
+            # own output flag (`sort -o FILE`) needs the same check.
+            side_effect = _side_effect_reason(target)
+            if side_effect:
+                return f"pipe target is not read-only: {side_effect}"
     return ""
 
 
