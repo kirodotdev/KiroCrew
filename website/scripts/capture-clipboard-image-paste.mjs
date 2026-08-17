@@ -64,7 +64,7 @@ const detail = {
  *  pressing Cmd/Ctrl+V with a screenshot on the clipboard produces. */
 async function pasteImage(page, { name, bytes }) {
   await page.evaluate(async ({ name, bytes }) => {
-    const ta = document.querySelector('textarea[aria-label="Message input"]')
+    const ta = document.querySelector('textarea[data-composer-input]')
     if (!ta) throw new Error('composer textarea not found')
     ta.focus()
     const data = new Uint8Array(bytes)
@@ -111,7 +111,7 @@ async function main() {
   })
 
   await page.goto(`${base}/chat/${SLOT}`)
-  await page.waitForSelector('textarea[aria-label="Message input"]')
+  await page.waitForSelector('textarea[data-composer-input]')
   await page.waitForTimeout(500)
 
   // ── Scenario 1: normal screenshot paste → attachment chip ────────────────
@@ -126,12 +126,12 @@ async function main() {
 
   // ── Scenario 2: oversize pasted image → same error as the picker ─────────
   await page.reload()
-  await page.waitForSelector('textarea[aria-label="Message input"]')
+  await page.waitForSelector('textarea[data-composer-input]')
   await page.waitForTimeout(500)
   const before = uploadRequests
   // 51 MB of zeros — over the 50 MB client-side cap.
   await page.evaluate(async () => {
-    const ta = document.querySelector('textarea[aria-label="Message input"]')
+    const ta = document.querySelector('textarea[data-composer-input]')
     ta.focus()
     const blob = new Blob([new ArrayBuffer(51 * 1024 * 1024)], { type: 'image/png' })
     const file = new File([blob], 'huge-screenshot.png', { type: 'image/png' })

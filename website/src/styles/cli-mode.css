@@ -23,7 +23,7 @@
      [data-role="assistant"]           — AssistantMessage root (added by us)
      .msg-content                      — message text container (already in tree)
      [data-testid="input-wrapper"]     — chat-input rounded card wrapper
-     textarea[aria-label="Message input"] — chat input
+     textarea[data-composer-input]      — chat input
      [style*="--mc-content-width"]     — chat pane root (scope anchor)
      [style*="var(--mc-content-width"] — per-message row wrappers
    ───────────────────────────────────────────────────────────────────────── */
@@ -173,7 +173,7 @@
   user-select: none;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] textarea[aria-label="Message input"] {
+[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
   padding-left: 24px !important;
   caret-color: var(--accent);
   /* font-family + font-size inherit from body; useZoom auto-resolves

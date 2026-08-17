@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { queryComposer } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { i18nT } from '../i18n/t'
 
@@ -610,7 +611,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Alt+Enter: Focus text input — works even from other inputs
     if (code === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus()
+      // Synchronous and unguarded on purpose: no state change precedes this, so
+      // there is no next-frame commit to wait for, and a pressed keyboard
+      // shortcut proves a keyboard exists — the helper's touch-device skip
+      // would wrongly no-op it.
+      queryComposer()?.focus()
       return
     }
 

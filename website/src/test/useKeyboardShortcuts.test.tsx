@@ -179,6 +179,32 @@ describe('useKeyboardShortcuts — toggle behavior', () => {
     fireEvent.keyDown(document, { code: 'KeyN', altKey: true, shiftKey: true })
     expect(onNewChat).toHaveBeenCalledTimes(1)
   })
+
+  it('Alt+Enter focuses the composer even on a touch device (#4088)', () => {
+    // The Alt+Enter site is deliberately UNGUARDED: a pressed keyboard
+    // shortcut proves a keyboard exists, so focusComposer()'s touch-device
+    // skip must not apply. This exercises the failure path directly — a
+    // future "consistency" swap to the guarded helper turns this red.
+    const composer = document.createElement('textarea')
+    composer.setAttribute('data-composer-input', '')
+    document.body.appendChild(composer)
+    const matchMedia = window.matchMedia
+    // Make isTouchDevice() genuinely return true: coarse pointer + no hover.
+    window.matchMedia = ((q: string) => ({
+      matches: q === '(pointer: coarse)' || q === '(hover: none)',
+      media: q, addEventListener: () => {}, removeEventListener: () => {},
+      addListener: () => {}, removeListener: () => {}, onchange: null,
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    try {
+      setup()
+      fireEvent.keyDown(document, { code: 'Enter', altKey: true })
+      expect(document.activeElement).toBe(composer)
+    } finally {
+      window.matchMedia = matchMedia
+      composer.remove()
+    }
+  })
 })
 
 describe('ShortcutsModal', () => {

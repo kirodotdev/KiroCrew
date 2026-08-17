@@ -9,6 +9,7 @@ import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeAppro
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
 import { createSlot, appendMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { queryComposer } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
@@ -1315,7 +1316,12 @@ export default function App() {
     mutationFn: () => dispatch(createSlot(undefined)).unwrap(),
     onSuccess: () => {
       navigate('/chat')
-      requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')?.focus())
+      // Unguarded on purpose: this mutation only fires from the new-chat
+      // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
+      // focusComposer()'s touch-device skip would wrongly suppress focus on a
+      // tablet with a physical keyboard. Next frame, so the new slot's
+      // composer has been committed to the DOM.
+      requestAnimationFrame(() => queryComposer()?.focus())
     },
   })
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)

@@ -163,7 +163,7 @@ import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
-import { focusComposerAfter } from './chat/composerFocus'
+import { focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
@@ -4142,14 +4142,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       widgetPrefillRef.current = text
       setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n${text}` : text))
       setPrefillHint(true)
-      // Touch: reveal the pre-filled composer without focusing (focus pops the
-      // soft keyboard); desktop: focus, which scrolls it into view anyway.
-      requestAnimationFrame(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')
-        if (!ta) return
-        if (isTouchDevice()) { if (typeof ta.scrollIntoView === 'function') ta.scrollIntoView({ block: 'nearest' }) }
-        else ta.focus()
-      })
+      revealComposer()
     }
     window.addEventListener('mc-widget-send', handler)
     return () => window.removeEventListener('mc-widget-send', handler)
@@ -4879,14 +4872,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
     // Trigger flying animation
     setFlyingQuote({ text, from: rect })
-    // Touch: reveal the pre-filled composer without focusing (focus pops the
-    // soft keyboard); desktop: focus, which scrolls it into view anyway.
-    requestAnimationFrame(() => {
-      const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]')
-      if (!ta) return
-      if (isTouchDevice()) { if (typeof ta.scrollIntoView === 'function') ta.scrollIntoView({ block: 'nearest' }) }
-      else ta.focus()
-    })
+    revealComposer()
   }, [])
 
   // "Ask" (Select-to-Ask): open the isolated /side conversation seeded with the
