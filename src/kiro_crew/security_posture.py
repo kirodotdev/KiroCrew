@@ -1178,7 +1178,7 @@ def _write_protected_items() -> list[PostureItem]:
     return [
         PostureItem(
             label=f"~/{entry}",
-            detail="Reads allowed; writes blocked so the agent cannot raise its own limits",
+            detail="Reads allowed; the agent's file-edit tools cannot modify it",
         )
         for entry in security.write_protected_home_paths()
     ]

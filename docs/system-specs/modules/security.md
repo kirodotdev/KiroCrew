@@ -198,6 +198,35 @@ The gateway's writers (`store.claim` / `update_fields`, and `ledger_sync`'s `git
 schedule) open these paths directly and do not route through the tool gate, so the app and team
 sync keep working.
 
+**App-sources checkouts** (`app-sources/`) — the persistent tree every installed app *executes*
+from (`apps.registry.app_source_dir` → `<data-home>/app-sources/{name}`). The entry is a whole
+DIRECTORY rather than a leaf, which `_path_in_home_dirs` already supports: it matches the entry
+and its `entry + os.sep` prefix, so every file under every checkout is covered without
+enumerating them.
+
+This is the strongest instance of the write-only class, because the protected file *is* the
+executed code rather than an input to a decision about it — an agent with ordinary file-write
+tools could edit an installed app's source, which then runs with that app's privileges on the
+app's next launch. Nothing downstream neutralizes it: unlike `config.json`, whose inflated values
+the load-time clamp below rewrites, a modified checkout is simply run. Provenance does not catch
+it either — `install_from_registry` records `_resolved_clone_commit` (the tree's real `HEAD`), and
+an agent write dirties the worktree without moving `HEAD`, so a modified tree still reports the
+pinned SHA.
+
+- **File-edit tool gate only**, deliberately: `app-sources` is in `_WRITE_PROTECTED_HOME_PATHS`
+  but NOT in `_WRITE_PROTECTED_BASH_LEAVES`. That matcher blocks on a command *naming* the path,
+  which would deny bash reads too — and unlike the marker and the two Ops Mission Control files,
+  reading app source is a routine, high-volume operation (the dashboard file viewer lists
+  `app-sources` as a browsable root, knowledge indexing walks it, and reading an app's code is how
+  anyone debugs one). Reads stay allowed on both paths; `app-sources` is not in
+  `_SENSITIVE_HOME_DIRS`. This leaves shell writes on the same footing as `config.json`'s, where
+  the tool gate is likewise the enforcement point.
+- The gateway's own installer is unaffected: `_clone_build_app` clones, builds and prunes through
+  direct Python/subprocess calls, which are not agent tool calls and never reach
+  `hooks.on_tool_call`.
+- An installed app's *data* directory (`apps/{name}/data/`) is a different tree and stays
+  writable — apps persist state there through the agent's own tools.
+
 **Load-time resource-limit clamp** (`config/loader.py`) — defends against a config-loader bound bypass: the dashboard config API rejects out-of-range writes, but a direct edit of `config.json` (any process as the same OS user, or a prompt-injected agent with file-write access) bypassed that gate.
 - `KiroCrewConfig.load()` calls `_clamp_security_bounds(data)` on the disk-read path (before caching) so cache hits and the `GET /api/config/kirocrew` serialization both report clamped values.
 - Clamped knobs: `agent.subagent_auto_max` ≤ `SUBAGENT_AUTO_MAX_CEILING` (64), `agent.max_subagents` ≤ 64, `agent.subagent_max_turns` ≤ `SUBAGENT_MAX_TURNS_CEILING` (200), `session.pool_size` ≤ `POOL_SIZE_MAX` (10). Mins match existing runtime floors (0/1); `bool` and non-int values are left untouched for dataclass coercion.

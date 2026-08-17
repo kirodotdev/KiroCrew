@@ -4555,6 +4555,45 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/connections-tool-aliases.json"
     for prefix in _CREW_HOME_PREFIXES
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The app-sources checkout root — the persistent tree every installed app
+    # EXECUTES from (``apps.registry.app_source_dir``). This is a whole DIRECTORY
+    # rather than a leaf, which the shared matcher already supports: it compares a
+    # resolved path against the entry and its ``entry + os.sep`` prefix, so every
+    # file under every checkout is covered without enumerating them.
+    #
+    # It is the strongest instance of the write-protection class, because the
+    # protected file IS the executed code rather than an input to a decision about
+    # it: an agent session with ordinary file-write tools could edit an installed
+    # app's source, and that source then runs with the app's privileges on the
+    # app's next launch. Nothing downstream neutralizes it — unlike ``config.json``,
+    # whose inflated values the loader clamps at load time, a modified checkout is
+    # simply run. Provenance does not catch it either: ``install_from_registry``
+    # records ``_resolved_clone_commit`` (the tree's real ``HEAD``), and an agent
+    # write dirties the worktree without moving ``HEAD``, so a modified tree still
+    # reports the pinned SHA.
+    #
+    # Write-only, NOT ``_SENSITIVE_HOME_DIRS``, and the asymmetry is load-bearing:
+    # app source carries no secret and is legitimately READ all the time — the
+    # dashboard file viewer lists ``app-sources`` as a browsable root
+    # (``apps.builtins.file_explorer.server``), knowledge indexing walks it, and
+    # reading an installed app's code is how anyone debugs one. Classifying it
+    # read+write sensitive would break those.
+    #
+    # Deliberately NOT added to ``_WRITE_PROTECTED_BASH_LEAVES`` below: that
+    # matcher blocks on a command NAMING the path, which denies bash reads too.
+    # That is harmless for the marker and the two Ops Mission Control files, whose
+    # only legitimate readers are Python; it is not harmless here, where reading
+    # app source with ``grep``/``cat`` is routine. Shell writes therefore sit on
+    # the same footing as ``config.json``'s, with the file-edit tool gate as the
+    # enforcement point.
+    #
+    # The gateway's own installer is unaffected: ``_clone_build_app`` clones,
+    # builds and prunes through direct Python/subprocess calls, which are not
+    # agent tool calls and never reach ``hooks.on_tool_call``.
+    f"{prefix}/app-sources"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 # ── Bash-layer protection for write-protected leaves ──
 # Leaf files under the crew home that a bash command must not be able to
