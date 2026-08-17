@@ -2719,6 +2719,9 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         )
     else:
         state._restricted_keys.discard(f"dashboard:{name}")
+        # Durable, so no rollback can retract this frame — a client pruning its
+        # per-slot cards on it can never be pruning a slot that comes back.
+        state.push_slots_update()
     # The app was already told, and compensated if the persist above failed — see
     # the notify block before the pop and the rollback in the except branch.
     # Kill the per-tab session to free resources

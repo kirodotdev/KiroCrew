@@ -14693,3 +14693,199 @@ class TestSessionReload:
 
         assert resp.status == 409
         state.sessions.reset.assert_not_awaited()
+
+
+class TestCloseBroadcastDurability:
+    """A slot-list frame must never omit a slot that is coming back.
+
+    Clients treat a frame omitting a slot as licence to drop that slot's cached
+    per-slot state, including follow-up and folder-suggestion cards that only
+    ever exist in the browser and are never re-sent. So the close may only
+    broadcast once the history save is durable: past that point no rollback can
+    put the slot back, and the omission can never be retracted.
+
+    Every test records the ORDER of the close steps, because asserting only that
+    a broadcast happened passes against any placement and proves nothing.
+    """
+
+    @staticmethod
+    def _instrument(state, slot, monkeypatch, frames=None):
+        """Record close steps in call order; append each frame's slot keys."""
+        from kiro_crew.dashboard import chat_handlers
+
+        calls: list[str] = []
+
+        def _push():
+            calls.append("broadcast")
+            if frames is not None:
+                frames.append(set(state._slots))
+
+        state.push_slots_update = MagicMock(side_effect=_push)
+
+        real_sync = chat_handlers._sync_dashboard_slots
+
+        def _sync(st):
+            calls.append("sync")
+            return real_sync(st)
+
+        monkeypatch.setattr(chat_handlers, "_sync_dashboard_slots", _sync)
+
+        real_unblock = chat_handlers._unblock_pending_waits
+
+        def _unblock(st, sl):
+            calls.append("unblock_pending_waits")
+            return real_unblock(st, sl)
+
+        monkeypatch.setattr(chat_handlers, "_unblock_pending_waits", _unblock)
+
+        async def _save(*args, **kwargs):
+            calls.append("save")
+
+        monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _save)
+
+        state.sessions.remove = AsyncMock(side_effect=lambda *a, **k: calls.append("remove"))
+
+        eager = MagicMock()
+        eager.done = MagicMock(return_value=False)
+        eager.cancel = MagicMock(side_effect=lambda: calls.append("cancel_eager"))
+        slot._eager_spawn_task = eager
+
+        async def _never() -> None:
+            await asyncio.sleep(30)
+
+        task = asyncio.get_running_loop().create_task(_never())
+        real_cancel = task.cancel
+
+        def _task_cancel(*args, **kwargs):
+            calls.append("cancel_task")
+            return real_cancel(*args, **kwargs)
+
+        task.cancel = _task_cancel  # type: ignore[method-assign]
+        # `running` is derived from `task`, so assigning the task is enough to
+        # reach the cancel-and-wait_for branch.
+        slot.task = task
+
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_failed_close_never_emits_a_frame_without_the_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """The regression guard: a rollback must not be preceded by an omission.
+
+        A frame omitting the slot is what makes another client drop this slot's
+        follow-up and folder-suggestion cards. Those are browser-only and the
+        backend re-offers a folder suggestion at most once per slot, so a prune
+        on a close that then rolls back loses them permanently.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_handlers
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hello")
+        slot.drain()
+        frames: list[set] = []
+        calls = self._instrument(state, slot, monkeypatch, frames=frames)
+
+        async def _boom(*args, **kwargs):
+            calls.append("save")
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _boom)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete("/api/chat/slots/s1")
+            assert resp.status == 500
+
+        assert frames, "no frame was broadcast at all, so this proves nothing"
+        missing = [i for i, f in enumerate(frames) if "s1" not in f]
+        assert not missing, (
+            f"frame(s) {missing} omitted a slot that the rollback restores, so a "
+            f"client pruned its cards for it: frames={frames} calls={calls}"
+        )
+        assert state._slots.get("s1") is slot, "slot was not restored"
+
+    @pytest.mark.asyncio
+    async def test_broadcast_precedes_the_session_teardown(self, tmp_path, monkeypatch):
+        """On success, broadcast after the save but before the slow teardown."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hello")
+        slot.drain()
+        calls = self._instrument(state, slot, monkeypatch)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete("/api/chat/slots/s1")
+            assert resp.status == 200
+
+        for step in ("save", "remove", "broadcast"):
+            assert step in calls, f"{step} never ran, so this proves nothing: {calls}"
+        assert calls.index("save") < calls.index("broadcast"), (
+            f"broadcast ran before the save was durable: {calls}"
+        )
+        assert calls.index("broadcast") < calls.index("remove"), (
+            f"broadcast waited out the session teardown: {calls}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_broadcast_beats_a_slow_session_teardown(self, tmp_path, monkeypatch):
+        """A session teardown that never returns must not hold the broadcast."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hello")
+        slot.drain()
+        calls = self._instrument(state, slot, monkeypatch)
+        seen = asyncio.Event()
+        state.push_slots_update = MagicMock(
+            side_effect=lambda: (calls.append("broadcast"), seen.set())
+        )
+
+        async def _hang(*args, **kwargs):
+            calls.append("remove")
+            await asyncio.sleep(30)
+
+        state.sessions.remove = AsyncMock(side_effect=_hang)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            close = asyncio.get_running_loop().create_task(client.delete("/api/chat/slots/s1"))
+            await asyncio.wait_for(seen.wait(), timeout=5.0)
+            assert "save" in calls and calls.index("save") < calls.index("broadcast")
+            assert "s1" not in state._slots
+            close.cancel()
+            try:
+                await close
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_active_slot_set_is_published_only_after_the_teardown(
+        self, tmp_path, monkeypatch
+    ):
+        """_sync_dashboard_slots must stay after the teardown.
+
+        Publishing the shrunken set earlier lets the idle sweep classify this
+        session as orphaned and reap it mid-teardown, and that reap releases a
+        shared subagent runtime which outlives the turn — the turn semaphore, the
+        sweep's only busy guard, is free while subagents run.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hello")
+        slot.drain()
+        calls = self._instrument(state, slot, monkeypatch)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete("/api/chat/slots/s1")
+            assert resp.status == 200
+
+        assert "sync" in calls, f"the trailing sync never ran: {calls}"
+        assert calls.index("save") < calls.index("sync"), (
+            f"active-slot set published before the save was durable: {calls}"
+        )
+        assert calls.index("remove") < calls.index("sync"), (
+            f"active-slot set published before the session teardown: {calls}"
+        )
