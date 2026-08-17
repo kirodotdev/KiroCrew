@@ -27,9 +27,12 @@ export function clampTintCount(n: unknown): number {
  * `last_turn_ts` — the same key the sidebar SORTS by — so the tinted rows are the
  * top rows; ranking by `last_ts` instead would repaint the stripe on every
  * streamed tool call and highlight a session sitting further down the list.
- * Falls back to `last_ts` for a payload without the settled field, and excludes
- * sessions with no parseable timestamp so an empty session never occupies a tint
- * slot.
+ * Falls back to `last_ts` for a payload without the settled field.
+ *
+ * The ladder stops one rung SHORT of `slotActivityTs`, which continues on to
+ * `created`: a session that has never run must not occupy a tint slot, so an
+ * unparseable or absent instant is excluded here rather than resolved to its
+ * creation time.
  */
 export function computeRecentRank(
   slots: { key: string; last_turn_ts?: string; last_ts?: string }[],

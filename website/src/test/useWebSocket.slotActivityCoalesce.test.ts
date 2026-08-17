@@ -374,6 +374,23 @@ describe('useWebSocket slot-activity coalescing', () => {
     expect(lastTurnTs('slot-1')).toBe('2026-08-10T18:00:00Z')
   })
 
+  it('settles the ordering key for a mid-turn steer, like a queued send', () => {
+    // Steering is the other way to type into a busy session; without this the
+    // re-rank waits for the next slots push while a queued send re-ranks at once.
+    seedStore()
+    const { ws } = mount()
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'steer_push',
+        data: { slot: 'slot-1', content: 'actually do X', ts: '2026-08-10T20:00:00Z' },
+      })
+    })
+    runFrames()
+
+    expect(lastTurnTs('slot-1')).toBe('2026-08-10T20:00:00Z')
+  })
+
   it('keeps the newest ts when a settling event arrives before older output', () => {
     // The buffer holds one entry per slot, so an out-of-order pair must not walk
     // the timestamp backwards while still settling the rank.

@@ -1014,6 +1014,7 @@ class _ChatSlot:
         "event",
         "_pending",
         "_queue",
+        "_last_enqueue_ts",
         "_approval_futures",
         "_trust",
         "_trust_scope",
@@ -1151,6 +1152,9 @@ class _ChatSlot:
         self.event = asyncio.Event()
         self._pending: list[dict[str, str]] = []
         self._queue: list[dict[str, str]] = []  # [{"id": uuid, "content": str}, ...]
+        # Newest enqueue instant, read only while ``_queue`` is non-empty — see
+        # ``_note_enqueue``.
+        self._last_enqueue_ts: str = ""
         self._approval_futures: dict[str, asyncio.Future[str]] = {}  # type: ignore[type-arg]
         self._trust: bool = False  # auto-approve tools for this slot
         # SafetyOverride scope key holding an EXPIRING, SEL-audited auto-approve
@@ -1923,7 +1927,23 @@ class _ChatSlot:
         if meta:
             item["meta"] = meta
         self._queue.append(item)
+        self._note_enqueue()
         return qid
+
+    def _note_enqueue(self) -> None:
+        """Record that work was just queued for this slot.
+
+        Held BESIDE the queue rather than on the entry: an entry dict is compared
+        wholesale in a great many places, and widening its shape would make every
+        one of those comparisons depend on a clock.
+
+        Read only while ``_queue`` is non-empty (see ``to_dict``), so the value
+        cannot outlive the queue it describes. Individual removals leave it
+        pointing at the most recent enqueue rather than at the oldest surviving
+        entry, which is the same statement for ranking purposes: work is waiting,
+        and it was asked for at this instant.
+        """
+        self._last_enqueue_ts = datetime.now(timezone.utc).isoformat()
 
     def queue_insert(self, index: int, content: str, kind: str = "", payload: str = "") -> str:
         """Insert a message at a specific queue position. Returns the queue ID.
@@ -1935,6 +1955,7 @@ class _ChatSlot:
         """
         qid = uuid.uuid4().hex[:12]
         self._queue.insert(index, {"id": qid, "content": content, "kind": kind, "payload": payload})
+        self._note_enqueue()
         return qid
 
     def queue_pop(self, index: int = 0) -> dict[str, str]:
@@ -2274,7 +2295,7 @@ class _ChatSlot:
                 break
         pending_approval = any(not f.done() for f in self._approval_futures.values())
         # Ordering instant for the session list: the last time this session
-        # SETTLED -- a prompt arrived, or a turn finished. Deliberately not
+        # SETTLED -- work was asked of it, or a turn finished. Deliberately not
         # ``last_ts``, which is the newest row of ANY role and therefore advances
         # on every streamed tool call: a list ranked by that reshuffles
         # continuously whenever several sessions are working, so rows swap under
@@ -2282,12 +2303,17 @@ class _ChatSlot:
         # started it, and the single re-rank lands when the turn ends -- at which
         # point the newest row IS the completion.
         #
-        # The prompt scan is running-only, so an idle slot (the common case in a
-        # long sidebar) costs nothing, and a running one is bounded by the rows
-        # its current turn has emitted.
+        # A send that arrived behind a running turn is QUEUED, not appended, so
+        # the message scan alone would not see it and this snapshot would rank the
+        # session by the older prompt -- overwriting the client's own bump and
+        # dropping the row the user just typed into. Ranking queued entries here
+        # makes this the single owner of the key instead of racing the client.
+        #
+        # Both scans are running-only, so an idle slot (the common case in a long
+        # sidebar) costs nothing, and a running one is bounded by its own turn.
         last_turn_ts = last_ts
         if self.running:
-            last_turn_ts = next(
+            prompt_ts = next(
                 (
                     m.get("ts") or ""
                     for m in reversed(self.messages)
@@ -2295,6 +2321,15 @@ class _ChatSlot:
                 ),
                 "",
             )
+            queued_ts = self._last_enqueue_ts if self._queue else ""
+            last_turn_ts = prompt_ts
+            if queued_ts:
+                # Parse-based, not string ``max``: rows carry both aware and naive
+                # isoformat, and comparing those as strings can pick the earlier
+                # one. Consulted only while something is queued, so a prompt row
+                # whose own ``ts`` is unparseable still ranks the session instead
+                # of being discarded by the combiner.
+                last_turn_ts = latest_transcript_ts(prompt_ts, queued_ts) or queued_ts
         # waiting_for_input: turn ended (not running), no options, no approval,
         # and the last conversational message is from the assistant (not user).
         waiting_for_input = (

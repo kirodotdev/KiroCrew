@@ -1293,7 +1293,13 @@ function ChatSidebar({
     // date-sort comparator (`slotActivityTs`).
     const now = Date.now()
     return slots.map(s => {
-      const recent = isWithinRecentWindow(slotActivityTs(s), now, recentWindowMs)
+      // A running turn is recent BY DEFINITION, whatever its settled instant
+      // says. The ordering key deliberately stops advancing mid-turn, so a turn
+      // outliving the window — routine for unattended multi-step work — would
+      // otherwise age out of the Recent list while it is the busiest session on
+      // screen. `workflowActive` / `looping` below extend "running" the same way,
+      // hence the OR against the computed flag rather than `s.running`.
+      const recentByTs = isWithinRecentWindow(slotActivityTs(s), now, recentWindowMs)
       // A slot with a live dynamic-workflow run counts as running so the
       // "In progress" filter (and its count) surfaces it, even though the
       // parent turn has ended while the run executes in the background.
@@ -1304,7 +1310,8 @@ function ChatSidebar({
       // writes through `safeKey`, so a bare index read could resolve a
       // `__proto__`-like key to a truthy `Object.prototype`.
       const looping = Object.prototype.hasOwnProperty.call(goalLoops ?? {}, s.key)
-      return { ...s, running: s.running || !!workflowActive[s.key] || looping, midTurn: s.running, unread: unreadSet.has(s.key), recent }
+      const running = s.running || !!workflowActive[s.key] || looping
+      return { ...s, running, midTurn: s.running, unread: unreadSet.has(s.key), recent: running || recentByTs }
     })
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.

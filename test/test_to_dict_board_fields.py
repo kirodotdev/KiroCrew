@@ -154,6 +154,43 @@ def test_last_turn_ts_empty_when_running_with_no_prompt_row():
     assert d["last_turn_ts"] == ""
 
 
+def test_last_turn_ts_counts_a_send_queued_behind_a_running_turn():
+    # A send that lands mid-turn is QUEUED, not appended, so a message-only scan
+    # would rank the session by the older prompt — and this snapshot is
+    # authoritative, so it would drop a row the user just typed into back down
+    # the list even after the client bumped it.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "2026-08-17T01:00:00+00:00"},
+        {"role": "tool_call", "content": "grep ...", "ts": "2026-08-17T01:00:05+00:00"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    s.queue_append("and also this")
+    d = s.to_dict()
+    assert d["last_turn_ts"] > "2026-08-17T01:00:00+00:00"
+    assert d["last_turn_ts"] != d["last_ts"]
+
+
+def test_queue_entries_keep_their_exact_shape():
+    # The enqueue instant lives beside the queue, not on the entry: entry dicts
+    # are compared wholesale across the suite, so widening them would make those
+    # comparisons depend on a clock.
+    s = _slot()
+    qid = s.queue_append("later")
+    assert s._queue == [{"id": qid, "content": "later", "kind": ""}]
+
+
+def test_last_turn_ts_ignores_the_queue_once_idle():
+    # Queue drains only while a turn runs; an idle slot's newest row is the
+    # completion, and a leftover queued entry must not outrank it.
+    s = _slot(
+        {"role": "user", "content": "do it", "ts": "2026-08-17T01:00:00+00:00"},
+        {"role": "assistant", "content": "done", "ts": "2026-08-17T01:00:09+00:00"},
+    )
+    s.queue_append("held")
+    d = s.to_dict()
+    assert d["last_turn_ts"] == "2026-08-17T01:00:09+00:00"
+
+
 def test_last_turn_ts_empty_for_empty_slot():
     d = _slot().to_dict()
     assert d["last_turn_ts"] == ""

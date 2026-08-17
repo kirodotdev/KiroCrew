@@ -948,6 +948,17 @@ export function useWebSocket() {
               slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
               message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true }, ts: (data as { ts?: string }).ts },
             }))
+            // Steering is the other way to type into a busy session, so it
+            // settles the rank exactly like a queued send. The server appends a
+            // real `user` row for it, so the authoritative snapshot already
+            // agrees — this only avoids waiting for the next slots push.
+            if ((data as { slot?: string }).slot) {
+              bufferSlotActivity(
+                (data as { slot: string }).slot,
+                (data as { ts?: string }).ts || new Date().toISOString(),
+                true,
+              )
+            }
             break
           case 'queue_cancel':
             dispatch(cancelQueuedMessage(data))

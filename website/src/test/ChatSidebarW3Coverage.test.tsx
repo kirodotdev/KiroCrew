@@ -148,6 +148,7 @@ interface TestSlot {
   messages?: number
   folder_id?: string
   last_ts?: string
+  last_turn_ts?: string
 }
 
 const ALPHA: ChatFolder = { id: 'f1', name: 'Alpha', order: 0 }
@@ -473,6 +474,22 @@ describe('ChatSidebar — sort and filter menu', () => {
     await waitFor(() => expect(localStorage.getItem('mc-flat-hidden-folders')).toBe('[]'))
     // With nothing hidden the reset row retires itself.
     expect(screen.queryByTestId('folder-filter-show-all')).toBeNull()
+  })
+
+  it('keeps a still-running session in the Recent filter however old its settled instant is', async () => {
+    // The ordering key stops advancing mid-turn by design, so a turn outliving
+    // the recency window would age out of "Recent" while it is the busiest
+    // session on screen. Running has to satisfy the filter on its own.
+    const ancient = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+    localStorage.setItem('mc-session-recent-only', '1')
+    renderSidebar({
+      slots: [
+        { key: 'k-run', title: 'still working', running: true, messages: 40, last_turn_ts: ancient },
+        { key: 'k-idle', title: 'long finished', running: false, messages: 40, last_turn_ts: ancient },
+      ],
+    })
+    expect(await screen.findByText('still working')).toBeTruthy()
+    expect(screen.queryByText('long finished')).toBeNull()
   })
 
   it('toggles the Recent filter from its submenu row, by pointer and by keyboard', async () => {
