@@ -2115,6 +2115,8 @@ class TestWin32StructsAreModuleScoped:
         "proc_rss_bytes",
         "proc_rss_bytes_for_pid",
         "system_memory",
+        "apply_job_limits",
+        "resume_process_main_thread",
     )
 
     def test_the_shared_layouts_are_defined_once_at_module_scope(self) -> None:
@@ -2126,6 +2128,10 @@ class TestWin32StructsAreModuleScoped:
             "_MemoryStatusEx",
             "_SidAndAttributes",
             "_TokenUser",
+            "_IoCounters",
+            "_JobObjectBasicLimitInformation",
+            "_JobObjectExtendedLimitInformation",
+            "_ThreadEntry32",
         ):
             assert issubclass(getattr(pc, name), ctypes.Structure), name
 

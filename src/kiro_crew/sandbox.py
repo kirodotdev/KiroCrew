@@ -3675,6 +3675,19 @@ def _default_max_memory_mb() -> int:
             return mb
     except (ValueError, OSError, AttributeError):
         pass
+    # Windows has no ``os.sysconf``, so the probe above raises AttributeError and
+    # would leave a FLAT cap that ignores the machine entirely. That is not a
+    # cosmetic gap now that ``apply_windows_resource_ceiling`` consumes this
+    # value: on an 8 GB host the fallback EQUALS physical RAM and on a smaller
+    # one it exceeds it, so the Job object's memory limit could never engage
+    # before the host was exhausted — the ceiling would exist and enforce
+    # nothing. Ask the kernel instead. ``system_memory()`` returns None off
+    # Windows, so POSIX still reaches the fallback below unchanged.
+    mem = platform_compat.system_memory()
+    if mem is not None:
+        mb = int(mem[0] * _CGROUP_MEMORY_FRACTION) // (1024 * 1024)
+        if mb > 0:
+            return mb
     return _CGROUP_FALLBACK_MAX_MEMORY_MB
 
 
@@ -4049,6 +4062,42 @@ def _reconcile_slice_memory_high_off_thread() -> None:
             "host — per-scope MemoryMax still applies.",
             exc,
         )
+
+
+def apply_windows_resource_ceiling(pid: int) -> bool:
+    """Windows counterpart to :func:`cgroup_scope_argv`, applied AFTER the spawn.
+
+    ``cgroup_scope_argv`` bounds an agent subprocess and all its descendants by
+    prepending ``systemd-run --user --scope`` with ``TasksMax`` / ``MemoryMax``.
+    That has no Windows equivalent expressible as an argv prefix, so there it
+    returns argv unchanged and logs a one-time loud SECURITY warning — the
+    fork-bomb and memory-DoS ceilings were simply absent on that platform.
+
+    A Job object is the native mechanism (limits cover every process in the job,
+    and a member's descendants join automatically), but it must be applied to a
+    live pid rather than baked into argv. Callers therefore invoke this right
+    after the spawn returns, in ADDITION to the ``cgroup_scope_argv`` call they
+    already make (a no-op on Windows), and while the child is still suspended —
+    see :func:`platform_compat.apply_job_limits` for why that ordering is what
+    makes the ceiling airtight.
+
+    Reads the SAME ``resource_limits`` config as the cgroup path, so one operator
+    setting governs both platforms.
+
+    Returns ``True`` when a ceiling was installed; ``False`` on non-Windows
+    (nothing to do — the cgroup wrapper owns it) or on any failure, which
+    :func:`platform_compat.apply_job_limits` has already logged as a SECURITY
+    warning. Never raises: a missing ceiling must not fail the spawn, matching
+    how an unavailable cgroup scope is handled.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    max_procs, max_mem_mb, _cpu_weight, _max_cpu_percent = _cgroup_limits_from_config()
+    return platform_compat.apply_job_limits(
+        pid,
+        max_procs=max_procs,
+        max_memory_bytes=max_mem_mb * 1024 * 1024,
+    )
 
 
 def cgroup_scope_argv(argv: list[str]) -> list[str]:

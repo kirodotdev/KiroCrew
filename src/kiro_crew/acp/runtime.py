@@ -14,6 +14,7 @@ exceptions) keeps working for existing callers and tests.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ from kiro_crew.acp.client import (
     _get_start_time,
     _KiroExecutableTrustError,
     _resolve_kiro_bin_for_spawn,
+    finish_suspended_spawn,
 )
 from kiro_crew.acp.kas_agents import (
     KasAgentTranslationError,
@@ -972,11 +974,25 @@ class AcpRuntime:
             creationflags=(
                 platform_compat.CREATE_NEW_PROCESS_GROUP
                 | platform_compat._SUBPROCESS_NO_WINDOW
+                | platform_compat.CREATE_SUSPENDED
             ),
             env=env,
             profile=RLIMIT_PROFILE_SESSION_HOST,
         )
         self._pid = self._process.pid
+        # Windows resource ceiling, applied while the child is still SUSPENDED,
+        # then resumed. No-op on POSIX (CREATE_SUSPENDED is 0 there). This shared
+        # runtime multiplexes many session handles, so an unbounded fork/memory
+        # blowup here takes down every session on it, not just one. Offloaded for
+        # the same reason as in `AcpClient._spawn`: the Windows path reads config
+        # and walks the process and thread tables, and this runtime's event loop
+        # is serving every other session while it spawns.
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(
+                finish_suspended_spawn, self._process, self._pid, label=f"{KIRO_CLI_BIN} acp"
+            ),
+        )
         self._start_time = _get_start_time(self._pid)
         self._spawn_monotonic = time.monotonic()
         self._last_activity = time.monotonic()

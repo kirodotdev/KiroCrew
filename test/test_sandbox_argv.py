@@ -1340,13 +1340,23 @@ class TestCgroupScopeArgv:
         assert 10_000 < mb < 11_000  # ~10.6 GB, expected range
 
     def test_default_max_memory_falls_back_when_ram_unknown(self):
-        """If sysconf can't report RAM, fall back to the flat MB constant."""
+        """If sysconf can't report RAM, fall back to the flat MB constant.
+
+        ``system_memory`` is stubbed out alongside ``os.sysconf`` because it is
+        the second probe: on Windows ``GlobalMemoryStatusEx`` answers, so patching
+        only ``sysconf`` would no longer make RAM unknown and this would assert
+        against a derived value instead of the fallback.
+        """
         import kiro_crew.sandbox as sb
 
-        with patch("os.sysconf", side_effect=OSError("no sysconf")):
+        with patch("os.sysconf", side_effect=OSError("no sysconf")), patch.object(
+            sb.platform_compat, "system_memory", return_value=None
+        ):
             assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
         # Non-positive product also falls back (never returns 0 -> unlimited).
-        with patch("os.sysconf", return_value=0):
+        with patch("os.sysconf", return_value=0), patch.object(
+            sb.platform_compat, "system_memory", return_value=None
+        ):
             assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
 
     @pytest.mark.skipif(sys.platform != "linux", reason="cgroup v2 scope enforcement is Linux-only")
