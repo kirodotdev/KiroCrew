@@ -20,11 +20,13 @@ import {
 } from './constants'
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
+import { CodeFenceBlock } from './CodeFenceBlock'
 import { MermaidBlock } from './MermaidBlock'
 import { NoteImage } from './NoteImage'
 import {
   FM_RE,
   LIST_MARKER_RE,
+  fenceLang,
   indentPx,
   parseMermaidBlock,
   parseTable,
@@ -361,19 +363,7 @@ export function Preview({
           blk(
             codeStart,
             idx,
-            <pre
-              style={{
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                padding: '10px',
-                fontSize: '12px',
-                overflowX: 'auto',
-                fontFamily: FONT_MONO,
-              }}
-            >
-              {codeBuf.join('\n')}
-            </pre>,
+            <CodeFenceBlock code={codeBuf.join('\n')} lang={fenceLang(lines[codeStart])} />,
             { fontSize: '12px', fontFamily: FONT_MONO },
             { split: false },
           ),

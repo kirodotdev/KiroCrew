@@ -421,3 +421,16 @@ export function parseMermaidBlock(
   }
   return null
 }
+
+/**
+ * Language named on a fence's opening line (` ```python ` -> `python`), or
+ * undefined for a bare fence. Only the first whitespace-delimited token after
+ * the backticks counts, matching how highlight.js and every other markdown
+ * renderer read a fence info string; anything after it (e.g. a title) is not
+ * this app's concern yet. Undefined — not '' — is the signal a caller checks
+ * to keep an unlabelled fence out of highlightAuto().
+ */
+export function fenceLang(openLine: string): string | undefined {
+  const info = openLine.slice(3).trim().split(/\s+/)[0]
+  return info || undefined
+}
