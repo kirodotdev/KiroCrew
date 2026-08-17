@@ -12,8 +12,10 @@
  *      not shift with the app language.
  *  (5) A running session ranks by `last_turn_ts` (its prompt), so mid-turn rows
  *      moving `last_ts` cannot reshuffle the list.
- *  (6) `fmtRelativeTime` shares one set of day boundaries across a whole list,
- *      and rebuilds them when the clock leaves that day in either direction.
+ *  (6) `fmtRelativeTime` classifies a row by the difference in LOCAL CALENDAR
+ *      DAYS between it and now, holding no state between calls, so the label
+ *      follows the active timezone immediately and cannot be served from a day
+ *      that has stopped being true.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { compareBySort, comparePinnedThenSort, fmtRelativeTime, lastActivityEpoch, slotActivityTs } from '../pages/chat/sessionOrder'
@@ -165,11 +167,11 @@ describe('compareBySort created-*', () => {
 /**
  * Count `new Date(...)` constructions performed inside `fn`.
  *
- * The day-boundary cache is not visible in the string `fmtRelativeTime` returns,
- * so the allocation count is the only direct evidence it is doing anything. The
- * subclass is restored in `finally` so a failed assertion cannot leak it into a
- * later test. `Date.now()` is a static and is inherited, so reading the clock is
- * deliberately not counted — only allocation is.
+ * Per-call cost is not visible in the string `fmtRelativeTime` returns, so the
+ * allocation count is the direct evidence of it. The subclass is restored in
+ * `finally` so a failed assertion cannot leak it into a later test. `Date.now()`
+ * and `Date.UTC()` are statics and are inherited, so reading the clock and
+ * projecting a calendar day are deliberately not counted — only allocation is.
  */
 function countDateConstructions(fn: () => void): number {
   const Real = globalThis.Date
@@ -190,27 +192,45 @@ function countDateConstructions(fn: () => void): number {
   return made
 }
 
+/** Run `fn` with the process timezone set to `tz`, restoring it afterwards.
+ *  A real zone, not a stubbed offset: only a real zone moves what the `Date`
+ *  constructor itself produces, which is what the label is derived from. */
+function inZone<T>(tz: string, fn: () => T): T {
+  const prev = process.env.TZ
+  process.env.TZ = tz
+  try {
+    return fn()
+  } finally {
+    process.env.TZ = prev
+  }
+}
+
+/** The catalog's rendering of the yesterday prefix, read out of a row that is
+ *  unambiguously yesterday in `tz`, so assertions do not hardcode a locale. */
+const yesterdayPrefixIn = (tz: string, ts: string) =>
+  inZone(tz, () => fmtRelativeTime(ts)).split(' ')[0]
+
 describe('fmtRelativeTime day boundaries', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('builds the day boundaries once for a whole list, not once per row', () => {
+  it('costs a flat two Date allocations per row, with no warm-up pass', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
     const rows = Array.from({ length: 20 }, (_, i) => `2026-08-17T0${i % 9}:30:00Z`)
 
-    const cold = countDateConstructions(() => {
+    const first = countDateConstructions(() => {
       for (const ts of rows) fmtRelativeTime(ts)
     })
-    const warm = countDateConstructions(() => {
+    const second = countDateConstructions(() => {
       for (const ts of rows) fmtRelativeTime(ts)
     })
 
-    // A rebuild costs 5 (the clock reading plus four boundaries), so a cold list
-    // pays it once and a warm one not at all. Per-row it would be 5 every row.
-    expect(cold).toBeLessThanOrEqual(rows.length + 5)
-    expect(warm).toEqual(rows.length)
+    // One Date for the row, one for the clock; `Date.UTC` allocates nothing. Flat
+    // cost means no retained instant exists that a later call could find stale.
+    expect(first).toEqual(rows.length * 2)
+    expect(second).toEqual(first)
   })
 
   it('reclassifies a timestamp once the local day rolls over', () => {
@@ -228,7 +248,7 @@ describe('fmtRelativeTime day boundaries', () => {
     expect(asYesterday).toContain(asToday)
   })
 
-  it('rebuilds when the clock moves backwards, so a future day is not reused', () => {
+  it('does not reuse a future day when the clock moves backwards', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
     const asToday = fmtRelativeTime('2026-08-17T10:00:00Z')
@@ -237,9 +257,49 @@ describe('fmtRelativeTime day boundaries', () => {
     fmtRelativeTime('2026-08-20T10:00:00Z')
 
     vi.setSystemTime(new Date('2026-08-17T12:00:00Z'))
-    // Held at the Aug 20 boundaries, Aug 17 would fall in the within-6-days
-    // branch and gain a weekday prefix.
+    // Held at the Aug 20 day, Aug 17 would fall in the within-6-days branch and
+    // gain a weekday prefix.
     expect(fmtRelativeTime('2026-08-17T10:00:00Z')).toEqual(asToday)
+  })
+
+  it('classifies by the local day of the active zone, an hour apart all year', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-06T12:00:00Z'))
+    // 18:30Z is 23:30 on Sep 5 in Almaty (UTC+5) but 00:30 on Sep 6 in Bishkek
+    // (UTC+6), so the same instant is yesterday in one zone and today in the other.
+    const ts = '2026-09-05T18:30:00Z'
+    const yesterday = yesterdayPrefixIn('Asia/Almaty', '2026-09-05T06:00:00Z')
+
+    expect(inZone('Asia/Almaty', () => fmtRelativeTime(ts)).startsWith(yesterday)).toBe(true)
+    expect(inZone('Asia/Bishkek', () => fmtRelativeTime(ts)).startsWith(yesterday)).toBe(false)
+  })
+
+  it('follows a zone whose midnight offset differs from its offset at noon', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-02-15T12:00:00Z'))
+    // Casablanca is +00:00 by noon on this date but +01:00 at local midnight, so
+    // 23:30Z is Feb 14 in UTC and Feb 15 there while both agree on the time of day.
+    const ts = '2026-02-14T23:30:00Z'
+    const yesterday = yesterdayPrefixIn('UTC', '2026-02-14T06:00:00Z')
+
+    expect(inZone('UTC', () => fmtRelativeTime(ts)).startsWith(yesterday)).toBe(true)
+    expect(inZone('Africa/Casablanca', () => fmtRelativeTime(ts)).startsWith(yesterday)).toBe(false)
+  })
+
+  it('follows a zone that agrees on today but not on when yesterday began', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-06T12:00:00Z'))
+    // The zones agree at this instant and at today's midnight, diverging only
+    // further back: 05:30Z is Sep 5 in Winnipeg but still Sep 4 on Easter.
+    const ts = '2026-09-05T05:30:00Z'
+    const yesterday = yesterdayPrefixIn('America/Winnipeg', '2026-09-05T12:00:00Z')
+
+    const winnipeg = inZone('America/Winnipeg', () => fmtRelativeTime(ts))
+    const easter = inZone('Pacific/Easter', () => fmtRelativeTime(ts))
+
+    expect(winnipeg.startsWith(yesterday)).toBe(true)
+    expect(easter.startsWith(yesterday)).toBe(false)
+    expect(easter).not.toEqual(winnipeg)
   })
 
   it('still returns empty for a missing or unparseable timestamp', () => {
