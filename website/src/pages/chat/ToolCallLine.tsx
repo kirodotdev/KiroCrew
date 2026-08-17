@@ -639,7 +639,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         ? (e) => { if (e.target === e.currentTarget) setRevealPlayed(true) }
         : undefined}
     >
-      <div className="inline-flex items-start gap-1 group/toolpill max-w-full min-w-0">
+      <div className="inline-flex items-start gap-1 group/toolpill max-w-full min-w-0 -ml-2">
       {/* No `font-mono`: the pill's label is prose with the odd argument spliced
           in ("Searching for 'YOLO' in src"), not code, and Tailwind's
           `font-mono` pins `var(--mono)` — which the Font Family setting never
@@ -748,7 +748,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? i18nT('pages.chat.toolCallLine.blocked_by_security_policy') : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? i18nT('pages.chat.toolCallLine.blocked_by_security_policy') : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>
