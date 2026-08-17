@@ -196,14 +196,32 @@ describe('narrow-first layout baseline', () => {
     // `mx-auto w-full px-5` both walked straight through it. Every one of those was a new
     // SPELLING of the same element, so stop matching spellings: split each class list into
     // tokens and ask what it IS -- a self-centring full-width wrapper -- then require its
-    // gutter to be the page's. Order, interleaving and future siblings are all covered,
-    // which is the only version of this test that stops needing another round.
+    // gutter to be the page's. Order, interleaving and future siblings are all covered.
+    //
+    // But `mx-auto w-full` on its own is a generic centring idiom, not proof of chat-column
+    // membership: a `max-w-*` modal body at `px-6` centres itself the same way and would
+    // fail an assertion about "the chat content column" for the wrong reason -- and the
+    // tempting dodge is to split the tokens, the exact evasion this guard was rewritten to
+    // close. So key the scan on `--mc-content-width`, the variable that actually SIZES the
+    // column (the wrappers all carry `style={{ maxWidth: 'var(--mc-content-width, ...)' }}`
+    // right next to the class list): a wrapper counts only if that variable appears within
+    // NEAR chars of its className. Measured over the current tree this covers 18 of the 19
+    // px-carrying wrappers; the one it misses is the composer's `input-area` in
+    // ChatInput.tsx, which the transcript==composer test above already pins by name, so
+    // narrowing loses no coverage. It also stops three wrappers that carry `mx-auto w-full`
+    // with no content-width var at all (WelcomeView, auto-improvement/AutoImprovementPage,
+    // one ChatPage node) from failing for the wrong reason if they ever gain a non-standard
+    // `px-*` -- they are centred, but they are not the chat content column.
+    const CONTENT_WIDTH_VAR = '--mc-content-width'
+    const NEAR = 200
     const offenders: string[] = []
     for await (const file of walkSource(SRC)) {
       const src = await readFile(file, 'utf8')
       for (const m of src.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
         const tokens = (m[1] ?? m[2] ?? '').split(/\s+/)
         if (!tokens.includes('mx-auto') || !tokens.includes('w-full')) continue
+        const near = src.slice(Math.max(0, m.index! - NEAR), m.index! + m[0].length + NEAR)
+        if (!near.includes(CONTENT_WIDTH_VAR)) continue
         const px = tokens.find((t) => /^px-\d+(?:\.\d+)?$/.test(t))
         if (px && px !== `px-${gutter![1]}`) {
           offenders.push(`${file.slice(SRC.length + 1)}: ${px}`)
@@ -212,8 +230,9 @@ describe('narrow-first layout baseline', () => {
     }
     expect(
       offenders,
-      `these wrappers centre themselves in the chat content column but do not carry its `
-        + `gutter (px-${gutter![1]}), so they render a second left edge inside one column`,
+      `these wrappers centre themselves in the chat content column (sized by `
+        + `${CONTENT_WIDTH_VAR}) but do not carry its gutter (px-${gutter![1]}), so they `
+        + `render a second left edge inside one column`,
     ).toEqual([])
   })
 

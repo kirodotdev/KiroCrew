@@ -334,7 +334,7 @@ export default function ProjectsPage() {
   )
 
   const composePanel = (
-    <div className="px-5 py-4">
+    <div className="px-4 md:px-6 py-4">
       <div className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-1 mb-4">
         <button onClick={() => setMode('compose')} disabled={anyPlanning} aria-pressed={mode === 'compose'} className={modeRowClass(mode === 'compose')}><ModeDot on={mode === 'compose'} /><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
         <button onClick={() => setMode('spec')} disabled={anyPlanning} aria-pressed={mode === 'spec'} className={modeRowClass(mode === 'spec')}><ModeDot on={mode === 'spec'} /><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
