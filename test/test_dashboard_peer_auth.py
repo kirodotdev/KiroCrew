@@ -720,3 +720,44 @@ def test_mcp_core_post_falls_back_to_tcp_when_socket_absent(
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1")
     out = mcp_core._get("/api/anything")
     assert "error" in out
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_non_loopback_mixed_denial_names_which_credential_was_wrong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mixed-path arm must name the sides too, like the loopback arm does.
+
+    The loopback arm records both credential fingerprints, so an ABSENT
+    credential (a caller that could read no credential file at all) is visibly
+    different from a caller holding the wrong one. This arm was left on a bare
+    string, so a denial here still said only "wrong secret" -- the exact
+    ambiguity the fingerprint exists to remove, in the one place a remote
+    mixed-path caller lands.
+    """
+    calls = _wire_peer(monkeypatch)
+    mw = ta.token_auth_middleware(
+        internal_paths=INTERNAL,
+        internal_secret=SECRET,
+        mixed_internal_paths=INTERNAL,
+        local_only=True,
+    )
+
+    # Non-loopback remote on a mixed internal path, header present but EMPTY.
+    req, _ = _make_request(headers={"X-Internal-Secret": ""}, remote="10.1.2.3")
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+
+    denials = [
+        c
+        for c in calls
+        if c.get("operation") == "internal_auth" and c.get("outcome") == "denied"
+    ]
+    assert len(denials) == 1
+    err = denials[0]["error"]
+    assert "non-loopback mixed" in err, err
+    assert "received=absent" in err, (
+        "the mixed arm still cannot say an absent credential from a wrong one"
+    )
+    assert f"expected={ta._credential_fingerprint(SECRET)}" in err, err

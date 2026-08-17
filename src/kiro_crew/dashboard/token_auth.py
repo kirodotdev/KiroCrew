@@ -1806,6 +1806,17 @@ def token_auth_middleware(
                     if not internal_secret or not hmac.compare_digest(
                         internal_secret, request.headers["X-Internal-Secret"]
                     ):
+                        # Same fingerprint detail and code as the loopback arm
+                        # above. This arm was left on the bare string, so a
+                        # denial here still could not say which side was wrong --
+                        # in particular an ABSENT credential (a caller that could
+                        # read no credential file at all) read identically to a
+                        # caller holding the wrong one, which is the exact
+                        # confusion the fingerprint exists to remove.
+                        _detail = (
+                            "wrong secret (non-loopback mixed, "
+                            f"{_credential_mismatch_detail(internal_secret, request.headers['X-Internal-Secret'])})"
+                        )
                         _sel = _sel_fn()
                         _sel.log_api_access(
                             caller=_caller,
@@ -1813,12 +1824,10 @@ def token_auth_middleware(
                             outcome="denied",
                             source="token_auth",
                             resources=path,
-                            error="wrong secret (non-loopback mixed)",
+                            error=_detail,
                         )
-                        _log_auth(
-                            request, "internal", "denied", "wrong secret (non-loopback mixed)"
-                        )
-                        return _deny(request, "Forbidden")
+                        _log_auth(request, "internal", "denied", _detail)
+                        return _deny(request, "Forbidden", "internal_auth_mismatch")
                 _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
                 if not _valid:
                     _sel = _sel_fn()
