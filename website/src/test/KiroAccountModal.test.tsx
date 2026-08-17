@@ -138,6 +138,25 @@ describe('KiroAccountModal', () => {
     expect(screen.getByText('Credit usage unavailable')).toBeInTheDocument()
   })
 
+  it('states the failure instead of spinning when the fetch failed cold', async () => {
+    // 'failed' and null are both "no reading", but only null still has a fetch
+    // outstanding. Spinning on 'failed' would repeat, one level down, the defect
+    // the top-bar pill was fixed for: the drill-in must not claim it is checking.
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="failed" />)
+
+    expect(await screen.findByText('Account details unavailable')).toBeInTheDocument()
+    expect(screen.getByText('Credit usage unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
+  })
+
+  it('keeps spinning only while the reading is genuinely still in flight', async () => {
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={null} />)
+
+    expect(await screen.findByText('Checking account…')).toBeInTheDocument()
+    expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
+  })
+
   it('calls onClose from the accessible close control', async () => {
     const onClose = vi.fn()
     renderWithProviders(
