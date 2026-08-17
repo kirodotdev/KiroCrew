@@ -114,27 +114,34 @@ describe('the shape-matched cards', () => {
     expect(el!.props.onFolderOpen).toBe(OPTS.onFolderOpen)
     expect(el!.props.onOpenPanel).toBe(OPTS.onOpenSubagentPanel)
     expect(el!.props.disclosureKey).toBe('zzq-key')
-    // This card lays out its own row, so it is NOT wrapped.
-    expect(row).not.toHaveBeenCalled()
+    // The host owns row geometry, so this card IS wrapped. It used to be left
+    // bare because the card applied `px-5` + the --mc-content-width clamp at its
+    // own root; that double-padded it in ChatPage and, here, left it flush at 0px
+    // in ChatPane and ChatEmbed, where nothing else supplies a gutter.
+    // `true` is the tight flag: py-0.5, the density the card carried itself.
+    expect(row).toHaveBeenCalledTimes(1)
+    expect(row.mock.calls[0][1]).toBe(true)
   })
 })
 
 describe('the two launch cards', () => {
-  it('draws a workflow launch with the extracted run id, unwrapped', () => {
+  it('draws a workflow launch with the extracted run id, wrapped by the host', () => {
     const { el, id, row } = drawn(workflowLaunch)
     expect(id).toBe('workflow_run_tool')
     expect(el!.type).toBe(WorkflowRunCard)
     expect(el!.props).toMatchObject({ runId: 'wf_abc123', slot: 'zzq-slot' })
-    expect(row).not.toHaveBeenCalled()
+    expect(row).toHaveBeenCalledTimes(1)
+    expect(row.mock.calls[0][1]).toBe(true)
   })
 
-  it('draws a sub-agent launch with the parsed ids, unwrapped', () => {
+  it('draws a sub-agent launch with the parsed ids, wrapped by the host', () => {
     const { el, id, row } = drawn(subagentLaunch)
     expect(id).toBe('subagent_run_tool')
     expect(el!.type).toBe(SubagentRunCard)
     expect(el!.props.slot).toBe('zzq-slot')
     expect(el!.props.launch.ids).toEqual(['1a2b3c4d', '5e6f7a8b'])
-    expect(row).not.toHaveBeenCalled()
+    expect(row).toHaveBeenCalledTimes(1)
+    expect(row.mock.calls[0][1]).toBe(true)
   })
 
   // The match guard makes these unreachable through resolution; they exist so a
@@ -167,7 +174,7 @@ describe('the refined role rows', () => {
     expect(entryById('recovery_inject').render(msg('inject', { content: 'zzq ordinary' }), ctx)).toBeNull()
   })
 
-  it('draws a workflow completion through its card, unwrapped', () => {
+  it('draws a workflow completion through its card, wrapped by the host', () => {
     const m = msg('assistant', {
       content: '[Workflow completion event]\nWorkflow `demo` (wf_abc123) → **finished**\nResult: ok\n',
     })
@@ -176,7 +183,8 @@ describe('the refined role rows', () => {
     expect(el!.type).toBe(WorkflowCompletionCard)
     expect(el!.props.onFileOpen).toBe(OPTS.onFileOpen)
     expect(el!.props.onFolderOpen).toBe(OPTS.onFolderOpen)
-    expect(row).not.toHaveBeenCalled()
+    expect(row).toHaveBeenCalledTimes(1)
+    expect(row.mock.calls[0][1]).toBe(true)
   })
 })
 

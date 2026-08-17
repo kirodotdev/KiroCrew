@@ -86,46 +86,49 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
     dispatch(openActivityToTab('workflows'))
   }
 
+  // Row geometry -- the px-5 gutter and the --mc-content-width clamp -- belongs to
+  // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
+  // result, and the shared registries wrap this card through ctx.row. Re-applying
+  // it here nested one clamp inside another and inset the card by a second full
+  // gutter, so it sat 20px right of every sibling row and 40px narrower.
   return (
-    <div className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <button
-        type="button"
-        onClick={open}
-        title={i18nT('pages.chat.workflowRunCard.open_in_the_workflows_panel')}
-        className="pi-morph group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
-      >
-        <span className="shrink-0 mt-0.5">
-          {status === 'running' && <Loader2 size={15} className="text-accent animate-spin" />}
-          {status === 'finished' && <CheckCircle2 size={15} className="text-green-500" />}
-          {(status === 'failed' || status === 'cancelled') && <AlertCircle size={15} className="text-danger" />}
-          {!status && <Workflow size={15} className="text-accent/70" />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <Workflow size={12} className="text-accent/70 shrink-0" />
-            <span className="truncate text-[13px] font-medium text-text-strong">{name}</span>
-            {status && (
-              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent">
-                {status === 'running' && phase ? phase : status}
-              </span>
-            )}
-          </div>
-          {status === 'running' && lastLog && (
-            <div className="text-[12px] text-muted italic truncate mt-0.5">{lastLog}</div>
+    <button
+      type="button"
+      onClick={open}
+      title={i18nT('pages.chat.workflowRunCard.open_in_the_workflows_panel')}
+      className="pi-morph group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
+    >
+      <span className="shrink-0 mt-0.5">
+        {status === 'running' && <Loader2 size={15} className="text-accent animate-spin" />}
+        {status === 'finished' && <CheckCircle2 size={15} className="text-green-500" />}
+        {(status === 'failed' || status === 'cancelled') && <AlertCircle size={15} className="text-danger" />}
+        {!status && <Workflow size={15} className="text-accent/70" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <Workflow size={12} className="text-accent/70 shrink-0" />
+          <span className="truncate text-[13px] font-medium text-text-strong">{name}</span>
+          {status && (
+            <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent">
+              {status === 'running' && phase ? phase : status}
+            </span>
           )}
-          {(status === 'failed' || status === 'cancelled') && errMsg && (
-            <div className="text-[12px] text-danger truncate mt-0.5">{errMsg}</div>
-          )}
-          <div className="text-[10px] text-muted font-mono truncate mt-0.5">
-            {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
-          </div>
         </div>
-        <PanelRightSolid
-          size={14}
-          className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
-        />
-      </button>
-    </div>
+        {status === 'running' && lastLog && (
+          <div className="text-[12px] text-muted italic truncate mt-0.5">{lastLog}</div>
+        )}
+        {(status === 'failed' || status === 'cancelled') && errMsg && (
+          <div className="text-[12px] text-danger truncate mt-0.5">{errMsg}</div>
+        )}
+        <div className="text-[10px] text-muted font-mono truncate mt-0.5">
+          {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
+        </div>
+      </div>
+      <PanelRightSolid
+        size={14}
+        className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
+      />
+    </button>
   )
 })
 

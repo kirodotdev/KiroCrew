@@ -217,13 +217,14 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'subagent_completion',
     roles: ['*'],
     match: isSubagentCompletionMessage,
-    render: (m, ctx) => (
+    render: (m, ctx) => ctx.row(
       <SubagentCompletionCard
         key={ctx.key}
         message={m}
         onFileOpen={ctx.onFileOpen}
         disclosureKey={ctx.key}
-      />
+      />,
+      true,
     ),
   },
   {

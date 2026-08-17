@@ -124,121 +124,124 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
     ? i18nT('pages.chat.subagentCompletionCard.hide_details')
     : i18nT('pages.chat.subagentCompletionCard.show_details')
 
+  // Row geometry -- the px-5 gutter and the --mc-content-width clamp -- belongs to
+  // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
+  // result, and the shared registries wrap this card through ctx.row. Re-applying
+  // it here nested one clamp inside another and inset the card by a second full
+  // gutter, so it sat 20px right of every sibling row and 40px narrower.
   return (
-    <div className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <div
-        className="rounded-md bg-accent/10 border border-accent/20 overflow-hidden"
-        data-testid="subagent-completion-card"
-      >
-        <div className="flex items-center gap-2 px-3 py-2">
-          <span className="shrink-0">
-            {failed ? (
-              <AlertCircle size={15} className="text-danger" />
-            ) : interrupted ? (
-              <AlertCircle size={15} className="text-warn" data-testid="glyph-interrupted" />
-            ) : partial ? (
-              <CircleDashed size={15} className="text-muted" data-testid="glyph-partial" />
-            ) : stopped ? (
-              <Square size={15} className="text-muted" />
-            ) : (
-              <CheckCircle2 size={15} className="text-ok" />
-            )}
-          </span>
-          <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
-          <span className="truncate text-[13px] font-medium text-text-strong">{headline(parsed)}</span>
-          {parsed.kind === 'single' ? (
-            <span
-              className={`${CHIP} ${
-                failed
-                  ? 'bg-danger-subtle border-danger/20 text-danger'
-                  : interrupted
-                    ? 'bg-warn-subtle border-warn/20 text-warn'
-                    : stopped
-                      ? 'bg-muted/15 border-border text-muted'
-                      : 'bg-ok-subtle border-ok/20 text-ok'
-              }`}
-            >
-              {outcomeLabel(parsed.outcome)}
-            </span>
+    <div
+      className="rounded-md bg-accent/10 border border-accent/20 overflow-hidden"
+      data-testid="subagent-completion-card"
+    >
+      <div className="flex items-center gap-2 px-3 py-2">
+        <span className="shrink-0">
+          {failed ? (
+            <AlertCircle size={15} className="text-danger" />
+          ) : interrupted ? (
+            <AlertCircle size={15} className="text-warn" data-testid="glyph-interrupted" />
+          ) : partial ? (
+            <CircleDashed size={15} className="text-muted" data-testid="glyph-partial" />
+          ) : stopped ? (
+            <Square size={15} className="text-muted" />
           ) : (
-            <>
-              {parsed.ok > 0 && (
-                <span className={`${CHIP} bg-ok-subtle border-ok/20 text-ok`} data-testid="chip-ok">
-                  <CheckCircle2 size={10} aria-hidden /> {parsed.ok}
-                </span>
-              )}
-              {parsed.failed > 0 && (
-                <span className={`${CHIP} bg-danger-subtle border-danger/20 text-danger`} data-testid="chip-failed">
-                  <AlertCircle size={10} aria-hidden /> {parsed.failed}
-                </span>
-              )}
-              {parsed.stopped > 0 && (
-                <span className={`${CHIP} bg-muted/15 border-border text-muted`} data-testid="chip-stopped">
-                  <Square size={10} aria-hidden /> {parsed.stopped}
-                </span>
-              )}
-            </>
+            <CheckCircle2 size={15} className="text-ok" />
           )}
-          {parsed.kind === 'single' ? (
-            <span className="text-[10px] text-muted font-mono truncate hidden sm:inline">
-              {parsed.agentId}
-            </span>
-          ) : parsed.chunks > 1 ? (
-            // A one-chunk wave's "1/1" is noise; a multi-chunk one tells the
-            // reader this card is a slice of a bigger wave, which the headline
-            // alone does not. The label is spelled out rather than left as a bare
-            // fraction: beside "10 of 18 results delivered" a second, smaller
-            // "1/2" reads as a competing ratio, and a tooltip-only explanation is
-            // invisible to touch and keyboard.
-            <span className="text-[10px] text-muted truncate hidden sm:inline">
-              {i18nT('pages.chat.subagentCompletionCard.digest_chunk_n_of_n', {
-                chunk: parsed.chunk,
-                chunks: parsed.chunks,
-              })}
-            </span>
-          ) : null}
-          <div className="ml-auto flex items-center gap-1 shrink-0">
-            {onOpenPanel && (
-              <button
-                type="button"
-                onClick={() => onOpenPanel(parsed)}
-                title={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
-                aria-label={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
-                className="pi-morph flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
-              >
-                <PanelRightSolid size={13} />
-                <span className="hidden sm:inline">{i18nT('pages.chat.subagentCompletionCard.panel')}</span>
-              </button>
+        </span>
+        <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
+        <span className="truncate text-[13px] font-medium text-text-strong">{headline(parsed)}</span>
+        {parsed.kind === 'single' ? (
+          <span
+            className={`${CHIP} ${
+              failed
+                ? 'bg-danger-subtle border-danger/20 text-danger'
+                : interrupted
+                  ? 'bg-warn-subtle border-warn/20 text-warn'
+                  : stopped
+                    ? 'bg-muted/15 border-border text-muted'
+                    : 'bg-ok-subtle border-ok/20 text-ok'
+            }`}
+          >
+            {outcomeLabel(parsed.outcome)}
+          </span>
+        ) : (
+          <>
+            {parsed.ok > 0 && (
+              <span className={`${CHIP} bg-ok-subtle border-ok/20 text-ok`} data-testid="chip-ok">
+                <CheckCircle2 size={10} aria-hidden /> {parsed.ok}
+              </span>
             )}
-            {parsed.body && (
-              <button
-                type="button"
-                onClick={() => setExpanded(e => !e)}
-                aria-expanded={expanded}
-                title={detailsLabel}
-                className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
-              >
-                {detailsLabel}
-                <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
-              </button>
+            {parsed.failed > 0 && (
+              <span className={`${CHIP} bg-danger-subtle border-danger/20 text-danger`} data-testid="chip-failed">
+                <AlertCircle size={10} aria-hidden /> {parsed.failed}
+              </span>
             )}
-          </div>
-        </div>
-        {expanded && parsed.body && (
-          <div className="px-3 pb-2 pt-1 border-t border-accent/10">
-            {/* softBreaks: the payload is machine-composed plain text whose line
-                structure carries meaning (one line per agent, an indented result
-                path under it). Without hard breaks CommonMark collapses the
-                digest into a single run-on paragraph. */}
-            <MarkdownRenderer
-              content={parsed.kind === 'batch' ? legibleDigest(parsed.body) : parsed.body}
-              onFileOpen={onFileOpen}
-              onFolderOpen={onFolderOpen}
-              softBreaks
-            />
-          </div>
+            {parsed.stopped > 0 && (
+              <span className={`${CHIP} bg-muted/15 border-border text-muted`} data-testid="chip-stopped">
+                <Square size={10} aria-hidden /> {parsed.stopped}
+              </span>
+            )}
+          </>
         )}
+        {parsed.kind === 'single' ? (
+          <span className="text-[10px] text-muted font-mono truncate hidden sm:inline">
+            {parsed.agentId}
+          </span>
+        ) : parsed.chunks > 1 ? (
+          // A one-chunk wave's "1/1" is noise; a multi-chunk one tells the
+          // reader this card is a slice of a bigger wave, which the headline
+          // alone does not. The label is spelled out rather than left as a bare
+          // fraction: beside "10 of 18 results delivered" a second, smaller
+          // "1/2" reads as a competing ratio, and a tooltip-only explanation is
+          // invisible to touch and keyboard.
+          <span className="text-[10px] text-muted truncate hidden sm:inline">
+            {i18nT('pages.chat.subagentCompletionCard.digest_chunk_n_of_n', {
+              chunk: parsed.chunk,
+              chunks: parsed.chunks,
+            })}
+          </span>
+        ) : null}
+        <div className="ml-auto flex items-center gap-1 shrink-0">
+          {onOpenPanel && (
+            <button
+              type="button"
+              onClick={() => onOpenPanel(parsed)}
+              title={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
+              aria-label={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
+              className="pi-morph flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
+            >
+              <PanelRightSolid size={13} />
+              <span className="hidden sm:inline">{i18nT('pages.chat.subagentCompletionCard.panel')}</span>
+            </button>
+          )}
+          {parsed.body && (
+            <button
+              type="button"
+              onClick={() => setExpanded(e => !e)}
+              aria-expanded={expanded}
+              title={detailsLabel}
+              className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
+            >
+              {detailsLabel}
+              <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
+            </button>
+          )}
+        </div>
       </div>
+      {expanded && parsed.body && (
+        <div className="px-3 pb-2 pt-1 border-t border-accent/10">
+          {/* softBreaks: the payload is machine-composed plain text whose line
+              structure carries meaning (one line per agent, an indented result
+              path under it). Without hard breaks CommonMark collapses the
+              digest into a single run-on paragraph. */}
+          <MarkdownRenderer
+            content={parsed.kind === 'batch' ? legibleDigest(parsed.body) : parsed.body}
+            onFileOpen={onFileOpen}
+            onFolderOpen={onFolderOpen}
+            softBreaks
+          />
+        </div>
+      )}
     </div>
   )
 })

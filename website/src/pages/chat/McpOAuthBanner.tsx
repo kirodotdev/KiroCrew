@@ -59,9 +59,9 @@ export default function McpOAuthBanner({
 
   if (failed) {
     return (
-      <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-sm">
-        <XCircle className="shrink-0 text-[var(--danger)] lucide-inline" />
-        <span className="flex-1 text-[var(--text)]">
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-danger/40 bg-danger/10 text-sm">
+        <XCircle className="shrink-0 text-danger lucide-inline" />
+        <span className="flex-1 text-text">
           <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.authentication_failed')}{error ? `: ${error}` : '.'}
         </span>
       </div>
@@ -70,9 +70,9 @@ export default function McpOAuthBanner({
 
   if (completed) {
     return (
-      <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-[var(--ok)]/40 bg-[var(--ok)]/10 text-sm">
-        <CheckCircle className="shrink-0 text-[var(--ok)] lucide-inline" />
-        <span className="flex-1 text-[var(--text)]">
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border border-ok/40 bg-ok/10 text-sm">
+        <CheckCircle className="shrink-0 text-ok lucide-inline" />
+        <span className="flex-1 text-text">
           <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.authenticated')}
         </span>
       </div>
@@ -84,10 +84,10 @@ export default function McpOAuthBanner({
   if (!safeUrl) return null
 
   return (
-    <div className="flex flex-col gap-2 px-3.5 py-3 rounded-lg border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-sm">
+    <div className="flex flex-col gap-2 px-3.5 py-3 rounded-lg border border-warn/40 bg-warn/10 text-sm">
       <div className="flex items-center gap-2.5">
-        <Lock className="shrink-0 text-[var(--warn)] lucide-inline" />
-        <span className="flex-1 text-[var(--text)] min-w-0 break-words">
+        <Lock className="shrink-0 text-warn lucide-inline" />
+        <span className="flex-1 text-text min-w-0 break-words">
           <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.requires_authentication')}
         </span>
       </div>
@@ -95,7 +95,7 @@ export default function McpOAuthBanner({
         href={safeUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center justify-center gap-1.5 self-start px-4 py-1.5 rounded-md text-[13px] font-semibold bg-[var(--accent)] text-[var(--accent-fg)] cursor-pointer hover:opacity-90 transition-opacity no-underline"
+        className="inline-flex items-center justify-center gap-1.5 self-start px-4 py-1.5 rounded-md text-[13px] font-semibold bg-accent text-accent-fg cursor-pointer hover:opacity-90 transition-opacity no-underline"
       >
         {i18nT('pages.chat.mcpOAuthBanner.authorize')} {label} <ExternalLink className="lucide-inline" size={13} />
       </a>

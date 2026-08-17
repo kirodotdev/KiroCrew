@@ -355,7 +355,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
 
       {/* Pending-changes banner */}
       {pendingCount > 0 && (
-        <div className="mb-3 p-3 rounded border border-[var(--warn)] bg-[var(--warn)]/20 flex items-center justify-between">
+        <div className="mb-3 p-3 rounded border border-[var(--warn)] bg-warn/20 flex items-center justify-between">
           <div className="text-[13px] text-[var(--warn)]">
             <AlertTriangle className="lucide-inline" /> {i18nT('pages.overview.mcpTab.pending_change', { count: pendingCount })}
             <span className="ml-2 text-muted">{i18nT('pages.overview.mcpTab.apply_commits_to_kirocrew_mcp_json_provider_glob')}</span>

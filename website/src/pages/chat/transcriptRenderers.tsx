@@ -112,7 +112,7 @@ export function createTranscriptRenderers(
       id: 'subagent_completion',
       roles: ['*'],
       match: isSubagentCompletionMessage,
-      render: (m, ctx) => (
+      render: (m, ctx) => ctx.row(
         <SubagentCompletionCard
           key={ctx.key}
           message={m}
@@ -120,7 +120,8 @@ export function createTranscriptRenderers(
           onFolderOpen={o.onFolderOpen}
           disclosureKey={ctx.key}
           onOpenPanel={o.onOpenSubagentPanel}
-        />
+        />,
+        true,
       ),
     },
 
@@ -137,9 +138,7 @@ export function createTranscriptRenderers(
         // The match already proved this, but a null here must draw the generic
         // line rather than crash the row.
         if (!runId) return toolLine(m, ctx)
-        // No ctx.row: this card lays out its own full-width row (it sets
-        // --mc-content-width itself), so wrapping it would double the padding.
-        return <WorkflowRunCard key={ctx.key} runId={runId} message={m} slot={o.slot} />
+        return ctx.row(<WorkflowRunCard key={ctx.key} runId={runId} message={m} slot={o.slot} />, true)
       },
     },
     {
@@ -149,7 +148,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => {
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
-        return <SubagentRunCard key={ctx.key} launch={launch} slot={o.slot} />
+        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot} />, true)
       },
     },
     {
@@ -223,14 +222,15 @@ export function createTranscriptRenderers(
       id: 'workflow_completion',
       roles: ['assistant'],
       match: isWorkflowCompletionMessage,
-      render: (m, ctx) => (
+      render: (m, ctx) => ctx.row(
         <WorkflowCompletionCard
           key={ctx.key}
           message={m}
           onFileOpen={o.onFileOpen}
           onFolderOpen={o.onFolderOpen}
           disclosureKey={ctx.key}
-        />
+        />,
+        true,
       ),
     },
     {

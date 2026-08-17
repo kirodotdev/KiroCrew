@@ -85,60 +85,63 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   const ok = status === 'finished'
   const label = sanitizeLlmOutput(name.slice(0, 80))
 
+  // Row geometry -- the px-5 gutter and the --mc-content-width clamp -- belongs to
+  // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
+  // result, and the shared registries wrap this card through ctx.row. Re-applying
+  // it here nested one clamp inside another and inset the card by a second full
+  // gutter, so it sat 20px right of every sibling row and 40px narrower.
   return (
-    <div className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <div className="rounded-md bg-accent/10 border border-accent/20 overflow-hidden">
-        <div className="flex items-center gap-2 px-3 py-2">
-          <span className="shrink-0">
-            {ok ? (
-              <CheckCircle2 size={15} className="text-green-500" />
-            ) : (
-              <AlertCircle size={15} className="text-danger" />
-            )}
-          </span>
-          <Workflow size={12} className="text-accent/70 shrink-0" />
-          <span className="truncate text-[13px] font-medium text-text-strong">{label}</span>
-          <span
-            className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${
-              ok
-                ? 'bg-green-500/10 border-green-500/20 text-green-500'
-                : 'bg-danger/10 border-danger/20 text-danger'
-            }`}
+    <div className="rounded-md bg-accent/10 border border-accent/20 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2">
+        <span className="shrink-0">
+          {ok ? (
+            <CheckCircle2 size={15} className="text-green-500" />
+          ) : (
+            <AlertCircle size={15} className="text-danger" />
+          )}
+        </span>
+        <Workflow size={12} className="text-accent/70 shrink-0" />
+        <span className="truncate text-[13px] font-medium text-text-strong">{label}</span>
+        <span
+          className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${
+            ok
+              ? 'bg-green-500/10 border-green-500/20 text-green-500'
+              : 'bg-danger/10 border-danger/20 text-danger'
+          }`}
+        >
+          {status}
+        </span>
+        <span className="text-[10px] text-muted font-mono truncate hidden sm:inline">{runId}</span>
+        <div className="ml-auto flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => dispatch(openActivityToTab('workflows'))}
+            title={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
+            aria-label={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
+            className="pi-morph flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
           >
-            {status}
-          </span>
-          <span className="text-[10px] text-muted font-mono truncate hidden sm:inline">{runId}</span>
-          <div className="ml-auto flex items-center gap-1 shrink-0">
+            <PanelRightSolid size={13} />
+            <span className="hidden sm:inline">{i18nT('pages.chat.workflowCompletionCard.panel')}</span>
+          </button>
+          {body && (
             <button
               type="button"
-              onClick={() => dispatch(openActivityToTab('workflows'))}
-              title={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
-              aria-label={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
-              className="pi-morph flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
+              onClick={() => setExpanded(e => !e)}
+              aria-expanded={expanded}
+              title={expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
+              className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
             >
-              <PanelRightSolid size={13} />
-              <span className="hidden sm:inline">{i18nT('pages.chat.workflowCompletionCard.panel')}</span>
+              {expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
+              <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
             </button>
-            {body && (
-              <button
-                type="button"
-                onClick={() => setExpanded(e => !e)}
-                aria-expanded={expanded}
-                title={expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
-                className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
-              >
-                {expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
-                <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
-              </button>
-            )}
-          </div>
+          )}
         </div>
-        {expanded && body && (
-          <div className="px-3 pb-2 pt-1 border-t border-accent/10">
-            <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
-          </div>
-        )}
       </div>
+      {expanded && body && (
+        <div className="px-3 pb-2 pt-1 border-t border-accent/10">
+          <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
+        </div>
+      )}
     </div>
   )
 })
