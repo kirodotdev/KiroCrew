@@ -626,6 +626,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
         "cli_commands.py::_register_app_crons_to_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``), used to drive the async
+        # ``install_from_registry`` coroutine from the loop-less CLI
+        # ``kirocrew app install registry:<name>`` path. No child process is
+        # created by this call; the registry clone it awaits does its own
+        # spawning inside ``apps/registry.py``, which is separately audited.
+        # The sole input is the operator-typed registry entry name. Same
+        # classification as the two ``cli_commands.py`` sites above.
+        "cli_commands.py::_handle_app",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
         # NOT a subprocess spawn here: the AST heuristic matches ``asyncio.run``

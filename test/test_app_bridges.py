@@ -2815,6 +2815,26 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "setup": {"onEnable": "echo hi"},
                 "publishProvider": {"id": "p", "label": "P"},
                 "notifications": {"channels": [{"id": "n", "name": "N"}]},
+                "recipes": {
+                    "slack": [
+                        {
+                            "name": "r",
+                            "description": "d",
+                            "channelNamePart": "r",
+                            "agent": "a",
+                            "activation": "always",
+                        }
+                    ],
+                    "crons": [
+                        {
+                            "name": "c",
+                            "description": "d",
+                            "schedule": "* * * * *",
+                            "agent": "a",
+                            "promptText": "p",
+                        }
+                    ],
+                },
             }
         )
         # Every declared field must be populated above, otherwise a conditional

@@ -1246,6 +1246,64 @@ def disable_app(name: str) -> AppResult:
 # ---------------------------------------------------------------------------
 
 
+#: Manifest tag by which an app declares itself a recipes provider (the engine
+#: that discovers and installs other apps' ``recipes`` declarations). Core ships
+#: no provider: the vocabulary is validated here, the implementation is supplied
+#: by an edition. A tag rather than a schema field, so recognising a provider
+#: needs no manifest change. See docs/system-specs/features/recipes.md.
+RECIPES_PROVIDER_TAG = "recipes-provider"
+
+
+def recipes_provider_installed() -> bool:
+    """True when some installed, enabled app declares itself a recipes provider.
+
+    ``list_apps`` returns ``{**installed-metadata, "manifest": <manifest dict>}``,
+    so the tag is read from the nested manifest: it is a manifest field, not
+    installed-metadata, and a top-level lookup would silently always miss.
+    """
+    try:
+        for app in list_apps():
+            if not isinstance(app, dict) or not app.get("enabled", False):
+                continue
+            manifest = app.get("manifest")
+            if not isinstance(manifest, dict):
+                continue
+            tags = manifest.get("tags")
+            if isinstance(tags, list) and RECIPES_PROVIDER_TAG in tags:
+                return True
+    except Exception:  # pragma: no cover - defensive: a hint must never raise
+        logger.debug("recipes provider probe failed", exc_info=True)
+    return False
+
+
+def recipes_provider_hint(app_name: str) -> str:
+    """Hint text when *app_name* declares recipes but nothing can install them.
+
+    An app whose manifest carries a ``recipes`` block installs cleanly here and
+    then does nothing, because core validates the vocabulary but ships no
+    installer. Without this, the first symptom is silence. Returns "" when the
+    app declares no recipes or a provider is already present.
+    """
+    try:
+        manifest = get_app_manifest(app_name)
+        if manifest is None:
+            return ""
+        recipes = getattr(manifest, "recipes", None)
+        declared = len(getattr(recipes, "slack", []) or []) + len(
+            getattr(recipes, "crons", []) or []
+        )
+        if not declared or recipes_provider_installed():
+            return ""
+        return (
+            f"{app_name} declares {declared} recipe(s), but no recipes provider is "
+            f"installed, so nothing will install them. Install an app tagged "
+            f"{RECIPES_PROVIDER_TAG!r} (see docs/system-specs/features/recipes.md)."
+        )
+    except Exception:  # pragma: no cover - defensive: a hint must never raise
+        logger.debug("recipes hint failed for %s", app_name, exc_info=True)
+        return ""
+
+
 def list_apps() -> list[dict[str, Any]]:
     """Return metadata for all installed apps."""
     root = apps_dir()
