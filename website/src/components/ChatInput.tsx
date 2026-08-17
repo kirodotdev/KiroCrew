@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, mem
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
 import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
 import type { AudioSample } from '../hooks/mic'
@@ -1029,6 +1030,15 @@ function ChatInput({
   }, [disabled, onFollowUpSend])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
+  const [attachControlRow, controlRowEdges, remeasureControlRow] = useScrollEdges<HTMLDivElement>()
+  // The control row's chips are prop-driven (the auto-nudge loop chip, the
+  // approval-mode picker) and appear or change label while the row keeps its
+  // own box, so neither the ResizeObserver nor a scroll event reports the new
+  // content width — only this remeasure can refresh the cue. Boolean presence,
+  // not the callback itself: the handler's identity may change every render
+  // and would re-run the effect for nothing.
+  const hasAutoNudge = !!onAutoNudgeClick
+  useEffect(() => { remeasureControlRow() }, [hasAutoNudge, autoNudgeLoop, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
   // An icon swap alone announces nothing, so the empty-state placeholder carries
@@ -2573,7 +2583,13 @@ function ChatInput({
                 )}
               </div>
             )}
-            <div className="flex items-center gap-0.5 min-w-0 overflow-x-auto flex-1">
+            {/* The wrapper exists for the edge cues: absolutely-positioned
+                children of the scroller itself would travel with the scrolled
+                content, so the fades anchor to this non-scrolling parent. It
+                also owns the flex sizing so the scroller keeps filling the
+                row. */}
+            <div className="relative min-w-0 flex-1">
+              <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto">
 
               {onAutoNudgeClick && (
                 <AutoNudgePopover
@@ -2590,6 +2606,23 @@ function ChatInput({
               )}
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+              )}
+              </div>
+              {/* Edge cues, same treatment as the sibling strips that already
+                  ship it (FollowUpBar's scroll row, SidePanelLayout's tab
+                  strip): at narrow widths the loop chip and approval picker
+                  clip silently, and the overlay scrollbar on macOS/iOS leaves
+                  no idle trace. from-bg-elevated matches the composer surface.
+                  Deliberately NO z-index: positioned elements already paint
+                  above the row's in-flow buttons, and an explicit z-10 would
+                  win the tree-order tiebreak against the optimizing dim
+                  overlay (also z-10, earlier in the tree), punching an
+                  undimmed wedge through it. */}
+              {controlRowEdges.left && (
+                <div aria-hidden="true" data-testid="control-row-cue-left" className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 bg-gradient-to-r from-bg-elevated to-transparent" />
+              )}
+              {controlRowEdges.right && (
+                <div aria-hidden="true" data-testid="control-row-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-bg-elevated to-transparent" />
               )}
             </div>
             {isMobile && approvalMode && (
