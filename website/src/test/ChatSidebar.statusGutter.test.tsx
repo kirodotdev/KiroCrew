@@ -11,9 +11,11 @@
  *   4. the unread "your turn" dot lives in the gutter, NOT absolutely positioned
  *      at the row's right edge, and yields to any more specific state,
  *   5. the gutter is OUT OF FLOW — absolutely positioned inside the row's own
- *      `pl-3.5`, and vertically centred on the row. In flow it added its 12px
- *      width plus a gap to where the content column starts, which is what broke
- *      the sidebar's two left-edge guides (ChatSidebar.folderAlignment.test.tsx),
+ *      `pl-3.5`, and anchored to the headline at a fixed offset. In flow it added
+ *      its 12px width plus a gap to where the content column starts, which is what
+ *      broke the sidebar's two left-edge guides
+ *      (ChatSidebar.folderAlignment.test.tsx); centred on the ROW instead, it fell
+ *      below the headline on any row carrying a chip row,
  *   6. the glyph carries an accessible name — it is the gutter's only content.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -132,7 +134,7 @@ describe('chat sidebar — status gutter', () => {
     expect(container.querySelector('.session-row .absolute.right-1\\.5.rounded-full')).toBeNull()
   })
 
-  it('keeps the gutter out of the content flow, centred, so the left edges hold', () => {
+  it('keeps the gutter out of the content flow, anchored to the headline, so the left edges hold', () => {
     const { container } = renderSidebar([slot({ last_message: 'done' })])
     const g = gutterOf(container)
     expect(g).toBeTruthy()
@@ -146,11 +148,82 @@ describe('chat sidebar — status gutter', () => {
     expect(g.className).toMatch(/\babsolute\b/)
     expect(g.className).toMatch(/\bleft-px\b/)
     expect(g.className).not.toMatch(/\bshrink-0\b/)
-    // Centred on the ROW, not derived from the headline's line height. The trade
-    // is deliberate: a single-line row (the common case) gets a truly centred
-    // glyph, and a wrapped two-line title puts its glyph on the block's midline.
-    expect(g.className).toMatch(/\btop-1\/2\b/)
-    expect(g.className).toMatch(/-translate-y-1\/2/)
+    // Anchored to the HEADLINE at a fixed offset, NOT centred on the row. Row
+    // centring put the glyph under the headline on any row taller than three
+    // lines (a `source_links` chip row adds ~18px), and was never exact even
+    // without one: headline-centre equals row-centre only when the meta and
+    // secondary line boxes match. It is a literal because the row's type scale
+    // is fixed and the headline no longer wraps.
+    expect(g.className).not.toMatch(/\btop-1\/2\b/)
+    expect(g.className).not.toMatch(/-translate-y-1\/2/)
+    expect((g as HTMLElement).style.top).toBe('24px')
+  })
+
+  it('keeps every line box on the 4px grid, and derives the gutter offset from them', () => {
+    // The row's type scale is an ARITHMETIC contract, not a taste setting, so it
+    // is asserted as arithmetic rather than as three remembered class names.
+    // Read off the rendered classes: a future edit that reaches for a ratio
+    // (`leading-snug`) instead of an explicit box fails here rather than shipping
+    // a row that silently drifts off the grid again.
+    const { container } = renderSidebar([slot({ running: true })])
+    const row = container.querySelector('.session-row') as HTMLElement
+    const col = row.children[1] as HTMLElement
+    const boxOf = (el: Element) => {
+      const m = /leading-\[(\d+)px\]/.exec(el.className)
+      if (!m) throw new Error(`no explicit line box on: ${el.className}`)
+      return Number(m[1])
+    }
+    const sizeOf = (el: Element) => {
+      const m = /text-\[(\d+)px\]/.exec(el.className)
+      if (!m) throw new Error(`no explicit font size on: ${el.className}`)
+      return Number(m[1])
+    }
+    const [meta, title, status] = [col.children[0], col.children[1], col.children[2]]
+
+    // `py-2` — the row's own vertical padding, the only term not read off a line
+    // box, and a grid multiple itself so the FIRST line starts on a grid line too.
+    // `py-1.5` (6px) kept the row height a multiple of 4 while putting every edge
+    // inside it 2px off, which is a grid on paper only.
+    expect(row.className).toMatch(/\bpy-2\b/)
+    const PAD = 8
+
+    // 1. Every line box is a whole number of grid units — AND so is the padding,
+    //    which is what puts each line's own top edge on a grid line rather than
+    //    merely making the rows stack correctly.
+    expect(PAD % 4).toBe(0)
+    for (const el of [meta, title, status]) expect(boxOf(el) % 4).toBe(0)
+
+    // 2. So is the row, which is what makes consecutive rows stack on the grid
+    //    instead of accumulating fractional drift.
+    const rowH = PAD * 2 + boxOf(meta) + boxOf(title) + boxOf(status)
+    expect(rowH % 4).toBe(0)
+    // Every interior edge, cumulatively — the check that `py-1.5` failed 56 times
+    // out of 64 while the row height alone still looked correct.
+    let y = PAD
+    for (const el of [meta, title, status]) { expect(y % 4).toBe(0); y += boxOf(el) }
+    expect(y % 4).toBe(0)
+    expect(rowH).toBe(64)
+
+    // 3. The gutter's offset is that geometry, not an independent guess: its 12px
+    //    box centred on the headline's box. Note what is NOT asserted — that the
+    //    first and last boxes match. Row-centring needed that equality (it is the
+    //    only way headline-centre coincides with row-centre); anchoring to the
+    //    headline does not, which is what lets the meta line take the tightest box.
+    const GUTTER_BOX = 12
+    expect(row.children[0].className).toMatch(/\bw-3\b/)
+    expect((row.children[0] as HTMLElement).style.top)
+      .toBe(`${PAD + boxOf(meta) + (boxOf(title) - GUTTER_BOX) / 2}px`)
+
+    // 4. The headline outranks both neighbours by enough to READ as a headline.
+    //    The previous 11/13/12 scale sat within 2px, and CJK glyphs fill their em
+    //    box, so the secondary line competed with the title instead of yielding.
+    expect(sizeOf(title)).toBeGreaterThanOrEqual(sizeOf(meta) + 3)
+    expect(sizeOf(title)).toBeGreaterThan(sizeOf(status))
+
+    // 5. And it never wraps, which is what keeps the row height a constant and
+    //    the offset in (3) valid for every row.
+    expect(title.className).toMatch(/\btruncate\b/)
+    expect(title.className).not.toMatch(/line-clamp/)
   })
 
   it('renders exactly one status glyph, never two', () => {

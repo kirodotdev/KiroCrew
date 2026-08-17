@@ -78,9 +78,61 @@ import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
 
 /** Max height (px) of the inline session-rename <textarea> before it scrolls.
- *  ~6 lines at the row's 13px/leading-snug type. Shared by the auto-grow hook
+ *  ~6 lines at the row's `ROW_TITLE_CLS` type. Shared by the auto-grow hook
  *  (grows while typing) and the open effect (sizes on every open). */
 const RENAME_MAX_H = 120
+
+/**
+ * Session-row type scale, quantized to a 4px baseline grid.
+ *
+ * Every line box is a multiple of 4 and the inter-line gaps are zero — the
+ * leading carries the breathing room — so a row is a whole number of grid
+ * units (12px padding + 12 + 20 + 16 = 60) and consecutive rows stack on the
+ * grid instead of drifting. The previous scale mixed three RATIOS
+ * (`leading-tight` / `leading-snug`) over 11/13/12px text, which produced
+ * 13.75 / 17.875 / 16.5px boxes: no line landed on the grid and the row height
+ * was an arbitrary 62.125px.
+ *
+ * The three sizes are also spread far enough apart to READ as a hierarchy.
+ * 11/13/12 sat within 2px of each other, and CJK glyphs fill their em box, so
+ * the secondary line competed with the headline instead of yielding to it.
+ *
+ * The three boxes need NOT be equal to each other. Row-centring the status
+ * gutter did require the first and last to match — it is the only way
+ * headline-centre can coincide with row-centre — and that constraint is gone
+ * because the gutter is anchored to the headline directly (`ROW_GUTTER_TOP`).
+ * Which is what buys the meta line its 12px box: the tightest of the three,
+ * spent on the least important line.
+ */
+const ROW_META_CLS = 'text-[10px] leading-[12px]'
+const ROW_TITLE_CLS = 'text-[13px] leading-[20px]'
+const ROW_STATUS_CLS = 'text-[11px] leading-[16px]'
+
+/** The secondary line's three shapes, as whole class strings. The eight status
+ *  branches that render this line each used to spell the type classes out, so a
+ *  ninth state was one copy-paste away from re-introducing a size the grid does
+ *  not contain — which is how the line ended up at 12px against an 11px meta
+ *  line in the first place. Colour is what actually differs between them. */
+const ROW_STATUS_LINE_CLS = `${ROW_STATUS_CLS} flex items-center gap-1.5 min-w-0`
+const ROW_STATUS_LINE_ACCENT_CLS = `${ROW_STATUS_CLS} text-accent truncate flex items-center gap-1`
+const ROW_STATUS_LINE_MUTED_CLS = `${ROW_STATUS_CLS} text-muted truncate`
+
+/** Every glyph in a session row is drawn at ONE size — the status gutter, the
+ *  meta line's mode/channel markers, and the pin. Three sizes (9 / 10 / 12) read
+ *  as accidental variation rather than as a hierarchy, since none of these
+ *  glyphs outranks another. */
+const ROW_ICON_PX = 10
+
+/** Top offset (px) of the status gutter's 12px box, measured from the row's top
+ *  edge, so the glyph centres on the HEADLINE rather than on the row.
+ *
+ *  = `py-2` 8 + meta box 12 + (headline box 20 − gutter box 12) / 2 = 24.
+ *
+ *  A literal, not a measurement: with `ROW_*_CLS` fixed and the headline no
+ *  longer wrapping, the headline's y is a constant. Derived from the row's
+ *  padding, so it moves with it — a padding change that left this alone would
+ *  put the glyph back off the line it exists to mark. */
+const ROW_GUTTER_TOP = 24
 
 /** Translate a slot's running-status line. The status `text` is stored as a raw
  *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
@@ -2585,17 +2637,17 @@ function ChatSidebar({
     // The label is NOT passed to the lucide icons as `title`: that lands as an
     // svg attribute, which is not a tooltip. It goes on the gutter element.
     const status: { glyph: React.ReactNode; label: string } | null = s.pending_approval
-      ? { glyph: <ShieldCheck size={12} style={{ color: 'var(--warn)' }} />, label: i18nT('pages.chatSidebar.needs_approval') }
+      ? { glyph: <ShieldCheck size={ROW_ICON_PX} style={{ color: 'var(--warn)' }} />, label: i18nT('pages.chatSidebar.needs_approval') }
       : subagentAwaiting > 0
-        ? { glyph: <Bot size={12} style={{ color: 'var(--warn)' }} />, label: subagentApprovalLabel }
+        ? { glyph: <Bot size={ROW_ICON_PX} style={{ color: 'var(--warn)' }} />, label: subagentApprovalLabel }
         : s.needs_input
-          ? { glyph: <MessageCircleQuestionMark size={12} style={{ color: 'var(--info)' }} />, label: needsInputLabel }
+          ? { glyph: <MessageCircleQuestionMark size={ROW_ICON_PX} style={{ color: 'var(--info)' }} />, label: needsInputLabel }
           : goalLoop
-            ? { glyph: <Goal size={12} className={goalLoopStalled ? 'text-warn' : 'text-accent animate-pulse'} />, label: goalLoopStalled ? `${goalLoopLabel} — ${i18nT('pages.chatSidebar.loop_interrupted')}` : goalLoopLabel }
+            ? { glyph: <Goal size={ROW_ICON_PX} className={goalLoopStalled ? 'text-warn' : 'text-accent animate-pulse'} />, label: goalLoopStalled ? `${goalLoopLabel} — ${i18nT('pages.chatSidebar.loop_interrupted')}` : goalLoopLabel }
             : wfActive
-              ? { glyph: <Workflow size={12} className="text-accent animate-pulse" />, label: wfActive.label }
+              ? { glyph: <Workflow size={ROW_ICON_PX} className="text-accent animate-pulse" />, label: wfActive.label }
               : subagentCount > 0
-                ? { glyph: <Bot size={12} className="text-accent animate-pulse" />, label: subagentLabel }
+                ? { glyph: <Bot size={ROW_ICON_PX} className="text-accent animate-pulse" />, label: subagentLabel }
                 : s.running
                   // A spinner, not a pulsing dot: "actively working" is the one
                   // state with a definite direction, and rotation reads as
@@ -2604,8 +2656,12 @@ function ChatSidebar({
                   // The label is resolved HERE rather than hoisted above: the
                   // status chain is evaluated for every row, and slotStatusDetail
                   // is only meaningful for a running one.
-                  ? { glyph: <Loader size={12} className="text-accent animate-spin" />, label: slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang) }
+                  ? { glyph: <Loader size={ROW_ICON_PX} className="text-accent animate-spin" />, label: slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang) }
                   : s.unread
+                    // A DOT, so it keeps its own size: `ROW_ICON_PX` sizes the
+                    // lucide glyphs, whose ink covers a fraction of their box,
+                    // while a filled disc covers all of it. At 10px it reads as
+                    // heavier than every state that outranks it.
                     ? { glyph: <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} />, label: i18nT('pages.chatSidebar.agent_finished_your_turn') }
                     : null
     const rowColor = ci != null ? paletteColors[ci] : null
@@ -2639,7 +2695,7 @@ function ChatSidebar({
           <ContextMenuTrigger asChild>
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
-          className={`session-row group relative flex items-start pl-3.5 pr-3 py-1.5 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start pl-3.5 pr-3 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -2723,16 +2779,23 @@ function ChatSidebar({
            *  of it, and the content starts at 14. Putting it back in flow re-breaks
            *  guides 2 and 3 — see ChatSidebar.folderAlignment.test.tsx.
            *
-           *  Vertically CENTRED on the row, not on the headline. The trade is
-           *  explicit: a single-line row (the common case) gets a glyph that is
-           *  actually centred, and a row whose title wraps to two lines gets its
-           *  glyph on the block's midline rather than on the first line. The
-           *  earlier revision derived the headline's y from repeated type
-           *  classes, which kept the wrapped case tidy at the cost of every idle
-           *  row looking top-heavy (measured 10.25px above centre on a
-           *  three-line row). */}
+           *  Vertically anchored to the HEADLINE, at a constant offset
+           *  (`ROW_GUTTER_TOP`), not centred on the row. Row-centring only put the
+           *  glyph on the headline by accident, and only for a row of exactly
+           *  three lines: a row carrying a chip row (`source_links`, below) is
+           *  ~18px taller, which dropped its glyph well under the headline it was
+           *  supposed to mark. Centring was also never exact even in the plain
+           *  case — it sat 2.375px low, because headline-centre equals row-centre
+           *  only when the meta and secondary line boxes match, which the old
+           *  13.75 / 16.5 pair did not.
+           *
+           *  An earlier revision anchored to the headline too and was reverted for
+           *  deriving the y from repeated type classes; that fragility is gone.
+           *  `ROW_*_CLS` fixes every line box, and the headline no longer wraps,
+           *  so the offset is one literal that no row can invalidate. */}
           <div
-            className="absolute left-px top-1/2 -translate-y-1/2 w-3 h-3 flex items-center justify-center pointer-events-none"
+            className="absolute left-px w-3 h-3 flex items-center justify-center pointer-events-none"
+            style={{ top: ROW_GUTTER_TOP }}
             {...(status
               ? { role: 'img', 'aria-label': status.label, title: status.label }
               : { 'aria-hidden': true })}
@@ -2740,7 +2803,7 @@ function ChatSidebar({
             {status?.glyph}
           </div>
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
+            <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               <AnimatePresence mode="wait">
                 <motion.span key={agentName || 'empty'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 ? 'max-w-[50%]' : ''}`}>{agentName || '\u00A0'}</motion.span>
               </AnimatePresence>
@@ -2829,8 +2892,8 @@ function ChatSidebar({
                     {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
                     {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
                   </>}
-              {s.mode === 'orchestrator' && <span className="text-[11px] px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
-              {s.mode === 'crew' && <Badge variant="warn" className="text-[11px] px-1 py-0 rounded font-sans" title={i18nT('pages.chatSidebar.crew_mode')}>{i18nT('pages.chatSidebar.crew')}</Badge>}
+              {s.mode === 'orchestrator' && <span className="px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
+              {s.mode === 'crew' && <Badge variant="warn" className="px-1 py-0 rounded font-sans" title={i18nT('pages.chatSidebar.crew_mode')}>{i18nT('pages.chatSidebar.crew')}</Badge>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the timestamp
                *  mid-row.
@@ -2844,7 +2907,7 @@ function ChatSidebar({
                *  still names it. */}
               {slotActivityTs(s) || pinned.has(s.key) ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
-                  {slotActivityTs(s) && <span className="text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
+                  {slotActivityTs(s) && <span className="text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
                   {/* Last in the row: the pin is a state marker, not a label, so
                    *  it sits after the text that reads left-to-right rather than
                    *  pushing the agent name off its own start edge. */}
@@ -2852,7 +2915,14 @@ function ChatSidebar({
                 </span>
               ) : null}
             </div>
-            <div className={`text-[13px] font-semibold leading-snug break-words text-text ${renamingSlot === s.key && renameScope === scope ? '' : 'line-clamp-2'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
+            {/* NEVER wraps. `truncate` rather than a two-line clamp, so every row
+                is the same height and the status gutter's fixed offset lands on
+                this line for all of them. A clamped title also moved the whole
+                secondary line down by a full line box on some rows, which is what
+                made the list read as ragged. The full string stays reachable
+                through the `title` attribute, and the rename box below is the one
+                place it is shown in full. */}
+            <div className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingSlot === s.key && renameScope === scope ? '' : 'truncate'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
                   the arrow in the title text — rather than as a UI-only glyph —
@@ -2860,7 +2930,7 @@ function ChatSidebar({
                   onRename handler) so users can edit or drop it when they rename.
                   A separate ↳ glyph also double-stacked into "↳↳ Fork of …". */}
               {renamingSlot === s.key && renameScope === scope ? (
-                <textarea ref={renameInputRef} rows={1} className="w-full bg-transparent border border-accent rounded px-1 py-0 leading-snug text-text-strong outline-none text-[13px] select-text resize-none block overflow-hidden" value={renameValue} onChange={e => setRenameValue(e.target.value.replace(/[\r\n]+/g, ' '))} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: () => { cancelRenameRef.current = true; setRenamingSlot(null) }, onBlur: () => { if (!cancelRenameRef.current && renameValue.trim()) { dispatch(sseSlotTitle({ key: s.key, title: renameValue.trim() })); api.renameSlot(s.key, renameValue.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) }) } cancelRenameRef.current = false; setRenamingSlot(null) } })} onMouseDown={e => e.stopPropagation()} />
+                <textarea ref={renameInputRef} rows={1} className={`w-full bg-transparent border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-none select-text resize-none block overflow-hidden`} value={renameValue} onChange={e => setRenameValue(e.target.value.replace(/[\r\n]+/g, ' '))} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: () => { cancelRenameRef.current = true; setRenamingSlot(null) }, onBlur: () => { if (!cancelRenameRef.current && renameValue.trim()) { dispatch(sseSlotTitle({ key: s.key, title: renameValue.trim() })); api.renameSlot(s.key, renameValue.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) }) } cancelRenameRef.current = false; setRenamingSlot(null) } })} onMouseDown={e => e.stopPropagation()} />
               ) : (s.title && s.title !== s.key ? s.title : s.key)}
             </div>
             {s.pending_approval ? (
@@ -2869,7 +2939,7 @@ function ChatSidebar({
               // check): show the yellow dot + "Needs approval" even if the slot
               // still reports running, so an owed approval is never hidden
               // behind a "Thinking…" spinner.
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0">
+              <div className={ROW_STATUS_LINE_CLS}>
                 <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.needs_approval')}</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
               </div>
             ) : subagentAwaiting > 0 ? (
@@ -2878,7 +2948,7 @@ function ChatSidebar({
               // signal for the same reason: an owed decision must not read as
               // work in progress. The bot glyph is static, not pulsing —
               // nothing is running — and warn-coloured to match the row above.
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={subagentApprovalLabel}>
+              <div className={ROW_STATUS_LINE_CLS} title={subagentApprovalLabel}>
                 <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
               </div>
             ) : s.needs_input ? (
@@ -2895,7 +2965,7 @@ function ChatSidebar({
               // not the question. Trailing it after "Needs your answer ·" reads
               // as the question itself, so the label stands alone and the
               // transcript carries the card.
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={needsInputLabel}>
+              <div className={ROW_STATUS_LINE_CLS} title={needsInputLabel}>
                 <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
               </div>
             ) : goalLoop ? (
@@ -2908,7 +2978,7 @@ function ChatSidebar({
               // rather than accent. No inline dot — the loop's state marker lives
               // in the status gutter (a static warn Goal icon when stalled, a
               // pulsing accent one when live).
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
+              <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
                 <span className="truncate"><span className={`font-medium ${goalLoopStalled ? 'text-warn' : 'text-accent'}`}>{goalLoopLabel}{goalLoopStalled ? ` — ${i18nT('pages.chatSidebar.loop_interrupted')}` : ''}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
 
               </div>
@@ -2920,7 +2990,7 @@ function ChatSidebar({
               // message. Outranks the subagent count: workflow track agents
               // may also register as subagents, and "which workflow / phase"
               // is the stronger signal.
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={`${wfActive.count} workflow${wfActive.count > 1 ? 's' : ''} running`}>
+              <div className={ROW_STATUS_LINE_ACCENT_CLS} title={`${wfActive.count} workflow${wfActive.count > 1 ? 's' : ''} running`}>
                 <span className="truncate">{wfActive.label}</span>
               </div>
             ) : subagentCount > 0 ? (
@@ -2929,13 +2999,13 @@ function ChatSidebar({
               // (s.running === false while it waits for completion events), so
               // the sidebar shows live activity instead of a stale last
               // message. Outranks the generic "Thinking…".
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={subagentLabel}>
+              <div className={ROW_STATUS_LINE_ACCENT_CLS} title={subagentLabel}>
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1">{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)}</div>
+              <div className={ROW_STATUS_LINE_ACCENT_CLS}>{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)}</div>
             ) : s.last_message ? (
-              <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
+              <div className={ROW_STATUS_LINE_MUTED_CLS}>{s.last_message}</div>
             ) : null}
             {s.source_links && s.source_links.length > 0 && (() => {
               // `kind` is OPTIONAL on the wire and absent means 'change', so an
@@ -3119,7 +3189,13 @@ function ChatSidebar({
          *  the status gutter is absolutely positioned inside that pad and adds
          *  nothing to the content column. The right inset is the row's own
          *  padding. */}
-        {showDivider && <div className="ml-[14px] mr-3 border-b border-border" />}
+        {/* `-mt-px` so the rule does NOT add a row of layout height. In flow it made
+         *  the row-to-row pitch row-height + 1, and since the active row suppresses
+         *  its neighbours' dividers the pitch also VARIED down the list (measured
+         *  60 and 61 on one list), which no fixed row height can compensate for.
+         *  Overlaying the row's last pixel keeps the pitch equal to the row height.
+         *  The left inset is unchanged — it still starts at the content x. */}
+        {showDivider && <div className="ml-[14px] mr-3 -mt-px border-b border-border" />}
       </motion.div>
     )
   }
