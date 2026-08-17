@@ -38,6 +38,28 @@ def _png(tmp_path, name="shot.png"):
     return p
 
 
+#: mime -> Pillow save format, for building genuine bytes of each supported
+#: format in tests. Keeping real bytes behind each name is the whole point: a
+#: PNG written to ``img.webp`` proves nothing about a builder that reads the
+#: suffix, because both agree by construction.
+_SAVE_FORMAT = {
+    "image/png": "PNG",
+    "image/jpeg": "JPEG",
+    "image/gif": "GIF",
+    "image/webp": "WEBP",
+    "image/bmp": "BMP",
+}
+
+
+def _image_bytes(mime, size=(1, 1)):
+    """Return real encoded bytes of *mime*."""
+    from PIL import Image as _Image
+
+    buf = io.BytesIO()
+    _Image.new("RGB", size, (127, 127, 127)).save(buf, format=_SAVE_FORMAT[mime])
+    return buf.getvalue()
+
+
 class TestBuildPromptBlocks:
     def test_always_returns_at_least_a_text_block(self):
         blocks = build_prompt_blocks("just words")
@@ -103,15 +125,15 @@ class TestBuildPromptBlocks:
 
     @pytest.mark.parametrize("suffix,mime", sorted(IMAGE_MEDIA_TYPES.items()))
     def test_every_supported_suffix_maps_to_its_mime(self, tmp_path, suffix, mime):
-        # Fixtures are format-faithful (real bytes per format, not one PNG
-        # renamed): the emitted mimeType tracks the header-DETECTED format,
-        # because the backend validates the bytes, not the file extension.
-        pil = pytest.importorskip("PIL.Image")
-        fmt = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG",
-               ".gif": "GIF", ".webp": "WEBP", ".bmp": "BMP"}[suffix]
+        """A correctly-named file of each supported format keeps its own mime.
+
+        The bytes are now real bytes OF that format, not a PNG wearing the
+        suffix: this assertion used to pass with PNG content behind every name,
+        which is precisely what made it blind to the mime being read off the
+        filename.
+        """
         p = tmp_path / f"img{suffix}"
-        mode = "P" if fmt == "GIF" else "RGB"
-        pil.new(mode, (2, 2)).save(p, format=fmt)
+        p.write_bytes(_image_bytes(mime))
         blocks = build_prompt_blocks(f"see {p}")
         assert blocks[1]["mimeType"] == mime
 
@@ -135,6 +157,110 @@ class TestBuildPromptBlocks:
 
     def test_default_cap_is_ten_mib(self):
         assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
+
+
+class TestMediaTypeFromContent:
+    """The wire ``mimeType`` describes the BYTES, never the filename.
+
+    A suffix is a claim made by whoever named the file — an upload handler that
+    kept a client-supplied name, a channel that renamed an attachment — and the
+    backend decodes by the declared type. Getting it wrong is not a one-turn
+    error: a block the backend rejects sits at a fixed history index that
+    kiro-cli replays on every later turn.
+    """
+
+    def test_content_wins_over_a_misleading_suffix(self, tmp_path):
+        p = tmp_path / "actually-a-jpeg.png"
+        p.write_bytes(_image_bytes("image/jpeg"))
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[1]["mimeType"] == "image/jpeg"
+
+    def test_renamed_attachment_is_still_inlined(self, tmp_path):
+        """A mismatch is not a refusal: the image is real, so it still travels.
+
+        Producers rename attachments routinely; refusing them would drop good
+        images to placate a filename.
+        """
+        p = tmp_path / "screenshot.jpg"
+        p.write_bytes(_PNG)
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert blocks[1]["mimeType"] == "image/png"
+        assert base64.b64decode(blocks[1]["data"]) == _PNG
+
+    def test_non_image_named_like_an_image_is_left_as_a_path(self, tmp_path):
+        """Fail CLOSED. Previously these shipped as `image/png` because the name
+        said so, handing the backend a block it cannot decode."""
+        p = tmp_path / "notes.png"
+        p.write_bytes(b"this is plain text, not a raster")
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [b["type"] for b in blocks] == ["text"]
+        assert str(p) in blocks[0]["text"]
+
+    def test_svg_content_behind_a_png_name_is_refused(self, tmp_path):
+        """SVG is excluded by policy (scriptable XML, not a raster). Excluding it
+        by SUFFIX alone let the same bytes through under another name."""
+        p = tmp_path / "vector.png"
+        p.write_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [b["type"] for b in blocks] == ["text"]
+
+    def test_truncated_image_is_left_as_a_path(self, tmp_path):
+        p = tmp_path / "cut.png"
+        p.write_bytes(_PNG[:12])
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [b["type"] for b in blocks] == ["text"]
+
+    @pytest.mark.parametrize("mime", sorted(_SAVE_FORMAT))
+    def test_sniffer_identifies_every_supported_format(self, mime):
+        assert prompt_blocks._sniff_media_type(_image_bytes(mime)) == mime
+
+    @pytest.mark.parametrize("mime", sorted(_SAVE_FORMAT))
+    def test_signature_table_matches_pillow_without_pillow(self, monkeypatch, mime):
+        """The no-Pillow fallback must reach the SAME verdict.
+
+        A hand-stripped install cannot decode, and falling back to the suffix
+        there would leave the sink lying exactly when it has least help. The
+        signature table is what keeps the answer content-derived either way.
+        """
+        monkeypatch.setattr(prompt_blocks, "_HAS_PIL", False)
+        assert prompt_blocks._sniff_media_type(_image_bytes(mime)) == mime
+
+    def test_signature_table_refuses_a_non_image_without_pillow(self, monkeypatch):
+        monkeypatch.setattr(prompt_blocks, "_HAS_PIL", False)
+        assert prompt_blocks._sniff_media_type(b"not an image at all") is None
+
+    def test_riff_container_that_is_not_webp_is_refused(self, monkeypatch):
+        """`RIFF` alone is a container, not a format: WAV opens the same way."""
+        monkeypatch.setattr(prompt_blocks, "_HAS_PIL", False)
+        wav = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"fmt "
+        assert prompt_blocks._sniff_media_type(wav) is None
+
+    def test_downscale_reencodes_by_content_not_by_name(self, tmp_path):
+        """The re-encode picks its Pillow save format from the mime, so a wrong
+        mime also produced a wrongly-encoded payload — not just a wrong label."""
+        p = tmp_path / "big.png"
+        p.write_bytes(_image_bytes("image/jpeg", size=(MAX_IMAGE_EDGE_PX + 40, 10)))
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert blocks[1]["mimeType"] == "image/jpeg"
+        out = base64.b64decode(blocks[1]["data"])
+        assert prompt_blocks._sniff_media_type(out) == "image/jpeg"
+
+    def test_gif_still_collapses_to_png_on_re_encode(self, tmp_path):
+        """Unchanged behaviour, now keyed off the decoded format: a downscaled
+        GIF is re-encoded as a still PNG and the wire says so."""
+        p = tmp_path / "anim.gif"
+        p.write_bytes(_image_bytes("image/gif", size=(MAX_IMAGE_EDGE_PX + 40, 10)))
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert blocks[1]["mimeType"] == "image/png"
+        assert prompt_blocks._sniff_media_type(base64.b64decode(blocks[1]["data"])) == "image/png"
 
 
 class TestSensitivePathGate:

@@ -4,6 +4,19 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **An image attachment now reaches the model labelled by what it IS, not by what
+  it is named.** The ACP prompt builder took an image's wire `mimeType` from its
+  path suffix, so a screenshot a producer had renamed travelled as `image/png`
+  while carrying JPEG bytes, and a non-image named `notes.png` was inlined as an
+  image block the backend cannot decode. Because kiro-cli replays the full history
+  every turn, such a block sits at a fixed index and wedges the session on every
+  later turn rather than just the one. The format is now read from the file's
+  content at the shared sink every channel crosses -- Pillow's decoded format, or
+  a magic-byte signature table on a hand-stripped install, so the answer stays
+  content-derived either way. A candidate that is not a supported raster is left
+  as a path instead of inlined, and a real image whose name disagrees with its
+  bytes still travels, labelled by its bytes.
+
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
   `kiro-cli` child holds its credential for the life of the session, so an
