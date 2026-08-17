@@ -1237,9 +1237,14 @@ export function rehypeSanitize() {
 }
 
 /** A whole mdast `html` node that is exactly ONE tag: `<x>`, `</x>`, `<x a b>`,
- * `<x/>`. `[^>]*` forbids an interior `>`, and the leading `[a-zA-Z]` excludes
- * comments (`<!-- -->`) and doctypes, which must keep their existing handling. */
-const SINGLE_TAG_RE = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?>$/
+ * `<x/>`. Attribute values are quote-aware, so a value may itself contain `>`
+ * (`<x a="b>c">`); without that, such a tag misses this test and falls to the
+ * lossy escapedNodeTree() path. A bare attribute may hold `/` (`<x a/b>`) so
+ * this accepts everything the previous blanket `[^>]*` did. The leading
+ * `[a-zA-Z]` excludes comments (`<!-- -->`) and doctypes, which keep their
+ * existing handling. */
+const SINGLE_TAG_RE =
+  /^<\/?([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s=>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?)*)\s*\/?>$/
 
 /** Tag name of a single-tag html node, or undefined when it is not one. */
 function singleTagName(value: string): string | undefined {

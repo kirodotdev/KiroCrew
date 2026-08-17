@@ -162,6 +162,75 @@ describe('verbatim rendering of unknown tags used as prose placeholders', () => 
     expect(container.textContent).toContain('<customLink href=javascript:alert(1)>')
     expectInert(container)
   })
+
+  it('renders a double-quoted attribute value containing > verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={'Compare <Foo bar="a>b"> here.'} />)
+    expect(container.textContent).toBe('Compare <Foo bar="a>b"> here.')
+    expect(container.textContent).not.toContain('<foo')
+    expect(container.textContent).not.toContain('</foo>')
+  })
+
+  it('renders a single-quoted attribute value containing > verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={"Compare <Foo bar='a>b'> here."} />)
+    expect(container.textContent).toBe("Compare <Foo bar='a>b'> here.")
+    expect(container.textContent).not.toContain('bar="a>b"')
+    expect(container.textContent).not.toContain('</foo>')
+  })
+
+  it('renders an attribute value that is exactly > verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={'Compare <Foo bar=">"> here.'} />)
+    expect(container.textContent).toBe('Compare <Foo bar=">"> here.')
+    expect(container.textContent).not.toContain('</foo>')
+  })
+
+  it('keeps the trailing prose outside the placeholder', () => {
+    // The lossy path rebuilt a close tag, which pulled the rest of the sentence
+    // inside the escaped-tag span instead of leaving it as sibling text.
+    const { container } = render(<MarkdownRenderer content={'Compare <Foo bar="a>b"> here.'} />)
+    const span = container.querySelector('span.escaped-tag')
+    expect(span?.textContent ?? '').not.toContain('here.')
+  })
+
+  it('still drops an HTML comment rather than rendering it verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={'before <!-- note --> after'} />)
+    expect(container.textContent).toBe('before  after')
+    expect(container.textContent).not.toContain('note')
+  })
+
+  it('still drops a doctype rather than rendering it verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={'<!DOCTYPE html>'} />)
+    expect(container.textContent).toBe('')
+    expect(container.textContent).not.toContain('DOCTYPE')
+  })
+
+  it('still renders a multi-tag block as live allowlisted elements', () => {
+    const { container } = render(<MarkdownRenderer content={'<div><span>hi</span></div>'} />)
+    expect(container.querySelector('span')).not.toBeNull()
+    expect(container.textContent).toBe('hi')
+    expect(container.textContent).not.toContain('<span>')
+  })
+
+  it('renders a bare attribute containing a slash verbatim', () => {
+    // remark does not tokenize this as HTML at all, so it never reaches the
+    // matcher; the guard is that no future change routes it to the lossy path.
+    const { container } = render(<MarkdownRenderer content={'Compare <Foo a/b> here.'} />)
+    expect(container.textContent).toBe('Compare <Foo a/b> here.')
+    expect(container.textContent).not.toContain('=""')
+    expect(container.textContent).not.toContain('</foo>')
+  })
+
+  it('renders a path-like bare attribute verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={'See <some path/to/file here> now.'} />)
+    expect(container.textContent).toBe('See <some path/to/file here> now.')
+    expect(container.textContent).not.toContain('=""')
+  })
+
+  it('keeps a self-closing placeholder verbatim', () => {
+    const { container } = render(<MarkdownRenderer content={'A <Foo /> and <Foo a="b"/> b.'} />)
+    expect(container.textContent).toBe('A <Foo /> and <Foo a="b"/> b.')
+    expect(container.textContent).not.toContain('<foo')
+    expect(container.textContent).not.toContain('</Foo>')
+  })
 })
 
 /**
@@ -193,5 +262,32 @@ describe('remarkVerbatimUnknownTags as a shared unit', () => {
   it('converts a placeholder whose bare word merely looks like a protocol', () => {
     const kids = run('a <Some data: Thing> b')
     expect(kids.some(k => k.type === 'text' && k.value === '<Some data: Thing>')).toBe(true)
+  })
+
+  it('receives the whole tag as one node when an attribute value holds >', () => {
+    // The tokenizer does not split at the interior >, so the diverter sees the
+    // complete tag and only the match test decides which path it takes.
+    const kids = run('a <Foo bar="a>b"> b')
+    expect(kids.filter(k => k.type === 'html')).toHaveLength(0)
+    expect(kids.some(k => k.type === 'text' && k.value === '<Foo bar="a>b">')).toBe(true)
+  })
+
+  it('converts a single-quoted attribute value containing > to a text node', () => {
+    const kids = run("a <Foo bar='a>b'> b")
+    expect(kids.some(k => k.type === 'text' && k.value === "<Foo bar='a>b'>")).toBe(true)
+  })
+
+  it('converts an attribute value that is exactly > to a text node', () => {
+    const kids = run('a <Foo bar=">"> b')
+    expect(kids.some(k => k.type === 'text' && k.value === '<Foo bar=">">')).toBe(true)
+  })
+
+  it('leaves a comment, a doctype and a multi-tag block as html nodes', () => {
+    for (const src of ['<!-- note -->', '<!DOCTYPE html>', '<div><span>hi</span></div>']) {
+      const tree = unified().use(remarkParse).use(remarkVerbatimUnknownTags).runSync(
+        unified().use(remarkParse).parse(src)
+      ) as { children: { type: string; value?: string }[] }
+      expect(tree.children.some(k => k.type === 'html' && k.value === src)).toBe(true)
+    }
   })
 })
