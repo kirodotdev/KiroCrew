@@ -115,9 +115,9 @@ def _child_argv() -> "list[str]":
     """The argv the jail should re-exec — this same kirocrew invocation.
 
     Reuses ``agent._resolve_kirocrew_bin`` (the same self-invocation resolver
-    kirocrew-core/kirocrew-cron use) so the jailed child inherits its
-    frozen/PyInstaller, venv ``bin/`` walk, and ``os.access(X_OK)`` validation —
-    rather than re-implementing a bare ``shutil.which`` that misses those cases.
+    kirocrew-core/kirocrew-cron use) so the jailed child inherits its venv
+    ``bin/`` walk and ``os.access(X_OK)`` validation — rather than
+    re-implementing a bare ``shutil.which`` that misses those cases.
     The resolver returns the bare ``"kirocrew"`` sentinel when it finds no usable
     binary; in that case fall back to ``python -m kiro_crew`` so a non-PATH /
     editable run still re-execs correctly.

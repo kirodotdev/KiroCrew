@@ -1312,7 +1312,7 @@ def _status(args: argparse.Namespace) -> None:
 def _should_reconcile_launchd_launcher() -> bool:
     """Whether this gateway may repair the shared launchd launcher.
 
-    Only a non-frozen production instance may.
+    Only a production instance running outside the desktop bundle may.
 
     ``LIVE_PROGRAM`` is a per-user path under Application Support that
     ``KIROCREW_HOME`` does not scope, so a dev, pod, or worktree gateway
@@ -1322,16 +1322,22 @@ def _should_reconcile_launchd_launcher() -> bool:
     ``is_default_home`` is reused rather than re-derived so the two cannot drift
     on what counts as the real home.
 
-    A frozen build is excluded for a different reason: the launchd agent is a
-    ``service install`` artifact belonging to a source or pip install, while a
+    A bundled interpreter is excluded for a different reason: the launchd agent is
+    a ``service install`` artifact belonging to a source or pip install, while a
     packaged app manages its own backend lifecycle and supplies environment its
     interpreter needs — notably ``PYTHONPYCACHEPREFIX``, which keeps bytecode out
     of the signed bundle. A launcher naming the bundled executable would be run by
     launchd WITHOUT that environment, so the interpreter would write
     ``__pycache__`` inside the app and invalidate its signature. The packaged app
-    has no business owning this artifact at all.
+    has no business owning this artifact at all. The bundle is identified by its
+    interpreter's location (:func:`platform_compat.is_bundled_interpreter`), which
+    is the one runtime reading of the packaging layout.
     """
-    return sys.platform == "darwin" and not getattr(sys, "frozen", False) and is_default_home()
+    return (
+        sys.platform == "darwin"
+        and not platform_compat.is_bundled_interpreter()
+        and is_default_home()
+    )
 
 
 async def _gateway(

@@ -694,8 +694,6 @@ def _pip_install_channel_available() -> bool:
     it there recreates the press-and-nothing-changes failure this surface
     exists to avoid:
 
-    - a frozen backend: its import set is fixed at build time (the packaging
-      spec excludes the voice extra), so no install can become importable;
     - the desktop app's bundled interpreter (see
       :func:`platform_compat.is_bundled_interpreter`): pip may exist, but a
       pip install writes into the code-signed bundle — breaking launches and
@@ -706,8 +704,6 @@ def _pip_install_channel_available() -> bool:
       pip refuses to install. Checked only outside a venv: inside one, pip
       works and deliberately ignores the marker, so a venv returns True.
     """
-    if getattr(sys, "frozen", False):
-        return False
     if platform_compat.is_bundled_interpreter():
         return False
     if importlib.util.find_spec("pip") is None:
@@ -921,8 +917,10 @@ async def api_stt_install(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "code": "stt_no_local_install",
-                "error": "AWS Transcribe has no local install;"
-                " run the prerequisite command to add the 'voice' extra instead",
+                "error": (
+                    "AWS Transcribe has no local install;"
+                    " run the prerequisite command to add the 'voice' extra instead"
+                ),
             },
             status=400,
         )
@@ -1001,8 +999,10 @@ async def api_stt_install(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "ok": True,
-                "ffmpeg": shutil.which("ffmpeg") is not None
-                or os.path.isfile(os.path.expanduser("~/ffmpeg/ffmpeg")),
+                "ffmpeg": (
+                    shutil.which("ffmpeg") is not None
+                    or os.path.isfile(os.path.expanduser("~/ffmpeg/ffmpeg"))
+                ),
             }
         )
     except asyncio.TimeoutError:
@@ -1078,9 +1078,7 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
     if provider in ("mlx", "parakeet"):
         pipx_pkg = "parakeet-mlx" if provider == "parakeet" else "mlx-whisper"
         verify_bin = "parakeet-mlx" if provider == "parakeet" else "mlx_whisper"
-        return (
-            prelude
-            + rf"""
+        return prelude + rf"""
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -1101,7 +1099,6 @@ pipx install --force {pipx_pkg} 2>&1 || {{ echo "ERROR: pipx install {pipx_pkg} 
 
 echo "Done. {verify_bin}=$(command -v {verify_bin} 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
-        )
     return prelude + r"""
 # Pick up ffmpeg from ~/ffmpeg if installed there
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
@@ -1919,8 +1916,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("denied", f"{path_key}={value}")
             return web.json_response(
                 {
-                    "error": "must be an executable shell (an absolute path or a "
-                    "command on PATH); leave empty to use the system default",
+                    "error": (
+                        "must be an executable shell (an absolute path or a "
+                        "command on PATH); leave empty to use the system default"
+                    ),
                     "code": "shell_not_executable",
                 },
                 status=400,

@@ -408,16 +408,19 @@ def _resolve_kirocrew_bin() -> str:
 
     Resolution order (first existing + executable wins):
 
-    0. Frozen/PyInstaller app (the shipped desktop app): ``sys.executable``
-       *is* the kirocrew CLI — e.g. ``.../kirocrew-backend`` — which accepts
-       the ``mcp-core`` / ``mcp-cron`` subcommands. The bundle has no
-       ``bin/kirocrew`` and nothing named ``kirocrew`` on PATH, so this is the
-       only reliable handle; without it kirocrew-core/kirocrew-cron are dropped.
-    1. Same install as the current process: walk up from ``kiro_crew.__file__``
-       looking for a ``bin/kirocrew`` sibling. Covers venv-based installs and
-       source-tree dev trees.
-    2. ``shutil.which('kirocrew')`` — respects PATH order.
-    3. Bare ``"kirocrew"`` — last resort, may fail but surfaces the problem
+    1. A sibling ``.venv`` entrypoint, for a source-tree install (an editable
+       install next to its own venv, e.g. ``project/src/kiro_crew`` plus
+       ``project/.venv``). Bounded by the first ``pyvenv.cfg`` walking up, so a
+       pip-into-venv install falls through to step 2 instead.
+    2. Same install as the current process: walk up from ``kiro_crew.__file__``
+       looking for a sibling console script (see
+       :func:`_kirocrew_bin_subpath` for the per-OS layout). Covers venv-based
+       installs, pip installs, source-tree dev trees, and the desktop app —
+       whose bundled interpreter is a python-build-standalone tree exposing a
+       launcher at its root, reached by this walk from the bundle's
+       ``site-packages``.
+    3. ``shutil.which('kirocrew')`` — respects PATH order.
+    4. Bare ``"kirocrew"`` — last resort, may fail but surfaces the problem
        instead of caching a known-bad absolute path.
 
     Every candidate is validated with ``is_file()`` and ``os.access(X_OK)``
@@ -434,23 +437,11 @@ def _resolve_kirocrew_bin() -> str:
         # the shared predicate, so the two cannot drift apart.
         return bool(sp) and _launcher_works(Path(sp))
 
-    # Frozen/PyInstaller app (shipped desktop app): ``sys.executable`` is the
-    # bundled ``kirocrew-backend`` binary, which *is* the kirocrew CLI and
-    # accepts the ``mcp-core`` / ``mcp-cron`` subcommands. The bundle ships no
-    # ``bin/kirocrew`` and nothing named ``kirocrew`` on PATH, so this is the
-    # only reliable handle — without it kirocrew-core / kirocrew-cron (and
-    # therefore spawn_run / cron_add / learn_add …) get dropped.
-    if getattr(sys, "frozen", False):
-        exe = sys.executable
-        if _usable(exe):
-            _KIROCREW_BIN = exe
-            return _KIROCREW_BIN
-
-    # 0. Prefer the venv entrypoint for source-tree installs (editable
+    # 1. Prefer the venv entrypoint for source-tree installs (editable
     #    install with a sibling .venv directory, e.g. project/src/kiro_crew
     #    + project/.venv/bin/kirocrew).
     #    NOTE: For pip-into-venv installs where pkg_dir is inside .venv/,
-    #    the pyvenv.cfg guard below breaks early and step 1 handles it.
+    #    the pyvenv.cfg guard below breaks early and step 2 handles it.
     try:
         # Circular import: kiro_crew.agent is loaded during kiro_crew
         # package initialization, so importing kiro_crew at module level
@@ -469,7 +460,7 @@ def _resolve_kirocrew_bin() -> str:
     except Exception:
         logger.debug("kirocrew venv bin check failed", exc_info=True)
 
-    # 1. Walk up from the running package to find bin/kirocrew
+    # 2. Walk up from the running package to find the console script
     try:
         import kiro_crew as _mc  # noqa: PLC0415  circular import
 
@@ -484,13 +475,13 @@ def _resolve_kirocrew_bin() -> str:
     except Exception:
         logger.debug("kirocrew bin walk failed", exc_info=True)
 
-    # 2. PATH lookup (also validated)
+    # 3. PATH lookup (also validated)
     found = shutil.which("kirocrew")
     if found and _usable(found):
         _KIROCREW_BIN = found
         return _KIROCREW_BIN
 
-    # 3. Last resort — don't cache, so a future call can retry
+    # 4. Last resort — don't cache, so a future call can retry
     logger.warning(
         "Could not resolve kirocrew binary to an existing file; "
         "falling back to bare 'kirocrew' (MCP probes may fail)"

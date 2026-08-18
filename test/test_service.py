@@ -2144,7 +2144,7 @@ class TestLauncherReconcileIsProductionOnly:
 
         assert cli_server._should_reconcile_launchd_launcher() is False
 
-    def test_a_frozen_build_never_reconciles(self, monkeypatch):
+    def test_the_desktop_bundle_never_reconciles(self, monkeypatch, tmp_path):
         """The packaged app must not own this artifact.
 
         launchd would run the bundled interpreter WITHOUT the environment the app
@@ -2152,11 +2152,21 @@ class TestLauncherReconcileIsProductionOnly:
         the signed bundle and invalidate its signature. The launchd agent belongs
         to a `service install`, not to an app that manages its own backend.
         """
-        from kiro_crew import cli_server
+        from kiro_crew import cli_server, platform_compat
 
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(cli_server.sys, "platform", "darwin")
-        monkeypatch.setattr(cli_server.sys, "frozen", True, raising=False)
+        # Drive the real predicate with a bundle-shaped interpreter path rather
+        # than stubbing it, so this test and the packaging layout cannot agree on
+        # a shape the build never ships.
+        bundled_python = (
+            tmp_path
+            / platform_compat.BUNDLED_BACKEND_DIST_DIRNAME
+            / "kirocrew-backend"
+            / "bin"
+            / "python3.12"
+        )
+        monkeypatch.setattr(cli_server.sys, "executable", str(bundled_python))
 
         assert cli_server._should_reconcile_launchd_launcher() is False
 

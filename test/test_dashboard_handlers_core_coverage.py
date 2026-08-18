@@ -320,10 +320,10 @@ class TestSttPrereqCommands:
         assert cmds == [f'& "{core_mod.sys.executable}" -m pip install "kirocrew[voice]"']
 
     def test_transcribe_prereq_without_install_channel_is_empty(self, monkeypatch) -> None:
-        """When no install channel can make the extra importable (frozen build,
-        pip-less interpreter, PEP 668), emitting a pip command would recreate
-        the press-and-nothing-changes dead end — the UI shows the unsupported
-        notice via `transcribe_unsupported` instead."""
+        """When no install channel can make the extra importable (bundled
+        interpreter, pip-less interpreter, PEP 668), emitting a pip command would
+        recreate the press-and-nothing-changes dead end — the UI shows the
+        unsupported notice via `transcribe_unsupported` instead."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: False)
         monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
@@ -419,15 +419,10 @@ class TestPipInstallChannel:
             core_mod.platform_compat, "is_bundled_interpreter", lambda: False
         )
 
-    def test_frozen_build_has_no_channel(self, monkeypatch) -> None:
-        monkeypatch.setattr(core_mod.sys, "frozen", True, raising=False)
-        assert core_mod._pip_install_channel_available() is False
-
     def test_bundled_desktop_interpreter_has_no_channel(self, monkeypatch) -> None:
         """A pip install into the desktop app's code-signed bundle breaks
         launches/updates and is discarded on every app update — the command
         must not be offered there even though pip itself may exist."""
-        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
         monkeypatch.setattr(
             core_mod.platform_compat, "is_bundled_interpreter", lambda: True
         )
@@ -436,7 +431,6 @@ class TestPipInstallChannel:
     def test_pipless_interpreter_has_no_channel(self, monkeypatch) -> None:
         """uv tool installs and some pipx layouts ship no `pip` module, so
         `<python> -m pip` fails immediately — the command must not be shown."""
-        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
         real = core_mod.importlib.util.find_spec
         monkeypatch.setattr(
             core_mod.importlib.util,
@@ -448,7 +442,6 @@ class TestPipInstallChannel:
     def test_externally_managed_python_has_no_channel(self, monkeypatch, tmp_path) -> None:
         """PEP 668: pip refuses installs into an externally-managed
         interpreter (distro/brew pythons) — but only outside a venv."""
-        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
         monkeypatch.setattr(core_mod.sys, "prefix", core_mod.sys.base_prefix)
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
         monkeypatch.setattr(core_mod.sysconfig, "get_path", lambda name: str(tmp_path))
@@ -459,7 +452,6 @@ class TestPipInstallChannel:
         resolves to the BASE interpreter's directory where distro pythons put
         the marker — the recommended install layout (venv on a Debian/brew
         python) must not be misread as unsupported."""
-        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
         monkeypatch.setattr(core_mod.sys, "prefix", str(tmp_path / "venv"))
         monkeypatch.setattr(core_mod.sys, "base_prefix", str(tmp_path / "base"))
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
@@ -467,7 +459,6 @@ class TestPipInstallChannel:
         assert core_mod._pip_install_channel_available() is True
 
     def test_ordinary_venv_has_a_channel(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
         monkeypatch.setattr(core_mod.sys, "prefix", core_mod.sys.base_prefix)
         monkeypatch.setattr(core_mod.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True

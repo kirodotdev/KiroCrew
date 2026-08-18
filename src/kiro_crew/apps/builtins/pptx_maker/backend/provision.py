@@ -36,8 +36,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
-import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,8 +58,8 @@ ENGINE_COMMIT = engine_source.ENGINE_COMMIT
 UV_SYNC_TIMEOUT = 900
 UV_INSTALL_TIMEOUT = 300
 
-# The `uv` executable name, per platform. `sysconfig`'s EXE is "" on POSIX and
-# ".exe" on Windows, which is exactly the suffix the uv wheel's own locator uses.
+# The `uv` executable basename. No platform suffix is appended: the wheel's own
+# locator returns a full path, and `shutil.which` applies Windows `PATHEXT`.
 _UV_BASENAME = "uv"
 
 # Placeholders substituted into the shipped agent configs. The engine's absolute
@@ -109,24 +107,6 @@ _uv_path_cache: str | None = None
 _uv_path_resolved = False
 
 
-def _frozen_bundle_dirs() -> list[str]:
-    """Candidate directories for a bundled ``uv`` in a frozen build.
-
-    A frozen one-folder bundle has neither a scripts dir nor site-packages, so
-    the uv wheel's own locator cannot find the binary there (it walks
-    ``sysconfig`` paths only) — it raises ``UvNotFound``. Such a build stages the
-    binary at the bundle root, which is ``sys._MEIPASS`` at runtime and, for a
-    one-folder build, the directory holding ``sys.executable``. Both are checked
-    because the two differ for a one-FILE build (``_MEIPASS`` is the extraction
-    temp dir). Returns ``[]`` on the current desktop bundle, which ships a real
-    python-build-standalone interpreter tree that the locator walks.
-    """
-    if not getattr(sys, "frozen", False):
-        return []
-    candidates = [getattr(sys, "_MEIPASS", ""), os.path.dirname(sys.executable or "")]
-    return [c for c in candidates if c]
-
-
 def resolve_uv() -> str | None:
     """Absolute path to a usable ``uv``, or ``None`` when genuinely absent.
 
@@ -141,17 +121,15 @@ def resolve_uv() -> str | None:
     1. ``uv.find_uv_bin()`` — the wheel's own locator, the normal pip case. It
        raises ``UvNotFound`` (a ``FileNotFoundError`` subclass) when the binary
        is missing, e.g. an odd repackaging;
-    2. the frozen-bundle location — the DMG/Electron install, where there is no
-       scripts dir for the locator to walk (see :func:`_frozen_bundle_dirs`);
-    3. ``shutil.which("uv")`` — a user's own, possibly newer, uv still works;
-    4. ``None``.
+    2. ``shutil.which("uv")`` — a user's own, possibly newer, uv still works;
+    3. ``None``.
 
     Never raises: an absent uv is a reportable condition, so the caller can fail
     with an actionable message instead of a traceback in a background job.
 
     Cached process-wide: this runs on every provision and the answer cannot
-    change within a process (the interpreter's own site-packages and the frozen
-    bundle are both fixed at startup).
+    change within a process (the interpreter's own site-packages are fixed at
+    startup).
     """
     global _uv_path_cache, _uv_path_resolved
     if _uv_path_resolved:
@@ -175,12 +153,6 @@ def _resolve_uv_uncached() -> str | None:
             return found
     except (ImportError, FileNotFoundError, OSError) as exc:
         logger.debug("pptx-maker: uv.find_uv_bin() did not resolve: %s", exc)
-
-    executable = _UV_BASENAME + (sysconfig.get_config_var("EXE") or "")
-    for directory in _frozen_bundle_dirs():
-        candidate = os.path.join(directory, executable)
-        if os.path.isfile(candidate):
-            return candidate
 
     return shutil.which(_UV_BASENAME)
 
