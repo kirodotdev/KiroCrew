@@ -13,13 +13,21 @@ Two layers of defence:
    event's ``team`` field against the cached value (zero-cost in-memory
    check, no API call).  Catches hot-swap of ``.env`` tokens while the
    gateway is running.  Allows everything when no allowlist is set.
+
+Default-open means *no allowlist configured*, which is not the same as
+*the allowlist could not be read*.  ``KiroCrewConfig.load()`` degrades to
+defaults on a corrupt or torn ``config.json`` rather than raising, so both
+places this module reads the allowlist ask :func:`unreadable_config_paths`
+first and fail CLOSED on an unreadable config — admitting only the
+validated ``team_id`` — instead of inferring "unconfigured" from an empty
+value (#3945).
 """
 
 from __future__ import annotations
 
 import logging
 
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, unreadable_config_paths
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -60,6 +68,24 @@ def _load_allowed_team_ids() -> None:
     any ``slack.allowed_enterprise_ids`` entries.  When none are
     configured the module stays default-open.
 
+    **A config that cannot be read is not "unconfigured".**
+    ``KiroCrewConfig.load()`` degrades on a corrupt or torn ``config.json``:
+    it catches the parse error, logs a warning and returns DEFAULTS.  So an
+    operator's ``allowed_enterprise_ids`` came back as the empty default,
+    ``_allowlist_configured`` flipped to False, and ``check_message_origin``
+    took its default-open path — accepting every origin — while the
+    ``except`` branch below, written for exactly this case, never fired
+    because ``load()`` never raises (#3945).  Torn reads are documented as
+    the common case in ``read_config_for_update``, so this is not
+    hypothetical.
+
+    :func:`unreadable_config_paths` asks the question ``load()`` swallows.
+    When a config file exists but does not parse, this fails CLOSED: the
+    allowlist stays ACTIVE with only the validated ``team_id`` admitted, so
+    the restriction narrows rather than disappearing until the file is
+    repaired.  Same shape and same primitive as the publish allowlist fix in
+    #3615.
+
     Config load failures are logged and SEL-audited but do not raise —
     the cache falls back to just the validated team_id.
     """
@@ -67,6 +93,8 @@ def _load_allowed_team_ids() -> None:
     allowed: set[str] = set()
     if _validated_team_id:
         allowed.add(_validated_team_id)
+    # Asked BEFORE load(), because load() cannot report it afterwards.
+    unreadable = unreadable_config_paths()
     try:
         cfg = KiroCrewConfig.load()
         configured = set(cfg.slack.allowed_enterprise_ids)
@@ -83,6 +111,27 @@ def _load_allowed_team_ids() -> None:
             outcome="error",
             source="startup",
             error="config_load_failed",
+        )
+    if unreadable:
+        # Deliberately NOT `or`-ed into the bool above: an unreadable config
+        # forces the allowlist ON even when the parsed (defaulted) value is
+        # empty. That is the whole point — empty-because-unknown must not read
+        # as empty-because-unconfigured.
+        _allowlist_configured = True
+        names = ", ".join(p.name for p in unreadable)
+        logger.error(
+            "Slack enterprise allowlist failing CLOSED: %s could not be read, "
+            "so slack.allowed_enterprise_ids is unknown; admitting only the "
+            "validated team_id until the config is repaired",
+            names,
+        )
+        sel().log_api_access(
+            caller="gateway",
+            operation="slack.allowed_team_ids_load",
+            outcome="denied",
+            source="startup",
+            resources=f"unreadable={names}",
+            error="config_unreadable_failing_closed",
         )
     _allowed_team_ids = allowed
 
@@ -194,6 +243,11 @@ def validate_enterprise(
         # config here cannot rely on auth.test having succeeded, so check
         # it directly.
         configured: set[str] = set()
+        # Same trap as _load_allowed_team_ids: load() degrades to defaults on a
+        # corrupt config instead of raising, so an empty `configured` here can
+        # mean "no allowlist" OR "the allowlist is unreadable" — and the
+        # difference decides whether this branch fails open or closed (#3945).
+        unreadable = unreadable_config_paths()
         try:
             cfg = KiroCrewConfig.load()
             configured = set(cfg.slack.allowed_enterprise_ids)
@@ -204,24 +258,33 @@ def validate_enterprise(
             )
         allowlist = extra | configured
 
-        if allowlist:
-            # FAIL CLOSED: an operator restriction is in force but the
-            # workspace identity could not be verified.  Accepting an
-            # unverifiable workspace against an explicit allowlist would
-            # silently bypass the restriction.  check_message_origin()
-            # also denies because no validated team_id was cached.
+        if allowlist or unreadable:
+            # FAIL CLOSED: an operator restriction is in force -- or may be,
+            # and we cannot tell -- but the workspace identity could not be
+            # verified.  Accepting an unverifiable workspace against an
+            # explicit allowlist would silently bypass the restriction, and an
+            # unreadable config is not evidence that no restriction exists.
+            # check_message_origin() also denies because no validated team_id
+            # was cached.
             _allowlist_configured = True
             _allowed_team_ids = set(allowlist)
+            reason = (
+                "auth_test_unavailable_with_unreadable_config"
+                if unreadable and not allowlist
+                else "auth_test_unavailable_with_allowlist"
+            )
             logger.error(
                 "Enterprise validation FAILED: auth.test unavailable and an "
-                "allowlist is configured; cannot verify workspace identity."
+                "allowlist is configured (or unreadable: %s); cannot verify "
+                "workspace identity.",
+                ", ".join(p.name for p in unreadable) or "none",
             )
             sel().log_api_access(
                 caller="gateway",
                 operation="slack.enterprise_validation",
                 outcome="denied",
                 source="startup",
-                error="auth_test_unavailable_with_allowlist",
+                error=reason,
             )
             return False
 

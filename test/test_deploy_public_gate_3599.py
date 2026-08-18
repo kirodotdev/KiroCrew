@@ -482,11 +482,12 @@ def test_a_malformed_config_denies_instead_of_reopening_the_path(
     moment the file was corrupted. This module documents fail-CLOSED, so it checks
     parseability itself.
     """
+    import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
     bad = tmp_path / "config.json"
     bad.write_text('{"publish": {"allowed_destinations": ["internal-registry"]')  # truncated
-    monkeypatch.setattr(pg, "config_path", lambda: bad)
-    monkeypatch.setattr(pg, "config_local_path", lambda: tmp_path / "config.local.json")
+    monkeypatch.setattr(loader, "config_path", lambda: bad)
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
 
     reason = pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID)
 
@@ -501,13 +502,14 @@ def test_a_malformed_overlay_denies_too(tmp_path, monkeypatch, _quiet_sel):
     A corrupt overlay hides an allowlist exactly as effectively as a corrupt base,
     so checking only the base would leave half the hole open.
     """
+    import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
     good = tmp_path / "config.json"
     good.write_text("{}")
     bad_overlay = tmp_path / "config.local.json"
     bad_overlay.write_text("}not json{")
-    monkeypatch.setattr(pg, "config_path", lambda: good)
-    monkeypatch.setattr(pg, "config_local_path", lambda: bad_overlay)
+    monkeypatch.setattr(loader, "config_path", lambda: good)
+    monkeypatch.setattr(loader, "config_local_path", lambda: bad_overlay)
 
     reason = pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID)
 
@@ -517,11 +519,12 @@ def test_a_malformed_overlay_denies_too(tmp_path, monkeypatch, _quiet_sel):
 
 def test_a_non_object_config_denies(tmp_path, monkeypatch, _quiet_sel):
     """Valid JSON that is not an object also degrades to defaults in the loader."""
+    import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
     weird = tmp_path / "config.json"
     weird.write_text('["not", "an", "object"]')
-    monkeypatch.setattr(pg, "config_path", lambda: weird)
-    monkeypatch.setattr(pg, "config_local_path", lambda: tmp_path / "nope.json")
+    monkeypatch.setattr(loader, "config_path", lambda: weird)
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "nope.json")
 
     assert pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID) is not None
 
@@ -537,11 +540,12 @@ def test_a_config_load_failure_is_audited_too(tmp_path, monkeypatch, _quiet_sel)
     The parseability guard sits in front of this branch, so the config on disk has
     to be VALID while ``load()`` itself fails — hence a raising ``load``.
     """
+    import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
     good = tmp_path / "config.json"
     good.write_text("{}")
-    monkeypatch.setattr(pg, "config_path", lambda: good)
-    monkeypatch.setattr(pg, "config_local_path", lambda: tmp_path / "absent.json")
+    monkeypatch.setattr(loader, "config_path", lambda: good)
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "absent.json")
 
     class _Raising:
         """Only publish_governance's binding is replaced, so the governance layer
@@ -570,9 +574,10 @@ def test_an_absent_config_still_permits(tmp_path, monkeypatch, _quiet_sel):
     merely MISSING would break every ordinary install, where an unnamed publish is
     ungoverned and permitted.
     """
+    import kiro_crew.config.loader as loader
     import kiro_crew.publish_governance as pg
-    monkeypatch.setattr(pg, "config_path", lambda: tmp_path / "absent.json")
-    monkeypatch.setattr(pg, "config_local_path", lambda: tmp_path / "absent.local.json")
+    monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "absent.json")
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "absent.local.json")
 
     assert pg.publish_denied_reason(_Req(), pg.DEPLOY_WEB_PROVIDER_ID) is None
     assert _quiet_sel == [], "a permitted publish must not audit"

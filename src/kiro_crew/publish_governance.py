@@ -41,11 +41,8 @@ from aiohttp import web
 
 from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import (
-    ConfigReadError,
     KiroCrewConfig,
-    config_local_path,
-    config_path,
-    read_config_for_update,
+    unreadable_config_paths,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,16 +93,12 @@ def _unparseable_config_reason() -> str | None:
     the operator closed. Because ``load()`` cannot fail, a ``try/except`` around
     it never fires, so this chokepoint has to ask the question itself.
 
-    It asks through :func:`read_config_for_update`, which already IS the repo's
-    fail-closed config read (absent → ``{}``, unreadable or non-object →
-    ``ConfigReadError``, ``UnicodeDecodeError`` named explicitly because it is a
-    ``ValueError`` rather than an ``OSError``). Hand-rolling a second spelling of
-    "a config parse must not degrade" would give the invariant two homes and let
-    them drift; the name reads oddly here only because nothing is being updated.
-
-    Both files are checked: the overlay ``config.local.json`` is deep-merged over
-    the base and swallows its own parse errors the same way, so a corrupt overlay
-    hides an allowlist just as effectively as a corrupt base.
+    The asking lives in :func:`unreadable_config_paths` — the shared predicate
+    next to the fail-closed read it delegates to — because this is not the only
+    gate that has to ask (the Slack enterprise-origin allowlist has the same
+    shape, see ``slack.enterprise``), and two spellings of "a config parse must
+    not degrade" would drift. This function only turns its answer into the
+    denial string this module's callers expect.
 
     A file that is simply ABSENT is not an error — that is the standalone default,
     and an unnamed publish is ungoverned and permitted.
@@ -115,12 +108,9 @@ def _unparseable_config_reason() -> str | None:
     module-scope dependency of this file (``KiroCrewConfig``), so the CPP
     import-direction invariant has nothing to say about importing more of it.
     """
-    for path in (config_path(), config_local_path()):
-        try:
-            read_config_for_update(path)
-        except ConfigReadError as e:
-            logger.warning("publish denied: %s", e)
-            return f"publishing denied: {path.name} could not be read as a JSON object"
+    for path in unreadable_config_paths():
+        logger.warning("publish denied: %s could not be read as a JSON object", path)
+        return f"publishing denied: {path.name} could not be read as a JSON object"
     return None
 
 

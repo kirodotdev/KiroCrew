@@ -343,3 +343,129 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned():
             assert enterprise.validate_enterprise("xoxb-token") is True
     finally:
         ctx_mod.reset_context()
+
+
+# --------------------------------------------------------------------------
+# A config that cannot be READ is not a config that says "no allowlist" (#3945)
+# --------------------------------------------------------------------------
+#
+# KiroCrewConfig.load() catches JSONDecodeError/OSError, warns, and returns
+# DEFAULTS -- it never raises. So the `except Exception` in
+# _load_allowed_team_ids, written for exactly this case, never fired: a corrupt
+# or torn config.json handed back an empty allowed_enterprise_ids,
+# _allowlist_configured flipped to False, and check_message_origin took its
+# default-open path, accepting every origin. These tests drive the REAL loader
+# against a real corrupt file on disk rather than mocking load(), because the
+# whole defect is that the mock-visible failure path is not the one taken.
+
+
+@pytest.fixture
+def _config_on_disk(tmp_path, monkeypatch):
+    """Point the loader at a tmp config pair and return (base, overlay)."""
+    import kiro_crew.config.loader as loader
+
+    base = tmp_path / "config.json"
+    overlay = tmp_path / "config.local.json"
+    monkeypatch.setattr(loader, "config_path", lambda: base)
+    monkeypatch.setattr(loader, "config_local_path", lambda: overlay)
+    return base, overlay
+
+
+def test_corrupt_config_refuses_a_foreign_workspace_instead_of_admitting_it(
+    _config_on_disk,
+):
+    """The regression the issue asks for: a malformed config.json must not
+    reopen the allowlist for an origin the operator never listed."""
+    base, _ = _config_on_disk
+    base.write_text('{"slack": {"allowed_enterprise_ids": ["T_ALLOWED"]')  # truncated
+
+    resp = {"team_id": "T_HOME", "team": "Home Co", "url": "https://x"}
+    with _install_fake_slack_sdk(resp):
+        enterprise.validate_enterprise("xoxb-token")
+
+    assert enterprise._allowlist_configured is True
+    assert enterprise.check_message_origin("T_FOREIGN") is False
+    # The validated workspace itself still works -- this narrows, not bricks.
+    assert enterprise.check_message_origin("T_HOME") is True
+
+
+def test_a_corrupt_overlay_fails_closed_too(_config_on_disk):
+    """config.local.json is deep-merged and swallows its own parse errors, so
+    a corrupt overlay hides the allowlist just as effectively as a corrupt base."""
+    base, overlay = _config_on_disk
+    base.write_text('{"slack": {"allowed_enterprise_ids": ["T_ALLOWED"]}}')
+    overlay.write_text("}not json{")
+
+    resp = {"team_id": "T_HOME", "team": "Home Co", "url": "https://x"}
+    with _install_fake_slack_sdk(resp):
+        enterprise.validate_enterprise("xoxb-token")
+
+    assert enterprise._allowlist_configured is True
+    assert enterprise.check_message_origin("T_FOREIGN") is False
+
+
+def test_a_readable_config_with_no_allowlist_still_defaults_open(_config_on_disk):
+    """Control: the fail-closed path must key off UNREADABLE, not off empty.
+    An operator who configured nothing is still unrestricted."""
+    base, _ = _config_on_disk
+    base.write_text('{"slack": {}}')
+
+    resp = {"team_id": "T_HOME", "team": "Home Co", "url": "https://x"}
+    with _install_fake_slack_sdk(resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+
+    assert enterprise._allowlist_configured is False
+    assert enterprise.check_message_origin("T_ANYTHING") is True
+
+
+def test_an_absent_config_still_defaults_open(_config_on_disk):
+    """Control: absent is the ordinary unconfigured state, not an error."""
+    resp = {"team_id": "T_HOME", "team": "Home Co", "url": "https://x"}
+    with _install_fake_slack_sdk(resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+
+    assert enterprise._allowlist_configured is False
+    assert enterprise.check_message_origin("T_ANYTHING") is True
+
+
+def test_corrupt_config_is_sel_audited(_config_on_disk):
+    """The degradation must be visible to an operator, not silent."""
+    base, _ = _config_on_disk
+    base.write_text("}not json{")
+
+    fake_sel = MagicMock()
+    resp = {"team_id": "T_HOME", "team": "Home Co", "url": "https://x"}
+    with _install_fake_slack_sdk(resp), patch.object(
+        enterprise, "sel", return_value=fake_sel
+    ):
+        enterprise.validate_enterprise("xoxb-token")
+
+    errors = [
+        c.kwargs.get("error") for c in fake_sel.log_api_access.call_args_list
+    ]
+    assert "config_unreadable_failing_closed" in errors
+
+
+def test_auth_test_failure_with_corrupt_config_fails_closed(_config_on_disk):
+    """The other read of the allowlist in this module has the same shape: an
+    unverifiable workspace plus an unreadable config must not continue
+    default-open on the strength of an allowlist we could not read."""
+    base, _ = _config_on_disk
+    base.write_text('{"slack": {"allowed_enterprise_ids": ["T_ALLOWED"]')  # truncated
+
+    with _install_fake_slack_sdk(raise_exc=True):
+        assert enterprise.validate_enterprise("xoxb-token") is False
+    assert enterprise._allowlist_configured is True
+
+
+def test_auth_test_failure_with_readable_empty_config_still_defaults_open(
+    _config_on_disk,
+):
+    """Control for the above: a readable config with no allowlist keeps the
+    documented default-open behaviour when auth.test is unavailable."""
+    base, _ = _config_on_disk
+    base.write_text('{"slack": {}}')
+
+    with _install_fake_slack_sdk(raise_exc=True):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert enterprise._allowlist_configured is False

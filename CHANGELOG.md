@@ -3,6 +3,23 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **A corrupt `config.json` no longer silently reopens the Slack
+  enterprise-origin allowlist.** `KiroCrewConfig.load()` degrades rather than
+  raises on a malformed or torn config: it catches the parse error, warns, and
+  returns DEFAULTS. So an operator's `slack.allowed_enterprise_ids` came back
+  empty, `_allowlist_configured` flipped to False, and `check_message_origin()`
+  took its documented default-open path — admitting every origin — while the
+  `except` branch written for exactly this case never fired, because `load()`
+  never raises. The operator's restriction just stopped applying, with nothing
+  surfaced, until the file was repaired; the loader's own docs name torn reads
+  as the common case. Both places `slack.enterprise` reads the allowlist now
+  ask whether the config on disk actually parses and fail CLOSED when it does
+  not — the allowlist stays active with only the validated `team_id` admitted,
+  and the degradation is logged and SEL-audited — instead of inferring
+  "unconfigured" from an empty value. Same root cause as the publish allowlist
+  fixed in #3615, and it now shares that fix's primitive:
+  `unreadable_config_paths()` moves next to the fail-closed read it delegates
+  to, so the two gates cannot drift. (#3945)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A

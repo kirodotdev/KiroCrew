@@ -730,6 +730,41 @@ def read_config_for_update(path: Path | None = None) -> dict:
     return raw
 
 
+def unreadable_config_paths() -> list[Path]:
+    """Return the config files that EXIST on disk but do not parse.
+
+    The question a security gate has to ask before trusting a value read out of
+    :meth:`KiroCrewConfig.load`. ``load()`` deliberately DEGRADES — it catches
+    ``json.JSONDecodeError``/``OSError``, logs a warning and returns DEFAULTS —
+    which is right for an ordinary consumer and wrong for anything deciding
+    access: the degraded object is indistinguishable from "the operator
+    configured nothing", so an allowlist the operator narrowed silently reopens.
+    Because ``load()`` cannot raise, a ``try/except`` around it never fires and
+    the gate has to ask separately.
+
+    It asks through :func:`read_config_for_update`, which already IS this
+    repo's fail-closed config read, rather than hand-rolling a second spelling
+    of "a config parse must not degrade" that could drift from the first.
+    The name reads oddly at a read-only call site only because nothing is being
+    updated.
+
+    BOTH files are reported: the overlay ``config.local.json`` is deep-merged
+    over the base and swallows its own parse errors the same way, so a corrupt
+    overlay hides a setting just as effectively as a corrupt base.
+
+    An ABSENT file is not unreadable — that is the ordinary unconfigured state,
+    and a gate should treat it as such.
+    """
+    bad: list[Path] = []
+    for path in (config_path(), config_local_path()):
+        try:
+            read_config_for_update(path)
+        except ConfigReadError as e:
+            logger.warning("config unreadable: %s", e)
+            bad.append(path)
+    return bad
+
+
 def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> None:
     """Write a config dict to *path* atomically, PRESERVING its permissions.
 
