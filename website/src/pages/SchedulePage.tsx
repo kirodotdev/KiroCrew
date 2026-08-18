@@ -4,6 +4,7 @@ import Clickable from '../components/Clickable'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download } from 'lucide-react'
 import { api } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useArmedDelete } from '../hooks/useArmedDelete'
 import { PageHeader, Card, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton, Input } from '../components/ui'
 import { CodeBlock } from '../components/CodeBlock'
 import SegmentedControl from '../components/SegmentedControl'
@@ -379,29 +380,17 @@ export default function SchedulePage() {
     }
   }, [load, refreshFolders, setActionError])
 
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  const confirmRevertTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const armDelete = useCallback((id: string) => {
-    setConfirmDeleteId(id)
-    if (confirmRevertTimer.current) clearTimeout(confirmRevertTimer.current)
-    confirmRevertTimer.current = setTimeout(() => setConfirmDeleteId(null), 3000)
-  }, [])
-  useEffect(() => () => { if (confirmRevertTimer.current) clearTimeout(confirmRevertTimer.current) }, [])
-  const deleteJob = useCallback(async (id: string) => {
+  // performDelete reports its own errors, so confirmDelete never rejects.
+  const performDelete = useCallback(async (id: string) => {
     try {
-      if (confirmRevertTimer.current) clearTimeout(confirmRevertTimer.current)
-      setDeletingId(id)
       await api.deleteCron(id)
       setSelected(prev => prev?.id === id ? null : prev)
       await load()
     } catch (e: unknown) {
       setActionError({ id, msg: e instanceof Error ? e.message : i18nT('pages.schedulePage.delete_failed') })
-    } finally {
-      setDeletingId(null)
-      setConfirmDeleteId(null)
     }
   }, [load, setActionError])
+  const { armedId: confirmDeleteId, arm: armDelete, confirm: confirmDelete, isDeleting } = useArmedDelete(performDelete)
   const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(j.model||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
   const scheduleComparators = useMemo(() => ({
     name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
@@ -850,10 +839,10 @@ export default function SchedulePage() {
                         ChatInput's Continue/Send buttons. */}
                     <Btn
                       danger
-                      disabled={deletingId === j.id}
+                      disabled={isDeleting(j.id)}
                       title={confirmDeleteId === j.id ? i18nT('pages.schedulePage.click_again_to_confirm') : i18nT('pages.schedulePage.delete_job')}
-                      onClick={() => confirmDeleteId === j.id ? deleteJob(j.id) : armDelete(j.id)}
-                    >{deletingId === j.id ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
+                      onClick={() => { if (confirmDeleteId === j.id) void confirmDelete(j.id); else armDelete(j.id) }}
+                    >{isDeleting(j.id) ? '...' : confirmDeleteId === j.id ? i18nT('pages.schedulePage.confirm_delete_job') : i18nT('pages.schedulePage.delete')}</Btn>
                     <CronRowActions
                       job={j}
                       folders={cronFolders}
