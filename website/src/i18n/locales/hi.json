@@ -4412,6 +4412,10 @@
       "the_import_did_not_finish_please_try_again": "इम्पोर्ट पूरा नहीं हुआ। कृपया फिर कोशिश करें।",
       "try_again": "फिर कोशिश करें",
       "we_could_not_scan_agent_setup": "हम एजेंट सेटअप स्कैन नहीं कर सके",
+      "found_setup_kirocrew_could_not_read": "ऐसा सेटअप मिला जिसे Kiro Crew पढ़ नहीं सका",
+      "found_setup_but_could_not_read_it": "Kiro Crew को {{sources}} मिला, लेकिन फ़ाइलें नहीं पढ़ी जा सकीं, इसलिए कुछ भी आयात नहीं किया गया।",
+      "some_setup_could_not_be_read": "Kiro Crew {{sources}} को पढ़ नहीं सका — नीचे सूचीबद्ध नहीं।",
+      "files_could_not_be_read": "फ़ाइलें पढ़ी नहीं जा सकीं",
       "your_existing_kirocrew_setup_will_not_be_affecte": "आपके मौजूदा Kiro Crew सेटअप पर कोई असर नहीं पड़ेगा।",
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप Kiro Crew में तैयार है।"
     },

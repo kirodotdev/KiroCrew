@@ -54,8 +54,11 @@ workspace-scoped by default (fail-closed via `_caller_workspace`/`_ws_bucket`,
 
 ### Foreign-agent session import
 
-The first-run importer accepts session history from Codex, Claude Code,
-MeshClaw, OpenClaw, and Hermes. It projects each selected conversation to
+The first-run importer accepts session history from Codex, Claude Code, OpenClaw,
+and Hermes, plus any edition-registered source declaring the `lineage` layout —
+that reader covers the `workspace/` tree the predecessor entry used to, so the
+capability moved behind registration rather than being removed. It projects each
+selected conversation to
 **visible user and assistant text only**. Hidden reasoning, tool calls and tool
 results, system messages, raw instructions, provider session identifiers,
 approval state, and other runtime metadata are not copied.

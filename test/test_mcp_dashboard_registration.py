@@ -41,7 +41,7 @@ class TestRegistryParity:
         assert DASH_SERVER in mcp_cleanup.KIROCREW_BIN_MCP_SERVERS
         assert mcp_discovery._MANAGED_SERVER_SUBCOMMANDS.get(DASH_SERVER) == DASH_SUBCOMMAND
         assert DASH_SERVER in mcp_discovery._MANAGED_SERVER_NAMES
-        assert DASH_SERVER in onboarding_import._MANAGED_MCP_NAMES
+        assert DASH_SERVER in onboarding_import._managed_mcp_names()
 
     def test_tool_module_is_mapped_for_in_process_listing(self) -> None:
         """Discovery reads tool names in-process; an unmapped server lists zero."""

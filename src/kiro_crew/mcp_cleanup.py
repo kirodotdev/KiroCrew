@@ -60,11 +60,6 @@ OPT_IN_BIN_MCP_SERVERS = ("kirocrew-dashboard",)
 # user's global mcp.json, so a stray entry is purgeable either way.
 KIROCREW_BIN_MCP_SERVERS = ALWAYS_ON_BIN_MCP_SERVERS + OPT_IN_BIN_MCP_SERVERS
 
-# MeshClaw was the predecessor of KiroCrew. The rename left these managed
-# server entries — pointing at now-dead MeshClaw build paths — behind in the
-# user's global provider config; they are unambiguously stale and safe to purge.
-PREDECESSOR_BIN_MCP_SERVERS = frozenset({"meshclaw-cron", "meshclaw-core"})
-
 # Every managed-binary server name KiroCrew is responsible for removing from
 # the user's global mcp.json (Kiro Crew never legitimately writes these there).
 #
@@ -74,7 +69,34 @@ PREDECESSOR_BIN_MCP_SERVERS = frozenset({"meshclaw-cron", "meshclaw-core"})
 # only way it is ever granted is by hand. So no legitimate residue can exist
 # under that name, and anything found there is necessarily the user's own: to be
 # left alone, not reclaimed on a technicality about how it happens to be spelled.
-STALE_MANAGED_MCP_SERVERS = frozenset(ALWAYS_ON_BIN_MCP_SERVERS) | PREDECESSOR_BIN_MCP_SERVERS
+STALE_MANAGED_MCP_SERVERS = frozenset(ALWAYS_ON_BIN_MCP_SERVERS)
+
+
+def _predecessor_mcp_names() -> frozenset[str]:
+    """Managed server names owned by an agent an edition supersedes.
+
+    An edition that replaces a predecessor registers it as an import source, and
+    the same descriptor names the MCP servers that agent managed. Those entries
+    point at a runtime that is gone, so they are unambiguously stale — but only
+    the edition knows they exist, which is why this is read from the registry
+    rather than listed here.
+    """
+    # Deferred, NOT top-level: cli.py imports this module eagerly, and
+    # onboarding_import pulls yaml/croniter/vector_memory/embeddings. Hoisting it
+    # puts that weight on every CLI invocation, which
+    # test_cli_lazy_imports.py::test_cli_import_does_not_load_heavy_modules
+    # fails on by design. Same annotation as the call site in agent.py.
+    from kiro_crew.onboarding_import import predecessor_mcp_names  # noqa: PLC0415
+
+    return predecessor_mcp_names()
+
+
+def _stale_mcp_binaries() -> frozenset[str]:
+    """Launcher basenames whose leftover MCP entries an edition declared purgeable."""
+    # Deferred for the same boot-weight reason as _predecessor_mcp_names above.
+    from kiro_crew.onboarding_import import stale_mcp_binaries  # noqa: PLC0415
+
+    return stale_mcp_binaries()
 
 
 # The argv token the deleted Playwright MCP proxy was registered with. An entry
@@ -91,7 +113,7 @@ def _invokes_deleted_playwright_proxy(spec: object) -> bool:
     Matched on the ARGV token, never on the server name. The canonical name was
     ``playwright-mcp``, but that is also what an operator's OWN Playwright server
     is called, and purging by name would delete a server Kiro Crew never wrote --
-    the same trap ``_invokes_meshclaw`` exists to avoid.
+    the same trap ``_invokes_superseded_agent`` exists to avoid.
     """
     if not isinstance(spec, dict):
         return False
@@ -101,29 +123,44 @@ def _invokes_deleted_playwright_proxy(spec: object) -> bool:
     return any(isinstance(a, str) and a == _DELETED_PROXY_ARGV_TOKEN for a in args)
 
 
-def _invokes_meshclaw(spec: object) -> bool:
-    """True if a server spec's command is the dead MeshClaw predecessor binary.
+#: Executable suffixes a Windows console script carries (`...\Scripts\<name>.exe`).
+#: Only these are stripped when matching a launcher basename, so an unrelated
+#: dotted command is never collapsed onto a registered name.
+_WINDOWS_LAUNCHER_SUFFIXES = (".exe", ".cmd", ".bat", ".ps1", ".com")
 
-    Catches stale entries the rename left behind whose *name* isn't in the
-    managed set — e.g. a leftover ``npm:@playwright/mcp`` proxy pointing at an
-    old MeshClaw runtime (``.../MeshClaw/.../bin/meshclaw``,
-    ``...\\MeshClaw\\Scripts\\meshclaw.exe``). Keyed on the command basename so
-    it matches both the bare name and absolute paths, and never matches a
-    genuine playwright server (which runs ``npx``/``node``).
+
+def _invokes_superseded_agent(spec: object) -> bool:
+    """True if a server spec's command is the launcher of a superseded agent.
+
+    Catches stale entries a rename left behind whose *name* is not in the managed
+    set — e.g. a leftover ``npm:@playwright/mcp`` proxy pointing at the old
+    runtime. Keyed on the command basename so it matches both a bare name and an
+    absolute path, and never matches a genuine playwright server (which runs
+    ``npx``/``node``). The names come from the import-source registry, so the
+    core does not hardcode any superseded product name.
     """
     if not isinstance(spec, dict):
         return False
     cmd = spec.get("command", "")
     if not isinstance(cmd, str) or not cmd:
         return False
+    binaries = _stale_mcp_binaries()
+    if not binaries:
+        return False
     # mcp.json is cross-platform data (a config written on Windows may be read
     # anywhere), so split on BOTH separators rather than the host's os.sep —
-    # os.path.basename only honors the local separator. Then drop a launcher
-    # suffix so ``...\\Scripts\\meshclaw.exe`` (pip's Windows console script)
-    # matches the bare predecessor name.
+    # os.path.basename only honors the local separator.
     leaf = re.split(r"[\\/]", cmd)[-1]
-    stem = leaf.split(".", 1)[0]
-    return stem == "meshclaw"
+    stem = leaf.casefold()
+    # Strip only a real executable suffix. Splitting on the FIRST dot instead
+    # would collapse any dotted command onto its first segment, so a server
+    # launched by an unrelated `<name>.<something>` binary would match a
+    # registered `<name>` and be deleted.
+    for suffix in _WINDOWS_LAUNCHER_SUFFIXES:
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return stem in binaries
 
 
 def clean_stale_managed_mcp() -> list[str]:
@@ -137,11 +174,10 @@ def clean_stale_managed_mcp() -> list[str]:
     config; genuine user-installed servers are never touched:
 
     * **By name** — ``kirocrew-cron`` / ``kirocrew-core`` (written there by an
-      older install method; KiroCrew now keeps these in the agent file) and the
-      dead predecessor ``meshclaw-cron`` / ``meshclaw-core``.
-    * **By command** — any server whose command is the dead MeshClaw predecessor
-      binary (basename ``meshclaw``), e.g. a leftover ``npm:@playwright/mcp``
-      proxy entry pointing at an old MeshClaw runtime.
+      older install method; Kiro Crew now keeps these in the agent file), plus
+      the managed servers of any agent an edition declares it supersedes.
+    * **By command** — any server whose command is a superseded agent's launcher,
+      e.g. a leftover ``npm:@playwright/mcp`` proxy pointing at its old runtime.
 
     Returns names of removed servers (empty list on no-op or error).
     """
@@ -158,7 +194,8 @@ def clean_stale_managed_mcp() -> list[str]:
         name
         for name, spec in servers.items()
         if name in STALE_MANAGED_MCP_SERVERS
-        or _invokes_meshclaw(spec)
+        or name in _predecessor_mcp_names()
+        or _invokes_superseded_agent(spec)
         or _invokes_deleted_playwright_proxy(spec)
     )
     if not removed:

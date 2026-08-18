@@ -71,26 +71,9 @@ src/kiro_crew/sandbox.py:.*\.midway
 # the enterprise companion's managed launcher may still use these.
 src/kiro_crew/platform/profile.py:.*\.midway
 
-# Functional literals: mcp_cleanup purges dead ``meshclaw-cron``/``meshclaw-core``
-# MCP entries left by upgraded installs; removing them orphans those entries.
-# (Both casings — the doc comments say "MeshClaw", the literals say "meshclaw".)
-src/kiro_crew/mcp_cleanup.py:.*[Mm]esh[Cc]law
-test/test_installer_shim_and_cleanup.py:.*[Mm]esh[Cc]law
-
 # Legacy CloudFormation stack/bucket names in the migration guide — renaming
 # them would make the find/delete remediation commands point at nothing.
 src/kiro_crew/deploy/skills/artifact-deploy/MIGRATION.md:.*meshclaw
-
-# MeshClaw -> KiroCrew migration tool: "MeshClaw"/"~/.meshclaw" name the user's
-# OLD install being imported (a legitimate user-facing migration source).
-transfer/
-
-# Foreign-agent onboarding names MeshClaw as a public migration source.
-src/kiro_crew/onboarding_import.py:.*[Mm]esh[Cc]law
-src/kiro_crew/dashboard/handlers/onboarding_import.py:.*[Mm]esh[Cc]law
-test/test_onboarding_import.py:.*[Mm]esh[Cc]law
-website/src/components/AgentImportFlow.tsx:.*[Mm]esh[Cc]law
-website/src/components/AgentImportFlow.test.tsx:.*[Mm]esh[Cc]law
 
 # Deploy scan module (detects internal content - the regex IS the feature)
 src/kiro_crew/deploy/scan.py

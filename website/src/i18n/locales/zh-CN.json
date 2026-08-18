@@ -4348,6 +4348,10 @@
       "the_import_did_not_finish_please_try_again": "导入未完成。请重试。",
       "try_again": "重试",
       "we_could_not_scan_agent_setup": "我们无法扫描代理配置",
+      "found_setup_kirocrew_could_not_read": "找到了 Kiro Crew 无法读取的设置",
+      "found_setup_but_could_not_read_it": "Kiro Crew 找到了 {{sources}}，但无法读取文件，因此未导入任何内容。",
+      "some_setup_could_not_be_read": "Kiro Crew 无法读取 {{sources}} —— 下方未列出。",
+      "files_could_not_be_read": "无法读取文件",
       "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 Kiro Crew 设置不会受到影响。",
       "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 Kiro Crew 中就绪。"
     },

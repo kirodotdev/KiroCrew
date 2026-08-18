@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from kiro_crew.platform.interfaces import McpScope
+    from kiro_crew.platform.interfaces import ImportSource, McpScope
 
 from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import CapabilityResult, InterceptDecision
@@ -242,6 +242,13 @@ class DefaultPromptSourceProvider:
     """No edition prompt/SOP roots — only user-authored prompts are listed."""
 
     def prompt_source_roots(self) -> List[Path]:
+        return []
+
+
+class DefaultImportSourceProvider:
+    """No edition import sources — the onboarding importer offers the builtins only."""
+
+    def import_sources(self) -> List["ImportSource"]:
         return []
 
 

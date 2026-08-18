@@ -27,11 +27,11 @@ surfaces as a flake in a file you never touched.
 
 ## Rule 0 — Know which conftest is under your file BEFORE you isolate anything
 
-`setup.cfg` declares three testpaths and they do **not** get the same fixtures. The
+`setup.cfg` declares two testpaths and they do **not** get the same fixtures. The
 table is in [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
 § Which conftest you are standing on — read it rather than a second copy here, which
-would drift. The short version: only `test/` gets `test/conftest.py`; `transfer/` and
-`src/kiro_crew/apps/builtins/*/tests/` get the rootdir `conftest.py` plus that app's
+would drift. The short version: only `test/` gets `test/conftest.py`;
+`src/kiro_crew/apps/builtins/*/tests/` gets the rootdir `conftest.py` plus that app's
 own `tests/conftest.py` where one exists.
 
 The rootdir `conftest.py` is the **host-mutation floor** — the guards that protect the

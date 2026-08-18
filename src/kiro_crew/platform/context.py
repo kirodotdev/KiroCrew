@@ -37,6 +37,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         ExternalAccessPolicy,
         FeatureApp,
         IdentityProvider,
+        ImportSourceProvider,
         JailProvider,
         KnowledgeProvider,
         McpToolingProvider,
@@ -285,6 +286,7 @@ class PlatformContext:
     mcp_tooling: "McpToolingProvider"
     agent_catalog: "AgentCatalogProvider"
     prompt_sources: "PromptSourceProvider"
+    import_sources: "ImportSourceProvider"
     capability_manager: "CapabilityManager"
 
     # ── install / structural extension points ──

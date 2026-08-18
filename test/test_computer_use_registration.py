@@ -418,7 +418,7 @@ def test_managed_server_name_appears_in_every_registry():
     assert CU_SERVER in mcp_cleanup.KIROCREW_BIN_MCP_SERVERS
     assert mcp_discovery._MANAGED_SERVER_SUBCOMMANDS.get(CU_SERVER) == CU_SUBCOMMAND
     assert CU_SERVER in mcp_discovery._MANAGED_SERVER_NAMES
-    assert CU_SERVER in onboarding_import._MANAGED_MCP_NAMES
+    assert CU_SERVER in onboarding_import._managed_mcp_names()
 
     # The dashboard's builtin list is a literal inside ``api_mcp_active``'s body,
     # so it is asserted through the function's source rather than an importable
@@ -451,15 +451,13 @@ def test_cleanup_tuple_is_ordered_and_covers_every_managed_server():
     assert set(mcp_cleanup.KIROCREW_BIN_MCP_SERVERS) == set(agent._MANAGED_MCP_SERVERS)
 
 
-def test_stale_managed_set_includes_the_predecessor_brands():
-    """The rename left ``meshclaw-``/``openclaw-`` copies behind in user configs.
+def test_managed_set_includes_the_predecessor_brand():
+    """The rename left ``openclaw-`` copies behind in user configs.
 
-    Following the existing three-brand pattern so an imported config's foreign
-    computer-use entry is recognised as managed rather than preserved as a
-    user-installed server.
+    Recognising the predecessor brand as managed prevents an imported config's
+    foreign computer-use entry from being preserved as a user-installed server.
     """
-    assert "meshclaw-computer" in onboarding_import._MANAGED_MCP_NAMES
-    assert "openclaw-computer" in onboarding_import._MANAGED_MCP_NAMES
+    assert "openclaw-computer" in onboarding_import._managed_mcp_names()
 
 
 def test_server_key_is_slash_free():

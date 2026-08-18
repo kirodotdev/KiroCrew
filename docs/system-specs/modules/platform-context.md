@@ -47,6 +47,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
+| `import_sources` | adapter | `DefaultImportSourceProvider` (`import_sources()` → `[]`) | edition onboarding-import sources |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
 | `external_access` | adapter | `DefaultExternalAccessPolicy` (`admits_registry()` / `admits_cloud_deployment()` → `True`) | allowlist installable content to an internal registry; withhold cloud deployment |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
@@ -587,10 +588,10 @@ delegates to that same global. Wired sites:
   by the time a jail backend probes it.
 
 
-### Amazon-edition seam additions (v1, no `CONTRACT_VERSION` bump)
+### Edition seam additions (v1, no `CONTRACT_VERSION` bump)
 
-Existing-Protocol methods added / wired so the Amazon companion can re-introduce
-dropped MeshClaw behavior without the core importing it. All are v1 additions (a
+Existing-Protocol methods added / wired so a companion can re-introduce behavior
+the public fork dropped without the core importing it. All are v1 additions (a
 `Default*` no-op reproduces today's OSS behavior exactly — a standalone process
 is byte-identical) with no `CONTRACT_VERSION` bump.
 
@@ -838,6 +839,24 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   companion returns its resolved package prompt roots. **Split out of
   `McpToolingProvider` into its own Protocol** (a distinct concern). v1 addition;
   `Default` returns `[]`.
+- `ImportSourceProvider.import_sources() -> List[ImportSource]` — WIRED:
+  `onboarding_import._sources()` unions the returned descriptors over the core
+  builtins for every scan, apply, and id-validation path, so a registered source
+  is accepted by `/api/onboarding/import/*` and rendered by the import wizard with
+  no core branching. Default `[]`, so the public edition offers only the foreign
+  agents it ships. One descriptor carries id, display name, root resolution, and
+  the agent's own managed MCP server names, so a registration cannot
+  half-work; a malformed one (no id, a reserved id, no
+  resolvable root, an id that reuses a builtin, a traversing `home_dir`, or a
+  `stale_mcp_binaries` entry naming a shared runtime) is dropped with a warning
+  rather than shadowing a builtin or reclaiming unrelated MCP servers. A
+  descriptor names neither a reader nor a layout: the engine does all reading, so a
+  registered source cannot bypass the content gates inside the engine's readers.
+  `superseded` is a separate opt-in: only an agent this product REPLACES has its
+  leftover MCP entries reclaimed from the user's global provider config, because a
+  live foreign agent's servers are still in use. A registered source is read as an
+  install of this product's own on-disk layout — a predecessor, a rename, or a
+  fork. v1 addition; `Default` returns `[]`.
 
 **`McpToolingProvider` is intentionally scoped to MCP tooling only** —
 `extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. The former

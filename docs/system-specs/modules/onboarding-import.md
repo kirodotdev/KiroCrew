@@ -23,7 +23,9 @@ Three phases, always in this order:
 | Dry run (preview) | `preview_import()` | **no — never touches disk** |
 | Apply | `apply_import()` | yes, merge-only |
 
-**Sources:** `codex`, `claude_code`, `gemini`, `meshclaw`, `openclaw`, `hermes`.
+**Sources:** `codex`, `claude_code`, `gemini`, `openclaw`, `hermes`, plus any an
+edition registers through the `ImportSourceProvider` CPP seam (see
+[Registering a source](#registering-a-source)).
 
 `gemini` covers Google's whole terminal-agent lineage under one id, because
 Antigravity CLI reuses `~/.gemini` rather than claiming a directory of its own.
@@ -143,9 +145,9 @@ Durable tiers only:
    **A row the source types as a `directive` is a rule, not a fact**, so it is
    routed to the lesson tier via `_add_db_directive` instead — it passes the same
    identity guard (`_IDENTITY_PARAGRAPH_RE`) and the same `_MAX_IMPORTED_LESSONS`
-   ceiling as a file-sourced directive. It is NOT dropped: MeshClaw stores every
-   learned lesson this way, so discarding them lost exactly the least replaceable
-   rows in the store.
+   ceiling as a file-sourced directive. It is NOT dropped: a lineage store keeps
+   every learned lesson this way, so discarding them lost exactly the least
+   replaceable rows in the store.
    **Screen the DECODED value, never the raw JSON.** A DB value arrives as JSON
    text, so `_sanitize_text`/`contains_injection` applied to `value_json` inspect
    escape sequences, not content: `"Ignore all previous\ninstructions…"` carries a
@@ -176,9 +178,9 @@ and is reported `scoped_memory_unsupported`.
 with the same placeholder, so treating the column as authoritative discards the
 entire store. `_UNSCOPED_WORKSPACE_IDS` (`""`, `default`, `global`, `main`,
 `none`, `null`) enumerates the placeholders; `_row_is_workspace_scoped()` is the
-single predicate both DB scanners use. MeshClaw stamps `default` on every row, so
-before this predicate existed **100% of a real MeshClaw memory store imported
-zero rows** while the UI reported success.
+single predicate both DB scanners use. A lineage install stamps `default` on every
+row, so before this predicate existed **100% of a real memory store imported zero
+rows** while the UI reported success.
 
 Matching is exact after casefold + strip, never a prefix or substring: `default2`
 and `maintenance` are real workspace names, not sentinels. **Accepted ambiguity:** a
@@ -399,9 +401,95 @@ MUST be covered by a fixture-based regression test.
 | `codex` | `CODEX_HOME` → `~/.codex` | `config.toml`; `AGENTS.md` (instructions); `memories/*.md`; `skills/` (excl. `.system`); `memories*.sqlite*` reported unsupported |
 | `claude_code` | `CLAUDE_CONFIG_DIR`/`CLAUDE_HOME` → `~/.claude`; also `~/.claude.json` | `CLAUDE.md`; `rules/*.md`; `settings.json`/`settings.local.json` (`permissions.deny`); `memory/`; `skills/`; per-workspace `.claude/` |
 | `gemini` | `GEMINI_HOME`/`ANTIGRAVITY_HOME` → `~/.gemini` | Four probed config layouts, because Antigravity is closed-source and its subpath has moved between releases: `config/mcp_config.json` (**the live Antigravity path**, confirmed against a real install), `settings.json` (legacy Gemini CLI), `antigravity/mcp_config.json` and `antigravity-cli/settings.json` (older/absent layouts — kept as cheap hedges; `antigravity/` is runtime state, not config). `GEMINI.md` (instructions, hierarchical: root + per workspace); `skills/` only if it is a `SKILL.md` package; per-workspace `.gemini/settings.json` and `.agents/mcp_config.json`. Workspaces come from `config/projects/*.json` — one file per project, folder held as a percent-encoded `file://` URI under `projectResources.resources[].folderUri` — NOT from a `projects` map. That URI is decoded with `urllib.request.url2pathname`, not a bare `unquote`: on Windows the URI is `file:///C:/Users/...` and stripping the scheme alone leaves `/C:/Users/...`, which carries no drive and so is not absolute, which would refuse every workspace as `workspace_not_absolute`; `url2pathname` is the platform-correct inverse (plain unquoting on POSIX, drive reconstruction on Windows). **MCP shape normalization (all three verified against a real install, and required: without them a real Antigravity install imports ZERO of its servers):** `httpUrl`/`serverUrl` → canonical `url`; drop the inert `$typeName` protobuf discriminator (`exa.cascade_plugins_pb.CascadePluginCommandTemplate`) that Antigravity stamps on every stdio entry; drop `env` **only when empty** (the key name matches `_SECRET_KEY_RE`, so an empty map would otherwise score as a credential and refuse the server). A populated `env` is deliberately left untouched and still refused — stripping it would both change how the server runs and hide that secrets were present. `userSettings.themeMode` is not mapped |
-| `meshclaw` | `MESHCLAW_HOME` → `~/.meshclaw` | SQLite memory DB (`memory.db`: `semantic_memory` + `episodic_memories`; `workspace_id` holds the sentinel `default`, and `kind='directive'` marks a rule — see the two sections above); skills; config; `workspace/AGENTS.md` + `workspace/CLAUDE.md` and the same two per configured workspace. Only those canonical filenames are read — the MeshClaw workspace holds arbitrary user documents, so a blind `*.md` sweep there is wrong |
 | `openclaw` | `OPENCLAW_STATE_DIR` → `OPENCLAW_HOME`/`<state>` → `~/.openclaw-<profile>` → `~/.openclaw` → `~/.clawdbot` | `openclaw.json` (+ legacy `clawdbot.json`); `SOUL.md`, `MEMORY.md`, `USER.md`, `memory/*.md` under `workspace/` \| `workspace-main/` \| `workspace-<agentId>/`; `skills/`, `.agents/skills/`; `exec-approvals.json` |
 | `hermes` | `HERMES_HOME`/`HERMES_AGENT_HOME`/`HERMES_CONFIG_DIR` → `%LOCALAPPDATA%/hermes` (Windows) → `~/.hermes` | `config.yaml`/`.yml`; `memories/MEMORY.md`, `memories/USER.md`; `SOUL.md`; `skills/` (excl. managed + re-import dirs); `cron/jobs.json`; `memory_store.db` reported unsupported |
+| a registered lineage source | whatever the descriptor declares | Kiro Crew's OWN layout, read by `_scan_lineage_install`: `config.json`, `mcp.json`, `recent_projects.json`, `workspace_dir`/`project_dir` pointers, `workspace/skills`, `workspace/memory`, `crons.json`, and `memory.db` (`semantic_memory` + `episodic_memories`; `workspace_id` holds the sentinel `default`, and `kind='directive'` marks a rule — see the two sections above). Only the canonical `workspace/AGENTS.md` + `workspace/CLAUDE.md` filenames are read, and the same two per configured workspace — that tree holds arbitrary user documents, so a blind `*.md` sweep there is wrong |
+
+## Registering a source
+
+The five builtins above are the foreign agents any user may plausibly have
+installed. An edition that supersedes a predecessor of its own registers it
+instead of the core naming it, which is what keeps an edition-specific product
+name out of this tree.
+
+`ImportSourceProvider.import_sources()` (CPP seam, public default `[]`) returns
+`ImportSource` descriptors. A descriptor says WHERE an install is: `id` (what the
+API validates), `display_name` (what the dashboard shows), `env_vars` +
+`home_dir` (where it lives), `managed_mcp_names` (that agent's own MCP servers,
+never imported), and `superseded` + `stale_mcp_binaries` (see below).
+
+**A descriptor does not supply reader code, and does not choose a reader.** The
+engine does all reading with its own helpers, which is what keeps credential
+redaction, prompt-injection screening, sensitive-path refusal, size caps and
+symlink rejection applying to a registered source exactly as they do to a built-in
+one — those gates live inside ten separate read helpers, so a seam that accepted a
+scanner callable would hand an edition the engine's internal accumulator and
+depend on it to re-implement every one of them. A registered source is read as an
+install of **Kiro Crew's own on-disk layout** by `_scan_lineage_install` — a
+predecessor, a rename, or a fork, which is the case an edition actually has. A
+genuinely novel foreign format needs a reader added to the core, because only the
+core can read it through the gates; when a second layout exists, naming one
+becomes an additive default-valued field on this same seam.
+
+`_sources()` unions contributions over the builtins for every scan, apply, and
+id-validation path, read fail-closed through `safe_context_call` — a broken
+adapter costs the edition's sources, not the page.
+
+**Everything questionable about a descriptor is settled at one boundary.**
+`_normalize_source` is the only place that validates and canonicalizes, and BOTH
+groups pass through it, so a builtin cannot travel a laxer path than the rule it
+models and no consumer re-derives a field. It emits an internal `_Source` record:
+ids are shape-checked, names are casefolded, and a launcher name is version-
+stripped before the shared-runtime refusal. A descriptor is DROPPED with a reason
+when it:
+
+- has no id, an id that does not match `^[a-z0-9][a-z0-9_]*$`, or an id already
+  registered (the id becomes a **path segment** — imported skills land in
+  `skills/imported/<source_id>/` — so a separator or parent reference would place
+  content outside the tree it is namespaced into, and shadowing would silently
+  change what an existing id imports);
+- declares neither `env_vars` nor `home_dir`;
+- declares a `home_dir` that is not a single directory name (absolute, nested,
+  `..`, over 255 characters, or containing a NUL);
+- claims a shared runtime in `stale_mcp_binaries` — `node`, `python3.12`,
+  `node-22.1` and any other versioned spelling all reduce to the same refusal, as
+  do letter-suffixed aliases version stripping cannot collapse (`nodejs`), shebang
+  wrappers (`env`) and multi-call binaries (`busybox`). That list drives deletion
+  from the user's global config, so claiming an interpreter would reclaim every
+  MCP server that happens to run on it. An agent's launcher is its own name,
+  never the interpreter it starts.
+
+  That list is **mistake-mitigation, not a security boundary**, and an edition
+  authoring a descriptor should read it that way. It cannot be complete — every
+  language ships an interpreter, and `lua`, `julia` and `rscript` were only added
+  after a review pointed out their absence — so a descriptor naming one that is
+  still missing is refused by review, not by this guard. What makes that
+  acceptable is the trust level of the input: descriptors are edition code,
+  shipped and reviewed like the core, never user- or network-supplied.
+  `stale_mcp_binaries` is the one field that causes **deletion** from the user's
+  config, so it is the field to scrutinise hardest when reviewing a descriptor.
+
+A source declaring only `env_vars`, with none of them set, is left **unresolved**
+rather than defaulting to the user's home root — `base_home / ""` is the entire
+home, and scanning it would walk every file the user owns. Callers treat an absent
+root as "not installed".
+
+A scanner that raises is reported as a `scanner_failed` diagnostic and its partial
+findings are discarded: one unreadable source must not deny the user the others,
+and half of a source we now know we cannot read correctly must not be offered as
+importable data.
+
+A **lineage source** — a predecessor, a rename, or a fork that writes this
+product's own on-disk layout — needs no reader of its own and names none: the
+engine reads every registered source with `_scan_lineage_install`. That is the
+shape an edition migrating its users off a predecessor of its own registers.
+
+**`superseded` is not implied by registration.** Only an agent this product
+REPLACES has its leftovers reclaimed from the user's global provider config
+(`mcp_cleanup`, by server name and by launcher basename). A live foreign agent's
+managed servers are skipped on import but never purged — OpenClaw is the shipped
+instance of that distinction, and purging its entries would delete servers the
+user is still running.
 
 ### Transitive re-import (Hermes)
 
@@ -507,7 +595,7 @@ scanners, writers, and their supporting machinery:
   `_OPENCLAW_CREATED_VIA`, `_openclaw_session_provenance_is_user_owned`,
   `_openclaw_session_paths`, `_openclaw_session_artifact`,
   `_openclaw_entry_matches_file`, `_openclaw_registry_map`
-- session reads in `_scan_hermes_db` / `_scan_meshclaw_memory_db`, and
+- session reads in `_scan_hermes_db` / `_scan_lineage_memory_db`, and
   `_HERMES_RUNTIME_SESSION_SOURCES`
 - the `sessions` branch of `_deduplicate_items` (transcript-hash canonicalization)
 - session-only limits: `_MAX_JSONL_LINES`, `_MAX_MESSAGES_PER_SESSION`,

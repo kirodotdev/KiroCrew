@@ -30,7 +30,7 @@ KiroCrew implements defense-in-depth security across multiple layers: OS-level p
 | Outbound data exfiltration | LLM exfils data via `curl -d @file`, `nc < file` | Data-egress/reverse-shell command shapes (`_BASH_EXFIL_PATTERNS` / `audit_bash_exfiltration()`) are **denied at the tool-invocation gate** (`hooks.on_tool_call` + `mcp_cron`), not only advisory-audited (commit 5682f92b); + `redact_exfiltration_urls()` on output |
 | Credential file permissions | `.env` readable by group/other | `chmod 600` enforced at credential load time + setup wizard |
 | SEL event forwarding leaks | Forwarded audit events contain raw credentials | `redact()` applied to all string fields before callback |
-| Foreign-agent import widens trust | A local Codex/Claude Code/MeshClaw/OpenClaw/Hermes config contains credentials, hooks, personas, instructions, unsafe paths, or permissive runtime/security settings | Authenticated scan/apply/state APIs + fixed source/category catalogs + secret-free projections + native destination validation + merge-only writes; unsupported/secret items are reported, source trees remain untouched, and governance cannot be imported or widened |
+| Foreign-agent import widens trust | A local Codex/Claude Code/OpenClaw/Hermes (or edition-registered) config contains credentials, hooks, personas, instructions, unsafe paths, or permissive runtime/security settings | Authenticated scan/apply/state APIs + registry-validated source ids and a fixed category catalog + secret-free projections + native destination validation + merge-only writes; unsupported/secret items are reported, source trees remain untouched, and governance cannot be imported or widened |
 | Unsigned/unadmitted app install | Malicious app installs/registers via CLI, registry, or `POST /api/apps/register` with no admission control (`register_external_app` writes `enabled=True`) | Contained App Kit admission gate (`apps/admission.py`) on install/update/enable/register/registry — kill-switch `banned` (always wins) + `approved` allowlist + optional HMAC `require_signature`, fail-closed on an unreadable `app_admission.json`; absent policy admits (interim default) |
 | Implicit third-party app execution | An installed app reaches Python hooks, backend spawn, lifecycle/install shell scripts, or `openCommand` without explicit operator consent; a disabled app invokes `openCommand` | Central `apps/execution.py` decision defaults deny, accepts only JSON boolean `agent.apps_allow_third_party=true`, exempts positively identified builtins, fails closed on config errors, gates every execution chokepoint before side effects, requires enabled state for open, and SEL-audits denials |
 | App manifest path traversal | `backend.entryPoint`/`agents`/`skills`/`sops`/`ui.entry` uses `..` or an absolute path to escape the app root | `AppManifest.validate(app_root=...)` canonical containment (resolve + `is_relative_to`) + absolute-path rejection at install/discovery; runtime backstop in `apps/backend.py` rejects an `entryPoint` that resolves outside the app root at boot |
@@ -848,8 +848,9 @@ Centralized validation for all 12 MCP tool handlers (SDO-183):
 ### Foreign-Agent Import Boundary
 
 Foreign-agent import treats every discovered file and database as untrusted
-local input. The source catalog is fixed to Codex, Claude Code, MeshClaw,
-OpenClaw, and Hermes; Quick and unknown source ids are not accepted. The
+local input. Source ids are validated against the engine's registry (the shipped
+foreign agents plus any an edition registers); Quick and unknown source ids are
+not accepted. The
 category catalog is likewise fixed to sessions, memories/preferences,
 workspaces, MCP servers, user-authored skills, compatible schedules, and the
 strict settings allowlist.
@@ -889,9 +890,9 @@ Security invariants:
 - **Bounded databases:** before a supported foreign SQLite store is opened, its
   main file and present `-wal`/`-shm` sidecars must be regular non-symlink files
   whose aggregate size is at most 64 MiB. Unsupported durable stores, including
-  Hermes `memory_store.db`, are diagnosed without opening them. MeshClaw active
-  memory rows are capped across both supported tables before either contributes
-  import candidates.
+  Hermes `memory_store.db`, are diagnosed without opening them. A lineage store's
+  active memory rows are capped across both supported tables before either
+  contributes import candidates.
 - **Merge-only and idempotent:** existing KiroCrew data wins. A provenance
   ledger prevents replayed source items from creating duplicates and carries no
   grant of trust or permission.

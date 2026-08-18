@@ -979,7 +979,7 @@ pull request) and four upstream paths map onto differently-named equivalents:
 
 ### Audited gap state
 
-An audit against ``MeshClawApp-AutoImprovement/mainline`` diffed the engine
+An audit against the upstream engine diffed the engine
 module-by-module. The ``spine/`` port is faithful — six modules byte-identical modulo
 whitespace, ``driver.py`` structurally line-for-line, and all six safety invariants
 (push-disabled clone, draft-only, protected-branch denylist, edit-allowlist reward-hack

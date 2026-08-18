@@ -4540,6 +4540,10 @@
       "the_import_did_not_finish_please_try_again": "Импорт не завершился. Попробуй ещё раз.",
       "try_again": "Повторить",
       "we_could_not_scan_agent_setup": "Не удалось просканировать конфигурацию агента",
+      "found_setup_kirocrew_could_not_read": "Найдена конфигурация, которую Kiro Crew не смог прочитать",
+      "found_setup_but_could_not_read_it": "Kiro Crew обнаружил {{sources}}, но не смог прочитать файлы, поэтому ничего не было импортировано.",
+      "some_setup_could_not_be_read": "Kiro Crew не смог прочитать {{sources}} — ниже не показано.",
+      "files_could_not_be_read": "Не удалось прочитать файлы",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Ваша существующая конфигурация Kiro Crew не будет затронута.",
       "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в Kiro Crew."
     },

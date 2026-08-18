@@ -21,6 +21,7 @@ import {
   type AgentImportConflictStrategy,
   type AgentImportSource,
 } from '../api/client'
+import { fmtList } from '../i18n/format'
 import { Btn, SendBtn } from './ui'
 import OnboardingChapterShell, {
   OnboardingShellContext,
@@ -58,14 +59,13 @@ export function setupChapterAside(ariaLabel: string): ShellAsideCopy {
  *  nothing rendered, which read like a label table needing translation and was
  *  not one. Typed as `Stage[]` so an id here has to be a real stage. */
 const STAGES: Stage[] = [1, 2, 3, 4]
-const SUPPORTED_SOURCE_IDS = new Set([
-  'codex',
-  'claude_code',
-  'gemini',
-  'meshclaw',
-  'openclaw',
-  'hermes',
-])
+/* A DENYLIST, not an allowlist. An allowlist of known source ids would silently
+ * hide a source an edition registered through the backend's import-source
+ * registry, which is the one thing this list must not do. What still needs
+ * naming is the inverse: Quick is a first-run setup mode, never an import
+ * source, and it must not appear as an import option even if it ever reaches
+ * this payload. The backend rejects the id too; this is the second line. */
+const NON_SOURCE_IDS = new Set(['quick'])
 const SUPPORTED_CATEGORY_IDS = new Set([
   'instructions',
   'memories',
@@ -95,7 +95,7 @@ function supportedCategories(source: AgentImportSource) {
 function eligibleSources(sources: AgentImportSource[]): AgentImportSource[] {
   return sources.filter(source =>
     source.detected
-    && SUPPORTED_SOURCE_IDS.has(source.id)
+    && !NON_SOURCE_IDS.has(source.id)
     && supportedCategories(source).length > 0,
   )
 }
@@ -160,6 +160,19 @@ export default function AgentImportFlow({
     [scanQuery.data?.sources],
   )
 
+  /* Sources the backend DETECTED but could not read. A source-level diagnostic
+   * (empty category id) means the whole source failed, not one of its categories.
+   * These must never be treated as "nothing found": with no eligible sources the
+   * auto-complete effect below would mark first-run import done and close the
+   * dialog, so a user whose only agent hits a reader bug would never learn their
+   * setup was detected and would never be re-offered the import. */
+  const unreadableSources = useMemo(
+    () => (scanQuery.data?.skipped ?? [])
+      .filter(item => item.reason === 'source_unreadable')
+      .map(item => item.source),
+    [scanQuery.data?.skipped],
+  )
+
   const resetFlow = (refresh: boolean) => {
     setStage(1)
     setSelectedSources(new Set())
@@ -216,6 +229,7 @@ export default function AgentImportFlow({
       || !scanQuery.data
       || scanQuery.isError
       || sources.length > 0
+      || unreadableSources.length > 0
       || completionMutation.isPending
       || completionMutation.isSuccess
       || completionMutation.isError
@@ -227,6 +241,7 @@ export default function AgentImportFlow({
     scanQuery.data,
     scanQuery.isError,
     sources.length,
+    unreadableSources.length,
   ])
 
   useEffect(() => {
@@ -486,6 +501,55 @@ export default function AgentImportFlow({
         </div>
       )
     }
+    if (sources.length === 0 && unreadableSources.length > 0) {
+      /* Detected but unreadable is NOT "nothing found" — saying so would deny
+       * something the user has and offer no way forward. Name the source and
+       * give them the retry, exactly as a scan-level error does.
+       *
+       * "Try again" alone would be a dead end: `source_unreadable` means a
+       * PERSISTENT reader failure, so the retry predictably fails, and this state
+       * suppresses auto-complete so the dialog re-offers on every first run. Skip
+       * import is the escape that settles it without forfeiting the whole tour,
+       * which is what the header's "Skip all" would cost. */
+      return (
+        <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+          <AlertTriangle className="lucide-inline text-danger" />
+          <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
+            {i18nT('components.agentImportFlow.found_setup_kirocrew_could_not_read')}
+          </h1>
+          <p className="mt-2 max-w-lg text-sm text-danger" role="alert">
+            {i18nT('components.agentImportFlow.found_setup_but_could_not_read_it', {
+              sources: fmtList(unreadableSources),
+            })}
+          </p>
+          <div className="mt-5 flex items-center gap-3">
+            {/* `isFetching`, NOT `isPending`: a refetch of already-cached data
+              * leaves `isPending` false, so without this the primary action on a
+              * PERSISTENT failure gave no spinner, no text change and no disabled
+              * state — it read as a dead button on every click. */}
+            <SendBtn
+              type="button"
+              disabled={scanQuery.isFetching}
+              onClick={() => scanQuery.refetch()}
+            >
+              {scanQuery.isFetching
+                ? <Loader2 className="lucide-inline animate-spin" />
+                : <RefreshCw className="lucide-inline" />}
+              {i18nT('components.agentImportFlow.try_again')}
+            </SendBtn>
+            <Btn type="button" disabled={isBusy} onClick={skip}>
+              {isBusy && <Loader2 className="lucide-inline animate-spin" />}
+              {i18nT('components.agentImportFlow.skip_import')}
+            </Btn>
+          </div>
+          {completionError && (
+            <p className="mt-4 text-sm text-danger" role="alert">
+              {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
+            </p>
+          )}
+        </div>
+      )
+    }
     if (sources.length === 0) {
       return (
         <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
@@ -516,6 +580,17 @@ export default function AgentImportFlow({
     if (stage === 1) {
       return (
         <>
+          {/* When SOME sources are readable the full-panel state above does not
+            * fire, so an unreadable source would otherwise leave no trace at the
+            * one screen where the user decides what to import — they would read
+            * its absence as "unsupported". Name it here, next to the picker. */}
+          {unreadableSources.length > 0 && (
+            <p className="mb-4 text-sm text-danger" role="alert">
+              {i18nT('components.agentImportFlow.some_setup_could_not_be_read', {
+                sources: fmtList(unreadableSources),
+              })}
+            </p>
+          )}
           {completionError && (
             <p className="mb-4 text-sm text-danger" role="alert">
               {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
@@ -654,9 +729,13 @@ export default function AgentImportFlow({
                   <div key={`${item.source}-${item.category}-${index}`} className="flex items-start justify-between gap-4 p-3">
                     <div>
                       <p className="text-[13px] font-medium text-text">
-                        {item.source}: {item.category}
+                        {item.category ? `${item.source}: ${item.category}` : item.source}
                       </p>
-                      <p className="mt-1 text-[13px] text-muted">{item.reason}</p>
+                      <p className="mt-1 text-[13px] text-muted">
+                        {item.reason === 'source_unreadable'
+                          ? i18nT('components.agentImportFlow.files_could_not_be_read')
+                          : item.reason}
+                      </p>
                     </div>
                     {item.count !== undefined && <span className="font-mono text-[13px] text-muted">{item.count}</span>}
                   </div>

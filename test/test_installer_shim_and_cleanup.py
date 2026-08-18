@@ -20,15 +20,17 @@ Defect A — frozen-app binary resolution
     existing, executable path so the validation loop keeps it.
 
 Defect B — stale predecessor MCP entries
-    ``clean_stale_managed_mcp()`` only removes ``kirocrew-*`` entries, so the
-    MeshClaw predecessor's ``meshclaw-core`` / ``meshclaw-cron`` entries (left
-    in ``~/.kiro/settings/mcp.json`` by the rename) are never purged.
+    ``clean_stale_managed_mcp()`` only removes ``kirocrew-*`` entries unless an
+    edition registers a superseded agent through the import-source seam — those
+    entries point at a runtime that no longer exists and are purgeable by the
+    edition that replaced them.
 
 Both tests FAIL against the pre-fix code, proving they catch the real bug.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sys
@@ -40,6 +42,10 @@ import pytest
 
 import kiro_crew.agent as agent
 import kiro_crew.mcp_cleanup as mcp_cleanup
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.platform.bootstrap import build_default_context
+from kiro_crew.platform.context import reset_context, set_context
+from kiro_crew.platform.interfaces import ImportSource
 
 # The ~/.local/bin symlink shim is POSIX-only: ensure_kirocrew_on_path returns
 # early on Windows (pip's Scripts\kirocrew.exe is the launcher there, and a
@@ -50,6 +56,40 @@ _posix_shim_only = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX ~/.local/bin symlink shim; Windows uses pip's Scripts\\kirocrew.exe",
 )
+
+
+# --------------------------------------------------------------------------
+# import-source seam — register a superseded predecessor in tests
+# --------------------------------------------------------------------------
+def _install_superseded(
+    managed_mcp_names: tuple[str, ...] = (),
+    stale_mcp_binaries: tuple[str, ...] = (),
+) -> None:
+    """Register a superseded predecessor through the import-source seam."""
+
+    class _Provider:
+        def import_sources(self) -> list[ImportSource]:
+            return [
+                ImportSource(
+                    id="predecessor",
+                    display_name="Predecessor",
+                    env_vars=("PREDECESSOR_HOME",),
+                    home_dir=".predecessor",
+                    managed_mcp_names=managed_mcp_names,
+                    stale_mcp_binaries=stale_mcp_binaries,
+                    superseded=True,
+                )
+            ]
+
+    base = build_default_context(KiroCrewConfig())
+    set_context(dataclasses.replace(base, import_sources=_Provider()))
+
+
+@pytest.fixture(autouse=True)
+def _clean_context():
+    """Reset the platform context after every test so registrations don't leak."""
+    yield
+    reset_context()
 
 
 # --------------------------------------------------------------------------
@@ -153,51 +193,6 @@ def test_managed_servers_survive_in_frozen_app(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Defect B — stale meshclaw-* purge
-# --------------------------------------------------------------------------
-def test_cleanup_purges_meshclaw_predecessor_entries(tmp_path, monkeypatch):
-    """clean_stale_managed_mcp() must remove the predecessor's meshclaw-core /
-    meshclaw-cron entries (and the kirocrew-* ones) while preserving genuine
-    user-installed servers."""
-    mcp_path = tmp_path / "mcp.json"
-    mcp_path.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "kirocrew-core": {"command": "kirocrew", "args": ["mcp-core"]},
-                    "kirocrew-cron": {"command": "kirocrew", "args": ["mcp-cron"]},
-                    "meshclaw-core": {
-                        "command": "/old/MeshClaw/bin/meshclaw",
-                        "args": ["mcp-core"],
-                    },
-                    "meshclaw-cron": {
-                        "command": "/old/MeshClaw/bin/meshclaw",
-                        "args": ["mcp-cron"],
-                    },
-                    "ai-community-slack-mcp": {
-                        "command": "ai-community-slack-mcp",
-                        "args": [],
-                    },
-                }
-            },
-            indent=2,
-        )
-    )
-    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", mcp_path)
-
-    removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"])
-
-    assert "meshclaw-core" not in remaining, "stale meshclaw-core not purged"
-    assert "meshclaw-cron" not in remaining, "stale meshclaw-cron not purged"
-    assert "kirocrew-core" not in remaining
-    assert "kirocrew-cron" not in remaining
-    # genuine user-installed server must be preserved
-    assert "ai-community-slack-mcp" in remaining, "purge must not touch user servers"
-    assert {"meshclaw-core", "meshclaw-cron"} <= set(removed)
-
-
-# --------------------------------------------------------------------------
 # Shim install — mirrors install.sh for install paths that skip it (the app)
 # --------------------------------------------------------------------------
 @_posix_shim_only
@@ -249,6 +244,7 @@ def test_ensure_kirocrew_on_path_is_noop_on_windows(tmp_path, monkeypatch):
 # run_first_run_setup() delivers both automatically.
 # --------------------------------------------------------------------------
 def _seed_global_mcp(path: Path) -> None:
+    """Write a global mcp.json with stale predecessor entries for first-run tests."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -256,12 +252,12 @@ def _seed_global_mcp(path: Path) -> None:
                 "mcpServers": {
                     "kirocrew-core": {"command": "kirocrew", "args": ["mcp-core"]},
                     "kirocrew-cron": {"command": "kirocrew", "args": ["mcp-cron"]},
-                    "meshclaw-core": {
-                        "command": "/old/MeshClaw/bin/meshclaw",
+                    "predecessor-core": {
+                        "command": "/old/Predecessor/bin/predecessor",
                         "args": ["mcp-core"],
                     },
-                    "meshclaw-cron": {
-                        "command": "/old/MeshClaw/bin/meshclaw",
+                    "predecessor-cron": {
+                        "command": "/old/Predecessor/bin/predecessor",
                         "args": ["mcp-cron"],
                     },
                     "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
@@ -289,6 +285,11 @@ def test_first_run_delivers_shim_and_purge(tmp_path, monkeypatch):
     exe = _fake_frozen_exe(tmp_path)
     marker, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)
     _seed_global_mcp(mcp)
+    # Register a superseded predecessor so its entries are purgeable.
+    _install_superseded(
+        managed_mcp_names=("predecessor-core", "predecessor-cron"),
+        stale_mcp_binaries=("predecessor",),
+    )
 
     agent.run_first_run_setup()
 
@@ -297,7 +298,7 @@ def test_first_run_delivers_shim_and_purge(tmp_path, monkeypatch):
     assert link.is_symlink() and os.path.realpath(link) == os.path.realpath(exe)
     # stale managed entries purged, genuine user server preserved
     remaining = set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
-    assert {"meshclaw-core", "meshclaw-cron", "kirocrew-core", "kirocrew-cron"}.isdisjoint(
+    assert {"predecessor-core", "predecessor-cron", "kirocrew-core", "kirocrew-cron"}.isdisjoint(
         remaining
     )
     assert "ai-community-slack-mcp" in remaining
@@ -313,13 +314,19 @@ def test_first_run_purge_is_one_time(tmp_path, monkeypatch):
     marker.write_text("done\n")
     # A stale entry reappears after migration (e.g. user re-imports old config).
     _seed_global_mcp(mcp)
+    # Register the predecessor so entries would be purgeable if the marker
+    # were absent — proves the marker blocks the purge, not the lack of a source.
+    _install_superseded(
+        managed_mcp_names=("predecessor-core", "predecessor-cron"),
+        stale_mcp_binaries=("predecessor",),
+    )
     before = mcp.read_text(encoding="utf-8")
 
     agent.run_first_run_setup()
 
     # purge must NOT run again — global mcp.json untouched, stale entries stay
     assert mcp.read_text(encoding="utf-8") == before
-    assert "meshclaw-core" in set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
+    assert "predecessor-core" in set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
     # but the shim is still ensured on every start
     assert (tmp_path / ".local" / "bin" / "kirocrew").is_symlink()
 
@@ -587,20 +594,14 @@ def test_clean_stale_no_stale_leaves_file_untouched(tmp_path, monkeypatch):
     assert p.read_text(encoding="utf-8") == content  # not rewritten when nothing to remove
 
 
-def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
+def test_clean_stale_purges_deleted_playwright_proxy(tmp_path, monkeypatch):
+    """The deleted mcp-playwright-proxy verb is matched by argv, not by server
+    name — so an operator's own playwright server (launched via npx) survives."""
     p = tmp_path / "mcp.json"
     p.write_text(
         json.dumps(
             {
                 "mcpServers": {
-                    "npm:@playwright/mcp": {
-                        "command": "/Users/x/workspace/MeshClaw/env/MeshClaw-1.0/runtime/bin/meshclaw",
-                        "args": [
-                            "mcp-playwright-proxy",
-                            "--config",
-                            "/Users/x/.meshclaw/playwright-config.json",
-                        ],
-                    },
                     "@playwright/mcp": {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
                     # Launched by kirocrew but with a verb that still EXISTS,
                     # and deliberately NOT one of KIROCREW_BIN_MCP_SERVERS (those
@@ -619,45 +620,10 @@ def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
     removed = mcp_cleanup.clean_stale_managed_mcp()
     remaining = set(json.loads(p.read_text(encoding="utf-8"))["mcpServers"])
 
-    assert "npm:@playwright/mcp" not in remaining  # stale meshclaw-command entry purged
-    assert "npm:@playwright/mcp" in removed
-    # Was "the live kirocrew proxy kept". It is no longer live: the
-    # `mcp-playwright-proxy` verb was deleted with the proxy, so this entry now
-    # launches a command that does not exist and takes every kiro-cli session
-    # down with a ModuleNotFoundError. Purging it IS the upgrade path.
+    # The deleted playwright proxy entry is purged by argv token.
     assert "@playwright/mcp" not in remaining
     assert "@playwright/mcp" in removed
     assert "operator-own-server" in remaining  # other kirocrew-launched verb kept
-    assert "ai-community-slack-mcp" in remaining  # user server kept
-
-
-def test_clean_stale_purges_windows_exe_predecessor_command(tmp_path, monkeypatch):
-    """On Windows the predecessor console script is ``meshclaw.exe``; the
-    by-command purge must match after stripping the launcher suffix, or a stale
-    proxy pointing at a Windows predecessor binary survives on a supported
-    platform."""
-    p = tmp_path / "mcp.json"
-    p.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "npm:@playwright/mcp": {
-                        "command": r"C:\Users\x\MeshClaw\.venv\Scripts\meshclaw.exe",
-                        "args": ["mcp-playwright-proxy"],
-                    },
-                    "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
-                }
-            },
-            indent=2,
-        )
-    )
-    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
-
-    removed = mcp_cleanup.clean_stale_managed_mcp()
-    remaining = set(json.loads(p.read_text(encoding="utf-8"))["mcpServers"])
-
-    assert "npm:@playwright/mcp" not in remaining  # meshclaw.exe command matched by stem
-    assert "npm:@playwright/mcp" in removed
     assert "ai-community-slack-mcp" in remaining  # user server kept
 
 

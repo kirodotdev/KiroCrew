@@ -41,11 +41,11 @@ const TAGS = [
 const iso = minutesAgo => new Date(Date.now() - minutesAgo * 60_000).toISOString()
 
 const SLOTS = [
-  { key: 'chat-1', title: 'Tag filter for the session list', agent: 'meshclaw', running: false, messages: 24, tags: ['t-blocked'], last_ts: iso(4), created: iso(200) },
-  { key: 'chat-2', title: 'Screenshot evidence gate', agent: 'meshclaw', running: false, messages: 11, tags: ['t-blocked'], last_ts: iso(18), created: iso(300) },
-  { key: 'chat-3', title: 'Catalog parity for new keys', agent: 'meshclaw', running: false, messages: 7, tags: ['t-review'], last_ts: iso(40), created: iso(400) },
-  { key: 'chat-4', title: 'Pseudolocale regeneration', agent: 'meshclaw', running: false, messages: 3, tags: ['t-idea'], last_ts: iso(90), created: iso(500) },
-  { key: 'chat-5', title: 'Untagged scratch session', agent: 'meshclaw', running: false, messages: 2, tags: [], last_ts: iso(140), created: iso(600) },
+  { key: 'chat-1', title: 'Tag filter for the session list', agent: 'kirocrew', running: false, messages: 24, tags: ['t-blocked'], last_ts: iso(4), created: iso(200) },
+  { key: 'chat-2', title: 'Screenshot evidence gate', agent: 'kirocrew', running: false, messages: 11, tags: ['t-blocked'], last_ts: iso(18), created: iso(300) },
+  { key: 'chat-3', title: 'Catalog parity for new keys', agent: 'kirocrew', running: false, messages: 7, tags: ['t-review'], last_ts: iso(40), created: iso(400) },
+  { key: 'chat-4', title: 'Pseudolocale regeneration', agent: 'kirocrew', running: false, messages: 3, tags: ['t-idea'], last_ts: iso(90), created: iso(500) },
+  { key: 'chat-5', title: 'Untagged scratch session', agent: 'kirocrew', running: false, messages: 2, tags: [], last_ts: iso(140), created: iso(600) },
 ]
 
 const json = (route, body) => route.fulfill({

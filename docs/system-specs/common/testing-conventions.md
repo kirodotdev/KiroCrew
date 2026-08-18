@@ -113,7 +113,6 @@ floor is under your file before you decide what to isolate yourself:
 | Your test lives in | It inherits |
 |---|---|
 | `test/` | the rootdir `conftest.py` **and** `test/conftest.py` |
-| `transfer/` | the rootdir `conftest.py` only |
 | `src/kiro_crew/apps/builtins/*/tests/` | the rootdir `conftest.py`, plus that app's own `tests/conftest.py` where one exists (`auto_improvement`, `code_review_sage`, `spec_builder` have one; the other five apps do not) |
 
 The **rootdir `conftest.py` is the host-mutation floor**: everything in it protects the

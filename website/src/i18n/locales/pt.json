@@ -4476,6 +4476,10 @@
       "the_import_did_not_finish_please_try_again": "A importação não foi concluída. Tente novamente.",
       "try_again": "Tentar novamente",
       "we_could_not_scan_agent_setup": "Não foi possível analisar a configuração do agente",
+      "found_setup_kirocrew_could_not_read": "Configuração encontrada que o Kiro Crew não conseguiu ler",
+      "found_setup_but_could_not_read_it": "O Kiro Crew encontrou {{sources}}, mas não conseguiu ler os arquivos, portanto nada foi importado.",
+      "some_setup_could_not_be_read": "O Kiro Crew não conseguiu ler {{sources}} — não listado abaixo.",
+      "files_could_not_be_read": "Não foi possível ler os arquivos",
       "your_existing_kirocrew_setup_will_not_be_affecte": "A sua configuração existente do Kiro Crew não será afetada.",
       "your_selected_setup_is_ready_in_kiro_crew": "A configuração selecionada está pronta no Kiro Crew."
     },

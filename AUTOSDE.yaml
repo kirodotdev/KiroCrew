@@ -167,7 +167,6 @@ custom-rules:
       - "test/**/*.py"
       - "tests/**/*.py"
       - "src/kiro_crew/apps/builtins/**/tests/**/*.py"
-      - "transfer/**/*.py"
     rule: |
       A test must have no side effects outside its own tmp dir. Never register a
       real cron job, write into the operator's real ~/.kiro/crew or HOME, start
@@ -243,8 +242,8 @@ custom-rules:
         session-wide, redirects `tempfile`'s base with residue reported, and
         fails the run on residue at the repository root.
       - `test/conftest.py` adds ~20 MORE autouse fixtures, and it applies ONLY to
-        `test/`. Tests under `src/kiro_crew/apps/builtins/*/tests/` and
-        `transfer/` see the rootdir conftest plus that app's own
+        `test/`. Tests under `src/kiro_crew/apps/builtins/*/tests/` see the
+        rootdir conftest plus that app's own
         `tests/conftest.py` where one exists (`auto_improvement`,
         `code_review_sage`, `spec_builder` have one; the other five apps do not).
         So a test there gets the host floor -- which now includes the data home,

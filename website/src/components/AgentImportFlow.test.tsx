@@ -32,18 +32,6 @@ const SCAN_RESPONSE: AgentImportScanResponse = {
       ],
     },
     {
-      id: 'meshclaw',
-      name: 'MeshClaw',
-      detected: true,
-      detail: '~/.meshclaw',
-      categories: [
-        { id: 'skills', label: 'Skills', count: 5 },
-        { id: 'workspaces', label: 'Workspaces', count: 6 },
-        { id: 'rules', label: 'Rules', count: 7 },
-        { id: 'personas', label: 'Agent personas', count: 2 },
-      ],
-    },
-    {
       id: 'cursor',
       name: 'Cursor',
       detected: true,
@@ -51,6 +39,9 @@ const SCAN_RESPONSE: AgentImportScanResponse = {
       categories: [{ id: 'skills', label: 'Skills', count: 8 }],
     },
     {
+      // Deliberately given a SUPPORTED, non-zero category: Quick must be
+      // excluded because it is not an import source at all, not incidentally
+      // because its categories fail the category filter.
       id: 'quick',
       name: 'Quick',
       detected: true,
@@ -65,7 +56,6 @@ const SCAN_RESPONSE: AgentImportScanResponse = {
   ],
   skipped: [
     { source: 'Claude Code', category: 'Credentials', reason: 'Secrets are never imported', count: 2 },
-    { source: 'MeshClaw', category: 'Hooks', reason: 'Unsupported category', count: 3 },
   ],
   merge_only: true,
 }
@@ -133,9 +123,8 @@ describe('AgentImportFlow', () => {
     await waitFor(() => {
       expect(within(dialog).getByRole('checkbox', { name: /Claude Code/ })).toBeChecked()
     })
-    expect(within(dialog).getByRole('checkbox', { name: /MeshClaw/ })).toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: /Cursor/ })).toBeChecked()
     expect(within(dialog).queryByText('Codex')).not.toBeInTheDocument()
-    expect(within(dialog).queryByText('Cursor')).not.toBeInTheDocument()
     expect(within(dialog).queryByText('Quick')).not.toBeInTheDocument()
     expect(api.onboardingImportScan).toHaveBeenCalledOnce()
   })
@@ -164,15 +153,10 @@ describe('AgentImportFlow', () => {
     await goToCategories()
 
     const claude = screen.getByRole('group', { name: 'Claude Code categories' })
-    const meshclaw = screen.getByRole('group', { name: 'MeshClaw categories' })
     expect(within(claude).getByRole('checkbox', { name: /Skills.*4/ })).toBeChecked()
     expect(within(claude).getByRole('checkbox', { name: /MCP servers.*2/ })).toBeChecked()
-    expect(within(meshclaw).getByRole('checkbox', { name: /Skills.*5/ })).toBeChecked()
-    expect(within(meshclaw).getByRole('checkbox', { name: /Workspaces.*6/ })).toBeChecked()
     expect(screen.queryByRole('checkbox', { name: /Quick/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('checkbox', { name: /Rules/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: /Hooks/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('checkbox', { name: /personas/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: /Raw instructions/i })).not.toBeInTheDocument()
   })
 
@@ -182,7 +166,6 @@ describe('AgentImportFlow', () => {
 
     await goToCategories()
     await userEvent.click(screen.getByRole('checkbox', { name: /MCP servers.*2/ }))
-    await userEvent.click(screen.getByRole('checkbox', { name: /Workspaces.*6/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     expect(
@@ -190,14 +173,13 @@ describe('AgentImportFlow', () => {
     ).toBeInTheDocument()
     expect(screen.getByText(/matching items are deduplicated/i)).toBeInTheDocument()
     expect(screen.getByText(/Secrets are never imported/i)).toBeInTheDocument()
-    expect(screen.getByText(/Unsupported category/i)).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Import selected' }))
     await waitFor(() => {
       expect(api.onboardingImportApply).toHaveBeenCalledWith({
         sources: [
           { id: 'claude_code', categories: ['skills'] },
-          { id: 'meshclaw', categories: ['skills'] },
+          { id: 'cursor', categories: ['skills'] },
         ],
         // The first apply is always the non-destructive strategy; rename and
         // overwrite require an explicit click on the conflict notice.
@@ -350,7 +332,7 @@ describe('AgentImportFlow', () => {
       <AgentImportFlow initialOpen={false} onComplete={vi.fn()} />,
     )
     replayRerender(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
-    expect(await screen.findByRole('checkbox', { name: /MeshClaw/ })).toBeInTheDocument()
+    expect(await screen.findByRole('checkbox', { name: /Cursor/ })).toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: /Claude Code/ })).not.toBeInTheDocument()
   })
 
@@ -359,10 +341,12 @@ describe('AgentImportFlow', () => {
       sources: [
         { id: 'codex', name: 'Codex', detected: false, categories: [] },
         {
-          id: 'quick',
-          name: 'Quick',
+          // A real source id, so this exercises the CATEGORY filter in isolation
+          // rather than overlapping with the not-a-source denylist.
+          id: 'cursor',
+          name: 'Cursor',
           detected: true,
-          categories: [{ id: 'skills', label: 'Skills', count: 3 }],
+          categories: [{ id: 'unsupported_only', label: 'Unsupported', count: 3 }],
         },
       ],
       skipped: [],
@@ -376,6 +360,59 @@ describe('AgentImportFlow', () => {
       expect(onComplete).toHaveBeenCalledOnce()
     })
     expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+  })
+
+  it('does not auto-complete when the only detected source could not be read', async () => {
+    // Degrade-don't-fail turned a reader crash into zero eligible sources, which
+    // the auto-complete effect read as "nothing to import" — marking first-run
+    // import done and closing the dialog. The user never learned their setup was
+    // detected and was never re-offered it, so a reader bug silently cost them
+    // the whole import.
+    mockSuccessfulRequests({
+      sources: [{ id: 'codex', name: 'Codex', detected: false, categories: [] }],
+      skipped: [{ source: 'Codex', category: '', reason: 'source_unreadable' }],
+      merge_only: true,
+    })
+    const onComplete = vi.fn()
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={onComplete} />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not read the files/i)).toBeInTheDocument()
+    })
+    expect(api.onboardingImportState).not.toHaveBeenCalledWith({ completed: true })
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+    // Retry alone would dead-end: the reader failure is persistent, so the user
+    // needs a way to settle this state without forfeiting the whole tour.
+    expect(screen.getByRole('button', { name: /skip import/i })).toBeInTheDocument()
+    expect(screen.queryByText(/no supported setup found/i)).not.toBeInTheDocument()
+    // The heading must not claim the scan failed — it ran and found the source.
+    expect(screen.queryByText(/we could not scan agent setup/i)).not.toBeInTheDocument()
+  })
+
+  it('names an unreadable source at stage 1 when other sources are readable', async () => {
+    // The full-panel state only fires when NOTHING is readable, so with one good
+    // source the failed one used to leave no trace on the screen where the user
+    // decides what to import — they would read its absence as "unsupported".
+    mockSuccessfulRequests({
+      sources: [
+        {
+          id: 'codex',
+          name: 'Codex',
+          detected: true,
+          categories: [{ id: 'instructions', label: 'Instructions', count: 2 }],
+        },
+      ],
+      skipped: [{ source: 'Claude Code', category: '', reason: 'source_unreadable' }],
+      merge_only: true,
+    })
+    renderWithProviders(<AgentImportFlow initialOpen />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not read Claude Code/i)).toBeInTheDocument()
+    })
+    // Still a normal picker — one bad source must not block the readable one.
+    expect(screen.getByText('Codex')).toBeInTheDocument()
   })
 
   it('keeps the import gate open when skip state cannot be persisted', async () => {
@@ -437,5 +474,62 @@ describe('AgentImportFlow', () => {
 
     expect(screen.queryByRole('button', { name: 'Keep both' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Replace mine' })).not.toBeInTheDocument()
+  })
+
+  it('renders a source with an unknown id as eligible when detected with supported categories', async () => {
+    // No source-id allowlist exists — any source the backend returns is eligible
+    // provided it is detected and has at least one supported category with count > 0.
+    mockSuccessfulRequests({
+      sources: [
+        {
+          id: 'some-registered-agent',
+          name: 'Some Registered Agent',
+          detected: true,
+          detail: '~/.some-agent',
+          categories: [{ id: 'skills', label: 'Skills', count: 3 }],
+        },
+      ],
+      skipped: [],
+      merge_only: true,
+    })
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
+    await waitFor(() => {
+      expect(within(dialog).getByRole('checkbox', { name: /Some Registered Agent/ })).toBeChecked()
+    })
+  })
+
+  it('filters out a detected source whose categories are all unsupported or zero-count', async () => {
+    // A source with only unsupported category ids (or zero counts) must not appear.
+    mockSuccessfulRequests({
+      sources: [
+        {
+          id: 'claude_code',
+          name: 'Claude Code',
+          detected: true,
+          detail: '~/.claude',
+          categories: [{ id: 'skills', label: 'Skills', count: 4 }],
+        },
+        {
+          id: 'exotic_agent',
+          name: 'Exotic Agent',
+          detected: true,
+          categories: [
+            { id: 'unsupported_cat', label: 'Unsupported', count: 10 },
+            { id: 'skills', label: 'Skills', count: 0 },
+          ],
+        },
+      ],
+      skipped: [],
+      merge_only: true,
+    })
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
+    await waitFor(() => {
+      expect(within(dialog).getByRole('checkbox', { name: /Claude Code/ })).toBeChecked()
+    })
+    expect(within(dialog).queryByText('Exotic Agent')).not.toBeInTheDocument()
   })
 })

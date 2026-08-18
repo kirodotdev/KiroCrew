@@ -325,9 +325,10 @@ mapping into the memory hierarchy, the dry-run contract, the conflict
 strategies, and the per-source layout assumptions. This section covers only how
 the flow is surfaced through the dashboard and where it sits in onboarding.
 
-The dashboard can scan and selectively merge local setup from exactly five
-foreign agents: **Codex, Claude Code, MeshClaw, OpenClaw, and Hermes**. Quick is
-not a source and must not appear as an import option.
+The dashboard can scan and selectively merge local setup from five shipped
+foreign agents — **Codex, Claude Code, Gemini CLI / Antigravity, OpenClaw, and
+Hermes** — plus any an edition registers through the `ImportSourceProvider`
+seam. Quick is not a source and must not appear as an import option.
 
 The only selectable categories are:
 
@@ -366,7 +367,7 @@ diagnostics rather than guessed.
 |--------|-----------------|--------------------|
 | Codex | `CODEX_HOME`, else `~/.codex` | `config.toml` (workspaces/MCP/settings); `AGENTS.md` (instructions); `memories/*.md` (memories); `skills/**/SKILL.md` except `.system` (skills). Session trees, `sqlite/codex-dev.db` automations, and unstable memory stores are not imported. |
 | Claude Code | `CLAUDE_CONFIG_DIR`, then `CLAUDE_HOME`, else `~/.claude`; `~/.claude.json` is also recognized | Root and workspace settings/MCP JSON files (workspaces/MCP/settings, and `permissions.deny` Bash rules → denied commands); root and `<workspace>/.claude/skills` packages (skills); root/project `memory` or `memories` Markdown (memories); `CLAUDE.md` and `rules/*.md` (instructions). Session trees (`projects/**/*.jsonl`), tasks, and schedules are not imported. |
-| MeshClaw | `MESHCLAW_HOME`, else `~/.meshclaw` | `config.json` and `mcp.json` (workspaces/MCP/settings); `recent_projects.json`, `workspace_dir`, and `project_dir` (workspaces); resolved workspace `skills` and Markdown memory trees (skills/memories); supported `memory.db` semantic/episodic tables (memories); `crons.json` and `cron/jobs.json` (schedules). |
+| a registered lineage source | whatever the descriptor declares | `config.json` and `mcp.json` (workspaces/MCP/settings); `recent_projects.json`, `workspace_dir`, and `project_dir` (workspaces); resolved workspace `skills` and Markdown memory trees (skills/memories); supported `memory.db` semantic/episodic tables (memories); `crons.json` and `cron/jobs.json` (schedules). Read by `_scan_lineage_install`, which knows this product's own layout rather than a foreign format. |
 | OpenClaw | `OPENCLAW_STATE_DIR`; else `OPENCLAW_HOME/.openclaw[-profile]`; else `~/.openclaw[-profile]`, with existing `~/.clawdbot` fallback for the default profile | Explicit/default JSON5 config (workspaces/MCP/settings); `SOUL.md` directive body, `MEMORY.md`, and `USER.md` (instructions/memories); explicit, configured, profile, state, and per-agent workspace roots containing `skills`, `memory`, or `MEMORY.md` (skills/memories); `cron/jobs.json` (schedules). Native session/schedule SQLite stores are not imported. |
 | Hermes Agent | `HERMES_HOME`, then `HERMES_AGENT_HOME`, then `HERMES_CONFIG_DIR`; else existing `%LOCALAPPDATA%/hermes`; else `~/.hermes`. Scan the root plus at most 50 non-link directories from a bounded `profiles/*` enumeration; report overflow without consuming the rest of a large directory. | Exact `memories/MEMORY.md` and `memories/USER.md` (memories), plus `SOUL.md` (instructions); `config.yaml` or `config.yml` (MCP/settings); active local `skills/**/SKILL.md` packages after managed/cache and `*-imports/` re-import exclusions (skills); `cron/jobs.json` (schedules). `memory_store.db` is diagnostic-only. |
 

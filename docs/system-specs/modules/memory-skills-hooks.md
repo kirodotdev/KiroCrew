@@ -472,9 +472,9 @@ the main file and present `-wal`/`-shm` sidecars must all be regular non-symlink
 files, must not have multiple hard links, and their aggregate size must not
 exceed 64 MiB. The importer reads a descriptor-pinned private snapshot of the
 database and sidecars, so a source-file replacement after validation cannot
-change the inode being queried. MeshClaw's 10,000-row scan limit applies to the
-aggregate active rows across its supported semantic and episodic tables and is
-checked before either table contributes an item. Episodic text deduplication is
+change the inode being queried. The lineage scanner's 10,000-row scan limit applies
+to the aggregate active rows across its supported semantic and episodic tables and
+is checked before either table contributes an item. Episodic text deduplication is
 rechecked under the native store write lock before insertion, preventing a
 concurrent native write from being duplicated.
 
@@ -915,11 +915,11 @@ On Windows, reparse points (including directory junctions) are link-like for
 both source traversal and destination ancestry checks and are rejected by the
 same boundary.
 
-Claude includes global skills and `<workspace>/.claude/skills`; MeshClaw uses
-workspaces resolved from both `workspace_dir` and `project_dir` pointer files
-and scans `<workspace>/skills`, while `~/.meshclaw/skills` remains excluded
-because its user-authored provenance is not reliable. Re-import deduplicates
-through provenance instead of overwriting the destination. A package with
+Claude includes global skills and `<workspace>/.claude/skills`; a lineage source
+uses workspaces resolved from both `workspace_dir` and `project_dir` pointer files
+and scans `<workspace>/skills`, while the source root's own `skills` tree remains
+excluded because its user-authored provenance is not reliable. Re-import
+deduplicates through provenance instead of overwriting the destination. A package with
 `always: true` or `triggers` frontmatter is rejected so imported content cannot
 gain automatic prompt activation.
 

@@ -3295,6 +3295,10 @@
       "skipped": "Skipped",
       "try_again": "Try again",
       "we_could_not_scan_agent_setup": "We could not scan agent setup",
+      "found_setup_kirocrew_could_not_read": "Found setup Kiro Crew could not read",
+      "found_setup_but_could_not_read_it": "Kiro Crew found {{sources}} but could not read the files, so nothing was imported.",
+      "some_setup_could_not_be_read": "Kiro Crew could not read {{sources}} — not listed below.",
+      "files_could_not_be_read": "Files could not be read",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing Kiro Crew setup will not be affected."
     },
     "agentSelector": {

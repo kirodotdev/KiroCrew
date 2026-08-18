@@ -15,16 +15,20 @@ from kiro_crew.config.loader import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
-_SOURCE_IDS = frozenset(
-    {
-        "codex",
-        "claude_code",
-        "gemini",
-        "meshclaw",
-        "openclaw",
-        "hermes",
-    }
-)
+#: Upper bound on how many sources one apply request may name. A cap, not a
+#: catalog: the engine owns which ids exist, so this only stops an absurd request.
+_MAX_REQUESTED_SOURCES = 32
+
+#: Shape a requested source id must have. Deliberately a SECOND spelling of the
+#: engine's ``_SOURCE_ID_RE`` rather than a read through ``_backend()``: this is
+#: request validation, and reaching into the engine to do it would make every
+#: handler test double carry an engine attribute it does not otherwise need, for
+#: a rule that is one regex. The engine stays the authority on which ids EXIST.
+#: ``test_the_two_source_id_patterns_cannot_drift`` pins the two spellings equal,
+#: so the duplication cannot rot silently.
+_SOURCE_ID_SHAPE_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
+
+
 _CATEGORY_IDS = frozenset(
     {
         "instructions",
@@ -36,14 +40,6 @@ _CATEGORY_IDS = frozenset(
         "settings",
     }
 )
-_SOURCE_NAMES = {
-    "codex": "Codex",
-    "claude_code": "Claude Code",
-    "gemini": "Gemini CLI / Antigravity",
-    "meshclaw": "MeshClaw",
-    "openclaw": "OpenClaw",
-    "hermes": "Hermes Agent",
-}
 _CATEGORY_NAMES = {
     "memories": "Memories",
     "workspaces": "Workspaces",
@@ -154,7 +150,12 @@ def _parse_selection(body: object) -> tuple[list[str], set[tuple[str, str]]]:
     if not isinstance(body, dict):
         raise _InvalidSelection
     sources = body.get("sources")
-    if not isinstance(sources, list) or not sources or len(sources) > len(_SOURCE_IDS):
+    # A size bound, not a membership check. The engine is the authority on which
+    # ids exist and reports an unknown one as an `unknown_source` diagnostic, so
+    # re-validating membership here would make request parsing a second authority
+    # — the thing that produced a 500 when the two disagreed. A constant cap keeps
+    # the DoS guard without one.
+    if not isinstance(sources, list) or not sources or len(sources) > _MAX_REQUESTED_SOURCES:
         raise _InvalidSelection
 
     source_ids: list[str] = []
@@ -167,7 +168,8 @@ def _parse_selection(body: object) -> tuple[list[str], set[tuple[str, str]]]:
         categories = source.get("categories")
         if (
             not isinstance(source_id, str)
-            or source_id not in _SOURCE_IDS
+            or not source_id
+            or not _SOURCE_ID_SHAPE_RE.fullmatch(source_id)
             or source_id in seen_sources
             or not isinstance(categories, list)
             or not categories
@@ -262,12 +264,21 @@ def _scan_response(plan: object) -> dict[str, Any]:
         raise RuntimeError("invalid import preview")
 
     sources: list[dict[str, Any]] = []
+    # The plan is produced by the engine, which already validated every source id
+    # against its OWN registry snapshot and carries the resolved display name.
+    # Re-deriving either from a second read here gave the request two authorities:
+    # a registry degrading between the engine's read and this one turned a source
+    # the scan had just accepted into "invalid import preview" -> 500. Shape is
+    # validated; identity and name are taken from the plan that vouched for them.
     for source in plan["sources"]:
         if not isinstance(source, dict):
             raise RuntimeError("invalid import preview")
         source_id = source.get("id")
         categories = source.get("categories")
-        if source_id not in _SOURCE_IDS or not isinstance(categories, list):
+        if not isinstance(source_id, str) or not source_id or not isinstance(categories, list):
+            raise RuntimeError("invalid import preview")
+        display_name = source.get("name")
+        if not isinstance(display_name, str) or not display_name:
             raise RuntimeError("invalid import preview")
         projected_categories: list[dict[str, Any]] = []
         for category in categories:
@@ -287,7 +298,7 @@ def _scan_response(plan: object) -> dict[str, Any]:
         sources.append(
             {
                 "id": source_id,
-                "name": _SOURCE_NAMES[source_id],
+                "name": display_name,
                 "detected": True,
                 "categories": projected_categories,
             }
@@ -297,20 +308,29 @@ def _scan_response(plan: object) -> dict[str, Any]:
     raw_skipped = plan.get("skipped", [])
     if not isinstance(raw_skipped, list):
         raise RuntimeError("invalid import preview")
+    # Names come from the plan's own projected sources, for the same reason the
+    # loop above does not consult the registry. A skipped entry whose source was
+    # never scanned (an unknown id) legitimately has no name to show.
+    plan_names = {source["id"]: source["name"] for source in sources}
     for item in raw_skipped:
         if not isinstance(item, dict):
             raise RuntimeError("invalid import preview")
         source_id = item.get("source_id")
         category_id = item.get("category_id")
         source_name = (
-            _SOURCE_NAMES.get(source_id, "Unknown source")
+            plan_names.get(source_id, "Unknown source")
             if isinstance(source_id, str)
             else "Unknown source"
         )
+        # An EMPTY category id means the diagnostic is about the source as a whole
+        # (it could not be read at all), not about one category. Labelling that
+        # "General" produced rows like "Unknown source: General — unknown_source",
+        # three vague words for one fact, so a source-level entry carries no
+        # category label and the SPA omits the segment entirely.
         category_name = (
             _CATEGORY_NAMES.get(category_id, "General")
-            if isinstance(category_id, str)
-            else "General"
+            if isinstance(category_id, str) and category_id
+            else ""
         )
         projected: dict[str, Any] = {
             "source": source_name,
@@ -455,6 +475,11 @@ def _audit_item_outcomes(caller: str, result: object) -> None:
     outcomes = result.get("item_outcomes")
     if not isinstance(outcomes, list):
         return
+    # These outcomes are the engine's own report of what it just wrote, and the
+    # engine validated every id against its own snapshot to produce them. Checking
+    # them against a SECOND read would silently drop audit rows for a real write
+    # whenever the registry degraded mid-request — losing the audit trail for the
+    # very items that changed. Shape is validated; identity is the engine's.
     for item in outcomes:
         if not isinstance(item, dict):
             continue
@@ -463,7 +488,8 @@ def _audit_item_outcomes(caller: str, result: object) -> None:
         item_hash = item.get("item_hash")
         outcome = item.get("outcome")
         if (
-            source_id not in _SOURCE_IDS
+            not isinstance(source_id, str)
+            or not source_id
             or category_id not in _CATEGORY_IDS
             or not isinstance(item_hash, str)
             or not _ITEM_HASH_RE.fullmatch(item_hash)

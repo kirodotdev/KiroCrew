@@ -4332,6 +4332,10 @@
       "the_import_did_not_finish_please_try_again": "가져오기가 완료되지 않았습니다. 다시 시도해 주세요.",
       "try_again": "다시 시도",
       "we_could_not_scan_agent_setup": "에이전트 설정을 스캔할 수 없습니다",
+      "found_setup_kirocrew_could_not_read": "Kiro Crew가 읽을 수 없는 설정을 찾았습니다",
+      "found_setup_but_could_not_read_it": "Kiro Crew에서 {{sources}}을(를) 찾았지만 파일을 읽을 수 없어 아무것도 가져오지 않았습니다.",
+      "some_setup_could_not_be_read": "Kiro Crew가 {{sources}}을(를) 읽을 수 없습니다 — 아래에 표시되지 않습니다.",
+      "files_could_not_be_read": "파일을 읽을 수 없습니다",
       "your_existing_kirocrew_setup_will_not_be_affecte": "기존 Kiro Crew 설정은 영향을 받지 않습니다.",
       "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 Kiro Crew에 준비되었습니다."
     },
