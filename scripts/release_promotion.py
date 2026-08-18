@@ -25,7 +25,9 @@ from urllib.parse import urlencode
 
 SCHEMA_VERSION = 1
 MANIFEST_NAME = "promotion-manifest.json"
-ARTIFACT_NAMES = {
+# Roles every candidate MUST carry. A bundle missing one of these is not a
+# promotable release, so their absence is an error.
+REQUIRED_ARTIFACT_NAMES = {
     "wheel": re.compile(r"^kirocrew-[A-Za-z0-9_.]+-py3-none-any\.whl$"),
     "sdist": re.compile(r"^kirocrew-[A-Za-z0-9_.]+\.tar\.gz$"),
     "appimage": re.compile(r"^KiroCrew-x86_64\.AppImage$"),
@@ -37,12 +39,36 @@ ARTIFACT_NAMES = {
     "mac_zip": re.compile(r"^notarized\.zip$"),
     "dmg": re.compile(r"^KiroCrew\.dmg$"),
 }
+# Roles a candidate MAY carry. Optional is what keeps per-platform release
+# independence: `build-windows` is soft-fail precisely so a Windows problem
+# cannot hold back mac, Linux and the CLI, and a REQUIRED Windows role would
+# reintroduce exactly that coupling one layer down -- a failed Windows build
+# would make the whole candidate unpromotable. Optional instead means the
+# installer is promoted when it was built and simply absent when it was not.
+#
+# Optionality does NOT weaken byte identity. Verification compares the on-disk
+# file set against what THIS bundle's manifest claims (not against the union of
+# all roles), so a promoted bundle is still exact: nothing may be added,
+# removed or altered after it is recorded. What optional relaxes is only which
+# roles a manifest is allowed to claim.
+OPTIONAL_ARTIFACT_NAMES = {
+    "windows_installer": re.compile(r"^KiroCrew-Setup\.exe$"),
+    "windows_blockmap": re.compile(r"^KiroCrew-Setup\.exe\.blockmap$"),
+}
+# Windows' two roles are all-or-nothing: an installer promoted without its
+# blockmap still updates, but every client silently falls back to downloading
+# the whole installer instead of the changed blocks. Pairing them makes that
+# degradation impossible to ship by accident.
+WINDOWS_PAIR = {"windows_installer", "windows_blockmap"}
+ARTIFACT_NAMES = {**REQUIRED_ARTIFACT_NAMES, **OPTIONAL_ARTIFACT_NAMES}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 BASE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 MAX_ARCHIVE_BYTES = 5 * 1024 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 8 * 1024 * 1024 * 1024
 MAX_FILE_COUNT = len(ARTIFACT_NAMES) + 1
+# A bundle carrying only the required roles is the smallest legitimate one.
+MIN_FILE_COUNT = len(REQUIRED_ARTIFACT_NAMES) + 1
 
 
 class PromotionError(ValueError):
@@ -73,21 +99,32 @@ def _require_string(value: Any, field: str) -> str:
     return value
 
 
+def _require_paired_roles(present: Iterable[str], context: str) -> None:
+    """Reject a half-present pair, whose failure mode is silent degradation."""
+    carried = WINDOWS_PAIR & set(present)
+    if carried and carried != WINDOWS_PAIR:
+        missing = sorted(WINDOWS_PAIR - carried)
+        raise PromotionError(
+            f"{context} carries {sorted(carried)} without {missing}; "
+            "these roles must be promoted together or not at all"
+        )
+
+
 def _artifact_paths(bundle_dir: Path) -> dict[str, Path]:
     files = [path for path in bundle_dir.iterdir() if path.is_file()]
     result: dict[str, Path] = {}
     for logical_name, pattern in ARTIFACT_NAMES.items():
         matches = [path for path in files if pattern.fullmatch(path.name)]
-        if len(matches) != 1:
+        if len(matches) > 1 or (not matches and logical_name in REQUIRED_ARTIFACT_NAMES):
             names = sorted(path.name for path in matches)
             raise PromotionError(f"expected exactly one {logical_name} artifact, found {names}")
-        result[logical_name] = matches[0]
+        if matches:
+            result[logical_name] = matches[0]
+    _require_paired_roles(result, "promotion bundle")
     return result
 
 
-def _require_wheel_version_filename(
-    logical_name: str, filename: str, wheel_version: str
-) -> None:
+def _require_wheel_version_filename(logical_name: str, filename: str, wheel_version: str) -> None:
     prefix = f"kirocrew-{wheel_version}"
     if logical_name == "wheel":
         # Exact-match the full filename: a prefix check would also accept a
@@ -240,10 +277,17 @@ def validate_manifest(
             raise PromotionError(f"{label} mismatch: expected {wanted!r}, got {actual!r}")
 
     artifacts = manifest["artifacts"]
-    if not isinstance(artifacts, dict) or set(artifacts) != set(ARTIFACT_NAMES):
+    # A manifest must claim every required role and may claim optional ones, but
+    # never a role this tool does not know: an unknown key would name a file the
+    # exact-file-set check below then has to accept.
+    if not isinstance(artifacts, dict) or not set(REQUIRED_ARTIFACT_NAMES) <= set(artifacts) <= set(
+        ARTIFACT_NAMES
+    ):
         raise PromotionError("promotion manifest must list exactly the shipping artifacts")
+    _require_paired_roles(artifacts, "promotion manifest")
     expected_filenames: set[str] = set()
-    for logical_name, pattern in ARTIFACT_NAMES.items():
+    for logical_name in artifacts:
+        pattern = ARTIFACT_NAMES[logical_name]
         entry = artifacts[logical_name]
         if not isinstance(entry, dict) or set(entry) != {
             "filename",
@@ -361,7 +405,7 @@ def extract_verified_archive(archive_path: Path, output_dir: Path, *, expected_d
     with archive:
         infos = [info for info in archive.infolist() if not info.is_dir()]
         names = [info.filename for info in infos]
-        if len(infos) != MAX_FILE_COUNT or len(set(names)) != len(names):
+        if not MIN_FILE_COUNT <= len(infos) <= MAX_FILE_COUNT or len(set(names)) != len(names):
             raise PromotionError("promotion archive has an unexpected or duplicate file set")
         if sum(info.file_size for info in infos) > MAX_EXTRACTED_BYTES:
             raise PromotionError("promotion archive expands beyond the size bound")
@@ -379,12 +423,16 @@ def extract_verified_archive(archive_path: Path, output_dir: Path, *, expected_d
                 raise PromotionError(f"non-regular entry in promotion archive: {name!r}")
         # Wheel and sdist names are versioned, so validate the full set through
         # the same patterns used by the manifest rather than hard-coding them.
+        carried: set[str] = set()
         for logical_name, pattern in ARTIFACT_NAMES.items():
             matches = [name for name in names if pattern.fullmatch(name)]
-            if len(matches) != 1:
+            if len(matches) > 1 or (not matches and logical_name in REQUIRED_ARTIFACT_NAMES):
                 raise PromotionError(
                     f"promotion archive must contain exactly one {logical_name} file"
                 )
+            if matches:
+                carried.add(logical_name)
+        _require_paired_roles(carried, "promotion archive")
         if MANIFEST_NAME not in names:
             raise PromotionError(f"promotion archive is missing {MANIFEST_NAME}")
         del expected_names  # documents fixed names without weakening pattern checks

@@ -403,8 +403,9 @@ test("linux initialises the updater (not disabled)", () => {
   assert.strictEqual(deps.autoUpdater.autoDownload, false, "policy flags applied");
 });
 
-// Windows publishes nightly and insider only, so these drive a nightly-stamped
-// version. The stable case is asserted separately below.
+// A nightly-stamped version, kept because these cases were written against one.
+// Windows now publishes on every known channel, so the choice no longer matters;
+// the stable case is asserted separately below.
 const WIN_NIGHTLY = "1.0.0-nightly.20260817t170500";
 
 test("win32 initialises the updater (not disabled)", () => {
@@ -427,24 +428,31 @@ test("win32 never arms install-on-quit", () => {
   assert.strictEqual(deps.autoUpdater.autoInstallOnAppQuit, false);
 });
 
-// The lane gap is per CHANNEL, not per platform: stable republishes an immutable
-// promotion bundle that carries no Windows installer, so pointing a stable
-// Windows client at feed/stable/latest.yml would 404 on every check and hand the
-// user a manual-download link to an object that does not exist. Reporting it as
-// disabled is what makes About say "unavailable" instead of offering a Check
-// button that can only ever fail.
-test("win32 on stable is disabled for want of a lane, without touching the updater", () => {
+// Stable now publishes Windows too, by promoting the verified bundle's installer
+// rather than rebuilding it. Windows therefore carries no channel restriction of
+// its own, and this case exists to keep that from silently regressing.
+test("win32 on stable arms the updater like every other channel", () => {
   const { deps, calls } = makeDeps({ osPlatform: "win32", appVersion: "1.0.0" });
   const u = initAutoUpdate(deps);
-  assert.strictEqual(u.disabled, "channel");
-  assert.strictEqual(calls.setFeedURL.length, 0);
-  assert.strictEqual(deps.autoUpdater.autoDownload, undefined, "policy flags must not be applied");
-  // The disabled surface must still be safely callable.
-  assert.strictEqual(typeof u.check, "function");
-  assert.strictEqual(typeof u.getInfo, "function");
+  assert.strictEqual(u.disabled, undefined);
+  assert.ok(calls.setFeedURL.length >= 1, "feed must be configured at init");
+  assert.strictEqual(deps.autoUpdater.autoDownload, false, "policy flags applied");
 });
 
-// macOS and Linux keep every channel: only Windows is gated.
+// NOT tested here, deliberately: the disabled:"channel" branch in initAutoUpdate
+// is currently UNREACHABLE. currentChannel() runs the preference through
+// resolveChannel, which falls back to the version-stamped channel for anything it
+// does not recognise, so it can only ever return a member of KNOWN_CHANNELS. The
+// branch is kept as a fail-closed guard for the day a channel is added to
+// KNOWN_CHANNELS before its publish lane exists -- arming an updater against a
+// feed nobody wrote is the failure it prevents -- but a test would have to fake
+// module state to reach it, and a test that can only pass by faking the thing
+// under test is worse than an honest note.
+//
+// channelHasLane itself is NOT dead: manualDownloadUrl takes an arbitrary channel
+// argument, and auto-update-errors.test.js covers it rejecting an unknown one.
+
+// Every platform keeps every known channel.
 test("darwin on stable keeps its lane", () => {
   const { deps, calls } = makeDeps({ osPlatform: "darwin", appVersion: "1.0.0" });
   const u = initAutoUpdate(deps);

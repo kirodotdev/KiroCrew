@@ -477,12 +477,17 @@ Two Windows details do not generalise from the other platforms:
   without it the app would quit and then wait for the user to click through a
   setup wizard rather than swapping silently the way macOS and Linux do.
 
-`SUPPORTED_PLATFORMS` is necessary but not sufficient: a platform can have a lane
-on some channels and not others. `WINDOWS_CHANNELS` restricts Windows to
-`{nightly, insider}` because stable has no Windows lane (see below), and a client
-resolving a channel with no feed reports `disabled: "channel"` rather than
-arming an updater that can only 404. `test_windows_signing_contract.py` pins that
-set to the callers that actually invoke the lane, so the two cannot drift.
+`SUPPORTED_PLATFORMS` is necessary but not sufficient: a channel can lack a
+desktop publish lane entirely, which is what `KNOWN_CHANNELS` and
+`channelHasLane()` record. There is deliberately no Windows-specific channel set:
+every channel in `KNOWN_CHANNELS` publishes Windows, so a separate set would be a
+declaration claiming a restriction that does not exist. A channel with no lane
+reports `disabled: "channel"` rather than arming an updater that can only 404.
+`test_the_updater_offers_exactly_the_channels_that_publish_windows` in
+`test_windows_signing_contract.py` pins `KNOWN_CHANNELS` to the callers that
+actually invoke the lane, in both directions, so the two cannot drift -- and if a
+channel ever loses its Windows lane, that test fails until the restriction is
+reintroduced.
 
 The client resolves `{feedBase}/{channel}/` as a **directory** (the trailing
 slash matters: without it `new URL("latest-mac.yml", base)` replaces the last
@@ -552,9 +557,11 @@ whenever `AWS_WINDOWS_SIGNING_ROLE_ARN` is present and the caller passed
 `use_prod_environment: true`. Signing happens inside the build because the NSIS
 installer compresses its own already-signed executables.
 
-`publish-windows.yml` then publishes that installer on the **nightly and insider
-channels**, following the same contract as `publish-linux.yml`: an immutable
-versioned key, then the feed, then the mutable `latest/` alias.
+`publish-windows.yml` then publishes that installer on **every desktop channel --
+nightly, insider and stable**, following the same contract as `publish-linux.yml`:
+an immutable versioned key, then the feed, then the mutable `latest/` alias.
+Nightly and insider publish a fresh signed build; stable republishes the verified
+promotion bundle's installer (see the stable note below).
 
     desktop/<channel>/<version>/KiroCrew-Setup.exe            immutable
     desktop/<channel>/<version>/KiroCrew-Setup.exe.blockmap   immutable
@@ -596,15 +603,31 @@ Three things about this lane are deliberate rather than incidental:
   the same run already published, while a sustained failure still must. Asking the Actions API what this run uploaded needs `actions: read`,
   which the reusable workflow and both caller jobs grant; without it the probe
   403s and, because it fails closed, the lane aborts rather than publishing.
-- **The stable channel is not wired.** Stable republishes the immutable
-  promotion bundle that `scripts/release_promotion.py` verifies byte for byte,
-  and its `ARTIFACT_NAMES` table has no Windows role. Adding one would make a
-  stable release depend on a successful Windows build, which is the coupling
-  `soft_fail` exists to prevent, so giving Windows a promotion role is a separate
-  decision. Until it is made, Windows users track nightly or insider, and the
-  client refuses to offer stable updates rather than pointing at a feed nobody
-  wrote; the mechanism above is unchanged for stable once the bundle learns about
-  Windows.
+- **Stable publishes by promotion, and the Windows role is optional.** Stable
+  does not rebuild: it republishes the bundle `scripts/release_promotion.py`
+  verified byte for byte. Windows contributes two roles to that bundle,
+  `windows_installer` and `windows_blockmap`, and both are **optional** rather
+  than required. Optional is the whole point: a required role would make a stable
+  release depend on a successful Windows build, which is the coupling `soft_fail`
+  exists to prevent, so a candidate recorded from a run whose Windows build failed
+  simply carries no installer and the other platforms still ship. The two travel
+  as a pair, because an installer promoted without its blockmap still updates and
+  merely turns every client's update into a full download instead of a
+  differential one -- a silent degradation, which is exactly the kind that has to
+  be made impossible rather than documented.
+
+  In promote mode the lane verifies the whole bundle before it looks at the
+  installer, and re-verifies the attestation this same workflow produced at
+  insider time instead of minting a second one (a fresh attestation over
+  republished bytes would testify only that stable's own run held the file, which
+  is equally true of tampered bytes).
+
+  `record-promotion` therefore **waits on** `build-windows` without **requiring**
+  it. Waiting is mandatory: assembling before the installer artifact exists would
+  silently record a Windows-less candidate from a build that actually succeeded.
+  Requiring success is forbidden: it recreates the coupling, and `soft_fail`
+  forces that job's result to `success` even on failure, so the check would assert
+  nothing.
 
 The `KiroCrew-Setup.exe` basename is a public contract: it is what
 `manualDownloadUrl()` hands a user whose in-app update failed, which is why it

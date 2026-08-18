@@ -337,12 +337,22 @@ def test_no_reusable_workflow_caller_uses_an_unsupported_key() -> None:
 def test_the_updater_offers_exactly_the_channels_that_publish_windows() -> None:
     # A Windows client resolving a channel with no lane fetches a feed that was
     # never written: every check 404s and the manual-download link is dead. The
-    # client's channel set and the set of callers that actually invoke the lane
+    # channels the client knows and the channels that actually publish Windows
     # have to move together, in both directions.
+    #
+    # Expressed against KNOWN_CHANNELS rather than a Windows-specific set:
+    # publish-windows.yml is now wired into every channel, so a separate set
+    # would be a declaration claiming a restriction that does not exist. If a
+    # channel ever loses its Windows lane, this fails -- and the fix is to
+    # reintroduce the restriction and report `disabled: "channel"`, not to delete
+    # the assertion.
     auto_update = (ROOT / "website" / "electron" / "auto-update.js").read_text(encoding="utf-8")
-    match = re.search(r"WINDOWS_CHANNELS = new Set\(\[([^\]]*)\]\)", auto_update)
-    assert match, "auto-update.js no longer declares WINDOWS_CHANNELS"
+    match = re.search(r"KNOWN_CHANNELS = new Set\(\[([^\]]*)\]\)", auto_update)
+    assert match, "auto-update.js no longer declares KNOWN_CHANNELS"
     client_channels = set(re.findall(r'"([^"]+)"', match.group(1)))
+    assert "channelHasLane(channel)" in auto_update or "channelHasLane(currentChannel())" in (
+        auto_update
+    ), "channelHasLane must stay the single place a channel is checked for a lane"
 
     nightly = next(
         job
@@ -356,14 +366,25 @@ def test_the_updater_offers_exactly_the_channels_that_publish_windows() -> None:
         for job in _workflow("release.yml")["jobs"].values()
         if str(job.get("uses", "")).endswith("publish-windows.yml")
     )
-    # Insider only: stable republishes the promotion bundle, which has no Windows
-    # artifact role (see the job's own comment for why that is deliberate).
+    # Both of release.yml's channels publish, and stable must reach the lane
+    # through PROMOTION rather than a fresh build: it republishes the bundle
+    # resolve-promotion verified, so the caller has to gate on that job and pass
+    # promote plus the base version the manifest is checked against.
     assert "channel == 'insider'" in release["if"]
-    assert "stable" not in release["if"].replace("stable-gate", "")
+    assert "channel == 'stable'" in release["if"]
+    assert "needs.resolve-promotion.result == 'success'" in release["if"]
+    assert "resolve-promotion" in release["needs"]
+    assert "channel == 'stable'" in release["with"]["promote"]
+    assert release["with"]["promotion_base_version"], "stable promotion needs a base version"
+    # The stable installer comes from the verified handoff artifact, never from a
+    # fresh build-windows upload.
+    assert "KiroCrew-notarized-stable-" in release["with"]["installer_artifact"]
 
-    assert client_channels == {"nightly", "insider"}, (
-        f"the client offers Windows updates on {sorted(client_channels)} but the "
-        "workflows publish nightly and insider only"
+    published = {nightly["with"]["channel"]} | {"insider", "stable"}
+    assert client_channels == published, (
+        f"the client knows channels {sorted(client_channels)} but the workflows "
+        f"publish Windows on {sorted(published)}; a channel on only one side "
+        "either offers a dead updater or hides a lane that exists"
     )
 
 
@@ -420,9 +441,24 @@ def test_publishing_callers_consume_the_artifact_the_build_uploads() -> None:
         ]
         assert publish_jobs, f"{caller} does not call publish-windows.yml"
         for job in publish_jobs:
-            assert job["with"]["installer_artifact"] == upload_name, (
-                f"{caller} consumes {job['with']['installer_artifact']!r} but "
-                f"build-windows.yml uploads {upload_name!r}"
+            consumed = job["with"]["installer_artifact"]
+            if "${{" not in consumed:
+                assert consumed == upload_name, (
+                    f"{caller} consumes {consumed!r} but "
+                    f"build-windows.yml uploads {upload_name!r}"
+                )
+                continue
+            # release.yml selects between the verified stable handoff and this
+            # run's fresh build. Only the fresh-build branch is checkable
+            # against build-windows.yml, and it is the branch a typo hides in --
+            # the promotion branch is generated from the version and would fail
+            # loudly at download time instead of skipping.
+            assert (
+                f"|| '{upload_name}'" in consumed
+            ), f"{caller}'s fresh-build branch does not name {upload_name!r}: {consumed!r}"
+            assert "KiroCrew-notarized-stable-" in consumed, (
+                f"{caller}'s promotion branch must consume the verified handoff "
+                f"artifact, not a fresh build: {consumed!r}"
             )
 
 
@@ -552,3 +588,86 @@ def test_the_hook_refuses_a_partially_configured_environment() -> None:
     assert re.search(
         r"missing\.length > 0[\s\S]{0,400}throw new Error", source
     ), "a partially configured environment must throw, not skip"
+
+
+def test_promotion_verifies_the_whole_bundle_before_reading_the_installer() -> None:
+    # A stable publish republishes bytes recorded at insider time, so the
+    # candidate's integrity is the thing to establish first. Verifying only the
+    # installer would accept a bundle whose OTHER files were swapped, and this
+    # lane is one of the readers that would then trust it.
+    verify = _publish_step("Verify immutable promotion bundle")
+    assert "inputs.promote" in verify["if"]
+    assert "scripts/release_promotion.py verify" in verify["run"]
+    assert '--expected-source-sha "${GITHUB_SHA}"' in verify["run"]
+    assert '--expected-base-version "${PROMOTION_BASE_VERSION}"' in verify["run"]
+
+    names = [step.get("name", "") for step in _publish_job()["steps"]]
+    assert names.index("Verify immutable promotion bundle") < names.index(
+        "Locate the installer and its blockmap"
+    )
+
+
+def test_a_promoted_candidate_without_an_installer_skips_but_a_fresh_build_fails() -> None:
+    # These two halves pull against each other and neither may be dropped.
+    #
+    # SKIP: the Windows promotion role is optional, so a candidate recorded from
+    # a run whose Windows build failed carries no installer. Failing there would
+    # let one platform's build problem block the stable release of every other
+    # platform -- exactly what optionality buys back.
+    #
+    # FAIL: in fresh-build mode the artifact was probed and found, so a missing
+    # .exe inside it means the artifact's shape changed. Skipping there would
+    # silently stop publishing Windows with a green run.
+    run = _publish_step("Locate the installer and its blockmap")["run"]
+    # The caller-fed promote flag reaches the script through env:, never
+    # interpolated into it. `${{ }}` expanded inside a run: block is a shell
+    # injection surface (Semgrep run-shell-injection), and this step is the one
+    # place in the lane that has to branch on a caller input.
+    locate = _publish_step("Locate the installer and its blockmap")
+    assert locate["env"]["PROMOTE"] == "${{ inputs.promote }}"
+    assert "${{" not in run, f"run: block interpolates a workflow expression: {run!r}"
+    assert 'if [ "${#FOUND[@]}" -eq 0 ] && [ "${PROMOTE}" = "true" ]' in run
+    assert "staged=" in run and "::notice::" in run
+    assert 'if [ "${#FOUND[@]}" -ne 1 ]' in run
+    assert "::error::expected exactly one .exe" in run
+    # The blockmap requirement holds in BOTH modes: an installer published
+    # without it degrades every client to a full download, silently.
+    assert '[ ! -f "${SRC}.blockmap" ]' in run
+
+
+def test_promotion_reverifies_provenance_instead_of_minting_a_second_attestation() -> None:
+    # Attesting republished bytes would testify only that stable's own run held
+    # the file, which is equally true of tampered bytes. The original attestation
+    # from the insider publish is the one that means something.
+    attest = _publish_step("Attest installer provenance")
+    reverify = _publish_step("Verify promoted installer provenance")
+    assert "!inputs.promote" in attest["if"], "a promoted republish must not re-attest"
+    assert "inputs.promote" in reverify["if"] and "!inputs.promote" not in reverify["if"]
+    assert "gh attestation verify" in reverify["run"]
+    # Pinned to THIS workflow: any attestation signed by a different workflow is
+    # not the one this lane produced when the bytes were first published.
+    assert "--signer-workflow" in reverify["run"]
+    assert "publish-windows.yml" in reverify["run"]
+
+
+def test_every_publishing_step_is_gated_on_staged_bytes_not_on_the_probe() -> None:
+    # The probe answers "did this run upload the artifact", which in promote mode
+    # is always yes -- resolve-promotion uploaded the bundle. Only the locate step
+    # knows whether an INSTALLER came out of it, so everything that touches the
+    # bucket or the feed has to hang off that, or a candidate without a Windows
+    # installer would publish a feed pointing at bytes that were never staged.
+    publishing = (
+        "Verify the Authenticode signature",
+        "Attest installer provenance",
+        "Verify promoted installer provenance",
+        "Publish installer to distribution bucket",
+        "Write update feed",
+        "Update latest installer alias",
+    )
+    for name in publishing:
+        condition = _publish_step(name)["if"]
+        assert "steps.locate.outputs.staged" in condition, f"{name} is not gated on staged bytes"
+        assert "steps.probe.outputs.present" not in condition, (
+            f"{name} still gates on the probe, which cannot see whether the "
+            "promoted bundle carried an installer"
+        )

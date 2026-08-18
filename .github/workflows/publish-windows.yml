@@ -36,7 +36,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: "Release channel: nightly | insider"
+        description: "Release channel: nightly | insider | stable"
         required: true
         type: string
       version:
@@ -51,6 +51,16 @@ on:
         description: "Name of the uploaded artifact holding the NSIS installer"
         required: true
         type: string
+      promote:
+        description: "Publish verified prerelease bytes to stable without rebuilding"
+        required: false
+        type: boolean
+        default: false
+      promotion_base_version:
+        description: "Bare stable version whose candidate manifest must match"
+        required: false
+        type: string
+        default: ""
     secrets:
       # Declared explicitly so callers pass this ONE secret instead of
       # `secrets: inherit`, which would hand this lane every secret in the
@@ -184,16 +194,48 @@ jobs:
           name: ${{ inputs.installer_artifact }}
           path: artifacts
 
+      # Stable does not rebuild: it republishes the promotion bundle whose every
+      # file hash was recorded at insider time. Verify the whole bundle before
+      # looking at the installer, so a tampered candidate is refused even when
+      # the installer itself is the untouched part.
+      - name: Verify immutable promotion bundle
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present && inputs.promote
+        env:
+          PROMOTION_BASE_VERSION: ${{ inputs.promotion_base_version }}
+        run: |
+          python3 scripts/release_promotion.py verify \
+            --bundle-dir artifacts \
+            --expected-source-sha "${GITHUB_SHA}" \
+            --expected-base-version "${PROMOTION_BASE_VERSION}"
+
       # electron-builder names the installer after the product and version
       # ("KiroCrew Nightly Setup <version>.exe"), which differs per channel, so
       # it is located by glob and copied to the pinned public basename. The
       # blockmap must travel with it: without a blockmap beside the installer,
       # electron-updater falls back to a full download for every update.
+      #
+      # In promote mode the bundle already carries the canonical basename, and
+      # the Windows role is OPTIONAL -- a candidate recorded from a run whose
+      # Windows build failed simply has no installer. That is a clean skip, not
+      # an error: making it fatal would let a Windows problem block the stable
+      # release of every other platform, which is what optionality prevents.
       - name: Locate the installer and its blockmap
         if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        id: locate
+        env:
+          # Through env: rather than interpolated into the script. A caller-fed
+          # `${{ }}` value expanded inside `run:` is a shell-injection surface
+          # (Semgrep run-shell-injection), and publish-linux.yml passes PROMOTE
+          # the same way for the same reason.
+          PROMOTE: ${{ inputs.promote }}
         run: |
           set -euo pipefail
           mapfile -t FOUND < <(find artifacts -type f -name '*.exe' | sort)
+          if [ "${#FOUND[@]}" -eq 0 ] && [ "${PROMOTE}" = "true" ]; then
+            echo "::notice::this candidate carries no Windows installer, so there is nothing to promote. The other platforms still publish."
+            echo "staged=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${#FOUND[@]}" -ne 1 ]; then
             echo "::error::expected exactly one .exe in the artifact, found ${#FOUND[@]}"
             printf '%s\n' "${FOUND[@]:-<none>}"
@@ -209,6 +251,7 @@ jobs:
           cp "${SRC}.blockmap" "staged/${WINDOWS_BASENAME}.exe.blockmap"
           echo "INSTALLER_PATH=staged/${WINDOWS_BASENAME}.exe" >> "$GITHUB_ENV"
           echo "BLOCKMAP_PATH=staged/${WINDOWS_BASENAME}.exe.blockmap" >> "$GITHUB_ENV"
+          echo "staged=true" >> "$GITHUB_OUTPUT"
 
       # Two independent guards on the bytes about to become immutable.
       #
@@ -223,7 +266,7 @@ jobs:
       # The signature check is the one this lane cannot omit, per the header note
       # on fail-closed verification.
       - name: Verify the Authenticode signature
-        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         run: |
           set -euo pipefail
           python3 scripts/verify_windows_installer.py \
@@ -233,17 +276,28 @@ jobs:
       # Attested BEFORE the immutable write, so un-attested bytes can never
       # become the version clients resolve.
       - name: Attest installer provenance
-        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged && !inputs.promote
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: ${{ env.INSTALLER_PATH }}
+
+      # Promotion republishes bytes this same workflow already attested at
+      # insider time, so it re-checks that provenance instead of minting a
+      # second one. A fresh attestation here would testify only that stable's
+      # own run held the file, which is true of tampered bytes too.
+      - name: Verify promoted installer provenance
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged && inputs.promote
+        run: |
+          gh attestation verify "${INSTALLER_PATH}" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/publish-windows.yml"
 
       # --if-none-match '*' makes the versioned key write-once. A 412 on a
       # re-run is tolerated only when the published bytes are byte-identical;
       # otherwise the version string is burned and repointing the alias would
       # hand clients a binary whose feed digest no longer matches.
       - name: Publish installer to distribution bucket
-        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         run: |
           set -euo pipefail
           INSTALLER_KEY="desktop/${CHANNEL}/${VERSION}/${WINDOWS_BASENAME}.exe"
@@ -291,7 +345,7 @@ jobs:
       # newUrlFromBase leaves it alone, which is what preserves the
       # pointer-host / byte-host split.
       - name: Write update feed
-        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         run: |
           set -euo pipefail
           INSTALLER_SHA512=$(openssl dgst -sha512 -binary "${INSTALLER_PATH}" | base64 -w 0)
@@ -325,7 +379,7 @@ jobs:
       # Written LAST: the alias is what a human downloads, so it only ever
       # points at a version whose immutable key and feed are already live.
       - name: Update latest installer alias
-        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         run: |
           set -euo pipefail
           aws s3api put-object \
@@ -336,7 +390,7 @@ jobs:
             --cache-control "public, max-age=300" > /dev/null
 
       - name: Summary
-        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
         run: |
           {
             echo "### Windows installer published"

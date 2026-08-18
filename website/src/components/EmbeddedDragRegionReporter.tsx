@@ -53,7 +53,12 @@ export default function EmbeddedDragRegionReporter() {
     // Coalesce bursts (a metrics tick + a theme change in one frame) into one
     // measurement.
     const schedule = () => {
-      if (raf) return
+      // Cancel-and-reschedule, not `if (raf) return`: requestAnimationFrame may
+      // return a handle whose callback never runs (a frame queued for a page the
+      // browser then puts in the back/forward cache is dropped), and a latch on
+      // such a handle would stop drag-region reporting permanently. Same defect
+      // and same fix as CliPanel's theme scheduler.
+      if (raf) window.cancelAnimationFrame(raf)
       raf = window.requestAnimationFrame(post)
     }
 

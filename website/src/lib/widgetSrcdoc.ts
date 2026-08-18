@@ -118,6 +118,7 @@ const HEIGHT_REPORTER_BODY = `(function(){
   var shrinkTimer = null;
   var rafId = 0;
   var raf = window.requestAnimationFrame || function(cb){ return setTimeout(cb, 16); };
+  var unraf = window.cancelAnimationFrame || clearTimeout;
   function send(h){
     lastSent = h;
     parent.postMessage({type:'mc-widget-height', height:h}, '*');
@@ -160,7 +161,17 @@ const HEIGHT_REPORTER_BODY = `(function(){
   function schedule(){
     // Coalesce a burst of ResizeObserver callbacks (an animation can fire many
     // per frame) into a single measurement per frame.
-    if (rafId) return;
+    //
+    // Cancel-and-reschedule rather than an early return on a pending handle:
+    // requestAnimationFrame may return a handle whose callback never runs (a
+    // frame queued for a page the browser then puts in the back/forward cache is
+    // dropped), and latching on such a handle would stop this widget's height
+    // tracking permanently. Same defect and same fix as CliPanel's theme
+    // scheduler. NOTE this block lives inside a template literal, so it must
+    // carry neither a backtick nor a dollar-brace interpolation opener -- both
+    // terminate the literal, and the resulting parse error points here rather
+    // than at the string, which is why this warning is worth the two lines.
+    if (rafId) unraf(rafId);
     rafId = raf(evaluate);
   }
   new ResizeObserver(schedule).observe(document.body);

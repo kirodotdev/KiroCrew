@@ -200,19 +200,25 @@ test("manualDownloadUrl: per-platform artifact on the byte host", () => {
   );
 });
 
-test("manualDownloadUrl: Windows publishes x64 on nightly and insider only", () => {
+test("manualDownloadUrl: Windows publishes x64 on every known channel", () => {
   // The published basename is publish-windows.yml's contract.
   assert.strictEqual(
     manualDownloadUrl("insider", "win32", "x64"),
     `${DOWNLOAD_BASE}/desktop/insider/latest/KiroCrew-Setup.exe`,
   );
-  // Stable has no Windows lane, so a link there would be a 404. Offering
-  // nothing beats offering a dead link.
-  assert.strictEqual(manualDownloadUrl("stable", "win32", "x64"), null);
+  // Stable publishes too, by promoting the verified bundle's installer rather
+  // than rebuilding. Windows carries no channel restriction of its own.
+  assert.strictEqual(
+    manualDownloadUrl("stable", "win32", "x64"),
+    `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew-Setup.exe`,
+  );
+  // An unknown channel still yields nothing: a link there would be a 404, and
+  // offering nothing beats offering a dead link.
+  assert.strictEqual(manualDownloadUrl("experimental", "win32", "x64"), null);
   // Only x64 is built; arm64 has no lane and no feed entry, so no link either.
   assert.strictEqual(manualDownloadUrl("insider", "win32", "arm64"), null);
   assert.strictEqual(manualDownloadUrl("insider", "win32", "ia32"), null);
-  // The gate is Windows-only: the other platforms keep stable.
+  // The arch gate is Windows-specific: the other platforms are unaffected.
   assert.strictEqual(
     manualDownloadUrl("stable", "darwin"),
     `${DOWNLOAD_BASE}/desktop/stable/latest/KiroCrew.dmg`,

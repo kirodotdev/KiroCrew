@@ -73,14 +73,21 @@ Keep them concise. `_vendor/` (vendored third-party code) and pragma comments
 
 ## The lint pitfalls
 
-The blocking gates are isort, flake8 and mypy (`black --check` is not yet
-enabled). Run them before committing:
+The blocking gates are black (baselined), isort, flake8 and mypy. Run them before
+committing:
 
 ```bash
-black src/kiro_crew test && isort src/kiro_crew test
+python3 scripts/check_black_formatting.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```
+
+`black --check` cannot be run bare: 1,420 files under `src/` and `test/` predate
+any enforcement, so a repo-wide run reformats ~95,800 lines. Those files are
+recorded in `.github/black-baseline.txt` and exempted; every other file must be
+clean, and a file that *becomes* clean must be pruned from the list, so it only
+ever shrinks. Format what you touched with
+`black --target-version py310 <paths>`, never the whole tree.
 
 | Gate | Rule | Detail |
 |---|---|---|

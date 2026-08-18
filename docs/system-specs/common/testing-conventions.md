@@ -476,7 +476,7 @@ rest of the list, which is why a single-file run needs no `--override-ini` at al
 | Iterating on one task | `pytest --testmon` with the full override above |
 | Debugging a specific failure | `pytest --lf` with the override, or `-k "test_name" -n0` |
 | One file | `pytest test/test_foo.py -n0 -q` |
-| Checkpoint before committing | `black && isort && flake8 && mypy && python -m pytest` |
+| Checkpoint before committing | `scripts/check_black_formatting.py && isort && flake8 && mypy && python -m pytest` |
 
 ## Determinism: the five flake classes
 

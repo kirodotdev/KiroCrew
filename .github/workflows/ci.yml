@@ -295,7 +295,15 @@ jobs:
       matrix:
         python-version: ["3.10", "3.12"]
     steps:
+      # Full history so the black gate can compute THIS change's own diff. A
+      # shallow clone truncates parent info and leaves no base ref, and the gate
+      # then falls back to judging the whole tree -- which reddens the PR for
+      # files the base branch merged after the baseline was taken. depth 2 was
+      # tried first and was not enough; the gate now prints which scope it used,
+      # so a regression here is visible in the log instead of silent.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -318,11 +326,18 @@ jobs:
         # --group pulls [dependency-groups].dev from pyproject.
         run: uv pip install --system -e ".[voice]" --group dev
 
-      # black --check is still disabled: a bulk format pass (~406 files) has not
-      # been run yet. Do it as a standalone formatting PR, then re-enable:
-      #   black --target-version py310 src/ test/ && git commit
-      #   - name: Check formatting (black)
-      #     run: black --check --target-version py310 src/ test/
+      # black IS enforced, behind a shrinking baseline. A bare `black --check`
+      # cannot be turned on here: 1,420 files under src/ and test/ are not
+      # black-clean, so the bulk pass it waits on is ~95,800 lines and has been
+      # "pending" long enough for the old estimate in this comment to drift by 3x.
+      # Leaving it off meanwhile was the worse failure: AGENTS.md tells every
+      # contributor to run `black src/kiro_crew test` before committing, and
+      # following that instruction reformats those 1,420 files on top of their
+      # change. The baseline makes the gate real for everything else, so new code
+      # is formatted without any PR being forced to carry unrelated churn.
+      - name: Check formatting (black, baselined)
+        run: python3 scripts/check_black_formatting.py
+
       # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
 
       - name: Check imports (isort)

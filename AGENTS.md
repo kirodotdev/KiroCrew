@@ -230,10 +230,19 @@ One logical change per commit.
 ## The gate before you commit
 
 ```bash
-black src/kiro_crew test && isort src/kiro_crew test
+python3 scripts/check_black_formatting.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```
+
+**Do not run bare `black src/kiro_crew test`.** 1,420 files are not black-clean
+yet, so it reformats ~95,800 lines on top of whatever you changed and buries your
+diff. The gate above enforces black on every file *outside*
+[`.github/black-baseline.txt`](.github/black-baseline.txt) instead, so format only
+what you touched: `black --target-version py310 <the files you changed>`. If a
+file you touched is listed in the baseline, formatting it is welcome but optional
+— do it in its own commit, and prune its line with
+`python3 scripts/check_black_formatting.py --update-baseline`.
 
 Frontend: `cd website && npm run build && npm run test`. Faster loops (testmon,
 `--lf`, single-file runs) are in

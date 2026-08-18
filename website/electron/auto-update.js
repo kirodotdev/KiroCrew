@@ -145,21 +145,34 @@ const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
 // Channels with a desktop publish lane. "dev" has none.
 const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
 // Channels with a WINDOWS publish lane. publish-windows.yml is wired into
-// nightly.yml and release.yml's insider path only: stable republishes the
-// immutable promotion bundle, whose artifact roles do not include a Windows
-// installer, so no stable Windows feed or installer exists to point at.
+// nightly.yml and both of release.yml's channels: insider publishes a fresh
+// signed build, and stable republishes the promotion bundle's installer. That is
+// every channel in KNOWN_CHANNELS, so Windows carries no channel restriction of
+// its own and channelHasLane needs no win32 arm -- a separate set here would be a
+// comment claiming a restriction that does not exist.
 //
-// Without this set a Windows user who selects Stable resolves
-// feed/stable/latest.yml and desktop/stable/latest/KiroCrew-Setup.exe, neither
-// of which is published: every check fails and the manual-download escape hatch
-// is a 404. Offering nothing is the honest answer until stable has a lane.
-const WINDOWS_CHANNELS = new Set(["nightly", "insider"]);
+// If a channel ever loses its Windows lane, do NOT just delete the caller: a
+// client resolving a channel nobody publishes fetches a feed that was never
+// written, so every check 404s and the manual-download escape hatch is dead. Add
+// the restriction back and report `disabled: "channel"` instead.
+// test_the_updater_offers_exactly_the_channels_that_publish_windows fails until
+// that is done, which is how this stays honest.
+//
+// Note this is a CHANNEL-level property, not a per-release one. The Windows
+// promotion role is optional, so an individual stable release may carry no
+// installer; the channel's feed still exists and still advertises the previous
+// stable version, so there is nothing for the client to gate on.
 
-/** Whether this platform publishes artifacts for this channel. */
-function channelHasLane(channel, osPlatform) {
-  if (!KNOWN_CHANNELS.has(channel)) return false;
-  if (osPlatform === "win32") return WINDOWS_CHANNELS.has(channel);
-  return true;
+/**
+ * Whether this channel has a desktop publish lane at all.
+ *
+ * Platform-independent today: every KNOWN_CHANNELS channel publishes on all
+ * three platforms. Takes no platform argument rather than an ignored one, so the
+ * absence of a per-platform restriction is visible in the signature instead of
+ * hidden in a branch that always returns true.
+ */
+function channelHasLane(channel) {
+  return KNOWN_CHANNELS.has(channel);
 }
 
 /**
@@ -281,7 +294,7 @@ function buildFeedBase({ base, channel, variant = "" }) {
  * @returns {string|null}
  */
 function manualDownloadUrl(channel, osPlatform, osArch = process.arch, linuxFormat = "") {
-  if (!channelHasLane(channel, osPlatform)) return null;
+  if (!channelHasLane(channel)) return null;
   // The mac DMG is universal, so darwin needs no arch. Linux has no universal
   // binary: publish-linux.yml publishes one artifact per arch per format under
   // the basenames below, so handing a user the wrong one is an immediate
@@ -581,8 +594,9 @@ function initAutoUpdate(deps) {
     log.info(`[update] ${osPlatform} — auto-update disabled (no publish lane yet)`);
     return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "platform" };
   }
-  // A platform can have a lane on some channels and not others: Windows
-  // publishes nightly and insider but not stable (see WINDOWS_CHANNELS). Arming
+  // A channel can lack a desktop publish lane entirely -- that is what
+  // channelHasLane() records. No PLATFORM restricts channels today: every
+  // KNOWN_CHANNELS channel publishes on all three, Windows included. Arming
   // the updater against a channel with no feed makes every check fail on a 404
   // and leaves the manual-download link pointing at nothing, so report it the
   // same way the dev and platform paths do -- About then shows "unavailable"
@@ -591,7 +605,7 @@ function initAutoUpdate(deps) {
   // Evaluated once at init, while currentChannel() is read per check: switching
   // channels in Settings mid-session surfaces the ordinary failure card until
   // the next launch, which the UI already handles.
-  if (!channelHasLane(currentChannel(), osPlatform)) {
+  if (!channelHasLane(currentChannel())) {
     log.info(`[update] ${osPlatform} has no ${currentChannel()} publish lane — auto-update disabled`);
     return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "channel" };
   }

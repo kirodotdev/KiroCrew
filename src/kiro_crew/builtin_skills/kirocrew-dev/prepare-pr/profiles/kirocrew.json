@@ -4,6 +4,7 @@
   "single_commit": true,
   "gates": [
     "python -m pytest -q",
+    "python3 scripts/check_black_formatting.py",
     "isort --check-only src/kiro_crew test",
     "flake8 src/kiro_crew test",
     "mypy src/kiro_crew/",

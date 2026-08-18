@@ -538,27 +538,25 @@ jobs:
   # ── Windows installer publish ─────────────────────────────────────────
   # INSIDER ONLY, and that is a deliberate boundary rather than an omission.
   #
-  # The stable lane republishes the immutable promotion bundle that
-  # scripts/release_promotion.py verifies byte for byte, and that bundle's
-  # ARTIFACT_NAMES table has no Windows role. Adding one would make a stable
-  # release depend on a successful Windows build, which is exactly the coupling
-  # build-windows's soft_fail exists to prevent. Giving Windows a promotion role
-  # is therefore its own change, with its own decision about whether the role is
-  # required or optional.
-  #
-  # Until then a stable Windows installer is not published, so Windows users
-  # track the nightly or insider channel. The mechanism below is unchanged for
-  # stable once the bundle learns about Windows.
+  # Stable publishes by PROMOTION, not by rebuilding: it republishes the bundle
+  # scripts/release_promotion.py verified byte for byte, where the Windows
+  # installer and its blockmap are an OPTIONAL pair of roles. Optional is what
+  # keeps per-platform independence -- a required role would make a stable
+  # release depend on a successful Windows build, which is the coupling
+  # build-windows's soft_fail exists to prevent. A candidate recorded from a run
+  # whose Windows build failed simply carries no installer, and the lane skips
+  # cleanly while mac, Linux and the CLI still ship.
   #
   # Like nightly, this does not trust build-windows's job result (soft_fail
   # makes it `success` even on failure); publish-windows.yml probes for the
   # artifact and skips cleanly when the build produced none.
   publish-windows-x64:
     name: Publish Windows Desktop (${{ needs.version.outputs.channel }} channel · x64)
-    needs: [version, stable-gate, build-windows]
+    needs: [version, stable-gate, build-windows, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          needs.version.outputs.channel == 'insider' }}
+          (needs.version.outputs.channel == 'insider' ||
+           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       # A called workflow cannot exceed the caller job's grants, so the probe's
@@ -578,14 +576,19 @@ jobs:
     # workflow validation and the release run starts NO jobs at all -- far worse
     # than the coupling. Recovery is instead operational and one click: re-run
     # the failed job, which flips the run's conclusion to success and makes the
-    # commit promotable again. Removing the coupling properly means giving
-    # Windows a role in the promotion bundle, which is tracked as its own change.
+    # commit promotable again.
     uses: ./.github/workflows/publish-windows.yml
     with:
       channel: ${{ needs.version.outputs.channel }}
-      version: ${{ needs.version.outputs.version }}
+      # Stable republishes the candidate's own bytes, whose embedded app version
+      # is the insider one, so the feed has to advertise that same version or
+      # every client's version comparison is made against a number the binary
+      # does not carry. Mirrors publish-linux.yml's caller exactly.
+      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       publish: true
-      installer_artifact: build-windows-x64
+      installer_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-windows-x64' }}
+      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets:
       AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
@@ -757,6 +760,14 @@ jobs:
   # manifest before any channel pointer moves.
   record-promotion:
     name: Record Immutable Promotion Bundle
+    # build-windows is in `needs` but deliberately NOT in this condition. It has
+    # to be waited on, or this job can assemble the bundle before the installer
+    # artifact exists and record a Windows-less candidate from a Windows build
+    # that actually succeeded -- a silent omission, since the role is optional.
+    # Its RESULT is ignored for two reasons: gating on it would couple stable
+    # promotion to Windows build success (what build-windows' soft_fail exists to
+    # prevent), and soft_fail makes that result `success` even on failure anyway,
+    # so the check would assert nothing.
     if: >-
       ${{ always() && needs.version.outputs.channel == 'insider' &&
           needs.release-candidate-tests.result == 'success' &&
@@ -769,7 +780,7 @@ jobs:
           needs.publish-linux-rpm-arm64.result == 'success' &&
           needs.publish-docker.result == 'success' &&
           needs.sign-and-notarize.result == 'success' }}
-    needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize]
+    needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -797,6 +808,19 @@ jobs:
             fi
             printf '%s' "${matches[0]}"
           }
+          # Optional counterpart to one(): Windows is a soft-fail build, so its
+          # installer may legitimately be absent. Two or more is still a bug --
+          # this must never guess which installer to promote.
+          at_most_one() {
+            label="$1"; shift
+            mapfile -t matches < <(find artifacts -type f "$@")
+            if [ "${#matches[@]}" -gt 1 ]; then
+              echo "::error::expected at most one ${label}, found ${#matches[@]}"
+              printf '%s\n' "${matches[@]}"
+              exit 1
+            fi
+            printf '%s' "${matches[0]:-}"
+          }
           WHEEL=$(one wheel -name '*.whl')
           SDIST=$(one sdist -name '*.tar.gz')
           # The bundle records every Linux artifact the promotion will republish:
@@ -813,6 +837,7 @@ jobs:
           RPM_ARM64=$(one rpm-arm64 -path '*build-linux-arm64*' -name '*.rpm')
           MAC_ZIP=$(one notarized.zip -path '*KiroCrew-notarized-*' -name 'notarized.zip')
           DMG=$(one notarized-DMG -path '*KiroCrew-notarized-*' -name 'KiroCrew.dmg')
+          INSTALLER=$(at_most_one installer -path '*build-windows-x64*' -name '*.exe')
           cp "$WHEEL" "promotion-bundle/$(basename "$WHEEL")"
           cp "$SDIST" "promotion-bundle/$(basename "$SDIST")"
           cp "$APPIMAGE" promotion-bundle/KiroCrew-x86_64.AppImage
@@ -823,6 +848,28 @@ jobs:
           cp "$RPM_ARM64" promotion-bundle/KiroCrew-aarch64.rpm
           cp "$MAC_ZIP" promotion-bundle/notarized.zip
           cp "$DMG" promotion-bundle/KiroCrew.dmg
+          # The blockmap travels with the installer or not at all: promoting the
+          # installer alone still updates, but silently turns every stable
+          # Windows update into a full download instead of a differential one.
+          #
+          # A half-present pair DROPS the pair rather than failing this job.
+          # Failing would make a Windows artifact anomaly block the candidate
+          # recording for mac, Linux and the CLI -- the exact coupling the role
+          # was made optional to avoid, reintroduced at the one step that had
+          # not been thought through. The annotation is an ::error:: so it is
+          # loud in the run summary even though the job succeeds; the outcome is
+          # identical to a Windows build that produced nothing, which is a state
+          # the whole design already handles.
+          if [ -n "$INSTALLER" ] && [ ! -f "${INSTALLER}.blockmap" ]; then
+            echo "::error::${INSTALLER} has no .blockmap beside it, so the Windows pair is being DROPPED from this candidate. Stable will publish no Windows installer for this version; the other platforms are unaffected."
+            INSTALLER=""
+          fi
+          if [ -n "$INSTALLER" ]; then
+            cp "$INSTALLER" promotion-bundle/KiroCrew-Setup.exe
+            cp "${INSTALLER}.blockmap" promotion-bundle/KiroCrew-Setup.exe.blockmap
+          else
+            echo "::notice::no Windows installer in this run; recording a candidate without the optional Windows role."
+          fi
           OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           python3 scripts/release_promotion.py create \
             --bundle-dir promotion-bundle \

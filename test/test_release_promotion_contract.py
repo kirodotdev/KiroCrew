@@ -149,6 +149,7 @@ def test_prerelease_record_waits_for_test_gate_and_all_publish_lanes() -> None:
         "publish-linux-rpm-arm64",
         "publish-docker",
         "sign-and-notarize",
+        "build-windows",
     }
     for dependency in (
         "release-candidate-tests",
@@ -163,6 +164,15 @@ def test_prerelease_record_waits_for_test_gate_and_all_publish_lanes() -> None:
         "sign-and-notarize",
     ):
         assert f"needs.{dependency}.result == 'success'" in job["if"]
+
+    # build-windows is WAITED ON but never REQUIRED, and the difference is the
+    # whole design. Waiting is mandatory: the Windows role is optional, so
+    # assembling before the installer artifact exists would silently record a
+    # Windows-less candidate from a build that actually succeeded. Requiring
+    # success is forbidden: it would make stable promotion depend on the Windows
+    # build, the coupling soft_fail exists to prevent -- and soft_fail forces that
+    # result to 'success' anyway, so the check would assert nothing at all.
+    assert "needs.build-windows.result" not in job["if"]
 
     assemble = _step(RELEASE, "record-promotion", "Assemble canonical promotion bundle")
     assert assemble["env"]["DOCKER_DIGEST"] == "${{ needs.publish-docker.outputs.digest }}"

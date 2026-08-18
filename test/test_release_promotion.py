@@ -26,7 +26,7 @@ IMAGE = "ghcr.io/kirodotdev/kirocrew"
 IMAGE_DIGEST = f"sha256:{'b' * 64}"
 
 
-def _bundle(path: Path) -> Path:
+def _bundle(path: Path, extra: dict[str, bytes] | None = None) -> Path:
     path.mkdir()
     files = {
         "kirocrew-1.2.3rc4-py3-none-any.whl": b"wheel",
@@ -40,6 +40,7 @@ def _bundle(path: Path) -> Path:
         "notarized.zip": b"mac-zip",
         "KiroCrew.dmg": b"dmg",
     }
+    files.update(extra or {})
     for name, body in files.items():
         (path / name).write_bytes(body)
     manifest = promotion.create_manifest(
@@ -323,3 +324,92 @@ def test_archive_path_traversal_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(promotion.PromotionError, match="unsafe path"):
         promotion.extract_verified_archive(archive, tmp_path / "resolved", expected_digest=digest)
+
+
+WINDOWS_ROLES = {
+    "KiroCrew-Setup.exe": b"nsis-installer",
+    "KiroCrew-Setup.exe.blockmap": b"blockmap",
+}
+
+
+def test_a_candidate_without_windows_is_still_promotable(tmp_path: Path) -> None:
+    # The whole point of making the Windows roles OPTIONAL: build-windows is
+    # soft-fail so a Windows problem cannot hold mac/Linux/CLI back, and a
+    # required role would have reintroduced that coupling at the promotion layer.
+    bundle = _bundle(tmp_path / "bundle")
+    manifest = promotion.verify_bundle(bundle, expected_source_sha=SOURCE_SHA)
+    assert set(manifest["artifacts"]) == set(promotion.REQUIRED_ARTIFACT_NAMES)
+    assert "windows_installer" not in manifest["artifacts"]
+
+
+def test_a_candidate_with_windows_promotes_the_installer_and_its_blockmap(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path / "bundle", WINDOWS_ROLES)
+    manifest = promotion.verify_bundle(bundle, expected_source_sha=SOURCE_SHA)
+    assert set(manifest["artifacts"]) == set(promotion.REQUIRED_ARTIFACT_NAMES) | {
+        "windows_installer",
+        "windows_blockmap",
+    }
+    assert manifest["artifacts"]["windows_installer"]["filename"] == "KiroCrew-Setup.exe"
+    assert (
+        manifest["artifacts"]["windows_blockmap"]["filename"]
+        == "KiroCrew-Setup.exe.blockmap"
+    )
+
+
+@pytest.mark.parametrize("dropped", sorted(WINDOWS_ROLES))
+def test_half_a_paired_role_is_refused(tmp_path: Path, dropped: str) -> None:
+    # An installer promoted without its blockmap still updates, so nothing fails
+    # loudly -- every client just silently downloads the whole installer instead
+    # of the changed blocks. That is the failure this pairing exists to prevent,
+    # and it has to be refused from BOTH directions.
+    partial = {name: body for name, body in WINDOWS_ROLES.items() if name != dropped}
+    with pytest.raises(promotion.PromotionError, match="promoted together or not at all"):
+        _bundle(tmp_path / "bundle", partial)
+
+
+def test_optionality_does_not_let_an_unlisted_file_ride_along(tmp_path: Path) -> None:
+    # Byte identity is the property optionality must not cost. A bundle is still
+    # exactly what its manifest claims: adding a file after the manifest is
+    # recorded fails, whether or not optional roles are in play.
+    bundle = _bundle(tmp_path / "bundle", WINDOWS_ROLES)
+    (bundle / "KiroCrew-Setup.exe.sig").write_bytes(b"extra")
+
+    with pytest.raises(promotion.PromotionError, match="file set differs from manifest"):
+        promotion.verify_bundle(bundle, expected_source_sha=SOURCE_SHA)
+
+
+def test_a_tampered_windows_installer_fails_closed(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle", WINDOWS_ROLES)
+    (bundle / "KiroCrew-Setup.exe").write_bytes(b"nsis-installeR")
+
+    with pytest.raises(promotion.PromotionError, match="windows_installer sha256"):
+        promotion.verify_bundle(bundle, expected_source_sha=SOURCE_SHA)
+
+
+def test_a_manifest_may_not_claim_a_role_this_tool_does_not_know(tmp_path: Path) -> None:
+    # Widening the manifest's allowed key set from "exactly the roles" to "the
+    # required roles plus any known optional ones" must not widen it to ANY key:
+    # an unknown role names a filename the exact-file-set check then accepts.
+    bundle = _bundle(tmp_path / "bundle")
+    path = bundle / promotion.MANIFEST_NAME
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["msix"] = dict(manifest["artifacts"]["dmg"])
+    path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(promotion.PromotionError, match="must list exactly the shipping"):
+        promotion.verify_bundle(bundle, expected_source_sha=SOURCE_SHA)
+
+
+def test_a_windows_carrying_archive_survives_the_bounded_extraction(tmp_path: Path) -> None:
+    # The archive file-count bound became a range when roles became optional, so
+    # both ends of that range need a real archive proving they extract.
+    for label, extra in (("without", None), ("with", WINDOWS_ROLES)):
+        bundle = _bundle(tmp_path / f"bundle-{label}", extra)
+        archive = tmp_path / f"candidate-{label}.zip"
+        digest = _archive(bundle, archive)
+        output = tmp_path / f"resolved-{label}"
+
+        promotion.extract_verified_archive(archive, output, expected_digest=digest)
+        promotion.verify_bundle(output, expected_source_sha=SOURCE_SHA)
