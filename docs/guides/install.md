@@ -288,14 +288,18 @@ npm, or Node:
 make desktop
 ```
 
-Output is a DMG (plus a zip) on macOS, and an AppImage plus a `.deb` and an
-`.rpm` on Linux, under `website/electron/dist/`. On macOS the default is ONE
-universal DMG: the Electron shell is lipo-merged, and the backend, which cannot
-be lipo-merged, ships as two complete PBS trees selected at launch by
-`process.arch`. The x86_64 backend is built under Rosetta 2, so a universal
-build needs an Apple-Silicon host; `UNIVERSAL=0` forces a faster host-arch-only
-build. Linux is always host-arch, and the three Linux formats come from one
-backend tree packaged three times.
+Output is a DMG (plus a zip) on macOS, an AppImage plus a `.deb` and an `.rpm`
+on Linux, and an assisted NSIS Setup.exe on Windows, under
+`website/electron/dist/`. The macOS DMG opens to a branded
+drag-to-Applications layout carrying the opening animation's artwork. The
+Windows wizard keeps native controls and its
+per-user default while carrying matching Kiro Crew artwork through its sidebar
+and header. On macOS the default is ONE universal DMG: the Electron shell is
+lipo-merged, and the backend, which cannot be lipo-merged, ships as two complete
+PBS trees selected at launch by `process.arch`. The x86_64 backend is built
+under Rosetta 2, so a universal build needs an Apple-Silicon host;
+`UNIVERSAL=0` forces a faster host-arch-only build. Linux is always host-arch,
+and the three Linux formats come from one backend tree packaged three times.
 
 #### Installing a Linux desktop package
 
@@ -331,8 +335,10 @@ excludes Ubuntu 20.04, Debian 11 and Amazon Linux 2 — on those, use the
 [one-line install](#a-one-line-install-fastest) instead.
 
 Prebuilt downloads for the release channels are linked from the
-[README](../../README.md#app-downloads). Windows has no desktop build yet:
-run the gateway from a source install and open the dashboard in a browser.
+[README](../../README.md#app-downloads). The Windows desktop installer remains
+a preview artifact; see [windows-install.md](windows-install.md) for its current
+publishing and signing status. The source install remains the fully supported
+Windows path.
 
 See [desktop-app.md](../build/desktop-app.md) for the full pipeline (frontend,
 PBS provisioning, pip install, pruning, electron-builder) and how the app

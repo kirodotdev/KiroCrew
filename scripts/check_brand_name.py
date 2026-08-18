@@ -217,6 +217,8 @@ SKIP_SUFFIXES = (
     ".jpeg",
     ".gif",
     ".webp",
+    ".tiff",
+    ".bmp",
     ".ico",
     ".icns",
     ".woff",

@@ -109,6 +109,7 @@ jobs:
     environment: prod
     outputs:
       signed_zip_key: ${{ steps.sign.outputs.signed_zip_key }}
+      unsigned_dmg_key: ${{ steps.sign.outputs.unsigned_dmg_key }}
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
       HAS_CDSIGNER: ${{ secrets.CDSIGNER_API_ENDPOINT != '' && 'true' || '' }}
@@ -137,8 +138,8 @@ jobs:
           # Attest only artifacts whose bytes are final here. The macOS .zip is
           # re-signed + notarized downstream, so a pre-notarization attestation
           # would bind a digest that never ships -- omit *.zip. Same for *.dmg:
-          # the electron-builder DMG wraps the unsigned app and never ships
-          # (no DMG ships at all -- see the header note).
+          # the electron-builder DMG is only a layout template; the unsigned
+          # bytes are replaced before the shipping DMG is signed and attested.
           subject-path: |
             release/*.whl
             release/*.tar.gz
@@ -210,6 +211,15 @@ jobs:
           APP_SLUG="$(basename "$APP_PATH" .app)"
           APP_SLUG="${APP_SLUG// /-}"
           echo "signed_zip_key=signed/${CHANNEL}/${VERSION}/${APP_SLUG}.zip" >> "$GITHUB_OUTPUT"
+          shopt -s nullglob
+          UNSIGNED_DMGS=(release/*.dmg)
+          shopt -u nullglob
+          [ "${#UNSIGNED_DMGS[@]}" -eq 1 ] || {
+            echo "Expected exactly one electron-builder DMG layout template, found ${#UNSIGNED_DMGS[@]}"
+            exit 1
+          }
+          UNSIGNED_DMG_NAME="$(basename "${UNSIGNED_DMGS[0]}")"
+          echo "unsigned_dmg_key=pre-signed/${CHANNEL}/${VERSION}/${UNSIGNED_DMG_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
@@ -251,6 +261,7 @@ jobs:
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       SIGNED_ZIP_KEY: ${{ needs.sign.outputs.signed_zip_key }}
+      UNSIGNED_DMG_KEY: ${{ needs.sign.outputs.unsigned_dmg_key }}
       # Published FILENAMES are pinned to this basename on every channel even
       # though the nightly BUNDLE is "KiroCrew Nightly.app": CDN keys and the
       # latest-DMG permalink (desktop/<channel>/latest/KiroCrew.dmg) are a
@@ -286,6 +297,7 @@ jobs:
         run: |
           mkdir -p work
           aws s3 cp "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${SIGNED_ZIP_KEY}" work/signed.zip --only-show-errors
+          aws s3 cp "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${UNSIGNED_DMG_KEY}" work/layout-template.dmg --only-show-errors
           ls -la work/
 
       # The credential lives in Secrets Manager (never GitHub secrets --
@@ -356,20 +368,18 @@ jobs:
           echo "NOTARIZED_KEY=${KEY}" >> "$GITHUB_ENV"
           echo "Notarized artifact: s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}"
 
-      # First-install DMG, rebuilt from the STAPLED app (the electron-builder
-      # DMG from the build job wraps the unsigned app and must never ship).
-      # Volume name follows the bundle ("KiroCrew Nightly" mounts as such);
-      # the FILE name stays ${ARTIFACT_BASENAME}.dmg for key/permalink
-      # stability.
+      # First-install DMG, rebuilt from the STAPLED app. The unsigned
+      # electron-builder DMG is used only as a layout template so the shipping
+      # image keeps its branded background, volume identity, and icon positions;
+      # its unsigned app is removed before the final image is created.
       - name: Build DMG from stapled app
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          rm -rf work/dmg-staging && mkdir -p work/dmg-staging
-          cp -R "work/stapled/${APP_NAME}.app" work/dmg-staging/
-          ln -s /Applications work/dmg-staging/Applications
-          hdiutil create -volname "${APP_NAME}" -srcfolder work/dmg-staging \
-            -ov -format UDZO -quiet "work/${ARTIFACT_BASENAME}.dmg"
+          bash packaging/signing/build-dmg.sh \
+            work/layout-template.dmg \
+            "work/stapled/${APP_NAME}.app" \
+            "work/${ARTIFACT_BASENAME}.dmg"
           ls -lh "work/${ARTIFACT_BASENAME}.dmg"
 
       # Developer ID sign the DMG itself via a second CDSigner task (type:

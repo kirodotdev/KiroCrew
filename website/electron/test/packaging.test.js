@@ -4,6 +4,64 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(ROOT, "..", "..");
+const INSTALLER_ASSETS = path.join(REPO_ROOT, "packaging", "installer-assets");
+
+function tiffPages(file) {
+  const bytes = fs.readFileSync(file);
+  const byteOrder = bytes.toString("ascii", 0, 2);
+  assert.ok(byteOrder === "II" || byteOrder === "MM");
+  const littleEndian = byteOrder === "II";
+  const uint16 = offset =>
+    littleEndian ? bytes.readUInt16LE(offset) : bytes.readUInt16BE(offset);
+  const uint32 = offset =>
+    littleEndian ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
+  assert.equal(uint16(2), 42);
+
+  const pages = [];
+  const visited = new Set();
+  let directoryOffset = uint32(4);
+  while (directoryOffset !== 0) {
+    assert.ok(!visited.has(directoryOffset), "TIFF directory chain must not loop");
+    visited.add(directoryOffset);
+    const entryCount = uint16(directoryOffset);
+    const tags = new Map();
+    for (let index = 0; index < entryCount; index += 1) {
+      const entryOffset = directoryOffset + 2 + index * 12;
+      const tag = uint16(entryOffset);
+      const type = uint16(entryOffset + 2);
+      const count = uint32(entryOffset + 4);
+      if (count !== 1) continue;
+      let value;
+      if (type === 3) value = uint16(entryOffset + 8);
+      if (type === 4) value = uint32(entryOffset + 8);
+      if (type === 5) {
+        const rationalOffset = uint32(entryOffset + 8);
+        value = uint32(rationalOffset) / uint32(rationalOffset + 4);
+      }
+      if (value !== undefined) tags.set(tag, value);
+    }
+    pages.push({
+      width: tags.get(256),
+      height: tags.get(257),
+      xResolution: tags.get(282),
+      yResolution: tags.get(283),
+      resolutionUnit: tags.get(296),
+    });
+    directoryOffset = uint32(directoryOffset + 2 + entryCount * 12);
+  }
+  return pages;
+}
+
+function bmpInfo(file) {
+  const bytes = fs.readFileSync(file);
+  assert.equal(bytes.toString("ascii", 0, 2), "BM");
+  return {
+    width: bytes.readInt32LE(18),
+    height: Math.abs(bytes.readInt32LE(22)),
+    bitsPerPixel: bytes.readUInt16LE(28),
+  };
+}
 
 describe("electron-builder files list", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
@@ -48,6 +106,89 @@ describe("macOS bundle naming", () => {
       /-c\.mac\.extendInfo\.CFBundleDisplayName=Kiro Crew Nightly/
     );
     assert.doesNotMatch(buildScript, /-c\.mac\.extendInfo\.CFBundleName=/);
+  });
+});
+
+
+describe("first-download installer design contract", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const background = path.join(INSTALLER_ASSETS, "dmg-background.tiff");
+  const sidebar = path.join(INSTALLER_ASSETS, "windows-installer-sidebar.bmp");
+  const header = path.join(INSTALLER_ASSETS, "windows-installer-header.bmp");
+
+  it("positions the macOS app and Applications target on the branded background", () => {
+    assert.equal(pkg.build.dmg.background, "../../packaging/installer-assets/dmg-background.tiff");
+    assert.equal(pkg.build.dmg.title, "${productName}");
+    assert.equal(pkg.build.dmg.iconSize, 96);
+    assert.equal(pkg.build.dmg.iconTextSize, 13);
+    assert.equal(pkg.build.dmg.filesystem, "HFS+");
+    assert.deepEqual(pkg.build.dmg.contents, [
+      { x: 170, y: 246, type: "file" },
+      { x: 490, y: 246, type: "link", path: "/Applications" },
+    ]);
+    assert.deepEqual(tiffPages(background), [
+      { width: 660, height: 420, xResolution: 72, yResolution: 72, resolutionUnit: 2 },
+      { width: 1320, height: 840, xResolution: 144, yResolution: 144, resolutionUnit: 2 },
+    ]);
+  });
+
+  it("uses NSIS-native branded artwork without changing the assisted install flow", () => {
+    assert.equal(
+      pkg.build.nsis.installerSidebar,
+      "../../packaging/installer-assets/windows-installer-sidebar.bmp"
+    );
+    assert.equal(
+      pkg.build.nsis.installerHeader,
+      "../../packaging/installer-assets/windows-installer-header.bmp"
+    );
+    assert.deepEqual(bmpInfo(sidebar), { width: 164, height: 314, bitsPerPixel: 24 });
+    assert.deepEqual(bmpInfo(header), { width: 150, height: 57, bitsPerPixel: 24 });
+    assert.equal(pkg.build.nsis.oneClick, false);
+    assert.equal(pkg.build.nsis.perMachine, false);
+    assert.equal(pkg.build.nsis.allowToChangeInstallationDirectory, false);
+    assert.equal(pkg.build.nsis.runAfterFinish, true);
+  });
+
+  it("reuses the shipped logo and opening-animation ghost artwork", () => {
+    const normalize = text => text.replaceAll(",", " ").replace(/\s+/g, " ");
+    const loading = normalize(fs.readFileSync(path.join(ROOT, "loading.html"), "utf8"));
+    const siteLogo = normalize(
+      fs.readFileSync(path.join(REPO_ROOT, "site", "public", "kirocrew-logo.svg"), "utf8")
+    );
+    const dmgSource = normalize(
+      fs.readFileSync(path.join(INSTALLER_ASSETS, "dmg-background.svg"), "utf8")
+    );
+    const sidebarSource = normalize(
+      fs.readFileSync(path.join(INSTALLER_ASSETS, "windows-installer-sidebar.svg"), "utf8")
+    );
+    const headerSource = normalize(
+      fs.readFileSync(path.join(INSTALLER_ASSETS, "windows-installer-header.svg"), "utf8")
+    );
+
+    const openingGhost = "M398.554 818.914C316.315 1001.03";
+    const logoGhost = "M84.76 266.62c-19.2 42.53";
+    assert.ok(loading.includes(openingGhost));
+    assert.ok(dmgSource.includes(openingGhost));
+    assert.ok(sidebarSource.includes(openingGhost));
+    assert.ok(siteLogo.includes(logoGhost));
+    assert.ok(sidebarSource.includes(logoGhost));
+    assert.ok(headerSource.includes(logoGhost));
+  });
+
+  it("applies the branded layout again after signing and stapling", () => {
+    const workflow = fs.readFileSync(
+      path.join(REPO_ROOT, ".github", "workflows", "sign-and-notarize.yml"),
+      "utf8"
+    );
+    const helperPath = path.join(REPO_ROOT, "packaging", "signing", "build-dmg.sh");
+    const helper = fs.readFileSync(helperPath, "utf8");
+
+    assert.match(workflow, /bash packaging\/signing\/build-dmg\.sh/);
+    assert.match(workflow, /unsigned_dmg_key=pre-signed/);
+    assert.match(workflow, /work\/layout-template\.dmg/);
+    assert.match(helper, /hdiutil convert/);
+    assert.match(helper, /hdiutil resize -size min/);
+    assert.match(helper, /template and signed app names differ/);
   });
 });
 

@@ -59,7 +59,14 @@ Right-click the Dock icon → Options → Keep in Dock to pin it.
 npm run dist
 ```
 
-Output goes to `electron/dist/`.
+Output goes to `electron/dist/`. The DMG opens to a branded 660×420 logical-size
+drag-to-Applications layout on a flat light-purple ground carrying the opening
+animation's white ghost cast, with one chevron pointing from the app to
+`/Applications`.
+Its background is a multi-resolution TIFF with 1× and Retina 2× representations.
+The release workflow uses this Electron-built DMG as a layout template, removes
+its unsigned app, and inserts the signed/stapled app before the DMG itself is
+signed and notarized. That keeps local previews and shipped downloads aligned.
 
 ## Build Windows Installer (NSIS)
 
@@ -86,6 +93,9 @@ Notes:
 - The result is an assisted (non-one-click, per-user) NSIS installer,
   `KiroCrew Setup <version>.exe` (nightly builds:
   `KiroCrew Nightly Setup <version>.exe`), in `website/electron/dist/`.
+- The native welcome/finish sidebar and the header used on intermediate pages
+  carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
+  localized instructions remain native; only their supporting artwork changes.
 
 See `../../docs/guides/windows-install.md` for the CI-built installer and the
 current Windows support status.

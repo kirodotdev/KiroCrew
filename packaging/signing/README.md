@@ -23,6 +23,28 @@ trigger macOS Gatekeeper warnings).
   for all Electron helper processes and frameworks.
 - `sign.sh` — CI script that packages, uploads, submits to the signing
   service, polls, downloads, and verifies the signed artifact.
+- `build-dmg.sh` — replaces the unsigned app inside electron-builder's branded
+  DMG layout template with the signed/stapled app, then shrinks and recompresses
+  the image before the DMG signing and notarization stages.
+
+  The branded background is a **volume-bound alias recorded inside `.DS_Store`**,
+  which is why the image is reused rather than rebuilt from a folder: recreating
+  it drops the layout. The script fingerprints the template's `.DS_Store` before
+  the swap and requires the final image to carry the same bytes, which is
+  stronger than checking the files exist — a broken alias leaves every file in
+  place. It still cannot prove Finder *resolves* the alias, since that also
+  depends on the volume identity the alias binds to, and nothing on a CI runner
+  re-renders the window.
+
+  **So two things are worth doing rather than assuming green CI covers them.**
+  First, watch the next real signing run: the unsigned-DMG S3 round trip, the
+  sector-resize arithmetic and the app swap all execute for the first time
+  there, not in PR CI. Second, know the fallback — if the alias ever stops
+  surviving, run `dmgbuild` against the **stapled** app inside the notarize job.
+  That writes a fresh, correct `.DS_Store` and removes the template round trip,
+  the resize arithmetic and the survival question in one move; the only reason
+  it is not the default is that it re-derives the layout on every release
+  instead of preserving the one the build already produced.
 
 ## Prerequisites
 

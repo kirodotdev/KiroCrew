@@ -245,14 +245,17 @@ version derivation and `uses:` calls.
    signing credentials.
 2. **notarize** (macos-15). `notarytool submit --wait`, `stapler staple`, then a
    fail-closed `spctl --assess` that must report `Notarized Developer ID`. On an
-   `Invalid` verdict the itemized Apple log is printed. The DMG is then **rebuilt
-   from the stapled app** (`hdiutil`, plus an `/Applications` symlink), signed by
-   a second CDSigner task with a `type: dmg` manifest, notarized, stapled, and
-   held to the same `spctl` gate. The DMG signature is load-bearing twice over:
-   an `hdiutil` DMG carries an adhoc signature that the Apple notary accepts but
-   Gatekeeper treats as "no usable signature" ("app is damaged" on drag-out),
-   and an unsigned DMG cannot be stapled at all (`stapler` Error 73), so
-   first-install verification would need network. The stapled DMG is attested
+   `Invalid` verdict the itemized Apple log is printed. The branded
+   electron-builder DMG is then converted to a writable layout template; its
+   unsigned app is removed and replaced with the stapled app before the image
+   is shrunk and recompressed. This preserves the Finder background and icon
+   positions while ensuring no unsigned app survives. The resulting DMG is
+   signed by a second CDSigner task with a `type: dmg` manifest, notarized,
+   stapled, and held to the same `spctl` gate. The DMG signature is load-bearing
+   twice over: an `hdiutil` DMG carries an adhoc signature that the Apple notary
+   accepts but Gatekeeper treats as "no usable signature" ("app is damaged" on
+   drag-out), and an unsigned DMG cannot be stapled at all (`stapler` Error 73),
+   so first-install verification would need network. The stapled DMG is attested
    after stapling, because stapling changes the shipping bytes. The job ends by
    attaching the gated artifact, which is the sole input of everything
    downstream. The Apple credential is fetched from AWS Secrets Manager at

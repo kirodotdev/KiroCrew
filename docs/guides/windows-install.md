@@ -48,6 +48,10 @@ Current status:
   the two channels do not share an uninstall registry key. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
+- **Guided Kiro Crew artwork** — the welcome and finish pages use the existing
+  Kiro Crew logo and ghost family in the native NSIS sidebar, and intermediate
+  pages retain a compact branded header. Buttons, progress, install-mode copy,
+  keyboard behavior, and localization remain the standard Windows experience.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and — via the `customUnInstall` macro in `website/electron/build/installer.nsh`

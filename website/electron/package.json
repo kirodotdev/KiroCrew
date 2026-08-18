@@ -107,6 +107,24 @@
       ]
     },
     "dmg": {
+      "background": "../../packaging/installer-assets/dmg-background.tiff",
+      "iconSize": 96,
+      "iconTextSize": 13,
+      "title": "${productName}",
+      "filesystem": "HFS+",
+      "contents": [
+        {
+          "x": 170,
+          "y": 246,
+          "type": "file"
+        },
+        {
+          "x": 490,
+          "y": 246,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
       "writeUpdateInfo": false
     },
     "files": [
@@ -216,7 +234,9 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": false,
       "deleteAppDataOnUninstall": false,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "installerSidebar": "../../packaging/installer-assets/windows-installer-sidebar.bmp",
+      "installerHeader": "../../packaging/installer-assets/windows-installer-header.bmp"
     }
   },
   "author": "Kiro Crew"
