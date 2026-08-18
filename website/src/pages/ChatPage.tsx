@@ -313,16 +313,39 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
   )
 }
 
+/** Per-message identity key with row-id tie-break. `msgKey` alone is NOT
+ *  unique — a coarse OS clock can stamp two rows appended in one tick with the
+ *  same `ts` (see isRedeliveredMessage in chatSlice on why row identity is
+ *  `meta.mid`, not a ts tuple). `mid` is stamped once per row and survives
+ *  every delivery door (HTTP rebuild, WS broadcast, JSONL round trip), so the
+ *  suffix is as reload-stable as the key it disambiguates. Rows without a
+ *  `mid` (locally-minted streaming/optimistic bubbles) fall back to `msgKey`
+ *  alone, which is exactly the uniqueness they had before. */
+function msgIdentityKey(m: ChatMessage, msgKey: (m: ChatMessage) => string): string {
+  const mid = m.meta?.mid
+  return typeof mid === 'string' && mid ? `${msgKey(m)}~${mid}` : msgKey(m)
+}
+
 /** Stable key for a single TurnItem — the leading row of a turn OR a top-level
  *  single/group. A `single` and the `turn` it leads resolve to the SAME key so
  *  a mid-stream regroup (single promoted into a grouped turn once it gains
  *  working steps) does NOT change the row's virtual key → no remount / silent
  *  re-measure. `msgKey` supplies the per-message identity (clientTs → ts →
  *  minted id; never the array index — see stableMsgKey). Groups key on their
- *  first message's start index, which is stable for surviving rows (trailing
- *  truncation removes later groups whole rather than renumbering earlier ones). */
+ *  FIRST MESSAGE's identity, never `startIdx`: a prepend (history backfill)
+ *  renumbers every array index but leaves message identities intact, so a
+ *  group-led row keeps its key — and with it its cached height, DOM node, and
+ *  scroll anchor — across the shift. The index key this replaces was unique by
+ *  construction, so group keys go through `msgIdentityKey` to keep that
+ *  property across same-tick `ts` ties.
+ *
+ *  `msgs` is non-empty by construction (both producers emit a group only under
+ *  `if (group.length)`), but the type allows `[]` and this is a public export —
+ *  degrade to the index rather than throwing inside `msgKey`. */
 export function turnLeadKey(it: TurnItem, msgKey: (m: ChatMessage) => string): string {
-  return it.kind === 'single' ? `row-${msgKey(it.msg)}` : `grp-${it.startIdx}`
+  if (it.kind === 'single') return `row-${msgKey(it.msg)}`
+  const lead = it.msgs[0]
+  return lead ? `grp-${msgIdentityKey(lead, msgKey)}` : `grp-idx-${it.startIdx}`
 }
 
 /** Virtualizer / HeightCache key for a display row. Pure (identity injected)
@@ -6584,7 +6607,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   const renderTurnItem = (it: TurnItem, _j: number) => {
                     // Skip hidden tool messages (✅/🚫 completions) to avoid empty py-1 wrappers
                     if (it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')) return null
-                    return <div key={it.kind === 'single' ? (it.msg.ts || it.idx) : `g-${it.startIdx}`} className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                    return <div key={turnLeadKey(it, stableMsgKey)} className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                       {it.kind === 'group' ? (() => {
                         const unresolvedPerms = it.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                         // Skip group entirely if it only contains unresolved permissions (handled by ApprovalBar)
@@ -6592,7 +6615,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                         return (
                         <CollapsibleToolGroup
                           count={it.msgs.filter(m => m.role !== 'permission').length}
-                          disclosureKey={`ctg-g-${it.startIdx}`}
+                          disclosureKey={`ctg-${turnLeadKey(it, stableMsgKey)}`}
                           hasPermission={false}
                           isRunning={false}
                           permissionMeta={unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined}
@@ -6604,7 +6627,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                           })()}
                           onViewActivity={toggleAct}
                           activityOpen={activityOpen}
-                        >{it.msgs.map((m, j) => <div key={m.ts || j}>{renderMessage(it.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
+                        >{it.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(it.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
                       })() : renderMessage(it.idx, it.msg)}
                     </div>
                   }
@@ -6655,7 +6678,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   })()}
                   onViewActivity={toggleAct}
                   activityOpen={activityOpen}
-                >{item.msgs.map((m, j) => <div key={m.ts || j}>{renderMessage(item.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
+                >{item.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(item.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
               })() : renderMessage(item.idx, item.msg)}</div>
               })}
               {/* Bottom spacer — reserves the height of all items below the
