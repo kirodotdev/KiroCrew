@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from pathlib import Path
 
 from kiro_crew.artifacts import (
@@ -49,6 +48,14 @@ from kiro_crew.artifacts import (
     get_default_store,
 )
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.messaging.outbound_files import (
+    IMAGE_MD_RE,
+    REMOTE_PREFIXES,
+    local_destination,
+    md_destination,
+    strip_url_syntax,
+    unescape_md,
+)
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.widget_slug import derive_widget_slug
 
@@ -57,23 +64,8 @@ logger = logging.getLogger(__name__)
 #: Fallback display name when the markdown image had no alt text.
 _DEFAULT_IMAGE_NAME = "Image"
 
-#: Markdown inline-image OPENING: ``![alt](``. Deliberately stops at the opening
-#: paren and captures no destination — the destination is parsed from the text
-#: after the match by :func:`_md_destination`, which walks it with a paren
-#: counter. Two reasons it is split this way: a filename like
-#: ``screenshot(1).png`` is ordinary and a lazy ``[^)\s]+`` capture truncates it
-#: at the inner ``)``; and a pattern that swallows to end-of-line makes
-#: ``finditer`` consume every later image on the SAME line into one match, so a
-#: second same-line image is never seen.
-#:
-#: The alt capture accepts backslash escapes (``(?:[^\]\\]|\\.)*``) because a
-#: caption may legally contain an escaped bracket — ``![Revenue \[Q1\]](p.png)``.
-#: A plain ``[^\]]*`` stops at that escaped ``]``, the whole pattern then fails
-#: to match, and the image is never registered at all.
-_IMAGE_MD_RE = re.compile(r"!\[((?:[^\]\\]|\\.)*)\]\(")
-
 #: Local raster extensions we register, mapped to the mime create_image expects.
-#: SVG is intentionally absent — it is markup (``kind="svg"``), not a raster.
+#: SVG is intentionally absent -- it is markup (``kind="svg"``), not a raster.
 _IMAGE_EXT_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -83,15 +75,6 @@ _IMAGE_EXT_MIME = {
     ".bmp": "image/bmp",
 }
 
-
-#: Unwraps a markdown backslash escape to the character it escaped, for alt text.
-_MD_ESCAPE_RE = re.compile(r"\\(.)")
-
-#: Characters a backslash may legally escape inside a markdown destination. A
-#: backslash before anything else is a literal — most importantly a Windows path
-#: separator (``C:\Users\me\shot.png``).
-_MD_ESCAPABLE = frozenset("()[]\\<>\"'")
-
 #: Per-message registration budgets. Auto-registration copies bytes, and one
 #: finalized message can legitimately reference many images — but it can also
 #: reference the same 25 MiB file a thousand times, and pruning only runs AFTER
@@ -99,57 +82,6 @@ _MD_ESCAPABLE = frozenset("()[]\\<>\"'")
 #: are per message: whichever trips first stops registration for that message.
 MAX_IMAGES_PER_MESSAGE = 12
 MAX_IMAGE_BYTES_PER_MESSAGE = 64 * 1024 * 1024  # 64 MiB
-
-
-def _md_destination(rest: str) -> str | None:
-    """Extract a markdown link destination from the text after ``![alt](``.
-
-    Markdown allows unescaped parentheses in a destination as long as they
-    balance, which is exactly the common ``screenshot(1).png`` case. Walks to the
-    closing paren tracking depth, honours backslash escapes *only* before
-    markdown-significant characters, and stops at the optional ``"title"``
-    suffix. Returns ``None`` when the destination never closes (malformed, or a
-    ``(`` that belongs to prose).
-
-    The narrow escape set is load-bearing on Windows: a native path is
-    ``C:\\Users\\me\\shot.png``, and treating every backslash as an escape strips
-    the separators, leaving a path that cannot resolve — which silently disabled
-    image registration on Windows entirely.
-    """
-    depth = 1
-    out: list[str] = []
-    i = 0
-    while i < len(rest):
-        ch = rest[i]
-        if ch == "\\" and i + 1 < len(rest) and rest[i + 1] in _MD_ESCAPABLE:
-            # A real markdown escape: keep the escapee, and never let it move
-            # the paren depth.
-            out.append(rest[i + 1])
-            i += 2
-            continue
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                dest = "".join(out).strip()
-                # `<...>` is markdown's explicit way to write a destination that
-                # contains spaces (`![c](</tmp/generated images/c.png>)`). Unwrap
-                # it and DON'T split on whitespace: inside the brackets a space
-                # is part of the path, not the separator before a `"title"`.
-                if dest.startswith("<"):
-                    end = dest.find(">")
-                    if end == -1:
-                        return None  # unterminated — don't guess at the path
-                    return dest[1:end].strip() or None
-                # Bare destination: a `"title"` suffix is separated by
-                # whitespace, so the path ends at the first space.
-                if " " in dest or "\t" in dest:
-                    dest = re.split(r"[ \t]", dest, maxsplit=1)[0]
-                return dest or None
-        out.append(ch)
-        i += 1
-    return None
 
 
 def _derive_image_slug(message_ts: str, image_index: int) -> str:
@@ -167,8 +99,7 @@ def _derive_image_slug(message_ts: str, image_index: int) -> str:
 
 def _mime_for_path(raw_path: str) -> str | None:
     """Return the raster mime for a path's extension, or ``None`` if unsupported."""
-    clean = raw_path.split("?", 1)[0].split("#", 1)[0]
-    ext = os.path.splitext(clean)[1].lower()
+    ext = os.path.splitext(strip_url_syntax(raw_path))[1].lower()
     return _IMAGE_EXT_MIME.get(ext)
 
 
@@ -178,14 +109,14 @@ def _local_file(raw_path: str) -> Path | None:
     Returns ``None`` (skip) for anything that isn't a plain absolute path to an
     existing regular file we're allowed to read: relative paths (no stable
     meaning off the agent's cwd), missing files, and sensitive paths
-    (``~/.aws`` etc., via the store's own denylist) are all rejected.
+    (``~/.aws`` etc., via the store's own denylist) are all rejected. The
+    normalize-and-absolute half is :func:`local_destination`.
     """
-    clean = raw_path.split("?", 1)[0].split("#", 1)[0]
-    if clean.startswith("file://"):
-        clean = clean[len("file://") :]
+    p = local_destination(raw_path)
+    if p is None:
+        return None
     try:
-        p = Path(clean).expanduser()
-        if not p.is_absolute() or not p.is_file():
+        if not p.is_file():
             return None
         if is_sensitive_path(str(p)):
             return None
@@ -210,7 +141,7 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         # the artifact (the frontend probe would never find it).
         return []
     try:
-        matches = list(_IMAGE_MD_RE.finditer(text or ""))
+        matches = list(IMAGE_MD_RE.finditer(text or ""))
     except Exception:  # pragma: no cover — regex scan must never break a turn
         logger.warning("image scan failed for message %s", message_ts, exc_info=True)
         return []
@@ -239,13 +170,13 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         # Undo markdown escaping so the caption reads as written: the alt capture
         # now accepts `\]`, and leaving the backslashes in would surface them in
         # the artifact name and the image's accessible description.
-        alt = _MD_ESCAPE_RE.sub(r"\1", (m.group(1) or "")).strip()
+        alt = unescape_md(m.group(1) or "").strip()
         # The destination starts right after the opening paren this match ended on.
-        raw_path = _md_destination(text[m.end():])
+        raw_path = md_destination(text[m.end():])
         if not raw_path:
             continue
         low = raw_path.lower()
-        if low.startswith(("http://", "https://", "data:", "//")):
+        if low.startswith(REMOTE_PREFIXES):
             # Remote / data / protocol-relative — nothing local to copy.
             continue
         mime = _mime_for_path(raw_path)

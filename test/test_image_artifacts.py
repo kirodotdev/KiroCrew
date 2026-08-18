@@ -240,33 +240,33 @@ class TestMarkdownDestinationParsing:
     """
 
     def test_windows_separators_survive(self) -> None:
-        got = image_artifacts._md_destination(r"C:\Users\me\shot.png)")
+        got = image_artifacts.md_destination(r"C:\Users\me\shot.png)")
         assert got == r"C:\Users\me\shot.png"
 
     def test_balanced_parens_are_kept(self) -> None:
-        assert image_artifacts._md_destination("/tmp/screenshot(1).png)") == (
+        assert image_artifacts.md_destination("/tmp/screenshot(1).png)") == (
             "/tmp/screenshot(1).png"
         )
 
     def test_markdown_escaped_paren_is_unescaped(self) -> None:
-        assert image_artifacts._md_destination(r"/tmp/a\(b.png)") == "/tmp/a(b.png"
+        assert image_artifacts.md_destination(r"/tmp/a\(b.png)") == "/tmp/a(b.png"
 
     def test_title_suffix_is_split_off(self) -> None:
-        assert image_artifacts._md_destination('/tmp/a.png "a title")') == "/tmp/a.png"
+        assert image_artifacts.md_destination('/tmp/a.png "a title")') == "/tmp/a.png"
 
     def test_angle_wrapped_path_with_spaces_survives(self) -> None:
-        got = image_artifacts._md_destination("</tmp/generated images/chart.png>)")
+        got = image_artifacts.md_destination("</tmp/generated images/chart.png>)")
         assert got == "/tmp/generated images/chart.png"
 
     def test_angle_wrapped_path_with_title_suffix(self) -> None:
-        got = image_artifacts._md_destination('</tmp/a b/c.png> "a title")')
+        got = image_artifacts.md_destination('</tmp/a b/c.png> "a title")')
         assert got == "/tmp/a b/c.png"
 
     def test_unterminated_angle_wrap_is_none(self) -> None:
-        assert image_artifacts._md_destination("</tmp/a b/c.png)") is None
+        assert image_artifacts.md_destination("</tmp/a b/c.png)") is None
 
     def test_unclosed_destination_is_none(self) -> None:
-        assert image_artifacts._md_destination("/tmp/a.png") is None
+        assert image_artifacts.md_destination("/tmp/a.png") is None
 
 
 class TestRegisterImages:

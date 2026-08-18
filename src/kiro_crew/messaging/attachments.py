@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 
 from kiro_crew import transcribe
 from kiro_crew.doc_parser import extract_text, is_parseable_document
+from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -68,17 +69,6 @@ IMAGE_MIMETYPES = {
     "image/gif",
     "image/webp",
     "image/bmp",
-}
-
-#: Leading bytes per image type. Metadata and filenames are attacker-controlled;
-#: bytes are not. A claimed PNG that does not start with the PNG signature is
-#: rejected rather than handed to the model (CWE-434).
-_MAGIC: dict[str, tuple[bytes, ...]] = {
-    "image/png": (b"\x89PNG\r\n\x1a\n",),
-    "image/jpeg": (b"\xff\xd8\xff",),
-    "image/gif": (b"GIF87a", b"GIF89a"),
-    "image/webp": (b"RIFF",),  # RIFF....WEBP
-    "image/bmp": (b"BM",),
 }
 
 _TEXT_PREFIXES = ("text/",)
@@ -189,17 +179,10 @@ def sniff_image_mime(path: str) -> str | None:
     """
     try:
         with open(path, "rb") as fh:
-            head = fh.read(16)
+            head = fh.read(SNIFF_BYTES)
     except OSError:
         return None
-    for mime, prefixes in _MAGIC.items():
-        if any(head.startswith(p) for p in prefixes):
-            # WebP and other RIFF containers share the "RIFF" prefix; confirm the
-            # form tag so a RIFF/WAVE file is not mistaken for an image.
-            if mime == "image/webp" and head[8:12] != b"WEBP":
-                continue
-            return mime
-    return None
+    return sniff_raster_mime(head)
 
 
 #: Canonical suffix per image mimetype, so a downloaded file is renamed to match
