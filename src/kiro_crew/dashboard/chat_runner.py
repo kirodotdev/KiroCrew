@@ -1069,6 +1069,28 @@ def _redact_acp_string(s: str) -> str:
     return s
 
 
+# Native subagent cards carry a short error string only, so a long provider
+# message is clipped. The request id is what identifies the failure
+# server-side and the formatter appends it LAST, so a plain head-slice drops
+# precisely the part worth keeping.
+_MAX_NATIVE_CARD_ERROR = 200
+_RE_TRAILING_REQUEST_ID = re.compile(r"\(request_id:\s*[0-9a-fA-F-]+\)\s*$")
+
+
+def _clip_card_error(text: str, limit: int = _MAX_NATIVE_CARD_ERROR) -> str:
+    """Clip *text* to *limit* characters, keeping any trailing request id."""
+    if len(text) <= limit:
+        return text
+    match = _RE_TRAILING_REQUEST_ID.search(text)
+    if not match:
+        return text[:limit]
+    suffix = match.group(0).strip()
+    head = limit - len(suffix) - 4  # room for the elision marker and a space
+    if head <= 0:
+        return text[:limit]
+    return f"{text[:head]}... {suffix}"
+
+
 def _emit_mcp_oauth_request(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -1574,7 +1596,7 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
             if stype in ("failed", "error") and smsg:
                 err, _ = redact_exfiltration_urls(smsg)
                 err, _ = redact_credentials(err)
-                err = err[:200]
+                err = _clip_card_error(err)
             info["done"] = True
             _feed = _native_card_feed(card_output, card_id)
             _elapsed = time.time() - info["started"]

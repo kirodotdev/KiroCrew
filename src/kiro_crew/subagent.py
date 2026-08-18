@@ -238,6 +238,48 @@ def _redact(text: str) -> str:
     return text
 
 
+# Bounds for a rendered exception chain. The rendering reaches a WS frame, a
+# tombstone and the Subagents panel, so it is capped rather than trusted.
+_MAX_ERROR_DETAIL_LEN = 2_000
+_MAX_ERROR_CHAIN = 4
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Render *exc* as ``Type: message``, following its cause chain.
+
+    A bare ``str(exc)`` drops the class, and for a whole family of failures the
+    message alone cannot be attributed to a subsystem: ``bad parameter or other
+    API misuse`` is unreadable prose until ``sqlite3.InterfaceError`` names
+    what raised it. The module is included for anything outside ``builtins``,
+    because the bare class name is frequently just as ambiguous as the message.
+
+    The chain is followed because the outermost exception is often a generic
+    wrapper whose ``__cause__`` holds the real fault. ``__context__`` is
+    followed only when it was not suppressed, matching how a traceback decides
+    the same question, so an unrelated exception that merely happened to be in
+    flight is not reported as this one's cause.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and len(parts) < _MAX_ERROR_CHAIN:
+        if id(current) in seen:
+            break
+        seen.add(id(current))
+        cls = type(current)
+        name = cls.__qualname__
+        module = getattr(cls, "__module__", "")
+        if module and module != "builtins":
+            name = f"{module}.{name}"
+        message = str(current).strip()
+        parts.append(f"{name}: {message}" if message else name)
+        nxt = current.__cause__
+        if nxt is None and not current.__suppress_context__:
+            nxt = current.__context__
+        current = nxt
+    return " <- caused by ".join(parts)[:_MAX_ERROR_DETAIL_LEN]
+
+
 _MAX_DONE_RESULT_LEN = 50_000  # cap subagent_done payload to avoid bloating WS frames
 
 
@@ -4560,7 +4602,7 @@ class SubagentManager:
             logger.info("Subagent %s cancelled", info.id)
         except Exception as exc:
             if not info.reaped:
-                info.error = str(exc)
+                info.error = _describe_exception(exc)
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._write_tombstone(info, "error")
@@ -4880,6 +4922,11 @@ class SubagentManager:
                 turns=info.turns,
                 last_tool=info.last_tool,
                 outcome=info.outcome,
+                # ``cause`` is a coarse bucket ("error", "timeout"), which is
+                # not enough to act on. ``info.error`` is in-memory only and
+                # dies with the gateway, so without this the specific reason is
+                # recoverable from nothing but the log.
+                detail=(_redact(info.error)[:_MAX_ERROR_DETAIL_LEN] if info.error else ""),
             )
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
