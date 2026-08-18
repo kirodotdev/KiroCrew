@@ -1483,7 +1483,6 @@
         "previewing_from_disk": "Предпросмотр {{name}} с диска.",
         "previewing_from_url": "Предпросмотр {{name}} из {{url}}.",
         "remove_failed": "Не удалось убрать из списка: {{error}}",
-        "send_failed": "Не удалось отправить: {{error}}",
         "dispatch_failed_unconfirmed": "Запрос {{number}} закрыт, но подтвердить доставку не удалось ({{error}}). Проверяем сессию — список обновится.",
         "sent_request_to_session": "Запрос {{number}} ({{n}}) отправлен → сессия {{label}}.",
         "no_session_for_request": "Запрос {{number}} готов, но у этого приложения нет папки, поэтому отправлять его некуда. Укажите папку приложения, затем отправьте запрос из списка.",
@@ -8294,7 +8293,8 @@
       "upload_failed_error": "Не удалось загрузить: {{error}}",
       "what_can_i_do_for_you": "Чем могу помочь?",
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь",
-      "loading_earlier_messages": "Загрузка предыдущих сообщений…"
+      "loading_earlier_messages": "Загрузка предыдущих сообщений…",
+      "send_failed_with_error": "Не удалось отправить: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

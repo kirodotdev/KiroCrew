@@ -1382,7 +1382,6 @@
         "previewing_from_disk": "{{name}}을(를) 디스크에서 미리보는 중입니다.",
         "previewing_from_url": "{{name}}을(를) {{url}}에서 미리보는 중입니다.",
         "remove_failed": "제거 실패: {{error}}",
-        "send_failed": "전송 실패: {{error}}",
         "dispatch_failed_unconfirmed": "요청 {{number}}은(는) 확정되었지만 전달을 확인할 수 없습니다 ({{error}}). 세션을 확인하는 중입니다 — 목록이 업데이트됩니다.",
         "sent_request_to_session": "요청 {{number}} ({{n}})을 {{label}} 세션으로 전송했습니다.",
         "no_session_for_request": "요청 {{number}}은(는) 준비되었지만 이 앱에 폴더가 설정되지 않아 보낼 세션이 없습니다. 앱의 폴더를 설정한 후 목록에서 전송하세요.",
@@ -7982,7 +7981,8 @@
       "upload_failed_error": "업로드에 실패했습니다: {{error}}",
       "what_can_i_do_for_you": "무엇을 도와드릴까요?",
       "worktree_creation_returned_no_path": "워크트리 생성 결과에 경로가 없습니다",
-      "loading_earlier_messages": "이전 메시지를 불러오는 중…"
+      "loading_earlier_messages": "이전 메시지를 불러오는 중…",
+      "send_failed_with_error": "전송 실패: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

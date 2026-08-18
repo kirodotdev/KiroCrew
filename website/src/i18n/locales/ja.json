@@ -1382,7 +1382,6 @@
         "previewing_from_disk": "{{name}} をディスクからプレビュー中です。",
         "previewing_from_url": "{{name}} を {{url}} からプレビュー中です。",
         "remove_failed": "削除に失敗しました: {{error}}",
-        "send_failed": "送信に失敗しました: {{error}}",
         "dispatch_failed_unconfirmed": "リクエスト {{number}} は確定しましたが、配信を確認できませんでした ({{error}})。セッションを確認しています — リストは更新されます。",
         "sent_request_to_session": "リクエスト {{number}} ({{n}}) を {{label}} セッションに送信しました。",
         "no_session_for_request": "リクエスト {{number}} は準備できていますが、このアプリにフォルダーが設定されていないため、送信先のセッションがありません。アプリのフォルダーを設定してから、リストから送信してください。",
@@ -7982,7 +7981,8 @@
       "upload_failed_error": "アップロードに失敗しました: {{error}}",
       "what_can_i_do_for_you": "何をお手伝いしましょうか？",
       "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
-      "loading_earlier_messages": "以前のメッセージを読み込み中…"
+      "loading_earlier_messages": "以前のメッセージを読み込み中…",
+      "send_failed_with_error": "送信に失敗しました: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

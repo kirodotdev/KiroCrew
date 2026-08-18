@@ -1454,7 +1454,6 @@
         "previewing_from_disk": "Anteprima di {{name}} da disco.",
         "previewing_from_url": "Anteprima di {{name}} da {{url}}.",
         "remove_failed": "Rimozione non riuscita: {{error}}",
-        "send_failed": "Invio non riuscito: {{error}}",
         "dispatch_failed_unconfirmed": "La richiesta {{number}} è stata sigillata, ma non è stato possibile confermare la consegna ({{error}}). Controllo della sessione: l'elenco si aggiornerà.",
         "sent_request_to_session": "Richiesta {{number}} ({{n}}) inviata → sessione {{label}}.",
         "no_session_for_request": "La richiesta {{number}} è pronta, ma questa app non ha una cartella, quindi non c'è nessuna sessione a cui inviarla. Imposta la cartella dell'app e poi inviala dall'elenco.",
@@ -8190,7 +8189,8 @@
       "upload_failed_error": "Caricamento non riuscito: {{error}}",
       "what_can_i_do_for_you": "Cosa posso fare per te?",
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso",
-      "loading_earlier_messages": "Caricamento dei messaggi precedenti…"
+      "loading_earlier_messages": "Caricamento dei messaggi precedenti…",
+      "send_failed_with_error": "Invio non riuscito: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

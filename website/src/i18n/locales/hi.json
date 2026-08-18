@@ -1425,7 +1425,6 @@
         "previewing_from_disk": "{{name}} का पूर्वावलोकन डिस्क से हो रहा है।",
         "previewing_from_url": "{{name}} का पूर्वावलोकन {{url}} से हो रहा है।",
         "remove_failed": "हटाना विफल: {{error}}",
-        "send_failed": "भेजना विफल: {{error}}",
         "dispatch_failed_unconfirmed": "अनुरोध {{number}} सील हो गया, लेकिन डिलीवरी की पुष्टि नहीं हो सकी ({{error}})। सत्र जाँचा जा रहा है — सूची अपडेट हो जाएगी।",
         "sent_request_to_session": "अनुरोध {{number}} ({{n}}) → {{label}} सेशन को भेज दिया।",
         "no_session_for_request": "अनुरोध {{number}} तैयार है, लेकिन इस ऐप का कोई फ़ोल्डर नहीं है, इसलिए भेजने के लिए कोई सत्र नहीं है। ऐप का फ़ोल्डर सेट करो, फिर सूची से भेजो।",
@@ -8086,7 +8085,8 @@
       "upload_failed_error": "अपलोड विफल: {{error}}",
       "what_can_i_do_for_you": "मैं आपके लिए क्या कर सकता हूँ?",
       "worktree_creation_returned_no_path": "वर्कट्री बनाने पर कोई पथ नहीं मिला",
-      "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…"
+      "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…",
+      "send_failed_with_error": "भेजना विफल: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

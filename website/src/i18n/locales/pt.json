@@ -1454,7 +1454,6 @@
         "previewing_from_disk": "Visualizando {{name}} do disco.",
         "previewing_from_url": "Visualizando {{name}} de {{url}}.",
         "remove_failed": "Falha ao remover: {{error}}",
-        "send_failed": "Falha ao enviar: {{error}}",
         "dispatch_failed_unconfirmed": "A solicitação {{number}} foi selada, mas não foi possível confirmar a entrega ({{error}}). Verificando a sessão — a lista será atualizada.",
         "sent_request_to_session": "Solicitação {{number}} ({{n}}) enviada → sessão {{label}}.",
         "no_session_for_request": "A solicitação {{number}} está pronta, mas este aplicativo não tem pasta, então não há sessão para enviá-la. Defina a pasta do aplicativo e envie pela lista.",
@@ -8190,7 +8189,8 @@
       "upload_failed_error": "Falha no envio: {{error}}",
       "what_can_i_do_for_you": "O que posso fazer por você?",
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho",
-      "loading_earlier_messages": "Carregando mensagens anteriores…"
+      "loading_earlier_messages": "Carregando mensagens anteriores…",
+      "send_failed_with_error": "Falha ao enviar: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

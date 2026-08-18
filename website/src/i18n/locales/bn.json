@@ -1425,7 +1425,6 @@
         "previewing_from_disk": "{{name}} ডিস্ক থেকে প্রিভিউ করা হচ্ছে।",
         "previewing_from_url": "{{name}} {{url}} থেকে প্রিভিউ করা হচ্ছে।",
         "remove_failed": "সরানো যায়নি: {{error}}",
-        "send_failed": "পাঠানো যায়নি: {{error}}",
         "dispatch_failed_unconfirmed": "রিকোয়েস্ট {{number}} সিল হয়েছে, কিন্তু ডেলিভারি নিশ্চিত করা যায়নি ({{error}})। সেশন যাচাই করা হচ্ছে — তালিকা আপডেট হবে।",
         "sent_request_to_session": "রিকোয়েস্ট {{number}} ({{n}}) → {{label}} সেশনে পাঠানো হয়েছে।",
         "no_session_for_request": "রিকোয়েস্ট {{number}} তৈরি, কিন্তু এই অ্যাপের কোনো ফোল্ডার নেই, তাই পাঠানোর মতো কোনো সেশন নেই। অ্যাপের ফোল্ডার সেট করুন, তারপর তালিকা থেকে পাঠান।",
@@ -8086,7 +8085,8 @@
       "upload_failed_error": "আপলোড ব্যর্থ: {{error}}",
       "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?",
       "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি",
-      "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…"
+      "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…",
+      "send_failed_with_error": "পাঠানো যায়নি: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",

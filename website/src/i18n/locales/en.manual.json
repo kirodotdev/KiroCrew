@@ -254,7 +254,6 @@
         "previewing_from_disk": "Previewing {{name}} from disk.",
         "previewing_from_url": "Previewing {{name}} from {{url}}.",
         "remove_failed": "Remove failed: {{error}}",
-        "send_failed": "Send failed: {{error}}",
         "dispatch_failed_unconfirmed": "Request {{number}} was sealed but delivery could not be confirmed ({{error}}). Checking the session — the list will update.",
         "sent_request_to_session": "Sent Request {{number}} ({{n}}) → {{label}} session.",
         "no_session_for_request": "Request {{number}} is ready but this app has no folder, so there is no session to send it to. Set the app's folder, then send it from the list.",
@@ -2890,7 +2889,8 @@
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
-      "loading_earlier_messages": "Loading earlier messages…"
+      "loading_earlier_messages": "Loading earlier messages…",
+      "send_failed_with_error": "Send failed: {{error}}"
     },
     "chatSidebar": {
       "default_agent": "Default agent: {{name}}",

@@ -1440,7 +1440,6 @@
         "previewing_from_disk": "Aperçu de {{name}} depuis le disque.",
         "previewing_from_url": "Aperçu de {{name}} depuis {{url}}.",
         "remove_failed": "Échec du retrait : {{error}}",
-        "send_failed": "Échec de l'envoi : {{error}}",
         "dispatch_failed_unconfirmed": "La demande {{number}} a été scellée, mais la livraison n'a pas pu être confirmée ({{error}}). Vérification de la session — la liste se mettra à jour.",
         "sent_request_to_session": "Demande {{number}} ({{n}}) → session {{label}}.",
         "no_session_for_request": "La demande {{number}} est prête, mais cette application n'a pas de dossier, donc aucune session ne peut la recevoir. Définis le dossier de l'application, puis envoie-la depuis la liste.",
@@ -8190,7 +8189,8 @@
       "upload_failed_error": "Échec du téléversement : {{error}}",
       "what_can_i_do_for_you": "Que puis-je faire pour vous ?",
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin",
-      "loading_earlier_messages": "Chargement des messages précédents…"
+      "loading_earlier_messages": "Chargement des messages précédents…",
+      "send_failed_with_error": "Échec de l'envoi : {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

@@ -1411,7 +1411,6 @@
         "previewing_from_disk": "{{name}} wird von der Festplatte in der Vorschau angezeigt.",
         "previewing_from_url": "{{name}} wird von {{url}} in der Vorschau angezeigt.",
         "remove_failed": "Entfernen fehlgeschlagen: {{error}}",
-        "send_failed": "Senden fehlgeschlagen: {{error}}",
         "dispatch_failed_unconfirmed": "Anfrage {{number}} wurde abgeschlossen, aber die Zustellung ließ sich nicht bestätigen ({{error}}). Die Sitzung wird geprüft — die Liste aktualisiert sich.",
         "sent_request_to_session": "Anfrage {{number}} ({{n}}) gesendet → Sitzung {{label}}.",
         "no_session_for_request": "Anfrage {{number}} ist bereit, aber diese App hat keinen Ordner, also gibt es keine Sitzung zum Senden. Lege den Ordner der App fest und sende sie dann aus der Liste.",
@@ -8086,7 +8085,8 @@
       "upload_failed_error": "Upload fehlgeschlagen: {{error}}",
       "what_can_i_do_for_you": "Was kann ich für Sie tun?",
       "worktree_creation_returned_no_path": "Die Worktree-Erstellung hat keinen Pfad zurückgegeben",
-      "loading_earlier_messages": "Frühere Nachrichten werden geladen…"
+      "loading_earlier_messages": "Frühere Nachrichten werden geladen…",
+      "send_failed_with_error": "Senden fehlgeschlagen: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

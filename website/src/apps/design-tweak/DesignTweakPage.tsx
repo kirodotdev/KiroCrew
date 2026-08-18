@@ -912,7 +912,7 @@ export default function DesignTweak() {
     try {
       const sealed = await apiSendRequest(req.id)
       if (!sealed?.ok) {
-        setStatus(i18nT('apps.designTweak.status.send_failed', {
+        setStatus(i18nT('pages.chatPage.send_failed_with_error', {
           error: sealed?.error || i18nT('apps.designTweak.status.unknown'),
         }))
         return
@@ -937,7 +937,7 @@ export default function DesignTweak() {
       await deliverSealed(sealed.request || req, req)
       refresh()
     } catch (err) {
-      setStatus(i18nT('apps.designTweak.status.send_failed', { error: errMsg(err) }))
+      setStatus(i18nT('pages.chatPage.send_failed_with_error', { error: errMsg(err) }))
     } finally {
       setSendingId('')
     }
@@ -1033,7 +1033,7 @@ export default function DesignTweak() {
       }
       refresh()
     } catch (err) {
-      setStatus(i18nT('apps.designTweak.status.send_failed', { error: errMsg(err) }))
+      setStatus(i18nT('pages.chatPage.send_failed_with_error', { error: errMsg(err) }))
     } finally {
       setSendingId('')
     }

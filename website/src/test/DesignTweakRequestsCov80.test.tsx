@@ -361,7 +361,7 @@ describe('DesignTweak — send request flow', () => {
 
     await waitFor(() => {
       expect(screen.getByText(
-        i18nT('apps.designTweak.status.send_failed', { error: 'Server exploded' }),
+        i18nT('pages.chatPage.send_failed_with_error', { error: 'Server exploded' }),
       )).toBeInTheDocument()
     })
   })
