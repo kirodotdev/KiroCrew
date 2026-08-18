@@ -8,7 +8,11 @@ the /proc evidence paths against a fake proc tree — no real processes.
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from kiro_crew.acp.liveness import (
     CHILD_EXIT_GRACE_SECS,
@@ -19,6 +23,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
     LivenessOracle,
     ToolCallState,
+    consult_offloaded,
 )
 
 
@@ -442,3 +447,114 @@ def test_helpers_never_raise_on_garbage(tmp_path):
 
     verdict, _ = oracle.check_tool(100, tool)
     assert verdict in (VERDICT_UNKNOWN, VERDICT_WORKING)
+
+
+# ── Shared offloaded-consult guard ──
+#
+# consult_offloaded is the single copy of the guard sequence AcpClient and
+# AcpSessionHandle both delegate to. The call-site behaviors (retirement at
+# boundaries, oracle generation swaps) stay pinned by test_acp_client.py and
+# test_acp_stale_recovery.py; these tests pin the helper's own contract so a
+# regression in it is attributed to the shared code, not to one caller.
+
+
+class _Holder:
+    """Minimal ConsultFutureHolder: just the tracked-future slot."""
+
+    def __init__(self) -> None:
+        self._consult_future: asyncio.Future[tuple[str, str]] | None = None
+
+
+@pytest.mark.asyncio
+async def test_consult_offloaded_refused_submission_reads_unknown():
+    """A refused executor job degrades to UNKNOWN — it never raises.
+
+    The callers are silent-read polls and watchdog ticks: an executor shut
+    down during teardown (or refusing thread creation under load) must read as
+    an inconclusive probe, not abort the live turn with a RuntimeError.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    pool.shutdown(wait=True)
+    holder = _Holder()
+
+    verdict = await consult_offloaded(
+        holder,
+        lambda: (VERDICT_WORKING, "never runs"),
+        (),
+        executor_factory=lambda: pool,
+    )
+
+    assert verdict == (VERDICT_UNKNOWN, "oracle offload error")
+    # The failed submission left no tracked future behind to wedge the next
+    # poll on "prior consult still in flight".
+    assert holder._consult_future is None
+
+
+@pytest.mark.asyncio
+async def test_consult_offloaded_skips_while_prior_walk_is_in_flight():
+    """An unfinished prior walk answers UNKNOWN without submitting again."""
+    holder = _Holder()
+    prior = asyncio.get_running_loop().create_future()
+    holder._consult_future = prior
+
+    verdict = await consult_offloaded(
+        holder,
+        lambda: (VERDICT_WORKING, "must not be submitted"),
+        (),
+        executor_factory=lambda: pytest.fail("submitted despite in-flight prior"),
+    )
+
+    assert verdict == (VERDICT_UNKNOWN, "prior consult still in flight")
+    # The in-flight prior stays tracked; the guard did not replace it.
+    assert holder._consult_future is prior
+    prior.cancel()
+
+
+@pytest.mark.asyncio
+async def test_consult_offloaded_tracks_and_returns_the_walk_result():
+    """The happy path stores the submitted future and returns its verdict."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        holder = _Holder()
+
+        verdict = await consult_offloaded(
+            holder,
+            lambda pid: (VERDICT_WORKING, f"pid {pid} moving"),
+            (42,),
+            executor_factory=lambda: pool,
+        )
+
+        assert verdict == (VERDICT_WORKING, "pid 42 moving")
+        assert holder._consult_future is not None
+        assert holder._consult_future.done()
+    finally:
+        pool.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_consult_offloaded_consumes_a_failed_priors_exception():
+    """A done-with-exception prior is consumed, then a fresh walk submitted.
+
+    A prior that completed after a ``wait_for`` timeout detached its awaiter
+    would otherwise report through ``Future.__del__`` as an unhandled-asyncio
+    crash for what is an ordinary probe failure.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        holder = _Holder()
+        prior: asyncio.Future[tuple[str, str]] = asyncio.get_running_loop().create_future()
+        prior.set_exception(RuntimeError("walk failed after awaiter left"))
+        holder._consult_future = prior
+
+        verdict = await consult_offloaded(
+            holder,
+            lambda: (VERDICT_WORKING, "fresh walk"),
+            (),
+            executor_factory=lambda: pool,
+        )
+
+        assert verdict == (VERDICT_WORKING, "fresh walk")
+        # exception() retrieved without raising == consumed.
+        assert prior.exception() is not None
+    finally:
+        pool.shutdown(wait=True)

@@ -52,11 +52,14 @@ an injectable ``now`` clock.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import time
+from concurrent.futures import Executor
 from dataclasses import dataclass
+from typing import Any, Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -663,3 +666,98 @@ class LivenessOracle:
         self._samples[io_key] = (now, io_total)
         self._samples[cpu_key] = (now, cpu_total)
         return (io_delta != 0 or cpu_delta != 0), f"io {io_delta:+d}B cpu {cpu_delta:+d}t"
+
+
+# ── Offloaded-consult guard (shared by AcpClient and AcpSessionHandle) ──
+
+# Upper bound on one awaited oracle consult. A /proc walk wedged on a stuck fd
+# does not stop when this expires — the shield below detaches the awaiter and
+# the guard answers "prior consult still in flight" until the worker finishes.
+OFFLOADED_CONSULT_TIMEOUT_SECS = 10.0
+
+
+def _consume_future_exception(future: asyncio.Future[tuple[str, str]]) -> None:
+    """Retrieve a liveness consult's exception so asyncio does not report it.
+
+    The /proc walk keeps running after its awaiter goes away, so it can finish
+    with an exception nobody reads. ``Future.__del__`` reports that through the
+    loop exception handler, which the gateway records as an unhandled-asyncio
+    crash for what is an ordinary probe failure.
+    """
+    if not future.cancelled():
+        future.exception()
+
+
+class ConsultFutureHolder(Protocol):
+    """The one field :func:`consult_offloaded` needs on its caller.
+
+    Both consumers (``AcpClient`` and ``AcpSessionHandle``) track their single
+    outstanding oracle walk in an attribute of this exact shape; the guard
+    reads and writes it through the holder so the handle stays where each
+    caller's liveness-state boundary (turn start, ``_reset_state`` /
+    ``_retire_liveness_state``) can retire it.
+    """
+
+    _consult_future: asyncio.Future[tuple[str, str]] | None
+
+
+async def consult_offloaded(
+    holder: ConsultFutureHolder,
+    call: Callable[..., tuple[str, str]],
+    args: tuple[Any, ...],
+    *,
+    executor_factory: Callable[[], Executor],
+    log_label: str = "liveness consult",
+) -> tuple[str, str]:
+    """One guarded oracle consult, offloaded off the event loop. Never raises.
+
+    The oracle's evidence gathering is a synchronous /proc filesystem walk that
+    can block on a wedged fd, so ``call`` runs on ``executor_factory()`` under a
+    bounded ``wait_for``. This helper owns the full non-obvious sequence both
+    watchdog paths depend on, so a fix to it lands at both call sites at once:
+
+    - **One outstanding walk per holder.** A timed-out await does not stop its
+      executor thread, so the submitted future is tracked on the holder and any
+      poll that finds it unfinished answers UNKNOWN without submitting again —
+      otherwise a permanently wedged /proc read grows a new blocked worker per
+      tick and starves the shared pool teardown also draws from. The holder's
+      liveness-state boundary retires the handle so a walk abandoned by one
+      generation never gates the next.
+    - **Submission stays inside the guard.** The callers are silent-read polls
+      and watchdog ticks, so a refused executor job (shut down during teardown,
+      thread creation refused under load) must read as UNKNOWN rather than
+      abort the live turn.
+    - **Exception retrieval rides a callback attached at SUBMISSION**, not only
+      an ``except`` arm: a turn that ends on this verdict returns with the walk
+      still running and may never look again, and ``CancelledError`` is a
+      ``BaseException`` an ``except Exception`` arm would miss. ``wait_for``
+      cancels the shield's outer future and shield detaches its inner-done
+      callback in exactly that case, so the pre-submission consume below
+      additionally covers an already-completed prior that never went through
+      the callback. Retrieval is not destructive — the await still sees the
+      result.
+    - **Any failure degrades to UNKNOWN**, never to a raise: the callers fail
+      toward their own timeout policy (reaping at the cutoff), never toward
+      hanging or killing on a probe error.
+
+    ``executor_factory`` is passed by the caller (not resolved here) so each
+    call site keeps its own module-level ``subprocess_executor`` binding — the
+    seam its tests patch.
+    """
+    prior = holder._consult_future
+    if prior is not None:
+        if not prior.done():
+            return VERDICT_UNKNOWN, "prior consult still in flight"
+        _consume_future_exception(prior)
+
+    try:
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(executor_factory(), call, *args)
+        future.add_done_callback(_consume_future_exception)
+        holder._consult_future = future
+        return await asyncio.wait_for(
+            asyncio.shield(future), timeout=OFFLOADED_CONSULT_TIMEOUT_SECS
+        )
+    except Exception:
+        logger.debug("%s failed/timed out", log_label, exc_info=True)
+        return VERDICT_UNKNOWN, "oracle offload error"
