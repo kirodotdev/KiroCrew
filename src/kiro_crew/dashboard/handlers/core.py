@@ -44,7 +44,13 @@ from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
-from kiro_crew.transcribe import BREW_PATH_DIRS, ensure_ffmpeg_in_path, find_brew, is_available
+from kiro_crew.transcribe import (
+    BREW_PATH_DIRS,
+    _faster_whisper_model,
+    ensure_ffmpeg_in_path,
+    find_brew,
+    is_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -434,7 +440,19 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
 # ── STT (Speech-to-Text) ──
 
 
+#: Whisper model sizes offered in the STT picker and accepted on PUT.
+#:
+#: Maps model -> approximate on-disk download size, which is the number that
+#: actually decides the choice on a laptop. Keys MUST stay in step with
+#: ``_VALID_STT_MODELS`` in the config loader: this dict is the PUT allowlist, so a
+#: model the loader accepts but this omits would be silently rejected by the API.
+#: ``test_stt_model_sizes_cover_valid_models`` pins that.
 _STT_MODEL_SIZES: dict[str, str] = {
+    "tiny": "~75 MB",
+    "base": "~145 MB",
+    "small": "~484 MB",
+    "medium": "~1.5 GB",
+    "large-v3": "~3.1 GB",
     "turbo": "~1.6 GB",
 }
 
@@ -726,8 +744,16 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
 
     The ``mlx`` provider has its own lightweight prerequisite (``pipx install
     mlx-whisper``) and only needs ffmpeg beyond that — it does not require the
-    system-python/whisper toolchain.
+    system-python/whisper toolchain. The ``faster`` provider needs nothing manual
+    at all.
     """
+    if provider == "faster":
+        # Nothing manual: faster-whisper is a pip install of prebuilt wheels, and it
+        # decodes audio through PyAV's bundled FFmpeg — so neither the system ffmpeg
+        # nor the brew/Xcode toolchain the CLI providers need applies here. Returned
+        # before ensure_ffmpeg_in_path() so this path does no filesystem probing for
+        # a binary it will not use.
+        return []
     if provider == "transcribe":
         # AWS Transcribe's availability is "boto3 + amazon-transcribe importable
         # by THIS gateway process" (see kiro_crew.transcribe.is_available); the
@@ -879,6 +905,13 @@ async def api_stt_install(request: web.Request) -> web.Response:
             {"error": f"Install already in progress: {_stt_install_status['step']}"}, status=409
         )
 
+    # RESERVE the slot before anything can yield: the busy check above and the
+    # probes below would otherwise race — an `await` between check and set lets
+    # two concurrent requests both pass the 409 gate and launch pip twice
+    # against the same environment. Every rejection path below must roll this
+    # back to idle.
+    _stt_install_status = {"step": "starting", "detail": "", "error": ""}
+
     # Native install via shell script, tailored to the configured provider.
     # Transcribe has no local runtime to install (its requirement is the
     # ``voice`` extra importable by this process, surfaced as a prerequisite
@@ -886,6 +919,7 @@ async def api_stt_install(request: web.Request) -> web.Response:
     # change Transcribe's availability.
     provider = KiroCrewConfig.load().stt.provider
     if provider == "transcribe":
+        _stt_install_status = {"step": "idle", "detail": "", "error": ""}
         _sel().log_api_access(
             caller=caller,
             operation="stt.install",
@@ -901,7 +935,28 @@ async def api_stt_install(request: web.Request) -> web.Response:
             status=400,
         )
 
-    _stt_install_status = {"step": "starting", "detail": "", "error": ""}
+    # ``faster`` is imported in-process, so its install must land in the
+    # gateway's own interpreter (see _build_stt_install_script). Where no pip
+    # channel into that interpreter exists — frozen build, bundled desktop
+    # interpreter, pip-less python — the script below cannot succeed, and
+    # running it anyway recreates the press-and-nothing-changes failure.
+    if provider == "faster" and not await asyncio.to_thread(_pip_install_channel_available):
+        _stt_install_status = {"step": "idle", "detail": "", "error": ""}
+        _sel().log_api_access(
+            caller=caller,
+            operation="stt.install",
+            outcome="denied",
+            error="no pip install channel for provider=faster",
+        )
+        return web.json_response(
+            {
+                "code": "stt_no_install_channel",
+                "error": "This gateway's Python can't install extra packages, so"
+                " faster-whisper can't be enabled here. Run the gateway from a"
+                " Python environment where pip can install faster-whisper.",
+            },
+            status=400,
+        )
 
     _sel().log_api_access(
         caller=caller,
@@ -938,6 +993,8 @@ async def api_stt_install(request: web.Request) -> web.Response:
                 _stt_install_status = {"step": "installing_whisper", "detail": line, "error": ""}
             elif "Installing mlx-whisper" in line:
                 _stt_install_status = {"step": "installing_mlx", "detail": line, "error": ""}
+            elif "Installing faster-whisper" in line:
+                _stt_install_status = {"step": "installing_faster", "detail": line, "error": ""}
             elif "No suitable python3" in line:
                 _stt_install_status = {"step": "installing_python", "detail": line, "error": ""}
             elif "Using:" in line:
@@ -961,6 +1018,12 @@ async def api_stt_install(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": output[-500:]}, status=500)
 
         _stt_install_status = {"step": "done", "detail": "Whisper ready", "error": ""}
+        if provider == "faster":
+            # Warm the import cache OFF the event loop so the next is_available()
+            # (a cached read, loop-safe) reports ready without a gateway restart.
+            # Importing here would load CTranslate2's native extension on the
+            # loop, which is exactly what the cached-read design avoids.
+            await asyncio.to_thread(_faster_whisper_model)
         _sel().log_api_access(
             caller=caller,
             operation="stt.install",
@@ -970,7 +1033,13 @@ async def api_stt_install(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "ok": True,
-                "ffmpeg": shutil.which("ffmpeg") is not None
+                # `ffmpeg: false` makes the Settings page show an
+                # "installed but ffmpeg missing" error toast. The faster
+                # provider decodes through PyAV's bundled FFmpeg and never
+                # uses the system binary, so a missing system ffmpeg is not an
+                # error for it — always report True to keep the toast away.
+                "ffmpeg": provider == "faster"
+                or shutil.which("ffmpeg") is not None
                 or os.path.isfile(os.path.expanduser("~/ffmpeg/ffmpeg")),
             }
         )
@@ -1031,18 +1100,48 @@ if command -v brew >/dev/null 2>&1; then eval "$(brew shellenv)" 2>/dev/null || 
 def _build_stt_install_script(provider: str = "whisper") -> str:
     """Shell script that installs the runtime for the selected STT provider.
 
+    - ``faster``: installs faster-whisper via pip (CTranslate2, no system ffmpeg)
+      into the GATEWAY'S OWN interpreter — unlike the CLI providers below, the
+      library is imported in-process by ``kiro_crew.transcribe``, so a system
+      python's user-site would be invisible here and the install would report
+      "Done" while transcription stayed unavailable.
     - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
     - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
 
-    The pip fallback deliberately targets a SYSTEM python with ``--user`` (never
-    the gateway's own venv, which is replaced on every upgrade). ``--user`` lands
-    in ``~/.local/bin``, which :func:`kiro_crew.transcribe._find_whisper` probes
-    via its ``_WHISPER_SEARCH_PATHS`` (and via ``shutil.which`` when that dir is
-    on PATH). It also constrains the resolve so pip can never drop into a source
+    The ``whisper`` pip fallback deliberately targets a SYSTEM python with
+    ``--user`` (never the gateway's own venv, which is replaced on every
+    upgrade): the CLI binary lands in ``~/.local/bin``, which
+    :func:`kiro_crew.transcribe._find_whisper` probes via its
+    ``_WHISPER_SEARCH_PATHS`` (and via ``shutil.which`` when that dir is on
+    PATH). It also constrains the resolve so pip can never drop into a source
     build — see the ``BINARY_ONLY`` comment in the script for why an incompatible
     wheel otherwise reports itself as a compiler error.
     """
     prelude = _stt_install_path_prelude()
+    if provider == "faster":
+        # No $PY probe and no --user: the import happens in THIS process, so the
+        # one interpreter whose environment matters is sys.executable. --user is
+        # doubly wrong for it — inside a venv pip refuses the flag outright
+        # ("Can not perform a '--user' install ..."), and outside one it lands in
+        # a user-site this gateway may not even scan. api_stt_install gates this
+        # provider on _pip_install_channel_available(), so the command below is
+        # only reached where a pip install into sys.executable can succeed.
+        gateway_py = shlex.quote(sys.executable)
+        return (
+            prelude
+            + f"""
+# faster-whisper (CTranslate2 backend) — no system ffmpeg required, because audio
+# is decoded in-process through PyAV's bundled FFmpeg.
+# CTranslate2 publishes wheels for Linux x86-64/AArch64, macOS x86-64/ARM64 and
+# Windows x86-64. Windows on ARM has NO wheel: the install fails there, and
+# cli_doctor reports the usable alternatives.
+PY={gateway_py}
+echo "Using: $PY ($($PY --version))"
+echo "Installing faster-whisper..."
+"$PY" -m pip install -q faster-whisper || {{ echo "ERROR: pip install faster-whisper failed"; exit 1; }}
+echo "Done. faster_whisper=$("$PY" -c "import faster_whisper; print(faster_whisper.__file__)" 2>/dev/null || echo 'check install')"
+"""
+        )
     if provider == "mlx":
         return prelude + r"""
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"

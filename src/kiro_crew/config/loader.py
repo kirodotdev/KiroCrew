@@ -3893,7 +3893,18 @@ class ChannelConfig:
         )
 
 
-_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "transcribe")
+_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "transcribe", "faster")
+
+#: Whisper model sizes accepted for ``stt.model``.
+#:
+#: Shared by the ``whisper`` and ``faster`` providers, which both name models this
+#: way. (``mlx`` uses ``stt.mlx_model``, a HuggingFace repo id, instead.)
+#:
+#: ``turbo`` stays the default: it is the only entry the dashboard offered before,
+#: and it is the best accuracy-per-second of the set. The smaller sizes exist
+#: because they are the difference between usable and unusable on a machine
+#: without much RAM, and ``large-v3`` because it is the accuracy ceiling.
+_VALID_STT_MODELS = ("tiny", "base", "small", "medium", "large-v3", "turbo")
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
@@ -3903,6 +3914,32 @@ def _validated_stt_provider(value: str) -> str:
         return value
     logger.warning("Unknown STT provider '%s', falling back to whisper", value)
     return "whisper"
+
+
+def _validated_stt_model(value: object) -> str:
+    """Return *value* as the STT model name, warning when it is off the menu.
+
+    Unknown STRINGS pass through with a warning rather than being coerced: the
+    old loader accepted any string, and openai-whisper legitimately takes names
+    outside the dashboard's size menu (``tiny.en``/``base.en``/``small.en``/
+    ``medium.en``/``large-v2``), so coercing a hand-edited config to ``turbo``
+    would silently remove a real capability. Providers degrade safely on a bad
+    name anyway: the whisper CLI errors per-recording, and faster-whisper
+    resolves an unknown name to a download error, both logged, neither fatal.
+    Only a NON-STRING (numbers, null, nested json from a mangled edit) falls
+    back to ``turbo``, since it cannot be passed to any provider at all.
+    """
+    if isinstance(value, str) and value:
+        if value not in _VALID_STT_MODELS:
+            logger.warning(
+                "STT model '%s' is not in the dashboard menu %s; passing it through"
+                " — the provider will reject it per-recording if it is invalid",
+                value,
+                list(_VALID_STT_MODELS),
+            )
+        return value
+    logger.warning("Non-string STT model %r, falling back to turbo", value)
+    return "turbo"
 
 
 _VALID_COMPLETION_KEEP = ("head", "tail", "both")
@@ -4165,7 +4202,11 @@ class SttConfig:
     )
     model: str = field(
         default="turbo",
-        metadata=_meta("Model", "Whisper model size.", enum=["turbo"]),
+        metadata=_meta(
+            "Model",
+            "Whisper model size (whisper and faster providers).",
+            enum=list(_VALID_STT_MODELS),
+        ),
     )
     mlx_model: str = field(
         default="mlx-community/whisper-large-v3-turbo",
@@ -6500,7 +6541,7 @@ class KiroCrewConfig:
                 whisper_path=stt_data.get("whisper_path", ""),
                 # Default "turbo" — faster and recommended for most users
                 # (809M vs 74M, but much better latency).
-                model=stt_data.get("model", "turbo"),
+                model=_validated_stt_model(stt_data.get("model", "turbo")),
                 mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
                 device=stt_data.get("device", "cpu"),
                 timeout_secs=stt_data.get("timeout_secs", 300),
