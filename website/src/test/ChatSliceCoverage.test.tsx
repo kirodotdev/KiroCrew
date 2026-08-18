@@ -1125,6 +1125,16 @@ describe('chatSlice thunks', () => {
     expect(chat(store).activeSlot).toBe('elsewhere')
   })
 
+  it('carries a caller-supplied title on the create request', async () => {
+    // The server pins a title given at create time, locking the background
+    // auto-titler out, and the create broadcast already carries it. A later
+    // rename would paint a generated title first and can fail silently.
+    apiMock.createChatSlot.mockResolvedValue({ key: 'titled-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot({ folder_id: 'f1', title: '#4237 · a readable name' }))
+    expect(apiMock.createChatSlot.mock.calls[0][5]).toBe('#4237 · a readable name')
+  })
+
   it('registers a background create without stealing focus', async () => {
     apiMock.createChatSlot.mockResolvedValue({ key: 'bg-slot' })
     apiMock.chatSlotProject.mockResolvedValue({})
