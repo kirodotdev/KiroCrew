@@ -85,6 +85,18 @@ _SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE]]"
 # above this bound instead, leaving headroom under the transport cap.
 MAX_DIRECTIVE_CHARS = 3800
 
+# Stamped on an oversized :func:`encode` result INSTEAD of the directive marker,
+# so the consumer can tell a deliberate refusal apart from a marker that was lost
+# in transport. Both cases decode to "no directive", but only the second is a
+# bug, and the consumer's diagnostic for a lost marker is a WARNING that exists
+# to catch rawOutput-envelope escaping regressions — a by-design refusal firing
+# it trains operators to ignore the one signal that matters.
+#
+# Forgery-inert by construction: unlike the directive marker this token carries
+# no payload and grants no effect, so a model emitting the literal bytes can only
+# change how a log line reads, never what gets applied.
+_REFUSAL_SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE_REFUSED]]"
+
 
 def encode(kind: str, args: dict[str, Any], human: str) -> str:
     """Build a tool-result string: a human confirmation + the directive marker.
@@ -93,9 +105,11 @@ def encode(kind: str, args: dict[str, Any], human: str) -> str:
     payload the consumer needs to apply the effect (never a session key).
 
     When the encoded directive would exceed :data:`MAX_DIRECTIVE_CHARS`, returns a
-    plain ``"Error: …"`` string carrying NO marker: the caller returns it to the
-    model verbatim, so an oversized request fails LOUDLY (and is audited failed)
-    instead of being silently truncated past its marker and dropped.
+    plain ``"Error: …"`` string carrying NO directive marker: the caller returns it
+    to the model verbatim, so an oversized request fails LOUDLY (and is audited
+    failed) instead of being silently truncated past its marker and dropped. The
+    refusal is tagged with :data:`_REFUSAL_SENTINEL` so the consumer reports it as
+    a refusal rather than as a lost marker (see :func:`is_refusal`).
     """
     payload = json.dumps({"kind": kind, "args": args}, separators=(",", ":"), default=str)
     out = f"{human}\n{_SENTINEL}{payload}"
@@ -104,9 +118,21 @@ def encode(kind: str, args: dict[str, Any], human: str) -> str:
             f"Error: {kind} arguments are too large to deliver "
             f"({len(out)} chars, limit {MAX_DIRECTIVE_CHARS}). Shorten them "
             "(e.g. a briefer message / fewer items) and call the tool again — "
-            "nothing was applied."
+            f"nothing was applied.\n{_REFUSAL_SENTINEL}"
         )
     return out
+
+
+def is_refusal(text: str | None) -> bool:
+    """True iff *text* is an :func:`encode` refusal — a validated directive that
+    was deliberately NOT emitted because its payload exceeded
+    :data:`MAX_DIRECTIVE_CHARS`.
+
+    Distinguishes "refused before delivery, and the model was told" from "a marker
+    was expected and did not arrive", which are otherwise indistinguishable at the
+    consumer: both decode to ``None``.
+    """
+    return bool(text) and _REFUSAL_SENTINEL in (text or "")
 
 
 def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
@@ -153,8 +179,12 @@ def match_tool(raw: str) -> str:
 
 
 def strip_marker(text: str) -> str:
-    """Remove the directive marker line from *text* for transcript display."""
-    idx = text.find(_SENTINEL)
+    """Remove the directive or refusal marker line from *text* for transcript display."""
+    idx = -1
+    for sentinel in (_SENTINEL, _REFUSAL_SENTINEL):
+        found = text.find(sentinel)
+        if found >= 0 and (idx < 0 or found < idx):
+            idx = found
     if idx < 0:
         return text
     # Drop the marker and any immediately-preceding blank separator line.

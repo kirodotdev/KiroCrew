@@ -134,3 +134,36 @@ class TestUserContentNotCorrupted:
     def test_bidi_override_still_stripped(self):
         out = build_tool_response("safe\u202etxet-detrevr")
         assert "\u202e" not in out["content"][0]["text"]
+
+
+class TestRefusalMarkerSurvivesTransport:
+    """The refusal marker rides the SAME sanitizer + parser path as the directive
+    marker, so if it does not survive, the consumer cannot tell a by-design
+    oversize refusal from a marker lost in transport and logs every refusal as a
+    suspected escaping bug."""
+
+    def _refusal(self) -> str:
+        huge = "x" * (sd.MAX_DIRECTIVE_CHARS + 500)
+        return sd.encode("ask_question", {"questions": [{"question": huge}]}, "asked")
+
+    def test_refusal_marker_is_pure_ascii_and_survives_the_sanitizer(self):
+        # The prose carries an em dash, but the framing TOKEN must stay ASCII —
+        # the sanitizer strips category Cf, which is what destroyed an earlier
+        # invisible-separator prefix on the directive marker.
+        assert sd._REFUSAL_SENTINEL.isascii()
+        refusal = self._refusal()
+        assert strip_hidden_unicode(refusal) == refusal
+        text = build_tool_response(refusal)["content"][0]["text"]
+        assert sd.is_refusal(text)
+        assert sd.decode(text, "ask_question") is None
+
+    def test_refusal_survives_raw_output_json_envelope(self):
+        update = {
+            "toolCallId": "tc-refusal",
+            "status": "completed",
+            "rawOutput": {"items": [{"Json": _mcp_envelope(self._refusal())}]},
+        }
+        event = _build_tool_result_event(update)
+        assert event is not None
+        assert event.tool_final is True
+        assert sd.is_refusal(event.tool_output)

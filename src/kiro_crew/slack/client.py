@@ -474,8 +474,16 @@ class RealSlackClient(SlackClientOps):
             workspace_team = cached_team or team_id
             if workspace_team:
                 body["team_id"] = workspace_team
-            if team_id:
-                body["recipient_team_id"] = team_id
+            # An org-wide install rejects startStream with
+            # ``missing_recipient_team_id`` when the recipient's workspace is
+            # unknown, so fall back to the channel's cached team: for a channel
+            # message the recipient's workspace IS the channel's workspace.
+            # Without the fallback every caller that does not thread an explicit
+            # team_id (the renderer transport path) is rejected on each turn and
+            # silently demoted to the non-streaming chat.update surface.
+            recipient_team = team_id or cached_team
+            if recipient_team:
+                body["recipient_team_id"] = recipient_team
             if user_id:
                 body["recipient_user_id"] = user_id
             chunks: list[dict[str, Any]] = []

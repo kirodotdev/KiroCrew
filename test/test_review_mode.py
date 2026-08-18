@@ -357,6 +357,21 @@ class TestTeamIdInjection:
         assert "team_id" not in body
         assert "recipient_team_id" not in body
 
+    @pytest.mark.asyncio
+    async def test_start_stream_derives_recipient_team_from_cache(self) -> None:
+        """Regression: an org-wide install answers startStream with
+        ``missing_recipient_team_id`` when the recipient's workspace is absent,
+        and the renderer transport path never threads an explicit ``team_id`` —
+        so the cached channel team must also satisfy ``recipient_team_id``. For a
+        channel message the recipient's workspace IS the channel's workspace."""
+        c = self._client()
+        c._web.api_call = AsyncMock(return_value={"ts": "1"})
+        c.record_channel_team("C1", "TCHANNEL_A")
+        await c.start_stream("C1", "thread1")
+        body = c._web.api_call.await_args.kwargs["json"]
+        assert body["team_id"] == "TCHANNEL_A"
+        assert body["recipient_team_id"] == "TCHANNEL_A"
+
     # ── Streaming append/stop ────────────────────────────────────────
 
     @pytest.mark.asyncio

@@ -70,6 +70,32 @@ def test_encode_refuses_a_payload_too_large_for_the_transport():
     assert sd.decode(out, "monitor_start") is None
 
 
+def test_encode_refusal_is_tagged_so_the_consumer_can_name_the_cause():
+    """A refusal and a marker LOST in transport both decode to None, but only the
+    second is a bug — the consumer's diagnostic for a lost marker is a WARNING
+    guarding against rawOutput-envelope escaping regressions. is_refusal() is what
+    keeps a by-design refusal from firing (and desensitising) that signal."""
+    huge = "x" * (sd.MAX_DIRECTIVE_CHARS + 500)
+    refusal = sd.encode("monitor_start", {"message": huge}, "armed")
+    assert sd.is_refusal(refusal)
+    # A directive whose marker was stripped in transit is NOT a refusal.
+    lost = sd.strip_marker(sd.encode("monitor_start", {"message": "watch CI"}, "armed"))
+    assert not sd.is_refusal(lost)
+    assert not sd.is_refusal("")
+    assert not sd.is_refusal(None)
+
+
+def test_strip_marker_removes_the_refusal_marker():
+    """The refusal marker reaches the transcript on the same path the directive
+    marker does, so it must be stripped too or the raw token renders to the user."""
+    huge = "x" * (sd.MAX_DIRECTIVE_CHARS + 500)
+    refusal = sd.encode("monitor_start", {"message": huge}, "armed")
+    stripped = sd.strip_marker(refusal)
+    assert sd._REFUSAL_SENTINEL not in stripped
+    assert stripped.startswith("Error:")
+    assert stripped.endswith("nothing was applied.")
+
+
 def test_encode_allows_a_payload_at_the_limit():
     """A directive comfortably under the cap still encodes normally."""
     out = sd.encode("monitor_start", {"message": "watch CI", "idle_secs": 300}, "armed")
