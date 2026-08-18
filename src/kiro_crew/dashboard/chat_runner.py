@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import glob
 import inspect
 import ipaddress
 import json
@@ -2335,7 +2336,96 @@ def _split_command_segments(
     return normalized, segments
 
 
-def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
+def _nonshell_trust_key(event: Any, *, escape: bool = False) -> str | None:
+    """Canonical, non-model-authored trust key for a NON-shell tool call.
+
+    Returns ``"<tool_name> <path>"`` ONLY for a FILE-EDIT tool (ACP
+    ``tool_kind == "edit"``) with a provenance-trusted target path. Returns
+    None in every other case (fail-closed): when the canonical ``tool_name``
+    is absent, when the tool is not a file edit (a non-edit tool may carry
+    other security-relevant args the path key cannot capture), and when no
+    provenance-trusted path is available (path-less MCP tools such as
+    ``cron_add``).
+
+    A key of just ``"<tool_name>"`` would let "trust this" on one benign
+    invocation auto-approve EVERY later call to that tool regardless of its
+    arguments -- e.g. trusting a harmless ``cron_add`` would then auto-approve a
+    later attacker-influenced ``cron_add`` that schedules an arbitrary
+    persistent job. The arguments of path-less tools are not provenance-checked,
+    so no trust key can be safely offered; we decline and the caller falls
+    through to interactive human approval (GPT 5.6 fork review,
+    backend-security-controls).
+
+    Both the trusted-pattern MATCH gate and the pattern STORAGE side derive the
+    key from this one function so a stored grant and a later event produce the
+    same string. Keying on ``tool_name`` + ``trusted_edit_path`` (not title) is
+    what makes "trust this edit" bind to a real tool identity and file, so a
+    backend whose display title diverges from its params cannot get a write to a
+    different path auto-approved (Fable-5 design review, point 1).
+    """
+    name = getattr(event, "tool_name", "") or ""
+    if not name:
+        return None
+    # Only FILE-EDIT tools get a path-keyed trust grant. For an edit tool the
+    # target path IS the whole security surface, so tool_name + path fully
+    # describes what "trust this" authorizes. A non-edit tool that merely
+    # carries a path/file_path param can also carry OTHER security-relevant
+    # arguments the key does not capture -- e.g. file_send(path=P, channel=A):
+    # keying on tool_name + path alone would let a grant for channel A
+    # auto-approve a later upload of the same file to channel B. So unless the
+    # canonical tool identity denotes a file edit (ACP kind == "edit", the same
+    # signal the inline diff-card promotion gates on), offer no trust and let
+    # the caller fall through to interactive approval (GPT 5.6 fork review,
+    # backend-security-controls). This also keeps the grant scoped to the PR's
+    # stated purpose: trusting file EDITS (#4346).
+    if getattr(event, "tool_kind", "") != "edit":
+        return None
+    path = event.trusted_edit_path
+    if not path:
+        # No provenance-trusted path -> offer no trust. A bare tool_name key
+        # would ignore all arguments and blanket-approve the tool by name.
+        return None
+    if escape:
+        # STORAGE side only. Escape fnmatch metacharacters in the concrete path
+        # so a file literally named e.g. ``a*.txt`` or a Next.js dynamic route
+        # ``app/[id].tsx`` is stored as a pattern that matches that exact name,
+        # not as a glob that would widen the grant to sibling files.
+        #
+        # fnmatch is asymmetric: only the PATTERN interprets metacharacters, the
+        # SUBJECT is compared literally. So escaping belongs to the stored
+        # pattern ONLY -- the MATCH subject (escape=False, below) must stay raw.
+        # Escaping both sides makes the escaped pattern's char-classes never
+        # align with an escaped subject, so trust silently never sticks for any
+        # path containing * ? or [ (re-creating #4346 for that class).
+        return f"{name} {glob.escape(path)}"
+    # MATCH side: raw key used as the fnmatch SUBJECT (compared literally).
+    return f"{name} {path}"
+
+
+def _nonshell_store_pattern(event: Any) -> str:
+    """Storage-side non-shell trust pattern source, or ``""`` to offer no trust.
+
+    Returns the escaped non-shell trust key, EXCEPT when the display redactors
+    that run downstream before the pattern is stored would alter it. The stored
+    string is used as an fnmatch PATTERN, and redaction runs AFTER glob.escape:
+    a credential-shaped filename would be rewritten into a token carrying
+    fnmatch metacharacters that glob.escape never neutralized, widening the
+    stored pattern into a char-class/glob that auto-approves sibling paths. When
+    either redactor changes the canonical key, return ``""`` so no trust is
+    offered and the caller falls through to interactive approval (fail-closed;
+    GPT 5.6 fork review, backend-security-controls).
+    """
+    key = _nonshell_trust_key(event, escape=True) or ""
+    if not key:
+        return ""
+    red, _ = redact_exfiltration_urls(key)
+    red, _ = redact_credentials(red)
+    return "" if red != key else key
+
+
+def _matches_trusted_pattern(
+    tool_title: str, patterns: set[str], *, split: bool = True
+) -> str | None:
     """Return the matched pattern if tool_title matches any trusted pattern.
 
     For piped/chained commands, splits into segments and checks each
@@ -2344,11 +2434,24 @@ def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
 
     Deny-by-default for commands containing command substitution ($(...),
     backticks, process substitution) — fnmatch cannot reach sub-commands.
+
+    Pass ``split=False`` for a NON-shell trust key (``tool_name <path>`` from
+    ``_nonshell_trust_key``): it is a single tool identity + file path, not a
+    shell command line, so it must be matched LITERALLY. Routing it through the
+    segment splitter would cut a path containing ``& ; |`` (e.g. ``Q&A.txt``)
+    into fragments that never re-match the stored whole-path pattern, so trust
+    would silently never stick — re-creating #4346 for separator-containing
+    filenames (Opus 4.8 fork review).
     """
-    split = _split_command_segments(tool_title)
-    if split is None:
+    if not split:
+        for pattern in patterns:
+            if _tool_matches(pattern, tool_title):
+                return pattern
         return None
-    normalized, segments = split
+    seg_split = _split_command_segments(tool_title)
+    if seg_split is None:
+        return None
+    normalized, segments = seg_split
     if len(segments) > 1:
         matched_patterns = []
         for seg in segments:
@@ -7199,22 +7302,46 @@ async def _run_chat(
                     )
                     continue
                 # Session-trusted patterns: auto-approve commands matching user globs.
-                # Security: match against the ACTUAL command from tool_input (not
-                # event.title which is LLM-controlled display text). For shell tools,
-                # extract the real command; for non-shell MCP tools (no tool_input),
-                # use event.title as it IS the provider-controlled tool name.
-                # When tool_input exists but isn't recognized as bash, skip pattern
-                # matching entirely (deny-by-default).
+                # Security: key on the event's canonical, non-model-authored fields,
+                # NEVER event.title (LLM-controlled display text).
+                #
+                # Gate logic keys on the event's canonical, non-model-authored
+                # fields (see acp/types.py) rather than the LLM-authored title:
+                # - is_shell True → shell path: match event.shell_command, which
+                #   is recovered from provenance-trusted params (raw_tool_params,
+                #   then tool_input JSON), returns None on unrecoverable input
+                #   (deny-by-default), and handles the structured use_aws shape
+                #   that raw tool_input sniffing misses. Never falls back to the
+                #   model-authored title.
+                # - shell_classified True + is_shell False → POSITIVELY resolved
+                #   non-shell tool (file edit, MCP tool). Match on the canonical
+                #   _nonshell_trust_key (tool_name + provenance-trusted path),
+                #   NOT event.title: title is LLM-authored, so a backend whose
+                #   title diverges from the real params could otherwise let a
+                #   prompt-injected model forge a trusted path and get writes to
+                #   other files auto-approved. None → deny-by-default.
+                # - Otherwise (shell signal never resolved) → deny-by-default.
                 if slot._trusted_patterns and not _child_low_fidelity:
-                    _tp_cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-                    if _tp_cmd:
-                        _tp_check_title = f"Running: {_tp_cmd}"
-                    elif not event.tool_input:
-                        _tp_check_title = event.title
+                    if event.is_shell:
+                        # Shell tool: provenance-trusted command or deny.
+                        _tp_shell_cmd = event.shell_command
+                        _tp_check_title = f"Running: {_tp_shell_cmd}" if _tp_shell_cmd else None
+                    elif event.shell_classified:
+                        # Positively classified non-shell tool: match on the
+                        # canonical tool identity + trusted path, never title.
+                        _tp_check_title = _nonshell_trust_key(event)
                     else:
+                        # Shell classification never resolved → deny-by-default.
                         _tp_check_title = None
                     matched = (
-                        _matches_trusted_pattern(_tp_check_title, slot._trusted_patterns)
+                        _matches_trusted_pattern(
+                            _tp_check_title,
+                            slot._trusted_patterns,
+                            # Shell tools split into command segments; a non-shell
+                            # edit key is a single tool_name+path matched literally
+                            # (splitting would break paths with & ; | -- #4346).
+                            split=event.is_shell,
+                        )
                         if _tp_check_title is not None
                         else None
                     )
@@ -7341,9 +7468,14 @@ async def _run_chat(
                         metadata={"reason": "browser_cli"},
                     )
                     continue
-                # Trust-reads: auto-approve read-only bash commands
-                # Detect bash tools by tool_input content (title is human-readable)
-                cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
+                # Trust-reads: auto-approve read-only bash commands.
+                # Use the provenance-trusted shell command (raw_tool_params /
+                # tool_input JSON, use_aws-aware) rather than sniffing tool_input:
+                # event.shell_command is None for non-shell tools and for shell
+                # tools with unrecoverable params, so a non-shell tool carrying a
+                # `command`-shaped field (or a lost-signal shell tool) can never
+                # reach is_read_only_bash below — deny-by-default.
+                cmd = event.shell_command or ""
                 yolo_active = state.is_yolo_active()
                 # Evaluated ONCE for both branches below. Two separate calls could
                 # straddle a scoped grant's expiry and disagree with each other, and
@@ -7512,17 +7644,29 @@ async def _run_chat(
                 if cmd:
                     perm_meta["is_read_only"] = "1" if is_read_only_bash(cmd) else ""
                 # Pre-compute pattern fields for the TrustDropdown.
-                # NOTE: derived from the UN-annotated event.title — the
-                # _child_lf_warning prefix is applied to the DISPLAY text
-                # only, so learned trust patterns keep meaning tool identity.
+                # Derived from PROVENANCE-TRUSTED identity, never event.title
+                # (LLM-authored; select_tool_title even prefers the model's
+                # description for shell tools). This MUST mirror the trusted-
+                # pattern gate's check-string construction exactly, or a stored
+                # grant would never match a later event:
+                #   - shell tool         -> "Running: <shell_command>"
+                #   - non-shell (edit)   -> _nonshell_trust_key (tool_name+path)
+                #   - unrecoverable      -> "" (no trust option offered)
+                # tool_title below stays title-derived for DISPLAY only.
                 _safe_title, _ = redact_exfiltration_urls(event.title)
                 _safe_title, _ = redact_credentials(_safe_title)
                 perm_meta["tool_title"] = _safe_title
-                _full = _extract_full_command(event.title)
+                if event.is_shell:
+                    _pat_src = f"Running: {event.shell_command}" if event.shell_command else ""
+                elif event.shell_classified:
+                    _pat_src = _nonshell_store_pattern(event)
+                else:
+                    _pat_src = ""
+                _full = _extract_full_command(_pat_src) if _pat_src else ""
                 _full, _ = redact_exfiltration_urls(_full)
                 _full, _ = redact_credentials(_full)
                 perm_meta["full_command"] = _full
-                _base = _extract_base_command(event.title)
+                _base = _extract_base_command(_pat_src) if _pat_src else ""
                 _base, _ = redact_exfiltration_urls(_base)
                 _base, _ = redact_credentials(_base)
                 perm_meta["base_command"] = _base

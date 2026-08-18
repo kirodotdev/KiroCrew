@@ -1240,3 +1240,259 @@ class TestSplitterPlaceholderForgery:
         assert _matches_trusted_pattern('Running: grep "a|b" f', {'grep "a|b" *'}) is not None
         assert _matches_trusted_pattern("Running: ls 2>&1", {"ls *"}) is not None
         assert _extract_base_command("Running: cat f | wc -l") == "cat,wc"
+
+
+# ── Provenance-trusted non-shell trust key (Fable-5 design review, point 1) ──
+
+
+def _mk_event(**kw):
+    """Build a permission-request AcpEvent with sensible defaults."""
+    from kiro_crew.acp.types import AcpEvent
+
+    defaults = dict(
+        kind="permission_request",
+        title="",
+        tool_name="",
+        tool_kind="edit",
+        tool_input="",
+        is_shell=False,
+        shell_classified=True,
+        raw_params_trusted=False,
+        raw_tool_params=None,
+    )
+    defaults.update(kw)
+    return AcpEvent(**defaults)
+
+
+class TestTrustedEditPath:
+    def test_path_from_trusted_params(self):
+        e = _mk_event(raw_params_trusted=True, raw_tool_params={"path": "/repo/a.txt"})
+        assert e.trusted_edit_path == "/repo/a.txt"
+
+    def test_file_path_alias(self):
+        e = _mk_event(raw_params_trusted=True, raw_tool_params={"file_path": "/repo/b.txt"})
+        assert e.trusted_edit_path == "/repo/b.txt"
+
+    def test_untrusted_params_denied(self):
+        # Inline agent-authored params (raw_params_trusted False) never count.
+        e = _mk_event(raw_params_trusted=False, raw_tool_params={"path": "/etc/passwd"})
+        assert e.trusted_edit_path is None
+
+    def test_no_path_returns_none(self):
+        e = _mk_event(raw_params_trusted=True, raw_tool_params={"contents": "x"})
+        assert e.trusted_edit_path is None
+
+    def test_non_dict_params_none(self):
+        e = _mk_event(raw_params_trusted=True, raw_tool_params=None)
+        assert e.trusted_edit_path is None
+
+
+class TestNonShellTrustKey:
+    def test_tool_name_plus_path(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        e = _mk_event(
+            tool_name="fs_write",
+            title="Edit /repo/a.txt",  # LLM-authored; must be ignored
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/a.txt"},
+        )
+        assert _nonshell_trust_key(e) == "fs_write /repo/a.txt"
+
+    def test_pathless_mcp_tool_denies(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        # No provenance-trusted path -> None (offer no trust). A bare tool_name
+        # key would ignore all arguments and blanket-approve the tool by name,
+        # so trusting one benign cron_add would auto-approve any later one.
+        e = _mk_event(tool_name="cron_add", title="Schedule a job")
+        assert _nonshell_trust_key(e) is None
+
+    def test_non_edit_tool_with_path_denies(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        # A non-edit tool that carries a path but ALSO other security-relevant
+        # args (file_send(path, channel)) must NOT get a path-keyed grant: the
+        # key omits `channel`, so trusting an upload to channel A would
+        # auto-approve the same file to channel B. Only tool_kind == "edit"
+        # earns a key (GPT 5.6 fork review, backend-security-controls).
+        e = _mk_event(
+            tool_name="file_send",
+            tool_kind="other",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/report.pdf", "channel": "C_A"},
+        )
+        assert _nonshell_trust_key(e) is None
+        assert _nonshell_trust_key(e, escape=True) is None
+
+    def test_missing_tool_name_denies(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        # No canonical identity -> None (never fall back to title).
+        e = _mk_event(tool_name="", title="Edit /repo/a.txt")
+        assert _nonshell_trust_key(e) is None
+
+    def test_ignores_untrusted_path(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        # Params present but not from the cache -> no provenance-trusted path,
+        # so no trust key is offered (None). A forged inline path can neither
+        # widen a grant nor collapse to a bare tool_name that ignores args.
+        e = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=False,
+            raw_tool_params={"path": "/etc/passwd"},
+        )
+        assert _nonshell_trust_key(e) is None
+
+
+class TestNonShellStoreMatchRoundTrip:
+    """The stored pattern (from _nonshell_trust_key -> _extract_*) must match a
+    later event with the same identity, and NOT match a title-forged event."""
+
+    def test_exact_pattern_round_trip(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        store = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/a.txt"},
+        )
+        # STORAGE side escapes (escape=True); MATCH side stays raw.
+        pattern = _extract_full_command(_nonshell_trust_key(store, escape=True))
+        patterns = {pattern}
+
+        # Same identity later -> matches.
+        again = _mk_event(
+            tool_name="fs_write",
+            title="totally different title",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/a.txt"},
+        )
+        assert _matches_trusted_pattern(_nonshell_trust_key(again), patterns) == pattern
+
+        # Forged: model emits title "Edit /repo/a.txt" but real path is /etc/passwd.
+        forged = _mk_event(
+            tool_name="fs_write",
+            title="Edit /repo/a.txt",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/etc/passwd"},
+        )
+        assert _matches_trusted_pattern(_nonshell_trust_key(forged), patterns) is None
+
+    def test_metachar_filename_round_trip(self):
+        # Regression: a file whose name contains fnmatch metacharacters (e.g. a
+        # Next.js dynamic route app/[id].tsx). The stored pattern must escape
+        # them so it matches that literal name; the match subject stays raw.
+        # Escaping BOTH sides silently broke this (re-creating #4346 for the
+        # very common *?[ filename class).
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        store = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/app/[id].tsx"},
+        )
+        pattern = _extract_full_command(_nonshell_trust_key(store, escape=True))
+        patterns = {pattern}
+
+        again = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/app/[id].tsx"},
+        )
+        # Same metachar file trusted earlier -> still matches (trust sticks).
+        assert _matches_trusted_pattern(_nonshell_trust_key(again), patterns) == pattern
+
+        # A DIFFERENT file must NOT be captured by the escaped char-class.
+        sibling = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/app/i.tsx"},
+        )
+        assert _matches_trusted_pattern(_nonshell_trust_key(sibling), patterns) is None
+
+    def test_separator_filename_round_trip(self):
+        # Regression (Opus 4.8 fork review): a file whose name contains a shell
+        # separator (& ; |) e.g. "Q&A.txt". The non-shell key is matched with
+        # split=False (as the production gate does), so it is compared literally
+        # instead of being cut by _split_command_segments on '&' into fragments
+        # that never re-match -- which silently broke trust (re-creating #4346).
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        store = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/Q&A.txt"},
+        )
+        pattern = _extract_full_command(_nonshell_trust_key(store, escape=True))
+        patterns = {pattern}
+
+        again = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/Q&A.txt"},
+        )
+        # Literal (split=False) match -> trust sticks.
+        assert (
+            _matches_trusted_pattern(_nonshell_trust_key(again), patterns, split=False) == pattern
+        )
+        # And the old segment-splitting path would have silently missed it,
+        # proving the regression the split=False gate closes.
+        assert _matches_trusted_pattern(_nonshell_trust_key(again), patterns, split=True) is None
+
+    def test_credential_shaped_path_offers_no_trust(self):
+        # Blocker 1 (GPT 5.6 fork review): a credential-shaped filename would be
+        # rewritten by the display redactors into a token carrying fnmatch
+        # metacharacters AFTER glob.escape ran, widening the stored pattern into
+        # a glob that auto-approves sibling paths. _nonshell_store_pattern must
+        # fail closed (return "" -> no trust) when redaction alters the key.
+        from kiro_crew.dashboard.chat_runner import (
+            _nonshell_store_pattern,
+            _nonshell_trust_key,
+        )
+
+        creds = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/AKIAIOSFODNN7EXAMPLE.txt"},
+        )
+        assert _nonshell_store_pattern(creds) == ""
+
+        # A normal path is unaffected -> the escaped key is stored as the pattern.
+        normal = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/a.txt"},
+        )
+        assert _nonshell_store_pattern(normal) == _nonshell_trust_key(normal, escape=True)
+
+    def test_base_glob_matches_any_path_same_tool(self):
+        from kiro_crew.dashboard.chat_runner import _nonshell_trust_key
+
+        base = _extract_base_command(
+            _nonshell_trust_key(
+                _mk_event(
+                    tool_name="fs_write",
+                    raw_params_trusted=True,
+                    raw_tool_params={"path": "/repo/a.txt"},
+                )
+            )
+        )  # "fs_write"
+        # trust_base stores "<base> *" and the bare base.
+        patterns = {f"{base} *", base}
+
+        other = _mk_event(
+            tool_name="fs_write",
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/z.txt"},
+        )
+        assert _matches_trusted_pattern(_nonshell_trust_key(other), patterns) is not None
+
+        # A DIFFERENT tool is not covered by the fs_write glob.
+        other_tool = _mk_event(
+            tool_name="execute_bash",  # (hypothetical non-shell-classified name)
+            raw_params_trusted=True,
+            raw_tool_params={"path": "/repo/z.txt"},
+        )
+        assert _matches_trusted_pattern(_nonshell_trust_key(other_tool), patterns) is None

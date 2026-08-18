@@ -1490,31 +1490,79 @@ class TestDenyRowTitleRedaction:
         self._assert_audit_redacted(audit, "hook_error")
 
     @pytest.mark.asyncio
-    async def test_trust_reads_invalid_name_redacts(self, tmp_path):
-        """Trust-reads denies on a redacted row with an audited SEL record."""
+    async def test_trust_reads_auto_approve_redacts_credential_title(self, tmp_path):
+        """Trust-reads auto-approves a genuine shell read with a redacted title.
+
+        This is the trust-reads redaction surface that is actually REACHABLE
+        under the tool_name+shell_command gate. Trust-reads now keys on
+        ``event.shell_command``, which returns None unless ``is_shell`` is True,
+        so a trust-reads-eligible event is always a real shell read. And
+        ``_validate_tool_name`` exempts shell tools from the length cap
+        (``if not is_shell and len(...) > MAX_TOOL_NAME_LEN``), so a
+        credential-bearing INVALID (over-length) title can no longer reach the
+        trust-reads deny path at all -- the two conditions are mutually
+        exclusive. The former ``test_trust_reads_invalid_name_redacts`` drove an
+        is_shell=False event with a ``command``-shaped ``tool_input``; under the
+        fix that event correctly skips trust-reads (the very bypass the gate
+        closes) and falls through to interactive approval, so the deny surface
+        it asserted no longer exists.
+
+        The reachable guarantee: a credential the model plants in the title of
+        an auto-approved shell read must not reach a transcript row or the SEL
+        audit ``tool_name`` (``_broadcast_auto_tool`` redacts the row title,
+        ``_redact_display_text`` redacts the audit tool_name).
+        """
         state, client = _make_state(tmp_path)
         slot = _make_slot()
         slot._trust_reads = True
+
+        client.context_usage_pct = MagicMock(return_value=0.0)
+        client._client = client
+        client.last_prompt_stats = None
+
+        shell_event = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title=self._valid_title(),  # short + valid, credential embedded
+            tool_kind="bash",
+            is_shell=True,
+            request_id="req-1",
+            tool_input='{"command": "ls"}',  # read-only -> trust-reads approves
+        )
+        calls = {"n": 0}
+
+        def _stream(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _async_iter([shell_event, _complete_event()])
+            return _async_iter([_complete_event()])
+
+        client.stream = MagicMock(side_effect=_stream)
+
         with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
             audit = MagicMock()
             mock_sel.return_value = audit
-            await _drive_deny_turn(
-                state,
-                client,
-                slot,
-                title=self._invalid_title(),
-                tool_input='{"command": "ls"}',
-            )
-        _assert_deny_surfaces_redacted(slot, audit, self._SECRET, row_suffix="(invalid:")
-        self._assert_audit_redacted(audit, "denied")
-        denied = [
+            with _patch_stats():
+                await _run_chat(state, slot, "hello")
+                if slot.task:
+                    await slot.task
+
+        # Auto-approved via trust-reads -- no interactive future is created, so
+        # the turn completes (the old is_shell=False event hung here).
+        client.approve_tool.assert_called_once()
+        # The credential never reaches a transcript row.
+        rows = [m.get("content", "") for m in slot.messages]
+        assert not any(self._SECRET in row for row in rows), rows
+        # The SEL audit records the auto-approval with a redacted tool_name.
+        approved = [
             call.kwargs
             for call in audit.log_tool_invocation.call_args_list
-            if call.kwargs.get("outcome") == "denied"
+            if call.kwargs.get("outcome") == "auto_approved"
         ]
+        assert approved, "expected an auto_approved audit record"
+        assert all(self._SECRET not in c.get("tool_name", "") for c in approved), approved
         assert any(
-            (c.get("metadata") or {}).get("reason") == "trust_reads" for c in denied
-        ), denied
+            (c.get("metadata") or {}).get("reason") == "trust_reads" for c in approved
+        ), approved
 
     @pytest.mark.asyncio
     async def test_trust_mode_invalid_name_redacts(self, tmp_path):
