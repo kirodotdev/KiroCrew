@@ -412,6 +412,19 @@ async def api_cron_update(request: web.Request) -> web.Response:
     ):
         if key in body:
             kwargs[key] = body[key]
+    # name routes through the same validator as POST (type check +
+    # sanitize_string + length cap) so the two REST surfaces cannot diverge:
+    # PATCH previously passed it through entirely unvalidated, letting a
+    # non-string or oversize name persist verbatim into crons.json.
+    if "name" in kwargs:
+        try:
+            kwargs["name"] = validate_string_field(
+                body, "name", max_len=MAX_SHORT_STRING
+            )
+        except ValidationError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_name"}, status=400
+            )
     # message routes through the same validator as POST (type check +
     # sanitize_string + length cap) so the two REST surfaces cannot diverge:
     # PATCH previously passed it through entirely unvalidated. Sanitizing here
