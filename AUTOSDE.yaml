@@ -375,3 +375,56 @@ custom-rules:
       - Widening the acp_backend config enum to admit a preview harness: the
         enum is the value-SURVIVAL domain and selectability is gated separately
         (H4). Omitting it there is the bug, not including it.
+
+  - id: changelog-is-written-at-version-bump-only
+    blocking: true
+    file-patterns:
+      - "CHANGELOG.md"
+    rule: |
+      CHANGELOG.md is written ONLY when a version is bumped, and released
+      history in it is immutable. The spec for the section itself is
+      AGENTS.md -> "Release Changelog".
+
+      This rule exists because the file has already been destroyed once: a
+      docs commit on a release branch replaced CHANGELOG.md instead of
+      prepending to it, deleting the entire [0.2.0], [0.1.3] and [0.1.2]
+      sections (322 lines) and leaving one machine-generated section behind.
+      Nothing failed, no test covered it, and the loss was noticed only when a
+      user asked why the dashboard's Releases page had gone empty. A changelog
+      is append-only shipped history; a deletion in it is unrecoverable from
+      the artifact a user has installed.
+
+      - FLAG any change to CHANGELOG.md in a PR that is not a version bump or a
+        release cut. A feature, fix, refactor, test, or docs PR MUST NOT touch
+        this file — the release PR writes the section for everything that
+        shipped. If a PR author wants their change remembered, the commit
+        subject is the record.
+      - FLAG any diff that DELETES or MODIFIES a line inside an existing
+        released `## [X.Y.Z]` section. A release PR adds exactly one new
+        section at the top and leaves every pre-existing section
+        byte-identical. Treat a removed `## [` heading as a blocking finding on
+        its own, whatever the stated reason (merge-conflict resolution,
+        regeneration, "cleanup", branch divergence).
+      - FLAG a new `## [Unreleased]` section. There is no Unreleased section:
+        unshipped changes live in the commit log until a bump names them. Use
+        `git log --oneline <last-tag>..HEAD` to see what is pending.
+      - FLAG a section assembled from a commit dump — a bare list of commit
+        subjects, a "Bug Fixes (N total)" count, or a trailing "and N more
+        (see commit log)". That is not a changelog entry; it is the thing a
+        changelog entry exists to replace, and nobody reads it. A curated
+        `### Notable fixes` list of individually-named user-observable outcomes
+        is NOT a dump and is allowed — see AGENTS.md for the line between them.
+      - FLAG a heading that is not a plain release: `## [0.3.0-insider.9]`,
+        `## [0.3.0-rc.2]` and similar prerelease spellings must not appear.
+        A prerelease is a draft of its base version and is folded onto it by
+        src/kiro_crew/changelog.py; giving it its own heading puts a build
+        stamp in the reader's version archive.
+
+      Allowed (do NOT flag):
+      - A release PR that prepends one new `## [X.Y.Z] — YYYY-MM-DD` section
+        and, in the same commit, bumps src/kiro_crew/__init__.py.
+      - Correcting a genuine factual error inside an already-shipped section,
+        when the PR body says that is what it is doing. Say it out loud; an
+        unexplained edit to shipped history is the defect this rule exists for.
+      - Porting an already-written section verbatim between main and a release
+        branch, where the diff adds a section and removes nothing.

@@ -736,6 +736,23 @@ tone, contributor lines) is specified once in
 changelog from `KIROCREW_PROJECT_DIR/CHANGELOG.md` for source installs and from
 the bundled copy inside the package for wheel installs.
 
+**`main` holds the canonical copy.** A release branch necessarily carries its
+own `CHANGELOG.md`, so two copies exist while a release is in flight, and that
+divergence is what the 0.3.0 incident grew out of: the release branch's copy was
+rewritten in isolation and lost three shipped sections that `main` still had.
+The rules that keep the two from drifting:
+
+- **Write the section on the release branch first** (it is what ships), then port
+  it to `main` **verbatim** — a port adds a section and removes nothing.
+- **`main` is the recovery source.** If a release branch's changelog is damaged,
+  restore from `main` rather than reconstructing by hand; `main` is never rewound
+  by a release cut, so its copy is the one that still has the full history.
+- **Never carry a release branch's `Unreleased` entries into its own section by
+  assumption.** Entries accumulated on `main` after the release branch was cut
+  describe commits that branch does not contain — check with
+  `git merge-base --is-ancestor <sha> origin/release/<x.y.z>` before folding
+  anything in, or the release gets credited with work it does not ship.
+
 ## Deliberately not built
 
 These names appear in older design material and in code comments that point
