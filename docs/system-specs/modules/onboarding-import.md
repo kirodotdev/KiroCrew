@@ -23,7 +23,13 @@ Three phases, always in this order:
 | Dry run (preview) | `preview_import()` | **no — never touches disk** |
 | Apply | `apply_import()` | yes, merge-only |
 
-**Sources:** `codex`, `claude_code`, `meshclaw`, `openclaw`, `hermes`.
+**Sources:** `codex`, `claude_code`, `gemini`, `meshclaw`, `openclaw`, `hermes`.
+
+`gemini` covers Google's whole terminal-agent lineage under one id, because
+Antigravity CLI reuses `~/.gemini` rather than claiming a directory of its own.
+Gemini CLI stopped serving Pro/Ultra/free individual accounts on 2026-06-18 and
+Antigravity replaced it, so that one root holds both a displaced Gemini CLI
+user's config and a current Antigravity install.
 
 ## Scope: what is migrated
 
@@ -392,6 +398,7 @@ MUST be covered by a fixture-based regression test.
 |--------|------------------------------|--------------------|
 | `codex` | `CODEX_HOME` → `~/.codex` | `config.toml`; `AGENTS.md` (instructions); `memories/*.md`; `skills/` (excl. `.system`); `memories*.sqlite*` reported unsupported |
 | `claude_code` | `CLAUDE_CONFIG_DIR`/`CLAUDE_HOME` → `~/.claude`; also `~/.claude.json` | `CLAUDE.md`; `rules/*.md`; `settings.json`/`settings.local.json` (`permissions.deny`); `memory/`; `skills/`; per-workspace `.claude/` |
+| `gemini` | `GEMINI_HOME`/`ANTIGRAVITY_HOME` → `~/.gemini` | Four probed config layouts, because Antigravity is closed-source and its subpath has moved between releases: `config/mcp_config.json` (**the live Antigravity path**, confirmed against a real install), `settings.json` (legacy Gemini CLI), `antigravity/mcp_config.json` and `antigravity-cli/settings.json` (older/absent layouts — kept as cheap hedges; `antigravity/` is runtime state, not config). `GEMINI.md` (instructions, hierarchical: root + per workspace); `skills/` only if it is a `SKILL.md` package; per-workspace `.gemini/settings.json` and `.agents/mcp_config.json`. Workspaces come from `config/projects/*.json` — one file per project, folder held as a percent-encoded `file://` URI under `projectResources.resources[].folderUri` — NOT from a `projects` map. That URI is decoded with `urllib.request.url2pathname`, not a bare `unquote`: on Windows the URI is `file:///C:/Users/...` and stripping the scheme alone leaves `/C:/Users/...`, which carries no drive and so is not absolute, which would refuse every workspace as `workspace_not_absolute`; `url2pathname` is the platform-correct inverse (plain unquoting on POSIX, drive reconstruction on Windows). **MCP shape normalization (all three verified against a real install, and required: without them a real Antigravity install imports ZERO of its servers):** `httpUrl`/`serverUrl` → canonical `url`; drop the inert `$typeName` protobuf discriminator (`exa.cascade_plugins_pb.CascadePluginCommandTemplate`) that Antigravity stamps on every stdio entry; drop `env` **only when empty** (the key name matches `_SECRET_KEY_RE`, so an empty map would otherwise score as a credential and refuse the server). A populated `env` is deliberately left untouched and still refused — stripping it would both change how the server runs and hide that secrets were present. `userSettings.themeMode` is not mapped |
 | `meshclaw` | `MESHCLAW_HOME` → `~/.meshclaw` | SQLite memory DB (`memory.db`: `semantic_memory` + `episodic_memories`; `workspace_id` holds the sentinel `default`, and `kind='directive'` marks a rule — see the two sections above); skills; config; `workspace/AGENTS.md` + `workspace/CLAUDE.md` and the same two per configured workspace. Only those canonical filenames are read — the MeshClaw workspace holds arbitrary user documents, so a blind `*.md` sweep there is wrong |
 | `openclaw` | `OPENCLAW_STATE_DIR` → `OPENCLAW_HOME`/`<state>` → `~/.openclaw-<profile>` → `~/.openclaw` → `~/.clawdbot` | `openclaw.json` (+ legacy `clawdbot.json`); `SOUL.md`, `MEMORY.md`, `USER.md`, `memory/*.md` under `workspace/` \| `workspace-main/` \| `workspace-<agentId>/`; `skills/`, `.agents/skills/`; `exec-approvals.json` |
 | `hermes` | `HERMES_HOME`/`HERMES_AGENT_HOME`/`HERMES_CONFIG_DIR` → `%LOCALAPPDATA%/hermes` (Windows) → `~/.hermes` | `config.yaml`/`.yml`; `memories/MEMORY.md`, `memories/USER.md`; `SOUL.md`; `skills/` (excl. managed + re-import dirs); `cron/jobs.json`; `memory_store.db` reported unsupported |
@@ -422,6 +429,49 @@ evil (see the dedupe limitation above).
 
 All three endpoints are dashboard-owner-only and audited. `request["app"]` MUST
 be `""` — an app token is never a dashboard user.
+
+### Filesystem probes on foreign-supplied paths MUST NOT raise
+
+A scanner builds candidate config paths from workspace paths the foreign config
+named, so those paths are attacker-influenced. `Path.exists()` / `is_file()` /
+`is_dir()` re-raise any errno pathlib does not read as "absent" — its ignored set
+is ENOENT/ENOTDIR/EBADF/ELOOP and does **not** include **ENAMETOOLONG**. An
+escaping `OSError` reaches `_scan_response` and returns **HTTP 500**, breaking the
+wizard for every source rather than skipping one path.
+
+The trigger is **per-component**, not total length: `NAME_MAX` is 255 on both
+macOS and Linux, while `PATH_MAX` is 1024 / 4096, so a 301-character path is far
+below any total ceiling and still fails to stat. A total-length guard alone
+cannot close this.
+
+Two layers, both required:
+
+1. `_exists_safe` / `_is_file_safe` / `_is_dir_safe` are the only probes used on a
+   foreign-supplied path (`_walk_files`, `_named_descendant_dirs`,
+   `_add_memory_files`, `_add_instruction_files`, `_parse_configs`). They answer
+   "absent" on `OSError`, because an unprobeable candidate is exactly a candidate
+   to skip. This is what protects every source, not just the newest one.
+2. `_bounded_workspaces` rejects a path whose total exceeds
+   `_MAX_WORKSPACE_PATH_CHARS` or whose any component exceeds
+   `_MAX_WORKSPACE_COMPONENT_CHARS`, with a `workspace_path_too_long`
+   diagnostic — so the user sees a reason in "Not imported" instead of a silent
+   skip.
+
+### Adding a source touches THREE allowlists, not one
+
+The source id is enumerated independently in three places, and missing any one
+of them fails in a different way:
+
+| Layer | Symbol | Failure mode if omitted |
+|-------|--------|-------------------------|
+| Backend registry | `onboarding_import.SOURCE_IDS` (+ `_SOURCE_NAMES`, `_SOURCE_ROOTS`, `scanners`) | The source is never scanned |
+| Handler projection | `dashboard/handlers/onboarding_import._SOURCE_IDS` + `_SOURCE_NAMES` | **`_scan_response` raises and the endpoint 500s — breaking the wizard for EVERY source**, on any machine where the new source's home merely exists. `_SOURCE_NAMES` is indexed with `[source_id]`, so it `KeyError`s even once `_SOURCE_IDS` is fixed |
+| Frontend filter | `AgentImportFlow.tsx` `SUPPORTED_SOURCE_IDS` | `eligibleSources()` silently drops the source — it never renders, even with a working backend |
+
+The handler duplication is load-bearing (it is the content-free projection
+boundary), so it is pinned by `test_handler_source_tables_match_the_backend` in
+`test/test_api_onboarding_import.py`: the omission fails loudly in CI instead of
+as a production 500.
 
 | Endpoint | Phase | Body |
 |----------|-------|------|

@@ -21,6 +21,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
+from urllib.request import url2pathname
 from zoneinfo import ZoneInfo
 
 try:
@@ -89,7 +90,7 @@ def _load_no_alias_yaml(text: str) -> Any:
         loader.dispose()
 
 
-SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
+SOURCE_IDS = ("codex", "claude_code", "gemini", "meshclaw", "openclaw", "hermes")
 # Conflict strategies. ``skip`` is the default and the only non-destructive one;
 # the other two require an explicit user choice per apply request. See
 # docs/system-specs/modules/onboarding-import.md -> "Conflict strategy".
@@ -119,6 +120,7 @@ CATEGORY_IDS = (
 _SOURCE_NAMES = {
     "codex": "Codex",
     "claude_code": "Claude Code",
+    "gemini": "Gemini CLI / Antigravity",
     "meshclaw": "MeshClaw",
     "openclaw": "OpenClaw",
     "hermes": "Hermes Agent",
@@ -135,10 +137,71 @@ _CATEGORY_LABELS = {
 _SOURCE_ROOTS = {
     "codex": (("CODEX_HOME",), ".codex"),
     "claude_code": (("CLAUDE_CONFIG_DIR", "CLAUDE_HOME"), ".claude"),
+    "gemini": (("GEMINI_HOME", "ANTIGRAVITY_HOME"), ".gemini"),
     "meshclaw": (("MESHCLAW_HOME",), ".meshclaw"),
     "hermes": (("HERMES_HOME", "HERMES_AGENT_HOME", "HERMES_CONFIG_DIR"), ".hermes"),
 }
 _OPENCLAW_LEGACY_ROOTS = (".clawdbot",)
+# Google's terminal-agent lineage shares ONE home directory. Gemini CLI stopped
+# serving individual accounts on 2026-06-18 and Antigravity CLI (``agy``)
+# replaced it, reusing ``~/.gemini`` rather than claiming a directory of its own
+# -- so a single source id covers both, and a user who was moved off Gemini CLI
+# still has an importable config on disk. Antigravity is closed-source and its
+# config subpath has shifted between releases, so probe every known layout and
+# let ``_parse_configs`` skip whichever are absent. ORDER IS PRECEDENCE:
+# ``_add_mcp_configs`` keeps the FIRST definition of a server name and
+# ``_merge_missing`` keeps the first settings value, so the live tool's current
+# layout must come first — a user who migrated keeps a stale ``settings.json``
+# next to the Antigravity config, and legacy-first order would import the dead
+# tool's definition over the live one.
+_GEMINI_CONFIG_RELATIVE_PATHS = (
+    "config/mcp_config.json",  # Antigravity CLI, current layout
+    "antigravity/mcp_config.json",  # Antigravity CLI, earlier layout
+    "antigravity-cli/settings.json",  # Antigravity CLI, settings scope
+    "settings.json",  # Gemini CLI, user scope (retired 2026-06-18)
+)
+# Per-workspace config, resolved against each configured project root. Same
+# precedence rule: Antigravity before the retired Gemini CLI.
+_GEMINI_WORKSPACE_RELATIVE_PATHS = (
+    ".agents/mcp_config.json",  # Antigravity, workspace MCP
+    ".gemini/settings.json",  # Gemini CLI, project scope
+)
+# Hierarchical context file both tools read as instructional memory.
+_GEMINI_CONTEXT_FILENAME = "GEMINI.md"
+# Remote-endpoint field names seen across the lineage. Gemini CLI documents
+# ``httpUrl``; a real Antigravity ``config/mcp_config.json`` writes
+# ``serverUrl``. Both mean the same thing as the canonical ``url`` that
+# ``_sanitize_mcp_spec`` accepts.
+_GEMINI_URL_FIELDS = ("httpUrl", "serverUrl")
+# Antigravity serializes its MCP block from protobuf, so every stdio entry
+# carries a ``$typeName`` discriminator
+# (``exa.cascade_plugins_pb.CascadePluginCommandTemplate``). It is inert
+# serializer metadata with no runtime meaning, and dropping it is lossless --
+# but leaving it in place trips the unknown-field arm of ``_sanitize_mcp_spec``
+# and refuses EVERY stdio server the tool ever wrote.
+_GEMINI_TYPE_MARKER_FIELD = "$typeName"
+# Antigravity writes ``env: {}`` on stdio entries that need no environment. The
+# key NAME matches ``_SECRET_KEY_RE``, so an empty map is still scored as a
+# credential and refuses the server. An empty map carries no secret and no
+# behavior, so dropping it is lossless. A NON-empty ``env`` is deliberately left
+# untouched: silently stripping it would both change how the server runs and
+# hide that secrets were present, so those stay refused.
+_GEMINI_ENV_FIELD = "env"
+# Antigravity records each project as its own file under ``config/projects/``,
+# with the folder as a percent-encoded ``file://`` URI rather than a plain path.
+_GEMINI_PROJECTS_DIRNAME = "projects"
+_GEMINI_PROJECT_RESOURCES_KEY = "projectResources"
+_GEMINI_PROJECT_RESOURCE_LIST_KEY = "resources"
+_GEMINI_PROJECT_FOLDER_KEY = "folderUri"
+_GEMINI_FILE_URI_SCHEME = "file://"
+# Directories that exist under the shared home but have no Kiro Crew
+# destination. Antigravity kept Skills, Hooks, Subagents and plugins; only the
+# skills path can land here, and only when it is a SKILL.md package.
+_GEMINI_UNSUPPORTED_DIRS = (
+    ("plugins", "extensions"),
+    ("hooks", "hooks"),
+    ("subagents", "agents"),
+)
 # Directory names a foreign agent's OWN importer uses for skills it pulled in
 # from a third agent (Hermes: ``hermes import-agent`` / ``hermes claw migrate``).
 _FOREIGN_REIMPORT_SKILL_DIRS = (
@@ -211,6 +274,12 @@ _MAX_DB_BYTES = 64 * 1024 * 1024
 _MAX_DB_ROWS = 10_000
 _MAX_WALK_ENTRIES = 10_000
 _MAX_WORKSPACES = 500
+# Path ceilings applied to a FOREIGN-supplied workspace path before it becomes a
+# candidate read. The total mirrors _workspace_item's existing 4096 limit; the
+# per-component limit is POSIX NAME_MAX, which is the ceiling that actually
+# raises first (255 on macOS and Linux, while PATH_MAX is 1024 / 4096).
+_MAX_WORKSPACE_PATH_CHARS = 4096
+_MAX_WORKSPACE_COMPONENT_CHARS = 255
 _MAX_MCP_SERVERS = 200
 _MAX_SCHEDULES = 500
 _MAX_SKILL_PACKAGE_BYTES = 1024 * 1024
@@ -440,6 +509,44 @@ class _Scan:
         self.items[category].append(_Item(self.source_id, category, key, payload))
 
 
+def _exists_safe(path: Path) -> bool:
+    """``Path.exists()`` that cannot raise, for a foreign-supplied path.
+
+    pathlib re-raises any errno it does not read as "absent"; its ignored set is
+    ENOENT/ENOTDIR/EBADF/ELOOP and does **not** include ENAMETOOLONG. A foreign
+    config names its own workspace paths, so a single component over NAME_MAX
+    (255 on both macOS and Linux) reaches these probes and takes the whole scan
+    down — surfacing as HTTP 500 from ``/api/onboarding/import/scan`` for EVERY
+    source, not just the one that supplied the path. Note the trigger is
+    per-component, not total length: a 301-char path is far below ``PATH_MAX``
+    (1024 on macOS, 4096 on Linux) and still raises, so a total-length guard
+    alone cannot close this.
+
+    An unprobeable candidate is exactly a candidate to skip, so "absent" is the
+    correct answer rather than an error.
+    """
+    try:
+        return path.exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_file_safe(path: Path) -> bool:
+    """``Path.is_file()`` counterpart of ``_exists_safe`` — see that docstring."""
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_dir_safe(path: Path) -> bool:
+    """``Path.is_dir()`` counterpart of ``_exists_safe`` — see that docstring."""
+    try:
+        return path.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 def _stat_is_link_like(file_stat: Any) -> bool:
     attributes = getattr(file_stat, "st_file_attributes", 0)
     return stat.S_ISLNK(file_stat.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
@@ -627,12 +734,12 @@ def _walk_files(
     excluded_reason: str = "",
     count_files: bool = True,
 ) -> list[Path]:
-    if not base.exists():
+    if not _exists_safe(base):
         return []
     if _is_link_like(base):
         scan.diagnostic(category, "symlink_rejected")
         return []
-    if not base.is_dir():
+    if not _is_dir_safe(base):
         return []
     remaining = max(0, _MAX_FILES - scan.files_seen.get(category, 0)) if count_files else _MAX_FILES
     candidates: list[Path] = []
@@ -1316,7 +1423,7 @@ def _add_memory_files(scan: _Scan, paths: list[tuple[Path, Path]]) -> None:
     seen: set[str] = set()
     for path, anchor in paths:
         marker = os.path.normcase(os.path.abspath(str(path)))
-        if marker in seen or not path.is_file():
+        if marker in seen or not _is_file_safe(path):
             continue
         seen.add(marker)
         content = _read_text(path, anchor, scan, "memories")
@@ -1431,7 +1538,7 @@ def _add_instruction_files(
     seen: set[str] = set()
     for path, anchor in paths:
         marker = os.path.normcase(os.path.abspath(str(path)))
-        if marker in seen or not path.is_file():
+        if marker in seen or not _is_file_safe(path):
             continue
         seen.add(marker)
         content = _read_text(path, anchor, scan, "instructions")
@@ -1535,7 +1642,7 @@ def _named_descendant_dirs(
     category: str,
     names: frozenset[str],
 ) -> list[Path]:
-    if not base.exists() or not base.is_dir():
+    if not _exists_safe(base) or not _is_dir_safe(base):
         return []
     if _is_link_like(base):
         scan.diagnostic(category, "symlink_rejected")
@@ -1948,7 +2055,7 @@ def _parse_configs(
     seen: set[str] = set()
     for path, anchor, kind in configs:
         marker = os.path.normcase(os.path.abspath(str(path)))
-        if marker in seen or not path.exists():
+        if marker in seen or not _exists_safe(path):
             continue
         seen.add(marker)
         data: Any
@@ -2135,6 +2242,228 @@ def _scan_claude(scan: _Scan) -> None:
     settings: dict[str, Any] = {}
     for config in configs:
         _merge_missing(settings, _settings_from(config, "claude_code"))
+    if settings:
+        scan.add("settings", json.dumps(settings, sort_keys=True), settings)
+
+
+def _bounded_workspaces(scan: _Scan, workspaces: set[str]) -> list[str]:
+    """Sort, filter and cap a workspace list that a foreign config declared.
+
+    The list is attacker-influenced — it is whatever the source config named —
+    and every surviving entry costs filesystem work: two candidate config stats
+    here, then a strict ``resolve`` plus a sensitivity check in
+    ``_workspace_item``. So bound the count with ``_MAX_WORKSPACES`` (the same
+    ceiling the other declared-workspace readers use) and drop relative paths up
+    front, since ``_workspace_item`` refuses them anyway and resolving one would
+    otherwise aim a candidate read at the gateway's own working directory.
+    """
+    absolute: list[str] = []
+    for workspace in workspaces:
+        candidate = workspace.strip()
+        if not candidate or "\x00" in candidate:
+            continue
+        if candidate.startswith(("//", "\\\\")):
+            # CLASS-LEVEL chokepoint for network paths: every declared-
+            # workspace entry funnels through here regardless of which config
+            # shape named it (a ``projects`` key, a workspace map, or a
+            # decoded project-file URI). A ``\\server\share`` UNC path IS
+            # absolute on Windows (and ``//server/share`` is absolute on
+            # POSIX too), so it would pass the not-absolute refusal below and
+            # reach the config probes — and merely probing a UNC path makes
+            # Windows open an SMB connection (and authenticate) to a host
+            # named by a FOREIGN config file.
+            scan.diagnostic("workspaces", "network_workspace_excluded")
+            continue
+        expanded = Path(os.path.expanduser(candidate))
+        if not expanded.is_absolute():
+            scan.diagnostic("workspaces", "workspace_not_absolute")
+            continue
+        # Mirror _workspace_item's length ceiling BEFORE the path becomes a
+        # candidate read, and check each COMPONENT as well as the total: the
+        # filesystem limit that bites first is NAME_MAX (255), not PATH_MAX, so a
+        # 301-char path passes a total-length test and still fails to stat.
+        # _exists_safe now absorbs that, but rejecting here is what gives the
+        # user a reason in the "Not imported" list instead of a silent skip.
+        if len(candidate) > _MAX_WORKSPACE_PATH_CHARS or any(
+            len(part) > _MAX_WORKSPACE_COMPONENT_CHARS for part in expanded.parts
+        ):
+            scan.diagnostic("workspaces", "workspace_path_too_long")
+            continue
+        absolute.append(candidate)
+    ordered = sorted(absolute)
+    if len(ordered) > _MAX_WORKSPACES:
+        scan.diagnostic("workspaces", "item_count_limit", count=len(ordered))
+        return ordered[:_MAX_WORKSPACES]
+    return ordered
+
+
+def _normalized_gemini_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Project one Gemini/Antigravity MCP entry onto the canonical shape.
+
+    Three lossless rewrites, verified against a real Antigravity
+    ``~/.gemini/config/mcp_config.json``:
+
+    * ``httpUrl`` / ``serverUrl`` -> ``url`` (remote endpoints)
+    * drop the inert ``$typeName`` protobuf discriminator
+    * drop ``env`` only when it is empty
+
+    Everything else is left exactly as written, so ``_sanitize_mcp_spec`` still
+    has the final say. That keeps the credential boundary intact: a server with
+    a populated ``env``, or with an unsupported field such as
+    ``authProviderType``, is still refused with its own diagnostic rather than
+    being reshaped into something Kiro Crew cannot actually run.
+    """
+    rewritten: dict[str, Any] = {}
+    has_url = "url" in spec
+    for key, value in spec.items():
+        if key == _GEMINI_TYPE_MARKER_FIELD:
+            continue
+        if key == _GEMINI_ENV_FIELD and not value:
+            continue
+        if key in _GEMINI_URL_FIELDS and not has_url:
+            rewritten["url"] = value
+            continue
+        rewritten[key] = value
+    return rewritten
+
+
+def _normalized_gemini_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply ``_normalized_gemini_spec`` to every MCP entry, on a copy."""
+    normalized: list[dict[str, Any]] = []
+    for config in configs:
+        servers = config.get("mcpServers")
+        if not isinstance(servers, dict):
+            normalized.append(config)
+            continue
+        rebuilt: dict[str, Any] = {
+            name: (_normalized_gemini_spec(spec) if isinstance(spec, dict) else spec)
+            for name, spec in servers.items()
+        }
+        normalized.append({**config, "mcpServers": rebuilt})
+    return normalized
+
+
+def _gemini_project_workspaces(scan: _Scan, root: Path) -> set[str]:
+    """Collect workspace paths from Antigravity's ``config/projects/*.json``.
+
+    Antigravity does not keep a ``projects`` map inside its config the way Codex
+    and Claude Code do — it writes one file per project, and records the folder
+    as a percent-encoded ``file://`` URI. Decode those back into plain absolute
+    paths so ``_workspace_item`` can validate them like any other source's.
+    """
+    found: set[str] = set()
+    projects_dir = root / _GEMINI_PROJECTS_DIRNAME
+    if not projects_dir.is_dir():
+        return found
+    for path in _walk_files(projects_dir, scan, "workspaces", suffixes=(".json",)):
+        data = _read_json(path, projects_dir, scan, "workspaces")
+        if not isinstance(data, dict):
+            continue
+        resources = data.get(_GEMINI_PROJECT_RESOURCES_KEY)
+        entries = resources.get(_GEMINI_PROJECT_RESOURCE_LIST_KEY) if isinstance(
+            resources, dict
+        ) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries[:_MAX_WORKSPACES]:
+            if not isinstance(entry, dict):
+                continue
+            uri = entry.get(_GEMINI_PROJECT_FOLDER_KEY)
+            if not isinstance(uri, str) or not uri.startswith(_GEMINI_FILE_URI_SCHEME):
+                continue
+            # ``url2pathname`` rather than a bare ``unquote``: on Windows the URI
+            # is ``file:///C:/Users/...``, and stripping the scheme leaves
+            # ``/C:/Users/...`` — a path with no drive, which pathlib reports as
+            # NOT absolute, so every workspace would be refused as
+            # ``workspace_not_absolute`` there. url2pathname is the stdlib's
+            # platform-correct inverse (it drops the leading slash and rebuilds
+            # ``C:\Users\...`` on Windows, and is plain unquoting on POSIX).
+            # ``url2pathname`` re-raises OSError on Windows when the path
+            # component cannot map to a drive path (e.g. ``file:///::/x``) —
+            # the same class of foreign-input failure the ``_exists_safe``
+            # helpers absorb. Refuse the one bad URI with its own skip reason
+            # instead of letting the whole scan escape as an HTTP 500.
+            try:
+                decoded = url2pathname(uri[len(_GEMINI_FILE_URI_SCHEME) :])
+            except (OSError, ValueError):
+                scan.diagnostic("workspaces", "workspace_uri_invalid")
+                continue
+            if decoded.startswith(("//", "\\\\")):
+                # ``file:////server/share`` decodes to a UNC path, which IS
+                # absolute on Windows, so it would sail past the
+                # not-absolute refusal in ``_bounded_workspaces`` and reach
+                # the workspace/config probes — and merely probing a UNC
+                # path makes Windows open an SMB connection (and
+                # authenticate) to a host named by a FOREIGN config file.
+                # Refuse network workspaces outright.
+                scan.diagnostic("workspaces", "network_workspace_excluded")
+                continue
+            if decoded:
+                found.add(decoded)
+    return found
+
+
+def _scan_gemini(scan: _Scan) -> None:
+    root = scan.root
+    # Root configs are parsed first so the workspace list is known before each
+    # project's own config is read — the same two-pass shape as ``_scan_claude``.
+    root_configs = _parse_configs(
+        scan,
+        [(root / relative, root, "json") for relative in _GEMINI_CONFIG_RELATIVE_PATHS],
+    )
+    declared: set[str] = set()
+    for config in root_configs:
+        declared.update(_collect_project_paths(config))
+    # Antigravity keeps projects as one file each under config/projects/, not as
+    # a map inside the config, so they need their own pass.
+    declared.update(_gemini_project_workspaces(scan, root / "config"))
+    workspaces = _bounded_workspaces(scan, declared)
+    project_configs: list[tuple[Path, Path, str]] = []
+    for workspace_value in workspaces:
+        workspace_path = Path(os.path.expanduser(workspace_value))
+        project_configs.extend(
+            (workspace_path / relative, workspace_path, "json")
+            for relative in _GEMINI_WORKSPACE_RELATIVE_PATHS
+        )
+    configs = root_configs + _parse_configs(scan, project_configs)
+    # Diagnose the NORMALIZED view so both passes agree on what is excluded:
+    # on the raw view an EMPTY ``env`` scored as a credential field (the key
+    # matches ``_SECRET_KEY_RE``) even though normalization drops it and
+    # nothing is actually withheld from the import. Normalization only
+    # rewrites ``mcpServers`` entries losslessly — a populated ``env`` is kept
+    # verbatim — so no real secret is hidden from the diagnostic.
+    normalized_configs = _normalized_gemini_configs(configs)
+    _diagnose_unsupported_config(scan, normalized_configs)
+    # A project config may name further workspaces; fold them in and re-bound,
+    # so the second pass cannot exceed the ceiling either.
+    for config in configs:
+        declared.update(_collect_project_paths(config))
+    workspaces = _bounded_workspaces(scan, declared)
+    for configured_workspace in workspaces:
+        _workspace_item(scan, configured_workspace)
+    _add_mcp_configs(scan, normalized_configs)
+    # Antigravity "Agent Skills" land only if they are SKILL.md packages. When the
+    # directory exists but yields nothing, say so: a silent no-op would drop the
+    # user's skills from the import story with no count AND no skip reason, so
+    # they would simply vanish from the Review step's "Not imported" list.
+    skills_before = len(scan.items["skills"])
+    _add_skills(scan, [root / "skills"])
+    if _is_dir_safe(root / "skills") and len(scan.items["skills"]) == skills_before:
+        scan.diagnostic("skills", "unsupported_category", unsupported=True)
+    instruction_paths: list[tuple[Path, Path]] = [(root / _GEMINI_CONTEXT_FILENAME, root)]
+    instruction_paths += [
+        (workspace_root / _GEMINI_CONTEXT_FILENAME, workspace_root)
+        for workspace_root in (
+            Path(os.path.expanduser(workspace)) for workspace in workspaces
+        )
+    ]
+    _add_instruction_files(scan, instruction_paths)
+    for relative, category in _GEMINI_UNSUPPORTED_DIRS:
+        if (root / relative).exists():
+            scan.diagnostic(category, "unsupported_category", unsupported=True)
+    settings: dict[str, Any] = {}
+    for config in configs:
+        _merge_missing(settings, _settings_from(config, "gemini"))
     if settings:
         scan.add("settings", json.dumps(settings, sort_keys=True), settings)
 
@@ -3017,6 +3346,7 @@ def _scan_source(
     scanners = {
         "codex": _scan_codex,
         "claude_code": _scan_claude,
+        "gemini": _scan_gemini,
         "meshclaw": _scan_meshclaw,
         "openclaw": _scan_openclaw,
         "hermes": _scan_hermes,

@@ -1017,3 +1017,29 @@ def test_backfill_embeddings_sweeps_a_ready_model(monkeypatch) -> None:
     assert (
         module._backfill_embeddings(SimpleNamespace(backfill_missing_embeddings=lambda: 12)) == 12
     )
+
+
+def test_handler_source_tables_match_the_backend() -> None:
+    """The handler's allowlist must track ``onboarding_import.SOURCE_IDS``.
+
+    ``_scan_response`` rejects a payload whose source id is not in the handler's
+    own ``_SOURCE_IDS`` and then indexes ``_SOURCE_NAMES[source_id]``, so a
+    source added to the backend but missed here does not degrade to "that source
+    is hidden" — it raises and the endpoint 500s, breaking the import wizard for
+    EVERY source on any machine where the new source's home exists. Pin both
+    tables so the omission fails loudly in CI instead.
+    """
+    module = _handler_module()
+    backend = importlib.import_module("kiro_crew.onboarding_import")
+
+    assert module._SOURCE_IDS == frozenset(backend.SOURCE_IDS)
+    assert set(module._SOURCE_NAMES) == set(backend.SOURCE_IDS)
+    assert module._CATEGORY_IDS == frozenset(backend.CATEGORY_IDS)
+    assert set(module._CATEGORY_NAMES) >= frozenset(backend.CATEGORY_IDS) - {"instructions"}
+    # Diagnostic-only categories never enter _CATEGORY_IDS (they are not
+    # importable), but their ids DO reach the Review step's "Not imported"
+    # rows, where a missing label silently falls back to "General". Pin every
+    # category the unsupported-dirs table can emit to a real label.
+    assert set(module._CATEGORY_NAMES) >= {
+        category for _, category in backend._GEMINI_UNSUPPORTED_DIRS
+    }
