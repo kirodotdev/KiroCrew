@@ -5,10 +5,11 @@
 // Why these exist: a wheel install cannot replace its own code, so the panel
 // hands the user an installer command. Two things were missing afterwards.
 //
-// - There was no way to change WHICH channel is followed. The switcher is
-//   THREE-way here (cli.sh installs nightly as a first-class lane), unlike the
-//   desktop's two-way stable/insider control, whose nightly is a separate
-//   side-by-side app a feed switch cannot reach.
+// - There was no way to change WHICH channel is followed. The switcher offers
+//   the same two lanes as the desktop, stable ⇄ insider. Nightly is a
+//   deliberate pinned install (`cli.sh --channel nightly`), not a destination
+//   one click away from Stable, so its segment appears only for an install
+//   already on that lane — as an exit, never an entrance.
 // - There was no way to RELOAD after running the command. The installer
 //   replaced the code on disk while this process kept executing the old
 //   version, and killing it by hand was the only route.
@@ -93,31 +94,63 @@ describe('AboutPanel gateway channel switcher', () => {
     store.dispatch(sseStatus({ ...BLANK_STATUS } as never))
   })
 
-  it('offers all three lanes, marking the followed one selected', async () => {
+  it('offers stable and insider only, marking the followed one selected', async () => {
     stubFetch()
     seedStatus({ update_channel: 'insider' })
     mountWeb()
 
     const switcher = await screen.findByTestId('gateway-channel-switcher')
-    // Nightly being offered at all is the whole difference from the desktop
-    // switcher, which can only move between stable and insider.
-    for (const lane of ['Stable', 'Insider', 'Nightly']) {
+    for (const lane of ['Stable', 'Insider']) {
       expect(within(switcher).getByTitle(lane)).toBeTruthy()
     }
+    // Nightly ships untested `main` HEAD. Following it is a deliberate install,
+    // so it must not sit beside Stable as a third equal option one click away.
+    expect(within(switcher).queryByTitle('Nightly')).toBeNull()
+  })
+
+  it('keeps nightly on screen for an install already following it, as an exit', async () => {
+    // A two-segment control whose value is `nightly` matches nothing and shows
+    // no indicator at all -- the user could not tell which lane they are on.
+    // Rendering the segment keeps the answer truthful and leaves one click back
+    // to Stable.
+    const posts = stubFetch({ channelResponse: { ok: true, channel: 'stable', checked: true, available: false } })
+    seedStatus({ update_channel: 'nightly', release_channel: 'nightly' })
+    mountWeb()
+
+    const switcher = await screen.findByTestId('gateway-channel-switcher')
+    expect(within(switcher).getByTitle('Nightly')).toBeTruthy()
+
+    fireEvent.click(within(switcher).getByTitle('Stable'))
+    await waitFor(() => {
+      const call = posts.find(p => p.url.includes('/api/update/channel'))
+      expect(call!.body).toEqual({ channel: 'stable' })
+    })
+  })
+
+  it('keeps the nightly segment while the running build is still nightly', async () => {
+    // The window right after the exit click: the followed lane is stable, the
+    // bytes are still nightly. Dropping the segment here would strand an
+    // accidental click with no way back until the install actually moved.
+    stubFetch()
+    seedStatus({ update_channel: 'stable', release_channel: 'nightly' })
+    mountWeb()
+
+    const switcher = await screen.findByTestId('gateway-channel-switcher')
+    expect(within(switcher).getByTitle('Nightly')).toBeTruthy()
   })
 
   it('sends the picked channel to the backend', async () => {
-    const posts = stubFetch({ channelResponse: { ok: true, channel: 'nightly', checked: true, available: false } })
+    const posts = stubFetch({ channelResponse: { ok: true, channel: 'insider', checked: true, available: false } })
     seedStatus({ update_channel: 'stable' })
     mountWeb()
 
     const switcher = await screen.findByTestId('gateway-channel-switcher')
-    fireEvent.click(within(switcher).getByTitle('Nightly'))
+    fireEvent.click(within(switcher).getByTitle('Insider'))
 
     await waitFor(() => {
       const call = posts.find(p => p.url.includes('/api/update/channel'))
       expect(call).toBeTruthy()
-      expect(call!.body).toEqual({ channel: 'nightly' })
+      expect(call!.body).toEqual({ channel: 'insider' })
     })
   })
 
@@ -154,7 +187,7 @@ describe('AboutPanel gateway channel switcher', () => {
     mountWeb()
 
     const switcher = await screen.findByTestId('gateway-channel-switcher')
-    fireEvent.click(within(switcher).getByTitle('Nightly'))
+    fireEvent.click(within(switcher).getByTitle('Insider'))
 
     await waitFor(() => {
       expect(screen.getByTestId('gateway-channel-error').textContent).toContain('git remote')
@@ -215,7 +248,7 @@ describe('AboutPanel gateway channel switcher', () => {
     expect(screen.queryByTestId('gateway-channel-pending-note')).toBeNull()
   })
 
-  it('explains all three lanes behind the disclosure', async () => {
+  it('explains the lanes it offers behind the disclosure', async () => {
     stubFetch()
     seedStatus({ update_channel: 'stable' })
     mountWeb()
@@ -229,9 +262,23 @@ describe('AboutPanel gateway channel switcher', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     // Every lane the switcher offers must be explained, or the control asks for
     // a choice it never described.
-    for (const label of [/stable/i, /insider/i, /nightly/i]) {
+    for (const label of [/stable/i, /insider/i]) {
       expect(help.textContent).toMatch(label)
     }
+    // And no definition for a lane it does not offer: that reads as an
+    // invitation to hunt for a missing segment. The collapsed prompt names the
+    // same two lanes for the same reason.
+    expect(help.textContent).not.toMatch(/nightly/i)
+    expect(toggle.textContent).not.toMatch(/nightly/i)
+  })
+
+  it('explains nightly for the install that is on it', async () => {
+    stubFetch()
+    seedStatus({ update_channel: 'nightly', release_channel: 'nightly' })
+    mountWeb()
+
+    fireEvent.click(await screen.findByTestId('gateway-channel-help-toggle'))
+    expect(screen.getByTestId('gateway-channel-help').textContent).toMatch(/nightly/i)
   })
 })
 

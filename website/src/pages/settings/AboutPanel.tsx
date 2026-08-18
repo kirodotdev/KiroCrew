@@ -645,6 +645,22 @@ export function AboutPanel() {
   // shipped in status. Empty means this layout has no channel to switch.
   const effectiveGwChannel = gwChannel || statusUpdateChannel
   const showGwChannelSwitcher = !isDesktop && !!effectiveGwChannel
+  // Nightly is not an OFFERABLE destination on any surface. Its builds are
+  // untested `main` HEAD, so following that lane is a deliberate install
+  // (`cli.sh --channel nightly`), never a one-click flip from a control that
+  // sits next to Stable and reads like a third equal option.
+  //
+  // The segment is rendered only when this install is ALREADY on nightly —
+  // either the lane it follows or the lane the running bytes came from — which
+  // keeps the control truthful for a nightly user (a two-segment control with
+  // neither segment selected shows no indicator at all) and leaves them a
+  // one-click exit back to Stable. Reading BOTH channels matters for the window
+  // after that click: the followed lane is stable while the running build is
+  // still nightly, and dropping the segment there would strand an accidental
+  // click with no way back. There is no path IN: a stable/insider install never
+  // renders it. This matches the desktop switcher, which has only ever offered
+  // stable ⇄ insider.
+  const gwNightlyLane = effectiveGwChannel === 'nightly' || gatewayChannel === 'nightly'
   // Moving lanes needs the installer command whether or not the target lane's
   // version is numerically NEWER. Switching from nightly back to stable is a
   // downgrade, and the command is still the only thing that performs it — so
@@ -788,11 +804,11 @@ export function AboutPanel() {
           )
         )}
         {showGwChannelSwitcher && (
-          // Gateway (CLI / wheel / cloud source) channel switcher. THREE lanes,
-          // not the desktop's two: cli.sh installs nightly as a first-class
-          // channel, so a wheel install can genuinely follow it. The desktop is
-          // limited to stable ⇄ insider because its nightly is a separate
-          // side-by-side app that a feed switch cannot reach.
+          // Gateway (CLI / wheel / cloud source) channel switcher: the same two
+          // lanes the desktop offers, stable ⇄ insider. Nightly is a deliberate
+          // pinned install rather than a destination this control hands out, so
+          // its segment appears only for an install already on that lane (see
+          // `gwNightlyLane`) — as an exit, never an entrance.
           //
           // Switching persists the preference and re-checks; it never installs.
           // The new lane's build then arrives through the normal Update surface
@@ -810,7 +826,12 @@ export function AboutPanel() {
                 >
                   {showChannelHelp
                     ? i18nT('pages.settings.aboutPanel.channel_help_hide')
-                    : i18nT('pages.settings.aboutPanel.channel_help_show_all')}
+                    // The prompt names exactly the lanes the control shows: the
+                    // three-lane wording on a two-lane control advertises a
+                    // channel the user cannot pick here.
+                    : gwNightlyLane
+                      ? i18nT('pages.settings.aboutPanel.channel_help_show_all')
+                      : i18nT('pages.settings.aboutPanel.channel_help_show')}
                 </button>
               </div>
               <div className="shrink-0 flex items-center gap-2">
@@ -819,7 +840,9 @@ export function AboutPanel() {
                   segments={[
                     { key: 'stable', label: i18nT('pages.settings.aboutPanel.stable') },
                     { key: 'insider', label: i18nT('pages.settings.aboutPanel.insider') },
-                    { key: 'nightly', label: i18nT('pages.settings.aboutPanel.nightly') },
+                    ...(gwNightlyLane
+                      ? [{ key: 'nightly', label: i18nT('pages.settings.aboutPanel.nightly') }]
+                      : []),
                   ]}
                   value={effectiveGwChannel}
                   onChange={next => {
@@ -840,10 +863,15 @@ export function AboutPanel() {
                   <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.insider')}</span>
                   <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_insider')}</span>
                 </div>
-                <div className="flex gap-2">
-                  <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.nightly')}</span>
-                  <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_nightly')}</span>
-                </div>
+                {/* Explained only where it is selectable. A definition for a lane
+                    the control does not offer reads as an invitation to look for
+                    the missing segment. */}
+                {gwNightlyLane && (
+                  <div className="flex gap-2">
+                    <span className="font-medium text-text shrink-0">{i18nT('pages.settings.aboutPanel.nightly')}</span>
+                    <span className="text-muted">{i18nT('pages.settings.aboutPanel.channel_explainer_nightly')}</span>
+                  </div>
+                )}
                 <span className="text-muted opacity-80 pt-1.5 border-t border-border">
                   {i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note')}
                 </span>
