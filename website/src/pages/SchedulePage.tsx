@@ -738,12 +738,20 @@ export default function SchedulePage() {
                       own surface): the default cell background is transparent and
                       the scrolling columns would show through. Sticky changes
                       paint position, not column width, so the `w-[176px]`
-                      contract above still holds. The pinned edge carries no
-                      static border: the seam cue is the measured gradient
-                      painted after the table, shown only while the scroller
-                      actually hides columns, so a full-width desktop table is
-                      byte-identical to the unpinned rendering at rest. */}
-                  <TableHead className="sticky right-0 w-[176px] bg-card">{i18nT('pages.schedulePage.actions')}</TableHead>
+                      contract above still holds. The seam is TWO parts, both
+                      gated on the measured overflow flag so a full-width table
+                      renders neither: a 1px child div in this cell (legible over
+                      whitespace, where a fade into the same surface colour
+                      vanishes — a child div and not `border-l`, because under
+                      Preflight's `border-collapse: collapse` a cell border
+                      belongs to the collapsed table grid and stays at the
+                      cell's layout slot instead of travelling with the sticky
+                      cell) and the gradient painted after the table (says
+                      "content continues", which a 1px rule alone does not). */}
+                  <TableHead className="sticky right-0 w-[176px] bg-card">
+                    {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+                    {i18nT('pages.schedulePage.actions')}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>{jobs.length === 0
@@ -825,6 +833,7 @@ export default function SchedulePage() {
                     `bg-card` it matches the rest of the row exactly. */}
                 <TableCell className="sticky right-0 whitespace-nowrap bg-card" onClick={e => e.stopPropagation()}>
                   <div aria-hidden className={`absolute inset-0 -z-10 transition-colors group-hover/jobrow:bg-bg-hover ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} />
+                  {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                   <div className="flex items-center gap-1.5">
                     {j.is_running
                       ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>

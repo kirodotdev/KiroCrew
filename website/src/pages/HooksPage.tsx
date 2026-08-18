@@ -11,6 +11,7 @@ import SimpleSelect from '../components/SimpleSelect'
 import { esc } from '../api/helpers'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import SortableHeader from '../components/SortableHeader'
 
 import { i18nT } from '../i18n/t'
@@ -174,6 +175,11 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     lastRun: (a: Hook, b: Hook) => (a.last_run || 0) - (b.last_run || 0),
   }), [])
   const { sorted: sortedHooks, sort: hookSort, toggle: toggleHookSort } = useSortableTable(filtered, 'hooks', hookComparators, { key: 'name', dir: 'asc' })
+  // Measured overflow state for the hooks table's scroller — gates the pinned
+  // Actions column's seam (border + fade). Measured, not breakpoint-inferred:
+  // the table overflows whenever its container is narrower than the declared
+  // column widths, which a resizable nav rail can cause at any viewport size.
+  const [attachHooksScroller, hooksTableEdges, , attachHooksTable] = useScrollEdges<HTMLDivElement>()
 
   if (loading) return <div className="p-6 text-muted">{i18nT('pages.hooksPage.loading')}</div>
 
@@ -220,8 +226,24 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           {hooks.length === 0 ? (
             <EmptyState icon={<Anchor className="lucide-inline" />} title={i18nT('pages.hooksPage.no_hooks_yet')} subtitle={i18nT('pages.hooksPage.create_a_hook_to_run_scripts_on_chat_events')} />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse table-striped">
+            <div ref={attachHooksScroller} className="overflow-x-auto">
+              {/* This table is AUTO layout (`w-full border-collapse`, no
+                  table-fixed), so column edges depend on content and a
+                  wrapper-anchored cue cannot know where the pinned column
+                  starts. The seam therefore lives INSIDE the pinned cells —
+                  but NOT as a cell border: under Preflight's
+                  `border-collapse: collapse` a cell border belongs to the
+                  collapsed table grid and paints at the cell's LAYOUT slot,
+                  so it stays behind while the sticky cell travels. It is a
+                  1px child div instead (`left-0 w-px bg-border`), which the
+                  sticky cell carries, painted alongside a `right-full`
+                  gradient child hanging just left of it — both gated on the
+                  measured overflow flag, so a table that fits renders
+                  neither. Same treatment as the Schedule jobs table. The
+                  table itself is the observed content node: auto layout means
+                  the ROWS set scrollWidth, which the scroller's own box never
+                  reports. */}
+              <table ref={attachHooksTable} className="w-full border-collapse table-striped">
                 <thead>
                   <tr>
                     <th aria-label={i18nT('pages.hooksPage.enabled')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[52px]"></th>
@@ -232,14 +254,18 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                     <SortableHeader label={i18nT('pages.hooksPage.runs')} sortKey="runs" sort={hookSort} onToggle={toggleHookSort} className="w-[60px]" />
                     <SortableHeader label={i18nT('pages.hooksPage.status')} sortKey="status" sort={hookSort} onToggle={toggleHookSort} className="w-[80px]" />
                     <SortableHeader label={i18nT('pages.hooksPage.last_run')} sortKey="lastRun" sort={hookSort} onToggle={toggleHookSort} className="w-[90px]" />
-                    <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">{i18nT('pages.hooksPage.actions')}</th>
+                    <th className="sticky right-0 bg-card text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">
+                      {hooksTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+                      {hooksTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+                      {i18nT('pages.hooksPage.actions')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 ? (
                     <tr><td colSpan={9} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.hooksPage.no_matching_hooks')}</td></tr>
-                  ) : sortedHooks.map(h => (
-                    <tr key={h.id} className={`hover:bg-bg-hover transition-colors ${h.enabled ? '' : 'opacity-50'}`}>
+                  ) : sortedHooks.map((h, i) => (
+                    <tr key={h.id} className={`group/hookrow hover:bg-bg-hover transition-colors ${h.enabled ? '' : 'opacity-50'}`}>
                       <td className="px-2.5 py-2 border-b border-border">
                         <button
                           className={`w-9 h-5 rounded-full relative transition-colors cursor-pointer ${h.enabled ? 'bg-accent' : 'bg-border'}`}
@@ -261,7 +287,21 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           : <Badge variant="warn">{h.last_status}</Badge>}
                       </td>
                       <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{timeAgo(h.last_run)}</td>
-                      <td aria-label={i18nT('pages.hooksPage.actions')} className="px-2.5 py-2 border-b border-border text-sm">
+                      {/* Pinned like the header cell, on an OPAQUE `bg-card`.
+                          The row states live on the <tr>, which the opaque base
+                          would hide, so the overlay re-applies them: even rows
+                          mirror `.table-striped`'s translucent `--card-hl` zebra
+                          (which outranks the row's hover utility by specificity,
+                          so hover is deliberately NOT mirrored there), odd rows
+                          mirror the hover tint via the named row group. */}
+                      <td aria-label={i18nT('pages.hooksPage.actions')} className="sticky right-0 bg-card px-2.5 py-2 border-b border-border text-sm">
+                        <div aria-hidden className={`absolute inset-0 -z-10 transition-colors ${i % 2 === 1 ? 'bg-[var(--card-hl)]' : 'group-hover/hookrow:bg-bg-hover'}`} />
+                        {hooksTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+                        {/* The fade must ramp toward the surface it abuts: on a
+                            hovered odd row that is the hover tint, not the card
+                            (even rows keep from-card — zebra outranks the row's
+                            hover utility, so their surface never changes). */}
+                        {hooksTableEdges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent ${i % 2 === 1 ? '' : 'group-hover/hookrow:from-bg-hover'}`} />}
                         <div className="flex gap-1.5">
                           <Btn onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
                           <Btn onClick={() => { setEditing(h.id); setCreating(false) }}>{i18nT('pages.hooksPage.edit')}</Btn>

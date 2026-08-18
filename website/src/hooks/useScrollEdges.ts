@@ -30,10 +30,26 @@ export interface ScrollEdges {
  *
  * `remeasure` is for content changes no observer reports — the scroller keeps
  * its own box while its children change, e.g. a tab appearing behind a flag.
+ *
+ * `attachContent` (the fourth slot) is for the AUTO-SIZED case `remeasure`
+ * cannot close: an auto-layout table's scrollWidth moves whenever its rows
+ * re-render wider or narrower — a filter emptying rows, a locale switch
+ * re-labelling every header, a webfont finishing load — none of which resize
+ * the scroller's own box or announce themselves to the caller. The content
+ * node's border-box IS the overflow driver, so observing it subsumes all of
+ * them in one mechanism. Optional: scrollers whose overflow only moves with
+ * their own box (fixed-layout tables, inline chip strips that call
+ * `remeasure` on data changes) never attach one.
  */
-export function useScrollEdges<T extends HTMLElement>(): [(node: T | null) => void, ScrollEdges, () => void] {
+export function useScrollEdges<T extends HTMLElement>(): [
+  (node: T | null) => void,
+  ScrollEdges,
+  () => void,
+  (node: HTMLElement | null) => void,
+] {
   const elRef = useRef<T | null>(null)
   const detachRef = useRef<(() => void) | null>(null)
+  const detachContentRef = useRef<(() => void) | null>(null)
   const [edges, setEdges] = useState<ScrollEdges>({ left: false, right: false })
 
   const remeasure = useCallback(() => {
@@ -71,5 +87,16 @@ export function useScrollEdges<T extends HTMLElement>(): [(node: T | null) => vo
     }
   }, [remeasure])
 
-  return [attach, edges, remeasure]
+  // Stable, so React does not detach and re-attach on every render.
+  const attachContent = useCallback((node: HTMLElement | null) => {
+    detachContentRef.current?.()
+    detachContentRef.current = null
+    if (!node) return
+    remeasure()
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    ro?.observe(node)
+    detachContentRef.current = () => ro?.disconnect()
+  }, [remeasure])
+
+  return [attach, edges, remeasure, attachContent]
 }
