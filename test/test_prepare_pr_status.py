@@ -70,6 +70,259 @@ def _install_fake_gh(
     module.unresolved_thread_count = lambda _number: 3
 
 
+def _last_line_json(capsys) -> dict:
+    """Parse the --json object, which is contracted to be the LAST stdout line."""
+    lines = [ln for ln in capsys.readouterr().out.strip().splitlines() if ln.strip()]
+    return json.loads(lines[-1])
+
+
+def test_json_flag_does_not_change_the_exit_code(capsys) -> None:
+    clean = _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}])
+    blocked = _pr_payload([{"name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}])
+
+    for payload, expected in ((clean, 0), (blocked, 20)):
+        module = _load_script()
+        _install_fake_gh(module, payload)
+        assert module.main(["pr_status.py", "42"]) == expected
+        capsys.readouterr()
+
+        module = _load_script()
+        _install_fake_gh(module, payload)
+        assert module.main(["pr_status.py", "42", "--json"]) == expected
+        assert _last_line_json(capsys)["exit_code"] == expected
+
+
+def test_json_report_carries_the_full_head_sha_not_the_truncated_prose_one(capsys) -> None:
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}]))
+
+    module.main(["pr_status.py", "42", "--json"])
+
+    head = _last_line_json(capsys)["progress_key"]["head_sha"]
+    assert head == "f" * 40
+    assert len(head) == 40
+
+
+def test_bare_json_flag_is_not_read_as_the_pr_number() -> None:
+    """A boolean flag left in the positional list would resolve the wrong PR."""
+    module = _load_script()
+    payload = _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}])
+    seen: list[list[str]] = []
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        seen.append(args)
+        if args[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if args[:5] == ["gh", "pr", "view", "--json", "number"]:
+            return 0, "42", ""
+        if args[:3] == ["gh", "pr", "view"]:
+            return 0, payload, ""
+        if args[:3] == ["gh", "repo", "view"]:
+            return 0, "example/repo", ""
+        if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
+            return 0, "[]", ""
+        if args[:2] == ["gh", "api"] and "/actions/runs" in args[2]:
+            return 0, json.dumps({"total_count": 1, "workflow_runs": [{"event": "pull_request"}]}), ""
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+    module.unresolved_thread_count = lambda _number: 0
+
+    assert module.main(["pr_status.py", "--json"]) == 0
+
+    # The auto-detect branch must have run, i.e. --json was NOT taken as the PR.
+    assert ["gh", "pr", "view", "--json", "number", "-q", ".number"] in seen
+    detail = [c for c in seen if c[:3] == ["gh", "pr", "view"] and c[3:4] not in ([], ["--json"])]
+    assert detail and detail[0][3] == "42"
+
+
+def test_progress_key_is_identical_for_an_unchanged_pr(capsys) -> None:
+    payload = _pr_payload([{"name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}])
+
+    keys = []
+    for _ in range(2):
+        module = _load_script()
+        _install_fake_gh(module, payload)
+        module.main(["pr_status.py", "42", "--json"])
+        keys.append(json.dumps(_last_line_json(capsys)["progress_key"], sort_keys=True))
+
+    assert keys[0] == keys[1]
+
+
+def test_progress_key_changes_when_the_head_moves(capsys) -> None:
+    checks = [{"name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}]
+
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload(checks))
+    module.main(["pr_status.py", "42", "--json"])
+    before = _last_line_json(capsys)["progress_key"]
+
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload(checks, headRefOid="a" * 40))
+    module.main(["pr_status.py", "42", "--json"])
+    after = _last_line_json(capsys)["progress_key"]
+
+    assert before != after
+    assert after["head_sha"] == "a" * 40
+
+
+def test_progress_key_ignores_the_unresolved_thread_count(capsys) -> None:
+    """A thread count degrades to null on an API blip; it must not read as progress."""
+    payload = _pr_payload([{"name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}])
+
+    module = _load_script()
+    _install_fake_gh(module, payload)
+    module.unresolved_thread_count = lambda _number: 3
+    module.main(["pr_status.py", "42", "--json"])
+    first = _last_line_json(capsys)
+
+    module = _load_script()
+    _install_fake_gh(module, payload)
+    module.unresolved_thread_count = lambda _number: None
+    module.main(["pr_status.py", "42", "--json"])
+    second = _last_line_json(capsys)
+
+    assert first["progress_key"] == second["progress_key"]
+    assert first["advisory"]["unresolved_threads"] == 3
+    assert second["advisory"]["unresolved_threads"] is None
+
+
+def test_failing_checks_are_listed_sorted_and_exclude_passing_ones(capsys) -> None:
+    module = _load_script()
+    _install_fake_gh(
+        module,
+        _pr_payload(
+            [
+                {"name": "zeta lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"name": "alpha tests", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"name": "passing build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            ]
+        ),
+    )
+
+    module.main(["pr_status.py", "42", "--json"])
+
+    key = _last_line_json(capsys)["progress_key"]
+    assert key["failing_checks"] == ["alpha tests", "zeta lint"]
+    assert key["checks_failing"] == 2
+
+
+def test_same_check_name_in_two_workflows_does_not_collide_in_the_key(capsys) -> None:
+    """A failing check's identity must carry its workflow, not just its name.
+
+    Two workflows can publish the same check name. If one workflow's copy starts
+    failing while the other's stops, a name-only list is byte-identical across
+    that change and a stall streak would run through a PR whose blocking check
+    actually moved.
+    """
+    def payload(ci_fails: bool) -> str:
+        return _pr_payload(
+            [
+                {
+                    "name": "Tests",
+                    "workflowName": "CI",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE" if ci_fails else "SUCCESS",
+                },
+                {
+                    "name": "Tests",
+                    "workflowName": "Nightly",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS" if ci_fails else "FAILURE",
+                },
+            ]
+        )
+
+    keys = []
+    for ci_fails in (True, False):
+        module = _load_script()
+        _install_fake_gh(module, payload(ci_fails))
+        assert module.main(["pr_status.py", "42", "--json"]) == 20
+        keys.append(_last_line_json(capsys)["progress_key"])
+
+    assert keys[0]["failing_checks"] == ["CI / Tests"]
+    assert keys[1]["failing_checks"] == ["Nightly / Tests"]
+    assert keys[0] != keys[1]
+    # The rest of the key is identical, so the workflow qualifier is the only
+    # thing distinguishing these two states -- strip it and they collide.
+    assert {k: v for k, v in keys[0].items() if k != "failing_checks"} == {
+        k: v for k, v in keys[1].items() if k != "failing_checks"
+    }
+
+
+def test_a_status_context_keeps_its_bare_context_name(capsys) -> None:
+    """StatusContexts have no workflow; their context name IS the identity."""
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload([{"context": "legacy/build", "state": "FAILURE"}]))
+
+    module.main(["pr_status.py", "42", "--json"])
+
+    assert _last_line_json(capsys)["progress_key"]["failing_checks"] == ["legacy/build"]
+
+
+def test_a_changed_blocker_changes_the_key_even_with_an_identical_check_set(capsys) -> None:
+    """A different reason for being blocked must reset a stall streak, not extend it.
+
+    exit_code and the failing-check set cannot tell "blocked by a failing check"
+    from "blocked by a merge conflict": both are exit 20 and here carry a
+    byte-identical check set, head and readiness. Only the verdict reason
+    distinguishes them, which is why `status` is part of the key.
+    """
+    checks = [{"name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"}]
+
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload(checks))
+    assert module.main(["pr_status.py", "42", "--json"]) == 20
+    failing_check = _last_line_json(capsys)["progress_key"]
+
+    module = _load_script()
+    _install_fake_gh(
+        module,
+        _pr_payload(checks, mergeable="CONFLICTING", mergeStateStatus="DIRTY"),
+    )
+    assert module.main(["pr_status.py", "42", "--json"]) == 20
+    conflicted = _last_line_json(capsys)["progress_key"]
+
+    assert failing_check != conflicted
+    # And prove `status` is what discriminates: strip it and they collide, which
+    # is the false stall-streak completion this field exists to prevent.
+    assert {k: v for k, v in failing_check.items() if k != "status"} == {
+        k: v for k, v in conflicted.items() if k != "status"
+    }
+
+
+def test_report_emits_only_the_consumed_surface(capsys) -> None:
+    """Every emitted field has a named consumer in the babysit skill.
+
+    Pins the absence of ambient PR state (mergeable / merge_state /
+    review_decision / check totals / head_run): the prose above already prints
+    it and the skill reads it there, so a second machine-readable copy with no
+    reader would be a surface to keep in sync for nothing.
+    """
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}]))
+
+    module.main(["pr_status.py", "42", "--json"])
+    report = _last_line_json(capsys)
+
+    assert set(report) == {"exit_code", "pr", "status", "url", "progress_key", "advisory"}
+    assert set(report["progress_key"]) == {
+        "checks_failing",
+        "exit_code",
+        "failing_checks",
+        "head_sha",
+        "readiness_kind",
+        "status",
+    }
+    assert set(report["advisory"]) == {
+        "blocking_reviewers",
+        "bot_comments_readable",
+        "findings",
+        "stale_reviewers",
+        "unresolved_threads",
+    }
+
+
 def test_passed_aggregate_overrides_old_failures_and_advisory_threads() -> None:
     module = _load_script()
     payload = _pr_payload(
