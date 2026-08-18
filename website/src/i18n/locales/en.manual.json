@@ -3206,9 +3206,11 @@
       }
     },
     "hooksPage": {
+      "click_again_to_confirm": "Click again to confirm",
       "config": "config",
       "configure_via": "Configure via {{path}}.",
-      "delete_hook": "Delete hook \"{{name}}\"?",
+      "confirm_delete_hook": "Delete?",
+      "delete_hook": "Delete hook \"{{name}}\"",
       "disable_hook": "Disable hook",
       "edit_hook": "Edit Hook",
       "enable_hook": "Enable hook",
@@ -3216,16 +3218,17 @@
       "failed_to_load": "Failed to load {{section}}",
       "failed_to_load_hooks": "Failed to load hooks: {{error}}",
       "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name.",
+      "matcher_mode": "Matcher mode",
       "matcher_optional_e_g_deploy": "Matcher (optional, e.g. *deploy*)",
       "matcher_tool_filter_e_g_fs_write_git": "Matcher (tool filter, e.g. fs_write, @git/*)",
+      "more_actions": "More actions",
       "new_hook_2": "New Hook",
       "none_configured": "No {{section}} configured",
       "read_only_view_of_provider_hooks": "Read-only view of provider hooks from {{path}}. These fire on tool calls including auto-approved ones.",
       "script_hooks_fire_shell_commands_on_chat_lifecyc": "Script hooks fire shell commands on chat lifecycle events. PreToolUse/PostToolUse hooks can filter by tool name pattern.",
       "source": "Source",
       "total": "Total",
-      "total_runs": "Total Runs",
-      "matcher_mode": "Matcher mode"
+      "total_runs": "Total Runs"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "A unique identifier for this workspace. Agents reference workspaces by name.",

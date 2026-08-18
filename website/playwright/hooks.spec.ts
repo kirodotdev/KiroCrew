@@ -19,13 +19,16 @@ test.describe('Hooks Page E2E Tests', () => {
     const testHookCount = await testHooks.count()
     
     for (let i = 0; i < testHookCount; i++) {
-      // Find the delete button for the first matching hook
-      const hookRow = page.locator('div').filter({ has: page.getByText('Playwright_Test_Hook') }).first()
-      const deleteButton = hookRow.getByRole('button', { name: /delete/i }).first()
-      
+      // Row-scoped: a page-wide div filter resolves to the outermost match, so
+      // its first Delete button could belong to an unrelated hook's row.
+      const hookRow = page.getByRole('row').filter({ hasText: 'Playwright_Test_Hook' }).first()
+      const deleteButton = hookRow.getByRole('button', { name: /^delete$/i }).first()
+
       if (await deleteButton.isVisible()) {
-        page.on('dialog', dialog => dialog.accept())
-        await deleteButton.click()
+        await deleteButton.click() // arms
+        const confirmButton = hookRow.getByRole('button', { name: /^delete\?$/i }).first()
+        await expect(confirmButton).toBeVisible({ timeout: 2000 })
+        await confirmButton.click()
         await page.waitForTimeout(500)
       }
     }
@@ -35,12 +38,14 @@ test.describe('Hooks Page E2E Tests', () => {
     const updatedHookCount = await updatedHooks.count()
     
     for (let i = 0; i < updatedHookCount; i++) {
-      const hookRow = page.locator('div').filter({ has: page.getByText('Playwright_Updated_Hook') }).first()
-      const deleteButton = hookRow.getByRole('button', { name: /delete/i }).first()
-      
+      const hookRow = page.getByRole('row').filter({ hasText: 'Playwright_Updated_Hook' }).first()
+      const deleteButton = hookRow.getByRole('button', { name: /^delete$/i }).first()
+
       if (await deleteButton.isVisible()) {
-        page.on('dialog', dialog => dialog.accept())
-        await deleteButton.click()
+        await deleteButton.click() // arms
+        const confirmButton = hookRow.getByRole('button', { name: /^delete\?$/i }).first()
+        await expect(confirmButton).toBeVisible({ timeout: 2000 })
+        await confirmButton.click()
         await page.waitForTimeout(500)
       }
     }
@@ -123,8 +128,9 @@ test.describe('Hooks Page E2E Tests', () => {
     const row = page.getByRole('row').filter({ hasText: hookName })
     await expect(row).toBeVisible({ timeout: 3000 })
 
-    // Open the edit form for our row and save an update.
-    await row.getByRole('button', { name: /^edit$/i }).click()
+    // Open the edit form for our row via the ⋯ overflow menu and save an update.
+    await row.getByRole('button', { name: /more actions/i }).click()
+    await page.getByRole('menuitem', { name: /^edit$/i }).click()
     await expect(page.getByRole('button', { name: /^save$/i })).toBeVisible({ timeout: 3000 })
     const updatedName = `${hookName}_upd`
     await page.getByPlaceholder(/hook name/i).fill(updatedName)
@@ -132,10 +138,11 @@ test.describe('Hooks Page E2E Tests', () => {
     await expect(page.getByPlaceholder(/hook name/i)).not.toBeVisible({ timeout: 5000 })
     await expect(page.getByText(updatedName).first()).toBeVisible({ timeout: 3000 })
 
-    // Cleanup: delete the hook we created (window.confirm auto-accepted).
-    page.on('dialog', d => d.accept())
-    await page.getByRole('row').filter({ hasText: updatedName })
-      .getByRole('button', { name: /^delete$/i }).click()
+    // Cleanup: delete the hook we created via the arm→Confirm flow (no dialog).
+    const cleanupRow = page.getByRole('row').filter({ hasText: updatedName })
+    await cleanupRow.getByRole('button', { name: /^delete$/i }).click()
+    await cleanupRow.getByRole('button', { name: /^delete\?$/i }).click()
+    await expect(cleanupRow).not.toBeVisible({ timeout: 5000 })
   })
 
   test('toggles hook enabled state', async ({ page }) => {
@@ -178,17 +185,22 @@ test.describe('Hooks Page E2E Tests', () => {
 
     await page.waitForTimeout(1000)
 
-    // Find first Delete button (✕)
-    const deleteButton = page.getByRole('button', { name: /delete/i }).first()
-    
+    // Find first Delete button
+    const deleteButton = page.getByRole('button', { name: /^delete$/i }).first()
+
     if (await deleteButton.isVisible()) {
-      // Playwright automatically handles confirm dialogs
-      page.on('dialog', dialog => dialog.accept())
-      
+      // The arm→Confirm flow replaced window.confirm: first click arms the
+      // button (label becomes "Delete?"), second click deletes. No dialog
+      // may open — fail the test if one does.
+      let dialogOpened = false
+      page.on('dialog', dialog => { dialogOpened = true; void dialog.dismiss() })
+
       await deleteButton.click()
+      await page.getByRole('button', { name: /^delete\?$/i }).click()
 
       // Wait for deletion
       await page.waitForTimeout(1000)
+      expect(dialogOpened).toBe(false)
     }
   })
 

@@ -54,7 +54,10 @@ describe('HooksPage table sticky Actions column', () => {
 
   it('pins the Actions body cell with the row-state overlay and gated seam', async () => {
     const src = await loadSource()
-    const cell = src.match(/<td aria-label=\{i18nT\('pages\.hooksPage\.actions'\)\} className="([^"]*)">/)
+    // Anchored on the class shape: the cell deliberately carries NO aria-label
+    // (the header names the column; a cell label would triple-name the ⋯
+    // trigger for screen readers — see #4297).
+    const cell = src.match(/<td className="(sticky[^"]*)">/)
     expect(cell, 'the Actions <td> moved or changed shape').toBeTruthy()
     const cls = cell![1]
     expect(cls).toContain('sticky')
@@ -73,7 +76,7 @@ describe('HooksPage table sticky Actions column', () => {
     // Scope to each sticky cell's OWN markup: a seam div counted globally
     // could drift outside the cell and still pass, recreating the defect.
     const header = src.match(/<th className="[^"]*sticky[^"]*">([\s\S]*?)<\/th>/)
-    const body = src.match(/<td aria-label=\{i18nT\('pages\.hooksPage\.actions'\)\}[\s\S]*?<\/td>/)
+    const body = src.match(/<td className="sticky[^"]*"[\s\S]*?<\/td>/)
     expect(header, 'the sticky Actions <th> moved or changed shape').toBeTruthy()
     expect(body, 'the sticky Actions <td> moved or changed shape').toBeTruthy()
     // The seam is the full literal: a seam that loses top-0/bottom-0 spans

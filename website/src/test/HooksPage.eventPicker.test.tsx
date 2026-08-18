@@ -103,7 +103,11 @@ describe('hooks page — lifecycle event picker', () => {
     }
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    // Edit lives in the row's ⋯ overflow menu. The trigger is a Radix
+    // DropdownMenuTrigger, which opens on keyboard activation (Enter) — a path
+    // jsdom handles, unlike the PointerEvent-driven click Radix uses for mouse.
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit' }))
     const trigger = await screen.findByLabelText('Event')
     expect(trigger).toHaveTextContent('agentSpawn')
     expect(trigger).not.toHaveTextContent('AgentSpawn')

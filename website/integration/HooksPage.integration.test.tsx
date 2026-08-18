@@ -16,12 +16,8 @@ const renderWithRouter = (component: React.ReactElement) => {
   )
 }
 
-// Mock window.confirm for delete operations
-const mockConfirm = vi.fn()
-Object.defineProperty(window, 'confirm', {
-  writable: true,
-  value: mockConfirm,
-})
+// The page confirms deletion via an on-row arm→Confirm button, so no
+// window.confirm mock is needed.
 
 const mockHooks = [
   {
@@ -63,7 +59,6 @@ describe('HooksPage Integration Tests', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockConfirm.mockReturnValue(true)
 
     // Set up default hooks endpoint
     server.use(
@@ -220,10 +215,11 @@ describe('HooksPage Integration Tests', () => {
       expect(screen.getByText('Deploy Notifier')).toBeInTheDocument()
     })
 
-    // Find the hook row and click edit
-    const editButtons = screen.getAllByRole('button', { name: /edit/i })
-    // First hook is "Deploy Notifier", second is "Git Guard"
-    await user.click(editButtons[0])
+    // Edit lives in the row's ⋯ overflow menu (the CronRowActions pattern).
+    // Radix DropdownMenuTrigger opens on keyboard activation (Enter) in jsdom.
+    const row = screen.getByText('Deploy Notifier').closest('tr')!
+    fireEvent.keyDown(within(row).getByRole('button', { name: 'More actions' }), { key: 'Enter' })
+    await user.click(await screen.findByRole('menuitem', { name: /edit/i }))
 
     // Should show edit form
     await waitFor(() => {
@@ -295,12 +291,12 @@ describe('HooksPage Integration Tests', () => {
       expect(screen.getByText('Git Guard')).toBeInTheDocument()
     })
 
-    // Find the Delete button for Git Guard (second hook)
-    const deleteButtons = screen.getAllByRole('button', { name: /delete/i })
-    await user.click(deleteButtons[1])
-
-    // Should show confirmation dialog
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('Git Guard'))
+    // Delete is an arm→Confirm state machine on the row button: the first
+    // click arms (nothing deleted), the second click confirms.
+    const row = screen.getByText('Git Guard').closest('tr')!
+    await user.click(within(row).getByRole('button', { name: /^delete$/i }))
+    expect(deletedHookId).toBeUndefined()
+    await user.click(within(row).getByRole('button', { name: /^delete\?$/i }))
 
     // Verify delete was called
     await waitFor(() => {

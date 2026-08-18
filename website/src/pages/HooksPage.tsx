@@ -1,17 +1,19 @@
 import { compareText } from '../i18n/format'
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { AlertTriangle, Anchor, Link2, Lock } from 'lucide-react'
+import { AlertTriangle, Anchor, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
 import SkillsMultiSelect from '../components/HookSkillsSelect'
 import { Card, CardTitle, PageHeader, StatCard, Btn, SendBtn, Input, Badge, SearchInput, EmptyState } from '../components/ui'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import InfoTip from '../components/InfoTip'
 import SimpleSelect from '../components/SimpleSelect'
 import { esc } from '../api/helpers'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { useScrollEdges } from '../hooks/useScrollEdges'
+import { useArmedDelete } from '../hooks/useArmedDelete'
 import SortableHeader from '../components/SortableHeader'
 
 import { i18nT } from '../i18n/t'
@@ -148,14 +150,31 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   const mutOpts = { onSuccess: () => refresh(), onError: (e: Error) => e }
   const createMut = useMutation({ mutationFn: (data: Partial<Hook>) => api.createHook(data), ...mutOpts, onSuccess: () => { setCreating(false); refresh() } })
   const updateMut = useMutation({ mutationFn: ({ id, data }: { id: string; data: Partial<Hook> }) => api.updateHook(id, data), ...mutOpts, onSuccess: () => { setEditing(null); refresh() } })
-  const deleteMut = useMutation({ mutationFn: (id: string) => api.deleteHook(id), ...mutOpts })
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => api.deleteHook(id),
+    // Refetch BEFORE the armed-delete hook re-enables the row (mutateAsync
+    // resolves only after this settles, and useArmedDelete removes the
+    // pending id after deleteFn resolves): a deleted row must disappear
+    // rather than flash a re-enabled Delete. Deliberately NOT ...mutOpts —
+    // its `onSuccess: () => refresh()` does not await, so it cannot carry
+    // this ordering.
+    onSettled: async () => { await refresh() },
+  })
   const toggleMut = useMutation({ mutationFn: (id: string) => api.toggleHook(id), ...mutOpts })
   const testMut = useMutation({ mutationFn: (id: string) => api.testHook(id), onSuccess: (r: { result: HookTestResult }, id: string) => { setTestResult({ id, data: r.result }); refresh() } })
+
+  // Delete is the shared arm→Confirm→decay machine (useArmedDelete, the
+  // CronRowActions convention — SchedulePage consumes it the same way). A
+  // menu that closes on select cannot host the armed state, which is why
+  // Delete stays out of the ⋯ overflow below. Failures surface through
+  // deleteMut.error via the mutError banner, so the rejection confirm
+  // swallows is already reported. mutateAsync is referentially stable, so it
+  // is handed over directly.
+  const { armedId: confirmDeleteId, arm: armDelete, confirm: confirmDelete, isDeleting } = useArmedDelete(deleteMut.mutateAsync)
 
   const mutError = createMut.error?.message || updateMut.error?.message || deleteMut.error?.message || toggleMut.error?.message || testMut.error?.message || null
   const handleCreate = (data: Partial<Hook>) => createMut.mutate(data)
   const handleUpdate = (id: string, data: Partial<Hook>) => updateMut.mutate({ id, data })
-  const handleDelete = (id: string) => deleteMut.mutate(id)
   const handleToggle = (id: string) => toggleMut.mutate(id)
   const handleTest = (id: string) => { setTestResult(null); testMut.mutate(id) }
 
@@ -254,7 +273,13 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                     <SortableHeader label={i18nT('pages.hooksPage.runs')} sortKey="runs" sort={hookSort} onToggle={toggleHookSort} className="w-[60px]" />
                     <SortableHeader label={i18nT('pages.hooksPage.status')} sortKey="status" sort={hookSort} onToggle={toggleHookSort} className="w-[80px]" />
                     <SortableHeader label={i18nT('pages.hooksPage.last_run')} sortKey="lastRun" sort={hookSort} onToggle={toggleHookSort} className="w-[90px]" />
-                    <th className="sticky right-0 bg-card text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium w-[160px]">
+                    {/* Pinned sticky-right per #4296. No width hint: under auto
+                        table layout a specified width is only a preferred width
+                        — the nowrap content's minimum still wins when larger —
+                        and this cell's widest state (the armed "Delete?" label)
+                        varies by locale, so a hint is either redundant or
+                        overridden. */}
+                    <th className="sticky right-0 bg-card text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">
                       {hooksTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                       {hooksTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
                       {i18nT('pages.hooksPage.actions')}
@@ -293,8 +318,11 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           mirror `.table-striped`'s translucent `--card-hl` zebra
                           (which outranks the row's hover utility by specificity,
                           so hover is deliberately NOT mirrored there), odd rows
-                          mirror the hover tint via the named row group. */}
-                      <td aria-label={i18nT('pages.hooksPage.actions')} className="sticky right-0 bg-card px-2.5 py-2 border-b border-border text-sm">
+                          mirror the hover tint via the named row group. No
+                          aria-label: the header already names the column, and a
+                          cell label would triple-name the ⋯ trigger for screen
+                          readers. */}
+                      <td className="sticky right-0 bg-card px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
                         <div aria-hidden className={`absolute inset-0 -z-10 transition-colors ${i % 2 === 1 ? 'bg-[var(--card-hl)]' : 'group-hover/hookrow:bg-bg-hover'}`} />
                         {hooksTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                         {/* The fade must ramp toward the surface it abuts: on a
@@ -302,10 +330,47 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             (even rows keep from-card — zebra outranks the row's
                             hover utility, so their surface never changes). */}
                         {hooksTableEdges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent ${i % 2 === 1 ? '' : 'group-hover/hookrow:from-bg-hover'}`} />}
-                        <div className="flex gap-1.5">
+                        {/* Two controls plus the overflow menu (max-two-buttons-per-row,
+                            following CronRowActions). Test stays in the row as the
+                            per-glance action; Edit lives in the ⋯ menu. Delete stays a
+                            row-level button — its arm→Confirm state needs the button
+                            visible, and a menu that closes on select cannot host the
+                            armed state. The armed label explains itself IN THE LABEL:
+                            the `title` tooltip is hover-only, so on touch it does not
+                            exist. The visible text is also the accessible name — no
+                            aria-label, which would override the label a sighted user
+                            reads (WCAG 2.5.3, Label in Name); the row names the hook. */}
+                        <div className="flex items-center gap-1.5">
                           <Btn onClick={() => handleTest(h.id)} className="bg-accent/10 text-accent border-accent/30 hover:bg-accent/20">{i18nT('pages.hooksPage.test')}</Btn>
-                          <Btn onClick={() => { setEditing(h.id); setCreating(false) }}>{i18nT('pages.hooksPage.edit')}</Btn>
-                          <Btn danger onClick={() => { if (window.confirm(i18nT('pages.hooksPage.delete_hook', { name: h.name }))) handleDelete(h.id) }}>{i18nT('pages.hooksPage.delete')}</Btn>
+                          <Btn
+                            danger
+                            disabled={isDeleting(h.id)}
+                            title={confirmDeleteId === h.id ? i18nT('pages.hooksPage.click_again_to_confirm') : i18nT('pages.hooksPage.delete_hook', { name: h.name })}
+                            onClick={() => { if (confirmDeleteId === h.id) void confirmDelete(h.id); else armDelete(h.id) }}
+                          >{isDeleting(h.id) ? '...' : confirmDeleteId === h.id ? i18nT('pages.hooksPage.confirm_delete_hook') : i18nT('pages.hooksPage.delete')}</Btn>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Btn
+                                className="!px-1.5"
+                                aria-label={i18nT('pages.hooksPage.more_actions')}
+                                title={i18nT('pages.hooksPage.more_actions')}
+                              >
+                                <MoreHorizontal size={14} />
+                              </Btn>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="min-w-[160px]">
+                              {/* Test is also in the row; repeated here so the menu is a
+                                  complete account of what can be done to the hook. */}
+                              <DropdownMenuItem onSelect={() => handleTest(h.id)}>
+                                <Play size={13} className="shrink-0 text-accent" />
+                                <span>{i18nT('pages.hooksPage.test')}</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => { setEditing(h.id); setCreating(false) }}>
+                                <Pencil size={13} className="shrink-0 text-muted" />
+                                <span>{i18nT('pages.hooksPage.edit')}</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>
