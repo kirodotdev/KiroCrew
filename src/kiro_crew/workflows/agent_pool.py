@@ -40,8 +40,8 @@ from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Per-step tool-call ceiling — shared with the per-call path (agent_exec) so a
-# single edit retunes both; a hand-duplicated copy here would silently diverge
-# the pooled vs fallback ceilings (no test pins them equal).
+# single edit retunes both; a hand-duplicated copy here would silently diverge the
+# pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
 from kiro_crew.workflows.agent_exec import _MAX_TURNS_PER_STEP
 
 logger = logging.getLogger(__name__)
@@ -240,12 +240,9 @@ def build_pooled_agent_fn(
         # ``agent=None`` on the call means "use the run default" — identical to
         # build_agent_fn's ``opts.get("agent") or default_agent``. Resolve first
         # so a call that explicitly asks for the default reuses the default pool.
-        eff_agent = agent or default_agent
-        eff_model = model or default_model
-        eff_cwd = work_dir or cwd
-        if (eff_agent, eff_model, eff_cwd) == (default_agent, default_model, cwd):
+        key = (agent or default_agent, model or default_model, work_dir or cwd)
+        if key == (default_agent, default_model, cwd):
             return default_pool
-        key = (eff_agent, eff_model, eff_cwd)
         sp = subpools.get(key)
         if sp is not None:
             return sp
@@ -259,7 +256,7 @@ def build_pooled_agent_fn(
         # ``(max_identities + 1) * max_workers``.
         if len(subpools) >= max(1, max_identities):
             return None
-        sp = _make_pool(eff_agent, eff_model, eff_cwd)
+        sp = _make_pool(*key)
         subpools[key] = sp
         return sp
 

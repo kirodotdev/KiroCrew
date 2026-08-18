@@ -1,5 +1,5 @@
 """Gateway-side workflow service: the shared registry + runner the chat tools,
-the Workflows app, and result-to-chat injection all talk to (M6.3/M6.4/M6.5).
+the Workflows app, and result-to-chat injection all talk to.
 
 This is the single place the gateway wires the dynamic-workflows engine into the
 live process: one ``RunRegistry``, a ``WorkflowRunner`` whose ``agent_fn`` runs
@@ -336,7 +336,7 @@ class WorkflowService:
         # remove it). None → the service default.
         ceiling = clamp_run_timeout(timeout_secs, default=self._timeout_secs)
 
-        # M4 native ports wired for every run of this service. ``nudge`` bridges
+        # Native ports wired for every run of this service. ``nudge`` bridges
         # ``ctx.nudge`` to AutoNudge (the port is session-agnostic — the runner
         # supplies each run's originating session_key at call time; the closure
         # binds run_id so arms are tracked per run and drained at teardown).
@@ -350,6 +350,8 @@ class WorkflowService:
             # logs land inside the stream contract (terminal events are last).
             await self._drain_nudge_tasks(run_id)
 
+        agent_fn: Optional[Callable[[str, dict], Any]] = None
+        pool: Any = None
         if self._pool_agents:
             try:
                 # Size the warm pool to the run's fan-out cap so a fully-parallel
@@ -361,31 +363,24 @@ class WorkflowService:
                     max_workers=workers,
                     max_starting=min(workers, 2),
                 )
-
-                async def _teardown_pooled() -> None:
-                    # Safety net (drain is a no-op if pre_terminal already ran;
-                    # covers pre-exec failure paths), then release the pool.
-                    await self._drain_nudge_tasks(run_id)
-                    await pool.shutdown()
-
-                return WorkflowRunner(
-                    agent_fn=agent_fn,
-                    concurrency=self._concurrency,
-                    timeout_secs=ceiling,
-                    ports=ports,
-                    pre_terminal=_drain,
-                    on_complete=_teardown_pooled,
-                )
             except Exception:  # noqa: BLE001 - never let pooling break run start
+                agent_fn, pool = None, None
                 logger.warning(
                     "workflow agent pool init failed for %s; falling back to per-call sessions",
                     run_id,
                     exc_info=True,
                 )
-        agent_fn = build_agent_fn(self._sessions, run_id=run_id)
+        # Pooling off, or its init raised: cold-start a session per call instead.
+        # Keyed on ``agent_fn``, so a pool that yields no executor is not used.
+        if agent_fn is None:
+            agent_fn = build_agent_fn(self._sessions, run_id=run_id)
 
         async def _teardown() -> None:
+            # Safety net (drain is a no-op if pre_terminal already ran; covers
+            # pre-exec failure paths), then release the warm pool if there is one.
             await self._drain_nudge_tasks(run_id)
+            if pool is not None:
+                await pool.shutdown()
 
         return WorkflowRunner(
             agent_fn=agent_fn,
@@ -405,7 +400,7 @@ class WorkflowService:
     ) -> dict:
         """Turn a NL intent into a validated workflow script (or report errors).
 
-        ``on_progress(msg)`` (M6.7) streams human-readable authoring progress (each
+        ``on_progress(msg)`` streams human-readable authoring progress (each
         attempt, retries) so author-in-run can surface it live in the sidebar/chat.
         """
 
@@ -472,7 +467,7 @@ class WorkflowService:
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
     ) -> dict:
-        """Launch a background run that AUTHORS its own script from ``intent`` (M6.7).
+        """Launch a background run that AUTHORS its own script from ``intent``.
 
         Returns ``{run_id}`` immediately — authoring happens inside the run as a
         visible "Authoring" phase, so the slow model call(s) never block this call
@@ -560,7 +555,7 @@ class WorkflowService:
         timeout_secs: Optional[int] = None,
     ) -> dict:
         """Re-run a prior workflow, replaying agent calls BEFORE ``from_index`` from
-        cache and re-executing from there ("restart parts" at runtime, M6.6).
+        cache and re-executing from there ("restart parts" at runtime).
 
         ``from_index`` is the agent ``call_index`` to restart at: calls 0..from_index-1
         reuse the prior run's cached results, calls >= from_index re-call the model.
@@ -575,10 +570,9 @@ class WorkflowService:
         prior = self.registry.get(run_id)
         if prior is None:
             return {"error": f"no such run: {run_id}"}
-        edited = bool(
-            source is not None and source.strip() and source.strip() != (prior.source or "").strip()
-        )
-        run_source = source if (source is not None and source.strip()) else prior.source
+        stripped = (source or "").strip()
+        edited = bool(stripped and stripped != (prior.source or "").strip())
+        run_source = source if stripped else prior.source
         if not run_source:
             return {"error": f"run {run_id} has no stored source to re-run"}
         if edited:

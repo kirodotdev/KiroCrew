@@ -14,8 +14,8 @@ within ceilings, WITHOUT importing the runner or any heavy gateway code:
   run time (B3 runtime half) and there is no filesystem/socket capability (B7).
 
 The concrete ``WorkflowContext`` that wires ``dsl.parallel/pipeline``, agents,
-and the event stream is assembled by ``runner.py`` (next unit) using these parts;
-keeping them here lets the runner stay thin and keeps this layer dependency-light.
+and the event stream is assembled by ``runner.py`` from these parts; keeping them
+here lets the runner stay thin and keeps this layer dependency-light.
 
 Spec: ``docs/system-specs/modules/workflows.md``.
 """

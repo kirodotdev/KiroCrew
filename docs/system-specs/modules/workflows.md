@@ -804,12 +804,20 @@ The neighbouring suites carry the same rule for their own invariants: never rela
 `tests/workflows/malicious/` corpus, and never relax the layering without
 `test_workflows_architecture.py`.
 
-> Open question: several module docstrings and test docstrings cite a gate catalog
-> at `docs/system-specs/modules/workflow-gates.md` (and short-form "GATES.md")
-> using labels like A4, B5, C1, D1, F1, F2, G1. That file does not exist in this
-> repo, so the labels are unresolvable. Each gate's actual enforcement is the named
-> test, and this spec states the invariants directly rather than by label. Either
-> write the catalog or drop the label references from the code comments.
+The gate labels cited by the engine's docstrings and by the `test_workflows_*`
+docstrings (A4, B5, C1, D1, F1, F2, G1, …) are defined in
+[workflow-gates.md](workflow-gates.md), which names the test pinning each. A gate
+is closed by that test, not by either document: where a row and its test disagree,
+the test is right. This spec states the invariants directly rather than by label,
+so the catalog is a lookup table for the ids, not a second contract.
+
+> Open question: `M<n>` milestone markers (`M5`, `M6`, `M6.7`, …) still appear on
+> comments and docstrings across every workflow surface — the engine's tests, the
+> MCP tools, the validators, the gateway wiring, and the Workflows UI. They are
+> delivery markers, not gates, so nothing defines them, and
+> `grep -rnE '\bM(5|6)(\.[0-9]+)?\b'` is the live list rather than an inventory
+> kept here, which would go stale on the next edit. Clearing them belongs to each
+> file's own pass.
 
 ## Related
 

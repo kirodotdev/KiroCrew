@@ -1,13 +1,14 @@
-"""Dynamic workflows for KiroCrew — the FROZEN CONTRACT (no implementation yet).
+"""Dynamic workflows for Kiro Crew — the FROZEN CONTRACT.
 
-This package defines the interface-first freeze for the dynamic-workflows feature:
+This module defines the interface-first freeze for the dynamic-workflows feature:
 the ``WorkflowContext`` Protocol (the ``ctx`` DSL surface an authored workflow
-script calls) and the run-event types that drive the UI and future resume.
+script calls) and the run-event types that drive the UI and resume.
 
-Everything else — the runner, the UI builtin app, schema enforcement, and the
-KiroCrew-native primitive wrappers — is built in parallel against this contract.
-Changing a signature or event shape here is a re-freeze and must update the
-conformance test (GATE F2 in ``docs/system-specs/modules/workflow-gates.md``).
+The runner, schema enforcement, the Workflows UI app, and the wrappers for the
+ports native to Kiro Crew are all written against this contract — several of them
+without importing it, so nothing but the conformance test catches a drift.
+Changing a signature or event shape here is a re-freeze and must update that test
+(GATE F2 in ``docs/system-specs/modules/workflow-gates.md``).
 
 Spec: ``docs/system-specs/modules/workflows.md``.
 Gate catalog: ``docs/system-specs/modules/workflow-gates.md``.
@@ -165,7 +166,7 @@ class WorkflowContext(Protocol):
 
     budget: Budget
 
-    # --- KiroCrew-native (M4); None when not permitted for this run ---
+    # --- ports native to Kiro Crew; None when not permitted for this run ---
     cron: Optional[CronPort]
     memory: Optional[MemoryPort]
     learn: Optional[LearnPort]
@@ -205,7 +206,7 @@ EVENT_TYPES = (
 
 @dataclass
 class WorkflowEvent:
-    """One run event. Serialized to/from JSON only (BSC12 — no pickle).
+    """One run event. Serialized to/from JSON only — never pickle.
 
     ``data`` carries the event-specific fields documented in
     ``docs/system-specs/modules/workflows.md`` (run event stream table).

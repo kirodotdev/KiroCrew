@@ -71,7 +71,9 @@ async def _maybe_await(value: Any) -> Any:
 async def _call_stage(stage: Stage, prev: Any, item: Any, index: int) -> Any:
     arity = _positional_arity(stage)
     all_args = (prev, item, index)
-    args = all_args if arity is None else all_args[: max(0, min(arity, 3))]
+    # ``arity`` is None (accepts everything) or a non-negative count, and slicing
+    # past the end of the tuple already yields all three, so the count needs no clamp.
+    args = all_args if arity is None else all_args[:arity]
     return await _maybe_await(stage(*args))
 
 
@@ -103,12 +105,11 @@ async def parallel(thunks: Sequence[Thunk], *, limit: Optional[int] = None) -> l
     if not thunks:
         return []
 
-    if limit is None or limit <= 0:
-        return list(await asyncio.gather(*[_run_thunk(t) for t in thunks]))
-
-    sem = asyncio.Semaphore(limit)
+    sem = asyncio.Semaphore(limit) if (limit and limit > 0) else None
 
     async def _guarded(t: Thunk) -> Any:
+        if sem is None:
+            return await _run_thunk(t)
         async with sem:
             return await _run_thunk(t)
 

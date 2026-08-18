@@ -125,19 +125,20 @@ class RunHandle:
                 snap["agent_errors"] = _str_keyed(self.agent_errors)
         return snap
 
+    def _latest(self, event_type: str, key: str) -> str:
+        """``data[key]`` of the most recent event of ``event_type``, else ``""``."""
+        for e in reversed(self.events):
+            if e.type == event_type:
+                return e.data.get(key, "")
+        return ""
+
     def _current_phase(self) -> str:
         """Title of the most recent ``phase_started`` event (live progress)."""
-        for e in reversed(self.events):
-            if e.type == "phase_started":
-                return e.data.get("title", "")
-        return ""
+        return self._latest("phase_started", "title")
 
     def _last_log(self) -> str:
         """Most recent narrator ``log`` message (live progress)."""
-        for e in reversed(self.events):
-            if e.type == "log":
-                return e.data.get("message", "")
-        return ""
+        return self._latest("log", "message")
 
     # --- durable persistence: full JSON form for the on-disk store ---
     # Distinct from ``snapshot`` (a UI view): this round-trips the COMPLETE run so a

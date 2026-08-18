@@ -1,4 +1,4 @@
-"""Structured-output validation + bounded retry for ``ctx.agent(schema=...)`` (M2, C1–C3).
+"""Structured-output validation + bounded retry for ``ctx.agent(schema=...)`` (GATES C1–C3).
 
 The frozen contract says ``ctx.agent(prompt, schema=<JSON Schema>)`` returns a
 *validated dict* (or ``None`` after retries). KiroCrew's provider layer has no
@@ -98,7 +98,7 @@ def parse_json(text: str) -> Any:
 
     Handles the common cases of a fenced ```json block or surrounding prose by
     extracting the outermost ``{...}`` / ``[...]`` span. Never executes anything
-    (no ``eval`` — BSC12).
+    (no ``eval``).
     """
     if not isinstance(text, str):
         raise ValueError("model output is not text")

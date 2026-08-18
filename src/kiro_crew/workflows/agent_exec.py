@@ -1,4 +1,4 @@
-"""Production ``agent_fn`` for workflow ``ctx.agent()`` calls (M6.2).
+"""Production ``agent_fn`` for workflow ``ctx.agent()`` calls.
 
 The runner takes an injected ``agent_fn(prompt, opts) -> result`` so it stays
 testable with stubs and never spawns ``kiro-cli`` in tests. This module builds the

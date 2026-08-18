@@ -8,7 +8,7 @@ rerun / restart-subtree all keep working — and a successful run's script stays
 reusable.
 
 Layout: ``<workflows.dir>/runs/<run_id>.json`` — one self-contained file per run
-(``RunHandle.to_store_json``). JSON only (BSC12 — never pickle/marshal). Writes are
+(``RunHandle.to_store_json``). JSON only — never pickle/marshal. Writes are
 atomic (temp file + ``os.replace``) so a crash mid-write can't corrupt a run file.
 
 The store is a thin, side-effect-only persistence layer: the registry owns the
