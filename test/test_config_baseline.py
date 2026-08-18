@@ -75,6 +75,17 @@ class TestBaselineGenerator:
             SCHEMA_REGISTRY
         ), f"Expected {len(SCHEMA_REGISTRY)} entries, got {len(data['entries'])}"
 
+    def test_committed_baseline_matches_generator(self, tmp_path: str) -> None:
+        """The tracked artifact must not drift from the schema registry again."""
+        generated = _run_generator(tmp_path)
+        with open(os.path.join(_REPO_ROOT, "config-baseline.json"), encoding="utf-8") as f:
+            committed = json.load(f)
+
+        assert committed == generated, (
+            "config-baseline.json is stale; run "
+            "`python scripts/generate_config_baseline.py` and commit the result"
+        )
+
     def test_entries_have_expected_fields(self, tmp_path: str) -> None:
         """Each entry dict has all expected ConfigEntry fields."""
         data = _run_generator(tmp_path)
