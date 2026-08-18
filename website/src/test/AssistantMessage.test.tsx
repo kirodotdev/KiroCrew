@@ -200,7 +200,7 @@ describe('AssistantMessage', () => {
 
     fireEvent.click(planBtn)
 
-    // Plan button shows its Loader2 spinner (aria-hidden svg has no title, so
+    // Plan button shows its Loader spinner (aria-hidden svg has no title, so
     // assert via the disabled state + absence of the ClipboardList icon class
     // is fragile; instead assert both buttons are disabled (busyAction !== null)
     // while only the fork button still renders its GitFork icon svg).
@@ -209,9 +209,9 @@ describe('AssistantMessage', () => {
     // Fork icon (GitFork, lucide class "lucide-git-fork") must remain the fork
     // button's icon -- it must NOT have been swapped for a spinner.
     expect(forkBtn.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-loader')).not.toBeInTheDocument()
     // Plan button's icon IS the spinner while its action is in flight.
-    expect(planBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(planBtn.querySelector('svg.lucide-loader')).toBeInTheDocument()
     expect(planBtn.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
 
     await act(async () => { resolvePlan(); await Promise.resolve() })
@@ -232,8 +232,8 @@ describe('AssistantMessage', () => {
     expect(forkBtn).toBeDisabled()
     expect(planBtn).toBeDisabled()
     expect(planBtn.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
-    expect(planBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(planBtn.querySelector('svg.lucide-loader')).not.toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-loader')).toBeInTheDocument()
     expect(forkBtn.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
 
     await act(async () => { resolveFork(); await Promise.resolve() })

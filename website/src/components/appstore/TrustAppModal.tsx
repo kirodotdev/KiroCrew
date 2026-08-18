@@ -20,7 +20,7 @@
  */
 import { useCallback, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, Server, ShieldAlert, Terminal } from 'lucide-react'
+import { Code2, GitBranch, Server, ShieldAlert, Terminal, Loader } from 'lucide-react'
 
 import { api } from '../../api/client'
 import Modal from '../Modal'
@@ -270,7 +270,7 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
           </Btn>
           <Btn primary onClick={onConfirm} disabled={pending}>
             {pending
-              ? <><Loader2 size={14} className="animate-spin" /> {i18nT('components.appstore.trustAppModal.working')}</>
+              ? <><Loader size={14} className="animate-spin" /> {i18nT('components.appstore.trustAppModal.working')}</>
               : failed
                 ? <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
                 : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm')}</>}

@@ -14,11 +14,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../store'
 import { addNotification } from '../store/notificationsSlice'
 import { setPendingInput } from '../store/chatSlice'
-import {
-  Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
-  LoaderCircle, Check, Video, X,
-  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle, ShieldAlert,
-} from 'lucide-react'
+import { Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2, LoaderCircle, Check, Video, X, Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle, ShieldAlert, Loader } from 'lucide-react'
 import * as api from './devFleetApi'
 
 import { i18nT } from '../i18n/t'
@@ -1462,7 +1458,7 @@ export default function DevFleetPage() {
       out.push(<Btn key="open" onClick={() => act(w.name, 'open')}>{iconLabel(<ExternalLink size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.open'))}</Btn>)
     }
     const podBusy = busy[w.name + ':up'] || busy[w.name + ':down'] || busy[w.name + ':restart']
-    if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><LoaderCircle size={12} className="lucide-inline animate-spin" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
+    if (podBusy) out.push(<span key="podbusy" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--muted)' } as CSSProperties}><Loader size={12} className="lucide-inline animate-spin" /> {i18nT('pages.devFleetPage.pod')}{"\u2026"}</span>)
     out.push(<MenuBtn key="menu" items={[
       podsAvailable && w.has_dist && !w.running ? { label: i18nT('pages.devFleetPage.spin_up_pod'), icon: <Play size={13} className="lucide-inline" />, onClick: () => act(w.name, 'up') } : null,
       podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.restart_pod'), icon: <RefreshCw size={13} className="lucide-inline" />, onClick: () => act(w.name, 'restart') } : null,
@@ -1563,7 +1559,7 @@ export default function DevFleetPage() {
     const last = lastLine(pr.lines)
     return (
       <div style={{ gridColumn: '4 / -1', display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } as CSSProperties}>
-        <LoaderCircle size={12} className="lucide-inline animate-spin" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
+        <Loader size={12} className="lucide-inline animate-spin" style={{ color: 'var(--accent)', flexShrink: 0 } as CSSProperties} />
         <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i18nT('pages.devFleetPage.provisioning')}</span>
         {phase ? <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', background: 'var(--accent-subtle, rgba(99,102,241,0.14))', borderRadius: 5, padding: '1px 6px', flexShrink: 0 } as CSSProperties}>{phase}</span> : null}
         <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 } as CSSProperties} title={last}>{last || i18nT('pages.devFleetPage.starting')}</span>
@@ -1766,7 +1762,7 @@ export default function DevFleetPage() {
               <div key={nm} role="listitem" data-testid={`prune-item-${nm}`} data-status={it.status} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', borderBottom: '1px solid var(--border)' }}>
                 <span style={{ width: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                   {meta.kind === 'spin'
-                    ? <LoaderCircle size={12} className="lucide-inline animate-spin" style={{ color: 'var(--muted)' }} />
+                    ? <Loader size={12} className="lucide-inline animate-spin" style={{ color: 'var(--muted)' }} />
                     : meta.kind === 'done'
                       ? <Check size={13} style={{ color: 'var(--ok)' }} />
                       : meta.kind === 'failed'

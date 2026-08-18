@@ -8,9 +8,7 @@
 // Lifted out of the old NewReviewPanel, which is gone: the repo chooser it also
 // carried is now the rail, so keeping it would have meant two ways to pick a
 // repo and two PR lists.
-import {
-  ClipboardPaste, GitPullRequest, Link2, Loader2, RefreshCw, ScanSearch, Search,
-} from 'lucide-react'
+import { ClipboardPaste, GitPullRequest, Link2, RefreshCw, ScanSearch, Search, Loader } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { repoSlug, repoUrl, useSage, type ActiveRepo } from '../context'
@@ -29,7 +27,7 @@ function PrStateChip({ pr, reviewing }: { pr: RepoPr; reviewing?: boolean }) {
         title={i18nT('apps.codeReviewSage.components.prPickList.a_review_of_this_pull_request_is_running')}
         className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-accent-subtle text-accent whitespace-nowrap"
       >
-        <Loader2
+        <Loader
           size={9}
           className="animate-spin motion-reduce:animate-none"
           aria-hidden="true"
@@ -106,7 +104,7 @@ function PasteLinks() {
           className="inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-fg px-2.5 py-1 text-[12px] font-medium border-none cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default transition-colors"
         >
           {busy
-            ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" />
+            ? <Loader size={12} className="animate-spin motion-reduce:animate-none" />
             : <Link2 size={12} />}
           {i18nT('apps.codeReviewSage.components.prPickList.review_these')}
         </button>
@@ -223,7 +221,7 @@ export default function PrPickList() {
             className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-md bg-accent text-accent-fg px-2 py-1.5 text-[12px] font-medium border-none cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-default transition-colors"
           >
             {busy
-              ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" />
+              ? <Loader size={12} className="animate-spin motion-reduce:animate-none" />
               : <ScanSearch size={12} />}
             {/* One plural key, not three fragments: `picked.size || ''` renders
                 "Review  selected" with no count and a double space when nothing is

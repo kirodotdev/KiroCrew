@@ -5,7 +5,7 @@
 // it actually affects — "Concurrency: 5" means nothing without the sentence under
 // it.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Settings as SettingsIcon } from 'lucide-react'
+import { Settings as SettingsIcon, Loader } from 'lucide-react'
 
 import { sageApi } from '../api'
 import type { Settings } from '../lib/types'
@@ -65,7 +65,7 @@ export default function SettingsView() {
 
         {settingsQuery.isLoading && (
           <div className="mt-6 inline-flex items-center gap-2 text-[13px] text-muted">
-            <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+            <Loader size={14} className="animate-spin motion-reduce:animate-none" />
             {i18nT('apps.codeReviewSage.views.settingsView.loading_settings')}
           </div>
         )}

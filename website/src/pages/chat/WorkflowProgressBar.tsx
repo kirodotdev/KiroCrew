@@ -1,5 +1,5 @@
 import { useEffect, useMemo, memo, useState } from 'react'
-import { Workflow, Loader2, CheckCircle2, AlertCircle, ChevronDown } from 'lucide-react'
+import { Workflow, CheckCircle2, AlertCircle, ChevronDown, Loader } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { clearWorkflowRun } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -120,7 +120,7 @@ function ExpandableRunRow({
         className="w-full px-3 py-1.5 text-[13px] font-mono flex items-start gap-2 hover:bg-accent/5 transition-colors text-left"
       >
         <span className="shrink-0 mt-0.5">
-          {run.status === 'running' && <Loader2 size={14} className="text-accent animate-spin" />}
+          {run.status === 'running' && <Loader size={14} className="text-accent animate-spin" />}
           {run.status === 'finished' && <CheckCircle2 size={14} className="text-green-500" />}
           {(run.status === 'failed' || run.status === 'cancelled') && <AlertCircle size={14} className="text-danger" />}
         </span>

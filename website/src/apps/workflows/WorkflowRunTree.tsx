@@ -18,7 +18,7 @@
  * logic lives in ./runModel and is unit-tested.
  */
 import { memo, useMemo, useState } from 'react'
-import { CheckCircle2, XCircle, Loader2, ChevronRight, Workflow as WorkflowIcon } from 'lucide-react'
+import { CheckCircle2, XCircle, ChevronRight, Workflow as WorkflowIcon, Loader } from 'lucide-react'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
 
@@ -120,7 +120,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                 className={`text-muted shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
               />
               {ps === 'running' ? (
-                <Loader2 size={12} className="text-accent animate-spin shrink-0" />
+                <Loader size={12} className="text-accent animate-spin shrink-0" />
               ) : ps === 'ok' ? (
                 <CheckCircle2 size={12} className="text-green-500 shrink-0" />
               ) : (
@@ -142,7 +142,7 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                       className="flex items-center gap-2 px-3 py-1.5 text-[12px]"
                     >
                       {a.ok === undefined ? (
-                        <Loader2 size={12} className="text-accent animate-spin shrink-0" />
+                        <Loader size={12} className="text-accent animate-spin shrink-0" />
                       ) : a.ok ? (
                         <CheckCircle2 size={12} className="text-green-500 shrink-0" />
                       ) : (

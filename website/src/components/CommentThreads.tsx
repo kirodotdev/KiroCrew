@@ -9,10 +9,7 @@
 // Writes go through the gateway's owner-only mutations, which hold the provider
 // credential and re-verify that the thread belongs to this pull request.
 import { useMemo, useState } from 'react'
-import {
-  Check, ChevronDown, ChevronRight, CornerDownRight, Loader2, MessageSquare,
-  MessageSquarePlus, MessagesSquare, RotateCcw,
-} from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, CornerDownRight, MessageSquare, MessageSquarePlus, MessagesSquare, RotateCcw, Loader } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../api/client'
@@ -209,7 +206,7 @@ function ReplyBox({
           className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent-subtle px-2.5 py-1 text-[12.5px] font-medium text-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
         >
           {pending && (
-            <Loader2 size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            <Loader size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
           )}
           {label}
         </button>

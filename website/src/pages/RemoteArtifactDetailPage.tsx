@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, ExternalLink, GitFork, Loader2, User, MessageSquare } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ExternalLink, GitFork, User, MessageSquare, Loader } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -338,7 +338,7 @@ export default function RemoteArtifactDetailPage() {
               disabled={forking}
               title={i18nT('pages.remoteArtifactDetailPage.fork_into_your_local_artifacts_editable_copy')}
             >
-              {forking ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('pages.remoteArtifactDetailPage.fork')}
+              {forking ? <Loader size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('pages.remoteArtifactDetailPage.fork')}
             </Btn>
           </span>
         </div>

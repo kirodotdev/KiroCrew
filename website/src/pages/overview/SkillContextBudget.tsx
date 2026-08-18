@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Trans } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Gauge, Loader2 } from 'lucide-react'
+import { ArrowLeft, Gauge, Loader2, Loader } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, Btn, Toggle, EmptyState } from '../../components/ui'
 import {
@@ -329,7 +329,7 @@ function BudgetRow({
       {/* Column 4: toggle */}
       <div className="w-[42px] shrink-0 flex items-center justify-end">
         {pending ? (
-          <Loader2 size={14} className="animate-spin text-muted" />
+          <Loader size={14} className="animate-spin text-muted" />
         ) : toggleable ? (
           <Toggle
             checked={inject}

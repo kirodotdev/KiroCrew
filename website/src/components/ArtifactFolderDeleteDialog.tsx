@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Loader2, Trash2, FolderOutput } from 'lucide-react'
+import { Trash2, FolderOutput, Loader } from 'lucide-react'
 import Modal from './Modal'
 import { Btn } from './ui'
 import { folderSubtreeStats } from '../utils/artifactFolderTree'
@@ -51,7 +51,7 @@ export default function ArtifactFolderDeleteDialog({
           onClick={() => run(true)}
           className="justify-start text-left flex items-center gap-2"
         >
-          {busy === 'cascade' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+          {busy === 'cascade' ? <Loader size={14} className="animate-spin" /> : <Trash2 size={14} />}
           <span>
             <span className="block font-medium">{i18nT('components.artifactFolderDeleteDialog.delete_folder_and_all_contents')}</span>
             <span className="block text-[12px] opacity-80">
@@ -64,7 +64,7 @@ export default function ArtifactFolderDeleteDialog({
           onClick={() => run(false)}
           className="justify-start text-left flex items-center gap-2"
         >
-          {busy === 'keep' ? <Loader2 size={14} className="animate-spin" /> : <FolderOutput size={14} />}
+          {busy === 'keep' ? <Loader size={14} className="animate-spin" /> : <FolderOutput size={14} />}
           <span>
             <span className="block font-medium">{i18nT('components.artifactFolderDeleteDialog.delete_folder_only_keep_artifacts')}</span>
             <span className="block text-[12px] opacity-80">

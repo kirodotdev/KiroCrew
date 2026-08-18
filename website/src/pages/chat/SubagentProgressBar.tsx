@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight } from 'lucide-react'
+import { Bot, X, AlertTriangle, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Loader } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { api } from '../../api/client'
@@ -158,7 +158,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           <Bot size={14} className="text-accent shrink-0" />
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
-            <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
+            <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader size={12} className="animate-spin text-accent" /> {running}</span>
             {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
@@ -221,7 +221,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                     </span>
                     {a.retrying ? (
                       <span className="text-info flex items-center gap-1">
-                        <Loader2 size={11} className="shrink-0 animate-spin" />
+                        <Loader size={11} className="shrink-0 animate-spin" />
                         <span className="truncate">{i18nT('pages.chat.subagentProgressBar.backend_hiccup_retrying')}</span>
                       </span>
                     ) : a.stalled ? (

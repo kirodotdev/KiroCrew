@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { Download, RefreshCw, Sparkles, Loader } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
@@ -401,7 +401,7 @@ function InjectionRow({ skill }: { skill: Skill }) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {pending && <Loader2 size={14} className="animate-spin text-accent" />}
+          {pending && <Loader size={14} className="animate-spin text-accent" />}
           <Toggle
             checked={inject}
             onChange={flip}

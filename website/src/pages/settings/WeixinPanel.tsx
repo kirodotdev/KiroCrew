@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { QrCode, Loader2, Check, TriangleAlert, RefreshCw } from 'lucide-react'
+import { QrCode, Check, TriangleAlert, RefreshCw, Loader } from 'lucide-react'
 import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -302,7 +302,7 @@ export function WeixinPanel() {
               className="flex items-center gap-1.5 text-xs py-1.5 px-3.5 rounded-md border border-border bg-bg text-text cursor-pointer hover:bg-bg-hover disabled:opacity-60 disabled:cursor-default shrink-0"
             >
               {phase === 'starting' ? (
-                <Loader2 size={13} className="animate-spin" />
+                <Loader size={13} className="animate-spin" />
               ) : credentialSet ? (
                 <RefreshCw size={13} />
               ) : (
@@ -327,7 +327,7 @@ export function WeixinPanel() {
               <div className="text-[12px] text-muted">{i18nT('pages.settings.weixinPanel.waiting_for_a_code')}</div>
             )}
             <div className="flex items-center gap-1.5 text-[12px] text-muted">
-              <Loader2 size={12} className="animate-spin" />
+              <Loader size={12} className="animate-spin" />
               {phase === 'scanned' ? i18nT('pages.settings.weixinPanel.scanned_confirm_in_wechat') : i18nT('pages.settings.weixinPanel.waiting_for_scan')}
             </div>
           </div>

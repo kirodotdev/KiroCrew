@@ -1,4 +1,4 @@
-import { Loader2, Check, type LucideIcon } from 'lucide-react'
+import { Check, type LucideIcon, Loader } from 'lucide-react'
 import type { InvestigationRecord } from '../api'
 
 import { i18nT } from '../../../i18n/t'
@@ -59,7 +59,7 @@ export default function AgentSessionButton({
         }
       >
         {busy
-          ? <Loader2 size={13} className="animate-spin" />
+          ? <Loader size={13} className="animate-spin" />
           : <Icon size={13} />}
         {hasSession ? i18nT('apps.issueRadar.components.agentSessionButton.resume') : label}
       </button>

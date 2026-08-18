@@ -11,7 +11,7 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, Check, ExternalLink, Loader2, RefreshCw, AlertTriangle, ArrowLeft, KeyRound, Terminal } from 'lucide-react'
+import { Download, Check, ExternalLink, Loader2, RefreshCw, AlertTriangle, ArrowLeft, KeyRound, Terminal, Loader } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import { Btn } from './ui'
@@ -492,7 +492,7 @@ function ServerDetailPanel({
 
       {detailLoading ? (
         <div className="flex items-center gap-2 text-xs text-muted" role="status">
-          <Loader2 size={12} className="animate-spin" aria-hidden="true" /> {i18nT('components.mcpBrowserModal.loading_details')}
+          <Loader size={12} className="animate-spin" aria-hidden="true" /> {i18nT('components.mcpBrowserModal.loading_details')}
         </div>
       ) : (
         <>

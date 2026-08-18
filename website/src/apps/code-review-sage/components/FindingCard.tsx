@@ -29,7 +29,7 @@
 // renders through MarkdownRenderer; the `snippet` is code from a private diff and
 // renders verbatim in a monospace block — NEVER through the markdown renderer, so
 // it cannot be reinterpreted as markup.
-import { Check, Loader2, MessageSquarePlus } from 'lucide-react'
+import { Check, MessageSquarePlus, Loader } from 'lucide-react'
 import type { ReactNode } from 'react'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import type { Finding } from '../lib/types'
@@ -210,7 +210,7 @@ export default function FindingCard({
             </span>
           ) : posting ? (
             <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted">
-              <Loader2
+              <Loader
                 size={11}
                 className="animate-spin motion-reduce:animate-none"
                 aria-hidden="true"

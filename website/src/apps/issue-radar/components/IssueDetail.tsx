@@ -21,13 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
-import {
-  Copy, Check, RefreshCw, CircleDot, CircleCheck, CircleSlash, MessageSquare,
-  Tag, UserPlus, UserMinus, Pencil, Milestone as MilestoneIcon, GitPullRequest,
-  GitCommitHorizontal, Link2, Users, CalendarDays, Lock, Sparkles,
-  Plus, Loader2,
-  ThumbsUp, ThumbsDown, Laugh, PartyPopper, Frown, Heart, Rocket, Eye,
-} from 'lucide-react'
+import { Copy, Check, RefreshCw, CircleDot, CircleCheck, CircleSlash, MessageSquare, Tag, UserPlus, UserMinus, Pencil, Milestone as MilestoneIcon, GitPullRequest, GitCommitHorizontal, Link2, Users, CalendarDays, Lock, Sparkles, Plus, ThumbsUp, ThumbsDown, Laugh, PartyPopper, Frown, Heart, Rocket, Eye, Loader } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
 import { parseRepoRef } from '../lib/refLinks'
@@ -145,7 +139,7 @@ function AiSuggestions({
     return (
       <div className="mt-3 text-[11px] text-muted flex items-center gap-1.5">
         <Sparkles size={11} className="text-accent flex-shrink-0" />
-        <Loader2 size={11} className="animate-spin flex-shrink-0" /> {i18nT('apps.issueRadar.components.issueDetail.finding_suggestions')}
+        <Loader size={11} className="animate-spin flex-shrink-0" /> {i18nT('apps.issueRadar.components.issueDetail.finding_suggestions')}
       </div>
     )
   }
