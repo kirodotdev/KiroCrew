@@ -1936,32 +1936,65 @@ _BROWSER_CLI_PAGE_VERBS = frozenset(
         # Core / lifecycle. `close` is deliberately absent -- see the
         # exclusion note below. `detach` stays: it releases the session
         # without taking the operator's window with it.
-        "open", "attach", "detach", "goto", "resize",
+        "open",
+        "attach",
+        "detach",
+        "goto",
+        "resize",
         # Interaction
-        "type", "click", "dblclick", "fill", "drag", "drop", "hover",
-        "select", "check", "uncheck",
+        "type",
+        "click",
+        "dblclick",
+        "fill",
+        "drag",
+        "drop",
+        "hover",
+        "select",
+        "check",
+        "uncheck",
         # Reading the page
-        "snapshot", "find", "generate-locator", "highlight",
+        "snapshot",
+        "find",
+        "generate-locator",
+        "highlight",
         # Dialogs
-        "dialog-accept", "dialog-dismiss",
+        "dialog-accept",
+        "dialog-dismiss",
         # Navigation
-        "go-back", "go-forward", "reload",
+        "go-back",
+        "go-forward",
+        "reload",
         # Keyboard / mouse
-        "press", "keydown", "keyup",
-        "mousemove", "mousedown", "mouseup", "mousewheel",
+        "press",
+        "keydown",
+        "keyup",
+        "mousemove",
+        "mousedown",
+        "mouseup",
+        "mousewheel",
         # Capture (writes only into the service's own output dir)
-        "screenshot", "pdf",
+        "screenshot",
+        "pdf",
         # Tabs. `tab-close` is absent for the same reason as `close`.
-        "tab-list", "tab-new", "tab-select",
+        "tab-list",
+        "tab-new",
+        "tab-select",
         # Read-only request metadata: route-list prints the mock table
         # (pattern strings, no URLs) and config-print prints the session's
         # launch configuration.
         "route-list",
         # DevTools / diagnostics
-        "console", "tracing-start", "tracing-stop",
-        "video-stop", "video-chapter", "video-show-actions",
+        "console",
+        "tracing-start",
+        "tracing-stop",
+        "video-stop",
+        "video-chapter",
+        "video-show-actions",
         "video-hide-actions",
-        "show", "pause-at", "resume", "step-over",
+        "show",
+        "pause-at",
+        "resume",
+        "step-over",
         # Session management. The listing only; `close-all` / `kill-all`
         # are absent -- they are the widest-blast-radius verbs the CLI has.
         "list",
@@ -2073,13 +2106,25 @@ _BROWSER_CLI_SAFE_FLAGS = frozenset(
         # so the named-session form this repo's own prompt.md tells the agent to
         # use (`--s=chrome`) fell through to interactive approval on EVERY
         # command after `attach` -- the documented primary workflow.
-        "-s", "--s", "--session",
-        "--json", "--raw", "--help", "--version",
-        "--headed", "--browser", "--persistent",
-        "--extension", "--cdp", "--endpoint",
-        "--domain", "--hide",
+        "-s",
+        "--s",
+        "--session",
+        "--json",
+        "--raw",
+        "--help",
+        "--version",
+        "--headed",
+        "--browser",
+        "--persistent",
+        "--extension",
+        "--cdp",
+        "--endpoint",
+        "--domain",
+        "--hide",
         # Shape-only capture options: they change the image, not its location.
-        "--type", "--full-page", "--hires",
+        "--type",
+        "--full-page",
+        "--hires",
     }
 )
 
@@ -4801,11 +4846,7 @@ async def _run_chat(
         # stream, the assistant reply and the stream teardown together. Disconnect
         # is the user saying "not into this conversation", which applies to the
         # answer as much as to the echo — so it is one gate, not four.
-        if (
-            state.slack_client
-            and not is_slash
-            and not slack_mirror_is_paused(state, session_key)
-        ):
+        if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
                 try:
@@ -5349,9 +5390,7 @@ async def _run_chat(
                                 # this same tool_call_id (which no longer
                                 # resolves _dir_tool).
                                 _pending_dir_tool.pop(event.tool_call_id, None)
-                                _out = _redact_tool_field(
-                                    session_directive.strip_marker(_out)
-                                )
+                                _out = _redact_tool_field(session_directive.strip_marker(_out))
                                 _dir_consumed_out[event.tool_call_id] = _out
                             else:
                                 # The gate already AUTHENTICATED this as a
@@ -5680,9 +5719,10 @@ async def _run_chat(
                 # parent turn. Deny-by-default (CWE-1188): with no active crew this
                 # predicate is False no matter the trust flags, so the tool falls
                 # through to the normal interactive/trust gate below.
-                if _native_crew_should_auto_approve(
-                    _native_tracker, state, slot
-                ) and not _child_low_fidelity:
+                if (
+                    _native_crew_should_auto_approve(_native_tracker, state, slot)
+                    and not _child_low_fidelity
+                ):
                     logger.debug(
                         "Native crew auto-approve: %r (request_id=%s)",
                         _safe_native_crew_debug_title(event.title),
@@ -6066,7 +6106,11 @@ async def _run_chat(
                             slot._slack_thread_ts,
                             event.request_id,
                             session_key,
-                            f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title,
+                            (
+                                f"{_child_lf_warning}{event.title}"
+                                if _child_lf_warning
+                                else event.title
+                            ),
                             event.tool_input or "",
                         )
                         if _slack_approval_ts is None:
@@ -6424,11 +6468,7 @@ async def _run_chat(
                 # them here would leave the user watching a child tool fail
                 # with no explanation. When the card cannot exist yet, persist
                 # the explanation as a slot notice instead.
-                if (
-                    _sid not in _native_tracker
-                    and event.text
-                    and event.text.startswith("⛔")
-                ):
+                if _sid not in _native_tracker and event.text and event.text.startswith("⛔"):
                     _txt, _ = redact_exfiltration_urls(event.text)
                     _txt, _ = redact_credentials(_txt)
                     slot.append("notice", _txt, "msg msg-info")
@@ -6659,9 +6699,7 @@ async def _run_chat(
                 # recovery cycle); the emitted flag dedups the metric and
                 # blocks a later "recovered" mis-emit.
                 if not slot._tool_stall_exhausted_emitted:
-                    _emit_recovery_outcome(
-                        "tool_stall", "exhausted", slot._tool_stall_retries
-                    )
+                    _emit_recovery_outcome("tool_stall", "exhausted", slot._tool_stall_retries)
                     slot._tool_stall_exhausted_emitted = True
                 _emit_stall("Session stuck — please start a new chat.")
             else:
@@ -7009,9 +7047,7 @@ async def _run_chat(
                         "stale_recover", "recovered", slot._stale_recovery_retries
                     )
                 if slot._tool_stall_retries > 0 and not slot._tool_stall_exhausted_emitted:
-                    _emit_recovery_outcome(
-                        "tool_stall", "recovered", slot._tool_stall_retries
-                    )
+                    _emit_recovery_outcome("tool_stall", "recovered", slot._tool_stall_retries)
             slot._empty_response_retries = 0
             slot._prompt_busy_retries = 0
             slot._acp_pipe_death_retries = 0
@@ -7109,7 +7145,8 @@ async def _run_chat(
             # reporting "idle" resets _stop_state before this guard reads
             # _stopping, but _stop_generation counts stop INITIATIONS and never
             # rewinds, so an entry-vs-now delta is the durable signal.
-            slot._stop_generation == _stop_gen_at_entry
+            slot._stop_generation
+            == _stop_gen_at_entry
         ):
             _hook_reasons = parse_hook_continuations(_stop_hook_out)
             # No block decision -> nothing to queue; skip the cap load and
@@ -7122,9 +7159,12 @@ async def _run_chat(
                 # Config loading yields to the event loop. Recheck the Stop
                 # boundary before mutating the queue so a Stop that lands during
                 # that await cannot be bypassed by the stale outer guard.
-                if not should_queue_hook_continuation(
-                    slot._stopping, needs_session_reset, _stop_reason
-                ) or slot._stop_generation != _stop_gen_at_entry:
+                if (
+                    not should_queue_hook_continuation(
+                        slot._stopping, needs_session_reset, _stop_reason
+                    )
+                    or slot._stop_generation != _stop_gen_at_entry
+                ):
                     _hook_reasons = []
             else:
                 _nudge_cap = 0
@@ -7222,9 +7262,7 @@ async def _run_chat(
                     # from the thread would name whoever owns the thread at mint
                     # time, so a relink landing mid-turn would stamp the control
                     # with a conversation that never asked the question.
-                    _mirror_token = await asyncio.to_thread(
-                        mint_options_token, state, session_key
-                    )
+                    _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
                     _mirror_blocks = build_options_blocks(
                         _mirror_options, staleness_token=_mirror_token
                     )

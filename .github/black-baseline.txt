@@ -245,7 +245,6 @@ src/kiro_crew/dashboard/chat_mirror.py
 src/kiro_crew/dashboard/chat_nav.py
 src/kiro_crew/dashboard/chat_orchestrator.py
 src/kiro_crew/dashboard/chat_persistence.py
-src/kiro_crew/dashboard/chat_runner.py
 src/kiro_crew/dashboard/chat_slack.py
 src/kiro_crew/dashboard/chat_title.py
 src/kiro_crew/dashboard/chat_utils.py
