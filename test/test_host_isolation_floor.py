@@ -474,6 +474,15 @@ class TestTheTempResidueReport:
         then it protects nothing."""
         assert _root._tmp_residue(tmp_path / "does-not-exist", per_test=False) == []
 
+    def test_directory_residue_is_distinguished_from_single_files(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        (tmp_path / "tree").mkdir()
+        (tmp_path / "one.tmp").write_text("x")
+
+        leaked = _root._tmp_residue(tmp_path, per_test=False)
+        assert _root._tmp_residue_directories(tmp_path, leaked) == ["tree"]
+
 
 # ── the process working directory ──────────────────────────────────────────
 
