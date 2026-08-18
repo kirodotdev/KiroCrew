@@ -1803,9 +1803,14 @@ def token_auth_middleware(
                 # If X-Internal-Secret header is present, validate it first
                 # (defense-in-depth: wrong secret = deny, even with valid cookie)
                 if "X-Internal-Secret" in request.headers:
+                    _provided_secret = request.headers["X-Internal-Secret"]
                     if not internal_secret or not hmac.compare_digest(
-                        internal_secret, request.headers["X-Internal-Secret"]
+                        internal_secret, _provided_secret
                     ):
+                        _detail = (
+                            "wrong secret (non-loopback mixed) "
+                            f"({_credential_mismatch_detail(internal_secret, _provided_secret)})"
+                        )
                         _sel = _sel_fn()
                         _sel.log_api_access(
                             caller=_caller,
@@ -1813,11 +1818,9 @@ def token_auth_middleware(
                             outcome="denied",
                             source="token_auth",
                             resources=path,
-                            error="wrong secret (non-loopback mixed)",
+                            error=_detail,
                         )
-                        _log_auth(
-                            request, "internal", "denied", "wrong secret (non-loopback mixed)"
-                        )
+                        _log_auth(request, "internal", "denied", _detail)
                         return _deny(request, "Forbidden")
                 _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
                 if not _valid:
