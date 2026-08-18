@@ -295,7 +295,7 @@ graph TB
   says the approval went unanswered and to send the message again.
 - **Circuit breaker**: five consecutive failures on one session force a reset.
 - **Auto-compaction** at `session.autocompact_pct` of the context window
-  (default 90%).
+  (default 70%).
 
 ### Lifecycle by caller
 

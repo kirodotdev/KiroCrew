@@ -514,7 +514,7 @@ soft-cancel success) gates the one-shot re-injection.
 
 1. New session → full context injected (memory + skills + lessons + last 20 messages)
 2. Messages saved to JSONL with provenance after each response
-3. Context ≥ configured threshold (`session.autocompact_pct`, default 90%) → compaction via kiro-cli `/compact` (fire-and-forget)
+3. Context ≥ configured threshold (`session.autocompact_pct`, default 70%) → compaction via kiro-cli `/compact` (fire-and-forget)
 4. Session expires (30min idle) → provider killed
 5. User returns → new session with history re-injected
 6. After 10+ messages → background consolidation → structured memory updated

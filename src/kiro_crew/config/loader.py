@@ -228,6 +228,20 @@ _warned_env_keys: set[str] = set()
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# Auto-compaction threshold, as a percentage of the context window. Named
+# because two code paths need it — the dataclass field default (used only when
+# there is no config file) and the dict-load fallback in ``load()`` (used when
+# a config file omits the key). Restating the number in both is how
+# ``pool_size`` came to have a field default of 0 and a load fallback of 2.
+DEFAULT_AUTOCOMPACT_PCT = 70.0
+# Margin BELOW the configured compaction threshold at which the "context is
+# getting large" warning fires. A margin rather than an absolute percentage
+# because both consumers test compaction FIRST in an if/elif chain
+# (``session.check_context_usage`` and the ``cli_chat`` REPL loop), so an
+# absolute warn level at or above the configured threshold makes the warning arm
+# unreachable and the early signal disappears for whoever did not change the
+# default. Kept here rather than in either consumer so the two cannot drift.
+CONTEXT_WARN_MARGIN_PCT = 20.0
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
 )
@@ -1816,7 +1830,7 @@ class SessionConfig:
         ),
     )
     autocompact_pct: float = field(
-        default=90.0,
+        default=DEFAULT_AUTOCOMPACT_PCT,
         metadata=_meta(
             "Auto-Compact Threshold",
             "Context usage percentage at which auto-compaction triggers (5-90).",
@@ -6447,8 +6461,8 @@ class KiroCrewConfig:
                     session_data.get("empty_response_auto_continue", True)
                 ),
                 autocompact_pct=_safe_float(
-                    session_data.get("autocompact_pct", 90.0),
-                    90.0,
+                    session_data.get("autocompact_pct", DEFAULT_AUTOCOMPACT_PCT),
+                    DEFAULT_AUTOCOMPACT_PCT,
                     lo=AUTOCOMPACT_PCT_MIN,
                     hi=AUTOCOMPACT_PCT_MAX,
                 ),

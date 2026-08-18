@@ -777,7 +777,7 @@
       "defaultValue": {
         "timeout_secs": 3600,
         "empty_response_auto_continue": true,
-        "autocompact_pct": 90.0,
+        "autocompact_pct": 70.0,
         "pool_size": 0,
         "pool_agent": "",
         "pool_ttl_secs": 1800,
@@ -825,7 +825,7 @@
       "help": "Context usage percentage at which auto-compaction triggers (5-90).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 90.0
+      "defaultValue": 70.0
     },
     {
       "path": "session.pool_size",

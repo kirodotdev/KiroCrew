@@ -105,6 +105,7 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
+    CONTEXT_WARN_MARGIN_PCT,
     POOL_SIZE_MAX,
     build_provider_factory,
     default_project_dir,
@@ -359,9 +360,19 @@ BACKGROUND_AGENT = "kirocrew-lite"
 HEARTBEAT_KEY = "_hb"
 
 
-# Context usage thresholds
-_CONTEXT_WARN_PCT = 70.0
-_CONTEXT_COMPACT_PCT = 80.0
+# Context usage thresholds.
+#
+# The compaction threshold itself is NOT here — it is per-install config
+# (``cfg.session.autocompact_pct``, default ``DEFAULT_AUTOCOMPACT_PCT``), read
+# at ``check_context_usage``. The warning fires one
+# ``CONTEXT_WARN_MARGIN_PCT`` below whatever that threshold is; see that
+# constant in ``config.loader`` for why it is relative rather than absolute.
+#
+# Cost is why the compaction default sits below the 90.0 validation ceiling.
+# Measured on a 7-day sample (808 turns), credits scale ~linearly with context
+# at ~7 per 100k tokens up to about 90% of the window and then roughly double,
+# so turns taken near the ceiling are the most expensive ones a session ever
+# runs, and firing compaction there means paying that rate repeatedly first.
 
 # Headroom ADDED to the outer ``asyncio.wait_for`` cap around the kiro-cli
 # in-place compact, so the inner status wait can spend the FULL remaining
@@ -3242,6 +3253,11 @@ class SessionManager:
             del self._compact_pending_verdict[key]
             self._judge_compact_effect(key, baseline, pct)
 
+        # Warn one margin below the configured action point. Guarded as > 0 so a
+        # very low configured threshold cannot push the warn level negative and
+        # make the warning arm swallow the ordinary info arm below it.
+        _warn_at = self._cfg.session.autocompact_pct - CONTEXT_WARN_MARGIN_PCT
+
         # CC per_session handles its own compaction natively — skip KiroCrew's
         _is_cc_persistent = (
             ClaudeCodeProvider is not None
@@ -3271,7 +3287,7 @@ class SessionManager:
                 )
             else:
                 self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
-        elif pct >= _CONTEXT_WARN_PCT:
+        elif _warn_at > 0 and pct >= _warn_at:
             logger.warning("Session %s context at %.0f%%", key, pct)
         elif pct > 0:
             logger.info("Session %s context at %.0f%%", key, pct)
