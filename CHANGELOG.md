@@ -4,6 +4,21 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **An agent can no longer edit the source of an installed app.**
+  `~/.kiro/crew/app-sources/{name}` — the persistent checkout every installed
+  app executes from — was writable by ordinary agent file-edit tools for its
+  entire lifetime, so a prompt-injected session could modify an app's code and
+  have it run with that app's privileges on the app's next launch. Nothing
+  downstream caught it: unlike `config.json`, whose out-of-range values the
+  loader clamps at load time, a modified checkout is simply run, and the
+  recorded install provenance still reports the pinned commit because an agent
+  write dirties the worktree without moving `HEAD`. The checkout root is now in
+  the write-protection tier, covering every file under every checkout on both
+  data-home spellings. Reads are unchanged and deliberately so — the dashboard
+  file viewer, knowledge indexing, and anyone debugging an app all read app
+  source — and the gateway's own installer never routed through this gate, so
+  installing, building and pruning apps still work.
+
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
   `kiro-cli` child holds its credential for the life of the session, so an
