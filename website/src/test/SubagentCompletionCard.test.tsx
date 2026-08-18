@@ -485,7 +485,7 @@ describe('card containment', () => {
     expect(body.classList.contains('overflow-x-hidden')).toBe(true)
   })
 
-  it('makes the scroll region keyboard-reachable and named', () => {
+  it('makes the scroll region keyboard-reachable with a visible focus ring', () => {
     // A failure digest opens expanded, so a keyboard user meets this scroller
     // without asking for it; unfocusable, it cannot be scrolled at all.
     renderWithProviders(<SubagentCompletionCard message={msg(WAVE)} />, { store: store() })
@@ -495,5 +495,14 @@ describe('card containment', () => {
     const labelId = body.getAttribute('aria-labelledby')
     expect(labelId).toBeTruthy()
     expect(document.getElementById(labelId!)?.textContent).toContain('9 of 9 subagents finished')
+    // Focusable is not enough: pre-fix the only indicator was the UA
+    // :focus-visible outline, which the card root's overflow-hidden clips to
+    // a hairline on the top edge alone — an INSET ring is the one indicator
+    // its own clipping cannot swallow (WCAG 2.4.7). Each class is pinned
+    // literally — dropping any one silently removes the indicator.
+    expect(body.classList.contains('focus-visible:outline-none')).toBe(true)
+    expect(body.classList.contains('focus-visible:ring-2')).toBe(true)
+    expect(body.classList.contains('focus-visible:ring-inset')).toBe(true)
+    expect(body.classList.contains('focus-visible:ring-accent')).toBe(true)
   })
 })

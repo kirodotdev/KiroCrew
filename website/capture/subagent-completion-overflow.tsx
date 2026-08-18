@@ -66,6 +66,21 @@ if (scene === 'before') {
   document.head.appendChild(style)
 }
 
+// `ring=off` = the pre-#4408 focus state: no author ring (the box-shadow half
+// is suppressed), UA :focus-visible outline RESTORED — the explicit
+// restoration is required because the fix's own `focus-visible:outline-none`
+// compiles to `outline: 2px solid transparent`, which the old markup never
+// had. The card root's overflow-hidden clips the restored outward outline to
+// a hairline on the top edge alone, which IS the pre-fix rendering.
+// Driven by capture-subagent-focus-ring.mjs.
+if (params.get('ring') === 'off') {
+  const style = document.createElement('style')
+  style.textContent =
+    '[data-testid="subagent-completion-body"]:focus-visible' +
+    '{ box-shadow: none !important; outline: -webkit-focus-ring-color auto 1px !important; }'
+  document.head.appendChild(style)
+}
+
 const msg = (content: string, meta?: Record<string, unknown>): ChatMessage =>
   ({ role: 'subagent', content, cls: '', ts: '2026-08-18T00:00:00.000Z', meta })
 

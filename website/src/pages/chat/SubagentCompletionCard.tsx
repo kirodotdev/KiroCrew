@@ -242,8 +242,12 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
         // tabIndex + region role: a scroll region with no focusable descendant
         // is unreachable to a keyboard, and a failure digest opens expanded, so
         // this is a scroller a keyboard user meets without asking for it.
+        // The ring is INSET because the card root's overflow-hidden clips an
+        // outward ring where the body is flush with the card (left/right/
+        // bottom) — pre-fix, the only indicator was the UA :focus-visible
+        // outline reduced to a hairline on the top edge alone (WCAG 2.4.7).
         <div
-          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden"
+          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
           data-testid="subagent-completion-body"
           role="region"
           aria-labelledby={headlineId}
