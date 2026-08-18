@@ -1227,6 +1227,36 @@ interface RevealBlockingFilter {
   hides: (slot: Slot) => boolean
   clear: (slot: Slot) => void
 }
+/** One sidebar filter dimension, declared exactly once (in the component's
+ *  `filterDimensions` memo) and consumed by the three sites that must agree on
+ *  which filters exist: `filteredSlots` (which rows render at all),
+ *  `listNarrowed` (is anything filtering right now), and
+ *  `revealBlockingFilters` (does THIS row fail an active filter). Every field
+ *  is required, so adding a dimension forces a decision for each consumer —
+ *  `null` records "deliberately not consulted here", never an omission. */
+interface FilterDimension {
+  /** Row predicate applied by `filteredSlots`. `null` = this dimension does
+   *  not filter the flat slot list (the folder filter drops whole folder
+   *  blocks/lanes at the render sites instead of filtering rows). */
+  filtersRow: ((slot: Slot) => boolean) | null
+  /** Is this dimension narrowing the list right now? Consulted by
+   *  `listNarrowed`. `null` = deliberately excluded from that question (the
+   *  folder filter: counting it would strand every folder as an empty
+   *  "New chat in <name>" shell while one is hidden). */
+  narrows: (() => boolean) | null
+  /** Does this dimension hide THIS row from a reveal? `excluded` reports list
+   *  membership, for dimensions (search, status) that rank against backend
+   *  state a single row cannot answer for alone. Non-nullable on purpose,
+   *  together with `clear`: every dimension can hide a reveal target today.
+   *  If one ever genuinely cannot, make the PAIR nullable in one move —
+   *  never stub `hides: () => false` beside a real `clear` (or a real
+   *  `hides` beside a no-op `clear`, which is silent reveal breakage). */
+  hides: (slot: Slot, excluded: (slot: Slot) => boolean) => boolean
+  /** Drop this dimension so the reveal target renders. Receives the row
+   *  because the folder filter un-hides that row's own ancestor chain rather
+   *  than clearing globally. */
+  clear: (slot: Slot) => void
+}
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
@@ -2126,41 +2156,6 @@ function ChatSidebar({
     [foldersWithActiveSubtree],
   )
 
-  // State and in the memo deps on purpose, not a ref: a frozen run caches its
-  // stale list against new deps, so clearing a ref would invalidate nothing.
-  const [dragFrozen, setDragFrozen] = useState(false)
-  const frozenSlotsRef = useRef<Slot[]>([])
-
-  const filteredSlots = useMemo(() => {
-    if (dragFrozen) return frozenSlotsRef.current
-    const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
-    // Active content search: order by the backend's relevance ranking instead
-    // of the sidebar sort (mirrors the Older Sessions lane and the command
-    // palette). Pinning stays a reachability promise for browsing, not a
-    // ranking hint inside explicit search results.
-    const searchRanked = slotFilter.trim().length >= SEARCH_MIN_CHARS ? slotSearchRanks : null
-    const next = slots
-      .filter(slot => {
-        if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot))) return false
-        // Unlike the folder filter this does NOT go inert while searching: it is a
-        // session property, so it behaves like the Unread/Pinned filters above.
-        if (activeTagIds.size > 0 && !(slot.tags ?? []).some(id => activeTagIds.has(id))) return false
-        if (!slotFilter) return true
-        // Scoped to title: that is the field a rename mutates, and widening it to
-        // key/agent appends rows the backend's content search deliberately excluded.
-        const titleMatch = (slot.title || '').toLowerCase().includes(slotFilter.toLowerCase())
-        if (searchRanked) return searchRanked.has(slot.key) || titleMatch
-        return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
-      })
-      .sort((a, b) => searchRanked
-        ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
-        : comparePinnedThenSort(a, b, sortKey, pinned))
-    frozenSlotsRef.current = next
-    return next
-  },
-    [slots, _derivedLookup, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters, activeTagIds, dragFrozen]
-  )
-
   // Folder IDs whose sessions are excluded from the flat lane because the
   // folder — or any ancestor — is unchecked in the filter menu's folder list.
   // Unchecking a parent hides its whole subtree, matching what the user sees
@@ -2182,42 +2177,76 @@ function ChatSidebar({
     return hidden
   }, [folders, filterHiddenFolders])
 
-  // Which lane the sidebar is actually rendering. Mirrors the render branches
-  // below exactly: flat wins when there are folders to flatten, otherwise the
-  // tag-column board when columns exist, otherwise the folder tree. The folder
-  // filter applies to the flat lane and the tree, NOT to the board.
-  const flatLaneActive = flatView && folders.length > 0
-  const boardLaneActive = !flatLaneActive && orderedColumns.length > 0
+  // The backend relevance ranking, live only while the query is long enough to
+  // have been sent. Shared by the search dimension's row predicate and by
+  // filteredSlots' sort, so the two cannot disagree about when ranking is on.
+  const searchRanked = useMemo(
+    () => (slotFilter.trim().length >= SEARCH_MIN_CHARS ? slotSearchRanks : null),
+    [slotFilter, slotSearchRanks],
+  )
 
-  // The folder filter goes inert while searching, in BOTH views: a query must
-  // reach every match, so an unchecked folder can never become a search dead
-  // end. Everything that consults the filter routes through this flag.
-  const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
-
-  // Is the list narrowed at all? A new filter dimension must be added here too,
-  // or the folder lane strands its folders as empty "New chat in <name>" shells.
-  const listNarrowed = Boolean(slotFilter) || activeFilters.size > 0 || activeTagIds.size > 0
-
-  /** Every filter that can hide a reveal target, registered ONCE: the reveal
-   *  effect iterates this list instead of naming the dimensions by hand, so a
-   *  new filter opts in here and nowhere else. Deliberately NOT `listNarrowed`
-   *  above — that asks "is anything filtering?", this asks "does THIS row fail a
-   *  filter?", and the two lists differ (the folder filter is in this one only,
-   *  and tags enter raw here but resolved there). */
-  const revealBlockingFilters = useMemo<RevealBlockingFilter[]>(() => {
-    // Search and status defer to list membership: both rank against backend
-    // state (relevance, unread) that a single row cannot answer for alone.
-    const excluded = (slot: Slot) => !filteredSlots.some(s => s.key === slot.key)
+  /**
+   * THE single declaration of every filter dimension. `filteredSlots`,
+   * `listNarrowed`, and `revealBlockingFilters` all derive from this list, so
+   * adding a dimension is one entry here — the required fields force a
+   * decision per consumer, and THOSE THREE consumers cannot drift because
+   * none of them enumerates dimensions itself any more. The guard's limit:
+   * this declaration cannot see filtering done at the render sites (the
+   * folder dimension works that way), so a dimension that acts there must
+   * still answer `narrows` for real — writing `null` while narrowing the
+   * visible list at a render site re-creates the under-count this exists to
+   * prevent.
+   *
+   * The consumers legitimately answer different questions, and the per-field
+   * differences below are deliberate, not drift:
+   * - the folder dimension filters no rows (`filtersRow: null` — it drops
+   *   whole folder blocks/lanes at the render sites) and never narrows
+   *   (`narrows: null` — see the field docs on `FilterDimension`);
+   * - tags narrow by the RESOLVED `activeTagIds` but hide by the raw
+   *   `filterTagIds`, so a reveal arriving while the tag vocabulary is still
+   *   loading (when nothing is filtered yet) still clears the tag filter
+   *   instead of leaving the row to be re-hidden mid-flight.
+   *
+   * Bundling every consumer's state into one memo couples them: a change to
+   * reveal-only state (`filterTagIds`, `filterHiddenSubtree`, `folders`)
+   * re-derives `filteredSlots` — one extra filter+sort with content-identical
+   * rows. Accepted: no effect keys on `filteredSlots`, and its downstream
+   * memos already depend on that state themselves.
+   */
+  const filterDimensions = useMemo<FilterDimension[]>(() => {
+    const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
     return [
       {
+        // Tags. Unlike the folder filter this does NOT go inert while
+        // searching: it is a session property, so it behaves like the
+        // Unread/Pinned status chips.
+        filtersRow: slot => activeTagIds.size === 0 || (slot.tags ?? []).some(id => activeTagIds.has(id)),
+        narrows: () => activeTagIds.size > 0,
         // Raw `filterTagIds`, not resolved `activeTagIds`, and not behind
         // `excluded`: mid-flight nothing is filtered, so the row is re-hidden.
         hides: slot => filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
         clear: () => clearTagFilter(),
       },
-      { hides: slot => Boolean(slotFilter) && excluded(slot), clear: () => setSlotFilter('') },
       {
-        hides: slot => activeFilters.size > 0 && excluded(slot),
+        // Text search. Scoped to title while the backend ranking is live: that
+        // is the field a rename mutates, and widening it to key/agent appends
+        // rows the backend's content search deliberately excluded.
+        filtersRow: slot => {
+          if (!slotFilter) return true
+          const titleMatch = (slot.title || '').toLowerCase().includes(slotFilter.toLowerCase())
+          if (searchRanked) return searchRanked.has(slot.key) || titleMatch
+          return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
+        },
+        narrows: () => Boolean(slotFilter),
+        hides: (slot, excluded) => Boolean(slotFilter) && excluded(slot),
+        clear: () => setSlotFilter(''),
+      },
+      {
+        // Status chips (SESSION_FILTERS). Active chips OR together: a row
+        // passes when any active chip's predicate matches it.
+        filtersRow: slot => activeFilterDefs.length === 0 || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
+        narrows: () => activeFilters.size > 0,
+        hides: (slot, excluded) => activeFilters.size > 0 && excluded(slot),
         clear: () => {
           // Persisted like toggleFilter: remount re-reads the stored '1' and
           // would silently restore the filter that hides this row.
@@ -2228,6 +2257,12 @@ function ChatSidebar({
         },
       },
       {
+        // Folder filter. It filters no rows and never narrows (see the memo
+        // doc above). The folder-EXPANSION step lives outside the reveal
+        // registry on purpose: it runs whether or not this filter was hiding
+        // anything.
+        filtersRow: null,
+        narrows: null,
         hides: slot => !!slot.folder_id && filterHiddenSubtree.has(slot.folder_id),
         clear: slot => {
           // Un-hide the target's ancestor chain (persisted, mirroring
@@ -2248,7 +2283,65 @@ function ChatSidebar({
         },
       },
     ]
-  }, [filteredSlots, filterTagIds, clearTagFilter, slotFilter, activeFilters, filterHiddenSubtree, folders])
+  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, searchRanked, _derivedLookup, filterHiddenSubtree, folders])
+
+  // State and in the memo deps on purpose, not a ref: a frozen run caches its
+  // stale list against new deps, so clearing a ref would invalidate nothing.
+  const [dragFrozen, setDragFrozen] = useState(false)
+  const frozenSlotsRef = useRef<Slot[]>([])
+
+  const filteredSlots = useMemo(() => {
+    if (dragFrozen) return frozenSlotsRef.current
+    const next = slots
+      // Derived from filterDimensions — the single declaration above — so this
+      // site cannot hold a filter dimension the other consumers miss.
+      .filter(slot => filterDimensions.every(d => d.filtersRow === null || d.filtersRow(slot)))
+      // Active content search: order by the backend's relevance ranking instead
+      // of the sidebar sort (mirrors the Older Sessions lane and the command
+      // palette). Pinning stays a reachability promise for browsing, not a
+      // ranking hint inside explicit search results.
+      .sort((a, b) => searchRanked
+        ? (searchRanked.get(a.key) ?? Infinity) - (searchRanked.get(b.key) ?? Infinity)
+        : comparePinnedThenSort(a, b, sortKey, pinned))
+    frozenSlotsRef.current = next
+    return next
+  },
+    [slots, filterDimensions, searchRanked, pinned, sortKey, dragFrozen]
+  )
+
+  // Which lane the sidebar is actually rendering. Mirrors the render branches
+  // below exactly: flat wins when there are folders to flatten, otherwise the
+  // tag-column board when columns exist, otherwise the folder tree. The folder
+  // filter applies to the flat lane and the tree, NOT to the board.
+  const flatLaneActive = flatView && folders.length > 0
+  const boardLaneActive = !flatLaneActive && orderedColumns.length > 0
+
+  // The folder filter goes inert while searching, in BOTH views: a query must
+  // reach every match, so an unchecked folder can never become a search dead
+  // end. Everything that consults the filter routes through this flag.
+  const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
+
+  // Is the list narrowed at all? Derived from filterDimensions: a dimension
+  // participates through its required `narrows` field, so this site cannot
+  // silently miss one (a missed dimension used to strand the folder lane's
+  // folders as empty "New chat in <name>" shells).
+  const listNarrowed = filterDimensions.some(d => d.narrows !== null && d.narrows())
+
+  /** Every filter that can hide a reveal target, derived from
+   *  `filterDimensions`: the reveal effect iterates this list instead of
+   *  naming the dimensions by hand. Deliberately NOT `listNarrowed` above —
+   *  that asks "is anything filtering?", this asks "does THIS row fail a
+   *  filter?", and each dimension answers the two questions separately
+   *  (`narrows` vs `hides`) in its one declaration. */
+  const revealBlockingFilters = useMemo<RevealBlockingFilter[]>(() => {
+    // Search and status defer to list membership: both rank against backend
+    // state (relevance, unread) that a single row cannot answer for alone.
+    const excluded = (slot: Slot) => !filteredSlots.some(s => s.key === slot.key)
+    return filterDimensions.map(d => ({
+      hides: (slot: Slot) => d.hides(slot, excluded),
+      clear: d.clear,
+    }))
+  }, [filterDimensions, filteredSlots])
 
   // List view (the folder tree) drops an unchecked folder's whole block —
   // header and sessions together. Only the folder's OWN id is checked here:

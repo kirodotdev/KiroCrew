@@ -8,9 +8,11 @@
  * the refactor, which deliberately changed no filter's behaviour.
  *
  * The structural cases are the before/after guard, and their reach is narrow:
- * they fail while the effect names filter state directly, and they pin the set
- * that IS registered. A filter added to filteredSlots' enumeration and never
- * registered here still reveals nothing -- one opt-in remains, not zero.
+ * they fail while the effect names filter state directly, and they pin that
+ * the registry adapts the single filterDimensions declaration rather than
+ * declaring dimensions of its own. The declaration's shape — and that
+ * filteredSlots and listNarrowed derive from the same source — is pinned by
+ * ChatSidebar.filterDimensions.test.tsx.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -217,14 +219,20 @@ describe('reveal filter dimensions are registered, not enumerated in the effect'
     expect(effect).toContain('revealBlockingFilters')
   })
 
-  it('the registry is the single place a dimension is declared', () => {
+  it('the registry derives from the single filterDimensions declaration', () => {
     const registry = flat.match(/const revealBlockingFilters = useMemo<RevealBlockingFilter\[\]>.*?\}, \[[^\]]*\]\)/)?.[0]
     expect(registry).toBeDefined()
-    // Search, status, tags, folder. Pins the REGISTERED set only: bump this in
-    // the same commit as a fifth entry so the addition is a decision, not drift.
-    expect([...registry!.matchAll(/\bhides:/g)]).toHaveLength(4)
-    // Every registered dimension carries the means to drop itself, so the
-    // effect never needs to know which state backs it.
-    expect([...registry!.matchAll(/\bclear:/g)]).toHaveLength(4)
+    // Dimensions are declared ONCE, in filterDimensions (whose shape
+    // ChatSidebar.filterDimensions.test.tsx pins); this registry only adapts
+    // them, so it can no longer hold a dimension the other consumers miss.
+    expect(registry).toContain('filterDimensions.map')
+    for (const named of [
+      'filterTagIds', 'clearTagFilter',
+      'slotFilter', 'setSlotFilter',
+      'activeFilters', 'setActiveFilters', 'SESSION_FILTERS',
+      'filterHiddenSubtree', 'setFilterHiddenFolders',
+    ]) {
+      expect(registry, `reveal registry must not name ${named} directly`).not.toContain(named)
+    }
   })
 })
