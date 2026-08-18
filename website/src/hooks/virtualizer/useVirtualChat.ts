@@ -228,6 +228,28 @@ function rowTopFrom(
   return null
 }
 
+/** Border-box height at sub-pixel precision, quantized to quarter-pixels.
+ *
+ * `offsetHeight` ROUNDS to an integer, but real rows are fractional whenever
+ * content scales to width (an image at 342px width and a 696:204 ratio is
+ * 100.24px tall). Each row then contributes up to half a pixel of signed
+ * error to the offset tree, and over a long list the accumulated drift (tens
+ * of px across ~100 rows) cashes out at window boundaries as a few-pixel
+ * hiccup — invisible on engines with native scroll anchoring, visible on iOS
+ * Safari. The rect height carries the fraction; quarter-pixel quantization
+ * (finer than any real DPR grid) keeps float noise from tripping the strict
+ * height-change comparisons into churn. jsdom reports all-zero rects, so a
+ * degenerate rect falls back to offsetHeight — test doubles that mock
+ * offsetHeight keep working unchanged.
+ */
+function measureBorderBoxHeight(el: HTMLElement): number {
+  if (typeof el.getBoundingClientRect === 'function') {
+    const h = el.getBoundingClientRect().height
+    if (h > 0) return Math.round(h * 4) / 4
+  }
+  return el.offsetHeight
+}
+
 export function useVirtualChat<T>(
   opts: UseVirtualChatOptions<T>,
 ): UseVirtualChatReturn<T> {
@@ -238,6 +260,8 @@ export function useVirtualChat<T>(
     estimatedHeight = DEFAULT_ESTIMATED,
     overscan = DEFAULT_OVERSCAN,
     followOutput = true,
+    initialPlacement = 'bottom',
+    eagerFirstMeasure = false,
     bottomThreshold = DEFAULT_BOTTOM_THRESHOLD,
     isSticky,
     externalScrollerRef,
@@ -252,6 +276,10 @@ export function useVirtualChat<T>(
   // force the ResizeObserver to be torn down and reattached.
   const streamingIndexRef = useRef(streamingIndex)
   streamingIndexRef.current = streamingIndex
+  // Live ref for the same reason: the RO callback and the measureRef factory
+  // are stable-identity, so they read the option through a ref.
+  const eagerFirstMeasureRef = useRef(eagerFirstMeasure)
+  eagerFirstMeasureRef.current = eagerFirstMeasure
 
   // Same reasoning for the IntersectionObserver effect: keeping the callback in a
   // ref keeps it out of that effect's deps, so it never re-subscribes per render.
@@ -316,6 +344,36 @@ export function useVirtualChat<T>(
   const contentRef = useRef<HTMLDivElement>(null)
   const topSentinelRef = useRef<HTMLDivElement>(null)
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
+
+  // ---- Leading offset: px from the scroller's scroll origin to the start of
+  // list content. In the chat transcript the list IS the scroller's content,
+  // so this is 0 and every scrollTop↔offset conversion below is exact. A
+  // caller windowing against a shared page column (externalScrollerRef) can
+  // have arbitrary non-list content ABOVE the list — page header, toolbars —
+  // and treating raw scrollTop as a list offset then shifts the whole window
+  // by that height: rows unmount while still visible and remount late, at the
+  // same scroll positions every time. scrollToIndexSmooth already derives
+  // exactly this correction (its `headerPx`) from a mounted row; this is the
+  // same quantity for the hot path, read from the list container itself.
+  //
+  // Measured lazily per call rather than observed: getBoundingClientRect on
+  // two elements is cheap, the value only changes when leading content
+  // resizes, and a stale cached value would reintroduce the shifted-window
+  // bug it exists to fix. Prefers the caller's list container (the parent of
+  // the top sentinel — LibraryList's own wrapper) and falls back to 0 when
+  // geometry is unavailable (jsdom, detached nodes), which restores today's
+  // chat behavior exactly.
+  const leadingOffset = useCallback((el: HTMLElement): number => {
+    const anchor = topSentinelRef.current
+    if (!anchor || typeof anchor.getBoundingClientRect !== 'function' || typeof el.getBoundingClientRect !== 'function') return 0
+    const a = anchor.getBoundingClientRect()
+    const s = el.getBoundingClientRect()
+    // Degenerate rects (jsdom reports all-zero) resolve to 0 with a zero
+    // scrollTop — harmless. Real geometry: distance from the scroll origin
+    // (viewport top + scrollTop) down to the sentinel, clamped so a mid-list
+    // sentinel mismeasure can never produce a negative offset.
+    return Math.max(0, a.top - s.top + el.scrollTop)
+  }, [])
 
   // The scroller node, promoted to state so the observer effects (scroll
   // listener / ResizeObserver / IntersectionObserver) RE-ATTACH whenever the
@@ -467,6 +525,7 @@ export function useVirtualChat<T>(
   // pin runs before the tail items have rendered.
   const [windowRange, setWindowRange] = useState<{ start: number; end: number }>(() => {
     const tailSize = Math.min(itemCount, overscan + 1)
+    if (initialPlacement === 'top') return { start: 0, end: tailSize }
     return { start: Math.max(0, itemCount - tailSize), end: itemCount }
   })
   // Live mirror of windowRange for imperative reads (debug probe).
@@ -535,7 +594,11 @@ export function useVirtualChat<T>(
     const prevSession = sessionIdRef.current
     sessionIdRef.current = sessionId
     const tailSize = Math.min(itemCount, overscan + 1)
-    setWindowRange({ start: Math.max(0, itemCount - tailSize), end: itemCount })
+    setWindowRange(
+      initialPlacement === 'top'
+        ? { start: 0, end: tailSize }
+        : { start: Math.max(0, itemCount - tailSize), end: itemCount },
+    )
     lastWriteTopRef.current = -1
     setIsAtBottom(true)
     // A pending debounced save belongs to the OUTGOING session: flush it NOW,
@@ -786,7 +849,11 @@ export function useVirtualChat<T>(
     if (count <= 0) {
       next = { start: 0, end: 0 }
     } else if (idx) {
-      const top = Math.max(0, el.scrollTop)
+      // Convert the scroller's scrollTop into LIST content coordinates before
+      // asking the offset tree: content above the list (page header, toolbars
+      // — see leadingOffset) is not the tree's to know about.
+      const lead = leadingOffset(el)
+      const top = Math.max(0, el.scrollTop - lead)
       const bottom = top + Math.max(0, el.clientHeight)
       const overscanN = Math.max(0, Math.floor(overscan))
       const firstVisible = idx.indexAt(top)
@@ -796,7 +863,7 @@ export function useVirtualChat<T>(
         end: Math.min(count, lastVisible + 1 + overscanN),
       }
     } else {
-      next = computeWindow(el.scrollTop, el.clientHeight, count, getH, overscan)
+      next = computeWindow(Math.max(0, el.scrollTop - leadingOffset(el)), el.clientHeight, count, getH, overscan)
     }
     // On an upward shift (window start moving up → more rows mount above
     // the viewport) while the user is scrolled up (stick released), record the
@@ -834,7 +901,7 @@ export function useVirtualChat<T>(
       if (prev.start === merged.start && prev.end === merged.end) return prev
       return merged
     })
-  }, [getH, overscan, scrollerRef, captureTopAnchor])
+  }, [getH, overscan, scrollerRef, captureTopAnchor, leadingOffset])
 
   // ---- Pin helpers (the only code that writes el.scrollTop for follow) ----
 
@@ -1129,7 +1196,7 @@ export function useVirtualChat<T>(
         if (idx === undefined) continue
         const it = itemsRef.current[idx]
         if (!it) continue
-        const newH = (entry.target as HTMLElement).offsetHeight
+        const newH = measureBorderBoxHeight(entry.target as HTMLElement)
         const k = getKeyRef.current(it, idx)
         const prevH = cacheRef.current!.get(k)
         if (prevH !== newH) {
@@ -1217,8 +1284,12 @@ export function useVirtualChat<T>(
       // oscillating widget can't drive a per-frame render storm; the
       // caller-designated streaming row bypasses that debounce (immediate)
       // since ITS growth needs to track every tick, not settle-then-jump.
+      // Under `eagerFirstMeasure` a FIRST measurement bypasses it too: it
+      // happens once per row, so it cannot be an oscillation, and debouncing
+      // it lets a scroll-driven mounting streak starve the sync (see the seed
+      // path in measureRef and the option doc).
       if (genuineResize || firstMount) {
-        scheduleHeightSync(streamingRowResized)
+        scheduleHeightSync(streamingRowResized || (firstMount && eagerFirstMeasureRef.current))
       }
 
       // Coalesce cascading resizes into one window recompute next frame.
@@ -1582,8 +1653,21 @@ export function useVirtualChat<T>(
         return restoreAnchor(idx, anchor)
       }
       // Anchored row not found — re-arm follow (the sentinel released it in
-      // anticipation of a restore) and take the default bottom-pin path.
+      // anticipation of a restore) and take the default placement path.
       stickRef.current = followOutput
+    }
+    if (initialPlacement === 'top') {
+      // Head placement: a fresh scroller already sits at 0, but an INHERITED
+      // one (externalScrollerRef pointing at a page column that outlives this
+      // hook) can carry leftover scrollTop from whatever it showed before.
+      // Write 0 explicitly — accounted as 'pin' so the follow guard reads the
+      // resulting scroll event as ours. No second-frame write is needed: at
+      // the head there is nothing above the viewport to re-clamp against.
+      if (itemCount === 0) return // wait for content; effect re-runs when items arrive
+      slotPinDoneRef.current = sessionId
+      const el = scrollerRef.current
+      if (el && el.scrollTop !== 0) writeScrollTop(el, 0, 'auto', 'pin')
+      return
     }
     forcePin()
     if (itemCount === 0) return  // wait for content; effect re-runs when items arrive
@@ -1639,10 +1723,19 @@ export function useVirtualChat<T>(
         const it = itemsRef.current[index]
         if (it) {
           const k = getKeyRef.current(it, index)
-          const h = el.offsetHeight
+          const h = measureBorderBoxHeight(el)
           if (h > 0 && cacheRef.current!.get(k) !== h) {
             cacheRef.current!.set(k, h)
-            scheduleHeightSync()
+            // Eager (per the option): this branch fires at most once per row
+            // (the guard above skips re-attaches whose height is already
+            // cached), so it cannot be the render storm the debounce guards
+            // against. Under a scroll-driven mounting streak the debounced
+            // path starves — each seed resets the timer — leaving the offset
+            // tree frozen at estimates for the whole gesture; see the option
+            // doc on UseVirtualChatOptions.eagerFirstMeasure. Default (chat)
+            // keeps the debounce so the upward-anchor compensation's commit
+            // ordering is untouched.
+            scheduleHeightSync(eagerFirstMeasureRef.current)
           }
         }
       }

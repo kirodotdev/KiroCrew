@@ -1054,3 +1054,156 @@ describe('useVirtualChat: scroll-anchor preservation (T4/#5)', () => {
     }
   })
 })
+
+// Feature: chat-virtualizer — initialPlacement: 'top' (the list/gallery contract).
+//
+// The default is the chat contract: tail window + a slot-entry force-pin to the
+// bottom. A gallery consuming this hook opens at the HEAD instead — and beyond
+// the landing position this is the flicker fix: at the tail every unmeasured
+// row is ABOVE the viewport, so each measurement forces a scrollTop
+// compensation write; at the head they are all below, and corrections land in
+// the bottom spacer invisibly.
+describe('initialPlacement: top', () => {
+  const geom = { scrollTop: 0, scrollHeight: 4000, clientHeight: 800 }
+
+  function renderTop(items: Item[], extra?: Partial<UseVirtualChatOptions<Item>>) {
+    const { el, state } = makeScroller({ ...geom, ...((extra as { geom?: Geom })?.geom ?? {}) })
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const view = renderHook((props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props), {
+      initialProps: {
+        items,
+        sessionId: 'gallery-top',
+        getKey,
+        externalScrollerRef: ref,
+        followOutput: false,
+        initialPlacement: 'top',
+        ...extra,
+      } as UseVirtualChatOptions<Item>,
+    })
+    return { view, el, state }
+  }
+
+  it('mounts the HEAD window, not the tail', () => {
+    const { view } = renderTop(mkItems(40))
+    const mounted = view.result.current.virtualItems.filter((v) => v.mounted).map((v) => v.index)
+    expect(mounted).toContain(0)
+    expect(mounted).not.toContain(39)
+    // Nothing above the first mounted row — measurements can only grow the
+    // bottom spacer, which is what makes mount quiet.
+    expect(view.result.current.offsetBefore).toBe(0)
+  })
+
+  it('slot entry lands at scrollTop 0 even on an inherited scroller, and does not bottom-pin', () => {
+    // The page-column scroller outlives the gallery view, so it can carry
+    // leftover scrollTop from whatever it showed before.
+    const { state } = renderTop(mkItems(40), { geom: { scrollTop: 500, scrollHeight: 4000, clientHeight: 800 } } as never)
+    expect(state.scrollTop).toBe(0)
+  })
+
+  it('default placement still takes the chat contract (tail window)', () => {
+    const { el, state } = makeScroller(geom)
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const { result } = renderHook(() =>
+      useVirtualChat<Item>({ items: mkItems(40), sessionId: 'chat-default', getKey, externalScrollerRef: ref }),
+    )
+    const mounted = result.current.virtualItems.filter((v) => v.mounted).map((v) => v.index)
+    expect(mounted).toContain(39)
+    expect(mounted).not.toContain(0)
+    // Slot entry force-pinned to the bottom.
+    expect(state.scrollTop).toBe(geom.scrollHeight - geom.clientHeight)
+  })
+
+  it('measures sub-pixel row heights instead of rounding to integers', () => {
+    // offsetHeight rounds; content scaled to width is fractional (an image at
+    // a 696:204 ratio in a 342px column is 100.24px tall). The rounding error
+    // accumulates across the list into a few-pixel drift that cashes out at
+    // window boundaries on engines without scroll anchoring (iOS Safari).
+    const { view } = renderTop(mkItems(10), { eagerFirstMeasure: true } as never)
+    const before = view.result.current.totalHeight
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 405 })
+    node.getBoundingClientRect = () =>
+      ({ height: 404.688, width: 342, top: 0, left: 0, bottom: 404.688, right: 342, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    act(() => { view.result.current.measureRef(0)(node) })
+    // Unmeasured rows re-estimate from the measured average, so pin the
+    // DISCRIMINATING property rather than the arithmetic: the fraction
+    // survives into the total (404.688 → quarter-px 404.75). Rounding through
+    // offsetHeight instead yields an integer total.
+    expect(before % 1).toBe(0)
+    expect(view.result.current.totalHeight % 1).not.toBe(0)
+  })
+
+  it('eagerFirstMeasure lands a first measurement in the offset math immediately, even under a mounting streak', () => {
+    // The downward-scroll bounce: scrolling down mounts a new card every few
+    // dozen ms; each seed measurement used to (re-)arm the 120ms debounce, so
+    // the offset tree stayed frozen at estimates for the whole gesture, and
+    // every row the window front handed from real DOM to the before-spacer
+    // shrank the content above the viewport by (real − estimate).
+    const { view } = renderTop(mkItems(10), { eagerFirstMeasure: true } as never)
+    const before = view.result.current.totalHeight
+    const measure = (i: number, h: number) => {
+      const node = document.createElement('div')
+      Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => h })
+      view.result.current.measureRef(i)(node)
+    }
+    // Two seeds in quick succession — no timers advanced in between, exactly
+    // the streak that used to starve the debounced sync. Directional assert:
+    // unmeasured rows re-estimate from the measured average, so the exact
+    // total is the cache's business; what matters is it moved NOW.
+    act(() => { measure(0, 560) })
+    act(() => { measure(1, 560) })
+    expect(view.result.current.totalHeight).toBeGreaterThan(before)
+  })
+
+  it('without the option, first measurements stay debounced (the chat contract)', () => {
+    // Pins the default: the upward-anchor compensation's commit ordering
+    // depends on seeds riding the debounce, so eager sync must be opt-in.
+    const { view } = renderTop(mkItems(10))
+    const before = view.result.current.totalHeight
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 560 })
+    act(() => { view.result.current.measureRef(0)(node) })
+    expect(view.result.current.totalHeight).toBe(before)
+  })
+
+  it('maps scrollTop through the leading offset when content sits above the list', () => {
+    // A page column carrying header/toolbar content ABOVE the list: raw
+    // scrollTop is NOT a list offset. With 1600px of leading content and the
+    // scroller at scrollTop 1600, the viewport is exactly at the list's first
+    // row — a raw conversion would instead compute row ~20 (1600px / 80px
+    // estimate) and swap the window away from the rows actually on screen,
+    // at the same scroll positions every time (the fixed-position bounce).
+    const rect = (top: number) =>
+      ({ top, left: 0, bottom: top + 800, right: 390, width: 390, height: 800, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+    const { el, state } = makeScroller({ scrollTop: 0, scrollHeight: 4800, clientHeight: 800 })
+    ;(el as unknown as { getBoundingClientRect: () => DOMRect }).getBoundingClientRect = () => rect(0)
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const frames: FrameRequestCallback[] = []
+    const origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { frames.push(cb); return frames.length }) as typeof requestAnimationFrame
+    try {
+      const { result } = renderHook(() =>
+        useVirtualChat<Item>({
+          items: mkItems(40),
+          sessionId: 'lead-offset',
+          getKey,
+          externalScrollerRef: ref,
+          followOutput: false,
+          initialPlacement: 'top',
+        }),
+      )
+      // The list's own top sentinel: at scrollTop 1600 it sits exactly at the
+      // viewport top, i.e. the leading content is 1600px tall.
+      const sentinel = document.createElement('div')
+      ;(sentinel as unknown as { getBoundingClientRect: () => DOMRect }).getBoundingClientRect = () => rect(0)
+      ;(result.current.topSentinelRef as { current: HTMLDivElement | null }).current = sentinel
+      act(() => { state.scrollTop = 1600; el.dispatchEvent(new Event('scroll')) })
+      act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+      const indices = result.current.virtualItems.map((v) => v.index)
+      // The viewport is at the FIRST row: the window must still cover it.
+      expect(Math.min(...indices)).toBe(0)
+    } finally {
+      globalThis.requestAnimationFrame = origRaf
+    }
+  })
+})

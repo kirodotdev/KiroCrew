@@ -28,6 +28,18 @@ const SESSION_PREFIXES = [
   'mc-webpreview-applied:',
 ] as const
 
+/** Namespaces under those prefixes that are NOT session ids and must survive.
+ *
+ *  The virtualizer partitions its height cache by `sessionId`, so a caller that
+ *  is not a chat session (the artifacts gallery) still has to name a partition.
+ *  Without this exemption the startup pass reads that name as a dead session and
+ *  deletes it — the cache would appear to work and then be wiped every boot,
+ *  which is invisible except as heights that never stay warm.
+ *
+ *  Must stay byte-identical to the writer (`ARTIFACT_HEIGHT_NS` in
+ *  `pages/ArtifactsPage.tsx`). */
+const RESERVED_NAMESPACES = new Set(['artifacts-gallery'])
+
 /**
  * Remove localStorage keys belonging to sessions not in `liveSessionIds`.
  * Call once on app boot after fetching the slot list.
@@ -46,7 +58,7 @@ export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
       if (key.startsWith(prefix)) {
         // Extract the session ID: everything after the prefix, before any further ':'
         const sessionId = key.slice(prefix.length).split(':')[0]
-        if (sessionId && !liveSessionIds.has(sessionId)) {
+        if (sessionId && !liveSessionIds.has(sessionId) && !RESERVED_NAMESPACES.has(sessionId)) {
           doomed.push(key)
         }
         break

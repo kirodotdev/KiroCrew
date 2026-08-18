@@ -1,5 +1,5 @@
-import { safeSetItem } from '../utils/safeStorage'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight } from '../utils/widgetHeights'
 import { Maximize2, Minimize2, ExternalLink, Download, Star } from 'lucide-react'
 import { IconButton, IconButtonGroup } from './ui'
 import { useTheme } from '../hooks/useTheme'
@@ -79,70 +79,6 @@ export function staggeredBuildWait(baseWait: number, slot: number): number {
 }
 let jumpBuildSlot = 0
 let jumpBuildResetAt = 0
-
-// Height cache is theme-independent: every entry in THEME_VAR_NAMES is a
-// color var, never a size. If a length/size var is ever added to the list,
-// include it in the cache key so heights don't get reused across themes.
-// Persisted to localStorage so widgets don't jump on page reload.
-const CACHE_KEY = 'mc-widget-heights'
-const heightCache: Map<string, number> = (() => {
-  try {
-    const stored = localStorage.getItem(CACHE_KEY)
-    return stored ? new Map(JSON.parse(stored)) : new Map()
-  } catch { return new Map() }
-})()
-
-// Fallback height for a widget we've never measured. The first reveal of any
-// widget must reserve SOME height before its iframe builds and reports the real
-// one; if that reserve is wrong the row visibly corrects once (skeleton →
-// iframe). Using the median of heights we've already cached (this session or a
-// prior one, via localStorage) makes a brand-new widget reserve a typical
-// height, so the one-time correction is small. A truly first-ever widget (empty
-// cache) falls back to the fixed default. NOTE: this is why the correction only
-// showed on a cache-cold browser (fresh Firefox/Safari) and went away after one
-// view or a refresh — localStorage warms the cache.
-const DEFAULT_WIDGET_HEIGHT = 200
-function defaultWidgetHeight(): number {
-  if (heightCache.size === 0) return DEFAULT_WIDGET_HEIGHT
-  const vals = [...heightCache.values()].sort((a, b) => a - b)
-  return vals[Math.floor(vals.length / 2)]
-}
-
-function persistHeightCache() {
-  try {
-    // Keep only last 200 entries to bound storage
-    const entries = [...heightCache.entries()].slice(-200)
-    safeSetItem(CACHE_KEY, JSON.stringify(entries))
-  } catch (e) {
-    // Best-effort persistence (quota / private-mode / serialize failures).
-    // Surface it in dev so a persistent failure isn't completely invisible;
-    // there's no recovery to attempt, the next update retries the write.
-    // eslint-disable-next-line no-console -- intentional dev-only diagnostic
-    if (import.meta.env.DEV) console.warn('widget height cache persist failed', e)
-  }
-}
-
-// localStorage.setItem is synchronous and JSON.stringify'ing up to 200 entries
-// is not free; writing it on every height update stalls the main thread. Batch
-// writes so a burst of resizes (a widget settling, or several widgets mounting
-// at once) persists at most once per window.
-const HEIGHT_PERSIST_DEBOUNCE_MS = 1000
-let persistTimer: ReturnType<typeof setTimeout> | null = null
-function schedulePersistHeightCache() {
-  if (persistTimer) return
-  persistTimer = setTimeout(() => {
-    persistTimer = null
-    persistHeightCache()
-  }, HEIGHT_PERSIST_DEBOUNCE_MS)
-}
-
-function contentHash(html: string): string {
-  let h = 0
-  for (let i = 0; i < html.length; i++) {
-    h = ((h << 5) - h + html.charCodeAt(i)) | 0
-  }
-  return String(h)
-}
 
 function readThemeVars(): Record<string, string> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return {}
@@ -269,8 +205,14 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
     const id = setTimeout(() => setVisible(true), wait)
     return () => clearTimeout(id)
   }, [near, visible])
-  const key = useMemo(() => contentHash(html), [html])
-  const [height, setHeight] = useState(() => heightCache.get(key) ?? defaultWidgetHeight())
+  // Measured heights live in `utils/widgetHeights` — ONE map, one debounce timer,
+  // one persist. Two modules each holding their own map and each persisting a
+  // whole-map overwrite of the same storage key would erase each other's fresh
+  // entries, whichever flushed last. This frame lays out at its container's
+  // width, so it takes the default key space; a caller measuring at a different
+  // width takes its own.
+  const key = useMemo(() => widgetHeightKey(html), [html])
+  const [height, setHeight] = useState(() => getWidgetHeight(key) ?? estimateWidgetHeight())
   // Mirror of `height` so the message handler (wired once per `key`) can
   // compare against the live value, plus a timer used to defer shrinks.
   const heightRef = useRef(height)
@@ -331,8 +273,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
         const applyHeight = (next: number) => {
           heightRef.current = next
           setHeight(next)
-          heightCache.set(key, next)
-          schedulePersistHeightCache()
+          setWidgetHeight(key, next)
         }
         // A pending shrink is always superseded by the newest reading.
         if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null }
@@ -376,7 +317,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
       window.removeEventListener('message', handler)
       // The virtualizer can unmount this widget row (it leaves the window)
       // while a deferred shrink is still pending; clear it so it can't fire
-      // applyHeight → setHeight / heightCache.set / persist after unmount.
+      // applyHeight → setHeight / setWidgetHeight / persist after unmount.
       if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null }
     }
   }, [key])

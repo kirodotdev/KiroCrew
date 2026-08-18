@@ -6,7 +6,12 @@ import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, ImageOff, Rocket, 
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
+// At one column the gallery is a list, and it is windowed by this app's own
+// virtualizer rather than a library: see `LibraryList` for the measured reason.
+import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { useCollapseOnScroll, COLLAPSE_MS, CHROME_ATTR } from '../hooks/useCollapseOnScroll'
+import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight } from '../utils/widgetHeights'
+import { getImageDims, rememberImageDims } from '../utils/imageDims'
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
@@ -175,9 +180,22 @@ type LibCtx = {
 }
 
 /** Responsive column count from the container width (~300px target column). */
+/** The page column's own horizontal padding at narrow widths (`px-4`, one side).
+ *  Only used to seed the column estimate below; the real width is measured. */
+const PAGE_GUTTER = 16
+
 function useColumnCount(minColWidth = 300): readonly [React.RefObject<HTMLDivElement>, number] {
   const ref = useRef<HTMLDivElement>(null)
-  const [cols, setCols] = useState(2)
+  // Seeded from the viewport instead of a constant because the page reads this
+  // count to decide WHO OWNS THE SCROLL AXIS: a wrong first value hands the axis
+  // over and takes it back a frame later, which reads as a jump. This is only an
+  // estimate (it assumes the narrow gutter); the ResizeObserver corrects it
+  // against the real element on mount either way.
+  const [cols, setCols] = useState(() =>
+    typeof window === 'undefined'
+      ? 2
+      : Math.max(1, Math.floor((window.innerWidth - PAGE_GUTTER * 2) / minColWidth)),
+  )
   useEffect(() => {
     const el = ref.current
     if (!el || typeof ResizeObserver === 'undefined') return
@@ -189,6 +207,11 @@ function useColumnCount(minColWidth = 300): readonly [React.RefObject<HTMLDivEle
   }, [minColWidth])
   return [ref, cols] as const
 }
+
+/** Key space for cached thumbnail heights. These are measured at BASE_W and
+ *  clamped to VIEWPORT_H, so they are not comparable with the heights a
+ *  full-width `WidgetFrame` measures and must not share its entries. */
+const THUMB_HEIGHT_SPACE = 'thumb900'
 
 /** Live preview of a widget/html artifact, rendered as a scaled-down
  * thumbnail: the iframe lays out at a fixed desktop width (BASE_W) so the
@@ -210,7 +233,21 @@ function WidgetThumb({ content, slug }: { content: string; slug: string }) {
     [content, themeVars, theme],
   )
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  const [contentH, setContentH] = useState(VIEWPORT_H) // iframe height at BASE_W (≤ VIEWPORT_H)
+  // Reserve the height this content had last time, or the median of thumbnails
+  // already measured, before falling back to the viewport ceiling.
+  //
+  // Seeding from VIEWPORT_H instead makes every thumbnail start at the MAXIMUM
+  // and correct downward when the iframe reports — so the error is one-way, and
+  // inside a virtualized list the corrections accumulate into a scroller whose
+  // total height keeps shrinking as you scroll (measured: 4.1k px of height
+  // change and 1.2k px of drift over eight swipes). `WidgetFrame` solved the
+  // same problem the same way; the key space is separate because these
+  // thumbnails lay out at a fixed BASE_W while a frame lays out at its
+  // container's width, so the two sets of heights are not comparable.
+  const heightKey = useMemo(() => widgetHeightKey(content, THUMB_HEIGHT_SPACE), [content])
+  const [contentH, setContentH] = useState(
+    () => getWidgetHeight(heightKey) ?? Math.min(VIEWPORT_H, estimateWidgetHeight(THUMB_HEIGHT_SPACE, VIEWPORT_H)),
+  ) // iframe height at BASE_W (≤ VIEWPORT_H)
   const [colW, setColW] = useState(320) // measured column/preview width
   const wrapRef = useRef<HTMLDivElement>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -238,17 +275,34 @@ function WidgetThumb({ content, slug }: { content: string; slug: string }) {
     const handler = (e: MessageEvent) => {
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return
       if (e.data?.type === 'mc-widget-height' && typeof e.data.height === 'number') {
-        setContentH((prev) => {
-          // Clamp to the viewport ceiling so viewport-sized content (100vh) can
-          // never grow the iframe — and thus can never grow itself. Only shrinks.
-          const next = Math.min(VIEWPORT_H, Math.max(80, Math.round(e.data.height)))
-          return next === prev ? prev : next
-        })
+        // Reject non-finite reports outright: `typeof NaN === 'number'`, and
+        // NaN flows straight through min/max/round into BOTH the persisted
+        // cache and contentH (rendering height:NaN). A misbehaving widget
+        // must not be able to corrupt the geometry every later mount reserves
+        // from.
+        if (!Number.isFinite(e.data.height)) return
+        // Clamp to the viewport ceiling so viewport-sized content (100vh) can
+        // never grow the iframe — and thus can never grow itself.
+        const next = Math.min(VIEWPORT_H, Math.max(80, Math.round(e.data.height)))
+        // Remember it before the state update: this is what lets the NEXT mount
+        // of the same content reserve the right box and not correct at all.
+        setWidgetHeight(heightKey, next)
+        setContentH((prev) => (next === prev ? prev : next))
       }
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
-  }, [])
+  }, [heightKey])
+
+  // Re-reserve when the CONTENT changes: the card mounts before its lazy
+  // fetch resolves (`hasPreview` gates on kind, not content), so the useState
+  // initializer above ran against the EMPTY content's key. Without this
+  // resync the persisted height for the real content is ignored and every
+  // mount pays one avoidable correction when the iframe reports — the same
+  // height-churn class the virtualized gallery works to eliminate.
+  useEffect(() => {
+    setContentH(getWidgetHeight(heightKey) ?? Math.min(VIEWPORT_H, estimateWidgetHeight(THUMB_HEIGHT_SPACE, VIEWPORT_H)))
+  }, [heightKey])
 
   const scale = colW / BASE_W
   // contentH is already clamped to VIEWPORT_H in the reporter, so the iframe
@@ -260,7 +314,11 @@ function WidgetThumb({ content, slug }: { content: string; slug: string }) {
     <div
       ref={wrapRef}
       className="relative w-full overflow-hidden bg-card"
-      style={{ height: blobUrl ? scaledH : 140 }}
+      // The SAME box before and after the iframe exists. Reserving a different
+      // placeholder height (and then swapping) is a second height change per
+      // card on top of the report, and in a virtualized list every one of those
+      // re-lays out everything below it.
+      style={{ height: scaledH }}
     >
       {blobUrl ? (
         <iframe
@@ -329,6 +387,16 @@ function ImageThumb({ a }: { a: Artifact }) {
   // file, refused mime). A bare <img> would leave the browser's broken-image
   // glyph sitting in an otherwise healthy card with nothing to read.
   const [failed, setFailed] = useState(false)
+  // Natural dimensions, best source first: the save-time header sniff in the
+  // artifact metadata, else the client-side cache learned from a prior load
+  // (legacy artifacts saved before the sniff existed). Either way the browser
+  // derives an aspect ratio from the ATTRIBUTES and reserves the final
+  // contain-fit box before any bytes arrive — without it the card mounts
+  // ~16px tall and grows ~280px when the lazy load lands, shoving everything
+  // below it mid-scroll on every pass (the virtualizer's row-height cache
+  // sizes placeholders, not a remounted card's own empty <img> box).
+  const meta = a.image
+  const known = meta?.width && meta?.height ? { w: meta.width, h: meta.height } : getImageDims(a.slug)
   if (failed) {
     return (
       <div className="flex flex-col items-center justify-center gap-1 max-h-[300px] h-[120px] overflow-hidden bg-bg-elevated p-2 text-center">
@@ -345,8 +413,18 @@ function ImageThumb({ a }: { a: Artifact }) {
         src={`/api/artifacts/${a.slug}/asset`}
         alt={a.image?.alt || a.name}
         loading="lazy"
+        width={known?.w}
+        height={known?.h}
         className="max-w-full max-h-[280px] object-contain"
         draggable={false}
+        // Learn the natural size on a successful load so the NEXT mount of a
+        // legacy image (no sniffed metadata) reserves correctly. Slug-keyed:
+        // a re-upload overwrites on its next load.
+        onLoad={(e) => {
+          if (!meta?.width || !meta?.height) {
+            rememberImageDims(a.slug, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+          }
+        }}
         onError={() => setFailed(true)}
       />
     </div>
@@ -997,9 +1075,103 @@ function CollapsibleChrome({ collapsed, children }: { collapsed: boolean; childr
  *  single-scroller plumbing below exists to remove. */
 export const VIRTUALIZE_AT = 30
 
+/** Height-cache partition for the gallery. NOT a chat session id — it is
+ *  exempted in `utils/storageGc` (`RESERVED_NAMESPACES`) so the startup pass
+ *  does not read it as a dead session and wipe it. */
+const ARTIFACT_HEIGHT_NS = 'artifacts-gallery'
+
+/** Reserve for a card whose height has never been measured. The cache's own
+ *  measured heights replace this per card; it only sets the very first paint. */
+const GALLERY_ESTIMATED_CARD_H = 260
+
+/** One column of artifact cards, windowed by this app's own virtualizer.
+ *
+ *  `react-virtuoso` was measured keeping the main thread ~25% busy THROUGH a
+ *  swipe (53 layouts over six swipes) because it maintains a ResizeObserver per
+ *  mounted item and recomputes continuously. `useVirtualChat` is built the other
+ *  way on that hot path: a PASSIVE scroll listener, at most ONE rAF-coalesced
+ *  window recompute per frame, computed as arithmetic over CACHED heights rather
+ *  than by measuring, and ResizeObserver-driven work held back until the scroll
+ *  settles (`SCROLL_SETTLE_MS`) so it cannot fire mid-fling. It also accepts an
+ *  external scroller, which is the capability this page needs — the page column
+ *  has to keep the axis.
+ *
+ *  `followOutput: false` because a gallery is not a transcript: appends must not
+ *  pull the viewport to the bottom. */
+function LibraryList({
+  entries,
+  context,
+  scrollerRef,
+}: {
+  entries: GridEntry[]
+  context: LibCtx
+  scrollerRef: React.RefObject<HTMLDivElement | null>
+}) {
+  const virt = useVirtualChat<GridEntry>({
+    items: entries,
+    getKey: (e) => e.key,
+    sessionId: ARTIFACT_HEIGHT_NS,
+    estimatedHeight: GALLERY_ESTIMATED_CARD_H,
+    // Deliberately tight. Every mounted card is a live sandboxed document, so the
+    // window size IS the cost here: measured at the default (5 each way) the page
+    // held 12-19 iframes and the scroll phase ran 31% busy over 63 layouts,
+    // against 3-5 iframes and 25% over 53 at a tight window. A gallery has no
+    // streaming tail to keep warm, so it has no reason to hold a wide span.
+    overscan: 1,
+    followOutput: false,
+    // A gallery opens at the HEAD, not the chat default tail. Beyond the
+    // landing position this kills a mount-time flicker loop: opening at the
+    // tail puts every unmeasured card ABOVE the viewport, so each real
+    // measurement forces a scrollTop compensation write; at the head the
+    // corrections all land in the bottom spacer, out of sight.
+    initialPlacement: 'top',
+    // Mixed HTML/GIF/image cards vary widely around the estimate, and the
+    // debounced first-measure sync starves under a scroll-driven mounting
+    // streak — each handoff to the before-spacer then bounces the viewport by
+    // (real − estimate). See the option doc.
+    eagerFirstMeasure: true,
+    externalScrollerRef: scrollerRef,
+  })
+  return (
+    <div data-testid="artifacts-gallery-list">
+      {/* Sentinels drive window expansion at the ends. */}
+      <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />
+      {/* Spacers stand in for everything outside the mounted window so the
+        * scrollbar stays honest while only the window is real DOM.
+        * overflow-anchor:none so the browser anchors on real content rather than
+        * on a spacer that resizes as the window moves. */}
+      <div aria-hidden style={{ height: virt.offsetBefore, overflowAnchor: 'none' }} />
+      {virt.virtualItems.map((vi) =>
+        vi.mounted ? (
+          // The measure ref is what feeds the height cache; without it a card's
+          // real height is never learned and every reserve stays an estimate.
+          // `flow-root` is load-bearing: the card inside carries the list gap
+          // as its own mb-3, and without a BFC that margin COLLAPSES THROUGH
+          // this wrapper — offsetHeight then under-reports every row by 12px,
+          // the offset tree accumulates the error (~96px per viewport of short
+          // cards), and engines without native scroll anchoring (iOS Safari)
+          // render the drift as a visible bounce at content-determined, fixed
+          // positions. Chrome's anchoring silently absorbs it, which is why a
+          // Chromium probe shows nothing.
+          <div key={vi.key} ref={virt.measureRef(vi.index)} className="flow-root">
+            <MasonryCard data={vi.data} context={context} index={vi.index} />
+          </div>
+        ) : (
+          <div key={vi.key} aria-hidden style={{ height: vi.height, overflowAnchor: 'none' }} />
+        ),
+      )}
+      <div aria-hidden style={{ height: virt.offsetAfter, overflowAnchor: 'none' }} />
+      <div ref={virt.bottomSentinelRef} aria-hidden style={{ height: 1 }} />
+    </div>
+  )
+}
+
 /** The "Your Artifacts" grid of local artifacts. */
 function LibraryMasonry({
   entries,
+  cols,
+  widthRef,
+  scrollerRef,
   onOpen,
   onDelete,
   deletingSlug,
@@ -1007,33 +1179,55 @@ function LibraryMasonry({
   pinningSlug,
 }: {
   entries: GridEntry[]
+  /** Measured ONCE, at the page level. The page reads the same number to decide
+   *  who owns the scroll axis, so measuring it a second time here could disagree
+   *  at a boundary width and leave the page with two same-axis scrollers — the
+   *  trap `VIRTUALIZE_AT` is hoisted to module scope to avoid. */
+  cols: number
+  /** Attached to the width-defining wrapper below so the page's measurement is
+   *  taken from the element that actually lays the columns out. */
+  widthRef: React.RefObject<HTMLDivElement>
+  /** The page's scrolling column. A ref, not the resolved element: the
+   *  virtualizer takes `externalScrollerRef` and reads it when it needs it, so
+   *  nothing has to re-render just because the element appeared. */
+  scrollerRef: React.RefObject<HTMLDivElement | null>
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
   onTogglePin: (a: Artifact) => void
   pinningSlug: string | null
 }) {
-  const [ref, cols] = useColumnCount(300)
   const context = useMemo<LibCtx>(
     () => ({ onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug }),
     [onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug],
   )
   // Below this count, render a content-sized CSS-columns masonry so the
   // gallery takes only the height its cards need — no reserved blank space.
-  // At or above it, fall back to the virtualized masonry (fixed height +
-  // internal scroll) so a large library of iframe-preview cards stays
-  // performant.
+  // At or above it the gallery virtualizes so a large library of iframe-preview
+  // cards stays performant.
   const virtualized = entries.length >= VIRTUALIZE_AT
+  // ONE column is not a waterfall, it is a list — and a list can be windowed
+  // against an EXTERNAL scroller (`LibraryList`). `VirtuosoMasonry` cannot: its
+  // whole prop surface is columnCount/data/context/ItemContent/initialItemCount/
+  // useWindowScroll, so a virtualized masonry can only ever own a scroller of its
+  // own. Handing the axis to the page instead is what keeps every section above
+  // and below the gallery reachable by scrolling, and it is free here because at
+  // one column the two layouts render the same thing.
+  const asList = virtualized && cols === 1
+  // The masonry owns the axis only when it is actually a masonry. This must stay
+  // in lockstep with the page's own `galleryOwnsScroll`.
+  const masonryOwnsScroll = virtualized && cols > 1
   return (
     // -mr-3 offsets each card's own mr-3 so the trailing column's gutter
     // doesn't add page width; cards carry mr-3 (gutter) + mb-3 (row gap).
     //
-    // When virtualized, this grows to fill the page's content column (the page
-    // stops scrolling and hands the axis over) so the masonry's own scroller is
-    // the ONLY vertical scroller. `min-h-0` is what lets a flex child actually
-    // shrink to its parent instead of its content.
-    <div ref={ref} className={virtualized ? '-mr-3 flex-1 min-h-0' : '-mr-3'}>
-      {virtualized ? (
+    // Only the masonry needs to fill the page's content column (`flex-1
+    // min-h-0`, which is what lets a flex child shrink to its parent instead of
+    // its content). A list scrolling inside the page column is content-sized.
+    <div ref={widthRef} className={masonryOwnsScroll ? '-mr-3 flex-1 min-h-0' : '-mr-3'}>
+      {asList ? (
+        <LibraryList entries={entries} context={context} scrollerRef={scrollerRef} />
+      ) : masonryOwnsScroll ? (
         <VirtuosoMasonry
           key={cols}
           columnCount={cols}
@@ -2157,16 +2351,33 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // 42 artifacts: page column 706px tall over 819px of content, gallery scroller
   // 608px tall over 12485px. So exactly one element owns the axis; below the
   // threshold the gallery is content-sized and the page column scrolls, as before.
-  const galleryOwnsScroll = view === 'grid' && gridEntries.length >= VIRTUALIZE_AT
+  // Measured here, not inside the gallery, because two independent measurements
+  // of the same width could disagree at a boundary and leave the page holding an
+  // axis the gallery also thinks it owns. `galleryWidthRef` is attached to the
+  // gallery's own column-defining wrapper so the number still describes the
+  // element that lays the columns out.
+  const [galleryWidthRef, cols] = useColumnCount(300)
+  // Scroll ownership. A virtualized MASONRY can only own a scroller of its own,
+  // so the page column has to stop scrolling and hand the axis over — otherwise
+  // both scroll on the same axis and the page column has only ~113px of travel
+  // once the gallery is on screen, so a swipe that lands there stops dead after
+  // a few pixels and reads as "this card does not scroll". Measured at 390px with
+  // 42 artifacts: page column 706px tall over 819px of content, gallery scroller
+  // 608px tall over 12485px.
+  //
+  // At ONE column there is no masonry to preserve, so the gallery renders as a
+  // list windowed against this column (`LibraryList`) and the page column KEEPS
+  // the axis. That is the narrow case, and it is the one where handing the axis over
+  // hurt: it is what forced the pre-gallery region to be capped into a scroller
+  // of its own and the chrome to hide on scroll, and it is what left sections
+  // rendered after the gallery unreachable.
+  const galleryOwnsScroll = view === 'grid' && gridEntries.length >= VIRTUALIZE_AT && cols > 1
   // Hide-on-scroll for the page's own chrome. At 390x844 the title, subtitle,
   // heading row and filter rows pin 317px — 38% of the viewport — above a 527px
-  // gallery, and the fraction is worse once the browser's own bars are counted.
-  // The gallery cannot simply hand the axis back and let the whole column
-  // scroll: `VirtuosoMasonry` takes either its own scroller or the DOCUMENT
-  // scroller (`useWindowScroll`; it has no `customScrollParent`), and this app's
-  // shell is `h-dvh` with `overflow-hidden` on body, so the document has zero
-  // travel (measured: scrollHeight - clientHeight = 0). So the chrome yields on
-  // the way down and returns on the way up instead.
+  // gallery. This is only reachable when the masonry owns the axis (so, several
+  // columns on a short viewport); at one column the chrome scrolls away with the
+  // page instead, which tracks the finger 1:1 and needs no animation, no
+  // threshold and no settle window.
   //
   // Narrow only: at desktop heights the chrome is a small fraction of the column
   // and moving it on scroll would be motion nobody asked for.
@@ -2219,13 +2430,33 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // `isLoading` early return, because hooks cannot run after it.
   return (
     <>
-      <CollapsibleChrome collapsed={chromeCollapsed}>
-        <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
-      </CollapsibleChrome>
+      {/* The scroll host carries NO padding of its own: `PageHeader` brings the
+        * page gutter with it, and doubling that would put the title 32px in
+        * while the cards it labels stay at 16px. The gutter lives on the inner
+        * content wrapper instead.
+        *
+        * The header sits INSIDE this element so that, when the page owns the
+        * axis, it scrolls away with the content by physics — 1:1 with the
+        * finger, no animation and no threshold. When the masonry owns the axis
+        * this element does not scroll, and the header collapses instead. */}
       <div
         ref={chromeHostRef}
-        className={`px-4 md:px-6 flex-1 min-h-0 ${
-          galleryOwnsScroll ? 'flex flex-col overflow-hidden' : 'pb-8 overflow-y-auto'
+        data-testid="artifacts-scroll-host"
+        className={`flex-1 min-h-0 flex flex-col ${
+          galleryOwnsScroll ? 'overflow-hidden' : 'overflow-y-auto'
+        }`}
+      >
+        {/* shrink-0 so flex cannot absorb the header the way it absorbed the
+          * folder region: inside an `overflow-hidden` column a squeezed child
+          * has nothing able to scroll it back into view. */}
+        <div className="shrink-0">
+          <CollapsibleChrome collapsed={chromeCollapsed}>
+            <PageHeader title={i18nT('pages.artifactsPage.artifacts')} subtitle={i18nT('pages.artifactsPage.widgets_files_and_snippets_live_tracked_with_ver')} />
+          </CollapsibleChrome>
+        </div>
+      <div
+        className={`px-4 md:px-6 ${
+          galleryOwnsScroll ? 'flex flex-col flex-1 min-h-0' : 'pb-8'
         }`}
       >
         {(errMessage || mutErr || addError) && (
@@ -2529,6 +2760,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             ) : view === 'grid' ? (
               <LibraryMasonry
                 entries={gridEntries}
+                cols={cols}
+                widthRef={galleryWidthRef}
+                scrollerRef={chromeHostRef}
                 onOpen={handleOpen}
                 onDelete={handleDelete}
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
@@ -2608,6 +2842,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             onCloned={(slug) => { qc.invalidateQueries({ queryKey: ['artifacts'] }); qc.invalidateQueries({ queryKey: ['remote-artifacts', p.name] }); navigate(`/artifacts/${slug}`) }}
           />
         ))}
+        </div>
       </div>
     </>
   )

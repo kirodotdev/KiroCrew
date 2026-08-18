@@ -88,6 +88,119 @@ describe('ArtifactsPage', () => {
     expect(document.querySelector('iframe')).toBeNull()
   })
 
+  it('reserves an image card box from stored natural dimensions before the bytes arrive', async () => {
+    // The save-time header sniff records width/height exactly so the UI can
+    // derive an aspect ratio BEFORE the lazy load lands. Without the
+    // attributes the card mounts ~16px tall and grows ~280px when the image
+    // arrives — in the virtualized gallery that late growth shoves everything
+    // below it mid-scroll.
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
+      artifacts: [
+        mkArtifact('sized-photo', {
+          kind: 'image',
+          image: { mime: 'image/png', ext: 'png', alt: 'Sized', width: 800, height: 600 },
+        }),
+        mkArtifact('legacy-photo', {
+          kind: 'image',
+          image: { mime: 'image/png', ext: 'png', alt: 'Legacy' },
+        }),
+      ],
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByAltText('Sized')).toBeInTheDocument())
+    const sized = screen.getByAltText('Sized') as HTMLImageElement
+    expect(sized.getAttribute('width')).toBe('800')
+    expect(sized.getAttribute('height')).toBe('600')
+    // Older payloads without dimensions degrade to no attributes (today's
+    // late-growth behavior), never width=0 or NaN.
+    const legacy = screen.getByAltText('Legacy') as HTMLImageElement
+    expect(legacy.getAttribute('width')).toBeNull()
+    expect(legacy.getAttribute('height')).toBeNull()
+  })
+
+  it('rejects a non-finite widget height report instead of persisting it', async () => {
+    // `typeof NaN === 'number'`, and NaN flows through min/max/round into
+    // BOTH the persisted cache and the rendered height. One misbehaving
+    // widget must not corrupt the geometry every later mount reserves from.
+    const { widgetHeightKey, getWidgetHeight } = await import('../utils/widgetHeights')
+    const art = mkArtifact('nan-widget')
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [art] })
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue({ ...art, content: '<div>w</div>' })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+    const iframe = document.querySelector('iframe') as HTMLIFrameElement
+    const key = widgetHeightKey('<div>w</div>', 'thumb900')
+    const before = getWidgetHeight(key)
+    fireEvent(window, new MessageEvent('message', {
+      source: iframe.contentWindow,
+      data: { type: 'mc-widget-height', height: NaN },
+    }))
+    expect(getWidgetHeight(key)).toBe(before) // NaN never lands in the cache
+    // A finite report through the same handler still works (the guard is
+    // narrow, not a broken listener).
+    fireEvent(window, new MessageEvent('message', {
+      source: iframe.contentWindow,
+      data: { type: 'mc-widget-height', height: 240 },
+    }))
+    expect(getWidgetHeight(key)).toBe(240)
+  })
+
+  it('re-reserves from the cache when the lazy content arrives', async () => {
+    // The card mounts before its lazy fetch resolves (hasPreview gates on
+    // kind), so the one-time useState initializer ran against the EMPTY
+    // content's key. The resync effect must re-read the cache for the real
+    // content's key, or every mount pays one avoidable height correction.
+    const { widgetHeightKey, setWidgetHeight } = await import('../utils/widgetHeights')
+    const html = '<div>cached widget</div>'
+    // Decoys first: with other entries in the space, the MEDIAN fallback the
+    // empty-content initializer lands on (500) differs from the exact cached
+    // height (333) — otherwise this test cannot tell resync from fallback.
+    setWidgetHeight(widgetHeightKey('<div>decoy-a</div>', 'thumb900'), 500)
+    setWidgetHeight(widgetHeightKey('<div>decoy-b</div>', 'thumb900'), 500)
+    setWidgetHeight(widgetHeightKey(html, 'thumb900'), 333)
+    const art = mkArtifact('cached-widget')
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [art] })
+    let resolveFull: (a: Artifact) => void = () => {}
+    vi.mocked(api).artifact = vi.fn().mockReturnValue(new Promise((r) => { resolveFull = r }))
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('cached widget')).toBeInTheDocument())
+    resolveFull({ ...art, content: html } as Artifact)
+    // scaledH = round(contentH * colW/BASE_W) = round(333 * 320/900) = 118.
+    await waitFor(() => {
+      const iframe = document.querySelector('iframe') as HTMLIFrameElement | null
+      expect(iframe).not.toBeNull()
+      const wrap = iframe!.closest('div[style*="height"]') as HTMLElement
+      expect(wrap.style.height).toBe('118px')
+    })
+  })
+
+  it('learns a legacy image size on load and reserves from it on the next mount', async () => {
+    // Legacy artifacts (saved before the header sniff) have no dimensions in
+    // metadata, so their first-ever view grows on load. The load records the
+    // natural size client-side; every LATER mount — the "same cards bounce on
+    // every pass" report — reserves the box up front.
+    const legacyArt = mkArtifact('old-shot', {
+      kind: 'image',
+      image: { mime: 'image/png', ext: 'png', alt: 'Old shot' },
+    })
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [legacyArt] })
+    const first = renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByAltText('Old shot')).toBeInTheDocument())
+    const img = screen.getByAltText('Old shot') as HTMLImageElement
+    expect(img.getAttribute('width')).toBeNull() // nothing known yet
+    // The image arrives: report a natural size (jsdom defaults these to 0).
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, get: () => 1024 })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, get: () => 768 })
+    fireEvent.load(img)
+    first.unmount()
+    // Second visit: the box is reserved before any bytes arrive.
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByAltText('Old shot')).toBeInTheDocument())
+    const again = screen.getByAltText('Old shot') as HTMLImageElement
+    expect(again.getAttribute('width')).toBe('1024')
+    expect(again.getAttribute('height')).toBe('768')
+  })
+
 
   it('renders Starred/All filter toggle', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({

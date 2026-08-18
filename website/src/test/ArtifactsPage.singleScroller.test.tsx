@@ -50,18 +50,19 @@ function makeArtifacts(n: number) {
   return Array.from({ length: n }, (_, i) => artifact(i))
 }
 
-/** The page's content column — the element that used to be the second scroller.
+/** The page's scroll host — the element whose `overflow` decides who owns the
+ *  axis.
  *
- *  Found by the page gutter it carries, NOT by counting hops up from the
- *  heading: a hop count silently breaks the moment any wrapper is inserted
- *  between the two (a collapsing chrome container, a motion wrapper), and it
- *  then fails as an assertion error about overflow rather than as "the helper
- *  is pointing at the wrong element". */
+ *  Anchored on its own test id rather than on the page-gutter class: the gutter
+ *  moved to an inner wrapper once the header had to live INSIDE the scroller
+ *  (`PageHeader` brings the gutter with it, and two nested paddings would put
+ *  the title 32px in while its cards stay at 16px). Matching the gutter class
+ *  now finds that inner wrapper, which carries no overflow at all — so the
+ *  assertions below would read as "the column does not scroll" rather than as
+ *  "the helper is pointing at the wrong element". */
 function contentColumn(): HTMLElement {
-  const heading = screen.getByRole('heading', { name: /your artifacts/i })
-  const col = heading.closest('[class*="md:px-6"]')
-  if (!col) throw new Error('content column not found: no ancestor carries the page gutter class')
-  return col as HTMLElement
+  const host = screen.getByTestId('artifacts-scroll-host')
+  return host as HTMLElement
 }
 
 async function renderWith(count: number) {

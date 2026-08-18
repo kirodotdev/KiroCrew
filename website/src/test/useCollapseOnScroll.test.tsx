@@ -196,6 +196,15 @@ describe('ArtifactsPage wires the collapse to the chrome, narrow only', () => {
   it('listens on the element that CONTAINS the scroller, not the scroller', () => {
     // The virtualization library owns its scroller and exposes no ref, so the
     // host is the page column and the hook relies on capture-phase delivery.
-    expect(src).toMatch(/ref=\{chromeHostRef\}/)
+    //
+    // Pin the CHAIN, not one spelling of it: the column may carry the ref object
+    // directly or a callback that writes it (the list variant also needs the
+    // element in state, because `customScrollParent` is a prop). What must hold
+    // is that whatever the column writes is what the hook observes.
+    expect(src).toMatch(/ref=\{(chromeHostRef|setChromeHost)\}/)
+    expect(src).toMatch(/useCollapseOnScroll\(chromeHostRef/)
+    if (/ref=\{setChromeHost\}/.test(src)) {
+      expect(src).toMatch(/chromeHostRef\.current = el/)
+    }
   })
 })
