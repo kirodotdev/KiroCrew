@@ -1,6 +1,7 @@
 import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
+import { getImageDims, rememberImageDims } from '../utils/imageDims'
 import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
@@ -891,6 +892,32 @@ const MD_COMPONENTS: Components = {
  *  broken. The fallback is React-rendered rather than a hand-built SVG swapped
  *  in via .replaceWith(), so it never mutates DOM React owns — which could
  *  otherwise trigger "removeChild on Node" reconciliation crashes. */
+/** Style reserving a not-yet-loaded transcript image's EXACT display box.
+ *
+ * The loaded layout follows the replaced-element min/max rules, which
+ * BACK-PROPAGATE a max-height cap into the width (a tall screenshot capped at
+ * 60vh also narrows). Neither width/height attributes nor a bare aspect-ratio
+ * reproduce that transfer — with either, max-height clamps the box's height
+ * while the width stays at max-width, leaving the image letterboxed centered
+ * inside a full-width border band. So spell the native resolution out:
+ * width = min(natural, heightCap × ratio), the class's max-width still capping
+ * on top; aspect-ratio derives the height. Same expression the loaded image
+ * resolves to, so the reserve is invisible — same size, same left edge,
+ * border hugging the image.
+ */
+export function reservedImageStyle(dims: { w: number; h: number }): React.CSSProperties {
+  // NUMBERS only — the min()/calc()/aspect-ratio arithmetic lives in the
+  // `.mc-img-reserve` rule (index.css), which is where a CSS value belongs and
+  // keeps this component free of CSS-shaped string literals.
+  return { '--mc-img-w': dims.w, '--mc-img-h': dims.h } as React.CSSProperties
+}
+
+/** Class pair applying `reservedImageStyle`'s custom properties: the shared
+ *  reserve arithmetic plus the mode's height cap (see index.css). */
+export function reservedImageClass(compact: boolean): string {
+  return compact ? 'mc-img-reserve mc-img-reserve-compact' : 'mc-img-reserve'
+}
+
 function ImgWithFallback({
   node,
   src,
@@ -969,9 +996,31 @@ function ImgWithFallback({
   // uncommon in markdown. SVGs already get a definite width basis (their viewBox
   // derives the height), so they need no placeholder. See
   // MarkdownRenderer.streamingImageShift.test.tsx.
+  // Learned exact dimensions trump the heuristic floor: a transcript image
+  // remounts every time the virtualized window scrolls back over it, and a
+  // 120px floor under a 400-600px screenshot still realizes the difference as
+  // a visible jump on every (re)load. Recording naturalWidth/Height on first
+  // successful load (keyed by resolved URL, same mechanism as the artifact
+  // gallery's thumbnails) lets every later mount reserve the real aspect box
+  // via width/height attributes before any bytes arrive.
+  const learned = !isSvg ? getImageDims(url) : undefined
+  // The reserved box must resolve to EXACTLY the size the loaded image will
+  // take, or the difference shows as a border wrapping empty space with the
+  // image floated centered inside (object-contain letterboxing). The loaded
+  // layout follows the replaced-element min/max rules, which BACK-PROPAGATE a
+  // max-height cap into the width (a tall screenshot capped at 60vh also
+  // narrows). Neither width/height attributes nor an explicit aspect-ratio
+  // reproduce that transfer — with either, max-height clamps the box's height
+  // while the width stays at max-width, leaving a wide letterboxed band. So
+  // spell the native resolution out: width = min(natural, heightCap × ratio),
+  // with the class's max-width still capping on top; aspect-ratio then derives
+  // the height. Same expression the loaded image resolves to, so the reserve
+  // is invisible — same size, same left edge, border hugging the image.
   const imgStyle: React.CSSProperties | undefined = isSvg
     ? { width: compact ? '240px' : '760px', height: 'auto' }
-    : (loaded ? undefined : { minHeight: '120px' })
+    : learned
+      ? reservedImageStyle(learned)
+      : (loaded ? undefined : { minHeight: '120px' })
   // Sent-prompt (user message) images render as a small preview so an attached
   // screenshot doesn't dominate the bubble; the lightbox still opens full size
   // on click. Response images keep the large inline size. See CompactImagesCtx.
@@ -988,14 +1037,32 @@ function ImgWithFallback({
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
         src={url} alt={alt || ''} loading="lazy"
-        className={compact
-          ? 'max-w-[min(100%,240px)] max-h-[180px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'
-          : 'max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'}
+        // Sent-prompt images align to the END edge, matching the bubble they
+        // were sent from. `ms-auto` (logical, RTL-correct) sits on the IMG, never
+        // on its wrapper: preflight makes <img> display:block so text-align is
+        // inert here, and a shrink-to-fit wrapper makes the percentage in
+        // `max-w-[min(100%,240px)]` resolve against its own content — silently
+        // dropping the 240px cap and scattering mixed-width images. It reads
+        // right only because the bubble shrink-wraps (`w-fit` in UserMessage):
+        // inside a bubble stretched to its cap, moving the image to one edge
+        // only moves the empty band to the other. The cap is a DEFINITE 240px,
+        // not `min(100%,240px)`: a percentage max-width makes the image's
+        // max-content contribution indefinite, so the bubble's `w-fit` falls
+        // back to the full available width and the band never closes. 240px sits
+        // below the bubble's own cap at every width the app supports, so the
+        // percentage guard was redundant.
+        className={`${learned && !isSvg ? reservedImageClass(compact) + ' ' : ''}${compact
+          ? 'ms-auto max-w-[240px] max-h-[180px] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'
+          : 'max-w-[min(100%,760px)] max-h-[60vh] object-contain rounded-md border border-border cursor-pointer hover:opacity-90 transition-opacity'}`}
         style={imgStyle}
         onClick={(e) => dispatchLightbox(e.currentTarget)}
         data-lightbox-image=""
         title={alt || src}
-        onLoad={() => setLoaded(true)}
+        onLoad={(e) => {
+          const el = e.currentTarget
+          if (el.naturalWidth > 0 && el.naturalHeight > 0) rememberImageDims(url, el.naturalWidth, el.naturalHeight)
+          setLoaded(true)
+        }}
         onError={() => setErrored(true)}
         {...props}
       />
@@ -1564,7 +1631,17 @@ function remarkSoftBreaks() {
         out.push(child)
       }
     }
-    node.children = out
+    // A break ADJACENT to an image is redundant and inflates spacing: the
+    // image renders as its own block (span.block.my-2), so the line break is
+    // already implied — the <br> would add an empty line box (~one
+    // line-height) AND keep the neighbouring margins from collapsing,
+    // turning the intended 8px gap between two attached screenshots into
+    // ~37px. Text-to-text breaks (Shift+Enter prose) are untouched.
+    const isImage = (n: unknown): boolean => (n as { type?: string })?.type === 'image'
+    node.children = out.filter((n, i) => {
+      if ((n as { type?: string })?.type !== 'break') return true
+      return !(isImage(out[i - 1]) || isImage(out[i + 1]))
+    })
   }
   return (tree: unknown) => visit(tree as { children?: unknown[] })
 }

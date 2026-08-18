@@ -352,7 +352,7 @@ export function useVirtualChat<T>(
   // have arbitrary non-list content ABOVE the list — page header, toolbars —
   // and treating raw scrollTop as a list offset then shifts the whole window
   // by that height: rows unmount while still visible and remount late, at the
-  // same scroll positions every time. scrollToIndexSmooth already derives
+  // same scroll positions every time. The caller-side glide already derives
   // exactly this correction (its `headerPx`) from a mounted row; this is the
   // same quantity for the hot path, read from the list container itself.
   //
@@ -464,6 +464,14 @@ export function useVirtualChat<T>(
   // reliance on overflow-anchor (it does not replace it — the CSS is owned by
   // ChatPage and left alone).
   const anchorPendingRef = useRef<{ key: string; top: number } | null>(null)
+  // Anchor captured by syncHeightsNow for a spacer-repricing commit. Kept
+  // SEPARATE from anchorPendingRef: that one is consumed by the
+  // windowRange-keyed effect, and window commits land constantly while rows
+  // mount — sharing the slot lets an unrelated window commit consume (and
+  // clear) the anchor before the heightVersion commit it was captured for,
+  // leaving the repricing shift uncompensated (observed as a nondeterministic
+  // 170-190px lurch after a far jump with scroll anchoring unavailable).
+  const heightAnchorPendingRef = useRef<{ key: string; top: number } | null>(null)
 
   /**
    * Prepend compensation (load-older history).
@@ -734,9 +742,25 @@ export function useVirtualChat<T>(
     const total = idx.totalHeight()
     if (Math.abs(total - lastSyncedTotalRef.current) > 1) {
       lastSyncedTotalRef.current = total
+      // Spacer repricing about to commit: rows ABOVE the viewport re-price
+      // (estimates replaced by real heights), which moves everything below by
+      // the delta. Chrome's native scroll anchoring absorbs that shift; iOS
+      // Safari has none, so a reader sees the transcript slide under their
+      // finger (measured 13-25px right after a far jump, when a whole streak
+      // of first measurements lands in one sync). Capture the top visible row
+      // now so the anchor-compensation layout effect (keyed on heightVersion
+      // below) can hold it steady across the commit. Skipped while stick is
+      // armed — the bottom pin owns positioning there.
+      if (!stickRef.current && scrollerRef.current) {
+        const a = captureTopAnchorFrom(scrollerRef.current, elIndexRef.current.entries(), (i) => {
+          const it = itemsRef.current[i]
+          return it ? getKeyRef.current(it, i) : null
+        })
+        if (a) heightAnchorPendingRef.current = a
+      }
       setHeightVersion((v) => v + 1)
     }
-  }, [getH])
+  }, [getH, scrollerRef])
   const scheduleHeightSync = useCallback((immediate = false) => {
     if (heightSyncTimerRef.current) {
       clearTimeout(heightSyncTimerRef.current)
@@ -1478,6 +1502,27 @@ export function useVirtualChat<T>(
     recomputeWindow()
   }, [windowRange, scrollerRef, writeScrollTop, recomputeWindow])
 
+  // Same correction for a HEIGHT-SYNC commit (spacer repricing): keyed on
+  // heightVersion, consuming the anchor syncHeightsNow captured. See
+  // heightAnchorPendingRef for why this cannot share the window effect's slot.
+  useLayoutEffect(() => {
+    const pending = heightAnchorPendingRef.current
+    heightAnchorPendingRef.current = null
+    if (!pending) return
+    const el = scrollerRef.current
+    if (!el || stickRef.current || typeof el.getBoundingClientRect !== 'function') return
+    const newTop = rowTopFrom(el, elIndexRef.current.entries(), (idx) => {
+      const it = itemsRef.current[idx]
+      return it ? getKeyRef.current(it, idx) : null
+    }, pending.key)
+    if (newTop === null) return
+    const delta = newTop - pending.top
+    if (Math.abs(delta) > 0.5) {
+      writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
+    }
+  }, [heightVersion, scrollerRef, writeScrollTop])
+
+
   // ---- Follow-output: pin to bottom when items append ----
   const prevItemCountRef = useRef(itemCount)
   useLayoutEffect(() => {
@@ -1771,54 +1816,6 @@ export function useVirtualChat<T>(
     [overscan, getH, scrollerRef, writeScrollTop],
   )
 
-  // "Human-like" smooth scroll to a (possibly off-window) index. UNLIKE
-  // scrollToIndex/mountIndex, it does NOT pre-mount a window: it computes the
-  // target's pixel scrollTop from cached heights and animates the scroller
-  // there, letting the passive scroll listener's full (shrinking) recompute
-  // mount rows progressively and keep the window TIGHT — exactly like a user
-  // dragging the scrollbar. mountIndex's wide union, combined with expand-only
-  // RO recompute, would instead leave a broad span of rows mounted; any
-  // animated/auto-height widget in that span keeps oscillating and
-  // re-rendering long after the jump. Progressive mounting avoids that.
-  const scrollToIndexSmooth = useCallback(
-    (index: number, options?: { align?: 'start' | 'center'; offset?: number }) => {
-      const el = scrollerRef.current
-      if (!el) return
-      const count = itemsRef.current.length
-      if (count === 0) return
-      const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
-      // Derive the header offset (px from the scroller's scroll origin to the
-      // start of list content) from any currently-mounted row, so the target
-      // scrollTop is accurate without hardcoding the header spacer height.
-      // Derive headerPx (px from the scroller's scroll origin to the start of
-      // list content) from the LOWEST-index mounted row, not the first Map
-      // entry — Map iteration is insertion order, effectively arbitrary among
-      // mounted rows. For a correctly-measured row the value is invariant, but
-      // pinning the reference to the smallest index keeps far smooth-jumps
-      // deterministic and reproducible even if some row's cached height is
-      // momentarily stale mid-resize.
-      let headerPx = 0
-      const srTop = el.getBoundingClientRect().top
-      let refIdx = Infinity
-      let refNode: HTMLElement | null = null
-      for (const [node, idx] of elIndexRef.current.entries()) {
-        if (idx < refIdx) { refIdx = idx; refNode = node as HTMLElement }
-      }
-      if (refNode) {
-        headerPx = refNode.getBoundingClientRect().top - srTop + el.scrollTop - getOffsetFn(refIdx, count, getH)
-      }
-      const off = getOffsetFn(t, count, getH)
-      const itemH = getH(t)
-      let top = headerPx + off
-      if (options?.align === 'center') top = top - el.clientHeight / 2 + itemH / 2
-      top += options?.offset ?? 0
-      top = Math.max(0, Math.min(el.scrollHeight - el.clientHeight, top))
-      // Explicit navigation — stop following.
-      stickRef.current = false
-      writeScrollTop(el, top, 'smooth', 'release')
-    },
-    [getH, scrollerRef, writeScrollTop],
-  )
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = 'auto') => {
@@ -2025,7 +2022,6 @@ export function useVirtualChat<T>(
     totalHeight,
     isAtBottom,
     scrollToIndex,
-    scrollToIndexSmooth,
     scrollToBottom,
     mountIndex,
     measureRef,

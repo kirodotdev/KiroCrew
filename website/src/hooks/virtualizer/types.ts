@@ -143,10 +143,6 @@ export interface UseVirtualChatReturn<T> {
   isAtBottom: boolean
   /** Scroll the scroller so item `index` is visible. */
   scrollToIndex: (index: number, opts?: ScrollToIndexOptions) => void
-  /** "Human-like" smooth scroll to `index` without pre-mounting a window —
-   * animates scrollTop and lets the scroll listener mount rows progressively,
-   * keeping the window tight (avoids a wide always-mounted span). */
-  scrollToIndexSmooth: (index: number, opts?: { align?: 'start' | 'center'; offset?: number }) => void
   /** Scroll to the bottom (latest message). */
   scrollToBottom: (behavior?: ScrollBehavior) => void
   /** Ensure `index` is mounted (in the window) without scrolling — lets a

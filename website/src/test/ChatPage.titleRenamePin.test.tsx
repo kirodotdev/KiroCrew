@@ -37,8 +37,7 @@ vi.mock('../pages/chat', () => ({
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
   useVirtualChat: () => ({
-    virtualItems: [], isAtBottom: true, scrollToBottom: vi.fn(), scrollToIndexSmooth: vi.fn(),
-    mountIndex: vi.fn(), measureRef: () => () => {},
+    virtualItems: [], isAtBottom: true, scrollToBottom: vi.fn(), mountIndex: vi.fn(), measureRef: () => () => {},
     topSentinelRef: { current: null }, bottomSentinelRef: { current: null },
     offsetBefore: 0, offsetAfter: 0,
   }),

@@ -2297,3 +2297,26 @@ html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; wor
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
   mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
 }
+
+/* Reserve a transcript image's EXACT display box before its bytes decode.
+   The loaded layout follows the replaced-element min/max rules, which
+   BACK-PROPAGATE a max-height cap into the width (a tall screenshot capped at
+   60vh also narrows). Neither width/height attributes nor a bare aspect-ratio
+   reproduce that transfer: with either, max-height clamps the height while the
+   width stays at max-width, leaving the image letterboxed centered inside a
+   full-width border band. Spelling the native resolution out here — rather
+   than as a per-image inline style string — keeps the CSS in the stylesheet
+   (the i18n gate reads inline template literals as copy) and leaves the
+   component passing only NUMBERS via the two custom properties below.
+   --mc-img-cap comes from the mode class; the intrinsic size comes from the
+   learned natural dimensions. */
+.mc-img-reserve {
+  --mc-img-cap: 60vh;
+  width: min(
+    calc(var(--mc-img-w) * 1px),
+    calc(var(--mc-img-cap) * (var(--mc-img-w) / var(--mc-img-h)))
+  );
+  height: auto;
+  aspect-ratio: var(--mc-img-w) / var(--mc-img-h);
+}
+.mc-img-reserve-compact { --mc-img-cap: 180px; }

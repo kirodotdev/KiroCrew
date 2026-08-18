@@ -43,8 +43,11 @@ vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
 // Mounts only the first `mountedTo` items, so a far target is genuinely absent
 // from the DOM — the condition the poll exists to survive. mountIndex reports a
 // FAR jump (true) exactly as the real hook does when it replaces its window.
+let capturedVirtOpts: { eagerFirstMeasure?: boolean } | null = null
+
 vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
-  useVirtualChat: (opts: { items?: unknown[]; getKey?: (it: unknown, i: number) => string }) => {
+  useVirtualChat: (opts: { items?: unknown[]; getKey?: (it: unknown, i: number) => string; eagerFirstMeasure?: boolean }) => {
+    capturedVirtOpts = opts
     const items = opts.items ?? []
     return {
       virtualItems: items.slice(0, mountedTo).map((data, index) => ({
@@ -274,5 +277,33 @@ describe('ChatPage — a far jump whose row mounts late still lands on the first
     expect(recorded.length).toBeGreaterThan(0)
     const tops = recorded.map((r) => r.top ?? -1)
     expect(Math.max(...tops)).toBeGreaterThan(3000)
+  })
+
+  it("RATCHET: the one-shot smooth-jump API stays off the virtualizer's surface", async () => {
+    // It computed its destination from the offset tree, where a not-yet-measured
+    // row still counts at estimatedHeight, and it issued a NATIVE smooth scroll —
+    // which any concurrent scrollTop write cancels, and the anchor compensations
+    // perform exactly such writes mid-glide. A caller was therefore stranded
+    // wherever the compensation landed. ChatPage's converging rAF glide replaced
+    // it and this PR deleted it, so the guard is now that it stays deleted:
+    // re-exporting it would hand the next caller the same stranding bug.
+    //
+    // Asserted against the TYPE surface, not ChatPage's source text: a source
+    // grep only fenced this one file, while the defect belonged to the API.
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const types = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'virtualizer', 'types.ts'), 'utf8')
+    const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'virtualizer', 'useVirtualChat.ts'), 'utf8')
+    expect(types).not.toContain('scrollToIndexSmooth')
+    expect(hook).not.toContain('scrollToIndexSmooth')
+  })
+
+  it('opts the transcript into eagerFirstMeasure (first row measurements land in the offset tree immediately)', () => {
+    // Without this, a FAR jump or fast scroll mounts rows whose real heights
+    // wait out the height-sync debounce before entering the spacer math; the
+    // late reconciliation shifts content under the viewport. Chrome's scroll
+    // anchoring hides the shift, iOS Safari has none (13-25px measured drift).
+    renderChatPage([{ role: 'user', content: 'q', ts: '2026-01-01T00:00:00Z', meta: { mid: 'm-1' } }], '2026-01-01T00:00:00Z')
+    expect(capturedVirtOpts?.eagerFirstMeasure).toBe(true)
   })
 })

@@ -4,7 +4,7 @@
 // The follow/pin wiring lives in useVirtualChat.integration.test.tsx and the
 // height-sync debounce in useVirtualChat.spacerLurch / .postStreamLurch. What
 // this file exercises is everything those leave cold:
-//   - the imperative jump APIs (scrollToIndex, scrollToIndexSmooth, mountIndex)
+//   - the imperative jump APIs (scrollToIndex, mountIndex)
 //   - the isSticky full-scan path in virtualItems
 //   - the scrollToBottom settle frames (and their user-scroll bail-out)
 //   - the post-stream STREAMING_SETTLE_GRACE_MS timer expiring / being cancelled
@@ -207,106 +207,6 @@ describe('useVirtualChat: scrollToIndex', () => {
 
     act(() => { view.result.current.scrollToIndex(4) })
     expect(sc.el.scrollTop).toBe(400)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// scrollToIndexSmooth — no pre-mounted window; target derived from a mounted
-// row so the caller's header spacer is accounted for.
-// ---------------------------------------------------------------------------
-describe('useVirtualChat: scrollToIndexSmooth', () => {
-  const HEADER_PX = 40
-  let origRaf: typeof globalThis.requestAnimationFrame
-
-  beforeEach(() => {
-    localStorage.clear()
-    vi.useFakeTimers()
-    origRaf = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 0 }) as typeof requestAnimationFrame
-  })
-  afterEach(() => {
-    globalThis.requestAnimationFrame = origRaf
-    vi.useRealTimers()
-  })
-
-  /**
-   * Registers two measured rows whose rects imply DIFFERENT header offsets:
-   * the lower-index row (2) implies HEADER_PX, the higher-index row (5) — the
-   * one registered FIRST, so it comes first in Map insertion order — implies
-   * HEADER_PX + 50. The hook must pick the lowest index, not the first entry.
-   */
-  function setupRows(sc: ReturnType<typeof makeScroller>, view: ReturnType<typeof mountHook>['view']) {
-    stubRectTop(sc.el, 0)
-    const stale = mkRow(ITEM_H)
-    stubRectTop(stale, HEADER_PX + 50 + 5 * ITEM_H - sc.state.scrollTop)
-    const lowest = mkRow(ITEM_H)
-    stubRectTop(lowest, HEADER_PX + 2 * ITEM_H - sc.state.scrollTop)
-    act(() => { view.result.current.measureRef(5)(stale) })
-    act(() => { view.result.current.measureRef(2)(lowest) })
-  }
-
-  it('derives the header offset from the LOWEST-index mounted row', () => {
-    const sc = makeScroller({ scrollTop: 0, scrollHeight: 3000, clientHeight: 400 })
-    const { view } = mountHook('stis-header', mkItems(21), sc)
-    setupRows(sc, view)
-    sc.writes.length = 0
-
-    act(() => { view.result.current.scrollToIndexSmooth(10) })
-
-    // headerPx + row offset. Reading the first Map entry (index 5, whose rect
-    // is deliberately 50px off) would land at 1090 instead.
-    expect(sc.writes.at(-1)).toEqual({ top: HEADER_PX + 1000, behavior: 'smooth' })
-  })
-
-  it('centres the target and applies the caller offset', () => {
-    const sc = makeScroller({ scrollTop: 0, scrollHeight: 3000, clientHeight: 400 })
-    const { view } = mountHook('stis-center', mkItems(21), sc)
-    setupRows(sc, view)
-    sc.writes.length = 0
-
-    act(() => { view.result.current.scrollToIndexSmooth(10, { align: 'center', offset: -25 }) })
-
-    // (40 + 1000) - clientHeight/2 + itemHeight/2 + offset
-    expect(sc.el.scrollTop).toBe(865)
-  })
-
-  it('treats the header as zero when no row is mounted yet, and clamps to the range', () => {
-    const sc = makeScroller({ scrollTop: 0, scrollHeight: 900, clientHeight: 400 })
-    const { view } = mountHook('stis-clamp', mkItems(21), sc)
-    stubRectTop(sc.el, 0)
-    sc.writes.length = 0
-
-    act(() => { view.result.current.scrollToIndexSmooth(999) })
-
-    // Index clamped to the last row, target clamped to the scrollable maximum.
-    expect(sc.writes.at(-1)).toEqual({ top: 500, behavior: 'smooth' })
-  })
-
-  it('releases follow so streaming growth no longer pins the viewport', () => {
-    const sc = makeScroller({ scrollTop: 0, scrollHeight: 3000, clientHeight: 400 })
-    const { view, initialProps } = mountHook('stis-release', mkItems(21), sc)
-    stubRectTop(sc.el, 0)
-
-    act(() => { view.result.current.scrollToIndexSmooth(3) })
-    const landed = sc.el.scrollTop
-
-    act(() => {
-      sc.state.scrollHeight = 3400
-      view.rerender({ ...initialProps, items: mkItems(23) })
-    })
-
-    expect(sc.el.scrollTop).toBe(landed)
-  })
-
-  it('no-ops for an empty list and when no scroller is attached', () => {
-    const sc = makeScroller({ scrollTop: 0, scrollHeight: 0, clientHeight: 400 })
-    const empty = mountHook('stis-empty', [], sc)
-    sc.writes.length = 0
-    act(() => { empty.view.result.current.scrollToIndexSmooth(0) })
-    expect(sc.writes).toEqual([])
-
-    const detached = mountHook('stis-noscroller', mkItems(10), null)
-    expect(() => act(() => { detached.view.result.current.scrollToIndexSmooth(3) })).not.toThrow()
   })
 })
 

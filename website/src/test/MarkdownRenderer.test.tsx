@@ -1170,6 +1170,23 @@ describe('MarkdownRenderer softBreaks', () => {
     expect(container.textContent).toContain('line two')
   })
 
+  it('drops the redundant <br> between two attached images (blocks already break)', () => {
+    // Each image renders as its own block (span.block.my-2); a <br> between
+    // them adds an empty line box and blocks margin collapse, inflating the
+    // gap between two attached screenshots from ~8px to ~37px.
+    const { container } = render(<MarkdownRenderer
+      content={'shots\n\n![a](https://x.test/a.png)\n![b](https://x.test/b.png)'} softBreaks />)
+    expect(container.querySelectorAll('img').length).toBe(2)
+    expect(container.querySelectorAll('br').length).toBe(0)
+  })
+
+  it('keeps the <br> between an image and following TEXT (only image-adjacent breaks drop)', () => {
+    const { container } = render(<MarkdownRenderer
+      content={'line one\nline two\n\n![a](https://x.test/a.png)'} softBreaks />)
+    // the text-to-text break survives; none render adjacent to the image
+    expect(container.querySelectorAll('br').length).toBe(1)
+  })
+
   it('collapses a soft line break by default (no softBreaks, no <br>)', () => {
     const { container } = render(<MarkdownRenderer content={'line one\nline two'} />)
     expect(container.querySelector('br')).toBeNull()

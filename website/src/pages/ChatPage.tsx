@@ -1189,7 +1189,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const isAtBottomRef = useRef(true)
   const vScrollToBottomRef = useRef<(behavior?: ScrollBehavior) => void>(() => {})
   const mountIndexRef = useRef<(index: number) => boolean>(() => false)
-  const scrollToIndexSmoothRef = useRef<(index: number, opts?: { align?: 'start' | 'center'; offset?: number }) => void>(() => {})
 
   const [prefillHint, setPrefillHint] = useState(false)
   const autoSendRef = useRef<string | null>(null)
@@ -3210,28 +3209,123 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   /** Jump the transcript back to the pinned prompt, landing it just below the
    *  banner so the prompt is read in context — which also un-pins the banner,
    *  since its prompt is no longer above the fold. */
-  const scrollToPinnedPrompt = useCallback((target: number) => {
-    // Signal WidgetFrames that a programmatic jump is starting so any widget
-    // the smooth scroll sweeps PAST defers building its (expensive) Tailwind
-    // iframe until the glide settles (see PROGRAMMATIC_BUILD_DELAY_MS in
-    // WidgetFrame). Without this, the native smooth scroll crosses the span
-    // fast enough to mount+build several widget iframes synchronously mid-glide
-    // — a 100ms+ 'message' handler stall. navToDisplayIndex already emits this
-    // for its mountIndex path; the smooth path had dropped it.
-    window.dispatchEvent(new Event('mc-chat-scroll-jump'))
-    // Clear the header chrome the row would otherwise land behind: the fold
-    // inset plus the banner's own height plus a small gap. Measured rather
-    // than hardcoded so it tracks a wrapped title row or a taller banner.
+  /** Landing inset for a pinned-prompt jump, solved from the banner's own
+   *  push geometry so the PREVIOUS turn's banner pins COMPLETELY at the
+   *  landing — the chained-jump flow: click the banner, land on the prompt's
+   *  start, the previous prompt's banner is already fully formed above it,
+   *  click again to keep walking back. computePinPush returns 0 (no push, no
+   *  clipping) iff the landed row's top clears the fold by at least
+   *  pinPushTravel(bannerH). The incoming banner's height is unknowable until
+   *  it pins (different prompt, different wrap), so reserve for the SETTLED
+   *  collapsed height (pinCollapsedHRef, what a clamped card measures) with a
+   *  slack margin absorbing wrap variance and mid-glide shifts — over-reserving
+   *  only shows a little more of the turn above; under-reserving clips the
+   *  banner and breaks the chain. */
+  const PINNED_JUMP_SLACK_PX = 24
+  const pinnedJumpChrome = useCallback(() => {
     const el = scrollerRef.current
     const foldTop = pinFoldRef.current?.getBoundingClientRect().top
     const srTop = el?.getBoundingClientRect().top
-    const bannerH = pinCardRef.current?.getBoundingClientRect().height ?? 0
-    const chrome = (foldTop != null && srTop != null) ? (foldTop - srTop) + bannerH + 8 : 72
-    // Human-like smooth scroll (no wide window pre-mount) — see
-    // scrollToIndexSmooth. Avoids leaving a broad span of animated widgets
-    // mounted+oscillating after the jump.
-    scrollToIndexSmoothRef.current(target, { align: 'start', offset: -chrome })
+    const fold = (foldTop != null && srTop != null) ? (foldTop - srTop) : 48
+    // The banner that must fit is the PREVIOUS turn's, which pins mid-glide —
+    // its height is unknowable at launch (different prompt, different wrap:
+    // measured 69.5-92.3px across the same session). Read the LIVE card when
+    // one is pinned (after the mid-glide swap that is already the incoming
+    // banner), floored by the settled collapsed height for the gap while
+    // nothing is pinned. The converging glide re-reads this every frame, so
+    // the reserve tracks the swap instead of freezing at the old banner.
+    const live = pinCardRef.current?.getBoundingClientRect().height ?? 0
+    const bannerH = Math.max(live, pinCollapsedHRef.current)
+    return fold + pinPushTravel(bannerH) + PINNED_JUMP_SLACK_PX
   }, [scrollerRef])
+  const scrollToPinnedPrompt = useCallback((target: number) => {
+    const chrome = pinnedJumpChrome()
+    cancelAnimationFrame(navScrollRafRef.current)
+    navPollCancelRef.current?.()
+    const jumpedFar = mountIndexRef.current(target)
+    if (jumpedFar) {
+      // Far target: the window was REPLACED, the path between is unmounted
+      // spacer — a glide would scrub blank. Teleport via the convergence
+      // path, same as every other far jump.
+      navToDisplayIndex(target, { behavior: 'auto', align: 'start', offset: -chrome })
+      return
+    }
+    // NEAR jump — the common case: the pinned prompt is the previous turn.
+    // mountIndex UNIONED the whole path above, so every row between here and
+    // the target is now mounting. Wait the few frames those rows take to
+    // measure (reading, not scrolling), then compute the distance ONCE from
+    // live geometry and glide in a single smooth scroll. Measuring first is
+    // what makes the one glide land exactly (no estimatedHeight rows left on
+    // the path); gliding once is what keeps it a real scroll — a convergence
+    // poll's per-frame auto writes would cancel the animation and read as a
+    // teleport. A user scroll or a newer navigation aborts the wait.
+    window.dispatchEvent(new Event('mc-chat-scroll-jump'))
+    const rowEl = (): HTMLElement | null =>
+      (scrollerRef.current?.querySelector(`[data-display-index="${target}"]`) as HTMLElement | null)
+    let lastH: number | null = null
+    let stable = 0
+    let frames = 0
+    let cancelled = false
+    let detach2: (() => void) | null = null
+    const detach = attachUserScrollIntent(scrollerRef.current ?? undefined, () => { cancelled = true })
+    navPollCancelRef.current = () => { cancelled = true; detach() }
+    const tick = () => {
+      if (cancelled) { detach(); return }
+      const el = rowEl()
+      const h = el ? el.getBoundingClientRect().height : null
+      if (h != null && lastH != null && Math.abs(h - lastH) < 1) stable += 1
+      else stable = 0
+      lastH = h
+      frames += 1
+      // 2 stable frames is enough: rows measure synchronously on mount via
+      // measureRef; the wait only covers React committing the unioned window.
+      // The frame cap (~0.5s) guarantees the glide still happens if some row
+      // never stops moving (e.g. an animated widget).
+      if ((h != null && stable >= 2) || frames >= 30) {
+        // SELF-DRIVEN converging glide, not a native smooth scroll. A native
+        // animation is cancelled by ANY other scrollTop write — and writes DO
+        // land mid-glide: the upward window expansion's anchor compensation,
+        // the height-sync compensation, a re-measuring row. Each cancellation
+        // strands the scroll wherever the write happened (the probe showed
+        // landings at 34-61px with the banner clipped or dropped — the exact
+        // "some fixed spots never reach the previous message" report). Owning
+        // every frame's write makes the glide uncancellable, and re-deriving
+        // the destination each frame from LIVE geometry (row rect + the
+        // banner currently pinned) absorbs those same mid-flight shifts —
+        // mid-glide image loads and the banner swap included — so the glide
+        // CONVERGES on the true landing instead of a stale one. One motion,
+        // no post-landing correction. User scroll intent still aborts.
+        detach()
+        detach2 = attachUserScrollIntent(scrollerRef.current ?? undefined, () => { cancelled = true })
+        navPollCancelRef.current = () => { cancelled = true; detach2?.() }
+        const GLIDE_MS = 450
+        const t0 = performance.now()
+        const sc0 = scrollerRef.current
+        const from = sc0 ? sc0.scrollTop : 0
+        const reduced = typeof window.matchMedia === 'function'
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
+        const glide = () => {
+          if (cancelled) { detach2?.(); return }
+          const sc = scrollerRef.current
+          const row = rowEl()
+          if (!sc || !row) { detach2?.(); navPollCancelRef.current = null; return }
+          const liveTarget = sc.scrollTop
+            + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
+            - pinnedJumpChrome()
+          const goal = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, liveTarget))
+          const t = reduced ? 1 : Math.min(1, (performance.now() - t0) / GLIDE_MS)
+          sc.scrollTop = from + (goal - from) * easeOutCubic(t)
+          if (t >= 1) { detach2?.(); navPollCancelRef.current = null; return }
+          navScrollRafRef.current = requestAnimationFrame(glide)
+        }
+        navScrollRafRef.current = requestAnimationFrame(glide)
+        return
+      }
+      navScrollRafRef.current = requestAnimationFrame(tick)
+    }
+    navScrollRafRef.current = requestAnimationFrame(tick)
+  }, [navToDisplayIndex, scrollToDisplayIndex, pinnedJumpChrome, scrollerRef])
 
   // Sticky-bottom scroll state is owned by the virtualizer (`virt.isAtBottom`,
   // wired below). No local mirror — a single source of truth avoids
@@ -5196,6 +5290,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     //   larger  (25)  → fewer remounts but inflated RAM from warm iframe pool
     // Currently testing 6 — middle ground between memory and remount frequency.
     overscan: 6,
+    // A first measurement lands in the offset tree immediately instead of
+    // waiting out the height-sync debounce. Without this, a fast scroll or a
+    // FAR jump mounts a streak of rows whose real heights sit outside the
+    // spacer math for up to the debounce window; when they reconcile, content
+    // shifts under the viewport. Chrome's native scroll anchoring absorbs
+    // that shift, iOS Safari has none — measured 13-25px of post-jump drift
+    // with anchoring disabled (the "jump lands off by a bit" report). First
+    // measurements happen once per row, so they cannot be the oscillation the
+    // debounce exists to smother.
+    eagerFirstMeasure: true,
     // No isSticky: widget messages unmount along with everything else
     // when they leave the viewport window. Trade-off: scrolling back to
     // an old widget causes its iframe to reload (1-2 frames of flicker).
@@ -5230,7 +5334,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     isAtBottomRef.current = isAtBottom
     vScrollToBottomRef.current = virt.scrollToBottom
     mountIndexRef.current = virt.mountIndex
-    scrollToIndexSmoothRef.current = virt.scrollToIndexSmooth
   })
 
   // Legacy aliases so the JSX below keeps reading the same names.
