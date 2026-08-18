@@ -78,6 +78,23 @@ def _slot_save(side_effect: BaseException | None = None):
     )
 
 
+def _durable_store_file(slot_key: str, name: str) -> list[dict[str, Any]]:
+    """Read ONE named store file, WITHOUT building a `CrewStore`.
+
+    The mechanism the named readers below share. `CrewStore.__init__` reads all
+    three store files, so building one to answer a single-file question also
+    opens the two files nothing awaited, and on Windows an open that lands in a
+    `Path.replace()` window fails with `PermissionError` — issue #4142. Missing
+    is empty here for the same reason it is in `CrewStore._load`: a file that
+    was never written means nothing has been recorded yet.
+    """
+    path = crew_mod.data_home() / "crew" / crew_mod._store_name(slot_key) / name
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+
+
 def _durable_queue(slot_key: str = "s1") -> list[dict[str, Any]]:
     """Read one slot's queue file, WITHOUT building a `CrewStore`.
 
@@ -90,11 +107,18 @@ def _durable_queue(slot_key: str = "s1") -> list[dict[str, Any]]:
     `PermissionError` — issue #4142. Reading the one file the product promises
     is durable keeps the assertion and drops the unpromised dependency.
     """
-    path = crew_mod.data_home() / "crew" / crew_mod._store_name(slot_key) / "queue.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return []                      # nothing enqueued yet, as `_load` reads it
+    return _durable_store_file(slot_key, "queue.json")
+
+
+def _durable_forwards(slot_key: str = "s1") -> list[dict[str, Any]]:
+    """Read one slot's forwards file — see :func:`_durable_queue` for the why.
+
+    The closed-slot completion path is the caller that promises this file is on
+    disk before it returns, so a "the forward is durable" assertion can be
+    answered from `forwards.json` alone and need not depend on the durability of
+    `topics.json` and `queue.json`, which no caller there promises.
+    """
+    return _durable_store_file(slot_key, "forwards.json")
 
 
 def _durable_entry(slot_key: str, msg_id: str) -> dict[str, Any] | None:
@@ -431,6 +455,7 @@ class TestIngest:
         assert secret not in body and secret not in title
         # Same text, same treatment, on the two paths that persist it.
         assert secret not in (st.topic("r1") or {}).get("digest", "")
+        await orch._store("s1").wait_writes()      # reads below are ON-DISK
         assert not any(secret in f.get("body", "") for f in CrewStore("s1").forwards)
 
     @pytest.mark.asyncio
@@ -2098,8 +2123,9 @@ class TestGptRoundFive:
         orch._owned["r1"] = "s1"
         orch._state.get_slot = MagicMock(return_value=None)      # tab closed
         await orch.on_subagent_done(_spawn_info("r1", done=True, result="the result body"))
-        # Read from a FRESH store: the forward must already be on disk.
-        assert any("the result body" in f["body"] for f in CrewStore("s1").forwards)
+        # Read the FILE, not a store: awaiting here would prove nothing, since the
+        # property under test is that the PRODUCT awaited before returning.
+        assert any("the result body" in f["body"] for f in _durable_forwards("s1"))
 
 
 class TestLiveRunIsReOwned:
