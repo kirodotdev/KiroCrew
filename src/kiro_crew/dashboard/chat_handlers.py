@@ -272,6 +272,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
 
+    if not message:
+        # One guard, above every dispatch branch. An empty wire text reaches
+        # here only from programmatic callers (app tokens, curl, integrations)
+        # — the dashboard composer always inlines staged files into the
+        # message text. Such a send may still carry attachments in `meta`:
+        # nothing downstream queues or broadcasts it, so any success receipt
+        # would report work that was silently dropped. Refusing here keeps
+        # every branch below (steer/queue, crew, subagent-hold, new turn)
+        # unable to bypass the check — the guard used to sit below the busy
+        # branch, which is exactly how the false `queued: true` receipt
+        # happened. `message_required` is the backend-owned code already used
+        # for this refusal (handlers/messaging.py).
+        return web.json_response(
+            {"error": "message is required", "code": "message_required"}, status=400
+        )
+
     if slot.running or slot._in_stage_execution:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -362,25 +378,23 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # steer requested but unavailable → fall through to queue below.
         # Queue the message — return JSON immediately (no SSE needed).
         # The existing SSE reader will pick up queued messages as _run_chat
-        # processes the queue in its finally block.
-        if message:
-            qid = slot.queue_append(message)
-            _c, _ = redact_exfiltration_urls(message)
-            _c, _ = redact_credentials(_c)
-            _redacted = _redact_for_display(_c)
-            state.broadcast_ws(
-                "queue_push",
-                {
-                    "slot": slot.key,
-                    "content": _redacted,
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "queue_id": qid,
-                },
-            )
+        # processes the queue in its finally block. The message is non-empty
+        # here (hoisted guard above the busy branch), so `queued: true`
+        # always reports a real enqueue.
+        qid = slot.queue_append(message)
+        _c, _ = redact_exfiltration_urls(message)
+        _c, _ = redact_credentials(_c)
+        _redacted = _redact_for_display(_c)
+        state.broadcast_ws(
+            "queue_push",
+            {
+                "slot": slot.key,
+                "content": _redacted,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "queue_id": qid,
+            },
+        )
         return web.json_response({"ok": True, "queued": True})
-
-    if not message:
-        return web.json_response({"error": "message is required"}, status=400)
 
     # ── Crew Mode dispatch (RFC orchestrator-chat-sessions) ─────────
     # MUST precede the hold-users gate below: crew topics ARE background
