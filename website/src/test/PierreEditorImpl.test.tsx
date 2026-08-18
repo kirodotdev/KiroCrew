@@ -230,6 +230,23 @@ describe('PierreEditorImpl surface selection', () => {
     expect(surfaceOptions().expandUnchanged).toBe(true)
   })
 
+  it('zeroes the code padding the caret overlay double-counts', () => {
+    // `Editor.#getLineY` adds `metrics.paddingTop` to an `offsetTop` that
+    // already carries it, so a non-zero `[data-code]` padding puts the caret and
+    // the drag-selection range that many pixels below their row.
+    mount({ diffBase: '' })
+    expect(String(surfaceOptions().unsafeCSS)).toMatch(/\[data-code\]\{padding-top:0\}/)
+  })
+
+  it('keeps a call site’s own unsafeCSS when adding the caret alignment', () => {
+    // Appended, never assigned: overwriting would silently drop whichever
+    // surface-specific CSS the caller passed.
+    mount({ diffBase: '', options: { unsafeCSS: '[data-line]{color:red}' } })
+    const css = String(surfaceOptions().unsafeCSS)
+    expect(css).toContain('[data-line]{color:red}')
+    expect(css).toMatch(/\[data-code\]\{padding-top:0\}/)
+  })
+
   it('drives Pierre with the dashboard theme rather than the OS preference', () => {
     document.documentElement.setAttribute('data-theme', 'kirocrew-dark')
     mount()

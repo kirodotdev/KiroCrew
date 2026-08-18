@@ -73,6 +73,27 @@ export const PIERRE_WRAP_NO_HSCROLL_CSS = `
 [data-code]{--diffs-overflow-override:auto}
 `
 
+/** Aligns the edit caret and selection overlay with the text they mark.
+ *
+ *  `Editor.#getLineY` sums `lineElement.offsetTop + metrics.paddingTop`, reading
+ *  that padding off `[data-code]`. On the SPLIT surface the library also sets
+ *  `[data-code] { display: contents }`, so that element generates no box and its
+ *  `padding-top` contributes nothing to layout — yet the metric still reports it,
+ *  so the sum carries a term the rows never moved by and the caret, the
+ *  drag-selection range and the selection corners land that many pixels below
+ *  their row. The row background is laid out by the grid, which is why only the
+ *  overlays drift.
+ *
+ *  Zeroing the padding costs nothing on split, where it was already inert, and
+ *  deliberately tightens unified by the 8px it really did apply there — unified
+ *  keeps a real box, so its rows move up with the caret and stay aligned. Rows
+ *  and caret, measured on the editable diff surface as `row.top / caret.top`:
+ *  split 194/202 -> 194/194, unified 194/194 -> 186/186
+ *  (`scripts/capture-pierre-caret-align.mjs` prints both). */
+export const PIERRE_EDIT_CARET_ALIGN_CSS = `
+[data-code]{padding-top:0}
+`
+
 /** Highlighting worker pool size. Each worker is spawned eagerly at pool
  *  init and loads its own copy of the highlighter bundle plus the WASM regex
  *  engine, so this is a startup cost paid whether or not a diff is on screen.

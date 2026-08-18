@@ -9,6 +9,7 @@ import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/re
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
 import { useIsDark } from '../hooks/useIsDark'
 import {
+  PIERRE_EDIT_CARET_ALIGN_CSS,
   PIERRE_VIRTUALIZER_CONFIG,
   pierreDiffOptions,
   pierreFileOptions,
@@ -85,6 +86,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
       diffStyle: diffSplit ? 'split' : 'unified',
       ...(diffExpandUnchanged == null ? {} : { expandUnchanged: diffExpandUnchanged }),
       ...options,
+      unsafeCSS: (options?.unsafeCSS ?? '') + PIERRE_EDIT_CARET_ALIGN_CSS,
     }),
     [dark, options, diffSplit, diffExpandUnchanged],
   )
