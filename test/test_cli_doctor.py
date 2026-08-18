@@ -653,3 +653,357 @@ class TestPathLauncherOwnership:
 
         out = capsys.readouterr().out
         assert "kirocrew CLI: ✅" in out
+
+
+class TestSourceCheckout:
+    """`kirocrew doctor` Source Checkout section — stale/off-branch source tree.
+
+    Guards _doctor_source_checkout: an editable install parked on a stale
+    feature branch runs old code (merged security fixes included) while every
+    other doctor section reports healthy. These tests drive the probe through
+    the _git_line seam — no real repository needed.
+    """
+
+    @staticmethod
+    def _fake_git(answers: dict[tuple[str, ...], str | None]):
+        def fake(repo, *args):
+            return answers.get(tuple(args))
+
+        return fake
+
+    def _repo(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        return tmp_path
+
+    def test_on_default_up_to_date_passes(self, monkeypatch, tmp_path, capsys) -> None:
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+                    ("rev-list", "--count", "HEAD..origin/main"): "0",
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "✅ main (up to date" in out
+        assert "⚠️" not in out
+
+    def test_on_default_behind_warns_with_count(self, monkeypatch, tmp_path, capsys) -> None:
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+                    ("rev-list", "--count", "HEAD..origin/main"): "42",
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "⚠️" in out
+        assert "42 commit(s) behind" in out
+        assert "update + restart" in out
+
+    def test_feature_branch_behind_warns_with_fix(self, monkeypatch, tmp_path, capsys) -> None:
+        # The incident shape: gateway source parked on a feature branch for
+        # days, hundreds of commits behind — doctor must name the branch, the
+        # distance, and the recovery path.
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): "fix/some-feature",
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+                    ("rev-list", "--count", "HEAD..origin/main"): "798",
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "⚠️" in out
+        assert "fix/some-feature" in out
+        assert "798 commit(s) behind origin/main" in out
+        assert "NOT active" in out
+        assert "check out the default branch" in out
+
+    def test_remediation_never_renders_ref_inside_a_command(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """A hostile ref name must not become a pasteable command payload.
+
+        Branch names come from the repository — agent-writable on this threat
+        model — so a ref like ``$(touch${IFS}/tmp/pwn)`` rendered into a
+        suggested ``git checkout ...`` line would execute when the operator
+        pastes it. Remediation must stay prose: no line may combine a command
+        word with the interpolated ref.
+        """
+        evil = "$(touch${IFS}/tmp/pwn)"
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): evil,
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+                    ("rev-list", "--count", "HEAD..origin/main"): "3",
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        # The state is still reported (prose may name the ref) ...
+        assert evil in out
+        # ... but never on a line shaped like a runnable git command.
+        for line in out.splitlines():
+            if "git -C" in line or "git checkout" in line:
+                raise AssertionError(f"pasteable command rendered: {line!r}")
+
+    def test_on_default_failed_count_reports_could_not_check(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        # rev-list failing on the default branch must NOT masquerade as a
+        # verified-fresh checkout — "up to date" is a claim the probe could
+        # not establish.
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+                    ("rev-list", "--count", "HEAD..origin/main"): None,
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        assert "could not count commits behind" in out
+
+    def test_feature_branch_unknown_distance_still_warns(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        # rev-list failing (e.g. origin/main ref pruned) must not hide the
+        # off-branch state itself.
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): "fix/some-feature",
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): "origin/main",
+                    ("rev-list", "--count", "HEAD..origin/main"): None,
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "⚠️" in out
+        assert "on 'fix/some-feature' — not the default branch" in out
+        assert "behind" not in out.split("not the default branch")[1].splitlines()[0]
+
+    def test_missing_origin_head_reports_branch_without_guessing(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        # No origin/HEAD → report what we know, never assume the default is
+        # "main" (could mislabel a repo whose default genuinely differs).
+        monkeypatch.setattr(
+            cli_doctor,
+            "_git_line",
+            self._fake_git(
+                {
+                    ("rev-parse", "--abbrev-ref", "HEAD"): "develop",
+                    ("rev-parse", "--abbrev-ref", "origin/HEAD"): None,
+                }
+            ),
+        )
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "develop" in out
+        assert "could not determine default branch" in out
+        assert "main" not in out
+
+    def test_not_a_git_checkout_is_not_applicable(self, monkeypatch, tmp_path, capsys) -> None:
+        # Tarball installs (cloud/EC2) have no .git — mirror the update
+        # handler's guard and stay quiet rather than warning.
+        cli_doctor._doctor_source_checkout(tmp_path)
+        out = capsys.readouterr().out
+        assert "⏹ not a git checkout" in out
+        assert "⚠️" not in out
+
+    def test_git_failure_reports_could_not_check(self, monkeypatch, tmp_path, capsys) -> None:
+        monkeypatch.setattr(cli_doctor, "_git_line", self._fake_git({}))
+        cli_doctor._doctor_source_checkout(self._repo(tmp_path))
+        out = capsys.readouterr().out
+        assert "could not check" in out
+
+    def test_git_line_returns_none_on_nonzero_exit(self, monkeypatch, tmp_path) -> None:
+        import subprocess as _sp
+
+        def fake_run(*a, **k):
+            return _sp.CompletedProcess(a, 128, stdout="", stderr="fatal: not a repo")
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/git"
+        )
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") is None
+
+    def test_git_line_returns_first_line_stripped(self, monkeypatch, tmp_path) -> None:
+        import subprocess as _sp
+
+        def fake_run(*a, **k):
+            return _sp.CompletedProcess(a, 0, stdout="  main  \nextra\n", stderr="")
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/git"
+        )
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+    def test_git_line_returns_none_on_oserror(self, monkeypatch, tmp_path) -> None:
+        def fake_run(*a, **k):
+            raise OSError("git not found")
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/git"
+        )
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") is None
+
+    def test_git_line_survives_non_utf8_output(self, monkeypatch, tmp_path) -> None:
+        """A non-UTF-8 ref name must not crash doctor.
+
+        ``text=True`` decodes strictly unless an ``errors=`` policy is given:
+        a branch named with latin-1 bytes would raise ``UnicodeDecodeError``
+        inside ``_git_line`` — which the OSError/SubprocessError handler does
+        not catch — terminating the whole doctor run. The call passes
+        ``errors="replace"`` so undecodable bytes degrade to U+FFFD instead.
+        The fake below decodes with whatever policy the call supplies, so
+        removing ``errors="replace"`` makes this test crash exactly as the
+        real doctor would.
+        """
+        import subprocess as _sp
+
+        raw = b"exp\xe9rimental\n"  # latin-1 e-acute: invalid as UTF-8
+
+        def fake_run(argv, *a, **k):
+            errors = k.get("errors")
+            stdout = (
+                raw.decode("utf-8", errors=errors)
+                if errors
+                else raw.decode("utf-8")
+            )
+            return _sp.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/git"
+        )
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        line = cli_doctor._git_line(tmp_path, "rev-parse", "--abbrev-ref", "HEAD")
+        assert line == "exp\ufffdrimental"
+
+    def test_git_line_pins_git_and_returns_none_when_untrusted(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """git resolves via trusted_system_bin; a miss means no subprocess at all.
+
+        Doctor runs with operator privileges, so a ``git`` shim planted in an
+        agent-writable PATH directory must never execute: when the trusted
+        resolver declines, _git_line collapses to None without spawning.
+        When it resolves, the pinned absolute path — not the bare name — is
+        what reaches argv[0].
+        """
+        import subprocess as _sp
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, *a, **k):
+            calls.append(list(argv))
+            return _sp.CompletedProcess(argv, 0, stdout="main\n", stderr="")
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+
+        # Miss: no trusted git -> None, and no process spawned. Neutralize
+        # the Windows fallback too so the miss is a miss on every platform
+        # (on a real Windows runner _windows_git_bin finds the actual Git
+        # for Windows install; the fallback has its own dedicated test).
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None
+        )
+        monkeypatch.setattr(cli_doctor, "_windows_git_bin", lambda: None)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") is None
+        assert calls == []
+
+        # Hit: the resolved absolute path is argv[0], never the bare "git".
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "trusted_system_bin",
+            lambda _n: "/usr/bin/git",
+        )
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") == "main"
+        assert calls and calls[0][0] == "/usr/bin/git"
+
+    def test_git_line_windows_falls_back_to_git_for_windows_roots(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """On Windows a system-dirs miss probes the fixed Git for Windows roots.
+
+        Git for Windows installs under Program Files, never System32, so
+        without the fallback every supported Windows source install reported
+        "could not check". The fallback stays pinned: fixed literal roots, and
+        a miss there still means no subprocess.
+        """
+        import subprocess as _sp
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, *a, **k):
+            calls.append(list(argv))
+            return _sp.CompletedProcess(argv, 0, stdout="main\n", stderr="")
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None
+        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", True)
+
+        gfw = r"C:\Program Files\Git\cmd\git.exe"
+        monkeypatch.setattr(cli_doctor, "_windows_git_bin", lambda: gfw)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") == "main"
+        assert calls and calls[0][0] == gfw
+
+        # Fallback miss: still no spawn at all.
+        calls.clear()
+        monkeypatch.setattr(cli_doctor, "_windows_git_bin", lambda: None)
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") is None
+        assert calls == []
+
+    def test_git_line_non_windows_never_probes_git_for_windows(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # POSIX resolver miss must not consult the Windows fallback: the
+        # trusted-dirs decision is final there.
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None
+        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_windows_git_bin",
+            lambda: (_ for _ in ()).throw(AssertionError("probed on POSIX")),
+        )
+        assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") is None
+
+    def test_windows_git_bin_returns_none_when_roots_empty(self, monkeypatch) -> None:
+        # Fixed roots only — a miss returns None without consulting PATH or
+        # the environment.
+        monkeypatch.setattr(cli_doctor, "_WINDOWS_GIT_DIRS", ("Z:\\nonexistent\\Git\\cmd",))
+        assert cli_doctor._windows_git_bin() is None

@@ -620,6 +620,18 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_commands.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
         "cli_doctor.py::_doctor_mcp_tools",
+        # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
+        # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
+        # install's own source directory (derived from the package's module
+        # path, never agent-supplied). The binary itself is pinned via
+        # ``platform_compat.trusted_system_bin("git")`` with a Windows-only
+        # fallback to the fixed Git for Windows install roots under Program
+        # Files (literal paths, never ``%ProgramFiles%`` — the environment is
+        # exactly what the pin declines to trust); a miss on both means no
+        # spawn at all. Operator-invoked doctor, 10s-capped, queries only — no
+        # fetch, no mutation. Same classification as the other fixed-argv
+        # doctor probes (``_detect_userspace_oom_killer``, ``_detect_linger``).
+        "cli_doctor.py::_git_line",
         # NOT a subprocess spawn here: the AST heuristic matches ``asyncio.run``
         # (attr ``run`` on base ``asyncio``), used only to drive the async KAS
         # token probe from the synchronous doctor. The actual child process is
