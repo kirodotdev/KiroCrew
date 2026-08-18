@@ -115,7 +115,7 @@ import { pickSearchScrollBehavior, scrollCurrentMatchIntoView, pollRowSettled, g
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
-import { useVoiceInput, voiceInputSupported } from '../hooks/useVoiceInput'
+import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../hooks/useVoiceInput'
 import { usePushToTalk } from '../hooks/usePushToTalk'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
@@ -1766,7 +1766,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const insert = lead + text
     return { value: before + insert + trail + after, caret: before.length + insert.length }
   }, [])
-  const applyVoiceText = useCallback((text: string, sessionId: string | null) => {
+  const applyVoiceText = useCallback((text: string, sessionId: string | null, origin: TranscriptOrigin) => {
     // Disarmed after a send (streaming) — the transcript was already sent, so
     // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
     // late final can't slip the already-sent text back into the originating
@@ -1775,7 +1775,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // `sttAppendDisarmedRef` covers the narrower case: a manual stop whose
     // hypothesis is already in the composer. This route APPENDS, so letting the
     // close-time final through there would duplicate the utterance.
-    if (sttDisarmedRef.current || sttAppendDisarmedRef.current) return
+    //
+    // Both are STREAMING-only states — every site that arms them is gated on
+    // streaming — so they are keyed on where the text came from, not on the mode
+    // selected right now. A batch transcription can outlive the page that started
+    // it and land after streaming was switched on, and its onstop transcript is
+    // always the only copy: suppressing it would delete what the user said.
+    if (origin === 'stream' && (sttDisarmedRef.current || sttAppendDisarmedRef.current)) return
     const target = sessionId ?? activeSlotRef.current
     const append = (base: string) => (base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
     // Splice into the LIVE composer only when the target slot is both the active
@@ -1790,8 +1796,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // its live hypothesis into `input`, which is flushed into the draft on
       // switch, so a cross-slot append would double it — a streaming final that
       // lands off its slot is dropped (pre-existing behaviour). Batch has no
-      // partial, so appending to the slot's draft is unambiguous.
-      if (!target || streamEnabledRef.current) return
+      // partial, so appending to the slot's draft is unambiguous. Keyed on the
+      // text's origin rather than the live streaming setting, which is a proxy
+      // that goes wrong for a batch transcript arriving after the mode changed.
+      if (!target || origin === 'stream') return
       const next = append(drafts.current[target] ?? '')
       setDraft(drafts.current, target, next)
       // Mid-switch guard: if the composer still belongs to `target` (activeSlot

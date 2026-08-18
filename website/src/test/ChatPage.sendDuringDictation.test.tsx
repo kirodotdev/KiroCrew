@@ -3,6 +3,7 @@
 // pre-fill the composer, requiring an explicit human gesture (Enter) to send.
 // When the user does send pre-filled text, the turn is tagged meta.origin=widget.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { TranscriptOrigin } from '../hooks/useVoiceInput'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -46,7 +47,10 @@ const voice = vi.hoisted(() => {
     partial: '',
     onPartial: null as ((t: string) => void) | null,
     onEndpoint: null as (() => void) | null,
-    onText: null as ((t: string) => void) | null,
+    onText: null as ((t: string, sessionId: string | null, origin: TranscriptOrigin) => void) | null,
+    /** Mode the page configured, so a delivered transcript can carry the origin
+     *  the real hook would attach to it. */
+    streaming: false,
     toggle: (() => {}) as () => void,
     start: (() => {}) as () => void,
     stop: (() => {}) as () => void,
@@ -59,10 +63,11 @@ voice.start = vi.fn(() => { voice.recording = true })
 voice.stop = vi.fn(() => { voice.recording = false })
 voice.cancel = vi.fn(() => { voice.recording = false })
 vi.mock('../hooks/useVoiceInput', () => ({
-  useVoiceInput: (onText: (t: string) => void, opts?: { onPartial?: (t: string) => void; onEndpoint?: () => void; streaming?: boolean }) => {
+  useVoiceInput: (onText: (t: string, sessionId: string | null, origin: TranscriptOrigin) => void, opts?: { onPartial?: (t: string) => void; onEndpoint?: () => void; streaming?: boolean }) => {
     voice.onPartial = opts?.onPartial ?? null
     voice.onEndpoint = opts?.onEndpoint ?? null
     voice.onText = onText
+    voice.streaming = !!opts?.streaming
     return ({
     recording: voice.recording,
     transcribing: false,
@@ -83,6 +88,10 @@ vi.mock('../hooks/useVoiceInput', () => ({
   },
   voiceInputSupported: true,
 }))
+
+/** Hand ChatPage a transcript exactly as `useVoiceInput` would: the origin is the
+ *  capture path that produced it, which is the mode the page is configured for. */
+const deliverText = (text: string) => voice.onText?.(text, null, voice.streaming ? 'stream' : 'batch')
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
@@ -224,7 +233,7 @@ describe('ChatPage — sending while dictating', () => {
     expect(ta.value).toBe('')
 
     // Capture was NOT disarmed, so the transcript still lands.
-    await act(async () => { voice.onText?.('dictated words') })
+    await act(async () => { deliverText('dictated words') })
     expect(ta.value).toBe('dictated words')
   })
 
@@ -253,7 +262,7 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
     await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
 
-    await act(async () => { voice.onText?.('there') })
+    await act(async () => { deliverText('there') })
     expect(ta.value).toBe('Hello there world')
   })
 
@@ -267,7 +276,7 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
     await act(async () => { fireEvent.change(ta, { target: { value: 'world' } }) })
     await act(async () => { ta.setSelectionRange(0, 0); fireEvent.select(ta) })
-    await act(async () => { voice.onText?.('hello') })
+    await act(async () => { deliverText('hello') })
     expect(ta.value).toBe('hello world')
   })
 
@@ -281,7 +290,7 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
     await act(async () => { fireEvent.change(ta, { target: { value: 'keep me' } }) })
     await act(async () => { ta.setSelectionRange(0, 7); fireEvent.select(ta) })
-    await act(async () => { voice.onText?.('') })
+    await act(async () => { deliverText('') })
     expect(ta.value).toBe('keep me')
   })
 
@@ -312,7 +321,7 @@ describe('ChatPage — sending while dictating', () => {
     expect(voice.recording).toBe(false)
 
     // The final drains in after the stop and must still reach the composer.
-    await act(async () => { voice.onText?.('hello there') })
+    await act(async () => { deliverText('hello there') })
     expect(ta.value).toBe('note: hello there')
   })
 
@@ -406,7 +415,7 @@ describe('ChatPage — sending while dictating', () => {
 
     // The user edits while the socket drains, then the final arrives.
     await act(async () => { fireEvent.change(ta, { target: { value: 'edited by hand' } }) })
-    await act(async () => { voice.onText?.('hello there') })
+    await act(async () => { deliverText('hello there') })
     expect(ta.value).toBe('edited by hand')
   })
 
@@ -436,7 +445,7 @@ describe('ChatPage — sending while dictating', () => {
 
     // The close-time route still APPENDS, so it must stay suppressed — otherwise
     // the composer would read "remind me to call Ana remind me to call Ana".
-    await act(async () => { voice.onText?.('remind me to call Ana') })
+    await act(async () => { deliverText('remind me to call Ana') })
     expect(ta.value).toBe('remind me to call Ana')
   })
 
@@ -700,7 +709,7 @@ describe('ChatPage — sending while dictating', () => {
     // append — so letting it through here would delete the typed ' NOW'. The
     // drain already put the stabilised text in the composer, so the final has
     // nothing to add and must be suppressed.
-    await act(async () => { voice.onText?.('remind me to call Ana') })
+    await act(async () => { deliverText('remind me to call Ana') })
     expect(ta.value).toBe('draft remind me to call Ana NOW')
   })
 

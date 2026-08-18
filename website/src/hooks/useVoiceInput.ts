@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { api } from '../api/client'
 import { streamingSupported, useStreamingStt } from './useStreamingStt'
 import { acquireMicStream, activeDeviceId, humanizeMicError, createLevelMeter, createAudioSample, getPreferredMicId, setPreferredMicId } from './mic'
+import { beginTranscription, settleTranscription, subscribeTranscripts } from './voiceTranscriptInbox'
 import { i18nT } from '../i18n/t'
 
 function pickMimeType(): string {
@@ -34,7 +35,14 @@ interface Opts {
   sessionId?: string | null
 }
 
-export function useVoiceInput(onText: (text: string, sessionId: string | null) => void, opts: Opts = {}) {
+/** Which capture path produced a transcript. The caller's disarm flags are all
+ *  streaming-only concepts, so a batch transcript must be recognisable as such
+ *  rather than inferred from whichever mode happens to be selected when it
+ *  arrives — the two differ once a transcription outlives the page that
+ *  started it. */
+export type TranscriptOrigin = 'batch' | 'stream'
+
+export function useVoiceInput(onText: (text: string, sessionId: string | null, origin: TranscriptOrigin) => void, opts: Opts = {}) {
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   // The slot that owns the current voice session — set when a recording
@@ -115,7 +123,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
     [optsPartial],
   )
   const streamOnFinal = useCallback(
-    (text: string) => { setPartial(''); if (text) onText(text, streamSessionRef.current) },
+    (text: string) => { setPartial(''); if (text) onText(text, streamSessionRef.current, 'stream') },
     [onText],
   )
   const optsEndpoint = opts.onEndpoint
@@ -167,6 +175,50 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
 
   // Cleanup on unmount — stop mic stream
   useEffect(() => () => { stopStream() }, [stopStream])
+
+  // Latest delivery callback, so a transcription that settles after this
+  // instance mounted (including one started by an earlier one) reaches the
+  // current consumer rather than a captured stale closure.
+  const onTextRef = useRef(onText)
+  onTextRef.current = onText
+  // Live capture in THIS instance. A transcription reported through the inbox
+  // may belong to an earlier instance, and its bookkeeping must never blank the
+  // busy state of a recording running here. The batch recorder's own state is
+  // read directly (not a mirror) because the two can change in the same tick.
+  const streamRecordingRef = useRef(false)
+  streamRecordingRef.current = streamRecording
+  const capturing = useCallback(
+    () => mediaRef.current?.state === 'recording' || streamRecordingRef.current,
+    [],
+  )
+  // The inbox request this instance currently displays as busy, if any.
+  const shownRef = useRef<number | null>(null)
+
+  // A batch transcription outlives the component that started it (see
+  // voiceTranscriptInbox): leaving Chat unmounts this hook while `/api/stt` is
+  // still in flight, so its progress and result are routed through the inbox
+  // instead of into a dead closure. Whichever instance is mounted delivers it —
+  // restoring the busy indicator for the slot still waiting — and a result that
+  // settled with none mounted is drained here on the next mount.
+  useEffect(() => subscribeTranscripts({
+    begin: request => {
+      if (capturing()) return
+      shownRef.current = request.id
+      setTranscribing(true)
+      setSessionOwner(request.sessionId)
+    },
+    settle: result => {
+      // Only the request actually on display releases the busy state, and only
+      // while nothing is capturing here: a transcription that settles after this
+      // instance started its own session must not blank that session's mic UI.
+      if (shownRef.current === result.id) {
+        shownRef.current = null
+        if (!capturing()) { setTranscribing(false); setSessionOwner(null) }
+      }
+      if (result.error) setError(result.error)
+      else if (result.text) onTextRef.current(result.text, result.sessionId, 'batch')
+    },
+  }), [capturing])
 
   // Acquire (or reuse) a live mic stream and attach the level meter + device
   // label exactly once. A single in-flight getUserMedia is shared so a
@@ -335,25 +387,27 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
         const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm'
         const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })
         if (blob.size < 100) { setSessionOwner(null); return }
-        setTranscribing(true)
+        // Announced to the inbox rather than tracked only here: whichever hook
+        // instance is mounted shows the busy state for the slot that is waiting,
+        // including one that mounts after this recorder's page is gone.
+        const request = beginTranscription(sessionAtStart)
         try {
           const res = await api.sttTranscribe(blob, ext)
           if (res.error) {
             // eslint-disable-next-line no-console -- surface STT failures for debugging
             console.error('[voice] STT error:', res.error)
-            setError(i18nT('hooks.useVoiceInput.transcription_failed', { error: res.error }))
-          } else if (res.text) onText(res.text, sessionAtStart)
+            settleTranscription({ id: request.id, error: i18nT('hooks.useVoiceInput.transcription_failed', { error: res.error }), sessionId: sessionAtStart })
+          } else settleTranscription({ id: request.id, text: res.text, sessionId: sessionAtStart })
         } catch (err) {
           // eslint-disable-next-line no-console -- surface transcription failures for debugging
           console.error('[voice] transcription failed:', err)
-          setError(i18nT('hooks.useVoiceInput.transcription_request_failed'))
+          settleTranscription({ id: request.id, error: i18nT('hooks.useVoiceInput.transcription_request_failed'), sessionId: sessionAtStart })
         }
-        // Session over (recording ended, transcription done) — release ownership
-        // so another slot can start. Exclusivity (one session at a time) is
-        // enforced by the caller, so there is never a second in-flight request
-        // whose state this could clobber.
-        setTranscribing(false)
-        setSessionOwner(null)
+        // The session ends when the transcription settles, and releasing
+        // `transcribing`/`sessionOwner` is the subscriber's job — this recorder's
+        // own hook instance while it is still mounted, or the next one to mount.
+        // Releasing it a second time here would bypass that subscriber's guard
+        // and blank the mic UI of a session started since.
       }
       mr.start()
       mediaRef.current = mr
@@ -387,7 +441,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null) =
       setError(humanizeMicError(e))
     }
     if (gen === startGenRef.current) startingRef.current = false
-  }, [onText, streamEnabled, streamStart, acquireWarm])
+  }, [streamEnabled, streamStart, acquireWarm])
 
   const stop = useCallback(() => {
     if (streamEnabled) { streamStop(); setSessionOwner(null); return }
