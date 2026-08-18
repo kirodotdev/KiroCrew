@@ -6,6 +6,9 @@ const {
   GATEWAY_OWNERSHIP_STATES,
   waitForServiceRebind,
   waitForProcessExit,
+  snapshotPortPids,
+  incumbentSnapshotBlocksRespawn,
+  unrecoverableGatewayDialog,
 } = require("../gateway-recovery");
 
 describe("chooseRecoveryStrategy", () => {
@@ -179,8 +182,8 @@ describe("waitForProcessExit", () => {
     }
   });
 
-  // Empty/invalid pid sets (probe failed, Windows without lsof) degrade to a
-  // no-op — same behavior as before this gate existed, never a hang.
+  // Empty/invalid pid sets (for example, a failed listener probe) degrade to a
+  // no-op rather than hanging recovery.
   it("degrades to exited immediately with no watchable pids", async () => {
     let slept = false;
     for (const pids of [[], null, undefined, [0, -3, NaN]]) {
@@ -192,5 +195,101 @@ describe("waitForProcessExit", () => {
       assert.equal(verdict, "exited");
     }
     assert.equal(slept, false);
+  });
+});
+
+describe("snapshotPortPids", () => {
+  it("uses the Windows listener probe so recovery can wait for gateway.lock", async () => {
+    const calls = [];
+    const pids = await snapshotPortPids({
+      port: 5476,
+      isWindows: true,
+      getWindowsPids: async (port) => {
+        calls.push(["windows", port]);
+        return [4242];
+      },
+      getPosixPids: async (port) => {
+        calls.push(["posix", port]);
+        return [9999];
+      },
+    });
+    assert.deepEqual(pids, [4242]);
+    assert.deepEqual(calls, [["windows", 5476]]);
+  });
+
+  it("returns unknown when the selected probe fails or misses the listener", async () => {
+    const failed = await snapshotPortPids({
+      port: 5476,
+      isWindows: true,
+      getWindowsPids: async () => { throw new Error("netstat unavailable"); },
+      getPosixPids: async () => [9999],
+    });
+    const missed = await snapshotPortPids({
+      port: 5476,
+      isWindows: true,
+      getWindowsPids: async () => [],
+      getPosixPids: async () => [9999],
+    });
+    assert.equal(failed, null);
+    assert.equal(missed, null);
+  });
+});
+
+describe("unrecoverableGatewayDialog", () => {
+  it("offers a real quit action for an unkillable primary gateway", () => {
+    const model = unrecoverableGatewayDialog({
+      port: 5476,
+      isPrimaryWindow: true,
+    });
+    assert.equal(model.title, "Kiro Crew: backend stuck on port 5476");
+    assert.equal(model.primaryAction, "quit");
+    assert.equal(model.primaryLabel, "Quit Kiro Crew");
+    assert.equal(model.showQuitButton, false);
+    assert.equal(model.portConflict, false);
+    assert.match(model.message, /Restart your computer/);
+  });
+
+  it("tells a probe-failure user to reopen before restarting", () => {
+    const model = unrecoverableGatewayDialog({
+      port: 5476,
+      probeFailed: true,
+      isPrimaryWindow: false,
+    });
+    assert.equal(model.title, "Kiro Crew: can't verify what's using port 5476");
+    assert.equal(model.primaryAction, "quit");
+    assert.equal(model.primaryLabel, "Close");
+    assert.equal(model.showQuitButton, false);
+    assert.match(model.message, /Quit and reopen Kiro Crew to try again/);
+    assert.match(model.message, /If the port is still blocked, restart your computer/);
+  });
+
+  it("tells a user to quit an unowned process that still holds the port", () => {
+    const model = unrecoverableGatewayDialog({
+      port: 5476,
+      variant: "held",
+      isPrimaryWindow: true,
+    });
+    assert.equal(model.title, "Kiro Crew: port 5476 is in use");
+    assert.equal(model.primaryAction, "quit");
+    assert.equal(model.primaryLabel, "Quit Kiro Crew");
+    assert.equal(model.showQuitButton, false);
+    assert.match(model.message, /Quit the process using port 5476/);
+    assert.doesNotMatch(model.message, /Restart your computer/);
+  });
+});
+
+describe("incumbentSnapshotBlocksRespawn", () => {
+  it("refuses an automatic respawn when the Windows probe named nothing", () => {
+    assert.equal(incumbentSnapshotBlocksRespawn({ pids: null, isWindows: true }), true);
+  });
+
+  it("still boots a POSIX host whose lsof is missing or blocked", () => {
+    assert.equal(incumbentSnapshotBlocksRespawn({ pids: null, isWindows: false }), false);
+  });
+
+  it("never blocks when the incumbent was actually captured", () => {
+    for (const isWindows of [true, false]) {
+      assert.equal(incumbentSnapshotBlocksRespawn({ pids: [4242], isWindows }), false);
+    }
   });
 });

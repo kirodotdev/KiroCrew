@@ -145,12 +145,97 @@ async function waitForProcessExit({ pids, isAlive, sleep, timeoutMs = INCUMBENT_
   }
 }
 
+// Capture listener PIDs while the port is still bound. The draining process may
+// release its socket before dropping gateway.lock, so recovery needs its PID to
+// wait for process exit rather than treating "port free" as "lock free". A null
+// result means the snapshot is unsafe: the probe failed or the listener vanished
+// before it could be captured.
+async function snapshotPortPids({
+  port,
+  isWindows = false,
+  getWindowsPids,
+  getPosixPids,
+}) {
+  const getListenPids = isWindows ? getWindowsPids : getPosixPids;
+  if (typeof getListenPids !== "function") return null;
+  try {
+    const pids = await getListenPids(port);
+    return Array.isArray(pids) && pids.length ? pids : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does an unusable incumbent snapshot have to stop an automatic respawn?
+ *
+ * A `null` snapshot means the listener probe could not name the draining
+ * process. On Windows that is anomalous — netstat ships in-box — so recovery
+ * fails closed rather than respawning into the incumbent's `gateway.lock`. On
+ * POSIX a missing or blocked `lsof` degrades to a no-op wait, and the
+ * replacement's own lock refusal is an honest arbiter, so a host without `lsof`
+ * must still be able to boot.
+ */
+function incumbentSnapshotBlocksRespawn({ pids, isWindows = false }) {
+  return pids === null && isWindows;
+}
+
+/**
+ * Build the terminal recovery dialog without loading Electron.
+ *
+ * @param {object} o
+ * @param {number|string} o.port
+ * @param {"wedged"|"held"} [o.variant]
+ * @param {boolean} [o.probeFailed]
+ * @param {boolean} [o.isPrimaryWindow]
+ * @returns {{
+ *   title:string, message:string, portConflict:false,
+ *   primaryAction:"quit", primaryLabel:string, showQuitButton:false
+ * }}
+ */
+function unrecoverableGatewayDialog({
+  port,
+  variant = "wedged",
+  probeFailed = false,
+  isPrimaryWindow = false,
+}) {
+  const held = variant === "held";
+  return {
+    title: probeFailed
+      ? `Kiro Crew: can't verify what's using port ${port}`
+      : held
+        ? `Kiro Crew: port ${port} is in use`
+        : `Kiro Crew: backend stuck on port ${port}`,
+    message: probeFailed
+      ? `Kiro Crew could not verify which process owns port ${port}, so it did not `
+        + `risk terminating an unrelated process or starting a second gateway. `
+        + `Quit and reopen Kiro Crew to try again. If the port is still blocked, `
+        + `restart your computer.`
+      : held
+        ? `Another process is holding port ${port}, so Kiro Crew can't reconnect to `
+          + `it or start its own backend there. Quit the process using port ${port} `
+          + `(the launch log below names it; look for the "port-owner:" line), `
+          + `then reopen this app.`
+        : `The Kiro Crew backend is wedged and cannot be stopped. It is in an `
+          + `uninterruptible state and is still holding port ${port}, so it can't be `
+          + `force-stopped or restarted in place. Restart your computer to clear it. `
+          + `(This is a known backend hang; see the launch log below for the cause.)`,
+    portConflict: false,
+    primaryAction: "quit",
+    primaryLabel: isPrimaryWindow ? "Quit Kiro Crew" : "Close",
+    showQuitButton: false,
+  };
+}
+
 module.exports = {
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
   GATEWAY_OWNERSHIP_STATES,
   waitForServiceRebind,
   waitForProcessExit,
+  snapshotPortPids,
+  incumbentSnapshotBlocksRespawn,
+  unrecoverableGatewayDialog,
   SERVICE_REBIND_GRACE_MS,
   INCUMBENT_EXIT_GRACE_MS,
 };
