@@ -737,7 +737,7 @@ function NotificationsBellButton() {
       >
         <Bell size={15} />
         {unacked.length > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center shadow-[0_0_8px_var(--accent-glow)]" aria-hidden="true">
+          <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center shadow-[0_0_2px_var(--accent-glow)]" aria-hidden="true">
             {unacked.length > 99 ? '99+' : unacked.length}
           </span>
         )}

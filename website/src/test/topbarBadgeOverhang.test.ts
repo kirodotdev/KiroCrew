@@ -23,10 +23,10 @@ describe('topbar unread badge overhang', () => {
   it('reserves the overhang inside the clip box without moving the group', async () => {
     const m = (await css()).match(TB_RIGHT_RULE)
     expect(m, 'expected the .tb-right rule').not.toBeNull()
-    expect(m![0]).toMatch(/padding:4px 4px 0 0/)
+    expect(m![0]).toMatch(/padding:6px 6px 0 0/)
     // Equal and opposite: the padding grows the clip box, the margin gives back
     // the space, so the bell stays put and the header keeps its height.
-    expect(m![0]).toMatch(/margin:-4px -4px 0 0/)
+    expect(m![0]).toMatch(/margin:-6px -6px 0 0/)
   })
 
   it('does not depend on overflow-clip-margin, which WebKit does not implement', async () => {
@@ -39,20 +39,25 @@ describe('topbar unread badge overhang', () => {
   })
 
   it('keeps the shared clip on the group, so its contents cannot cross the centre track', async () => {
-    // The gutter widens the clip box by 4px; it does not remove the clip.
+    // The gutter widens the clip box by 6px; it does not remove the clip.
     const s = await css()
     expect(s).toMatch(/\.tb-left,\.tb-right\{container-type:inline-size[^}]*overflow:hidden\}/)
   })
 
-  it('keeps the gutter equal to the badge offset it exists to admit', async () => {
-    // The two files carry one number between them. Moving the badge further out
-    // without widening the gutter silently re-clips it, which is how this shipped.
+  it('reserves at least the badge offset, and keeps the glow inside that reserve', async () => {
+    // The two files carry the numbers between them. Moving the badge further out
+    // without widening the gutter silently re-clips it, which is how this shipped
+    // the first time. And the badge's glow shadow extends past the badge box, so
+    // a reserve that only admits the box still clips the glow — the blur radius
+    // must fit inside the reserve too.
     const app = await read('App.tsx')
     const badge = app.match(/className="absolute (-top-\S+) (-right-\S+)[^"]*"/)
     expect(badge, 'expected the bell badge span').not.toBeNull()
     // Tailwind spacing: `-top-1` / `-right-1` are 0.25rem = 4px.
     expect(badge![1]).toBe('-top-1')
     expect(badge![2]).toBe('-right-1')
+    const OFFSET = 4
+
     const rule = (await css()).match(TB_RIGHT_RULE)![0]
     // `0` is written without a unit, as CSS allows and this file does elsewhere.
     const four = /(-?\d+)(?:px)? (-?\d+)(?:px)? (-?\d+)(?:px)? (-?\d+)(?:px)?/
@@ -60,8 +65,23 @@ describe('topbar unread badge overhang', () => {
     const mar = rule.match(new RegExp('margin:' + four.source))
     expect(pad, 'expected the gutter padding').not.toBeNull()
     expect(mar, 'expected the compensating margin').not.toBeNull()
-    // top and right only — the badge overhangs nowhere else.
-    expect([pad![1], pad![2], pad![3], pad![4]]).toEqual(['4', '4', '0', '0'])
-    expect([mar![1], mar![2], mar![3], mar![4]]).toEqual(['-4', '-4', '0', '0'])
+    const [padTop, padRight, padBottom, padLeft] = [+pad![1], +pad![2], +pad![3], +pad![4]]
+    // top and right reserve the overhang; the badge overhangs nowhere else.
+    expect(padBottom).toBe(0)
+    expect(padLeft).toBe(0)
+    // Equal on the two overhang edges, and at LEAST the badge offset — a flush
+    // reserve (== offset) left the badge body on the clip boundary, so sub-pixel
+    // rounding still squared it. The reserve carries slack past the offset.
+    expect(padTop).toBe(padRight)
+    expect(padTop).toBeGreaterThanOrEqual(OFFSET)
+    // The margin gives back exactly what the padding took, so nothing moves.
+    expect([+mar![1], +mar![2], +mar![3], +mar![4]]).toEqual([-padTop, -padRight, 0, 0])
+
+    // The badge glow (`shadow-[0_0_<blur>px_var(--accent-glow)]`) blooms past the
+    // badge box by its blur radius. `.tb-right` has overflow:hidden, so a blur
+    // wider than the reserve bleeds to the header edge and gets clipped there.
+    const glow = app.match(/shadow-\[0_0_(\d+)px_var\(--accent-glow\)\]/)
+    expect(glow, 'expected the badge glow shadow').not.toBeNull()
+    expect(+glow![1]).toBeLessThanOrEqual(padTop)
   })
 })

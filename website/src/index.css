@@ -1625,9 +1625,12 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    CONTENT box -- what the @container ladder below queries -- keeps the width the
    track gives it. Deliberately NOT `overflow-clip-margin`: WebKit does not
    implement it, so on every iOS browser that spelling would leave the badge
-   clipped exactly as before. Keep both values equal to the badge's offset: less
-   re-clips it, more lets real content escape into the header's padding. */
-.tb-right{justify-content:flex-end;gap:.375rem;padding:4px 4px 0 0;margin:-4px -4px 0 0}
+   clipped exactly as before. The reserve is 2px MORE than the badge's 4px offset,
+   not equal to it: a flush 4px left the badge body exactly on the clip boundary,
+   so sub-pixel rounding and the badge's glow shadow still squared its top and
+   right edges. The 2px slack clears the box; keep both values equal, and only as
+   large as needed, since more lets real content escape into the header's padding. */
+.tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 0 0;margin:-6px -6px 0 0}
 
 /* Both side tracks are `minmax(0,1fr)` at EVERY width, and that is load-bearing
    for the containment above, not just for centring. A side track sized `auto`
