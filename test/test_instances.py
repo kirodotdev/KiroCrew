@@ -2817,7 +2817,52 @@ class TestHandlers:
         )
         assert r.status == 200 and _body(r)["aws_region"] == "eu-west-1"
 
-        assert launched.ssm_target == "i-0123abcd"  # sanity: fixture unchanged
+        assert launched.ssm_target == "i-0123abcd"  # confidence check: fixture unchanged
+
+    def test_update_fails_closed_when_correlation_check_errors(self, tmp_path, monkeypatch):
+        # If the launch job store can't be read, the correlation check must
+        # NOT fall back to "not correlated" — that would let this addressing
+        # edit through and strand a launched, billing instance the same way
+        # #3387 did. The PATCH refuses the edit instead of persisting one it
+        # could not verify was safe.
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        reg.add(
+            name="Cloud",
+            connection_method="ssm",
+            ssm_target="i-0123abcd",
+            aws_profile="prod",
+            aws_region="us-east-1",
+            instance_id="cloud-launched",
+        )
+        state = _State(reg)
+
+        def boom(ssm_target):
+            raise OSError("disk unavailable")
+
+        monkeypatch.setattr(handlers, "_is_correlated_cloud_instance", boom)
+
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(
+                    state, match={"id": "cloud-launched"}, body={"aws_region": "us-west-2"}
+                )
+            )
+        )
+        assert r.status == 503
+        assert _body(r)["code"] == "cloud_instance_correlation_check_failed"
+        # ...and the record is untouched.
+        assert reg.get("cloud-launched").aws_region == "us-east-1"
+
+        # A non-addressing field never invokes the (broken) correlation check.
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cloud-launched"}, body={"name": "Renamed"})
+            )
+        )
+        assert r.status == 200 and _body(r)["name"] == "Renamed"
 
 
 # ══════════════════════════════════════════════════════════════════════════

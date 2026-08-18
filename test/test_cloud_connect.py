@@ -522,10 +522,14 @@ class TestIsLaunchedInstance:
         self._store(monkeypatch, tmp_path)
         assert connect.is_launched_instance("i-0abc1234") is False
 
-    def test_store_error_fails_open(self, monkeypatch):
-        # Fails open (not correlated) rather than blocking every PATCH on every
-        # instance if the launch job store can't be read — mirrors the
-        # best-effort posture of register_instance()/unregister_instance() above.
+    def test_store_error_propagates(self, monkeypatch):
+        # Fails CLOSED: a launch-job store read failure must NOT be silently
+        # treated as "not correlated" — that would let a transient I/O blip
+        # unlock a launched instance's addressing fields for PATCH to
+        # rewrite, stranding the real (billing) EC2 instance. The error
+        # propagates so the caller (handlers_instances._is_correlated_cloud_
+        # instance / api_instances_update) can refuse the edit instead of
+        # persisting a change against an unverifiable correlation.
         import kiro_crew.cloud.launch_job as ljmod
 
         class _Boom:
@@ -533,4 +537,5 @@ class TestIsLaunchedInstance:
                 raise OSError("disk unavailable")
 
         monkeypatch.setattr(ljmod, "LaunchJobStore", lambda *a, **k: _Boom())
-        assert connect.is_launched_instance("i-0abc1234") is False
+        with pytest.raises(OSError):
+            connect.is_launched_instance("i-0abc1234")

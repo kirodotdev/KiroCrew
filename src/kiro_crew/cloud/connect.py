@@ -312,21 +312,24 @@ def is_launched_instance(ssm_target: str) -> bool:
     doing so would leave Stop/Start/Delete unable to resolve the real EC2 stack,
     which then keeps running and billing with no dashboard path to reach it.
 
-    Best-effort: returns False (not correlated — do not block) if the cloud
-    launch store can't be read, matching the fail-open posture of
-    :func:`register_instance`/:func:`unregister_instance` above.
+    Best-effort ONLY for the "cloud feature not installed" case: an
+    ``ImportError`` on the launch job module means nothing could ever have
+    been launched, so returning False (not correlated) is safe. A launch job
+    STORE read failure — the module resolved but the store itself couldn't be
+    read — is deliberately NOT swallowed here: silently treating an unreadable
+    store as "not correlated" would let a transient I/O blip unlock a launched
+    instance's addressing fields for PATCH to rewrite, which is exactly the
+    stranding this function exists to prevent. It propagates so the caller
+    (``handlers_instances._is_correlated_cloud_instance`` / the PATCH handler)
+    can fail the request CLOSED instead.
     """
     if not ssm_target:
         return False
     try:
         from kiro_crew.cloud.launch_job import LaunchJobStore
-    except Exception:  # pragma: no cover - cloud feature absent
+    except ImportError:  # pragma: no cover - cloud feature absent
         return False
-    try:
-        return any(job.instance_id == ssm_target for job in LaunchJobStore().list())
-    except Exception as exc:  # pragma: no cover - non-fatal
-        logger.info("could not check launch job store for %r: %s", ssm_target, exc)
-        return False
+    return any(job.instance_id == ssm_target for job in LaunchJobStore().list())
 
 
 def unregister_instance(instance_id_or_name: str) -> bool:
