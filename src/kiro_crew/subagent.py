@@ -5133,11 +5133,19 @@ class SubagentManager:
         # is on, so build_message applies one code path for sub-agents.
         _groups = _context_groups_of(info)
         # Off-loop: build_message embeds the episodic query (blocking urllib).
+        # A run's explicitly-given cwd IS its project for skill scoping: a
+        # dashboard spawn inherits the parent slot's project as its cwd, so the
+        # hands-off surface keeps the repo-scoped skills that surface exists for.
+        # The pool default is deliberately NOT substituted -- it is the
+        # workspace directory, not a checkout, so it can only ever mean "this
+        # run named no project", which is exactly the fail-closed case. Keeping
+        # one meaning for that makes the rule the same on every surface.
         full_message, _ = await run_in_embed_pool(
             self._ctx_builder.build_message,
             message,
             is_new,
             session_key,
+            project=info.cwd or None,
             provider_type=self._provider_label_of(client),
             model_window=_sub_window,
             context_groups=_groups,

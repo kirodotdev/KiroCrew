@@ -335,6 +335,7 @@ async def execute_task(
                     is_new,
                     session_key,
                     agent=agent or None,
+                    project=str(work_dir) if work_dir else None,
                     provider_type=KiroCrewConfig.load().agent.provider,
                 )
             else:

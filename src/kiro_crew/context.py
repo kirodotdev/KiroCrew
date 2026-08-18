@@ -1711,6 +1711,7 @@ class ContextBuilder:
         model_window: int | None = None,
         context_groups: frozenset[str] | None = None,
         query_text: str = "",
+        project: str | None = None,
     ) -> str:
         """Build context for a new session (memory + skills + history).
 
@@ -2046,6 +2047,7 @@ class ContextBuilder:
             skills_ctx = self.skills.get_context(
                 budget=caps.skills if lazy_skills else None,
                 only=skill_globs or None,
+                project_dir=project,
             )
             if skills_ctx:
                 if lazy_skills and len(skills_ctx) > caps.skills:
@@ -2280,6 +2282,7 @@ class ContextBuilder:
                 model_window=model_window,
                 context_groups=context_groups,
                 query_text=text,
+                project=project,
             )
             if session_ctx:
                 # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -2348,6 +2351,7 @@ class ContextBuilder:
                 skills_ctx = self.skills.get_context(
                     budget=caps.skills if lazy_skills else None,
                     only=_globs or None,
+                    project_dir=project,
                 )
                 if skills_ctx:
                     if lazy_skills and len(skills_ctx) > caps.skills:
@@ -2563,7 +2567,7 @@ class ContextBuilder:
         # context, and ACP replays native history so a body already sent earlier
         # in the conversation is still in the window.
         if not is_custom and not minimal_context:
-            triggered = self.skills.get_triggered_skills(text)
+            triggered = self.skills.get_triggered_skills(text, project_dir=project)
             if triggered:
                 enforced, pointer_only = self.skills.split_triggered(triggered)
                 # Log the split, not just the match: a pointed-at skill the

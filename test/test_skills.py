@@ -320,65 +320,147 @@ class TestSkillsLoader:
 
 class TestRepoScope:
     """``repo_scope:`` frontmatter mechanically suppresses a skill unless the
-    CWD (or an ancestor) contains the named relative path — the loader-enforced
-    gate for repo-specific skills with destructive instructions (PR #353
-    arbiter: prose scope guards are probabilistic; containment must be
-    mechanical before shipping to every install)."""
+    SESSION's active project directory (or an ancestor) contains the named
+    relative path — the loader-enforced gate for repo-specific skills with
+    destructive instructions (PR #353 arbiter: prose scope guards are
+    probabilistic; containment must be mechanical before shipping to every
+    install).
 
-    def _write_skill(self, root: Path, name: str, scope: str | None) -> None:
+    The gate is keyed on the project, never on the process working directory:
+    this runs in the gateway while it assembles context, so ``Path.cwd()`` is
+    the gateway's own directory and answers by install shape rather than by the
+    work the session is doing (issue #4322)."""
+
+    def _write_skill(
+        self, root: Path, name: str, scope: str | None, always: bool = False
+    ) -> None:
         d = root / name
         d.mkdir(parents=True)
         fm = f"---\nname: {name}\ntriggers: zebra quokka\n"
         if scope:
             fm += f"repo_scope: {scope}\n"
+        if always:
+            fm += "always: true\n"
         (d / "SKILL.md").write_text(fm + "---\nbody")
 
-    def test_scoped_skill_suppressed_outside_repo(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def _repo(self, tmp_path: Path, name: str = "checkout") -> Path:
+        repo = tmp_path / name
+        (repo / "src" / "kiro_crew").mkdir(parents=True)
+        return repo
+
+    def test_scoped_skill_suppressed_without_a_project(self, tmp_path: Path) -> None:
+        # No project named at all -> fail closed. An un-scoped surface (eval
+        # harness, a session with no project set) never inherits repo rules.
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "repo-only", "src/kiro_crew")
+        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        assert loader.get_triggered_skills("zebra quokka") == []
+
+    def test_scoped_skill_suppressed_outside_repo(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         self._write_skill(skills, "repo-only", "src/kiro_crew")
         loader = SkillsLoader(skills_path=skills, install_builtins=False)
         outside = tmp_path / "elsewhere"
         outside.mkdir()
-        monkeypatch.chdir(outside)
-        assert loader.get_triggered_skills("zebra quokka") == []
+        assert loader.get_triggered_skills("zebra quokka", project_dir=str(outside)) == []
 
-    def test_scoped_skill_eligible_inside_repo(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_scoped_skill_eligible_inside_repo(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         self._write_skill(skills, "repo-only", "src/kiro_crew")
         cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
         loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
-        repo = tmp_path / "checkout"
-        (repo / "src" / "kiro_crew").mkdir(parents=True)
-        subdir = repo / "website"
+        subdir = self._repo(tmp_path) / "website"
         subdir.mkdir()
-        monkeypatch.chdir(subdir)  # ancestor contains src/kiro_crew
-        assert loader.get_triggered_skills("zebra quokka") == ["repo-only"]
+        # ancestor of the project dir contains src/kiro_crew
+        assert loader.get_triggered_skills("zebra quokka", project_dir=str(subdir)) == [
+            "repo-only"
+        ]
 
-    def test_unscoped_skill_unaffected(
+    def test_process_cwd_does_not_admit_the_skill(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The regression this gate had: a gateway whose OWN cwd sits inside a
+        # scoped checkout admitted the skill into every session, whatever the
+        # session was working on. Standing in the repo must decide nothing.
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "repo-only", "src/kiro_crew")
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
+        monkeypatch.chdir(self._repo(tmp_path))
+        other = tmp_path / "some-rust-project"
+        other.mkdir()
+        assert loader.get_triggered_skills("zebra quokka") == []
+        assert loader.get_triggered_skills("zebra quokka", project_dir=str(other)) == []
+
+    def test_always_path_is_gated_identically(self, tmp_path: Path) -> None:
+        # Both injection paths share one helper; a pinned skill must not be a
+        # way around the gate.
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "repo-only", "src/kiro_crew", always=True)
+        loader = SkillsLoader(skills_path=skills, install_builtins=False)
+        other = tmp_path / "some-rust-project"
+        other.mkdir()
+        assert loader.get_always_skills() == []
+        assert loader.get_always_skills(str(other)) == []
+        assert loader.get_always_skills(str(self._repo(tmp_path))) == ["repo-only"]
+
+    def test_unscoped_skill_unaffected(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         self._write_skill(skills, "anywhere", None)
         cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
         loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
-        outside = tmp_path / "elsewhere"
-        outside.mkdir()
-        monkeypatch.chdir(outside)
         assert loader.get_triggered_skills("zebra quokka") == ["anywhere"]
 
-    def test_traversal_scope_fails_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_traversal_scope_fails_closed(self, tmp_path: Path) -> None:
         # ".." in the scope must never widen the check — fails closed.
         skills = tmp_path / "skills"
         self._write_skill(skills, "sneaky", "../..")
         loader = SkillsLoader(skills_path=skills, install_builtins=False)
-        monkeypatch.chdir(tmp_path)
-        assert loader.get_triggered_skills("zebra quokka") == []
+        assert loader.get_triggered_skills("zebra quokka", project_dir=str(tmp_path)) == []
+
+    def test_scoped_skill_is_absent_from_the_index_too(self, tmp_path: Path) -> None:
+        # Dropping only the BODY leaves the summary line in the skill index, and
+        # the index tells the agent to read the full file for anything related -
+        # so the repo-specific procedure stays one `cat` away.
+        skills = tmp_path / "skills"
+        self._write_skill(skills, "repo-only", "src/kiro_crew")
+        self._write_skill(skills, "anywhere", None)
+        cfg = KiroCrewConfig(skills=SkillsConfig(max_triggered=3))
+        loader = SkillsLoader(skills_path=skills, install_builtins=False, config=cfg)
+        other = tmp_path / "some-rust-project"
+        other.mkdir()
+        for block in (
+            loader.get_context(project_dir=str(other)),
+            loader.get_context(budget=100_000, project_dir=str(other)),
+            loader.get_context(),
+        ):
+            assert "repo-only" not in block
+            assert "anywhere" in block
+        # ...and present once the project is the scoped tree.
+        inside = loader.get_context(project_dir=str(self._repo(tmp_path)))
+        assert "repo-only" in inside
+
+    def test_pod_e2e_declares_a_repo_scope(self) -> None:
+        # pod-e2e drives this repo's pod tooling and its triggers are matched by
+        # word overlap, so it must carry the gate rather than rely on prose.
+        # The description carries the applicability statement as well: the gate
+        # covers the injection paths, and the description is what an agent reads
+        # on the paths it does not cover (an explicit `$name` load, a
+        # `skill_search` hit, or reading the file directly).
+        from kiro_crew import skills as skills_mod
+
+        skill_md = (
+            Path(skills_mod.__file__).parent
+            / "apps"
+            / "builtins"
+            / "dev_fleet"
+            / "skills"
+            / "pod-e2e"
+            / "SKILL.md"
+        )
+        head = skill_md.read_text(encoding="utf-8")[:2048]
+        assert "repo_scope: src/kiro_crew" in head
+        assert "ONLY for developing Kiro Crew itself" in head
 
 
 class TestRelocatedSkillCleanup:

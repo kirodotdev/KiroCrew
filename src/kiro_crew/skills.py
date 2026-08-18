@@ -1486,6 +1486,11 @@ class SkillsLoader:
                     "path": str(skill_file),
                     "dir": str(skill_file.parent),
                     "always": meta.get("always", "").lower() == "true",
+                    # Carried so a caller assembling context can drop a
+                    # repo-scoped skill from the INDEX, not just from the
+                    # injected body: a summary line the agent is told to read
+                    # advertises the skill just as effectively.
+                    "repo_scope": meta.get("repo_scope", ""),
                     # Mirrors split_triggered: only an explicit `false` opts out,
                     # so a malformed value reads as injecting, as it behaves.
                     "inject_on_trigger": (
@@ -2001,29 +2006,41 @@ class SkillsLoader:
         return [s for s in self.list_skills() if s["key"].startswith(f"{AUTO_SKILL_NAMESPACE}/")]
 
     @staticmethod
-    def _repo_scope_satisfied(relpath: str) -> bool:
+    def _repo_scope_satisfied(relpath: str, project_dir: str | Path | None) -> bool:
         """Mechanical gate for repo-scoped skills (``repo_scope:`` frontmatter).
 
         A skill carrying ``repo_scope: <relpath>`` is only eligible for
-        injection when the current working directory (or an ancestor) contains
-        *relpath* — e.g. ``repo_scope: src/kiro_crew`` restricts a skill to
-        sessions actually working inside the KiroCrew source tree. This is the
+        injection when *project_dir* (or an ancestor of it) contains *relpath*
+        — e.g. ``repo_scope: src/kiro_crew`` restricts a skill to sessions
+        whose active project IS the Kiro Crew source tree. This is the
         loader-enforced counterpart to a prose "ignore this skill elsewhere"
         scope guard: prose depends on probabilistic LLM obedience, while this
         check runs before the skill ever reaches the context (destructive
         repo-dev instructions must be mechanically contained).
 
-        Fails CLOSED on any error — a repo-scoped skill is suppressed unless
-        its scope is positively confirmed.
+        *project_dir* is the SESSION's active project — the same value the
+        ``[PROJECT]`` context block names. The process working directory is
+        deliberately NOT consulted: this runs in the gateway while it assembles
+        context, so ``Path.cwd()`` is the gateway's own working directory and
+        says nothing about the repository the session is working on. Reading it
+        made the gate answer by install shape rather than by work: a gateway
+        started from inside a checkout of the scoped repo admitted the skill
+        into EVERY session, while a packaged install whose cwd holds no marker
+        suppressed it for every session, contributors included.
+
+        Fails CLOSED — no project, an unusable one, or any error suppresses the
+        skill, so an un-scoped surface never inherits repo-specific rules.
         """
         rel = relpath.strip().strip("/")
         if not rel or ".." in rel.split("/"):
             return False
-        try:
-            cwd = Path.cwd().resolve()
-        except OSError:
+        if not project_dir:
             return False
-        for candidate in (cwd, *cwd.parents):
+        try:
+            root = Path(project_dir).resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        for candidate in (root, *root.parents):
             try:
                 if (candidate / rel).exists():
                     return True
@@ -3434,14 +3451,20 @@ class SkillsLoader:
                 pruned += 1
         return pruned
 
-    def get_always_skills(self) -> list[str]:
-        """Return names of skills marked ``always: true`` in frontmatter."""
+    def get_always_skills(self, project_dir: str | Path | None = None) -> list[str]:
+        """Return names of skills marked ``always: true`` in frontmatter.
+
+        *project_dir* is the session's active project, used only by the
+        ``repo_scope`` gate; omitting it suppresses every repo-scoped skill
+        (see :meth:`_repo_scope_satisfied` for why the gate cannot fall back
+        to the process working directory).
+        """
         result: list[str] = []
         for name, skill_file in self._iter():
             meta = self._cached_frontmatter(skill_file)
             if meta.get("always", "").lower() == "true":
                 scope = meta.get("repo_scope", "")
-                if scope and not self._repo_scope_satisfied(scope):
+                if scope and not self._repo_scope_satisfied(scope, project_dir):
                     continue
                 result.append(name)
         return result
@@ -3457,7 +3480,9 @@ class SkillsLoader:
         """
         _ensure_builtin_skills(self._dir)
 
-    def get_triggered_skills(self, text: str) -> list[str]:
+    def get_triggered_skills(
+        self, text: str, project_dir: str | Path | None = None
+    ) -> list[str]:
         """Return names of skills whose triggers match the given text.
 
         Uses word-overlap matching with multi-word trigger phrases and
@@ -3465,6 +3490,9 @@ class SkillsLoader:
         ``triggers`` frontmatter field.  A phrase prefixed with ``!`` is a
         negative trigger — if *any* negative trigger matches, the skill is
         excluded regardless of positive matches.
+
+        *project_dir* is the session's active project, used only by the
+        ``repo_scope`` gate; omitting it suppresses every repo-scoped skill.
 
         Returns up to ``max_triggered`` skills sorted by best overlap score.
         """
@@ -3485,7 +3513,7 @@ class SkillsLoader:
             # repo — word-overlap can fire on ordinary user phrasing, and a
             # prose scope guard alone is probabilistic.
             scope = meta.get("repo_scope", "")
-            if scope and not self._repo_scope_satisfied(scope):
+            if scope and not self._repo_scope_satisfied(scope, project_dir):
                 continue
 
             # Split into positive and negative triggers
@@ -3634,7 +3662,12 @@ class SkillsLoader:
                 return skill_file
         return None
 
-    def get_context(self, budget: int | None = None, only: list[str] | None = None) -> str:
+    def get_context(
+        self,
+        budget: int | None = None,
+        only: list[str] | None = None,
+        project_dir: str | Path | None = None,
+    ) -> str:
         """Build skills context for prompt injection (lazy-loaded).
 
         Pinned skills (``always: true`` frontmatter) get full content, always —
@@ -3661,17 +3694,31 @@ class SkillsLoader:
         all_skills = self.list_skills()
         if only is not None:
             all_skills = [s for s in all_skills if _matches_any(s.get("path", ""), only)]
+        # Scope BEFORE anything is rendered. Dropping a repo-scoped skill only
+        # from the injected body still leaves its summary line in the index, and
+        # the index tells the agent to read the full file for anything related —
+        # so an out-of-scope skill stays one `cat` away and its repo-specific
+        # procedure gets applied to the wrong project. Filtering the list is the
+        # single place that covers the index, both renderers, and the pinned set.
+        all_skills = [
+            s
+            for s in all_skills
+            if not s.get("repo_scope")
+            or self._repo_scope_satisfied(str(s["repo_scope"]), project_dir)
+        ]
         if not all_skills:
             return ""
         if budget is None:
-            return self._legacy_context(all_skills, restricted=only is not None)
+            return self._legacy_context(
+                all_skills, restricted=only is not None, project_dir=project_dir
+            )
         # get_always_skills() returns the _iter() identifier — the same value
         # list_skills() exposes as "key" (the dir-relative path, e.g.
         # "team-capabilities/build-helper"), NOT the frontmatter "name". So the
         # pinned check below, _record_use() (also called with the _iter
         # identifier), and _rank_key()'s score(s["key"]) are all consistently
         # keyed by "key" — there is no key/name mismatch here.
-        pinned = set(self.get_always_skills())
+        pinned = set(self.get_always_skills(project_dir))
 
         parts: list[str] = []
 
@@ -3739,7 +3786,12 @@ class SkillsLoader:
 
         return "[Skills:]\n" + "\n\n---\n\n".join(parts) + "\n[End of skills]\n\n"
 
-    def _legacy_context(self, all_skills: list[dict], restricted: bool = False) -> str:
+    def _legacy_context(
+        self,
+        all_skills: list[dict],
+        restricted: bool = False,
+        project_dir: str | Path | None = None,
+    ) -> str:
         """Pre-lazy-load skills block (opt-in OFF, the default).
 
         Full content for pinned (``always: true``) skills + a one-line summary
@@ -3751,8 +3803,12 @@ class SkillsLoader:
         ``skill://`` mapping, so the always-loaded set is narrowed to match: a
         pinned skill outside the mapping must NOT be force-injected, or the
         mapping would not actually bound what the agent sees.
+
+        *project_dir* is forwarded to the ``repo_scope`` gate so this path
+        scopes pinned skills exactly as the lazy-load path does — the default
+        block must not be the one that leaks a repo-scoped skill.
         """
-        always = self.get_always_skills()
+        always = self.get_always_skills(project_dir)
         if restricted:
             allowed = {s["key"] for s in all_skills} | {s["name"] for s in all_skills}
             always = [a for a in always if a in allowed]

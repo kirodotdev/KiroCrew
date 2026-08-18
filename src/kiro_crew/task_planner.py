@@ -251,7 +251,12 @@ async def decompose(
         if ctx:
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_prompt, _ = await run_in_embed_pool(
-                ctx.build_message, prompt, is_new, session_key, agent=agent or None
+                ctx.build_message,
+                prompt,
+                is_new,
+                session_key,
+                agent=agent or None,
+                project=work_dir or None,
             )
         else:
             full_prompt = prompt
