@@ -9699,7 +9699,14 @@
         "steering_files_looked_in": "Arquivos de steering são convenções markdown sempre ativas. Buscados em: {{path}}",
         "title_describe_the_convention_the_agent_should_a": "# Título\n\nDescreva a convenção que o agente deve sempre seguir.",
         "workspace": "Workspace",
-        "workspace_this_project_only": "Workspace — somente este projeto"
+        "workspace_this_project_only": "Workspace — somente este projeto",
+        "workspace_scope_no_project": "Workspace — somente este projeto (nenhum projeto definido para este chat)",
+        "workspace_scope_project_conflict": "Workspace — somente este projeto (os chats abertos usam projetos diferentes)",
+        "scope_hint_writes_to": "Grava em {{path}}/.kiro/steering.",
+        "scope_hint_no_project": "O escopo de workspace precisa de um projeto. Abra um chat, escolha uma pasta com o botão de projeto ao lado do campo de mensagem e reabra esta caixa de diálogo.",
+        "scope_hint_project_conflict": "Seus chats abertos estão em projetos diferentes, portanto nenhum projeto único se aplica. Feche um deles ou aponte-o para outro projeto e reabra esta caixa de diálogo.",
+        "conflict_while_editing": "Este arquivo pertence a um projeto que não está mais ativo, então ele não pode ser salvo aqui. Copie suas alterações para um lugar seguro antes de fechar o editor.",
+        "conflict_list_refreshed": "O projeto ativo mudou, então esta lista foi atualizada."
       },
       "tokenDailyChart": {
         "all": "Todos",

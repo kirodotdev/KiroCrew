@@ -3563,7 +3563,14 @@
         "global": "Global",
         "steering_files_looked_in": "Steering files are always-on markdown conventions. Looked in: {{path}}",
         "title_describe_the_convention_the_agent_should_a": "# Title\n\nDescribe the convention the agent should always follow.",
-        "workspace": "Workspace"
+        "workspace": "Workspace",
+        "workspace_scope_no_project": "Workspace — this project only (no project set for this chat)",
+        "workspace_scope_project_conflict": "Workspace — this project only (open chats use different projects)",
+        "scope_hint_writes_to": "Writes to {{path}}/.kiro/steering.",
+        "scope_hint_no_project": "Workspace scope needs a project. Open a chat, choose a folder with the project button beside the composer, then reopen this dialog.",
+        "scope_hint_project_conflict": "Your open chats are on different projects, so no single project applies. Close or re-point one, then reopen this dialog.",
+        "conflict_while_editing": "This file belongs to a project that is no longer active, so it cannot be saved here. Copy your changes somewhere safe before closing the editor.",
+        "conflict_list_refreshed": "The active project changed, so this list has been refreshed."
       },
       "displayTab": {
         "change_the_dashboard_font_family_persists_across": "Change the dashboard font family. Persists across sessions.",

@@ -9469,7 +9469,14 @@
         "steering_files_looked_in": "스티어링 파일은 상시 적용되는 Markdown 규약입니다. 검색 위치: {{path}}",
         "title_describe_the_convention_the_agent_should_a": "# 제목\n\n에이전트가 항상 따라야 할 규약을 설명하세요.",
         "workspace": "워크스페이스",
-        "workspace_this_project_only": "워크스페이스 — 이 프로젝트만"
+        "workspace_this_project_only": "워크스페이스 — 이 프로젝트만",
+        "workspace_scope_no_project": "워크스페이스 — 이 프로젝트만 (이 채팅에 프로젝트가 설정되지 않았습니다)",
+        "workspace_scope_project_conflict": "워크스페이스 — 이 프로젝트만 (열려 있는 채팅들이 서로 다른 프로젝트를 사용합니다)",
+        "scope_hint_writes_to": "{{path}}/.kiro/steering에 저장됩니다.",
+        "scope_hint_no_project": "워크스페이스 범위를 사용하려면 프로젝트가 필요합니다. 채팅을 열고 작성창 옆의 프로젝트 버튼으로 폴더를 선택한 다음, 이 대화상자를 다시 열어 주세요.",
+        "scope_hint_project_conflict": "열려 있는 채팅들이 서로 다른 프로젝트에 연결되어 있어 적용할 단일 프로젝트가 없습니다. 하나를 닫거나 다른 프로젝트로 다시 지정한 다음, 이 대화상자를 다시 열어 주세요.",
+        "conflict_while_editing": "이 파일은 더 이상 활성 상태가 아닌 프로젝트에 속해 있어 여기에 저장할 수 없습니다. 편집기를 닫기 전에 변경 내용을 안전한 곳에 복사해 두세요.",
+        "conflict_list_refreshed": "활성 프로젝트가 바뀌어 이 목록을 새로 고쳤습니다."
       },
       "tokenDailyChart": {
         "all": "전체",

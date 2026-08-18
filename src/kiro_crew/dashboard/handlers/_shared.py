@@ -450,6 +450,47 @@ def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -
     return None
 
 
+def active_project_state(
+    state: DashboardState, session_key: str = ""
+) -> tuple[Path | None, str]:
+    """Resolve the workspace project AND why it is absent when it is.
+
+    Returns ``(project, state)`` where *state* is one of:
+
+    * ``"set"`` — *project* is a real directory and workspace-scoped resources
+      resolve against it;
+    * ``"none"`` — no open chat slot names a project at all;
+    * ``"ambiguous"`` — two or more slots name DIFFERENT projects and
+      *session_key* did not single one out, so there is no defensible answer.
+
+    :func:`active_project_dir` collapses the last two to ``None``, which is the
+    right call for a resolver but not for a UI: "you have no project" and "your
+    open chats disagree" need different words and different remedies, and a
+    caller that cannot tell them apart has to guess. Callers that only need the
+    path should keep using :func:`active_project_dir`.
+    """
+    project = _resolve_active_project(state, session_key)
+    if project is not None:
+        return project, "set"
+    slots = getattr(state, "_slots", {}) or {}
+    distinct = {str(p) for p in (_slot_project(s) for s in slots.values()) if p is not None}
+    return None, "ambiguous" if len(distinct) > 1 else "none"
+
+
+def _slot_project(slot: Any) -> Path | None:
+    """The project a chat slot is bound to, if any.
+
+    ``project_dir`` is accepted alongside ``project`` for slot-like objects that
+    expose that name instead.
+    """
+    pd = getattr(slot, "project", None) or getattr(slot, "project_dir", None)
+    if isinstance(pd, Path):
+        return pd
+    if isinstance(pd, str) and pd:
+        return Path(pd)
+    return None
+
+
 def active_project_dir(state: DashboardState, session_key: str = "") -> Path | None:
     """Return the project directory that workspace-scoped resources resolve against.
 
@@ -470,28 +511,26 @@ def active_project_dir(state: DashboardState, session_key: str = "") -> Path | N
     there is no defensible "active" project for a settings page, and silently
     picking the first-inserted slot would create, overwrite or delete files in
     the wrong project.  Failing closed makes the caller surface the ambiguity
-    instead.
+    instead — :func:`active_project_state` reports which of the two "no answer"
+    cases produced the ``None``.
     """
-    slots = getattr(state, "_slots", {}) or {}
+    return _resolve_active_project(state, session_key)
 
-    def _project_of(slot: Any) -> Path | None:
-        pd = getattr(slot, "project", None) or getattr(slot, "project_dir", None)
-        if isinstance(pd, Path):
-            return pd
-        if isinstance(pd, str) and pd:
-            return Path(pd)
-        return None
+
+def _resolve_active_project(state: DashboardState, session_key: str) -> Path | None:
+    """The three-step resolution shared by the two public accessors."""
+    slots = getattr(state, "_slots", {}) or {}
 
     if session_key:
         slot_name = session_key.split(":", 1)[-1] if ":" in session_key else session_key
         slot = slots.get(slot_name)
         if slot is not None:
-            scoped = _project_of(slot)
+            scoped = _slot_project(slot)
             if scoped is not None:
                 return scoped
     distinct: dict[str, Path] = {}
     for slot in slots.values():
-        proj = _project_of(slot)
+        proj = _slot_project(slot)
         if proj is not None:
             distinct[str(proj)] = proj
     if len(distinct) == 1:

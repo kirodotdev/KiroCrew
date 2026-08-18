@@ -20,10 +20,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.handlers._shared import active_project_dir
+import kiro_crew.dashboard.handlers.steering as steering_mod
+from kiro_crew.dashboard.handlers._shared import active_project_dir, active_project_state
 from kiro_crew.dashboard.handlers.steering import (
     STEERING_FILE_MAX_BYTES,
     STEERING_MAX_FILES,
+    STEERING_PROJECT_HEADER,
+    _project_key,
     _safe_rel_name,
     _split_key,
     api_steering,
@@ -60,6 +63,15 @@ def _state(project: str | Path | None = None, *, restricted: bool = False):
     """A MagicMock DashboardState exposing one slot with a project dir."""
     slot = MagicMock(project=str(project) if project else "", is_restricted=restricted)
     return MagicMock(_slots={"default": slot}, _restricted_keys=set())
+
+
+def _project_headers(project: str | Path) -> dict[str, str]:
+    """The precondition header a client sends after being listed *project*.
+
+    Mirrors what the frontend echoes from ``project_key``; a workspace write
+    without it is refused, so tests that mean to succeed must send it.
+    """
+    return {STEERING_PROJECT_HEADER: _project_key(Path(project))}
 
 
 def _make_app(state):
@@ -282,6 +294,113 @@ class TestProjectResolution:
         assert data["files"] == []
 
 
+class TestProjectStateReason:
+    """``active_project_state`` must say WHY there is no project, not just that.
+
+    ``active_project_dir`` collapses "nothing is set" and "your open chats
+    disagree" to ``None``; the UI needs them apart because the remedies differ.
+    """
+
+    @staticmethod
+    def _multi_slot_state(*projects):
+        slots = {
+            f"slot{i}": MagicMock(project=str(p), is_restricted=False)
+            for i, p in enumerate(projects)
+        }
+        return MagicMock(_slots=slots, _restricted_keys=set())
+
+    def test_single_slot_with_project_is_set(self, fake_home, tmp_path):
+        proj = tmp_path / "proj"
+        assert active_project_state(self._multi_slot_state(proj)) == (proj, "set")
+
+    def test_session_key_singles_out_its_own_slot(self, fake_home, tmp_path):
+        """A named slot resolves even while another slot names a DIFFERENT project."""
+        state = self._multi_slot_state(tmp_path / "a", tmp_path / "b")
+        assert active_project_state(state, "dashboard:slot1") == (tmp_path / "b", "set")
+        assert active_project_state(state, "dashboard:slot0") == (tmp_path / "a", "set")
+
+    def test_disagreeing_slots_without_a_session_key_are_ambiguous(self, fake_home, tmp_path):
+        state = self._multi_slot_state(tmp_path / "a", tmp_path / "b")
+        assert active_project_state(state) == (None, "ambiguous")
+
+    def test_no_project_anywhere_is_none(self, fake_home):
+        slots = {
+            "a": MagicMock(project="", is_restricted=False),
+            "b": MagicMock(project="", is_restricted=False),
+        }
+        assert active_project_state(MagicMock(_slots=slots)) == (None, "none")
+
+    def test_no_slots_at_all_is_none(self, fake_home):
+        assert active_project_state(MagicMock(_slots={})) == (None, "none")
+
+    def test_two_slots_on_the_same_project_are_set_not_ambiguous(self, fake_home, tmp_path):
+        """Distinct projects is what makes an answer indefensible — not slot count."""
+        proj = tmp_path / "proj"
+        assert active_project_state(self._multi_slot_state(proj, proj)) == (proj, "set")
+
+    def test_active_project_dir_is_unchanged_by_the_refactor(self, fake_home, tmp_path):
+        """Both "no answer" states must still read as a plain ``None`` here."""
+        ambiguous = self._multi_slot_state(tmp_path / "a", tmp_path / "b")
+        assert active_project_state(ambiguous)[1] == "ambiguous"
+        assert active_project_dir(ambiguous) is None
+
+        none = MagicMock(_slots={"a": MagicMock(project="", is_restricted=False)})
+        assert active_project_state(none)[1] == "none"
+        assert active_project_dir(none) is None
+
+    @pytest.mark.asyncio
+    async def test_listing_reports_project_state_set(self, fake_home, tmp_path):
+        proj = tmp_path / "proj"
+        _write_steering(proj / ".kiro" / "steering", "a.md")
+        async with TestClient(TestServer(_make_app(_state(proj)))) as client:
+            data = await (await client.get("/api/steering")).json()
+        assert data["project_state"] == "set"
+
+    @pytest.mark.asyncio
+    async def test_listing_reports_project_state_none(self, fake_home):
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            data = await (await client.get("/api/steering")).json()
+        assert data["project_state"] == "none"
+
+    @pytest.mark.asyncio
+    async def test_listing_reports_project_state_ambiguous(self, fake_home, tmp_path):
+        state = self._multi_slot_state(tmp_path / "a", tmp_path / "b")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            data = await (await client.get("/api/steering")).json()
+        assert data["project_state"] == "ambiguous"
+
+    @pytest.mark.asyncio
+    async def test_workspace_refusal_reason_and_message_differ_by_cause(
+        self, fake_home, tmp_path
+    ):
+        """Both causes still 400, but the reason AND the wording must differ."""
+        body = {"name": "x.md", "content": "y", "source": "workspace"}
+
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            resp = await client.post("/api/steering", json=body)
+            assert resp.status == 400
+            no_project = await resp.json()
+
+        state = self._multi_slot_state(tmp_path / "a", tmp_path / "b")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/steering", json=body)
+            assert resp.status == 400
+            ambiguous = await resp.json()
+
+        # One machine-readable identity for "workspace scope is unavailable", and
+        # the CAUSE carried in the human text — no separate `reason` field, which
+        # had no consumer. The distinction being pinned is that the two causes do
+        # not render as the same sentence.
+        assert no_project["code"] == "steering_workspace_unavailable"
+        assert ambiguous["code"] == "steering_workspace_unavailable"
+        assert "reason" not in no_project and "reason" not in ambiguous
+        assert ambiguous["error"] != no_project["error"]
+        assert "different projects" in ambiguous["error"]
+        assert "no project is set" in no_project["error"]
+        assert not (tmp_path / "a" / ".kiro").exists()
+        assert not (tmp_path / "b" / ".kiro").exists()
+
+
 class TestRedaction:
     """Listing metadata is redacted; editor content deliberately is not."""
 
@@ -425,7 +544,11 @@ class TestCreateEndpoint:
         proj = tmp_path / "proj"
         proj.mkdir()
         async with TestClient(TestServer(_make_app(_state(proj)))) as client:
-            resp = await client.post("/api/steering", json={"name": "api.md", "content": "x"})
+            resp = await client.post(
+                "/api/steering",
+                json={"name": "api.md", "content": "x"},
+                headers=_project_headers(proj),
+            )
             assert resp.status == 200
             assert (await resp.json())["key"] == "workspace/api.md"
         assert (proj / ".kiro" / "steering" / "api.md").is_file()
@@ -654,3 +777,157 @@ class TestRestrictedSessions:
             ).status == 403
             assert (await client.delete("/api/steering/user/a.md", headers=hdr)).status == 403
         assert path.read_text() == "# Title\nrules\n"
+
+
+class TestProjectPrecondition:
+    """A workspace write must name the project it believed it was acting on.
+
+    A chat slot's project is mutable, so the session key cannot carry this: the
+    tab lists project A, the slot is re-pointed at B, and a delete issued from
+    the still-visible listing would resolve B and remove B's same-named file.
+    """
+
+    @staticmethod
+    def _two_projects(tmp_path):
+        listed = tmp_path / "listed"
+        moved = tmp_path / "moved"
+        for proj in (listed, moved):
+            _write_steering(proj / ".kiro" / "steering", "api.md", "# listed\n")
+        return listed, moved
+
+    @pytest.mark.asyncio
+    async def test_listing_publishes_a_project_key(self, fake_home, tmp_path):
+        proj = tmp_path / "proj"
+        _write_steering(proj / ".kiro" / "steering", "a.md")
+        async with TestClient(TestServer(_make_app(_state(proj)))) as client:
+            data = await (await client.get("/api/steering")).json()
+        assert data["project_key"] == _project_key(proj)
+        assert data["project_key"]
+
+    @pytest.mark.asyncio
+    async def test_no_project_publishes_an_empty_key(self, fake_home):
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            data = await (await client.get("/api/steering")).json()
+        assert data["project_key"] == ""
+
+    @pytest.mark.asyncio
+    async def test_delete_against_a_moved_slot_is_refused(self, fake_home, tmp_path):
+        """The data-loss vector itself: neither project's file may be removed."""
+        listed, moved = self._two_projects(tmp_path)
+        # The slot now points at `moved`, but the client still holds `listed`.
+        async with TestClient(TestServer(_make_app(_state(moved)))) as client:
+            resp = await client.delete(
+                "/api/steering/workspace/api.md", headers=_project_headers(listed)
+            )
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "steering_project_changed"
+        assert (moved / ".kiro" / "steering" / "api.md").is_file()
+        assert (listed / ".kiro" / "steering" / "api.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_update_against_a_moved_slot_is_refused(self, fake_home, tmp_path):
+        listed, moved = self._two_projects(tmp_path)
+        async with TestClient(TestServer(_make_app(_state(moved)))) as client:
+            resp = await client.put(
+                "/api/steering/workspace/api.md",
+                json={"content": "# overwritten\n"},
+                headers=_project_headers(listed),
+            )
+            assert resp.status == 409
+        assert (moved / ".kiro" / "steering" / "api.md").read_text() == "# listed\n"
+
+    @pytest.mark.asyncio
+    async def test_create_against_a_moved_slot_is_refused(self, fake_home, tmp_path):
+        listed, moved = self._two_projects(tmp_path)
+        async with TestClient(TestServer(_make_app(_state(moved)))) as client:
+            resp = await client.post(
+                "/api/steering",
+                json={"name": "new.md", "content": "x", "source": "workspace"},
+                headers=_project_headers(listed),
+            )
+            assert resp.status == 409
+        assert not (moved / ".kiro" / "steering" / "new.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_absent_header_fails_closed_on_workspace_writes(self, fake_home, tmp_path):
+        """A caller that cannot say which project it meant has not earned a write."""
+        proj = tmp_path / "proj"
+        _write_steering(proj / ".kiro" / "steering", "api.md")
+        async with TestClient(TestServer(_make_app(_state(proj)))) as client:
+            assert (await client.delete("/api/steering/workspace/api.md")).status == 409
+            assert (
+                await client.put(
+                    "/api/steering/workspace/api.md", json={"content": "x"}
+                )
+            ).status == 409
+        assert (proj / ".kiro" / "steering" / "api.md").is_file()
+
+    @pytest.mark.asyncio
+    async def test_matching_key_is_allowed_through(self, fake_home, tmp_path):
+        proj = tmp_path / "proj"
+        _write_steering(proj / ".kiro" / "steering", "api.md")
+        async with TestClient(TestServer(_make_app(_state(proj)))) as client:
+            resp = await client.put(
+                "/api/steering/workspace/api.md",
+                json={"content": "# updated\n"},
+                headers=_project_headers(proj),
+            )
+            assert resp.status == 200
+        assert (proj / ".kiro" / "steering" / "api.md").read_text() == "# updated\n"
+
+    @pytest.mark.asyncio
+    async def test_user_scoped_writes_need_no_precondition(self, fake_home, tmp_path):
+        """``user/`` keys are anchored to $HOME, so no project can move under them."""
+        _write_steering(fake_home / ".kiro" / "steering", "mine.md")
+        async with TestClient(TestServer(_make_app(_state(tmp_path / "proj")))) as client:
+            resp = await client.put(
+                "/api/steering/user/mine.md", json={"content": "# mine\n"}
+            )
+            assert resp.status == 200
+            assert (await client.delete("/api/steering/user/mine.md")).status == 200
+
+    @pytest.mark.asyncio
+    async def test_a_refused_write_is_audited(self, fake_home, tmp_path, monkeypatch):
+        """A denial nobody records is a denial nobody can review.
+
+        Matches the restricted-session refusal, which already audits: a burst of
+        stale-header denials is exactly the shape a confused or hostile client
+        produces, and it has to be visible in the same place.
+        """
+        listed, moved = self._two_projects(tmp_path)
+        calls: list[dict[str, object]] = []
+
+        class _Sel:
+            @staticmethod
+            def log_api_access(**kw: object) -> None:
+                calls.append(kw)
+
+            @staticmethod
+            def log_tool_invocation(**kw: object) -> None:
+                pass
+
+        monkeypatch.setattr(steering_mod, "_sel", lambda: _Sel())
+        async with TestClient(TestServer(_make_app(_state(moved)))) as client:
+            assert (await client.delete(
+                "/api/steering/workspace/api.md", headers=_project_headers(listed)
+            )).status == 409
+            assert (await client.put(
+                "/api/steering/workspace/api.md",
+                json={"content": "x"},
+                headers=_project_headers(listed),
+            )).status == 409
+
+        denials = [c for c in calls if c.get("outcome") == "denied"]
+        assert [c["operation"] for c in denials] == ["steering.delete", "steering.update"]
+        assert {c["resources"] for c in denials} == {"steering_project_changed"}
+
+    @pytest.mark.asyncio
+    async def test_reads_are_not_gated(self, fake_home, tmp_path):
+        """A stale read misleads but destroys nothing; the save comes back gated."""
+        proj = tmp_path / "proj"
+        _write_steering(proj / ".kiro" / "steering", "api.md", "# body\n")
+        async with TestClient(TestServer(_make_app(_state(proj)))) as client:
+            resp = await client.get("/api/steering/workspace/api.md")
+            assert resp.status == 200
+            assert (await resp.json())["content"] == "# body\n"

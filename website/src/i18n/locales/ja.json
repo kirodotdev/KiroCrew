@@ -9469,7 +9469,14 @@
         "steering_files_looked_in": "ステアリングファイルは常時有効な Markdown 規約です。検索場所：{{path}}",
         "title_describe_the_convention_the_agent_should_a": "# タイトル\n\nエージェントが常に従うべき規約を説明します。",
         "workspace": "ワークスペース",
-        "workspace_this_project_only": "ワークスペース — このプロジェクトのみ"
+        "workspace_this_project_only": "ワークスペース — このプロジェクトのみ",
+        "workspace_scope_no_project": "ワークスペース — このプロジェクトのみ（このチャットにプロジェクトが設定されていません）",
+        "workspace_scope_project_conflict": "ワークスペース — このプロジェクトのみ（開いているチャットが異なるプロジェクトを使用しています）",
+        "scope_hint_writes_to": "{{path}}/.kiro/steering に書き込みます。",
+        "scope_hint_no_project": "ワークスペーススコープにはプロジェクトが必要です。チャットを開き、コンポーザーの横にあるプロジェクトボタンでフォルダーを選択してから、このダイアログを開き直してください。",
+        "scope_hint_project_conflict": "開いているチャットが別々のプロジェクトを使用しているため、単一のプロジェクトを特定できません。いずれかを閉じるか別のプロジェクトに切り替えてから、このダイアログを開き直してください。",
+        "conflict_while_editing": "このファイルは現在アクティブではないプロジェクトに属しているため、ここには保存できません。エディターを閉じる前に、変更内容を安全な場所にコピーしてください。",
+        "conflict_list_refreshed": "アクティブなプロジェクトが変わったため、この一覧を更新しました。"
       },
       "tokenDailyChart": {
         "all": "すべて",

@@ -9699,7 +9699,14 @@
         "steering_files_looked_in": "Les fichiers de pilotage sont des conventions Markdown toujours actives. Emplacements consultés : {{path}}",
         "title_describe_the_convention_the_agent_should_a": "# Titre\n\nDécris la convention que l’agent doit toujours suivre.",
         "workspace": "Espace de travail",
-        "workspace_this_project_only": "Espace de travail — ce projet uniquement"
+        "workspace_this_project_only": "Espace de travail — ce projet uniquement",
+        "workspace_scope_no_project": "Espace de travail — ce projet uniquement (aucun projet défini pour ce chat)",
+        "workspace_scope_project_conflict": "Espace de travail — ce projet uniquement (les chats ouverts utilisent des projets différents)",
+        "scope_hint_writes_to": "Écrit dans {{path}}/.kiro/steering.",
+        "scope_hint_no_project": "La portée espace de travail nécessite un projet. Ouvrez un chat, choisissez un dossier avec le bouton de projet à côté du champ de saisie, puis rouvrez cette boîte de dialogue.",
+        "scope_hint_project_conflict": "Vos chats ouverts portent sur des projets différents, donc aucun projet unique ne s’applique. Fermez-en un ou réorientez-le vers un autre projet, puis rouvrez cette boîte de dialogue.",
+        "conflict_while_editing": "Ce fichier appartient à un projet qui n’est plus actif, il ne peut donc pas être enregistré ici. Copie tes modifications en lieu sûr avant de fermer l’éditeur.",
+        "conflict_list_refreshed": "Le projet actif a changé, cette liste a donc été actualisée."
       },
       "tokenDailyChart": {
         "all": "Tous",

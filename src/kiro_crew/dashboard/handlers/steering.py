@@ -24,6 +24,7 @@ directories and sensitive locations are all rejected before any read or write.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -44,7 +45,12 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 
-from ._shared import _is_restricted_session, _read_session_key, active_project_dir
+from ._shared import (
+    _is_restricted_session,
+    _read_session_key,
+    active_project_dir,
+    active_project_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,11 @@ STEERING_FILE_MAX_BYTES = 262_144  # 256 KiB per steering document
 
 # ``user`` → ~/.kiro/steering, ``workspace`` → <project>/.kiro/steering
 STEERING_SOURCES = ("user", "workspace")
+
+# Precondition header: the ``project_key`` the client was listed, echoed back
+# on a workspace write so a re-pointed chat slot cannot redirect it. A header
+# rather than a body field because DELETE carries no body.
+STEERING_PROJECT_HEADER = "X-Steering-Project"
 
 # ``O_NOFOLLOW`` does not exist on Windows — ``getattr`` keeps the flag optional
 # so a write there raises no AttributeError. Where the flag is absent the write
@@ -476,10 +487,18 @@ def _offload(fn: Any, *args: Any) -> Any:
 async def api_steering(request: web.Request) -> web.Response:
     """GET /api/steering — list the effective steering files (both roots)."""
     state: DashboardState = request.app["state"]
-    project_dir = active_project_dir(state, _read_session_key(request))
+    project_dir, project_state = active_project_state(state, _read_session_key(request))
     # rglob + per-file stat/head-read over two roots is browser-triggerable
     # blocking FS work: keep it off the event loop (same pool as /api/skills).
     result = await _offload(list_steering_blocking, project_dir)
+    # Why there is no project, not just that there isn't one: the tab disables
+    # workspace scope either way, but "no project set" and "your open chats are
+    # on different projects" are different problems, and a UI told only ``None``
+    # reports the first when it means the second.
+    result["project_state"] = project_state
+    # Travels back on every workspace write as a precondition — see
+    # _project_precondition().
+    result["project_key"] = _project_key(project_dir)
     _sel().log_tool_invocation(
         session_key='', agent='api', source='dashboard',
         tool_name='api_steering_list', tool_kind='steering', outcome='ok',
@@ -509,19 +528,40 @@ async def api_steering_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
         )
-    project_dir = active_project_dir(state, _read_session_key(request))
+    project_dir, project_state = active_project_state(state, _read_session_key(request))
     source = str(body.get("source") or ("workspace" if project_dir else "user"))
     if source not in STEERING_SOURCES:
         return web.json_response({"error": "invalid source"}, status=400)
     if source == "workspace" and project_dir is None:
-        # Either no project is set, or open chats disagree about which one —
-        # see active_project_dir(). Refuse rather than write to a guess.
+        # Refuse rather than write to a guess. ``reason`` lets the dialog say
+        # which fix applies — bind a project, or close the chat that disagrees —
+        # instead of reporting an unexplained rejection.
+        detail = (
+            "open chats are bound to different projects, so there is no single "
+            "project to write to"
+            if project_state == "ambiguous"
+            else "no project is set for this chat"
+        )
+        # No `reason` field: nothing reads it. The cause-specific `detail` above
+        # and `project_state` on the listing already carry which case this is,
+        # and a field with no consumer is a contract nobody is holding up.
         return web.json_response(
-            {"error": "no unambiguous project directory for this workspace"}, status=400
+            {
+                "error": f"cannot create a workspace steering file: {detail}",
+                "code": "steering_workspace_unavailable",
+            },
+            status=400,
         )
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
         return web.json_response({"error": "name is required"}, status=400)
+    if source == "workspace":
+        # Same precondition as the detail writes: creating into a project the
+        # client is no longer looking at plants the file where nobody will find
+        # it, and can overwrite-by-name in the project it landed in.
+        stale = _project_precondition(request, project_dir, "steering.create")
+        if stale is not None:
+            return stale
     key = f"{source}/{rel}"
     target = await _offload(_resolve_blocking, key, project_dir, True)
     if target is None:
@@ -541,11 +581,79 @@ async def api_steering_create(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "key": key, "path": display})
 
 
+def _project_key(project_dir: Path | None) -> str:
+    """Opaque fingerprint of the project a workspace-scoped response resolved to.
+
+    A digest of the absolute path rather than the path itself: it travels back on
+    a mutation as a precondition, and the display path is both lossy (``~``
+    collapsed, credential-redacted) and needlessly revealing for a value whose
+    only job is equality.
+    """
+    if project_dir is None:
+        return ""
+    return hashlib.sha256(str(project_dir).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def _project_precondition(
+    request: web.Request, project_dir: Path | None, operation: str
+) -> web.Response | None:
+    """Refuse a workspace-scoped write whose project is not the one the client saw.
+
+    A chat slot's project is MUTABLE: the tab lists project A, the slot is
+    re-pointed at B, and a delete issued from the still-visible listing resolves
+    B and removes B's file of the same name. The session key alone cannot close
+    that — it names a slot, and the slot is exactly what moved — so a workspace
+    write must state which project it believed it was acting on and be refused
+    when the server resolves a different one. Read-only paths are unguarded: a
+    stale read shows the wrong file but destroys nothing, and the save that would
+    act on it comes back through here.
+
+    ``409``, not ``400``: the request was well-formed and the client's view was
+    simply superseded, which is what tells the UI to refresh rather than to
+    correct the payload. An ABSENT header fails closed for the same reason the
+    resolver does — a caller that cannot say which project it meant has not
+    earned a write to one.
+    """
+    seen = request.headers.get(STEERING_PROJECT_HEADER, "")
+    actual = _project_key(project_dir)
+    if seen and actual and seen == actual:
+        return None
+    # Audited like any other refusal to write (see _blocked()): a denial nobody
+    # records is a denial nobody can review, and a stale-header burst is exactly
+    # the shape a confused — or hostile — client produces. Enqueued rather than
+    # synchronous because the write is already refused, so this record gates
+    # nothing; it reports a decision already made.
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation=operation,
+        outcome="denied",
+        source="dashboard",
+        resources="steering_project_changed",
+    )
+    return web.json_response(
+        {
+            # States the fact, not the remedy: the remedy differs by verb (a
+            # mid-edit save cannot be retried, a create/delete just needs the
+            # refreshed list), so the client supplies localized copy keyed off
+            # `code` and this text is the diagnostic fallback.
+            "error": (
+                "the project this steering file belongs to is no longer the "
+                "active project"
+            ),
+            "code": "steering_project_changed",
+        },
+        status=409,
+    )
+
+
 async def api_steering_detail(request: web.Request) -> web.Response:
     """GET/PUT/DELETE /api/steering/{key} — read, update, or delete one file."""
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     project_dir = active_project_dir(state, _read_session_key(request))
+    # Only ``workspace/`` keys resolve against the mutable project; ``user/``
+    # keys are anchored to $HOME and need no precondition.
+    workspace_scoped = key.split("/", 1)[0] == "workspace"
 
     if request.method == "GET":
 
@@ -589,6 +697,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
         denied = _blocked(request, "steering.delete")
         if denied is not None:
             return denied
+        if workspace_scoped:
+            stale = _project_precondition(request, project_dir, "steering.delete")
+            if stale is not None:
+                return stale
         target = await _offload(_resolve_blocking, key, project_dir, False)
         if target is None:
             return web.json_response({"error": "not found"}, status=404)
@@ -610,6 +722,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     denied = _blocked(request, "steering.update")
     if denied is not None:
         return denied
+    if workspace_scoped:
+        stale = _project_precondition(request, project_dir, "steering.update")
+        if stale is not None:
+            return stale
     try:
         body = await request.json()
     except Exception:

@@ -9469,7 +9469,14 @@
         "steering_files_looked_in": "引导文件是始终生效的 Markdown 约定。查找位置：{{path}}",
         "title_describe_the_convention_the_agent_should_a": "# 标题\n\n描述代理应始终遵循的约定。",
         "workspace": "工作区",
-        "workspace_this_project_only": "工作区 — 仅当前项目"
+        "workspace_this_project_only": "工作区 — 仅当前项目",
+        "workspace_scope_no_project": "工作区 — 仅当前项目（此对话未设置项目）",
+        "workspace_scope_project_conflict": "工作区 — 仅当前项目（打开的对话使用了不同项目）",
+        "scope_hint_writes_to": "写入 {{path}}/.kiro/steering。",
+        "scope_hint_no_project": "工作区范围需要一个项目。打开一个对话，用输入框旁边的项目按钮选择文件夹，然后重新打开此对话框。",
+        "scope_hint_project_conflict": "打开的对话位于不同项目，因此没有唯一适用项目。关闭其中一个，或将其重新指向同一项目，然后重新打开此对话框。",
+        "conflict_while_editing": "此文件属于一个已不再活动的项目，因此无法在这里保存。关闭编辑器前，先把改动复制到安全的地方。",
+        "conflict_list_refreshed": "当前项目已更改，因此此列表已刷新。"
       },
       "tokenDailyChart": {
         "all": "全部",

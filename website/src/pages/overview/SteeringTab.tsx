@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Compass, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
+import { store } from '../../store'
 import { Card, Btn, SearchInput, EmptyState } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
@@ -10,6 +11,8 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import type { SteeringFile, SteeringList } from '../../types'
+
+import { parseErrorCode } from '../../utils/errorReport'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -23,6 +26,30 @@ import { i18nT } from '../../i18n/t'
 const SOURCE_LABEL_KEY: Record<string, string> = {
   user: 'pages.overview.steeringTab.global',
   workspace: 'pages.overview.steeringTab.workspace',
+}
+
+/**
+ * Catalog KEY for the workspace scope row, per project state.
+ *
+ * Three whole labels rather than a base label plus an appended parenthetical:
+ * the suffix used to be raw English concatenated onto a translated string, so
+ * every non-English catalog rendered a half-translated row, and a translator
+ * given only "(no project set)" cannot see what it qualifies. Full sentences
+ * also let a language put the qualifier where its grammar wants it.
+ */
+const WORKSPACE_SCOPE_LABEL_KEY: Record<'set' | 'none' | 'ambiguous', string> = {
+  set: 'pages.overview.steeringTab.workspace_this_project_only',
+  none: 'pages.overview.steeringTab.workspace_scope_no_project',
+  ambiguous: 'pages.overview.steeringTab.workspace_scope_project_conflict',
+}
+
+/** Catalog KEY for the sentence under the Scope select that says what to DO
+ *  about an unavailable workspace scope. `set` has its own line naming the
+ *  directory the file will land in, so the dialog always states its target. */
+const SCOPE_HINT_KEY: Record<'set' | 'none' | 'ambiguous', string> = {
+  set: 'pages.overview.steeringTab.scope_hint_writes_to',
+  none: 'pages.overview.steeringTab.scope_hint_no_project',
+  ambiguous: 'pages.overview.steeringTab.scope_hint_project_conflict',
 }
 
 /** Localised scope chip text, falling back to the raw source token so a scope the
@@ -52,6 +79,29 @@ function newTemplate(): string {
   return i18nT('pages.overview.steeringTab.title_describe_the_convention_the_agent_should_a') + '\n'
 }
 
+/** Did this write fail because the project moved out from under the listing?
+ *
+ *  Keyed on the machine-readable identity — HTTP 409 plus the server's `code` —
+ *  never on the human sentence. Matching prose would let a copy edit silently
+ *  disable the recovery path the 409 exists to trigger, which is the whole reason
+ *  the response carries a `code` at all.
+ *
+ *  Reads `status`/`body` structurally rather than testing `instanceof ApiError`:
+ *  the class identity does not survive a module mock that omits the export, and a
+ *  predicate that THROWS during render is a worse failure than one that misses a
+ *  refresh. The fields are the contract; the class is just who usually carries it. */
+function isProjectConflict(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status
+  if (status !== 409) return false
+  const body = (err as { body?: unknown }).body
+  // The CODE is the identity, and it is required — 409 alone is not enough on
+  // these routes, because create already answers 409 for a name collision
+  // ("'x.md' already exists") with no code. Treating a bare 409 as a project
+  // conflict showed "the active project changed" over a collision and re-listed
+  // for nothing. Anything without this code keeps the server's own message.
+  return parseErrorCode(typeof body === 'string' ? body : undefined) === 'steering_project_changed'
+}
+
 /** Textarea styling matches SkillForm's raw-markdown editor. */
 const EDITOR_CLASS =
   'w-full h-full min-h-[320px] bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-none focus-ring'
@@ -75,28 +125,79 @@ export default function SteeringTab() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  /** The project key in force when the draft was loaded.
+   *
+   *  Save must be judged against the project the CONTENT came from, not
+   *  whichever project the listing has since refreshed to: a background
+   *  refetch re-syncs `projectKey`, so sending the live value would let a
+   *  draft typed against project A satisfy the server's precondition for B
+   *  and overwrite B's same-named file. Sending the captured value makes
+   *  that case fail the precondition (409) with the draft still on screen —
+   *  which is why the editor is not simply torn down on a project change:
+   *  discarding what the user typed is its own kind of loss. */
+  const [draftProjectKey, setDraftProjectKey] = useState<string | undefined>(undefined)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newSource, setNewSource] = useState<'user' | 'workspace'>('workspace')
   const [newBody, setNewBody] = useState(newTemplate)
 
+  /**
+   * The chat slot whose project `workspace/` keys resolve against.
+   *
+   * This tab lives on a settings page with no chat of its own, so "this project"
+   * can only mean the project of the chat the operator was last in. Sending it
+   * lets the server answer for THAT slot; with no key it can only fall back to
+   * "the one project every slot shares" and fails closed once two chats sit on
+   * different projects — which is what made workspace scope unreachable.
+   *
+   * Read once at mount, not subscribed: leaving the page unmounts the tab, so a
+   * later chat switch is picked up on return, while a value that cannot change
+   * mid-mount keeps it stable as a query key.
+   */
+  const [slotKey] = useState<string | undefined>(() => {
+    const slot = store.getState().chat.activeSlot
+    return slot ? `dashboard:${slot}` : undefined
+  })
+
   const { data, isLoading, isFetching, refetch } = useQuery<SteeringList>({
-    queryKey: ['steering'],
-    queryFn: () => api.steeringFiles(),
+    queryKey: ['steering', slotKey ?? null],
+    queryFn: () => api.steeringFiles(slotKey),
   })
   const files = useMemo(() => data?.files ?? [], [data])
   const roots = useMemo(() => data?.roots ?? [], [data])
-  const hasProject = !!data?.project
+  /** Parent of the global steering root, for the "Writes to …" hint.
+   *
+   *  Taken from the listing's own `roots` rather than assumed, and the trailing
+   *  `/.kiro/steering` is stripped because the catalog string supplies that
+   *  suffix itself. The `~` fallback only applies before the first response. */
+  const globalHintPath = useMemo(() => {
+    const userRoot = roots.find(r => r.source === 'user')?.path
+    return (userRoot ?? '~/.kiro/steering').replace(/\/\.kiro\/steering$/, '')
+  }, [roots])
+  const project = data?.project ?? ''
+  /** `project` alone cannot distinguish "none set" from "chats disagree"; fall
+   *  back to inferring it so an older backend still renders a sane label. */
+  // `?? 'none'` is the pre-load default, not a compatibility shim: the field is
+  // required on the wire and `data` is simply absent until the first response.
+  const projectState: 'set' | 'none' | 'ambiguous' = data?.project_state ?? 'none'
+  const hasProject = projectState === 'set'
+  /** Fingerprint of the project THIS listing resolved to. Every workspace write
+   *  echoes it so the server refuses (409) rather than acting on a different
+   *  project when the chat slot has been re-pointed since the list was drawn. */
+  const projectKey = data?.project_key
 
   const { data: detail } = useQuery({
-    queryKey: ['steering-file', selectedKey],
-    queryFn: () => api.steeringFile(selectedKey!),
+    // projectKey is part of the identity, not decoration: `workspace/api.md`
+    // names a DIFFERENT file in a different project, so a key without it serves
+    // project A's cached body as project B's file.
+    queryKey: ['steering-file', selectedKey, slotKey ?? null, projectKey ?? null],
+    queryFn: () => api.steeringFile(selectedKey!, slotKey),
     enabled: !!selectedKey,
   })
 
   const createFile = useMutation({
     mutationFn: (body: { name: string; content: string; source: string }) =>
-      api.createSteering(body.name, body.content, body.source),
+      api.createSteering(body.name, body.content, body.source, slotKey, projectKey),
     onSuccess: (res: { key?: string }) => {
       setCreating(false)
       setNewName('')
@@ -114,7 +215,8 @@ export default function SteeringTab() {
   })
 
   const updateFile = useMutation({
-    mutationFn: ({ key, content }: { key: string; content: string }) => api.updateSteering(key, content),
+    mutationFn: ({ key, content }: { key: string; content: string }) =>
+      api.updateSteering(key, content, slotKey, draftProjectKey ?? projectKey),
     onSuccess: () => {
       setEditing(false)
       queryClient.invalidateQueries({ queryKey: ['steering'] })
@@ -123,7 +225,7 @@ export default function SteeringTab() {
   })
 
   const deleteFile = useMutation({
-    mutationFn: (key: string) => api.deleteSteering(key),
+    mutationFn: (key: string) => api.deleteSteering(key, slotKey, projectKey),
     onSuccess: (_res, key) => {
       setSelectedKey(null)
       setEditing(false)
@@ -135,6 +237,22 @@ export default function SteeringTab() {
   })
 
   const mutError = (createFile.error || updateFile.error || deleteFile.error) as Error | null
+
+  // A 409 means the project moved under this listing, so the rows on screen are
+  // the stale input that produced it — refetch instead of leaving the user to
+  // guess that "refresh" means the button in the corner.
+  //
+  // EXCEPT while editing: the refetch lists the NEW project, where this file may
+  // not exist at all, and the selection effect then drops the row the editor is
+  // attached to — hiding the draft the 409 exists to preserve. A conflict on a
+  // create or a delete has no draft to lose, so those still refresh.
+  const conflictError = isProjectConflict(mutError)
+  const savingConflict = conflictError && !!updateFile.error && editing
+  useEffect(() => {
+    if (!conflictError) return
+    if (savingConflict) return
+    queryClient.invalidateQueries({ queryKey: ['steering'] })
+  }, [conflictError, savingConflict, queryClient])
 
   const filtered = useMemo(() => {
     const q = filter.toLowerCase()
@@ -157,6 +275,18 @@ export default function SteeringTab() {
 
   // Default the create dialog to the scope that exists.
   useEffect(() => { setNewSource(hasProject ? 'workspace' : 'user') }, [hasProject])
+
+  /** Open or close the create dialog, dropping any previous attempt's error.
+   *
+   *  react-query holds mutation state until the next `mutate()`/`reset()`, so a
+   *  failed create followed by Cancel and reopen rendered a stale banner over a
+   *  form the user had not submitted. Reset here rather than in an effect: an
+   *  effect runs a render late, which still paints the stale banner for a frame.
+   */
+  const setCreateDialog = (open: boolean) => {
+    createFile.reset()
+    setCreating(open)
+  }
 
   const select = (f: SteeringFile) => { setSelectedKey(f.key); setEditing(false); openDetail() }
 
@@ -191,11 +321,11 @@ export default function SteeringTab() {
   return (<>
     <Modal
       open={creating}
-      onClose={() => setCreating(false)}
+      onClose={() => setCreateDialog(false)}
       title={i18nT('pages.overview.steeringTab.new_steering_file')}
       maxWidth={640}
       footer={<>
-        <Btn onClick={() => setCreating(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
+        <Btn onClick={() => setCreateDialog(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
         <Btn
           primary
           disabled={!newName.trim() || !newBody.trim() || createFile.isPending}
@@ -204,6 +334,24 @@ export default function SteeringTab() {
       </>}
     >
       <div className="flex flex-col gap-3">
+        {/* A failed create leaves this modal OPEN, so the page-level error banner
+          * behind it is invisible — the refusal has to render here or the Create
+          * button just appears inert. */}
+        {createFile.error && (
+          <div
+            role="alert"
+            className="px-3 py-2 rounded-md bg-danger/10 border border-danger/20 text-[13px] text-danger"
+          >
+            {/* Same code-keyed substitution as the page banner. Without it this
+              * surface — the only verb with its own alert — printed the server's
+              * English diagnostic, which `steering.py` explicitly documents as a
+              * fallback for clients that cannot localize. A create conflict has
+              * already triggered the re-list, so it takes that copy. */}
+            {isProjectConflict(createFile.error)
+              ? i18nT('pages.overview.steeringTab.conflict_list_refreshed')
+              : (createFile.error as Error).message}
+          </div>
+        )}
         <label className="flex flex-col gap-1" htmlFor="steering-new-name">
           <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.file_name')}</span>
           <input
@@ -235,7 +383,7 @@ export default function SteeringTab() {
             options={[
               {
                 value: 'workspace',
-                label: i18nT('pages.overview.steeringTab.workspace_this_project_only') + (hasProject ? '' : ' (no project set)'),
+                label: i18nT(WORKSPACE_SCOPE_LABEL_KEY[projectState]),
                 disabled: !hasProject,
               },
               { value: 'user', label: i18nT('pages.overview.steeringTab.global_every_project') },
@@ -243,6 +391,27 @@ export default function SteeringTab() {
             value={newSource}
             onChange={v => setNewSource(v as 'user' | 'workspace')}
           />
+          {/* The dead end this closes: the row said "(no project set)" and
+            * stopped there, naming a scope with no way to reach it. The hint
+            * names the control that binds a project, or — when open chats
+            * disagree — says that is the problem, since the two look identical
+            * from here. */}
+          {/* Two independent facts, so two lines rather than one overloaded slot:
+            * where the file lands for the scope currently SELECTED, and — when
+            * workspace scope cannot be chosen — what to do about that. Keying the
+            * destination on project state alone claimed the project directory
+            * after the user switched to Global; dropping the guidance to fix that
+            * removed the affordance this dialog was missing. Both are needed. */}
+          <span className="flex flex-col gap-0.5 text-[11px] text-muted" data-testid="steering-scope-hint">
+            <span>
+              {i18nT('pages.overview.steeringTab.scope_hint_writes_to', {
+                path: newSource === 'user' ? globalHintPath : project,
+              })}
+            </span>
+            {projectState !== 'set' && (
+              <span>{i18nT(SCOPE_HINT_KEY[projectState], { path: project })}</span>
+            )}
+          </span>
         </label>
         <label className="flex flex-col gap-1" htmlFor="steering-new-body">
           <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.content')}</span>
@@ -263,7 +432,7 @@ export default function SteeringTab() {
       {i18nT('pages.overview.steeringTab.steering_count', { count: files.length })}
       <InfoTip text={i18nT('pages.overview.steeringTab.always_on_markdown_conventions_injected_into_eve')} />
       <span className="ml-auto">
-        <Btn primary onClick={() => setCreating(true)}>{i18nT('pages.overview.steeringTab.new_steering_file_2')}</Btn>
+        <Btn primary onClick={() => setCreateDialog(true)}>{i18nT('pages.overview.steeringTab.new_steering_file_2')}</Btn>
       </span>
     </h4>
     <Card>
@@ -287,7 +456,11 @@ export default function SteeringTab() {
 
       {mutError && (
         <div className="mb-3 px-3 py-2 rounded-md bg-danger/10 border border-danger/20 text-[13px] text-danger">
-          {mutError.message}
+          {conflictError
+            ? i18nT(savingConflict
+              ? 'pages.overview.steeringTab.conflict_while_editing'
+              : 'pages.overview.steeringTab.conflict_list_refreshed')
+            : mutError.message}
         </div>
       )}
 
@@ -342,7 +515,7 @@ export default function SteeringTab() {
                       <Btn onClick={() => setEditing(false)}>{i18nT('pages.overview.steeringTab.cancel')}</Btn>
                       <Btn primary disabled={!draft.trim() || updateFile.isPending} onClick={() => updateFile.mutate({ key: selected.key, content: draft })}>{i18nT('pages.overview.steeringTab.save')}</Btn>
                     </>) : (<>
-                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
+                      <Btn disabled={detail === undefined} onClick={() => { setDraft(detail?.content ?? ''); setDraftProjectKey(projectKey); setEditing(true) }}>{i18nT('pages.overview.steeringTab.edit')}</Btn>
                       <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>

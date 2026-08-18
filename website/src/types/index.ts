@@ -292,6 +292,18 @@ export interface SteeringList {
   roots: Array<{ source: string; path: string; exists: boolean }>
   /** Active project directory (display path), empty when none is set. */
   project: string
+  /** Why `project` is empty when it is: `none` (no chat names a project) or
+   *  `ambiguous` (open chats name different ones, so the server refuses to
+   *  pick). `set` when `project` is populated.
+   *
+   *  Required, not optional: the backend that serves this bundle is the one that
+   *  answers this call, so the only skew that can occur is an OLD tab against a
+   *  NEW backend — never a new tab against a backend too old to send it. */
+  project_state: 'set' | 'none' | 'ambiguous'
+  /** Opaque fingerprint of the project this listing resolved to, empty when
+   *  there is none. A workspace write echoes it back so the server can refuse
+   *  (409) once the chat slot has been re-pointed at a different project. */
+  project_key: string
 }
 
 /** A skill result from the multi-provider discover endpoint. */
