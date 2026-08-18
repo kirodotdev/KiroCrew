@@ -1863,34 +1863,49 @@ def _make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> st
     return "".join(udiff).rstrip()[:max_len]
 
 
-def _select_tool_title(title: object, raw_input: object, kind: object = None) -> str | None:
+def _select_tool_title(
+    title: object,
+    raw_input: object,
+    kind: object = None,
+    *,
+    is_shell: bool | None = None,
+) -> str | None:
     """Pick the pill label, preferring a human-readable `description` when present.
 
     Some backends' Bash tool emits a `description` field alongside `command`
     (e.g. "List KiroCrew ACP module files" rather than `ls /workplace/...`).
-    We surface it on the pill when supplied; otherwise we fall back to the
-    SDK-provided `title` (the literal tool invocation). Used by both
+    We surface it on the pill when supplied, then the literal shell command for
+    a shell tool, and only then the SDK-provided `title`. Used by both
     `_extract_tool_event` (initial tool_call) and
     `_extract_tool_call_refinement` (the second-phase tool_call_update from
     claude-agent-acp) so the title rule stays consistent across both events.
+
+    The command outranks `title` because backends disagree on what `title`
+    holds for a shell call: some send the invocation itself, others a generic
+    kind label ("Run Command") that names no command at all. A genuinely
+    human-readable label arrives as `description`, which still wins.
+
+    `is_shell` overrides the kind-derived classification for a caller holding a
+    RESOLVED signal — a tool_call_update may omit `kind` entirely, and reading
+    that absence as non-shell would put the generic title back on a pill the
+    initial tool_call had already labelled with its command.
     """
     if isinstance(raw_input, dict):
         desc = raw_input.get("description")
         if isinstance(desc, str) and desc.strip():
             return desc
+    kind_str = kind if isinstance(kind, str) else None
+    shell = _is_shell_kind(kind_str) if is_shell is None else is_shell
+    # Shell kinds only, so an fs tool's operation name ("strReplace") is never
+    # mistaken for a command.
+    if shell and isinstance(raw_input, dict):
+        cmd = raw_input.get("command")
+        if isinstance(cmd, str) and cmd.strip():
+            return cmd
     # The flat title field defaults to an "unknown" sentinel when a backend
     # omits it; treat that (and blanks) as absent rather than surfacing it.
     if isinstance(title, str) and title and title != "unknown":
         return title
-    # Some backends omit the SDK title for a shell/exec tool and carry only the
-    # command in rawInput. Surface it for shell kinds only (so an fs tool's
-    # operation name is never mistaken for a command) instead of a bare kind
-    # label like "Run Command".
-    kind_str = kind if isinstance(kind, str) else None
-    if _is_shell_kind(kind_str) and isinstance(raw_input, dict):
-        cmd = raw_input.get("command")
-        if isinstance(cmd, str) and cmd.strip():
-            return cmd
     return None
 
 
@@ -5140,7 +5155,7 @@ class AcpClient:
                 # Cache the trusted tool name too, so the permission event can
                 # rebuild mcp__<server>__<tool> for per-tool governance.
                 self._tool_call_tool_name[tool_call_id] = _kiro_tool_name(update)
-            title = _select_tool_title(title, raw_input, kind) or ""
+            title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
             if title:
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
@@ -5294,10 +5309,26 @@ class AcpClient:
             input_str, _ = redact_exfiltration_urls(input_str)
             input_str, _ = redact_credentials(input_str)
             self._tool_call_inputs[tool_use_id] = input_str
+        # Refresh the cached shell signal only when this refinement carries a
+        # kind. A refinement that omits kind must NOT clobber a True cached by
+        # the initial tool_call notification (kind is optional on updates).
+        # Cache off the RAW kind, not the redacted kind_str. Resolved BEFORE the
+        # title so the label rule sees the real classification rather than a
+        # missing kind.
+        if isinstance(kind, str) and kind:
+            self._tool_call_is_shell[tool_use_id] = _is_shell_kind(kind)
+        is_shell = self._tool_call_is_shell.get(tool_use_id, False)
         # Prefer rawInput.description over the SDK-supplied title (e.g.
         # Bash's "List KiroCrew ACP module files" rather than `ls /workplace/...`).
         # Same helper as `_extract_tool_event` so the rule is consistent.
-        title_source = _select_tool_title(title, raw_input, kind)
+        # A refinement carrying a title but no rawInput still overwrites the
+        # pill, so the command has to be recoverable from the params the initial
+        # tool_call cached — otherwise a backend that sends a generic title on
+        # both events lands that label on a pill the first event got right.
+        _title_params: object = raw_input
+        if not (isinstance(raw_input, dict) and raw_input):
+            _title_params = self._tool_call_params.get(tool_use_id)
+        title_source = _select_tool_title(title, _title_params, kind, is_shell=is_shell)
         title_str = ""
         if title_source:
             title_str, _ = redact_exfiltration_urls(title_source)
@@ -5316,13 +5347,6 @@ class AcpClient:
         if purpose:
             purpose, _ = redact_exfiltration_urls(purpose)
             purpose, _ = redact_credentials(purpose)
-        # Refresh the cached shell signal only when this refinement carries a
-        # kind. A refinement that omits kind must NOT clobber a True cached by
-        # the initial tool_call notification (kind is optional on updates).
-        # Cache off the RAW kind, not the redacted kind_str.
-        if isinstance(kind, str) and kind:
-            self._tool_call_is_shell[tool_use_id] = _is_shell_kind(kind)
-        is_shell = self._tool_call_is_shell.get(tool_use_id, False)
         return AcpEvent(
             kind=EVENT_TOOL_CALL_UPDATE,
             title=title_str,

@@ -6637,6 +6637,72 @@ class TestExtractToolCallRefinement:
         assert event is not None
         assert event.title == "List KiroCrew dashboard module files"
 
+    def test_generic_shell_title_yields_the_command(self):
+        # A backend whose shell `title` is a kind label ("Run Command") names no
+        # command; every pill in the transcript would read the same. The command
+        # is the ground truth of the call, so it is what the pill shows.
+        client = self._client()
+        msg = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-2d",
+                "title": "Run Command",
+                "kind": "execute",
+                "rawInput": {"command": "git status"},
+            }
+        )
+        event = client._extract_tool_call_refinement(msg)
+        assert event is not None
+        assert event.title == "git status"
+
+    def test_kindless_refinement_inherits_the_shell_classification(self):
+        # `kind` is optional on an update. Reading its absence as "not shell"
+        # repainted the pill with the generic title the initial tool_call had
+        # already resolved to a command, so the cached classification decides.
+        client = self._client()
+        call = self._make_msg(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc-2e",
+                "title": "Run Command",
+                "kind": "execute",
+                "rawInput": {"command": "git status"},
+            }
+        )
+        assert client._extract_tool_event(call).title == "git status"
+        refinement = self._make_msg(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc-2e",
+                "title": "Run Command",
+                "rawInput": {"command": "git status"},
+            }
+        )
+        event = client._extract_tool_call_refinement(refinement)
+        assert event is not None
+        assert event.title == "git status"
+
+    def test_title_only_refinement_reads_the_cached_params(self):
+        # A refinement can repeat the title without resending rawInput; the
+        # command then has to come from the params the initial call cached.
+        client = self._client()
+        call = self._make_msg(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc-2f",
+                "title": "Run Command",
+                "kind": "execute",
+                "rawInput": {"command": "git status"},
+            }
+        )
+        client._extract_tool_event(call)
+        refinement = self._make_msg(
+            {"sessionUpdate": "tool_call_update", "toolCallId": "tc-2f", "title": "Run Command"}
+        )
+        event = client._extract_tool_call_refinement(refinement)
+        assert event is not None
+        assert event.title == "git status"
+
     def test_blank_description_falls_back_to_title(self):
         # Whitespace-only description shouldn't override a useful title.
         client = self._client()

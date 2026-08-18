@@ -320,33 +320,50 @@ def make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str
     return "".join(udiff).rstrip()[:max_len]
 
 
-def select_tool_title(title: object, raw_input: object, kind: object = None) -> str | None:
+def select_tool_title(
+    title: object,
+    raw_input: object,
+    kind: object = None,
+    *,
+    is_shell: bool | None = None,
+) -> str | None:
     """Pick the pill label, preferring a human-readable ``description`` when present.
 
     Some backends' Bash tool emits a ``description`` field alongside ``command``
     (e.g. "List KiroCrew ACP module files" rather than ``ls /workplace/...``).
-    We surface it on the pill when supplied; otherwise we fall back to the
-    SDK-provided ``title`` (the literal tool invocation). Used for both the
+    We surface it on the pill when supplied, then the literal shell command for
+    a shell tool, and only then the SDK-provided ``title``. Used for both the
     initial ``tool_call`` and the second-phase ``tool_call_update`` refinement
     so the title rule stays consistent across both events.
+
+    The command outranks ``title`` because backends disagree on what ``title``
+    holds for a shell call: some send the invocation itself, others a generic
+    kind label ("Run Command") that names no command at all. Reading the
+    command yields the same pill for the first shape and an informative one for
+    the second, and it is never the weaker choice — a genuinely human-readable
+    label arrives as ``description``, which still wins.
+
+    ``is_shell`` overrides the kind-derived classification for a caller holding
+    a RESOLVED signal. A ``tool_call_update`` may omit ``kind`` entirely, and
+    reading that absence as non-shell would put the generic title back on a
+    pill the initial ``tool_call`` had already labelled with its command.
     """
     if isinstance(raw_input, dict):
         desc = raw_input.get("description")
         if isinstance(desc, str) and desc.strip():
             return desc
+    kind_str = kind if isinstance(kind, str) else None
+    shell = is_shell_kind(kind_str) if is_shell is None else is_shell
+    # Shell kinds only, so an fs tool's operation name ("strReplace") is never
+    # mistaken for a command.
+    if shell and isinstance(raw_input, dict):
+        cmd = raw_input.get("command")
+        if isinstance(cmd, str) and cmd.strip():
+            return cmd
     # The flat title field defaults to an "unknown" sentinel when a backend
     # omits it; treat that (and blanks) as absent rather than surfacing it.
     if isinstance(title, str) and title and title != "unknown":
         return title
-    # Some backends omit the SDK title for a shell/exec tool and carry only the
-    # command in rawInput. Surface it for shell kinds only (so an fs tool's
-    # operation name is never mistaken for a command) instead of a bare kind
-    # label like "Run Command".
-    kind_str = kind if isinstance(kind, str) else None
-    if is_shell_kind(kind_str) and isinstance(raw_input, dict):
-        cmd = raw_input.get("command")
-        if isinstance(cmd, str) and cmd.strip():
-            return cmd
     return None
 
 
@@ -777,7 +794,7 @@ def _build_tool_call_event(
         tool_input_cache[_ck] = input_str
     if purpose:
         purpose = _redact(purpose)
-    title = select_tool_title(title, raw_input, kind) or ""
+    title = select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
     if title:
         title = _redact(title)
     if kind:
@@ -1056,7 +1073,25 @@ def _build_tool_refinement_event(
     # and every child permission request downgrades to low fidelity.
     if raw_params_cache is not None and isinstance(raw_input, dict) and raw_input:
         raw_params_cache[_rk] = raw_input
-    title_source = select_tool_title(title, raw_input, kind)
+    # Refresh the cached shell signal only when this refinement carries a kind
+    # (kind is optional on updates); a kind-less refinement must not clobber a
+    # True cached by the initial tool_call. Mirrors AcpClient exactly. Resolved
+    # BEFORE the title so the label rule sees the real classification rather
+    # than a missing kind.
+    if shell_cache is not None:
+        if isinstance(kind, str) and kind:
+            shell_cache[_rk] = is_shell_kind(kind)
+        is_shell = shell_cache.get(_rk, False)
+    else:
+        is_shell = is_shell_kind(kind) if isinstance(kind, str) and kind else False
+    # A refinement carrying a title but no rawInput still overwrites the pill,
+    # so the command has to be recoverable from the params the initial
+    # tool_call cached — otherwise a backend that sends a generic title on both
+    # events lands that label on a pill the first event got right.
+    _title_params: object = raw_input
+    if not (isinstance(raw_input, dict) and raw_input) and raw_params_cache is not None:
+        _title_params = raw_params_cache.get(_rk)
+    title_source = select_tool_title(title, _title_params, kind, is_shell=is_shell)
     title_str = _redact(title_source) if title_source else ""
     kind_str = _redact(kind) if isinstance(kind, str) and kind else ""
     # The refinement's rawInput is the COMPLETE params object, so it carries the
@@ -1067,15 +1102,6 @@ def _build_tool_refinement_event(
     purpose = extract_tool_purpose(raw_input)
     if purpose:
         purpose = _redact(purpose)
-    # Refresh the cached shell signal only when this refinement carries a kind
-    # (kind is optional on updates); a kind-less refinement must not clobber a
-    # True cached by the initial tool_call. Mirrors AcpClient exactly.
-    if shell_cache is not None:
-        if isinstance(kind, str) and kind:
-            shell_cache[_rk] = is_shell_kind(kind)
-        is_shell = shell_cache.get(_rk, False)
-    else:
-        is_shell = is_shell_kind(kind) if isinstance(kind, str) and kind else False
     return AcpEvent(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
