@@ -5,32 +5,39 @@ The cross-platform process / signal / file-lock / metrics behavior is routed
 through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
 the same code path also runs on Windows.
 
-## Desktop installer (preview, CI-built)
+## Desktop installer
 
-CI's Windows lane (`build-windows.yml`) also builds a Windows desktop app: an
-NSIS `KiroCrew Setup <version>.exe` with the backend bundled (no separate Python
+CI's Windows lane (`build-windows.yml`) builds a Windows desktop app: an NSIS
+`KiroCrew Setup <version>.exe` with the backend bundled (no separate Python
 install needed). It has its own workflow rather than being a leg of
 `build-desktop.yml` because Authenticode signing has to happen *during* the
 build — the installer compresses its own already-signed executable — so that job
 needs AWS credentials the shared build workflow deliberately does not hold.
 Current status:
 
-- **CI artifact only** — produced on nightly/release runs and the manual
-  `workflow_dispatch` probe; not yet published to the download CDN (that is
-  the upcoming `publish-windows.yml` lane).
-- **Signing wired but not yet active** — the AWS Signer path is in place and
-  skips cleanly until the signing profiles are provisioned, so today's
-  installers are still unsigned and SmartScreen shows an "unrecognized app"
-  interstitial (More info > Run anyway).
-- **No auto-update yet** — win32 remains outside `SUPPORTED_PLATFORMS` in
-  `auto-update.js`. The NSIS target removes the *packaging* blocker
-  (electron-updater's win32 path is `NsisUpdater`, and it has no
-  Squirrel.Windows support at all), but two prerequisites remain: a published
-  `latest.yml` feed alongside `latest-mac.yml`/`latest-linux.yml`, and active
-  signing — `NsisUpdater` verifies Authenticode fail-closed, so an unsigned
-  installer makes every update fail rather than merely warn. Tracked in
-  [issue #598](https://github.com/kirodotdev/KiroCrew/issues/598); until then,
-  installs update by running a newer Setup.exe.
+- **Published on nightly and insider** — `publish-windows.yml` writes the
+  installer, its `.blockmap` and the `latest.yml` feed to the download CDN. The
+  `latest/` alias is the human download:
+  `https://download.crew.kiro.dev/desktop/<channel>/latest/KiroCrew-Setup.exe`.
+  **Stable has no Windows lane yet**: the stable release republishes the
+  immutable promotion bundle, whose artifact roles include no Windows installer,
+  so `WINDOWS_CHANNELS` in `auto-update.js` admits only `nightly` and `insider`
+  and a stable Windows client reports updates as unavailable rather than
+  resolving a feed nobody wrote.
+- **Authenticode-signed** — signing runs during the build through AWS Signer and
+  the publish lane refuses to publish bytes whose certificate table is empty,
+  whose signer is not the pinned publisher, or which carry no RFC3161
+  countersignature (`scripts/verify_windows_installer.py`). Signing removes the
+  unknown-publisher prompt but not SmartScreen's first-download interstitial:
+  reputation accrues per file hash and per certificate over download volume, and
+  a nightly produces a new hash daily.
+- **Auto-update is live on the channels that publish** — win32 is in
+  `SUPPORTED_PLATFORMS` and driven by `NsisUpdater`, which reads `latest.yml`
+  from the same per-channel feed directory the other platforms use. It verifies
+  the downloaded installer's Authenticode signature **fail-closed** against
+  `win.signtoolOptions.publisherName`, so a mis-signed publish would break every
+  client's update at once rather than degrade quietly — which is why the publish
+  lane verifies the signature before the bytes become immutable.
 - **Assisted installer, per user by default** — `nsis.oneClick` is false and
   `perMachine` is false, so the installer offers an install-mode page whose
   default is a per-user install into a directory named from the product name,
@@ -41,7 +48,25 @@ Current status:
   the two channels do not share an uninstall registry key. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
-- **Integrated Windows chrome** — the preview desktop shell uses the
+- **Uninstall removes the app and its caches, and keeps your data.** Removed:
+  the install directory, the Start Menu shortcut, the uninstall registry key,
+  and — via the `customUnInstall` macro in `website/electron/build/installer.nsh`
+  — this channel's electron-updater cache under
+  `%LOCALAPPDATA%\<package-name>-updater`, which holds a full installer payload
+  (~200MB) that nothing else would ever reclaim. Two things scope that removal.
+  It is guarded on `isUpdated`, because an auto-update runs the same uninstaller
+  and the cache is what the next update diffs against to avoid re-downloading the
+  whole installer. And the path is **per channel**: stable resolves
+  `kirocrew-desktop-updater`, nightly `kirocrew-desktop-nightly-updater`
+  (`build-desktop.sh` overrides `extraMetadata.name`), so uninstalling one
+  channel cannot touch the other's pending download or window state. An install
+  predating that split leaves a shared `kirocrew-electron-mac-updater` behind,
+  which is deliberately NOT removed for the same reason — it may still belong to
+  the other channel. **Deliberately kept:** `~/.kiro/crew` — sessions, memory,
+  the database and config. Delete it by hand to remove Kiro Crew's data too.
+  Also kept, because it belongs to a different product:
+  `%LOCALAPPDATA%\Kiro-Cli`.
+- **Integrated Windows chrome** — the desktop shell uses the
   dashboard's 42px header as its titlebar. File/Edit/View/Connection/Window/Help
   open the existing native Electron menus from the left of that row, the command
   palette remains centered on the window, and native minimize/maximize/close

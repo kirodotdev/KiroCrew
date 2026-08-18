@@ -8,9 +8,16 @@ const { fetchLocalToken, literalLoopbackUrl } = require("../local-token");
 
 describe("fetchLocalToken", () => {
   it("sends only the call-time authoritative secret to literal IPv4 loopback", async () => {
+    // Keys are built with path.join, matching how fetchLocalToken composes the
+    // secret path: a POSIX literal would never match the backslash-separated
+    // path the real path.join produces on Windows, so the fake fs would return
+    // undefined and the test would fail on path syntax rather than on the
+    // call-time-authoritative-secret rule it exists to pin.
+    const CANONICAL_HOME = path.resolve(path.sep, "canonical");
+    const LEGACY_HOME = path.resolve(path.sep, "legacy");
     const files = new Map([
-      ["/canonical/.local_secret", "canonical-secret"],
-      ["/legacy/.local_secret", "legacy-secret"],
+      [path.join(CANONICAL_HOME, ".local_secret"), "canonical-secret"],
+      [path.join(LEGACY_HOME, ".local_secret"), "legacy-secret"],
     ]);
     const attempted = [];
     const requestedUrls = [];
@@ -38,7 +45,7 @@ describe("fetchLocalToken", () => {
 
     const token = await fetchLocalToken({
       backendUrl: "http://localhost:5476",
-      resolveHome: () => "/legacy",
+      resolveHome: () => LEGACY_HOME,
       path,
       fs: fakeFs,
       http: fakeHttp,

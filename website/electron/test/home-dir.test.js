@@ -4,11 +4,17 @@ const path = require("path");
 const fs = require("fs");
 const { resolveHome, secretCandidates, canonicalHome, legacyHome } = require("../home-dir");
 
-const HOME = "/mock/home";
+// Absolute paths are built with path.resolve, not written as POSIX literals:
+// resolveHome() normalizes every override through path.resolve(), so on Windows
+// a literal "/custom/home" comes back as "C:\custom\home" and a hardcoded
+// expectation compares a normalized path against an unnormalized one. Deriving
+// both sides the same way keeps this suite about the RESOLUTION RULES, which are
+// platform-independent, rather than about path syntax, which is not.
+const HOME = path.resolve(path.sep, "mock", "home");
 const fakeOs = { homedir: () => HOME };
 const CANONICAL = path.join(HOME, ".kiro", "crew");
 const LEGACY = path.join(HOME, ".kirocrew");
-const OVERRIDE = "/custom/home";
+const OVERRIDE = path.resolve(path.sep, "custom", "home");
 
 // The shared cross-language contract: the same cases drive
 // test/test_home_resolution_parity.py, which runs the REAL backend resolver
@@ -45,11 +51,30 @@ describe("resolveHome (shared-fixture parity cases)", () => {
     assert.equal(resolveHome({ env: {}, os: fakeOs, path, fs: fakeFs }), CANONICAL);
   });
 
-  it("rejects an invalid override (root / system dir) and falls through -- parity with paths.py", () => {
-    // Backend _valid_override_home refuses "/" and /usr,/System,/etc; Electron
-    // must agree or the two read different config/secret homes (GPT 5.6 MEDIUM).
+  it("rejects a filesystem root override and falls through -- parity with paths.py", () => {
+    // Backend _valid_override_home refuses a root via `p == p.parent`; Electron
+    // must agree or the two read different config/secret homes. The root is
+    // spelled per-platform ("/" vs "C:\") because that is what the rule is
+    // about -- a path whose parent is itself -- and path.parse().root is the
+    // only portable way to name the root of the volume this test runs on.
     const fakeFs = { existsSync: () => false };
-    for (const bad of ["/", "/etc", "/usr", "/System"]) {
+    const root = path.parse(path.resolve(path.sep)).root;
+    assert.equal(
+      resolveHome({ env: { KIROCREW_HOME: root }, os: fakeOs, path, fs: fakeFs }),
+      CANONICAL,
+      `override ${root} should be rejected`,
+    );
+  });
+
+  // The POSIX system-directory guard. Scoped to POSIX deliberately rather than
+  // made cross-platform: the backend's list (_UNSAFE_HOME_PREFIXES) is literally
+  // /usr, /System, /etc, and on Windows those are ordinary relative-looking
+  // names that path.resolve() rewrites onto the current drive -- so asserting
+  // them here would test Windows path syntax, not the shared rule. Windows'
+  // equivalent protection is the root check above.
+  it("rejects POSIX system-dir overrides and falls through -- parity with paths.py", { skip: process.platform === "win32" ? "POSIX-only rule (backend guards /usr, /System, /etc)" : false }, () => {
+    const fakeFs = { existsSync: () => false };
+    for (const bad of ["/etc", "/usr", "/System"]) {
       assert.equal(
         resolveHome({ env: { KIROCREW_HOME: bad }, os: fakeOs, path, fs: fakeFs }),
         CANONICAL,

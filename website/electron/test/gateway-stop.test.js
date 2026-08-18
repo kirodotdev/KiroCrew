@@ -134,7 +134,19 @@ test("stopGatewayGracefully: SIGTERM fallback when endpoint fails", async () => 
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test("stopGatewayGracefully: SIGKILL fallback when SIGTERM ignored", async () => {
+// The SIGKILL escalation exists for a child that IGNORES SIGTERM, which is a
+// POSIX-only state: on Windows there are no real signals, and
+// ChildProcess.kill("SIGTERM") maps onto TerminateProcess -- an unconditional
+// kill the target cannot install a handler for (verified: the child's SIGTERM
+// handler never runs and it dies with signalCode "SIGTERM"). So the premise
+// "SIGTERM was ignored" is unreachable there, and the escalation cannot be
+// exercised rather than merely being unnecessary.
+//
+// Split per platform instead of relaxed to `signalCode != null`, which would
+// pass on POSIX even if the SIGKILL fallback regressed into a plain SIGTERM --
+// the exact bug this test exists to catch. Each platform asserts the strongest
+// true statement about its own semantics.
+test("stopGatewayGracefully: SIGKILL fallback when SIGTERM ignored", { skip: process.platform === "win32" ? "no real signals on Windows: kill(SIGTERM) is TerminateProcess, which cannot be ignored" : false }, async () => {
   const home = tmpHomeWithSecret("s3cr3t");
   const proc = spawnDummy({ ignoreSigterm: true }); // ignores SIGTERM
   await waitReady(proc);
@@ -144,6 +156,27 @@ test("stopGatewayGracefully: SIGKILL fallback when SIGTERM ignored", async () =>
       backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, timeoutMs: 800,
     });
     assert.strictEqual(proc.signalCode, "SIGKILL");
+  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test("stopGatewayGracefully: a SIGTERM-ignoring child still dies on Windows", { skip: process.platform === "win32" ? false : "covered by the SIGKILL-escalation test on POSIX" }, async () => {
+  // The guarantee callers actually depend on -- stopGatewayGracefully resolves
+  // only once the process is GONE, so the auto-update bundle swap never races a
+  // live gateway child. Windows reaches that end state through the first kill
+  // rather than through the escalation, so assert the end state, not the route.
+  const home = tmpHomeWithSecret("s3cr3t");
+  const proc = spawnDummy({ ignoreSigterm: true });
+  await waitReady(proc);
+  const { server, port } = await startServer({ secret: "s3cr3t", status: 500 });
+  try {
+    await stopGatewayGracefully(proc, {
+      backendUrl: `http://127.0.0.1:${port}`, kirocrewHome: home, timeoutMs: 800,
+    });
+    assert.notStrictEqual(
+      proc.exitCode === null && proc.signalCode === null,
+      true,
+      "process should be gone once stopGatewayGracefully resolves",
+    );
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 

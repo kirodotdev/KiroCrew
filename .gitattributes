@@ -8,3 +8,23 @@
 # Windows checkout, so both comparisons fail there and only there. Marking the
 # file non-text disables newline conversion entirely.
 *.pem -text
+
+# Shell scripts and the data files they parse must keep LF on every checkout.
+# `core.autocrlf=true` is the Git-for-Windows default, so without this a Windows
+# clone rewrites these to CRLF and two things break there and only there:
+#
+#   - A `#!/usr/bin/env bash` script whose lines end in CRLF fails outright: the
+#     CR becomes part of the interpreter path or of every command argument.
+#   - A script that READS a line-oriented data file gets a trailing CR on every
+#     value. scrub-lint.sh reads scripts/scrub-allowlist.txt line by line and
+#     uses each line as a grep pattern; a trailing CR makes every pattern match
+#     nothing, so the entire allowlist silently goes dead and the gate reports
+#     failures for the exact references it is configured to permit. Silent
+#     because the file is only ever consumed as patterns -- nothing validates
+#     that an allowlist entry still matches anything.
+#
+# eol=lf (not just `text`) pins the working-tree ending, so this holds regardless
+# of the user's core.autocrlf.
+*.sh text eol=lf
+scripts/scrub-allowlist.txt text eol=lf
+*.nsh text eol=lf

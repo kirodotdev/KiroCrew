@@ -491,6 +491,18 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       "-c.rpm.packageName=kirocrew-nightly"
       "-c.linux.executableName=kirocrew-desktop-nightly"
       "-c.extraMetadata.desktopName=kirocrew-desktop-nightly.desktop"
+      # The npm package `name` is per-channel for the same reason the Linux
+      # package name is. It is not build metadata: appInfo derives
+      # updaterCacheDirName from it (`sanitizedName.toLowerCase() +
+      # "-updater"`), Electron derives the userData directory from it, and NSIS
+      # receives it as ${APP_PACKAGE_NAME}. Shared, that makes nightly and
+      # stable write ONE %LOCALAPPDATA%\<name>-updater and ONE
+      # %APPDATA%\<name> -- so uninstalling either channel would delete the
+      # other's pending update download, its differential baseline, and its
+      # window state. productName and nsis.guid already separate the install
+      # directory and the registry key; this separates the per-user state they
+      # do not cover.
+      "-c.extraMetadata.name=kirocrew-desktop-nightly"
       # Squirrel.Windows keyed the INSTALL identity off squirrelWindows.name;
       # NSIS keys it off two separate things, and nightly needs both:
       #

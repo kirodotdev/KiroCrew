@@ -205,10 +205,17 @@ build_dir() {  # $1 = version -> unpacked .app in dist/ ; echoes the .app path
   # it exists to catch. Content mirrors what the real dmg+zip build emits; the
   # url is overridden at runtime by configureFeed()'s setFeedURL anyway.
   if [ -n "$app" ] && [ ! -f "$app/Contents/Resources/app-update.yml" ]; then
+    # updaterCacheDirName is DERIVED, exactly as app-builder-lib derives it
+    # (appInfo.updaterCacheDirName = sanitizedName.toLowerCase() + "-updater"):
+    # a hardcoded copy silently stops matching the real cache dir after a
+    # package rename, and this stub's whole purpose is to mirror what the real
+    # build emits.
+    local cache_dir_name
+    cache_dir_name="$("$NODE" -p "require('./package.json').name.toLowerCase() + '-updater'")"
     cat > "$app/Contents/Resources/app-update.yml" <<YML
 provider: generic
 url: https://updates.crew.kiro.dev/feed/stable/
-updaterCacheDirName: kirocrew-electron-mac-updater
+updaterCacheDirName: ${cache_dir_name}
 YML
     echo "    wrote app-update.yml (dir target does not emit it)" >&2
   fi
