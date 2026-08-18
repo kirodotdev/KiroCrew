@@ -29,7 +29,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect, stream_and_collect_json
-from kiro_crew.messaging.link import legacy_key
+from kiro_crew.messaging.link import canonical_key, legacy_key
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1700,6 +1700,27 @@ class ConversationLog:
         #: whole thing. Correctness-neutral — see
         #: :meth:`_read_tail_messages`.
         self._tail_reads = True
+        #: Per-key invalidation generation for the mtime-keyed caches, bumped
+        #: by :meth:`_invalidate_cache` BEFORE it drops entries. The mtime
+        #: guard alone cannot protect a cache FILL: housekeeping rewrites
+        #: (compaction / rotation / metadata edits / mark_consolidated) restore
+        #: the pre-write mtime via ``_restore_mtime``, so a fill that stats the
+        #: file before such a rewrite and publishes after its invalidation
+        #: would park pre-rewrite data under an mtime the file still has —
+        #: undetectable for the life of the process. Fill paths snapshot the
+        #: generation before their stat and publish through
+        #: :meth:`_publish_if_current`, which discards the fill when the
+        #: generation moved. Keyed by the sanitized filename stem (see
+        #: :meth:`_cache_gen`) so the logical-key and ``path.stem`` spellings
+        #: of one session share a counter. ``_cache_gens_guard`` protects only
+        #: the dict get/set — a few instructions of in-memory work, never held
+        #: across I/O or while ``_file_lock`` is held — so no read path waits
+        #: on a writer's file operations. Grows one small int per session key
+        #: ever invalidated in this process — the same growth class as
+        #: ``_file_locks``, and entries are never evicted because a missing
+        #: entry must always mean "generation 0", not "forgotten bump".
+        self._cache_gens: dict[str, int] = {}
+        self._cache_gens_guard = threading.Lock()
 
     def _file_lock(self, key: str) -> threading.RLock:
         """Return the process-wide reentrant lock guarding *key*'s session file.
@@ -2199,8 +2220,10 @@ class ConversationLog:
             if created_with_tab_id:
                 self.invalidate_tab_id_cache()
 
-            # Rotate if file exceeds size limit
-            self._maybe_rotate(path)
+            # Rotate if file exceeds size limit. Pass the logical key so the
+            # rotation's invalidation reaches every cache-key spelling; the
+            # file stem alone cannot recover it (sanitization is lossy).
+            self._maybe_rotate(path, key)
 
     def append_if_absent(
         self,
@@ -2852,6 +2875,13 @@ class ConversationLog:
         # Deduplicate stacked dashboard_ prefixes by canonical key, keeping newer
         by_canon: dict[str, dict] = {}
         for path in self._dir.glob("*.jsonl"):
+            key = path.stem
+            # Snapshot the invalidation generation BEFORE the stat: the
+            # first-line fill below publishes under this stat's mtime, and a
+            # housekeeping rewrite restores the pre-write mtime
+            # (``_restore_mtime``), so only the generation can prove the
+            # stat → read → publish window stayed write-free for this key.
+            gen = self._cache_gen(key)
             try:
                 stat = path.stat()
             except OSError:
@@ -2859,7 +2889,6 @@ class ConversationLog:
             # Skip symlinks — these are handoff aliases pointing to the real session
             if path.is_symlink():
                 continue
-            key = path.stem
             meta: dict = {
                 "key": key,
                 "messages": max(1, int(stat.st_size / 200)),
@@ -2896,7 +2925,12 @@ class ConversationLog:
                             meta["memory_mode"] = d.get("memory_mode", "persistent")
                             if d.get("folder_id"):
                                 meta["folder_id"] = d["folder_id"]
-                            self._meta_cache[key] = (stat.st_mtime, d)
+                            # Guarded publish — discard the fill if a write
+                            # invalidated this key inside the stat → read
+                            # window (see the generation snapshot above).
+                            self._publish_if_current(
+                                self._meta_cache, key, (stat.st_mtime, d), key=key, gen=gen
+                            )
                 except Exception:
                     pass
             # Ensure memory_mode is always present (old sessions lack it)
@@ -3967,6 +4001,10 @@ class ConversationLog:
         corrupting the shared entry.
         """
         path = self._path(key)
+        # Snapshot the invalidation generation BEFORE the stat: the mtime this
+        # stat returns can survive a housekeeping rewrite (``_restore_mtime``),
+        # so only the generation can prove the window stayed write-free.
+        gen = self._cache_gen(key)
         try:
             mtime = path.stat().st_mtime
         except OSError:
@@ -3980,7 +4018,11 @@ class ConversationLog:
             return [dict(m) for m in rc[1]]  # memo hit — no disk I/O
         tail = self._read_tail_messages(path, max_messages, roles)
         formatted = [{"role": m["role"], "content": m["content"]} for m in tail]
-        self._recent_cache[rc_key] = (mtime, formatted)
+        # Guarded publish: a rewrite that restored the mtime while we read the
+        # tail would otherwise park this pre-rewrite window under an mtime the
+        # file still has — and this memo feeds recent(), the per-turn model
+        # context path, so the staleness would be served every turn.
+        self._publish_if_current(self._recent_cache, rc_key, (mtime, formatted), key=key, gen=gen)
         return [dict(m) for m in formatted]
 
     @staticmethod
@@ -4092,26 +4134,126 @@ class ConversationLog:
         with self._locked(key):
             return self._last_row_ts(key)
 
+    @staticmethod
+    def _cache_key_identities(key: str) -> tuple[str, ...]:
+        """Every cache-key spelling that can refer to *key*'s session.
+
+        One session is addressable by its logical key, its sanitized filename
+        stem, and — for Slack threads — the pre-migration bare ``thread_ts``
+        in either role. The closure must be BIDIRECTIONAL: a writer told only
+        the bare legacy spelling (e.g. rotation deriving it from the file
+        name) must still reach the canonical spelling readers use, or its
+        invalidation is invisible to them. Pure string math, no I/O.
+        """
+        idents = dict.fromkeys((key, *transcript_stems(key)))
+        canon = canonical_key(key)
+        if canon != key:
+            idents.update(dict.fromkeys((canon, *transcript_stems(canon))))
+        return tuple(idents)
+
+    def _cache_gen(self, key: str) -> int:
+        """Current invalidation generation for *key* (0 if never invalidated).
+
+        Read under *key*'s sanitized filename stem, because one session file is
+        reachable under more than one cache-key spelling: ``list_sessions``
+        keys its fills by ``path.stem`` while every other caller passes the
+        logical session key, and ``_safe_key`` maps both onto the same stem.
+        Without this normalization a writer's bump under the logical key would
+        be invisible to a fill running under the stem (and vice versa) — the
+        exact blindness this counter exists to remove. Pure string math: no
+        stat, so snapshotting a generation costs a fill no I/O.
+        """
+        with self._cache_gens_guard:
+            return self._cache_gens.get(_safe_key(key), 0)
+
+    def _bump_cache_gen(self, key: str) -> None:
+        """Advance *key*'s generation so in-flight cache fills discard themselves.
+
+        Bumps every identity in :meth:`_cache_key_identities`, so a writer that
+        only knows one spelling (rotation knows the file stem; most callers
+        know the logical key) still moves the bucket every fill reads —
+        including the canonical spelling of a legacy bare ``thread_ts``.
+        """
+        with self._cache_gens_guard:
+            for ident in self._cache_key_identities(key):
+                self._cache_gens[ident] = self._cache_gens.get(ident, 0) + 1
+
+    def _publish_if_current(
+        self,
+        cache: _LRUCache[_V],
+        entry_key: str,
+        value: _V,
+        *,
+        key: str,
+        gen: int,
+    ) -> None:
+        """Publish *value* to *cache* only if *key*'s generation is still *gen*.
+
+        *key*/*gen* are keyword-only because *entry_key* and *key* are both
+        strings and coincide at most call sites; swapping them where they
+        differ would silently check a generation nothing ever bumps, turning
+        the guard into a permanent no-op that no type checker could see.
+
+        *gen* is the generation the caller snapshotted BEFORE its stat, so a
+        moved generation proves a write landed inside the stat → read → publish
+        window and the parse in hand may predate it. The check-store-recheck
+        shape closes every interleaving with :meth:`_invalidate_cache` (which
+        bumps before it pops):
+
+        - invalidation completes before the store → the pre-check sees the
+          moved generation and skips the publish;
+        - invalidation's bump lands between the pre-check and the store → the
+          re-check sees it and pops the entry this call just published;
+        - the store completes before the bump → the invalidation's own pop
+          removes it.
+
+        The pop can at worst remove a FRESHER entry a concurrent fill published
+        in the same window; that only costs the next reader one re-read, never
+        a stale answer. Discarding (rather than retrying) keeps the read path
+        free of any wait on writers — several fill paths run on the event loop.
+        """
+        if gen != self._cache_gen(key):
+            return
+        cache[entry_key] = value
+        if gen != self._cache_gen(key):
+            cache.pop(entry_key, None)
+
     def _invalidate_cache(self, key: str) -> None:
         """Invalidate caches for a key after a write operation."""
-        self._msg_cache.pop(key, None)
-        self._meta_cache.pop(key, None)
-        # The folded search blob is derived from the messages, so it goes stale
-        # exactly when they do. Its own mtime guard is not enough here: the
-        # housekeeping rewrites below restore the pre-write mtime.
-        self._folded_cache.pop(key, None)
-        # Same reasoning for the snippet source: it is the raw form of what the
-        # fold is derived from, so it goes stale at exactly the same moment. Its
-        # own mtime check would miss the preserved-mtime rewrites below, and a
-        # missed invalidation here shows the user a preview line quoting text
-        # that is no longer in the session.
-        self._snippet_cache.pop(key, None)
-        # Also drop any memoized recent() windows for this key. Necessary
-        # because housekeeping rewrites (mark_consolidated/update_metadata/
-        # rewrite_session/rotation) restore the pre-write mtime via
-        # _restore_mtime, so the recent cache's mtime guard alone would let a
-        # stale window survive a content change.
-        self._recent_cache.pop_prefix(f"{key}\x00")
+        # Bump BEFORE dropping entries: a fill publishing between a pop and a
+        # later bump would pass its generation re-check and resurrect the entry
+        # just dropped. Bump-first means any fill that stores after a pop here
+        # must re-check against the already-moved generation and discard.
+        self._bump_cache_gen(key)
+        # Drop entries under EVERY spelling this session's cache keys can take
+        # (:meth:`_cache_key_identities`): the logical key most callers pass,
+        # the sanitized filename stems that ``list_sessions`` — and everything
+        # fed by its meta dicts, like ``search_sessions``' fold/snippet memos —
+        # keys entries by, and the canonical spelling when this writer was only
+        # told a legacy bare stem (rotation derives its key from the file
+        # name). Popping only one spelling would leave an alias-keyed entry
+        # holding pre-rewrite data under the restored mtime, unreachable by
+        # any guard.
+        for ident in self._cache_key_identities(key):
+            self._msg_cache.pop(ident, None)
+            self._meta_cache.pop(ident, None)
+            # The folded search blob is derived from the messages, so it goes
+            # stale exactly when they do. Its own mtime guard is not enough
+            # here: the housekeeping rewrites below restore the pre-write
+            # mtime.
+            self._folded_cache.pop(ident, None)
+            # Same reasoning for the snippet source: it is the raw form of
+            # what the fold is derived from, so it goes stale at exactly the
+            # same moment. Its own mtime check would miss the preserved-mtime
+            # rewrites below, and a missed invalidation here shows the user a
+            # preview line quoting text that is no longer in the session.
+            self._snippet_cache.pop(ident, None)
+            # Also drop any memoized recent() windows for this key. Necessary
+            # because housekeeping rewrites (mark_consolidated/update_metadata/
+            # rewrite_session/rotation) restore the pre-write mtime via
+            # _restore_mtime, so the recent cache's mtime guard alone would let
+            # a stale window survive a content change.
+            self._recent_cache.pop_prefix(f"{ident}\x00")
 
     #: Bytes read from the end of a session file for the last-message preview.
     #: One tail block comfortably covers several trailing JSONL lines without
@@ -4262,6 +4404,13 @@ class ConversationLog:
             self._meta_cache.pop(key, None)
             return {}, True
         for attempt in range(_METADATA_READ_ATTEMPTS):
+            # Snapshot the invalidation generation BEFORE the stat (fresh per
+            # attempt — each retry is its own stat → read → publish window).
+            # The mtime alone cannot guard the fill: a housekeeping rewrite
+            # restores the pre-write mtime (``_restore_mtime``), so a fill that
+            # spans one would publish pre-rewrite metadata under an mtime the
+            # file still has.
+            gen = self._cache_gen(key)
             try:
                 mtime = path.stat().st_mtime
                 cached = self._meta_cache.get(key)
@@ -4310,7 +4459,11 @@ class ConversationLog:
                 )
             except json.JSONDecodeError:
                 meta = {}
-            self._meta_cache[key] = (mtime, meta)
+            # Guarded publish — discard the fill if a write invalidated this
+            # key inside the stat → read window (see the generation snapshot
+            # at the top of the loop). The metadata itself is still returned:
+            # it was true at read time; only the memo must not outlive it.
+            self._publish_if_current(self._meta_cache, key, (mtime, meta), key=key, gen=gen)
             return meta, True
         return {}, True
 
@@ -4381,8 +4534,13 @@ class ConversationLog:
         _restore_mtime(path, prev_mtime)
         self._invalidate_cache(key)
 
-    def _maybe_rotate(self, path: Path) -> None:
+    def _maybe_rotate(self, path: Path, key: str) -> None:
         """Rotate a session file that exceeds the byte limit.
+
+        *key* is the logical session key, required because the cache
+        invalidation below cannot recover it from the file stem: the
+        sanitization is lossy (``slack:<ts>`` and ``slack_<ts>`` share one
+        stem) and cache entries live under the spelling the caller used.
 
         Keeps the metadata line plus at most ``_SESSION_KEEP_LINES`` trailing
         messages. When a file is oversized because of a handful of very large
@@ -4455,9 +4613,10 @@ class ConversationLog:
         content = meta_line + "".join(kept)
         atomic_write(path, content)
         _restore_mtime(path, prev_mtime)
-        # Invalidate cache — offsets changed
-        safe = path.stem
-        self._invalidate_cache(safe)
+        # Invalidate cache — offsets changed. Use the caller's logical key:
+        # entries are keyed by the spelling callers pass, which the sanitized
+        # stem cannot always be mapped back to.
+        self._invalidate_cache(key)
         logger.info(
             "Rotated session file %s (%d → %d lines)",
             path.name,
