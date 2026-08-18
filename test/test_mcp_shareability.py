@@ -76,10 +76,43 @@ class TestDisqualifiers:
         for prefix in ENV_SCRUB_PREFIXES:
             assert shareability.rotating_secret_env((prefix + "_X",)) == (prefix + "_X",), prefix
 
-    def test_first_party_is_never_recommended(self) -> None:
-        verdict = assess(ShareEvidence(name="kirocrew-core", is_first_party=True, probe_ok=True))
+    def test_a_session_bound_server_is_never_recommended(self) -> None:
+        """The disqualifier is the identity mechanism, not the authorship.
+
+        ``kirocrew-cron`` is the real shape: one of ours, and still reading its
+        channel identity from process env, so one backend cannot serve two
+        sessions. The sibling test below pins the other half — that being ours is
+        NOT itself a disqualifier.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="kirocrew-cron", session_bound_by_construction=True, probe_ok=True
+            )
+        )
         assert verdict.strength is Strength.DISQUALIFIED
         assert _codes(verdict) == {"first_party_session_scoped"}
+
+    def test_a_managed_server_that_consumes_the_caller_block_is_not_disqualified(self) -> None:
+        """Regression: ``kirocrew-core`` was disqualified for being ours.
+
+        It advertises the caller-identity extension and resolves the session from
+        the injected caller block, which is exactly the property that makes a
+        shared backend correct — so the verdict must be the positive one. Keying
+        the disqualifier on the name inverted the answer for the one server in the
+        set that was built for pooling.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="kirocrew-core",
+                session_bound_by_construction=False,
+                probe_ok=True,
+                capabilities={"experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}}},
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.DECLARED
+        assert verdict.recommend_share
+        assert "first_party_session_scoped" not in _codes(verdict)
 
     def test_non_stdio_is_out_of_scope_not_unsafe(self) -> None:
         verdict = assess(ShareEvidence(name="x", is_stdio=False, probe_ok=True))
@@ -262,6 +295,131 @@ class TestNoObjectionSplitsStubFromShare:
         assert "all_tools_read_only" not in codes
         detail = next(r.detail for r in verdict.reasons if r.code == "no_tool_annotations")
         assert detail == "2024-11-05"
+
+
+class TestMeasurementCanEarnAVerdict:
+    """The rung that keeps a third-party server from being stuck for ever.
+
+    ``kirocrew.caller-identity`` is our own extension and the MCP base protocol has
+    no equivalent, so a third-party server cannot reach ``DECLARED`` no matter how
+    well it behaves. Before this tier the pre-flight could only ever take a verdict
+    away (``caller_sensitive_initialize``); provoking a server and finding NO
+    divergence recorded nothing.
+
+    What it must NOT do is recommend sharing -- see
+    ``test_a_measurement_does_not_recommend_sharing``.
+    """
+
+    def test_a_passed_preflight_earns_its_own_tier_without_any_declaration(self) -> None:
+        verdict = assess(
+            ShareEvidence(
+                name="third-party",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={},
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.MEASURED
+        assert verdict.recommend_stub is True
+        assert "preflight_passed" in _codes(verdict)
+
+    def test_a_measurement_does_not_recommend_sharing(self) -> None:
+        """The limit that keeps this tier honest, not caution.
+
+        The pre-flight compares the HANDSHAKE and never makes a tool call. A
+        server whose state is process-global -- one browser context, one database
+        connection, one working directory -- replays that handshake identically for
+        two callers and still cannot serve two sessions: on a shared backend one
+        caller reads state another caller wrote. So a measurement is a fact about
+        DETERMINISM while a declaration is a claim about ISOLATION, and only the
+        second is grounds for co-tenancy.
+
+        Nothing catches this afterwards either: the hazard ledger's codes describe
+        frames the gateway could not route, not state handed to the wrong session,
+        so a wrong ``recommend_share`` here would never be refuted.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="stateful-but-deterministic",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={},
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.MEASURED
+        assert verdict.recommend_share is False
+
+    def test_only_a_declaration_plus_a_measurement_recommends_sharing(self) -> None:
+        """The contrast, pinned in one place so the two tiers cannot converge."""
+        declared = assess(
+            ShareEvidence(
+                name="declares-it",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={"experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}}},
+                preflight_ran=True,
+            )
+        )
+        assert declared.strength is Strength.DECLARED
+        assert declared.recommend_share is True
+
+    def test_an_unrun_preflight_still_reads_as_absence_of_evidence(self) -> None:
+        """``preflight_ran=None`` is "nobody asked", not "asked and found nothing"."""
+        verdict = assess(
+            ShareEvidence(name="third-party", probe_ok=True, has_tools=True, capabilities={})
+        )
+        assert verdict.strength is Strength.NO_OBJECTION
+        assert verdict.recommend_share is False
+        assert "no_objection_found" in _codes(verdict)
+
+    def test_a_preflight_that_could_not_run_does_not_promote(self) -> None:
+        """A pre-flight blocked by the moment (missing credential, dead tunnel).
+
+        ``evaluate`` reports that as ``ran=False`` and deliberately does not cache
+        it, so it must not read as supporting evidence here either.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="third-party",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={},
+                preflight_ran=False,
+            )
+        )
+        assert verdict.strength is Strength.NO_OBJECTION
+        assert verdict.recommend_share is False
+
+    def test_measurement_does_not_override_a_disqualifier(self) -> None:
+        """Order matters: an objection outranks a clean measurement."""
+        verdict = assess(
+            ShareEvidence(
+                name="third-party",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={"logging": {}},
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.DISQUALIFIED
+
+    def test_measured_still_reports_the_supporting_annotation_evidence(self) -> None:
+        """The extra reasons are the same set; only the headline tier changes."""
+        verdict = assess(
+            ShareEvidence(
+                name="third-party",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={},
+                protocol_version="2025-06-18",
+                tool_annotations=[{"readOnlyHint": True}],
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.MEASURED
+        assert "all_tools_read_only" in _codes(verdict)
 
 
 class TestHazardLedger:

@@ -20,8 +20,12 @@ import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-ap
 const OUT = process.argv[2] || '/tmp/mcp-assessment-shots'
 mkdirSync(OUT, { recursive: true })
 
-const rec = (strength, share, reasons) => ({
+const rec = (strength, share, reasons, stub = true) => ({
   strength,
+  // Two axes, because the bulk action reads whichever one the global sharing
+  // switch makes true of a click. A fixture that sent only ``recommendShare``
+  // would leave every row ineligible and photograph a disabled button.
+  recommendStub: stub,
   recommendShare: share,
   reasons,
 })
@@ -39,7 +43,7 @@ const rec = (strength, share, reasons) => ({
  * name, stubbed, transport, verdict
  */
 const ROWS = [
-  ['alpha-mcp', true, 'stdio', rec('disqualified', false, [{ code: 'first_party_session_scoped', detail: '' }])],
+  ['alpha-mcp', true, 'stdio', rec('disqualified', false, [{ code: 'first_party_session_scoped', detail: '' }], false)],
   ['bravo-mcp', true, 'stdio', rec('no_objection', false, [
     { code: 'no_objection_found', detail: '' },
     { code: 'no_tool_annotations', detail: '2025-06-18' },
@@ -53,16 +57,16 @@ const ROWS = [
   ])],
   ['delta-mcp', true, 'stdio', rec('disqualified', false, [
     { code: 'per_client_capability', detail: 'logging_level' },
-  ])],
+  ], false)],
   ['echo-mcp', true, 'stdio', rec('disqualified', false, [
     { code: 'rotating_secret_env', detail: 'AWS_SESSION_TOKEN' },
-  ])],
+  ], false)],
   // Refutation: the strongest tier, reached only by watching a shared server
   // actually misbehave.
   ['foxtrot-mcp', true, 'stdio', rec('refuted', false, [
     { code: 'observed_hazard', detail: 'unroutable_notification' },
-  ])],
-  ['golf-mcp', true, 'stdio', rec('declared', true, [
+  ], false)],
+  ['golf-mcp', false, 'stdio', rec('declared', true, [
     { code: 'declares_caller_identity', detail: '' },
     { code: 'preflight_passed', detail: '' },
   ])],
@@ -72,12 +76,28 @@ const ROWS = [
     { code: 'no_tools_listed', detail: '' },
   ])],
   // Probe never succeeded: unknown, and deliberately NOT flagged as unsafe.
-  ['juliett-mcp', false, 'stdio', rec('unknown', false, [{ code: 'not_probed', detail: '' }])],
+  ['juliett-mcp', false, 'stdio', rec('unknown', false, [{ code: 'not_probed', detail: '' }], false)],
   // No verdict at all, as an older gateway would answer.
   ['kilo-mcp', true, 'stdio', null],
   // Not stdio: the question does not apply rather than the answer being no.
-  ['lima-mcp', false, 'http', rec('disqualified', false, [{ code: 'not_stdio', detail: '' }])],
+  ['lima-mcp', false, 'http', rec('disqualified', false, [{ code: 'not_stdio', detail: '' }], false)],
+  // Measured: provoked as two callers, the handshake replayed identically. That
+  // rules out a caller-sensitive handshake but says nothing about state a tool
+  // call would create, so it recommends the stub and NOT sharing -- which is why
+  // the bulk action leaves both of these alone while sharing is on.
+  ['mike-mcp', false, 'stdio', rec('measured', false, [
+    { code: 'preflight_passed', detail: '' },
+    { code: 'all_tools_read_only', detail: '' },
+  ])],
+  // Same verdict, and additionally a shared backend would withhold a declared env
+  // key, so the rewriter would leave it unwrapped.
+  ['november-mcp', false, 'stdio', rec('measured', false, [
+    { code: 'preflight_passed', detail: '' },
+  ])],
 ]
+
+//: Names the fixture reports as blocked from pooling by their declared env.
+const ENV_BLOCKED = new Set(['november-mcp'])
 
 const servers = ROWS.map(([name, stub, transport, recommendation]) => ({
   name,
@@ -85,6 +105,7 @@ const servers = ROWS.map(([name, stub, transport, recommendation]) => ({
   stub: transport === 'stdio' ? stub : false,
   in_allowlist: stub,
   entry_poolable: false,
+  pooling_blocked_by_env: ENV_BLOCKED.has(name),
   agents: ['kirocrew'],
   transport,
   denylisted: false,
@@ -157,6 +178,23 @@ await stubDashboardApi(page, {
     if (path === '/api/mcp/measure') {
       const starting = route.request().method() === 'POST'
       return json(route, starting ? measureStartReply : measureProgress), true
+    }
+    if (path === '/api/mcp-gateway/servers/stub') {
+      // The batch form. Answering it lets the bulk action reach its own result
+      // line, which is the part of the flow worth photographing: a frame of the
+      // button alone cannot show what it reports having done. The server decides
+      // eligibility, so the reply carries what it wrote rather than what was asked.
+      return json(route, {
+        ok: true,
+        names: ['golf-mcp', 'mike-mcp', 'november-mcp'],
+        stub: true,
+        stubbed: ['golf-mcp'],
+        skipped: [
+          { name: 'mike-mcp', reason: 'evidence_insufficient' },
+          { name: 'november-mcp', reason: 'pooling_blocked_by_env' },
+        ],
+        applied: true,
+      }), true
     }
     if (path === '/api/mcp-gateway/status') {
       return json(route, {
@@ -264,6 +302,50 @@ oneNowMeasured = true
 measureProgress = { running: false, done: 2, measured: 1, total: 2 }
 await page.waitForTimeout(3400)
 await shot('08-measured-one-of-two-attempted')
+
+// 9. The bulk action, in the state a reader meets it: the button names what it
+//     does and the line beside it says what will be measured and what will be
+//     left alone. It lives on the Servers view because the assessment view states
+//     it changes nothing.
+measureProgress = { running: false, done: 0, measured: 0, total: 0 }
+everythingMeasured = false
+sharingEnabled = true
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await shot('09-stub-what-evidence-allows')
+
+// 10. What one press reports. Sharing is ON, so eligibility takes the verdict that
+//     claims caller isolation: only the DECLARED row qualifies. The two MEASURED
+//     rows are left alone -- the pre-flight compared their handshakes, which says
+//     nothing about state a tool call would create -- and one of them additionally
+//     declares env a shared backend would withhold. A frame that stubbed those
+//     would document a state the product refuses to produce.
+await page.getByRole('button', { name: /evidence allows/i }).click()
+await page.waitForTimeout(1800)
+await shot('10-stub-result-what-it-skipped')
+
+// 11. A pass the button itself started, in flight. Nothing is stubbed until the
+//     measurement finishes, because acting on a half-measured fleet would stub
+//     whatever happened to be done by then. Captured past the first progress poll
+//     so the line shows the pass's real position rather than the pending count.
+measureProgress = { running: true, done: 1, measured: 1, total: 2 }
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await page.getByRole('button', { name: /evidence allows/i }).click()
+await page.waitForTimeout(2600)
+await shot('11-stub-waiting-on-measurement')
+
+// 12. The new tier on the evidence view. Its wording is the whole point: MEASURED
+//     is what the pre-flight can support, and "no divergence" is a narrower claim
+//     than safe. Scrolled to the rows that carry it, since a frame of the header
+//     would prove nothing about the tier.
+measureProgress = { running: false, done: 0, measured: 0, total: 0 }
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await openAssessment()
+await page.getByText('november-mcp', { exact: true }).scrollIntoViewIfNeeded()
+await page.waitForTimeout(600)
+await shot('12-measured-tier')
 
 await context.close()
 await browser.close()

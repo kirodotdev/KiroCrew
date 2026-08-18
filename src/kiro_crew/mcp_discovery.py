@@ -875,6 +875,44 @@ _MANAGED_SERVER_TOOL_MODULES = {
 }
 
 
+#: Managed servers that advertise ``kirocrew.caller-identity`` -- that is, the ones
+#: consuming the per-call caller block gatewayd injects instead of reading identity
+#: from their own process. Every other name in ``_MANAGED_SERVER_SUBCOMMANDS``
+#: resolves the session from its process and can serve only one at a time.
+#:
+#: A NAME SET rather than a runtime read of each module's own constant. Reading the
+#: constant means ``importlib.import_module`` on the request path, which executes
+#: package code the gateway does not otherwise run -- the package directory is
+#: writable by the same uid the agent runs as, so on an editable checkout every
+#: MCP-servers request becomes an execution point for whatever was written there.
+#: The sibling in-process tool read accepts that cost only on the fallback path
+#: where the sandbox could not have confined a spawn anyway; a classification
+#: consulted on every render must not widen it to hosts where the sandbox works.
+#:
+#: The drift this trades for is already covered:
+#: ``test/test_mcp_managed_caller_identity.py`` drives each server's real serve
+#: entry point and asserts this set matches the ``advertise_caller_identity``
+#: argument actually handed to the shim. That check imports the modules in the
+#: TEST process, where running package code is the point rather than a hazard.
+_MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset({"kirocrew-core"})
+
+
+def managed_server_is_session_bound(name: str) -> bool:
+    """True when *name* is one of ours AND resolves identity from its process.
+
+    The shareability assessment needs this WITHOUT a handshake: on a host where
+    the probe cannot spawn (any Windows host, macOS >= 26) there is no
+    ``initialize`` response to read the capability from, and before the first
+    probe cycle there is none yet either.
+
+    False for anything not managed by Kiro Crew: a third-party server's identity
+    handling is not knowable from here, which is what the pre-flight measures.
+    """
+    if name not in _MANAGED_SERVER_NAMES:
+        return False
+    return name not in _MANAGED_SERVERS_CALLER_AWARE
+
+
 def _managed_tools_in_process(name: str) -> list[str] | None:
     """Tool names for a managed server, read WITHOUT spawning it.
 

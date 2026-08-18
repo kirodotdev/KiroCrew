@@ -30,9 +30,34 @@ Evidence strength, strongest first
 ``DISQUALIFIED`` a declaration we trust rules sharing out up front.
 ``DECLARED``     the server advertises the caller-identity extension, i.e. it
                  was written for a pooled backend.
+``MEASURED``     nothing objected AND the pre-flight actually provoked this
+                 server as two different callers without finding a divergence.
 ``NO_OBJECTION`` nothing disqualifying was found — the weakest useful verdict,
                  and the one whose wording must stay honest about that.
 ``UNKNOWN``      not enough was observed to say anything.
+
+Why ``MEASURED`` sits below ``DECLARED`` but above ``NO_OBJECTION``
+------------------------------------------------------------------
+``kirocrew.caller-identity`` is an extension this project invented; the MCP base
+protocol has no field for "I can tell my callers apart", so no third-party server
+will ever send it. Reserving the top tier for servers that declare it left every
+real server resting at ``NO_OBJECTION`` for ever, and made a pre-flight able to
+REFUTE a server but never to record anything in its favour — the measurement could
+only ever cost the operator a verdict.
+
+``MEASURED`` is that missing rung: the server was provoked as two distinct callers
+and answered the same way, which rules OUT a caller-sensitive handshake.
+
+It does NOT recommend sharing, and that limit is the point rather than caution.
+The pre-flight compares the HANDSHAKE — capability shapes, ``protocolVersion``,
+``serverInfo``, the read-only listings — and never makes a tool call. A server
+whose state is process-global (one browser context, one database connection, one
+working directory) replays that handshake identically and still cannot serve two
+sessions: on a shared backend one caller reads state another caller wrote. A
+declaration and a measurement are therefore claims about different properties —
+ISOLATION versus DETERMINISM — and only the first is grounds for co-tenancy. The
+ledger cannot backstop the difference either: its codes describe frames the
+gateway could not route, not state handed to the wrong session.
 """
 
 from __future__ import annotations
@@ -77,6 +102,7 @@ class Strength(str, Enum):
 
     UNKNOWN = "unknown"
     NO_OBJECTION = "no_objection"
+    MEASURED = "measured"
     DECLARED = "declared"
     DISQUALIFIED = "disqualified"
     REFUTED = "refuted"
@@ -109,9 +135,16 @@ class ShareEvidence:
     # Transport: only stdio servers get a stub at all. HTTP/SSE servers are
     # already shareable by nature and are out of scope, not unsafe.
     is_stdio: bool = True
-    # One of Kiro Crew's own managed servers, which bind KIROCREW_SESSION_KEY
-    # and are per-session by construction.
-    is_first_party: bool = False
+    # The server resolves the calling session from its own PROCESS (env var, pid
+    # walk) rather than from the per-call caller block, so one backend can only
+    # ever serve one session correctly.
+    #
+    # Deliberately NOT "is this one of ours". Kiro Crew's own managed servers
+    # differ from each other here: ``kirocrew-core`` advertises the
+    # caller-identity extension and consumes the injected caller, while
+    # ``kirocrew-cron`` does not and still reads process identity. Keying this on
+    # authorship disqualified the first for a property only the second has.
+    session_bound_by_construction: bool = False
     # Did the handshake succeed? A server we could not start is UNKNOWN.
     probe_ok: bool = False
     # The server's advertised ``capabilities`` object, verbatim.
@@ -247,7 +280,7 @@ def assess(evidence: ShareEvidence) -> ShareVerdict:
     #    distinct codes rather than one "unsupported".
     if not evidence.is_stdio:
         return verdict(Strength.DISQUALIFIED, [Reason("not_stdio")])
-    if evidence.is_first_party:
+    if evidence.session_bound_by_construction:
         return verdict(Strength.DISQUALIFIED, [Reason("first_party_session_scoped")])
 
     rotating = rotating_secret_env(evidence.declared_env_names)
@@ -288,17 +321,43 @@ def assess(evidence: ShareEvidence) -> ShareVerdict:
         )
         return verdict(Strength.DECLARED, reasons, stub=True, share=share)
 
-    # 6. No objection found. This is an absence of evidence, not evidence of
-    #    absence, so sharing is NOT recommended here even though stubbing is:
-    #    a stub alone keeps the backend 1:1 with the session (same topology as
-    #    no gateway) and is what unlocks server-authored UI, while sharing is
-    #    the step that introduces co-tenancy. Splitting the two is what makes a
-    #    weak verdict still actionable without being reckless.
-    reasons = [Reason("no_objection_found")]
+    # 6. Nothing objected. Which of the two remaining tiers this is depends on
+    #    whether anybody actually provoked the server:
+    #
+    #    * the pre-flight ran and found no divergence -> MEASURED. Something was
+    #      ruled OUT: this server does not answer the handshake per caller.
+    #    * it never ran -> NO_OBJECTION, an absence of evidence rather than
+    #      evidence of absence.
+    #
+    #    NEITHER recommends sharing, and the reason is the same for both: what
+    #    the pre-flight compares is the HANDSHAKE (``initialize`` capability
+    #    shapes, ``protocolVersion``, ``serverInfo``, and the read-only listings).
+    #    It never makes a tool call. A server whose state is process-global -- one
+    #    browser context, one database connection, one working directory -- replays
+    #    that handshake identically for two callers and still cannot serve two
+    #    sessions, and on a shared backend one caller would receive state another
+    #    caller put there.
+    #
+    #    That is why MEASURED does NOT inherit DECLARED's share flag even though
+    #    it sits directly below it: a declaration is a claim about ISOLATION ("I
+    #    can tell my callers apart"), while a measurement is a fact about
+    #    DETERMINISM ("you answered the same twice"). Conflating the two would let
+    #    a bulk action co-tenant a stateful server on evidence that cannot see the
+    #    hazard -- and the ledger cannot catch it afterwards either, because its
+    #    codes describe unroutable frames, not state a server handed to the wrong
+    #    session.
+    #
+    #    What both tiers DO recommend is the stub, which keeps the backend 1:1
+    #    with the session (same topology as no gateway) and is what unlocks
+    #    server-authored UI. Splitting stub from share is what makes a verdict
+    #    short of a declaration still actionable without being reckless.
+    reasons = [Reason("preflight_passed" if evidence.preflight_ran else "no_objection_found")]
     if _all_tools_read_only(evidence.tool_annotations):
         reasons.append(Reason("all_tools_read_only"))
     elif not evidence.tool_annotations:
         reasons.append(Reason("no_tool_annotations", evidence.protocol_version))
     if not evidence.has_tools:
         reasons.append(Reason("no_tools_listed"))
+    if evidence.preflight_ran:
+        return verdict(Strength.MEASURED, reasons, stub=True, share=False)
     return verdict(Strength.NO_OBJECTION, reasons, stub=True, share=False)

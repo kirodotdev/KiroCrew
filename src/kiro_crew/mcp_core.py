@@ -1884,6 +1884,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     return dispatch(name, args)
 
 
+#: Whether this server advertises ``kirocrew.caller-identity`` — i.e. whether it
+#: consumes the per-call caller block gatewayd injects (see
+#: :func:`_resolve_session_key`, whose source 0 is that block) instead of reading
+#: identity from its own process. True here because it does.
+#:
+#: A module-level constant rather than a bare argument below so the value is
+#: readable without executing ``run_mcp_core_server``, and so a test can assert it
+#: against the argument actually handed to the shim.
+#:
+#: The shareability assessment does NOT read it: that classification runs on every
+#: render and must answer without spawning the server, so importing this module
+#: there would execute package code from an editable checkout on a path the
+#: sandbox never confines. It answers from ``_MANAGED_SERVERS_CALLER_AWARE`` in
+#: ``mcp_discovery`` instead, and ``test/test_mcp_managed_caller_identity.py``
+#: keeps the two from drifting by comparing them in the test process.
+ADVERTISE_CALLER_IDENTITY = True
+
+
 def run_mcp_core_server() -> None:
     """Run MCP stdio server for core agent tools."""
     run_mcp_stdio_loop(
@@ -1894,7 +1912,9 @@ def run_mcp_core_server() -> None:
         # Pooled-operation opt-in: kirocrew-core consumes the per-call
         # ``kirocrew.caller`` identity (see _resolve_session_key*), so it is
         # safe to share one backend across sessions. kirocrew-cron does NOT
-        # advertise — its tools still read env identity, so gatewayd keeps
-        # it per-session.
-        advertise_caller_identity=True,
+        # advertise — it imports this module's resolver, so it would consume the
+        # caller block if one were injected, but nothing injects one for a
+        # backend that never advertised, and its channel identity still comes
+        # from process env. So gatewayd keeps it per-session.
+        advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
     )

@@ -42,7 +42,16 @@ function server(over: Partial<Server> = {}): Server {
 }
 
 function mount() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // `staleTime: Infinity` mirrors the app's real shared QueryClient
+  // (`src/api/queryClient.ts`), where freshness comes from WebSocket
+  // invalidation rather than from age. Without it this harness is more lenient
+  // than production in exactly the direction that hides a bug: a cache-backed
+  // re-read that is a no-op in the app still refetches here, so a test asserting
+  // "acts on the fresh value" passes while the shipped code acts on the stale
+  // one.
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  })
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
@@ -733,5 +742,284 @@ describe('the warning reaches the decision point', () => {
     const marked = (await screen.findAllByText('shared', { selector: 'span' }))
       .filter(el => el.querySelector('svg') !== null)
     expect(marked).toHaveLength(1)
+  })
+})
+
+// The bulk action, whose whole risk is claiming to have done more than it did.
+describe('stub every server the evidence allows', () => {
+  // What the engine actually emits for each tier: MEASURED recommends the stub
+  // and withholds sharing (the pre-flight compares the handshake, not tool-call
+  // state), DECLARED recommends both.
+  const measured = {
+    strength: 'measured',
+    recommendStub: true,
+    recommendShare: false,
+    reasons: [{ code: 'preflight_passed', detail: '' }],
+  }
+  const declared = {
+    strength: 'declared',
+    recommendStub: true,
+    recommendShare: true,
+    reasons: [
+      { code: 'declares_caller_identity', detail: '' },
+      { code: 'preflight_passed', detail: '' },
+    ],
+  }
+  const disqualified = {
+    strength: 'disqualified',
+    recommendStub: false,
+    recommendShare: false,
+    reasons: [{ code: 'first_party_session_scoped', detail: '' }],
+  }
+  const idleProgress = { running: false, done: 0, total: 0, error: '' }
+
+  it('offers every stubbable row as a candidate and leaves the rest out', async () => {
+    // What the client still owns: WHICH rows are worth asking about. Eligibility
+    // itself is the server's, so a row is a candidate whenever it has a stdio pipe
+    // and is not already stubbed -- verdict strength is deliberately not consulted
+    // here, because a second copy of that rule could disagree with the one the
+    // write uses.
+    const { fireEvent } = await import('@testing-library/react')
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    const start = vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        { ...server({ name: 'good-mcp' }), recommendation: declared },
+        { ...server({ name: 'measured-mcp' }), recommendation: measured },
+        { ...server({ name: 'bad-mcp' }), recommendation: disqualified },
+        // Already stubbed: nothing to ask for.
+        { ...server({ name: 'done-mcp', stub: true, in_allowlist: true }), recommendation: declared },
+        // No stdio pipe to interpose on, so it can never be a candidate.
+        { ...server({ name: 'http-mcp', can_stub: false }), recommendation: declared },
+      ],
+    } as never)
+    const many = vi.spyOn(api, 'mcpGatewaySetStubMany').mockResolvedValue({
+      ok: true,
+      names: ['good-mcp', 'measured-mcp', 'bad-mcp'],
+      stub: true,
+      stubbed: ['good-mcp'],
+      skipped: [
+        { name: 'measured-mcp', reason: 'evidence_insufficient' },
+        { name: 'bad-mcp', reason: 'evidence_insufficient' },
+      ],
+      applied: true,
+    } as never)
+
+    mount()
+    // Wait for the rows, not just the button: the control is correctly disabled
+    // until rows are known, so clicking at first paint hits a dead button.
+    await screen.findByText('good-mcp')
+    const btn = await screen.findByRole('button', { name: /evidence allows/i })
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(many).toHaveBeenCalled())
+    // One request for the whole set — a per-row loop could land the allowlist
+    // half-flipped.
+    expect(many).toHaveBeenCalledTimes(1)
+    expect(many).toHaveBeenCalledWith(['good-mcp', 'measured-mcp', 'bad-mcp'], true, true)
+    // Nothing was unmeasured, so no spawns were paid for.
+    expect(start).not.toHaveBeenCalled()
+    // Counts come off the response: one written, two declined by the server.
+    await waitFor(() => expect(screen.getByText(/Stubbed 1\./)).toBeTruthy())
+    expect(screen.getByText(/Left 2 alone\./)).toBeTruthy()
+  })
+
+  it('re-reads the rows after the wait instead of trusting the click', async () => {
+    // The measurement pass runs for minutes, and it changes which servers are
+    // candidates at all -- a row absent at click time can exist by the end. The
+    // sharing switch is deliberately NOT re-read here: that state belongs to the
+    // server's decision now, taken inside the lock hold that writes.
+    const { fireEvent } = await import('@testing-library/react')
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+      vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue({ ...idleProgress, running: true } as never)
+      vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+      // First paint shows one candidate; a second appears while the pass runs.
+      // Sending the click-time list would miss it.
+      const rows = vi
+        .spyOn(api, 'mcpGatewayServers')
+        .mockResolvedValueOnce({
+          servers: [{ ...server({ name: 'fresh-mcp' }), recommendation: measured }],
+        } as never)
+        .mockResolvedValue({
+          servers: [
+            { ...server({ name: 'fresh-mcp' }), recommendation: measured },
+            { ...server({ name: 'late-mcp' }), recommendation: declared },
+          ],
+        } as never)
+      const many = vi.spyOn(api, 'mcpGatewaySetStubMany').mockResolvedValue({
+        ok: true,
+        names: ['fresh-mcp', 'late-mcp'],
+        stub: true,
+        stubbed: ['late-mcp'],
+        skipped: [{ name: 'fresh-mcp', reason: 'evidence_insufficient' }],
+        applied: true,
+      } as never)
+
+      mount()
+      await vi.waitFor(() => screen.getByText('fresh-mcp'))
+      fireEvent.click(screen.getByRole('button', { name: /evidence allows/i }))
+      await vi.advanceTimersByTimeAsync(2 * 1000)
+
+      // The batch carries the row that only became visible after the wait.
+      await vi.waitFor(() =>
+        expect(many).toHaveBeenCalledWith(['fresh-mcp', 'late-mcp'], true, true),
+      )
+      // Read more than once: the render's copy plus the post-wait re-read.
+      expect(rows.mock.calls.length).toBeGreaterThan(1)
+      await vi.waitFor(() => screen.getByText(/Stubbed 1\./))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('measures the unmeasured before deciding, then acts on the fresh verdicts', async () => {
+    const { fireEvent } = await import('@testing-library/react')
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+      const start = vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue({
+        ...idleProgress,
+        running: true,
+      } as never)
+      vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+      // First render has no verdict; the re-read after the pass has one. Acting
+      // on the first would skip the very server the operator just installed.
+      const servers = vi
+        .spyOn(api, 'mcpGatewayServers')
+        .mockResolvedValueOnce({ servers: [server({ name: 'fresh-mcp' })] } as never)
+        .mockResolvedValue({
+          servers: [{ ...server({ name: 'fresh-mcp' }), recommendation: declared }],
+        } as never)
+      const many = vi
+        .spyOn(api, 'mcpGatewaySetStubMany')
+        .mockResolvedValue({ ok: true, names: ['fresh-mcp'], stub: true, applied: true } as never)
+
+      mount()
+      // The unmeasured row is what enables the button here — the eligible set is
+      // empty until the pass runs, which is the whole point of this case.
+      await vi.waitFor(() => screen.getByText('fresh-mcp'))
+      fireEvent.click(screen.getByRole('button', { name: /evidence allows/i }))
+      // Past the first progress poll, which reports the pass already finished.
+      await vi.advanceTimersByTimeAsync(2 * 1000)
+
+      await vi.waitFor(() => expect(many).toHaveBeenCalledWith(['fresh-mcp'], true, true))
+      expect(start).toHaveBeenCalledTimes(1)
+      expect(servers.mock.calls.length).toBeGreaterThan(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the live pass position instead of a counter frozen at zero', async () => {
+    // The wait runs for up to four minutes. A hardcoded 0 read as a stalled pass
+    // on exactly the fresh install this control serves, so the poll's readings
+    // have to reach the line beside the button.
+    const { fireEvent } = await import('@testing-library/react')
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+      vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue({ ...idleProgress, running: true } as never)
+      vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue({
+        running: true,
+        done: 3,
+        total: 7,
+        error: '',
+      } as never)
+      vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+        servers: [server({ name: 'fresh-mcp' })],
+      } as never)
+
+      mount()
+      await vi.waitFor(() => screen.getByText('fresh-mcp'))
+      fireEvent.click(screen.getByRole('button', { name: /evidence allows/i }))
+      await vi.advanceTimersByTimeAsync(2 * 1000)
+
+      await vi.waitFor(() => screen.getByText(/3 of 7/))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('changes nothing while a pass it started is still running', async () => {
+    const { fireEvent } = await import('@testing-library/react')
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+      vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue({ ...idleProgress, running: true } as never)
+      // Never stops: the wait has to give up rather than act on a half-measured
+      // fleet, which would stub whatever happened to be done by then.
+      vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue({
+        running: true,
+        done: 1,
+        total: 9,
+        error: '',
+      } as never)
+      vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+        servers: [server({ name: 'fresh-mcp' })],
+      } as never)
+      const many = vi.spyOn(api, 'mcpGatewaySetStubMany')
+
+      mount()
+      await vi.waitFor(() => screen.getByText('fresh-mcp'))
+      fireEvent.click(screen.getByRole('button', { name: /evidence allows/i }))
+      // Past the wait deadline.
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
+
+      expect(many).not.toHaveBeenCalled()
+      await vi.waitFor(() => screen.getByText(/Still measuring/i))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports what the server decided, not what the request asked for', async () => {
+    // The client sends candidates and the server resolves eligibility inside the
+    // lock hold that writes them, so the two lists differ by design. Counting the
+    // request would claim stubs that were skipped.
+    const { fireEvent } = await import('@testing-library/react')
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        { ...server({ name: 'good-mcp' }), recommendation: declared },
+        { ...server({ name: 'other-mcp' }), recommendation: declared },
+      ],
+    } as never)
+    const many = vi.spyOn(api, 'mcpGatewaySetStubMany').mockResolvedValue({
+      ok: true,
+      names: ['good-mcp', 'other-mcp'],
+      stub: true,
+      stubbed: ['good-mcp'],
+      skipped: [{ name: 'other-mcp', reason: 'evidence_insufficient' }],
+      applied: true,
+    } as never)
+
+    mount()
+    await screen.findByText('good-mcp')
+    fireEvent.click(await screen.findByRole('button', { name: /evidence allows/i }))
+
+    // Every stubbable row is offered as a candidate; the server does the filtering.
+    await waitFor(() =>
+      expect(many).toHaveBeenCalledWith(['good-mcp', 'other-mcp'], true, true),
+    )
+    // One stubbed, one skipped -- both read off the RESPONSE.
+    await waitFor(() => expect(screen.getByText(/Stubbed 1\./)).toBeTruthy())
+    expect(screen.getByText(/Left 1 alone\./)).toBeTruthy()
+  })
+
+  it('renders the measured tier with its own label, not "not measured"', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [{ ...server({ name: 'good-mcp' }), recommendation: measured }],
+    } as never)
+    mount()
+    ;(await screen.findByRole('tab', { name: /sharing assessment/i })).click()
+    // An unmapped tier falls back to "not measured", which would read as the
+    // measurement having never happened.
+    expect(await screen.findByText(/measured, no divergence/i)).toBeTruthy()
   })
 })
