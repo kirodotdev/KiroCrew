@@ -4499,147 +4499,167 @@ class TestInitServicesLoopResponsiveness:
     Invariant (issue #3051): the loop runs callbacks one at a time, so a
     synchronous subprocess/scan inside ``_init_services`` starves every other
     coroutine — including the loop-stall watchdog heartbeat once armed — for
-    its whole duration. These tests run a fast ticker concurrently with a
-    deliberately slow dependency install / store scan and assert the ticker's
-    max inter-tick gap stays under a load-adaptive ceiling. A regression to
-    the old synchronous shape (subprocess.run / a bare on-loop call) blocks
-    the ticker for the whole slow window and blows the ceiling.
+    its whole duration.
+
+    These tests assert the PROPERTY, not a duration (#4235): a fast ticker
+    runs concurrently with the init work, and the stand-in for each slow
+    call blocks — in whatever execution context production invoked it —
+    until it OBSERVES the ticker advance. Fixed code runs the work off the
+    loop (``asyncio.to_thread`` / an async subprocess), so the loop stays
+    free, the ticker advances, and the probe returns almost immediately. A
+    mutant reverted to the old synchronous on-loop shape blocks the loop
+    itself, the ticker can never advance while the probe waits, and the
+    probe gives up at a deliberately generous deadline and flags
+    starvation.
+
+    The previous shape bounded the ticker's max inter-tick gap by an
+    absolute, load-adaptive ceiling; a scheduler stall on a saturated
+    runner blew the ceiling with the invariant intact (a 1.87s gap against
+    the 0.40s floor at a commit whose diff contained zero Python files).
+    Polling for the property makes host contention cost only wall-clock,
+    never the verdict, while an on-loop regression still fails
+    deterministically: ticks CANNOT happen while the loop is blocked, so no
+    amount of waiting turns a mutant green.
     """
 
-    _SLOW_SECS = 0.5
-    # Floor for the gap ceiling. The real ceiling adapts to host load (see
-    # _gap_ceiling): an absolute constant alone is the flake class AGENTS.md
-    # warns about — coverage + a saturated -n auto runner can produce
-    # hundred-ms scheduler hiccups on a perfectly healthy loop.
-    _MAX_GAP_SECS = 0.4
-    # Multiple of the measured control gap. The mutant signal is ~_SLOW_SECS
-    # (0.5s) vs a healthy ~0.01s, so 8x still kills every mutant on any host
-    # where the control gap stays under ~60ms.
-    _GAP_CEILING_FACTOR = 8
+    # Ticks a probe must observe while the slow work is in flight. Each tick
+    # proves the loop scheduled another coroutine DURING the work; requiring
+    # a handful rules out a single lucky wakeup counting as liveness.
+    _MIN_TICKS_DURING_WORK = 5
+    # How long a probe waits for those ticks before declaring the loop
+    # starved. Generous on purpose (testing-conventions § Determinism: poll
+    # with a generous deadline): a loaded host only DELAYS ticks, so
+    # contention costs wall-clock, never the verdict. Only a blocked loop —
+    # where ticks cannot happen at all — exhausts it, so this is paid only
+    # on a genuinely regressed run.
+    _PROBE_DEADLINE_SECS = 30.0
 
     @staticmethod
-    def _gap_ticker(state: dict):
-        state["last"] = time.monotonic()
+    def _make_ticker(state: dict):
+        """A coroutine that advances ``state['ticks']`` whenever the loop is free.
+
+        Stand-in for the loop-stall watchdog heartbeat: anything that blocks
+        the loop freezes this counter for the whole block.
+        """
 
         async def _ticker():
-            state["last"] = time.monotonic()
             while True:
                 await asyncio.sleep(0.01)
-                now = time.monotonic()
-                state["max_gap"] = max(state["max_gap"], now - state["last"])
                 state["ticks"] += 1
-                state["last"] = now
 
         return _ticker
 
-    @staticmethod
-    def _fold_final_gap(state: dict) -> None:
-        """Record the gap between the last tick and measurement end.
+    def _make_probe(self, state: dict, label: str, result=None):
+        """A stand-in for slow init work that polls the loop-liveness property.
 
-        Without this, a block at the TAIL of the measured call is invisible:
-        the parent coroutine resumes first and cancels the ticker before it
-        can run once more to observe the gap.
+        Runs in whatever execution context production invokes it in. Off the
+        loop (the fixed shape) the ticker keeps running, the tick delta
+        reaches ``_MIN_TICKS_DURING_WORK`` almost immediately, and *label* is
+        recorded in ``state['probed']``. On the loop (the regressed shape)
+        the ticker is starved for exactly as long as this function runs, the
+        delta can never advance, and *label* lands in ``state['starved']``
+        once the deadline expires.
         """
-        state["max_gap"] = max(state["max_gap"], time.monotonic() - state["last"])
 
-    async def _gap_ceiling(self) -> float:
-        """Measure the host's baseline tick gap and derive the failure ceiling.
+        def _probe(*args, **kwargs):
+            start = state["ticks"]
+            give_up = time.monotonic() + self._PROBE_DEADLINE_SECS
+            while state["ticks"] - start < self._MIN_TICKS_DURING_WORK:
+                if time.monotonic() >= give_up:
+                    state["starved"].append(label)
+                    return result
+                time.sleep(0.01)
+            state["probed"].append(label)
+            return result
 
-        Runs the same ticker over a plain ``asyncio.sleep`` window with
-        nothing offloaded — any gap observed here is pure scheduler noise —
-        then allows the measured phase a small multiple of it, floored at
-        _MAX_GAP_SECS for quiet hosts.
-        """
-        control = {"ticks": 0, "max_gap": 0.0}
-        task = asyncio.create_task(self._gap_ticker(control)())
-        await asyncio.sleep(0.02)  # ticker baseline
-        try:
-            await asyncio.sleep(self._SLOW_SECS)
-            self._fold_final_gap(control)
-        finally:
-            task.cancel()
-        return max(self._MAX_GAP_SECS, self._GAP_CEILING_FACTOR * control["max_gap"])
+        return _probe
 
     @pytest.mark.asyncio
     async def test_slow_pip_install_does_not_starve_heartbeat(self):
         orch = _make_orchestrator()
-        ceiling = await self._gap_ceiling()
-        state = {"ticks": 0, "max_gap": 0.0}
-        _ticker = self._gap_ticker(state)
+        state: dict = {"ticks": 0, "starved": [], "probed": []}
+        _ticker = self._make_ticker(state)
 
-        async def _slow_exec(*args, **kwargs):
+        async def _async_exec(*args, **kwargs):
+            # The FIXED shape: production awaits communicate() on the loop,
+            # so this waits for the ticker asynchronously — each await IS the
+            # loop servicing another callback, which is the property.
             proc = MagicMock()
             proc.returncode = 0
             proc.kill = MagicMock()
 
             async def _communicate():
-                await asyncio.sleep(self._SLOW_SECS)  # yields to the loop
+                start = state["ticks"]
+                give_up = time.monotonic() + self._PROBE_DEADLINE_SECS
+                while state["ticks"] - start < self._MIN_TICKS_DURING_WORK:
+                    if time.monotonic() >= give_up:
+                        state["starved"].append("pip-communicate")
+                        return (b"", b"")
+                    await asyncio.sleep(0.01)
+                state["probed"].append("pip-communicate")
                 return (b"", b"")
 
             proc.communicate = MagicMock(side_effect=_communicate)
             return proc
 
-        def _blocking_run(*args, **kwargs):  # the OLD, buggy shape
-            time.sleep(self._SLOW_SECS)  # blocks the loop thread
-            return MagicMock(returncode=0, stdout="", stderr=b"")
+        # The OLD, buggy shape: a mutant reverted to subprocess.run invokes
+        # this synchronously ON the loop, where the probe's ticks can never
+        # arrive — it flags starvation at the deadline. Patched on the
+        # subprocess MODULE (not the gateway namespace) because the fixed
+        # gateway no longer imports subprocess at all.
+        _blocking_run = self._make_probe(
+            state,
+            "pip-blocking-run",
+            result=MagicMock(returncode=0, stdout="", stderr=b""),
+        )
 
         with patch("importlib.util.find_spec", return_value=None):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
                 with patch.object(
                     GatewayOrchestrator, "_is_brazil_install", return_value=False
                 ):
-                    # Patch BOTH shapes: the fixed code awaits the async exec
-                    # (ticker keeps running); a mutant reverted to
-                    # subprocess.run blocks the loop and starves the ticker.
-                    # The sync shape is patched on the subprocess MODULE (not
-                    # the gateway namespace) because the fixed gateway no
-                    # longer imports subprocess at all.
                     with patch(
-                        "asyncio.create_subprocess_exec", side_effect=_slow_exec
+                        "asyncio.create_subprocess_exec", side_effect=_async_exec
                     ):
                         with patch(
                             "subprocess.run",
                             side_effect=_blocking_run,
                         ):
                             ticker_task = asyncio.create_task(_ticker())
-                            # Let the ticker establish its baseline BEFORE the
-                            # measured call: awaiting a coroutine runs it
-                            # inline, so without this yield an on-loop block
-                            # would happen before the first tick and never be
-                            # observed as a gap.
-                            await asyncio.sleep(0.02)
                             try:
+                                # Above every probe deadline so a regressed
+                                # run fails on the starvation assert below,
+                                # not on a torn-down timeout.
                                 await asyncio.wait_for(
-                                    orch._check_missing_deps(), timeout=10
+                                    orch._check_missing_deps(), timeout=60
                                 )
-                                self._fold_final_gap(state)
                             finally:
                                 ticker_task.cancel()
-        assert state["max_gap"] < ceiling, (
-            f"loop blocked for {state['max_gap']:.2f}s during dep install "
-            f"(ceiling {ceiling:.2f}s)"
+        assert state["starved"] == [], (
+            f"loop starved during dep install: {state['starved']} observed no "
+            f"ticker progress within {self._PROBE_DEADLINE_SECS:.0f}s"
+        )
+        assert "pip-communicate" in state["probed"], (
+            "dep install never awaited the async subprocess — the loop-free "
+            f"path was not taken (probed={state['probed']})"
         )
 
     @pytest.mark.asyncio
     async def test_slow_fts_rebuild_does_not_starve_heartbeat(self):
         """rebuild_index and vector init scale with usage; both must run off-loop."""
         orch = _make_orchestrator(slack_enabled=False)
-        ceiling = await self._gap_ceiling()
-        state = {"ticks": 0, "max_gap": 0.0}
-        _ticker = self._gap_ticker(state)
-
-        def _slow_rebuild():
-            time.sleep(self._SLOW_SECS)  # off-loop this is harmless
-            return 3
-
-        def _slow_vector_init():
-            time.sleep(self._SLOW_SECS)  # off-loop this is harmless
+        state: dict = {"ticks": 0, "starved": [], "probed": []}
+        _ticker = self._make_ticker(state)
 
         mock_mem_inst = MagicMock()
         mock_mem_inst.init = MagicMock()
-        mock_mem_inst.rebuild_index = MagicMock(side_effect=_slow_rebuild)
+        mock_mem_inst.rebuild_index = MagicMock(
+            side_effect=self._make_probe(state, "rebuild-index", result=3)
+        )
         mock_vm_inst = MagicMock()
-        mock_vm_inst.init = MagicMock(side_effect=_slow_vector_init)
+        mock_vm_inst.init = MagicMock(
+            side_effect=self._make_probe(state, "vector-init")
+        )
         with patch("kiro_crew.slack.gateway.MemoryStore", return_value=mock_mem_inst):
             with patch("kiro_crew.vector_memory.VectorMemoryStore") as mock_vm:
                 mock_vm.return_value = mock_vm_inst
@@ -4657,19 +4677,23 @@ class TestInitServicesLoopResponsiveness:
                                                         new=AsyncMock(return_value=_fake_async_proc(stdout=b"kiro-cli 1.30.0")),
                                                     ):
                                                         ticker_task = asyncio.create_task(_ticker())
-                                                        # Baseline tick first — see the
-                                                        # comment in the pip test above.
-                                                        await asyncio.sleep(0.02)
                                                         try:
+                                                            # Above the sum of both probe
+                                                            # deadlines so a regressed run
+                                                            # fails on the starvation
+                                                            # assert, not on teardown.
                                                             await asyncio.wait_for(
-                                                                orch._init_services(), timeout=10
+                                                                orch._init_services(), timeout=90
                                                             )
-                                                            self._fold_final_gap(state)
                                                         finally:
                                                             ticker_task.cancel()
-        assert state["max_gap"] < ceiling, (
-            f"loop blocked for {state['max_gap']:.2f}s during service init "
-            f"(ceiling {ceiling:.2f}s)"
+        assert state["starved"] == [], (
+            f"loop starved during service init: {state['starved']} observed no "
+            f"ticker progress within {self._PROBE_DEADLINE_SECS:.0f}s"
+        )
+        assert {"rebuild-index", "vector-init"} <= set(state["probed"]), (
+            "service init skipped a probed call — the invariant was not "
+            f"exercised (probed={state['probed']})"
         )
 
 

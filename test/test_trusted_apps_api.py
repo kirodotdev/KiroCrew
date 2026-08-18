@@ -1504,6 +1504,14 @@ def seeded_registry(monkeypatch: pytest.MonkeyPatch):
         "_load_registry_file",
         lambda: [{"name": _REG_ONLY, "repo": "acme/registry-only-app", "branch": "main"}],
     )
+    # "Never touches the network" needs the catalog pinned too: resolution
+    # consults the official catalog BEFORE the seed row, with a fresh uncached
+    # HTTPS fetch (#4236) — and with a seed row present a failed lookup refuses
+    # rather than falling back to the seed.
+    monkeypatch.setattr(
+        "kiro_crew.apps.official_catalog.inventory_for_install",
+        lambda name: None,
+    )
     return _REG_ONLY
 
 

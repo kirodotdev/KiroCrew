@@ -43,6 +43,23 @@ def _explicit_registry_execution_admission(monkeypatch):
     monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
 
 
+@pytest.fixture(autouse=True)
+def _catalog_absent(monkeypatch):
+    """Pin "official catalog reachable, app absent" for the whole module.
+
+    This module is about SEED and EXTERNAL-registry resolution; the official
+    catalog is upstream of both in ``_resolve_registry_row``, and its real
+    lookup performs a fresh uncached HTTPS fetch on every call (#4236).
+    Before the suite-wide network guard these tests silently depended on the
+    runner's live network being up. A test that wants a different catalog
+    answer overrides this by monkeypatching the same seam itself.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.apps.official_catalog.inventory_for_install",
+        lambda name: None,
+    )
+
+
 @pytest.fixture()
 def cache_dir(tmp_path, monkeypatch):
     """Redirect manifest cache to a temp directory."""

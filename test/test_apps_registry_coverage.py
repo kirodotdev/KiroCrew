@@ -1023,6 +1023,14 @@ class TestCandidateResolution:
     def test_candidates_span_bundled_and_every_configured_registry(
         self, monkeypatch, cache_dir
     ):
+        # `_registry_app_candidates` consults the official catalog with a fresh
+        # uncached HTTPS fetch, and DROPS every candidate when that lookup
+        # fails (#4236); pin "catalog reachable, app absent" so the assertion
+        # exercises the bundled + external span deterministically.
+        monkeypatch.setattr(
+            "kiro_crew.apps.official_catalog.inventory_for_install",
+            lambda name: None,
+        )
         monkeypatch.setattr(
             registry,
             "_load_registry_file",

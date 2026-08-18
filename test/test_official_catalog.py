@@ -561,7 +561,15 @@ class TestRedirectsAreRefused:
 
         return srv, close
 
-    def test_a_redirect_to_loopback_http_is_not_followed(self, monkeypatch):
+    def test_a_redirect_to_loopback_http_is_not_followed(
+        self, monkeypatch, _no_live_catalog_network
+    ):
+        # This test needs the REAL opener: the property under test is the
+        # redirect refusal inside `_open_catalog` itself, exercised against
+        # loopback servers this test starts — never the live CDN. Opt back
+        # out of the suite-wide catalog network guard, which yields the
+        # original seam for exactly this purpose.
+        monkeypatch.setattr(oc, "_open_catalog", _no_live_catalog_network)
         reached = []
 
         class Target(http.server.BaseHTTPRequestHandler):

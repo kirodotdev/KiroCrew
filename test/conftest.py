@@ -1365,3 +1365,50 @@ def _no_release_feed_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.updates._fetch_feed_bytes", _refuse, raising=True
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_live_catalog_network(monkeypatch: pytest.MonkeyPatch):
+    """Make the official app catalog's network seam unreachable for the suite.
+
+    ``official_catalog._open_catalog`` is THE seam every catalog fetch goes
+    through (its own docstring says tests must intercept there). Two paths
+    reach it without a test asking to: the install path's
+    ``inventory_for_install`` performs a fresh, deliberately UNCACHED HTTPS
+    fetch of ``official-registry.json`` on every call (#4236), and store
+    listings can trigger ``load_official_catalog``. Without this fixture,
+    any test that walks either path makes a real HTTPS request to the live
+    CDN — slow, offline-hostile, and nondeterministic: the test's verdict
+    then depends on the CI runner's network, and one transient failure also
+    poisons the module's on-disk failure memory for the rest of the worker.
+
+    Tests that want a catalog answer stub a higher seam
+    (``fetch_document``, ``fetch_inventory_entries``, or
+    ``inventory_for_install``), which keeps this fixture from ever being
+    reached. A test that genuinely needs the real opener — e.g. against a
+    loopback server it started itself — must opt in explicitly: request
+    this fixture by name and monkeypatch ``_open_catalog`` back to the
+    original it yields.
+
+    The refusal is an ``AssertionError`` — deliberately OUTSIDE the
+    exception family ``fetch_document`` degrades on — but note the install
+    path's fail-closed ``except Exception`` in
+    ``registry._resolve_registry_row`` will convert it into a catalog
+    refusal rather than failing the test with this message. Like
+    ``_no_release_feed_network`` above, this is a NETWORK guard first and a
+    diagnostic second.
+    """
+    from kiro_crew.apps import official_catalog
+
+    original = official_catalog._open_catalog
+
+    def _refuse(req: object) -> None:
+        url = getattr(req, "full_url", repr(req))
+        raise AssertionError(
+            f"test reached the live app catalog ({url}) — stub "
+            "kiro_crew.apps.official_catalog.fetch_document (or a higher "
+            "seam such as inventory_for_install) instead"
+        )
+
+    monkeypatch.setattr(official_catalog, "_open_catalog", _refuse, raising=True)
+    yield original
