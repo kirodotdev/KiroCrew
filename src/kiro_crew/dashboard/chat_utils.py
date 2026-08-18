@@ -1652,6 +1652,56 @@ def _dequeue_next_system_message(slot, *, exclude_cron: bool = False) -> tuple:
     return None, []
 
 
+def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
+    """Reduce wire-only rows so that one row means one displayed message.
+
+    ``chunk`` and ``done`` are wire-only roles that are never persisted.
+    ``chunk`` is appended once per streamed delta, so a text segment still in
+    flight occupies hundreds of rows that render as a single message, and
+    ``done`` is a turn terminator that renders as nothing at all. A caller that
+    bounds by row count is therefore counting stream progress and terminators
+    rather than messages, and a bound taken before this reduction is spent on
+    rows the response will not contain.
+
+    Runs of ``chunk`` fold into one ``chunk`` row; ``done`` rows drop. Both are
+    output-equivalent to leaving them for :func:`_prepare_messages`, which
+    reads nothing from a ``chunk`` row but its ``content``, accumulates a run
+    into one output row, and skips ``done`` WITHOUT flushing that accumulator
+    -- so dropping a terminator here, rather than letting it split a run, is
+    what matches its behaviour. No redaction is applied and no other role is
+    rewritten, which is what lets this run ahead of a slice without changing
+    what the slice renders as.
+
+    Input dicts are never mutated: a merged row is a fresh dict, because these
+    rows are shared with the live window the event loop appends to.
+    """
+
+    def _merged(run: list[dict]) -> dict:
+        if len(run) == 1:
+            return run[0]
+        # One join across the run, not a new string per delta: a long reply is
+        # hundreds of deltas, and pairwise concatenation copies the text
+        # accumulated so far every time, which is quadratic in the reply size.
+        return {**run[0], "content": "".join(m.get("content", "") for m in run)}
+
+    out: list[dict] = []
+    run: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "chunk":
+            run.append(m)
+            continue
+        if role == "done":
+            continue
+        if run:
+            out.append(_merged(run))
+            run = []
+        out.append(m)
+    if run:
+        out.append(_merged(run))
+    return out
+
+
 def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
     """Prepare messages for API response."""
     out: list[dict] = []
