@@ -764,6 +764,7 @@ make this tool possible:
 <a href="https://github.com/greatfighter" title="Spencer"><img src="https://github.com/greatfighter.png?size=64" width="64" height="64" alt="Spencer" /></a>
 <a href="https://github.com/gregory-chapman" title="Gregory Chapman"><img src="https://github.com/gregory-chapman.png?size=64" width="64" height="64" alt="Gregory Chapman" /></a>
 <a href="https://github.com/greysonevins" title="Greyson Nevins"><img src="https://github.com/greysonevins.png?size=64" width="64" height="64" alt="Greyson Nevins" /></a>
+<a href="https://github.com/gspivey" title="Gerard Spivey"><img src="https://github.com/gspivey.png?size=64" width="64" height="64" alt="Gerard Spivey" /></a>
 <a href="https://github.com/haozihong" title="haozihong"><img src="https://github.com/haozihong.png?size=64" width="64" height="64" alt="haozihong" /></a>
 <a href="https://github.com/harpreetmultani1994" title="Harpreet Singh"><img src="https://github.com/harpreetmultani1994.png?size=64" width="64" height="64" alt="Harpreet Singh" /></a>
 <a href="https://github.com/hazlijohar95" title="Hazli Johar"><img src="https://github.com/hazlijohar95.png?size=64" width="64" height="64" alt="Hazli Johar" /></a>
@@ -964,6 +965,7 @@ make this tool possible:
 <a href="https://github.com/Ship-Loop" title="Siddartha "><img src="https://github.com/Ship-Loop.png?size=64" width="64" height="64" alt="Siddartha " /></a>
 <a href="https://github.com/shortbloke" title="Martin Rowan"><img src="https://github.com/shortbloke.png?size=64" width="64" height="64" alt="Martin Rowan" /></a>
 <a href="https://github.com/ShotaroKataoka" title="Shotaro Kataoka"><img src="https://github.com/ShotaroKataoka.png?size=64" width="64" height="64" alt="Shotaro Kataoka" /></a>
+<a href="https://github.com/shrihan-vijay" title="Shrihan Vijay"><img src="https://github.com/shrihan-vijay.png?size=64" width="64" height="64" alt="Shrihan Vijay" /></a>
 <a href="https://github.com/shubag" title="shubag"><img src="https://github.com/shubag.png?size=64" width="64" height="64" alt="shubag" /></a>
 <a href="https://github.com/skagraw16" title="skagraw16"><img src="https://github.com/skagraw16.png?size=64" width="64" height="64" alt="skagraw16" /></a>
 <a href="https://github.com/smeyffret" title="smeyffret"><img src="https://github.com/smeyffret.png?size=64" width="64" height="64" alt="smeyffret" /></a>
