@@ -67,6 +67,8 @@ from aiohttp import web
 
 from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider, store, watch
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.context import ui_language_tag
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
@@ -1392,14 +1394,75 @@ _AI_BODY_MAX_CHARS = 6000
 _AI_MAX_SUGGESTIONS = 6
 
 
-def _build_ai_prompt(owner: str, repo: str, detail: dict, labels: list[dict], current_names: list[str]) -> str:
+def _ui_language() -> str:
+    """Dashboard UI language as a validated BCP-47 tag, or ``""`` when unknown.
+
+    ``""`` covers both "never chosen" (the config's follow-the-browser sentinel,
+    resolved in the SPA where the backend cannot see it) and a malformed or
+    unshipped stored value — see :func:`kiro_crew.context.ui_language_tag`. The
+    prompt then carries no language directive at all, byte-identical to what it
+    always sent, and the model keeps answering in English.
+
+    Read per generation (the load is mtime-cached) rather than captured at
+    import, so changing the language in Settings applies to the next summary
+    without restarting the gateway. Best-effort: any failure summarizes without
+    a directive rather than failing the request.
+
+    **Call this OFF the event loop** (``asyncio.to_thread``): ``KiroCrewConfig
+    .load()`` stats, reads and JSON-parses a file, which ``AUTOSDE.yaml``'s
+    ``no-blocking-call-on-event-loop`` prohibits on the gateway's single loop —
+    the same discipline ``chat_title._ui_language`` follows.
+    """
+    try:
+        return ui_language_tag(KiroCrewConfig.load())
+    except Exception:
+        logger.debug("issue-radar ai: UI language lookup failed; prompting without a directive")
+        return ""
+
+
+def _language_directive(ui_language: str, fields: str) -> str:
+    """The output-language instruction appended to a one-shot AI prompt.
+
+    ``""`` when no UI language is configured, which keeps every prompt
+    BYTE-IDENTICAL to what unconfigured installs have always sent (the model
+    then defaults to English exactly as before). ``fields`` names the JSON
+    fields whose PROSE localizes — everything structural (JSON keys, label
+    names, code spans, identifiers, file paths) is explicitly excluded, so the
+    downstream label-intersection and validation paths see unchanged tokens.
+
+    Appended AFTER the fenced untrusted block on purpose, mirroring
+    ``chat_title._TITLE_LANGUAGE_TEMPLATE``'s placement rationale: issue/PR
+    text that quotes or contradicts the directive stays data inside the fence
+    and cannot restate it.
+    """
+    if not ui_language:
+        return ""
+    return (
+        f"\nWrite {fields} in the language of BCP-47 tag {ui_language} — that is "
+        "the dashboard language the text renders in, even when the material "
+        "above is written in another language. Everything else is never "
+        "translated: JSON keys, label names, code spans, identifiers, file "
+        "paths, branch names, and product names stay verbatim."
+    )
+
+
+def _build_ai_prompt(
+    owner: str, repo: str, detail: dict, labels: list[dict], current_names: list[str],
+    *, ui_language: str = "",
+) -> str:
     """Assemble the single-call triage prompt.
 
     The issue body is UNTRUSTED (an attacker can open an issue containing
     prompt-injection text), so it is fenced in an explicit delimiter and the
     instructions tell the model to treat everything inside as data. The output
     is further constrained downstream: suggested labels are intersected with the
-    repo's real label set, so an injected "add label X" cannot invent a label."""
+    repo's real label set, so an injected "add label X" cannot invent a label.
+
+    ``ui_language`` is a validated BCP-47 tag (see :func:`_ui_language`); ``""``
+    omits the language directive entirely, leaving the prompt byte-identical to
+    what unconfigured installs have always sent. The ``summary`` and each
+    ``reason`` localize — both render as prose in the dashboard — while label
+    NAMES stay verbatim so the downstream intersection still matches."""
     title = detail.get("title") or "(no title)"
     body = (detail.get("body") or "").strip()
     if len(body) > _AI_BODY_MAX_CHARS:
@@ -1437,6 +1500,7 @@ def _build_ai_prompt(owner: str, repo: str, detail: dict, labels: list[dict], cu
         "</issue>\n\n"
         'Respond with ONLY the JSON object, e.g. {"summary": "...", '
         '"suggested_labels": [{"name": "bug", "reason": "..."}]}.'
+        + _language_directive(ui_language, 'the "summary" and each "reason"')
     )
 
 
@@ -1475,20 +1539,25 @@ async def _run_oneshot_model(request: web.Request, key: str, prompt: str) -> str
 
 
 async def _compute_issue_ai(
-    request: web.Request, owner: str, repo: str, number: int, detail: dict, labels: list[dict]
+    request: web.Request, owner: str, repo: str, number: int, detail: dict, labels: list[dict],
+    *, ui_language: str = "",
 ) -> dict:
     """Run the one-shot triage model call and return ``{"summary", "suggested_labels"}``.
 
     See :func:`_run_oneshot_model` for how the call is isolated. Output is
     validated: the summary is redacted; suggested labels are intersected with the
-    repo's real label set and de-duplicated against what is already on the issue."""
+    repo's real label set and de-duplicated against what is already on the issue.
+
+    ``ui_language`` is resolved by the caller (``_handle_issue_ai``) rather than
+    here because the same tag also keys the cached result — one read keeps the
+    prompt and the cache entry agreeing on the language."""
     import uuid
 
     from kiro_crew.llm_helpers import parse_llm_json
     from kiro_crew.security import redact
 
     current_names = [lab.get("name") for lab in (detail.get("labels") or []) if lab.get("name")]
-    prompt = _build_ai_prompt(owner, repo, detail, labels, current_names)
+    prompt = _build_ai_prompt(owner, repo, detail, labels, current_names, ui_language=ui_language)
 
     key = f"issue-radar-ai:{owner}/{repo}#{int(number)}:{uuid.uuid4().hex}"
     text = await _run_oneshot_model(request, key, prompt)
@@ -1573,9 +1642,21 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
         )
 
     force_refresh = request.query.get("refresh") == "1"
+    # Resolved once per request, off-loop (config-file I/O — see _ui_language),
+    # and used BOTH to validate the cache hit and to steer a fresh generation.
+    lang = await asyncio.to_thread(_ui_language)
     cached = None if force_refresh else await _st(
         key, store.read_issue_ai_cache, owner, repo, number
     )
+    # A cached summary is only servable if it was generated for the CURRENT
+    # dashboard language — otherwise a language switch would keep rendering the
+    # old-language card indefinitely (the pull-ai path gets this from its
+    # fingerprint; this cache has no fingerprint, so the tag is stored beside
+    # the payload and compared here). Legacy entries carry no tag and read as
+    # "" — identical to the unconfigured sentinel — so installs that never set
+    # a language keep every cached entry across the upgrade.
+    if cached is not None and str(cached.get("ui_language") or "") != lang:
+        cached = None
     if cached is not None:
         return web.json_response({
             "owner": owner, "repo": repo, "number": number,
@@ -1592,7 +1673,7 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=502)
 
     try:
-        ai = await _compute_issue_ai(request, owner, repo, number, detail, labels)
+        ai = await _compute_issue_ai(request, owner, repo, number, detail, labels, ui_language=lang)
     except Exception:
         logger.exception("issue-ai: computation failed for %s/%s#%s", owner, repo, number)
         return web.json_response(
@@ -1605,7 +1686,10 @@ async def _handle_issue_ai(request: web.Request) -> web.Response:
     # caching that would strand the user on an empty card until they manually
     # regenerate, so instead we skip the cache and let the next open retry.
     if ai.get("summary") or ai.get("suggested_labels"):
-        await _st(key, store.write_issue_ai_cache, owner, repo, number, ai)
+        await _st(
+            key, store.write_issue_ai_cache, owner, repo, number,
+            {**ai, "ui_language": lang},
+        )
     return web.json_response({
         "owner": owner, "repo": repo, "number": number,
         "summary": ai["summary"], "suggested_labels": ai["suggested_labels"],
@@ -1680,7 +1764,9 @@ def _pr_ai_comment_rows(timeline: list[dict]) -> list[dict]:
     return kept
 
 
-def _pr_ai_fingerprint(detail: dict, timeline: list[dict], checks: list[dict]) -> str:
+def _pr_ai_fingerprint(
+    detail: dict, timeline: list[dict], checks: list[dict], *, ui_language: str = ""
+) -> str:
     """A short digest of everything the summary was built from.
 
     Stored beside the cached summary so the cache self-invalidates when the PR
@@ -1692,7 +1778,13 @@ def _pr_ai_fingerprint(detail: dict, timeline: list[dict], checks: list[dict]) -
     comment changes neither its ``created_at`` nor the comment count, so a
     metadata-only digest would keep serving a summary written from text that no
     longer exists. Hashing the same bounded rows the prompt actually receives ties
-    the cache key to the real input."""
+    the cache key to the real input.
+
+    ``ui_language`` is an input too: the tag steers the summary's output
+    language, so switching the dashboard language must earn a fresh summary the
+    same way a new comment does. It is folded in only when non-empty so that
+    installs with no configured language keep byte-identical digests across the
+    upgrade (no one-time invalidation of every cached summary)."""
     comments = _pr_ai_comment_rows(timeline)
     convo = hashlib.sha256()
     for c in comments:
@@ -1714,6 +1806,8 @@ def _pr_ai_fingerprint(detail: dict, timeline: list[dict], checks: list[dict]) -
         convo.hexdigest(),
         ",".join(sorted(f"{c.get('name')}:{c.get('bucket')}" for c in checks if isinstance(c, dict))),
     ]
+    if ui_language:
+        parts.append(ui_language)
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
@@ -1727,7 +1821,8 @@ def _pr_lifecycle(detail: dict) -> str:
 
 
 def _build_pr_ai_prompt(
-    owner: str, repo: str, detail: dict, timeline: list[dict], checks: list[dict]
+    owner: str, repo: str, detail: dict, timeline: list[dict], checks: list[dict],
+    *, ui_language: str = "",
 ) -> str:
     """Assemble the single-call PR summary prompt.
 
@@ -1736,7 +1831,11 @@ def _build_pr_ai_prompt(
     prompt-injection text — so the whole payload is fenced in explicit markers and
     the instruction says to treat it as data. The output is prose only: there is
     no tool access and nothing downstream acts on it, so an injected instruction
-    has no mechanism to do anything beyond distorting one summary."""
+    has no mechanism to do anything beyond distorting one summary.
+
+    ``ui_language`` is a validated BCP-47 tag (see :func:`_ui_language`); ``""``
+    omits the language directive entirely, leaving the prompt byte-identical to
+    what unconfigured installs have always sent."""
     title = detail.get("title") or "(no title)"
     body = (detail.get("body") or "").strip() or "(no description)"
     if len(body) > _PR_AI_BODY_MAX_CHARS:
@@ -1822,20 +1921,26 @@ def _build_pr_ai_prompt(
         f"CONVERSATION (oldest first, newest last):\n{comments_block}\n"
         "</pull-request>\n\n"
         'Respond with ONLY the JSON object, e.g. {"summary": "..."}.'
+        + _language_directive(ui_language, 'the "summary"')
     )
 
 
 async def _compute_pr_ai(
     request: web.Request, owner: str, repo: str, number: int,
     detail: dict, timeline: list[dict], checks: list[dict],
+    *, ui_language: str = "",
 ) -> str:
-    """Run the one-shot PR summary call and return the redacted summary text."""
+    """Run the one-shot PR summary call and return the redacted summary text.
+
+    ``ui_language`` is resolved by the caller (``_handle_pull_ai``) rather than
+    here because the same tag must also feed :func:`_pr_ai_fingerprint` — one
+    read keeps the prompt and the cache key agreeing on the language."""
     import uuid
 
     from kiro_crew.llm_helpers import parse_llm_json
     from kiro_crew.security import redact
 
-    prompt = _build_pr_ai_prompt(owner, repo, detail, timeline, checks)
+    prompt = _build_pr_ai_prompt(owner, repo, detail, timeline, checks, ui_language=ui_language)
     key = f"issue-radar-pr-ai:{owner}/{repo}#{int(number)}:{uuid.uuid4().hex}"
     text = await _run_oneshot_model(request, key, prompt)
     data = parse_llm_json(text) or {}
@@ -1901,7 +2006,11 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
             key, store.write_pr_detail_cache, owner, repo, number, detail, timeline, checks
         )
 
-    fingerprint = _pr_ai_fingerprint(detail, timeline, checks)
+    # Resolved once per request, off-loop (config-file I/O — see _ui_language),
+    # and fed to BOTH the fingerprint and the prompt so the cached summary's
+    # language always matches the key it is stored under.
+    lang = await asyncio.to_thread(_ui_language)
+    fingerprint = _pr_ai_fingerprint(detail, timeline, checks, ui_language=lang)
     cached = None if force_refresh else await _st(
         key, store.read_pr_ai_cache, owner, repo, number, fingerprint=fingerprint
     )
@@ -1914,7 +2023,9 @@ async def _handle_pull_ai(request: web.Request) -> web.Response:
         })
 
     try:
-        summary = await _compute_pr_ai(request, owner, repo, number, detail, timeline, checks)
+        summary = await _compute_pr_ai(
+            request, owner, repo, number, detail, timeline, checks, ui_language=lang
+        )
     except Exception:
         logger.exception("pull-ai: computation failed for %s/%s#%s", owner, repo, number)
         return web.json_response(
@@ -2378,11 +2489,22 @@ def _short_rationale(raw: object) -> str:
     return redact(text)[:_RATIONALE_MAX_CHARS]
 
 
-def _build_reco_prompt(owner: str, repo: str, existing_labels: list[dict], issues: list[dict]) -> str:
+def _build_reco_prompt(
+    owner: str, repo: str, existing_labels: list[dict], issues: list[dict],
+    *, ui_language: str = "",
+) -> str:
     """Assemble the taxonomy-proposal prompt. Open-issue text is UNTRUSTED
     (prompt-injection surface), so it is fenced and marked as data; the output is
     further constrained downstream (names intersected AGAINST the existing set to
     guarantee 'new', category constrained to the known set, colors validated).
+
+    ``ui_language`` is a validated BCP-47 tag (see :func:`_ui_language`); ``""``
+    omits the language directive entirely, leaving the prompt byte-identical to
+    what unconfigured installs have always sent. ONLY the ``rationale``
+    localizes — it renders purely as dashboard prose. ``name`` and
+    ``description`` are deliberately excluded: /labels/create writes both onto
+    the GitHub repo itself when a proposal is applied, and repo content should
+    follow the repo's own label language, not one operator's dashboard setting.
 
     The prompt deliberately presets NO naming style. Real repos are split across
     several mutually incompatible conventions — flat (`bug`), slash namespaces
@@ -2451,6 +2573,12 @@ def _build_reco_prompt(owner: str, repo: str, existing_labels: list[dict], issue
         '{"recommendations": [{"name": "<name in this repo\'s style>", "category": '
         '"priority", "color": "d73a4a", "description": "Urgent, address first", '
         '"rationale": "...", "examples": [12]}]}'
+        + _language_directive(
+            ui_language,
+            'each "rationale" — and ONLY the rationale; "name" and "description" '
+            "become repo content on GitHub when applied, so keep them consistent "
+            "with the EXISTING LABELS language",
+        )
     )
 
 
@@ -2474,7 +2602,9 @@ async def _compute_label_recommendations(
         raise RuntimeError("session manager unavailable")
 
     kiro_agent = "kirocrew-lite"
-    prompt = _build_reco_prompt(owner, repo, existing_labels, issues)
+    # Off-loop: the language read is config-file I/O (see _ui_language).
+    lang = await asyncio.to_thread(_ui_language)
+    prompt = _build_reco_prompt(owner, repo, existing_labels, issues, ui_language=lang)
 
     import uuid
 

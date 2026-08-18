@@ -40,7 +40,7 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/pulls` | List open/closed PRs (cached, `poll=1` probe-gated as for `/issues`; `first_page=1` (open only) takes the progressive first-paint fast path — see First Paint; rows enriched with diff size + check tally via one GraphQL call and merge readiness via a second, lean one run CONCURRENTLY, each topped up by number for rows outside its `first:100` window). Rows whose enrichment failed carry `null` (unknown, not zero) and are deliberately NOT written to the cache, so the next read retries |
 | GET | `/pulls/search` | PRs matching a per-person filter, resolved server-side by GitHub search (escapes the list's page cap). Paginates only as far as its own cap and reports `truncated` so the UI says "newest N" rather than implying completeness |
 | GET | `/pull` | Full PR detail + conversation (issue timeline merged with inline review comments) + automated checks on the head commit. Cache-first with a short server-side TTL (`PR_DETAIL_CACHE_TTL_SEC`), so a plain GET self-refreshes and no caller has to pass `refresh=1` to stay current |
-| GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
+| GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one. The configured dashboard language (when set) is folded into the fingerprint too, so switching languages earns a fresh summary instead of serving the cached one in the old language |
 | POST | `/labels/apply` | Apply label changes (add/remove) |
 | POST | `/issue/state` | Close/reopen an issue |
 | GET/PUT | `/investigation` | Per-issue investigation record. The PUT is the ONE app route also reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool — see [Recording findings](#recording-findings) |
@@ -662,6 +662,18 @@ the parent RUN and needs its id.
   output is redacted. Issue label suggestions are additionally intersected with the
   repo's real label set, so injected text cannot invent a label; a PR summary is
   prose that nothing downstream acts on.
+- **Output language**: when `dashboard.language` names a shipped catalog, each AI
+  prompt appends a directive (outside the untrusted fence) to write its PROSE —
+  the summaries, per-label `reason`, and recommendation `rationale` — in that
+  language. Label names stay verbatim (the intersection above still matches), and
+  a recommendation's `name`/`description` stay in the repo's own language because
+  `/labels/create` writes them onto GitHub. With no configured language the
+  prompts are byte-identical to before and the model defaults to English.
+  Caches follow suit: the PR-summary fingerprint folds the tag in, and the
+  issue-AI cache stores the tag beside the payload and treats a mismatch as a
+  miss, so a language switch regenerates both on next open. The recommendations
+  cache is regenerate-only by design — it renders the last explicitly generated
+  proposal until the user presses "Recommend labels" again.
 
 ## Background Watcher
 
