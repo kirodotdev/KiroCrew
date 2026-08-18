@@ -218,6 +218,8 @@ class TestAgentDeniedEnvKeys:
         assert "SLACK_BOT_TOKEN" in _AGENT_DENIED_ENV_KEYS
         assert "SLACK_APP_TOKEN" in _AGENT_DENIED_ENV_KEYS
         assert "KIROCREW_OWNER_ID" in _AGENT_DENIED_ENV_KEYS
+        assert "FEISHU_APP_ID" in _AGENT_DENIED_ENV_KEYS
+        assert "FEISHU_APP_SECRET" in _AGENT_DENIED_ENV_KEYS
 
     def test_cc_launcher_scrubs_agent_creds(self):
         """cc launcher script's ENV_PREFIXES list contains the cred keys."""

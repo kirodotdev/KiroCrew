@@ -2,7 +2,7 @@
 
 ## Overview
 
-`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, and WhatsApp integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
+`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, WhatsApp, and Feishu integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
 **Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), and `sel` for audit.
 
@@ -477,7 +477,7 @@ Telegram's forum routing stays entirely channel-local. `_handle_busy` and
 `_active_renderers`. `_handle_stop` is NOT in that exclusion — see
 [Where a command handler splits](#where-a-command-handler-splits).
 
-The remaining channels (Webex, WeCom, Weixin) implement `_handle_busy` as
+The remaining channels (Webex, WeCom, Weixin, Feishu) implement `_handle_busy` as
 **steer-only**: they fold the message into the running turn and reply with a
 one-shot notice, or ask the user to resend when steer is unavailable. They have
 no receipt and no drain because their reply is bound to the inbound request
@@ -882,14 +882,14 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **A reconnect cannot hot-loop on an accept-then-close edge**: a connection must live at least `_MIN_HEALTHY_CONN_SECS` for its CLEAN close to reset the backoff counter, so a repeating immediate close stays on the exponential curve. Webex, WeCom and Discord all carry this guard. Without it a clean-disconnect branch that resets the attempt count makes the backoff curve unreachable and nothing bounds the request rate, and Discord bans an identity for 10 minutes after 10,000 invalid requests, so the cost is the channel, not just CPU.
 - **Session keys are namespaced**: every key is `channel_type:conversation_id`; only bare legacy Slack `thread_ts` keys are shimmed, via `canonical_key`/`legacy_key`.
 - **Runtime identity follows the current turn**: every channel dispatcher passes its trusted transport name as `runtime_source` to `ContextBuilder.build_message`; the shared `drive_turn` pipeline uses `ChannelTurn.channel_type`. A cross-surface resume keeps its original stable session key for conversation continuity, but `[RUNTIME]` names the interface carrying the current message. Follow-up turns refresh the marker because the one-time session context may describe an earlier surface.
-- **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, or Weixin-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
+- **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, Weixin, or Feishu-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
 - **An owner notification is not Slack-only**: `dashboard/server.py::_dm_owner` prefers the owner's Slack DM and falls back to registered channel transports (`_notify_owner_channels`). It used to no-op entirely without Slack, so an expiring unattended grant was invisible on a Teams-only, Discord-only or Telegram-only install — silence about a security grant lapsing is exactly what the notice exists to prevent. Fallback, not addition: an operator with Slack gets one notice, not one per channel. Reachability is the transport's OWN answer, so this can only reach a destination that channel already authorized. **And a channel must be able to NAME the owner: exactly one configured target, or nothing.** The notice carries the operator's own security state, while an allow-list is a list of people permitted to talk to the agent — not a claim that any one of them is the operator. With several configured targets there is no unambiguous owner, and sending to the first reachable one hands one allow-listed human another's auto-approve state; the count is over ALL configured targets, because a three-person allow-list with one learned route is still a guess. Same premise as `/sessions`' owner-only rule. Per-identity authority within an allow-list would let this deliver on a multi-person install; it does not exist yet on any channel.
 - **The proactive PRODUCERS are still Slack-shaped, and the parity claim says so**: `api_send_message` (the LLM-facing `send_message` tool) has exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` posts to the Slack upload route. Neither consults `state.channel_transports`. A cron result still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`), which is the normal path; what is missing is the tool's own explicit channel/user addressing, whose allow-list, threading and unfurl semantics are Slack concepts. This is the largest remaining outbound gap and it hurts Discord and Telegram identically — routing it through the transport ladder is a change to that handler's contract, not to a channel.
-- **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram and Webex expose configured DMs; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom advertises its allow-listed userids plus, under its allow-all policy, the peers it has learned — each either offered or listed with a reason, because `aibot_send_msg` needs no token but the platform only delivers into a conversation the user has already written to.
+- **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram and Webex expose configured DMs; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom advertises its allow-listed userids plus, under its allow-all policy, the peers it has learned — each either offered or listed with a reason, because `aibot_send_msg` needs no token but the platform only delivers into a conversation the user has already written to. Feishu destinations are visible but unavailable because replies are anchored to an inbound message (no proactive DM in v1).
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
 - **`/link` and `/unlink` are one pair with one location**: `rebind_conversation_location` claims what `release_conversation_location` frees, and both take the channel's single `_origin_mirror_link()` value — the release matches an occupied location by VALUE, so a second spelling of "this conversation" lets it miss the binding the bind wrote. Inside the rebind the **claim goes first**: `batched_save` writes on the way out even when the block raises, so an opt-out withdrawal ordered ahead of a refused claim would persist for a link that never happened and silently turn mirroring back on.
 - **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`) stores a `ChannelLink` under the `mirror` slot for non-Slack channels, still distinct from the session's own inbound link.
-- **Managed-MCP session-key resolution**: every turn-running surface publishes `session_pid_<pid>.txt` (with an HMAC-SHA256 sidecar) through the single shared helper `messaging.identity.publish_turn_identity` (which calls `session_pid_sig.publish_session_pid`), keyed by the session's kiro-cli host PID, so the gateway's ancestor PID-walk resolves the caller's `X-Session-Key`. One writer is called by the dashboard, native Slack, and every shipped channel transport-dispatch surface: Telegram (DM + forum), Discord, Slack, Webex, WeCom, Teams, and Weixin (through the shared `drive_turn`). Any surface that omits it makes every session-keyed managed MCP tool (`learn_add`, cron management, …) fail with HTTP 400 `missing X-Session-Key` from that channel's turns; the identity-topology test guards every dispatcher against regressing.
+- **Managed-MCP session-key resolution**: every turn-running surface publishes `session_pid_<pid>.txt` (with an HMAC-SHA256 sidecar) through the single shared helper `messaging.identity.publish_turn_identity` (which calls `session_pid_sig.publish_session_pid`), keyed by the session's kiro-cli host PID, so the gateway's ancestor PID-walk resolves the caller's `X-Session-Key`. One writer is called by the dashboard, native Slack, and every shipped channel transport-dispatch surface: Telegram (DM + forum), Discord, Slack, Webex, WeCom, Teams, Weixin, and Feishu (through the shared `drive_turn`). Any surface that omits it makes every session-keyed managed MCP tool (`learn_add`, cron management, …) fail with HTTP 400 `missing X-Session-Key` from that channel's turns; the identity-topology test guards every dispatcher against regressing.
 
 ## Testing conventions
 
@@ -2837,3 +2837,82 @@ equivalent, and inbound reaction events as a control channel. Read receipts are
 deliberately absent rather than pending: `client.mark_read` exists, but calling it
 writes to the operator's own account and overrides whatever read-receipt privacy
 setting their phone carries, so it is a product decision and not a parity gap.
+
+## Feishu channel
+
+**Transport (`kiro_crew/feishu/`).** A concrete `MessagingTransport` over
+`lark-oapi` (`client.py`): inbound rides the lark-oapi WebSocket long
+connection (a daemon thread pushing normalized `LarkInbound` frames into the
+async event loop via `run_coroutine_threadsafe`); outbound is REST reply
+anchored to the inbound `message_id` (via `run_in_executor` so it never
+blocks the event loop). `lark-oapi` is an OPTIONAL dependency declared as the
+`[feishu]` extra in `setup.cfg` and lazily imported inside the client module;
+`maybe_start_feishu` catches `ImportError` and logs a skip so a missing
+library never takes down the gateway. No public webhook endpoint is required.
+Capabilities: `streaming=False`, `edit=False`, `reactions=False`,
+`files_inbound=False`, `files_outbound=False`, `rich_blocks=False`,
+`threads=False`, `max_message_chars=4000`, `max_buttons=0`,
+`supports_proactive_send=False`. Long replies are split with
+`split_markdown_safe` (the shared fence-safe splitter from
+`messaging/split.py`), not `chunk_text`.
+
+**Redelivery suppression.** lark's WS may redeliver an event, so a bounded
+message-id window lives in `FeishuTransport.receive` and is consulted as the LAST
+gate — after the chat-type gate, the group allow-list and `authorize` — per the
+cross-channel invariant above. Placed any earlier it is self-defeating: traffic
+the bot can see but will never serve (an unauthorized sender, a group it merely
+sits in, a sticker) would occupy the window, and crossing the cap trims 500 to
+200 in one pass, so the id evicted is an authorized one and its redelivery
+re-runs a turn's tool side effects. A frame with no `message_id` is dispatched
+and never recorded — no id is no evidence of a duplicate, and inserting an empty
+key would make every id-less frame a duplicate of the first. The window needs no
+lock: `receive` runs on the event loop (the WS thread hands off via
+`run_coroutine_threadsafe`), and the membership test and insert are not separated
+by an `await`.
+
+**Security model.** `authorize` is deny-by-default against
+`feishu.allowed_open_ids` (frozen at construction); every denial is
+SEL-audited (`source="feishu"`). Group-chat access is an explicit opt-in
+gated on BOTH `allow_group=True` AND the group's `chat_id` appearing in
+`allowed_group_ids`; every other context is denied with a SEL audit record
+(`denied_group_not_allowed`). `FEISHU_APP_SECRET` is on the sandbox agent env
+denylist.
+
+**Dispatch + rendering.** Turns ride the shared `TurnDriver`
+(`transport_dispatch.py` mirrors the WeCom dispatcher: `/new`, `/compact`
+command intercept, mid-turn messages fold into the running turn via steer
+gated on `has_active_turn`, `/compact` under atomic `try_acquire`, soft/hard
+context-threshold notices as separate proactive messages). The soft notice is
+latched per route and released on BOTH the hard-threshold compaction and a
+manual `/compact`, so it stays a per-growth-cycle nudge instead of decaying
+into a once-ever one. `messaging.idle_reset_minutes` / `daily_reset_hour` are
+honoured through `ConversationState.maybe_rotate`, called AFTER the busy check
+— rotating first would mint a new generation and miss an in-flight turn on the
+current key — with the session key re-derived afterwards. The turn carries a
+`build_directive_consumer` so the session-directive tools (`monitor_start`,
+`autonudge_stop`, …) apply against the Feishu session rather than returning a
+marker the driver leaves inert while still reporting success to the model;
+dashboard-only directives stay refused for a channel turn (`slot=None`,
+fail-closed). The dispatcher runs decider-less (no interactive buttons); an
+`[OPTIONS:]` trailer is stripped. The renderer buffers the complete turn and sends it as one reply on
+`on_done` — no streaming, no edit-in-place.
+
+**Session identity.** A p2p turn keys on `open_id` under the `DIRECT` chat
+type; a group turn keys on the group's `chat_id` under the non-direct
+(`FORUM`) chat type, so a group turn never resumes the sender's private DM
+bucket — including under `dm_scope: unified`, where a direct key collapses to
+the cross-channel bucket and a group key deliberately does not.
+
+**A group turn is minimal-context for everyone.** The key above isolates the
+turn HISTORY, which is only half the disclosure: memory, lessons and skills are
+assembled by the context builder, not read from the session, so a group turn
+runs with `minimal_context=True` regardless of who sent it. The property that
+matters belongs to the CONVERSATION rather than to the sender — a group's key is
+the group, so one session serves every member, and an allow-listed sender
+addressing the agent in a group would otherwise inject their private context
+into a reply the whole group reads. The p2p session is where context-rich work
+belongs. WhatsApp's extra `not is_operator` clause does not transfer: its
+transport is the operator's own account and can tell the operator from a peer,
+whereas Feishu has a bot identity and authorises against `allowed_open_ids`,
+where every admitted DM sender is an equally-trusted peer with their own
+`open_id`-keyed bucket.

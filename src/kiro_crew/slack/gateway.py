@@ -61,6 +61,8 @@ from kiro_crew.channels import builtin_channel_descriptors
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CRED_DISCORD_BOT_TOKEN,
+    CRED_FEISHU_APP_ID,
+    CRED_FEISHU_APP_SECRET,
     CRED_MICROSOFT_APP_ID,
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
@@ -1508,6 +1510,23 @@ class GatewayOrchestrator:
         # optional dependency or an unpaired session via the status badge.
         self._whatsapp_enabled = bool(cfg.whatsapp.enabled)
         self._whatsapp_client: "WhatsAppClient | None" = None
+        # Feishu (Lark/飞书) — FEISHU_APP_ID / FEISHU_APP_SECRET (env/.env),
+        # matching the Feishu developer console's own naming; everything else
+        # from the typed cfg.feishu dataclass. Both are registered credentials,
+        # so they are stripped from the agent subprocess environment by
+        # sandbox._AGENT_DENIED_ENV_KEYS — the gateway is their only consumer.
+        # Deny-by-default: an empty allowed_open_ids authorises nobody, and a
+        # group chat needs BOTH allow_group and an allow-listed chat_id. The
+        # client handle is owned by the channel registry (``kiro_crew.channels``),
+        # which also closes it on shutdown.
+        self._feishu_app_id = creds.get(CRED_FEISHU_APP_ID, "")
+        self._feishu_app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
+        self._feishu_enabled = bool(
+            cfg.feishu.enabled and self._feishu_app_id and self._feishu_app_secret
+        )
+        self._feishu_allowed_open_ids: list[str] = list(cfg.feishu.allowed_open_ids)
+        self._feishu_allow_group: bool = bool(cfg.feishu.allow_group)
+        self._feishu_allowed_group_ids: list[str] = list(cfg.feishu.allowed_group_ids)
         # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
         # cfg.discord.bot_token; all other settings come from the typed
         # cfg.discord dataclass (mirrors the Telegram block above).

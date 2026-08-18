@@ -52,6 +52,7 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     "teams",
     "weixin",
     "imessage",
+    "feishu",
     "unified",
 )
 

@@ -4546,6 +4546,153 @@
       "defaultValue": ""
     },
     {
+      "path": "feishu",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Feishu",
+      "help": "Feishu (Lark/飞书) channel configuration.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "allowed_open_ids": [],
+        "allow_group": false,
+        "allowed_group_ids": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95
+      }
+    },
+    {
+      "path": "feishu.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Feishu (Lark/飞书) channel. Requires FEISHU_APP_ID and FEISHU_APP_SECRET environment variables to be set.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "feishu.allowed_open_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Allowed Open IDs",
+      "help": "Feishu open_ids allowed to DM the bot (deny-by-default: empty list authorises nobody). Find your open_id via the Feishu developer console.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "feishu.allowed_open_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "feishu.allow_group",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Allow Group Chat",
+      "help": "Serve messages from group chats whose chat_id is in allowed_group_ids. The bot must be @-mentioned in a group to receive the message.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "feishu.allowed_group_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Allowed Group IDs",
+      "help": "Feishu group chat_ids allowed to drive a turn (requires allow_group=true).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "feishu.allowed_group_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "feishu.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "When a conversation's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "feishu.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context reaches this so the window never overflows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
       "path": "discord",
       "kind": "core",
       "type": "object",

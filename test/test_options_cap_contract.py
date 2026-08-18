@@ -27,6 +27,7 @@ PINNED_WIDGET_CHANNELS = {"slack", "discord", "telegram", "teams"}
 
 def _all_channel_capabilities() -> dict[str, TransportCapabilities]:
     from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+    from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
     from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
     from kiro_crew.slack.transport import SLACK_CAPABILITIES
     from kiro_crew.teams.transport import TEAMS_CAPABILITIES
@@ -44,6 +45,7 @@ def _all_channel_capabilities() -> dict[str, TransportCapabilities]:
         "wecom": WECOM_CAPABILITIES,
         "weixin": WEIXIN_CAPABILITIES,
         "imessage": IMESSAGE_CAPABILITIES,
+        "feishu": FEISHU_CAPABILITIES,
     }
 
 

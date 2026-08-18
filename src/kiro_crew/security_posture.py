@@ -1530,6 +1530,7 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "wecom": "WeCom messages, approvals, and owner-authorization decisions",
     "weixin": "Weixin messages, approvals, and owner-authorization decisions",
     "whatsapp": "WhatsApp messages, approvals, and owner-authorization decisions",
+    "feishu": "Feishu messages, approvals, and owner-authorization decisions",
     "webex": "Webex messages, approvals, and owner-authorization decisions",
     "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
     "imessage": "iMessage messages, approvals, and owner-authorization decisions",

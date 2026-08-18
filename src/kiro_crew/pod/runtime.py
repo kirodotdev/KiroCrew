@@ -985,6 +985,7 @@ SEED_DISABLED_SECTIONS: tuple[str, ...] = (
     # send from the operator's real number using a credential that is not an env
     # var this env can scrub (the session store lives under the data home).
     "whatsapp",
+    "feishu",
 )
 
 
@@ -1025,13 +1026,15 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
     """Construct the isolated gateway environment for a pod.
 
     Scrubs messaging-identity creds so the pod can't inherit and re-use the live
-    plane's Slack / WeCom / Telegram / Teams identity via the systemd --user manager
-    env: ``SLACK_*``, ``WECOM_*`` (WECOM_BOT_ID / WECOM_SECRET), ``MICROSOFT_APP_*``
-    and non-AWS ``*_TOKEN`` (covers ``TELEGRAM_BOT_TOKEN``). Teams needs its own
-    prefix because none of ``MICROSOFT_APP_ID`` / ``MICROSOFT_APP_PASSWORD`` /
-    ``MICROSOFT_APP_TENANT_ID`` ends in ``_TOKEN``, so the generic suffix rule that
-    catches every other channel's bot credential passes the Azure Bot secret
-    straight through. ``AWS_*`` is kept on purpose (pods run agent turns), and the
+    plane's Slack / WeCom / Telegram / Teams / Feishu identity via the systemd
+    --user manager env: ``SLACK_*``, ``WECOM_*`` (WECOM_BOT_ID / WECOM_SECRET),
+    ``MICROSOFT_APP_*``, ``FEISHU_*`` and non-AWS ``*_TOKEN`` (covers
+    ``TELEGRAM_BOT_TOKEN``). Teams and Feishu each need their own prefix because
+    none of ``MICROSOFT_APP_ID`` / ``MICROSOFT_APP_PASSWORD`` /
+    ``MICROSOFT_APP_TENANT_ID`` / ``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` ends
+    in ``_TOKEN``, so the generic suffix rule that catches every other channel's
+    bot credential passes the Azure Bot secret and the Feishu app secret straight
+    through. ``AWS_*`` is kept on purpose (pods run agent turns), and the
     ``_TOKEN`` scrub deliberately EXCLUDES ``AWS_`` so ``AWS_SESSION_TOKEN`` (temp
     creds) survives intact — scrubbing it would leave half a credential and break
     every AWS call. Config-level channel enables are additionally forced off by
@@ -1085,6 +1088,7 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         if k.startswith("SLACK_")
         or k.startswith("WECOM_")
         or k.startswith("MICROSOFT_APP_")
+        or k.startswith("FEISHU_")
         or (k.endswith("_TOKEN") and not k.startswith("AWS_"))
     ]:
         env.pop(key, None)

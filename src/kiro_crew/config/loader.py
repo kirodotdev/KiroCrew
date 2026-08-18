@@ -153,6 +153,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "wecom",
         "weixin",
         "whatsapp",
+        "feishu",
         "teams",
         "imessage",
         "dashboard",
@@ -199,6 +200,8 @@ CRED_MICROSOFT_APP_ID = "MICROSOFT_APP_ID"
 CRED_MICROSOFT_APP_PASSWORD = "MICROSOFT_APP_PASSWORD"
 CRED_MICROSOFT_APP_TENANT_ID = "MICROSOFT_APP_TENANT_ID"
 CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR flow
+CRED_FEISHU_APP_ID = "FEISHU_APP_ID"  # Feishu custom-app id (developer console)
+CRED_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
 CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
 # kiro-cli's OWN model credential. Unlike the gateway-owned channel tokens
 # above, its rightful consumer is the agent subprocess itself (and the whoami
@@ -219,6 +222,8 @@ _CREDENTIAL_KEYS = (
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
     CRED_WEIXIN_TOKEN,
+    CRED_FEISHU_APP_ID,
+    CRED_FEISHU_APP_SECRET,
     CRED_JIRA_API_TOKEN,
     CRED_KIRO_API_KEY,
 )
@@ -5110,6 +5115,72 @@ class WeComConfig:
         )
 
 
+@dataclass
+class FeishuConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Feishu (Lark/飞书) channel. Requires FEISHU_APP_ID and "
+            "FEISHU_APP_SECRET environment variables to be set.",
+            tags=["feishu"],
+        ),
+    )
+    allowed_open_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Open IDs",
+            "Feishu open_ids allowed to DM the bot (deny-by-default: empty list "
+            "authorises nobody). Find your open_id via the Feishu developer console.",
+            tags=["feishu"],
+        ),
+    )
+    allow_group: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Group Chat",
+            "Serve messages from group chats whose chat_id is in allowed_group_ids. "
+            "The bot must be @-mentioned in a group to receive the message.",
+            tags=["feishu"],
+        ),
+    )
+    allowed_group_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Group IDs",
+            "Feishu group chat_ids allowed to drive a turn (requires allow_group=true).",
+            tags=["feishu"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a conversation's context passes this, prompt the user to /compact "
+            "or /new instead of auto-compacting.",
+            tags=["feishu"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this so the window never overflows.",
+            tags=["feishu"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Shared normalization: clamp both thresholds and guarantee soft <= hard
+        # so a misconfig can't make the soft nudge unreachable -- _maybe_notice
+        # checks ``pct >= hard`` first. Mirrors WeComConfig. The helper's floor
+        # is 1, not 0, because a 0% threshold reads as "always over" and would
+        # compact every turn -- a hand-rolled max(0, ...) admits exactly that.
+        self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
+            self.soft_threshold_pct, self.hard_threshold_pct
+        )
+
+
 def _coerce_int_ids(raw: object) -> list[int]:
     """Coerce a config value to a clean ``list[int]``, dropping anything invalid.
 
@@ -6217,6 +6288,14 @@ class KiroCrewConfig:
             tags=["whatsapp"],
         ),
     )
+    feishu: FeishuConfig = field(
+        default_factory=FeishuConfig,
+        metadata=_meta(
+            "Feishu",
+            "Feishu (Lark/飞书) channel configuration.",
+            tags=["feishu"],
+        ),
+    )
     discord: DiscordConfig = field(
         default_factory=DiscordConfig,
         metadata=_meta("Discord", "Discord bot integration settings.", tags=["discord"]),
@@ -6501,6 +6580,9 @@ class KiroCrewConfig:
         whatsapp_data = data.get("whatsapp", {})
         if not isinstance(whatsapp_data, dict):
             whatsapp_data = {}
+        feishu_data = data.get("feishu", {})
+        if not isinstance(feishu_data, dict):
+            feishu_data = {}
         discord_data = data.get("discord", {})
         if not isinstance(discord_data, dict):
             discord_data = {}
@@ -7092,6 +7174,18 @@ class KiroCrewConfig:
                 soft_threshold_pct=_threshold_pct(wecom_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(wecom_data.get("hard_threshold_pct"), 95),
             ),
+            feishu=FeishuConfig(
+                enabled=_safe_bool(feishu_data.get("enabled"), False),
+                allowed_open_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_open_ids")),
+                # Shape-safe coercion rather than bool() / a raw comprehension:
+                # the schema type check already substitutes the default for a
+                # wrong-typed value, and these helpers keep the guarantee local
+                # to the parse (and dedupe + strip the opaque ou_/oc_ ids).
+                allow_group=_safe_bool(feishu_data.get("allow_group"), False),
+                allowed_group_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_group_ids")),
+                soft_threshold_pct=_safe_int(feishu_data.get("soft_threshold_pct", 80), 80),
+                hard_threshold_pct=_safe_int(feishu_data.get("hard_threshold_pct", 95), 95),
+            ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
                 tailscale=_tailscale_config_from(dashboard_data.get("tailscale")),
@@ -7527,6 +7621,7 @@ class KiroCrewConfig:
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
             "whatsapp": asdict(self.whatsapp),
+            "feishu": asdict(self.feishu),
             "teams": asdict(self.teams),
             "imessage": asdict(self.imessage),
             "dashboard": asdict(self.dashboard),

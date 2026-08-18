@@ -50,6 +50,7 @@ EXPECTED_MEMBERS = {
     "weixin",
     "imessage",
     "whatsapp",
+    "feishu",
 }
 
 

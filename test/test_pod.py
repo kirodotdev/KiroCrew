@@ -2223,6 +2223,38 @@ class TestReviewRound1Fixes:
         assert "TELEGRAM_BOT_TOKEN" not in env  # non-AWS *_TOKEN
         assert env.get("AWS_SESSION_TOKEN") == "sts-temp"  # AWS kept
 
+    def test_seed_forces_feishu_off(self, tmp_path: Path) -> None:
+        """A seed cloned from a real home must not boot a live Feishu bot.
+
+        ``feishu.enabled`` self-activates through ``maybe_start_feishu`` exactly
+        like telegram/wecom, so it belongs in the sanitize roster. Other keys
+        survive so the pod's config still round-trips.
+        """
+        seed = tmp_path / "s"
+        seed.mkdir()
+        (seed / "config.json").write_text(
+            json.dumps({"feishu": {"enabled": True, "allowed_open_ids": ["ou_live"]}})
+        )
+        out = rt.sanitized_seed_config(seed)
+        assert out is not None
+        assert out["feishu"]["enabled"] is False
+        assert out["feishu"]["allowed_open_ids"] == ["ou_live"]
+
+    def test_build_pod_env_scrubs_feishu(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FEISHU_APP_ID / FEISHU_APP_SECRET match none of the other predicates.
+
+        Neither ends in ``_TOKEN`` and neither carries the SLACK_/WECOM_ prefix,
+        so without an explicit ``FEISHU_`` prefix a pod inherits the live plane's
+        Feishu app identity from the systemd --user manager env.
+        """
+        monkeypatch.setenv("FEISHU_APP_ID", "cli-live")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "sec-live")
+        env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
+        assert "FEISHU_APP_ID" not in env
+        assert "FEISHU_APP_SECRET" not in env
+
     def test_read_env_file_matched_quote_pair_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

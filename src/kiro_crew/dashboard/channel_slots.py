@@ -87,6 +87,7 @@ _CHANNEL_LABELS: dict[str, str] = {
     "teams": "Teams",
     "weixin": "Weixin",
     "imessage": "iMessage",
+    "feishu": "Feishu",
     "unified": "Direct message",
 }
 #: In-memory window for a newly surfaced slot. Deliberately the same bound the
