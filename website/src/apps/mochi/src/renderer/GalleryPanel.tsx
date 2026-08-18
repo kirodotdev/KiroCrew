@@ -18,7 +18,7 @@ import { REQUIRED_STATES, OPTIONAL_STATES, ALL_MOODS } from '../shared/appearanc
 import { toDataUri } from './animationResolver'
 import { applySvgColorMap, type ColorMap } from '../shared/colorCustomizer'
 import { LottieRenderer } from './LottieRenderer'
-import { SpriteRenderer } from './SpriteRenderer'
+import { SpriteRenderer } from '../../../shared/SpriteRenderer'
 import {
   Cat,
   Check,
