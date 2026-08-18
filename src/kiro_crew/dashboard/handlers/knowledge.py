@@ -1470,7 +1470,11 @@ async def export_all(request: web.Request) -> web.Response:
     namespace = request.query.get("namespace")
     _sel_log("export_all", namespace=namespace)
     store = _store(request)
-    bundle = store.export_all(namespace=namespace)
+    # Full-table scans over items, entities, relations and the per-document
+    # ownership tables. `store.db` is a per-thread connection, so the worker
+    # uses its own; run inline on a large library this stalls the loop past the
+    # watchdog threshold, the same reason the search and re-embed paths offload.
+    bundle = await asyncio.to_thread(store.export_all, namespace)
     safe_ns = re.sub(r'[^\w.-]', '_', namespace) if namespace else None
     filename = f"{safe_ns}.knowledge" if safe_ns else "knowledge.knowledge"
     return web.json_response(bundle, headers={"Content-Disposition": f"attachment; filename={filename}"})
@@ -1497,7 +1501,10 @@ async def import_bundle(request: web.Request) -> web.Response:
         redacted_type = _redact(rel.get("relation_type"))
         rel["relation_type"] = redacted_type if redacted_type is not None else ""
         rel["description"] = _redact(rel.get("description"))
-    result = _store(request).import_bundle(body)
+    # One unbounded write transaction plus a full graph rebuild (`_load_graph`).
+    # Offloaded for the same reason as the export above, and matching the
+    # dedup/re-embed paths that already run their graph work off the loop.
+    result = await asyncio.to_thread(_store(request).import_bundle, body)
     _sel_log("import", **result)
     return web.json_response(result)
 

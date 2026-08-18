@@ -60,10 +60,19 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
-from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
-from .store import KnowledgeStore
+from .ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline, run_to_completion
+from .store import INGESTING_STATUS, KnowledgeStore
 
 logger = logging.getLogger(__name__)
+
+#: ``artifact_item_state.status`` values. ``active`` is the owning status the
+#: rest of the store matches on (``store._DOC_STATE_TABLES``); ``ingesting`` marks
+#: an ingest that has not finished recording its group, and is what makes the
+#: residue of an interrupted one attributable rather than merely unowned.
+#: The transient one is single-sourced from the store, which must withhold it
+#: from bundles -- it is authority to delete on THIS machine, not ownership.
+_STATUS_ACTIVE = "active"
+_STATUS_INGESTING = INGESTING_STATUS
 
 #: Source type for the aggregate artifact source. Lets retrieval/UI distinguish
 #: auto-ingested artifacts from folders/uploads.
@@ -295,6 +304,84 @@ def _invalidate_content_hash(
     return cur.rowcount > 0
 
 
+def _mark_ingest_intent(kstore: KnowledgeStore, source_id: str, slug: str) -> None:
+    """Record that an ingest for *slug* is about to commit items.
+
+    This is what makes the residue of an interrupted ingest ATTRIBUTABLE. Items
+    are committed by ``ingest_file``; ownership is recorded afterwards, so a
+    crash in between leaves items that nothing names. Without a marker written
+    beforehand, those items are indistinguishable from knowledge restored from a
+    pre-ownership bundle, and a sweep could not tell which it was deleting.
+
+    Only an ``active`` row is marked, and its recorded group is left intact: the
+    group is still the live one until ``ingest_file`` succeeds, and a failed
+    ingest must be able to retry from it. A ``deduped`` row is skipped -- its
+    status carries a dedup claim keyed to the recorded hash, and overwriting that
+    would strand the claim; it owns no items, so it can leave no residue either.
+    """
+    now = datetime.now().isoformat()
+    updated = kstore.db.execute(
+        "UPDATE artifact_item_state SET status = ?, updated_at = ? "
+        "WHERE source_id = ? AND slug = ? AND status = ?",
+        (_STATUS_INGESTING, now, source_id, slug, _STATUS_ACTIVE),
+    ).rowcount
+    if not updated:
+        # No row yet (a first ingest, or one whose ownership write was lost).
+        # INSERT OR IGNORE so a `deduped` row is left exactly as it is.
+        kstore.db.execute(
+            "INSERT OR IGNORE INTO artifact_item_state "
+            "(source_id, slug, content_hash, item_ids, updated_at, name, status) "
+            "VALUES (?, ?, NULL, '[]', ?, ?, ?)",
+            (source_id, slug, now, slug, _STATUS_INGESTING),
+        )
+    kstore.db.commit()
+
+
+def _retire_intent_unless_items_landed(
+    kstore: KnowledgeStore, source_id: str, slug: str, before_ids: set[str]
+) -> None:
+    """Retire *slug*'s intent if the failed ingest committed no items.
+
+    An outstanding intent is a licence for :func:`sweep_unowned_items` to delete,
+    so one that outlives its failure is not merely untidy: the next unowned
+    knowledge to arrive -- a restore from a pre-ownership bundle -- falls inside
+    its time window and is reaped as residue that no interruption produced.
+
+    Which failures leave residue is not knowable in advance, so it is measured
+    rather than assumed. ``ingest_file`` commits its items before the finalizer
+    that reports the outcome, and that finalizer runs to completion even under
+    cancellation, so an exception can arrive on either side of a durable write.
+    Comparing the source's items against the pre-ingest snapshot answers it
+    exactly: nothing new means nothing to attribute, and the intent goes.
+    """
+    landed = {
+        r["id"]
+        for r in kstore.db.execute(
+            "SELECT id FROM items WHERE source_id = ?", (source_id,)
+        ).fetchall()
+    } - before_ids
+    if landed:
+        return
+    _clear_ingest_intent(kstore, source_id, slug)
+
+
+def _clear_ingest_intent(kstore: KnowledgeStore, source_id: str, slug: str) -> None:
+    """Retire an intent that did not end in a state write.
+
+    ``_set_state`` writes ``status`` explicitly, so a completed or deduped ingest
+    clears its own intent. This covers the paths that deliberately leave the
+    recorded state alone -- a partial or failed ingest, or an early return -- and
+    must not leave the marker outstanding, or the next sweep would treat this
+    source as holding residue when the rollback already removed it.
+    """
+    kstore.db.execute(
+        "UPDATE artifact_item_state SET status = ? "
+        "WHERE source_id = ? AND slug = ? AND status = ?",
+        (_STATUS_ACTIVE, source_id, slug, _STATUS_INGESTING),
+    )
+    kstore.db.commit()
+
+
 def _del_state(kstore: KnowledgeStore, source_id: str, slug: str) -> None:
     kstore.db.execute(
         "DELETE FROM artifact_item_state WHERE source_id = ? AND slug = ?",
@@ -395,6 +482,21 @@ async def ingest_artifact(
     # previous content, and this artifact has changed.
     kstore.release_stale_claim(source_id, prev_hash, content_hash, old_item_ids)
 
+    # Fence for the live listener path, which reaches here on every upsert with
+    # no reconcile in between. Reaping runs BEFORE this ingest records its own
+    # intent, so it only ever acts on an intent left outstanding by an EARLIER,
+    # interrupted ingest -- never on this one. A source with no such intent has
+    # nothing attributable and the sweep returns immediately.
+    try:
+        await asyncio.to_thread(sweep_unowned_items, kstore, source_id)
+    except Exception:
+        # A failed sweep must not cost the artifact its ingest: the residue
+        # stays searchable and reconcile reaps it on the next start, which is
+        # strictly better than refusing to index the current content.
+        logger.exception(
+            "artifact KB: could not reap residue before re-ingesting %s", slug
+        )
+
     ext = _KIND_EXT.get(art.kind)
     if ext is None:
         # Defensive: kind passed the allowlist but has no reader extension
@@ -411,6 +513,10 @@ async def ingest_artifact(
             "SELECT id FROM items WHERE source_id = ?", (source_id,)
         ).fetchall()
     }
+    # Declare the intent BEFORE any item is committed. Ownership is recorded in
+    # a later commit, so this marker is the only thing that can attribute what
+    # the gap leaves behind if the process dies inside it.
+    await asyncio.to_thread(_mark_ingest_intent, kstore, source_id, slug)
     # Route through the SAME path as folders/uploads: write the redacted content
     # to a temp file with the kind's real extension and hand it to
     # ingest_file -> FileReader. This gives html artifacts the ``_read_html``
@@ -441,6 +547,18 @@ async def ingest_artifact(
             on_duplicate=lambda: _record_deduped_state(
                 kstore, source_id, slug, content_hash, title, art.kind),
         )
+    except BaseException:
+        # Nothing below runs on this path, so the intent declared above would
+        # otherwise outlive the attempt and keep authorizing the sweep forever.
+        # Retired only when the source gained no items -- via the same
+        # run-to-completion finalizer the pipeline uses, so a cancellation
+        # cannot drop the retirement while the executor still has it queued.
+        await run_to_completion(
+            lambda: _retire_intent_unless_items_landed(
+                kstore, source_id, slug, before_ids
+            )
+        )
+        raise
     finally:
         if tmp_path:
             try:
@@ -456,7 +574,9 @@ async def ingest_artifact(
     if status != "completed":
         # Partial/failed ingest: ingest_file kept the old group and rolled back
         # the new items. Leave the recorded state untouched so the next event
-        # retries from the prior good group.
+        # retries from the prior good group -- but retire the intent, because
+        # the rollback means there is no residue to attribute to it.
+        await asyncio.to_thread(_clear_ingest_intent, kstore, source_id, slug)
         return job_id
     after_ids = {
         r["id"]
@@ -476,6 +596,96 @@ async def ingest_artifact(
         ),
     )
     return job_id
+
+
+def _decode_item_group(raw: object) -> list[str] | None:
+    """Decode a state row's ``item_ids`` as a list of item ids, or ``None``.
+
+    ``None`` means "this row owns something it cannot name". Valid JSON is not a
+    valid group: ``"abc"`` decodes to a *string*, and feeding that to ``set.update``
+    would silently enrol its CHARACTERS as owned ids -- so the real ids would read
+    as unowned and be deleted. A JSON object degrades the same way, through its
+    keys. Every decoded shape other than a list of strings is therefore refused.
+    """
+    if raw is not None and not isinstance(raw, (str, bytes)):
+        return None
+    try:
+        decoded = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(decoded, list):
+        return None
+    if not all(isinstance(i, str) for i in decoded):
+        return None
+    return decoded
+
+
+def sweep_unowned_items(kstore: KnowledgeStore, source_id: str) -> int:
+    """Delete residue left in the aggregate source by an interrupted ingest.
+
+    Ownership lands in ``artifact_item_state`` in a commit of its own, AFTER
+    ``ingest_file`` has committed the items. An interruption in that window
+    leaves items nothing points at, and because the replacement path is driven
+    by ``old_item_ids`` -- the record that was lost -- the next ingest of that
+    artifact adds a second copy instead of replacing the first.
+
+    **Being unowned is not, on its own, evidence of residue.** Knowledge restored
+    from a bundle written before ownership travelled arrives unowned too, and is
+    indistinguishable by inspection; deleting it would destroy content no crash
+    ever touched. So the sweep acts only on positive evidence that an ingest was
+    interrupted: an outstanding ``ingesting`` intent row, recorded before
+    ``ingest_file`` runs and cleared when it finalizes. With no intent
+    outstanding, nothing here is attributable and the sweep stands down.
+
+    Attribution is narrowed further by time: residue was necessarily created
+    AFTER the intent that produced it was recorded, so an unowned item older than
+    the earliest outstanding intent predates the interruption and is spared. Both
+    timestamps are ``datetime.now().isoformat()``, which orders lexicographically.
+
+    Scoped to ONE source, and only ever called for the aggregate Artifacts
+    source. Items under any other source -- manually added knowledge, folders,
+    uploads -- are outside the query and cannot be reaped by it.
+
+    Returns the number of items removed.
+    """
+    intents = kstore.db.execute(
+        "SELECT MIN(updated_at) AS since FROM artifact_item_state "
+        "WHERE source_id = ? AND status = ?",
+        (source_id, _STATUS_INGESTING),
+    ).fetchone()
+    since = intents["since"] if intents else None
+    if not since:
+        return 0
+    owned: set[str] = set()
+    for row in kstore.db.execute(
+        "SELECT item_ids FROM artifact_item_state WHERE source_id = ?", (source_id,)
+    ).fetchall():
+        group = _decode_item_group(row["item_ids"])
+        if group is None:
+            # The row owns something it cannot name, so no item in this source
+            # can be shown to be unowned. Stand down rather than delete on a
+            # guess: a stale duplicate is recoverable, deleted items are not.
+            logger.warning(
+                "artifact KB: unreadable item group in artifact_item_state; "
+                "skipping the residue sweep for this source"
+            )
+            return 0
+        owned.update(group)
+    residue = [
+        r["id"]
+        for r in kstore.db.execute(
+            "SELECT id FROM items WHERE source_id = ? AND created_at >= ?",
+            (source_id, since),
+        ).fetchall()
+        if r["id"] not in owned
+    ]
+    if not residue:
+        return 0
+    kstore.delete_items_batch(residue, owner_source_id=source_id)
+    logger.info(
+        "artifact KB: removed %d item(s) left by an interrupted ingest", len(residue)
+    )
+    return len(residue)
 
 
 def remove_artifact(kstore: KnowledgeStore, source_id: str, slug: str) -> int:
@@ -742,6 +952,19 @@ async def reconcile_artifacts(
             logger.exception(
                 "artifact KB reconcile: failed to refresh name for %s", art.slug
             )
+
+    # Residue from an interrupted ingest is reaped once ownership is final for
+    # this pass -- after the reaps above, which delete state rows, and before any
+    # re-ingest below, which would otherwise add a second copy alongside it.
+    # Unbudgeted and run even for an empty allowlist, for the same reason as the
+    # removals: it costs no extraction calls, and orphaned text stays searchable
+    # with no artifact behind it until something deletes it.
+    try:
+        removed += await asyncio.to_thread(
+            sweep_unowned_items, pipeline.store, source_id
+        )
+    except Exception:
+        logger.exception("artifact KB reconcile: unowned-item sweep failed")
 
     if not kinds:
         return 0, removed, 0

@@ -158,6 +158,75 @@ _DOC_STATE_KEY_COL: dict[str, str] = {
     "agent_item_state": "slug",
 }
 
+#: ``artifact_item_state.status`` for an ingest that has committed nothing yet.
+#: Written before the items so an interruption in the ownership-write window is
+#: attributable (``knowledge.artifact_ingest``).
+INGESTING_STATUS = "ingesting"
+
+#: Per-document statuses that are RECOVERY AUTHORITY rather than durable
+#: ownership. A row in one of these is a standing licence for the residue sweep
+#: to delete, granted by an interruption on one specific machine, so it must not
+#: leave that machine in a backup.
+TRANSIENT_DOC_STATUSES = frozenset({INGESTING_STATUS})
+
+
+def _durable_ownership_rows(rows: list[dict]) -> list[dict]:
+    """Drop rows whose status is authority to delete rather than ownership.
+
+    A bundle is restored onto a store that never ran the interrupted ingest, so
+    a transferred intent points at nothing it could legitimately reap -- but the
+    sweep would still honour it, and the target's own unowned knowledge sits
+    inside its window. Wall-clock ordering does not save it either: import keeps
+    each item's original ``created_at``, and both timestamps are naive local
+    time, so a bundle from a host running ahead restores items dated *after* an
+    intent they have nothing to do with.
+
+    The cost is accepted deliberately. If the export raced the window where the
+    items were already committed but ownership was not yet recorded, the bundle
+    carries that residue with no marker able to attribute it, so the restored
+    copy is preserved rather than reaped -- the same guarantee this store gives
+    any residue it cannot attribute, and the safe direction: a stale duplicate is
+    recoverable, deleted knowledge is not. The source machine keeps its own row
+    and still repairs itself.
+    """
+    return [r for r in rows if r.get("status") not in TRANSIENT_DOC_STATUSES]
+
+
+def _scope_ownership_rows(rows: list[dict], exported_item_ids: set[str]) -> list[dict]:
+    """Narrow per-document ownership rows to a namespace-scoped export.
+
+    A state row names the items it owns in a JSON ``item_ids`` column, which no
+    foreign key reaches, so a scoped export that shipped these rows whole would
+    carry ownership of items the bundle does not contain. That is worse than no
+    ownership at all: ``ingest_artifact`` short-circuits on "hash unchanged AND
+    still holding its items", which a row pointing at absent items satisfies, so
+    the document would be silently skipped and never become searchable in the
+    restored store.
+
+    A row is kept only if some of its items are in the bundle, and is narrowed to
+    exactly those. Keeping it narrowed rather than dropping it matters for the
+    partial case: the exported items would otherwise arrive unowned, which is
+    the state the residue sweep exists to reap. A row owning nothing (a deduped
+    marker holds a hash claim, not a group) has no item in any bundle and is
+    scoped out. An unreadable group is passed through untouched -- it cannot be
+    narrowed, and dropping it could unown items that ARE in the bundle, while
+    every consumer already treats it as owning nothing it can name.
+    """
+    scoped: list[dict] = []
+    for row in rows:
+        raw = row.get("item_ids")
+        try:
+            owned = json.loads(raw or "[]")
+            kept = [i for i in owned if i in exported_item_ids]
+        except (TypeError, ValueError):
+            scoped.append(row)
+            continue
+        if not kept:
+            continue
+        scoped.append({**row, "item_ids": json.dumps(kept)})
+    return scoped
+
+
 # Which column on each state table holds a hash in the SAME DOMAIN as
 # ``items.content_hash``, for lookups that have to relate a state row to items.
 #
@@ -1491,6 +1560,29 @@ class KnowledgeStore:
         return {"item": item, "entities": entities, "relations": relations, "source_locations": locations}
 
     def export_all(self, namespace: str | None = None) -> dict:
+        """Serialize the library, optionally filtered by namespace.
+
+        Every read runs inside ONE transaction. The connection is autocommit, so
+        without it each statement takes a fresh snapshot and an ingest that
+        commits between two of them tears the bundle across tables: the items
+        read before it, the ownership rows read after. That restores a store
+        whose ownership names item ids the bundle never carried, and
+        ``ingest_artifact`` short-circuits on "recorded hash matches AND the row
+        still holds a group" without checking the group survived -- so the
+        document is treated as already indexed while the content that answers
+        searches is the older copy. WAL lets the writer continue against this
+        snapshot rather than blocking on it.
+        """
+        self.db.execute("BEGIN")
+        try:
+            bundle = self._export_all_locked(namespace)
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        return bundle
+
+    def _export_all_locked(self, namespace: str | None = None) -> dict:
         if namespace:
             items = [self._serialize_item(r) for r in self.db.execute(
                 "SELECT * FROM items WHERE namespace = ?", (namespace,))]
@@ -1513,7 +1605,7 @@ class KnowledgeStore:
             relations = [dict(r) for r in self.db.execute("SELECT * FROM entity_relations")]
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
             mentions = [dict(r) for r in self.db.execute("SELECT * FROM mentions")]
-        return {
+        bundle = {
             "items": items,
             "entities": [dict(r) for r in self.db.execute("SELECT * FROM entities")],
             "relations": relations,
@@ -1521,6 +1613,19 @@ class KnowledgeStore:
             "source_locations": source_locations,
             "mentions": mentions,
         }
+        # The per-document ownership rows travel with the items they own. Without
+        # them an imported item is unowned, which is indistinguishable from the
+        # residue of an interrupted ingest: no group label in Sources, no
+        # replacement on a later ingest of the same document, and nothing for a
+        # residue sweep to spare.
+        for table, _ in _DOC_STATE_TABLES:
+            rows = _durable_ownership_rows(
+                [dict(r) for r in self.db.execute(f"SELECT * FROM {table}")]  # noqa: S608
+            )
+            bundle[table] = (
+                rows if item_ids is None else _scope_ownership_rows(rows, item_ids)
+            )
+        return bundle
 
     def import_bundle(self, bundle: dict) -> dict:
         items_imported = 0
@@ -1584,6 +1689,32 @@ class KnowledgeStore:
                     "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) "
                     "VALUES (?, ?, ?, ?)",
                     (m["item_id"], m["entity_id"], m.get("context"), m.get("created_at", now)))
+            # Restore ownership last: the rows reference sources and items that the
+            # loops above have just landed. Columns are intersected with the live
+            # schema rather than spelled out, so a bundle written by a different
+            # schema version imports the columns both sides share instead of
+            # failing the whole restore; a bundle with no state rows at all (an
+            # export from before ownership travelled) simply contributes none.
+            for table, _ in _DOC_STATE_TABLES:
+                # Refused on the way in as well as withheld on the way out: a
+                # bundle can be hand-assembled or come from a build that still
+                # exported transient state, and importing deletion authority is
+                # not recoverable.
+                rows = _durable_ownership_rows(bundle.get(table) or [])
+                if not rows:
+                    continue
+                live_cols = [
+                    r[1] for r in self.db.execute(f"PRAGMA table_info({table})").fetchall()  # noqa: S608
+                ]
+                for row in rows:
+                    cols = [c for c in live_cols if c in row]
+                    if not cols:
+                        continue
+                    placeholders = ", ".join("?" for _ in cols)
+                    self.db.execute(
+                        f"INSERT OR IGNORE INTO {table} ({', '.join(cols)}) "  # noqa: S608
+                        f"VALUES ({placeholders})",
+                        tuple(row[c] for c in cols))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
