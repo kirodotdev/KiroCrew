@@ -42,12 +42,12 @@
 //   - Place `topSentinelRef` / `bottomSentinelRef` at the list ends for
 //     window expansion.
 //
-// WHY THIS IS IN-HOUSE (build-vs-buy — recorded, not assumed)
-// ===========================================================
+// WHY THIS IS IN-HOUSE (build-vs-buy — decided, not assumed)
+// ==========================================================
 // This module re-implements machinery that react-virtuoso and @tanstack/virtual
 // ship battle-tested (dynamic measurement, prefix-sum offsets, follow-output
-// pinning, anchor stability), so the choice to keep owning it needs to be a
-// decision on the record rather than a default. The chat-specific requirements a
+// pinning, anchor stability). Owning it is a deliberate maintainer decision
+// rather than a default that accumulated. The chat-specific requirements a
 // drop-in library does not cover today:
 //   - Widget iframes: rows contain sandboxed iframes that lose all internal
 //     state on unmount and rebuild slowly (PROGRAMMATIC_BUILD_DELAY_MS), which
@@ -61,10 +61,18 @@
 //   - Cross-session persistence: heights survive in localStorage per session,
 //     partitioned by `sessionId`, so a revisit is warm.
 // None of these is proven *fundamental* — they are integration costs, not
-// impossibilities. The maintainers' open question is therefore whether to keep
-// investing here or schedule a migration; this comment records the constraints
-// that a migration would have to satisfy, so the next scroll fix is a choice
-// rather than a default. It does NOT itself decide the direction.
+// impossibilities, so the decision is revisitable and this list is what any
+// future migration would have to satisfy. Such a revisit should weigh that
+// react-virtuoso is already a dependency serving other virtualized surfaces, so
+// the question is convergence between two strategies rather than first-time
+// adoption.
+//
+// The decision carries one obligation. Height truth spans the DOM, `HeightCache`,
+// `OffsetIndex` and the memos derived from them, and stays coherent by convention
+// — a version counter in the memo deps, plus a session guard held separately by
+// the cache and by the offset tree — rather than by construction. Collapsing that
+// to a single seam, with `OffsetIndex` the only read surface for heights and
+// `HeightCache` purely its persistence backend, is the standing follow-through.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { isRailSettling, RAIL_SETTLE_MS } from '../useRailWidth'
