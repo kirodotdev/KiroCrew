@@ -6144,7 +6144,9 @@
       "next_match": "Nächster Treffer",
       "no_results": "Keine Ergebnisse",
       "previous": "Zurück ({{mod}})",
-      "previous_match": "Vorheriger Treffer"
+      "previous_match": "Vorheriger Treffer",
+      "no_results_loaded_only": "Keine Ergebnisse im geladenen Verlauf",
+      "results_loaded_only": "{{current}}/{{total}} Ergebnisse im geladenen Verlauf"
     },
     "searchResultsList": {
       "assistant": "Assistent",
@@ -7762,13 +7764,8 @@
         "next_version": "Nächste Version",
         "plan_from_here": "Ab hier planen",
         "previous_version": "Vorherige Version",
-        "raw": "roh",
-        "raw_markdown": "Rohes Markdown",
         "regenerate": "Neu erstellen",
         "regenerate_response": "Antwort neu erstellen",
-        "rendered": "gerendert",
-        "rendered_view": "Gerenderte Ansicht",
-        "speak": "Vorlesen",
         "speak_message": "Nachricht vorlesen",
         "steered": "Gesteuert",
         "switch_to_raw_markdown_view": "Zur Roh-Markdown-Ansicht wechseln",
@@ -7780,7 +7777,9 @@
         "turn_took_credits_cost": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits ({{cost}} API-Kosten)",
         "use_as_plan_count": "Als Plan verwenden ({{count}} Schritte)",
         "pin_message": "Nachricht anheften",
-        "unpin_message": "Nachricht loslösen"
+        "unpin_message": "Nachricht loslösen",
+        "needs_earlier_history": "Nicht verfügbar — zuerst den gesamten früheren Verlauf laden",
+        "more_actions": "Weitere Aktionen"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -8189,6 +8188,9 @@
         "select_file_hint": "Wähle eine Datei im Baum, um sie in einem neuen Tab zu öffnen",
         "title": "Dateien",
         "tree_error": "Der Dateibaum konnte nicht geladen werden"
+      },
+      "deepLink": {
+        "message_unavailable": "Diese Nachricht ist im geladenen Verlauf nicht mehr verfügbar."
       }
     },
     "chatPage": {

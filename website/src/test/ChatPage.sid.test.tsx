@@ -39,7 +39,7 @@ vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({ default: () => null }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
-vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null }))
+vi.mock('../pages/chat', () => ({ ChatFooter: () => null, AssistantMessage: () => null, McpInfoButton: () => null, UserMessage: () => null, CronAckBar: () => null, NotificationItem: () => null, PinnedPrompt: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => ({ contentWidth: 'compact' }), CONTENT_WIDTH: { compact: { messages: '900px', input: '916px' }, comfortable: { messages: '84%', input: '85%' }, full: { messages: '92%', input: '93%' } } }))
 
@@ -115,8 +115,12 @@ function renderChatPage(opts: {
   slots?: ChatSlot[]
   /** Render the companion-panel variant on a HOST route (see the noUrlSync suite). */
   hostEmbed?: { noUrlSync?: boolean }
+  /** Transcript already in the store, plus the slot its paging cursor describes. */
+  messages?: RootState['chat']['messages']
+  slotCursorKey?: string | null
 }) {
-  const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed } = opts
+  const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed,
+          messages = [], slotCursorKey = null } = opts
   const preload: PreloadState = {
     dashboard: {
       status: { platform: 'darwin' }, connected: true, slots, approvalMode: 'normal',
@@ -125,7 +129,7 @@ function renderChatPage(opts: {
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
     },
     chat: {
-      activeSlot, messages: [], slotRunning: false, slotStopping: false, slotState: 'idle',
+      activeSlot, messages, slotCursorKey, slotRunning: false, slotStopping: false, slotState: 'idle',
       slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
       lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
       pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
@@ -185,6 +189,42 @@ const orchSlots = [
   slot('orch-1-100', 'Plan migration', 'orchestrator'),
   slot('orch-2-200', 'Review design', 'orchestrator'),
 ]
+
+/** A ?msg= deep link must survive the slot switch it arrives with. The effect
+ *  reads `state.chat.messages`, which still holds the OUTGOING chat until the
+ *  switch settles — so without a slot-identity gate the target is "not found"
+ *  in the wrong transcript, the one-shot ref is spent, and the jump is lost. */
+describe('ChatPage ?sid= + ?msg= deep link across a slot switch', () => {
+  const slots: ChatSlot[] = [
+    { key: 'chat-1-100', title: 'short chat', agent: 'a', mode: 'chat' } as ChatSlot,
+    { key: 'chat-2-200', title: 'long chat', agent: 'a', mode: 'chat' } as ChatSlot,
+  ]
+  /** A complete window for the chat being LEFT. The deep-link target belongs to
+   *  the requested chat, so it is legitimately absent from this array. */
+  const outgoing = [
+    { role: 'user', content: 'a', ts: '2026-01-01T00:00:00Z' },
+    { role: 'assistant', content: 'b', ts: '2026-01-01T00:00:01Z' },
+  ] as RootState['chat']['messages']
+  const DEEP_LINK = '/chat?sid=chat-2-200&msg=2025-06-01T00%3A00%3A00Z'
+
+  it('does not declare the target unavailable while the requested chat is still activating', async () => {
+    renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-1-100', slots, messages: outgoing, slotCursorKey: 'chat-1-100' })
+    // The outgoing window is complete, so an ungated hand-off hits the dead-end
+    // branch and paints a false notice against a chat the link never named.
+    await new Promise(r => setTimeout(r, 250))
+    expect(screen.queryByText(/no longer available/i)).toBeNull()
+  })
+
+  it('acts on the deep link once the window belongs to the requested chat (control)', async () => {
+    // Target absent from a window whose extent is known, so the hand-off is
+    // correct to make here and the gate must not suppress it.
+    renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-2-200', slots, messages: outgoing, slotCursorKey: 'chat-2-200' })
+    const notice = await screen.findByText(/no longer available/i)
+    // Both strings share "no longer available", so only the pin word discriminates:
+    // this reader followed a link and may never have pinned anything.
+    expect(notice.textContent).not.toMatch(/pinned/i)
+  })
+})
 
 describe('ChatPage ?sid= URL parameter', () => {
   describe('URL sync on active slot', () => {

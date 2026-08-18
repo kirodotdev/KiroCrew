@@ -190,3 +190,45 @@ describe('SearchBar', () => {
     expect(input).not.toHaveAttribute('aria-activedescendant')
   })
 })
+
+describe('SearchBar scope disclosure', () => {
+  // Bounding the initial fetch means search covers only the loaded window. A bare
+  // "No results" would be a false negative, so the scope has to be stated.
+  it('states the loaded-window scope when there are no matches', () => {
+    renderBar({ term: 'needle', matches: [], scopeLimited: true })
+    expect(screen.getByText(/in loaded history/i)).toBeTruthy()
+  })
+
+  it('states the loaded-window scope alongside a match count', () => {
+    renderBar({ term: 'needle', matches: [{ msgIdx: 1, occ: 0 }, { msgIdx: 4, occ: 0 }], currentIdx: 0, scopeLimited: true })
+    // Names the scope rather than reading as load progress ("1/2 loaded").
+    expect(screen.getByText('1/2 results in loaded history')).toBeTruthy()
+  })
+
+  it('keeps the plain wording when the whole history is loaded', () => {
+    renderBar({ term: 'needle', matches: [], scopeLimited: false })
+    expect(screen.queryByText(/loaded history/i)).toBeNull()
+    expect(screen.getByText('No results')).toBeTruthy()
+  })
+  it('carries the full partial-scope string on title, since truncate clips its tail', () => {
+    // `min-w-0 truncate` clips the END, which is exactly where the "in loaded history"
+    // qualifier sits -- so a docked 320px pane would hide the scope it just added.
+    renderBar({ term: 'needle', matches: [{ msgIdx: 1, occ: 0 }, { msgIdx: 4, occ: 0 }], currentIdx: 0, scopeLimited: true })
+    const span = screen.getByText('1/2 results in loaded history')
+    expect(span).toHaveAttribute('title', '1/2 results in loaded history')
+  })
+
+  it('offers the remedy beside the partial-scope count, not only at the transcript top', () => {
+    const onLoadEarlier = vi.fn()
+    renderBar({ term: 'needle', matches: [], scopeLimited: true, onLoadEarlier })
+    fireEvent.click(screen.getByTestId('search-load-earlier'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+  })
+
+  it('omits the remedy link when the scope is NOT limited', () => {
+    // Negative control: a full-scope count states no limitation, so it needs no fix.
+    const onLoadEarlier = vi.fn()
+    renderBar({ term: 'needle', matches: [], scopeLimited: false, onLoadEarlier })
+    expect(screen.queryByTestId('search-load-earlier')).toBeNull()
+  })
+})

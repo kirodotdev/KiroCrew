@@ -6056,7 +6056,9 @@
       "next_match": "次の一致",
       "no_results": "結果がありません",
       "previous": "前へ（{{mod}}）",
-      "previous_match": "前の一致"
+      "previous_match": "前の一致",
+      "no_results_loaded_only": "読み込み済みの履歴に結果がありません",
+      "results_loaded_only": "読み込み済みの履歴で {{current}}/{{total}} 件"
     },
     "searchResultsList": {
       "assistant": "アシスタント",
@@ -7661,13 +7663,8 @@
         "next_version": "次のバージョン",
         "plan_from_here": "ここからプランを作成",
         "previous_version": "前のバージョン",
-        "raw": "生",
-        "raw_markdown": "生 Markdown",
         "regenerate": "再生成",
         "regenerate_response": "レスポンスを再生成",
-        "rendered": "レンダリング済み",
-        "rendered_view": "レンダリング済みビュー",
-        "speak": "スピーク",
         "speak_message": "メッセージをスピーク",
         "steered": "ステアリング済み",
         "switch_to_raw_markdown_view": "生 Markdown ビューに切り替え",
@@ -7679,7 +7676,9 @@
         "turn_took_credits_cost": "ターンに {{elapsed}} かかり {{credits}} クレジットを使用しました({{cost}} の API コスト)",
         "use_as_plan_count": "プランとして使用({{count}} ステップ)",
         "pin_message": "メッセージをピン留め",
-        "unpin_message": "メッセージのピン留めを解除"
+        "unpin_message": "メッセージのピン留めを解除",
+        "needs_earlier_history": "利用できません — 先に以前の履歴をすべて読み込んでください",
+        "more_actions": "その他の操作"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -8085,6 +8084,9 @@
         "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
         "title": "ファイル",
         "tree_error": "ファイルツリーを読み込めませんでした"
+      },
+      "deepLink": {
+        "message_unavailable": "このメッセージは読み込まれた履歴では利用できなくなりました。"
       }
     },
     "chatPage": {

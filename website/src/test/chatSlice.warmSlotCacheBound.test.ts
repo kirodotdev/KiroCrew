@@ -49,12 +49,16 @@ describe('warmSlotCache hydrate bound', () => {
     expect(api.chatSlotDetail).not.toHaveBeenCalled()
   })
 
-  // Control: the bound is for background panes only. The active slot renders the
-  // full transcript and pages through it, so bounding these would truncate it.
-  it('leaves the active-slot paths unbounded', async () => {
+  /** Matches OLDER_PAGE_LIMIT in chatSlice (module-private). */
+  const ACTIVE_SLOT_BOUND = 100
+
+  // Control: the PANE bound must not reach the active slot. An open pages through
+  // its own larger bound; refresh REPLACES a paged transcript so stays unbounded.
+  it('keeps the pane bound off the active-slot paths', async () => {
     const store = makeStore('active-slot')
     await store.dispatch(switchSlot('active-slot') as never)
-    expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot')
+    expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot', ACTIVE_SLOT_BOUND)
+    expect(ACTIVE_SLOT_BOUND).not.toBe(PANE_HYDRATE_LIMIT)
     await store.dispatch(refreshSlot('active-slot') as never)
     expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot')
   })

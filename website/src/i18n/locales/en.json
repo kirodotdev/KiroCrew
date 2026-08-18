@@ -5237,7 +5237,6 @@
         "previous_version": "Previous version",
         "regenerate": "Regenerate",
         "regenerate_response": "Regenerate response",
-        "speak": "Speak",
         "speak_message": "Speak message",
         "steered": "Steered",
         "turn_model": "model: {{model}}",

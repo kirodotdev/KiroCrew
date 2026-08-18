@@ -6056,7 +6056,9 @@
       "next_match": "下一个匹配",
       "no_results": "无结果",
       "previous": "上一个（{{mod}}）",
-      "previous_match": "上一个匹配"
+      "previous_match": "上一个匹配",
+      "no_results_loaded_only": "已加载的历史记录中无结果",
+      "results_loaded_only": "已加载的历史记录中第 {{current}}/{{total}} 条结果"
     },
     "searchResultsList": {
       "assistant": "助手",
@@ -7661,13 +7663,8 @@
         "next_version": "下一个版本",
         "plan_from_here": "从此处开始规划",
         "previous_version": "上一个版本",
-        "raw": "原始",
-        "raw_markdown": "原始 Markdown",
         "regenerate": "重新生成",
         "regenerate_response": "重新生成回复",
-        "rendered": "渲染",
-        "rendered_view": "渲染视图",
-        "speak": "朗读",
         "speak_message": "朗读消息",
         "steered": "已引导",
         "switch_to_raw_markdown_view": "切换到原始 Markdown 视图",
@@ -7679,7 +7676,9 @@
         "turn_took_credits_cost": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度（API 成本 {{cost}}）",
         "use_as_plan_count": "用作计划（{{count}} 个步骤）",
         "pin_message": "置顶消息",
-        "unpin_message": "取消置顶"
+        "unpin_message": "取消置顶",
+        "needs_earlier_history": "不可用 — 请先加载全部更早的历史记录",
+        "more_actions": "更多操作"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -8085,6 +8084,9 @@
         "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
         "title": "文件",
         "tree_error": "无法加载文件树"
+      },
+      "deepLink": {
+        "message_unavailable": "此消息在已加载的历史记录中不再可用。"
       }
     },
     "chatPage": {

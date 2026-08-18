@@ -20,9 +20,14 @@ interface SearchBarProps {
   goTo?: (i: number) => void
   /** Render inline (fills width, no floating chrome) for use inside the search pane header. */
   docked?: boolean
+  /** True when older history is unloaded, so results cover only the loaded window. */
+  scopeLimited?: boolean
+  /** Page in older history. Offered BESIDE the partial-scope count, because that
+   *  count states a limitation whose remedy otherwise lives out of sight. */
+  onLoadEarlier?: () => void
 }
 
-export default function SearchBar({ term, setTerm, matches, currentIdx, next, prev, close, caseSensitive, toggleCaseSensitive, focusNonce, goTo, docked }: SearchBarProps) {
+export default function SearchBar({ term, setTerm, matches, currentIdx, next, prev, close, caseSensitive, toggleCaseSensitive, focusNonce, goTo, docked, scopeLimited, onLoadEarlier }: SearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
@@ -106,11 +111,34 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
       >
         <CaseSensitive size={15} />
       </button>
-      {term && (
-        <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">
-          {matches.length > 0 ? `${currentIdx + 1} of ${matches.length} results` : i18nT('components.searchBar.no_results')}
-        </span>
-      )}
+      {term && (() => {
+        const count = matches.length > 0
+          ? (scopeLimited
+              ? i18nT('components.searchBar.results_loaded_only', { current: currentIdx + 1, total: matches.length })
+              : `${currentIdx + 1} of ${matches.length} results`)
+          : (scopeLimited
+              ? i18nT('components.searchBar.no_results_loaded_only')
+              : i18nT('components.searchBar.no_results'))
+        return (
+          <>
+            {/* `truncate` clips the tail, which is exactly where the "in loaded history"
+                qualifier sits in a 320px docked pane -- so the full string rides `title`. */}
+            <span className="text-muted text-[12px] min-w-0 truncate tabular-nums" title={count}>
+              {count}
+            </span>
+            {scopeLimited && onLoadEarlier && (
+              <button
+                type="button"
+                onClick={onLoadEarlier}
+                data-testid="search-load-earlier"
+                className="shrink-0 bg-transparent border-none p-0 text-[12px] text-accent hover:text-accent-hover underline cursor-pointer"
+              >
+                {i18nT('pages.chat.earlierMessagesBar.load_earlier_messages')}
+              </button>
+            )}
+          </>
+        )
+      })()}
       <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.previous', { mod: platformShortcut('Shift+Enter') })} aria-label={i18nT('components.searchBar.previous_match')}>
         <ChevronUp size={15} />
       </button>

@@ -6144,7 +6144,9 @@
       "next_match": "পরবর্তী মিল",
       "no_results": "কোনো ফলাফল নেই",
       "previous": "পূর্ববর্তী ({{mod}})",
-      "previous_match": "পূর্ববর্তী মিল"
+      "previous_match": "পূর্ববর্তী মিল",
+      "no_results_loaded_only": "লোড করা ইতিহাসে কোনো ফলাফল নেই",
+      "results_loaded_only": "লোড করা ইতিহাসে {{current}}/{{total}} ফলাফল"
     },
     "searchResultsList": {
       "assistant": "অ্যাসিস্ট্যান্ট",
@@ -7762,13 +7764,8 @@
         "next_version": "পরবর্তী সংস্করণ",
         "plan_from_here": "এখান থেকে প্ল্যান করুন",
         "previous_version": "পূর্ববর্তী সংস্করণ",
-        "raw": "মূল",
-        "raw_markdown": "মূল markdown",
         "regenerate": "পুনরায় তৈরি করুন",
         "regenerate_response": "উত্তর পুনরায় তৈরি করুন",
-        "rendered": "রেন্ডার করা",
-        "rendered_view": "রেন্ডার করা ভিউ",
-        "speak": "পড়ে শোনান",
         "speak_message": "মেসেজ পড়ে শোনান",
         "steered": "স্টিয়ার করা হয়েছে",
         "switch_to_raw_markdown_view": "মূল markdown ভিউতে যাও",
@@ -7780,7 +7777,9 @@
         "turn_took_credits_cost": "টার্নে সময় লেগেছে {{elapsed}} এবং খরচ হয়েছে {{credits}} ক্রেডিট ({{cost}} API ব্যয়)",
         "use_as_plan_count": "প্ল্যান হিসেবে ব্যবহার করুন ({{count}}টি ধাপ)",
         "pin_message": "বার্তা পিন করুন",
-        "unpin_message": "বার্তা আনপিন করুন"
+        "unpin_message": "বার্তা আনপিন করুন",
+        "needs_earlier_history": "অনুপলব্ধ — প্রথমে সমস্ত আগের ইতিহাস লোড করুন",
+        "more_actions": "আরও অ্যাকশন"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -8189,6 +8188,9 @@
         "select_file_hint": "নতুন ট্যাবে খুলতে ট্রি থেকে একটি ফাইল নির্বাচন করুন",
         "title": "ফাইল",
         "tree_error": "ফাইল ট্রি লোড করা যায়নি"
+      },
+      "deepLink": {
+        "message_unavailable": "বার্তাটি লোড করা ইতিহাসে আর পাওয়া যাচ্ছে না।"
       }
     },
     "chatPage": {

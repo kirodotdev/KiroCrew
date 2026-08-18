@@ -151,11 +151,19 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('md')).toHaveTextContent('v1')
   })
 
-  it('renders fork button when onFork is provided and calls it on click', () => {
+  /* Fork and Plan moved behind the overflow trigger (see the row-count test
+   * below). Radix opens on POINTERDOWN, not click, so the trigger needs that
+   * event; the async items then hold the menu open while their spinner runs. */
+  const openOverflow = () => fireEvent.pointerDown(
+    screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' },
+  )
+  const item = (name: RegExp) => screen.getByRole('menuitem', { name })
+
+  it('renders fork action when onFork is provided and calls it on click', async () => {
     const onFork = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} forkIndex={0} />)
-    const forkBtn = screen.getByTitle('Fork conversation from here')
-    fireEvent.click(forkBtn)
+    openOverflow()
+    fireEvent.click(item(/Fork conversation from here/))
     expect(onFork).toHaveBeenCalledTimes(1)
     expect(onFork).toHaveBeenCalledWith(0)
   })
@@ -165,10 +173,100 @@ describe('AssistantMessage', () => {
     expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
   })
 
-  it('does not render fork button when forkIndex is undefined (gated by parent)', () => {
+  it('does not grow the pre-existing footer row when forkIndex is undefined', () => {
     const onFork = vi.fn()
-    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} />)
-    expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
+    const { container } = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onSpeak={vi.fn()} onRegenerate={vi.fn()} />)
+    // `max-two-buttons-per-row` measures what the diff ADDS: a bounded window must
+    // not put more controls in this row than a fully loaded one does.
+    const bounded = container.querySelectorAll('button').length
+    const { container: full } = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onSpeak={vi.fn()} onRegenerate={vi.fn()} forkIndex={0} />)
+    expect(bounded).toBe(full.querySelectorAll('button').length)
+    // Fork is not a row button any more; it lives behind the overflow trigger.
+    expect(screen.queryAllByTitle('Fork conversation from here')).toHaveLength(0)
+    expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
+  })
+
+  it('keeps an unavailable fork item reachable, so its reason can actually be read', () => {
+    // Radix sets data-disabled AND pointer-events-none for a `disabled` item, so the
+    // reason would be unreachable by keyboard nav and by hover alike.
+    const onFork = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} />)
+    openOverflow()
+    const forkItem = screen.getByTestId('fork-from-here')
+    expect(forkItem).toHaveAttribute('role', 'menuitem')
+    expect(forkItem).toHaveAttribute('aria-disabled', 'true')
+    expect(forkItem).not.toHaveAttribute('data-disabled')
+    expect(forkItem.textContent).toContain('Fork conversation from here')
+    // The reason is VISIBLE text, not a tooltip: a keyboard user arrow-navigating here
+    // gets the why without a pointer, and `title` alone would have hidden it from them.
+    const reason = screen.getByTestId('fork-unavailable-reason')
+    // "all": canForkAtWindow needs !slotHasMore, so one page-back is not the remedy --
+    // a long session needs every page, and "load earlier history" read as one step.
+    expect(reason.textContent).toBe('Unavailable — load all earlier history first')
+    expect(forkItem).toHaveAttribute('aria-describedby', reason.id)
+    expect(forkItem).not.toHaveAttribute('title')
+    // The sibling names its OWN action rather than repeating fork's.
+    expect(screen.getByText('Plan from here')).toBeTruthy()
+    // Reachable is not actionable: the guarded onSelect still refuses to fork.
+    fireEvent.click(forkItem)
+    expect(onFork).not.toHaveBeenCalled()
+  })
+
+  it('routes an unavailable fork/plan item to the remedy it names', () => {
+    // The reason names a control at the TOP of the transcript, so selecting the item
+    // has to take the reader there -- stating a fix and doing nothing is the defect.
+    const onFork = vi.fn()
+    const onPlanFromHere = vi.fn()
+    const onLoadEarlier = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} onLoadEarlier={onLoadEarlier} />)
+    openOverflow()
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    expect(onFork).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('plan-from-here'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(2)
+    expect(onPlanFromHere).not.toHaveBeenCalled()
+  })
+
+  it('does NOT route to the remedy once fork is available', () => {
+    // Negative control for the branch above: with an index the item must fork, and
+    // must not divert to paging.
+    const onFork = vi.fn()
+    const onLoadEarlier = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} forkIndex={3} onLoadEarlier={onLoadEarlier} />)
+    openOverflow()
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onFork).toHaveBeenCalledWith(3)
+    expect(onLoadEarlier).not.toHaveBeenCalled()
+    // With no reason to state, neither the visible line nor its reference exists.
+    expect(screen.queryByTestId('fork-unavailable-reason')).toBeNull()
+    expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('renders the overflow trigger only when a menu item is ACTIONABLE', () => {
+    // `max-two-buttons-per-row` measures what the diff adds, and a menu whose every entry
+    // is unavailable still adds a control — so presence of a handler is not enough.
+    const variants = [{ content: 'ready' }, { content: 'ok' }]
+    const short = 'ready'
+    // 1. No handlers at all (the app-SDK renderer's shape): nothing to offer.
+    const a = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} variants={variants} />)
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    a.unmount()
+    // 2. Handler supplied but NO index, and content too short for the raw item: every
+    //    entry would be unavailable, so the trigger must not appear either.
+    const b = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} variants={variants} />)
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    b.unmount()
+    // 3. Actionable fork: trigger appears.
+    const c = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} variants={variants} />)
+    expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
+    c.unmount()
+    // 4. Fork unavailable but the raw-view item IS available, so the trigger stays and
+    //    fork keeps its disabled-in-place explanation — the documented presentation.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} variants={variants} />)
+    expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
+    openOverflow()
+    expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('does not render fork button while streaming', () => {
@@ -193,55 +291,48 @@ describe('AssistantMessage', () => {
 
   // Spinner-scoping: fork and plan each own their spinner slot so clicking one
   // does not spin the other's icon.
-  it('spins only the Plan button when Plan is clicked; fork icon stays a GitFork, not a spinner', async () => {
+  it('spins only the Plan action when Plan is clicked; fork icon stays a GitFork, not a spinner', async () => {
     let resolvePlan!: () => void
     const onPlanFromHere = vi.fn(() => new Promise<void>(res => { resolvePlan = res }))
     const onFork = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
-
-    const planBtn = screen.getByTitle('Plan from here')
-    const forkBtn = screen.getByTitle('Fork conversation from here')
-
-    fireEvent.click(planBtn)
-
-    // Plan button shows its Loader2 spinner (aria-hidden svg has no title, so
-    // assert via the disabled state + absence of the ClipboardList icon class
-    // is fragile; instead assert both buttons are disabled (busyAction !== null)
-    // while only the fork button still renders its GitFork icon svg).
-    expect(planBtn).toBeDisabled()
-    expect(forkBtn).toBeDisabled()
-    // Fork icon (GitFork, lucide class "lucide-git-fork") must remain the fork
-    // button's icon -- it must NOT have been swapped for a spinner.
-    expect(forkBtn.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    // Plan button's icon IS the spinner while its action is in flight.
-    expect(planBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(planBtn.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
+    openOverflow()
+    fireEvent.click(item(/Plan from here/))
+    // The async actions hold the menu open while in flight, so the spinner they
+    // render is observable rather than unmounting with the menu.
+    const planItem = item(/Plan from here/)
+    const forkItem = item(/Fork conversation from here/)
+    expect(planItem).toHaveAttribute('aria-disabled', 'true')
+    expect(forkItem).toHaveAttribute('aria-disabled', 'true')
+    // Fork keeps its GitFork icon -- it must NOT have been swapped for a spinner.
+    expect(forkItem.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    // Plan's icon IS the spinner while its own action is in flight.
+    expect(planItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(planItem.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
 
     await act(async () => { resolvePlan(); await Promise.resolve() })
-    expect(planBtn).not.toBeDisabled()
+    expect(item(/Plan from here/)).not.toHaveAttribute('aria-disabled', 'true')
   })
 
-  it('spins only the Fork button when Fork is clicked; plan icon stays a ClipboardList, not a spinner', async () => {
+  it('spins only the Fork action when Fork is clicked; plan icon stays a ClipboardList, not a spinner', async () => {
     let resolveFork!: () => void
     const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
     const onPlanFromHere = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
-
-    const planBtn = screen.getByTitle('Plan from here')
-    const forkBtn = screen.getByTitle('Fork conversation from here')
-
-    fireEvent.click(forkBtn)
-
-    expect(forkBtn).toBeDisabled()
-    expect(planBtn).toBeDisabled()
-    expect(planBtn.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
-    expect(planBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
+    openOverflow()
+    fireEvent.click(item(/Fork conversation from here/))
+    const planItem = item(/Plan from here/)
+    const forkItem = item(/Fork conversation from here/)
+    expect(forkItem).toHaveAttribute('aria-disabled', 'true')
+    expect(planItem).toHaveAttribute('aria-disabled', 'true')
+    expect(planItem.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
+    expect(planItem.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
 
     await act(async () => { resolveFork(); await Promise.resolve() })
-    expect(forkBtn).not.toBeDisabled()
+    expect(item(/Fork conversation from here/)).not.toHaveAttribute('aria-disabled', 'true')
   })
 
 })
