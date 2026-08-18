@@ -2245,15 +2245,28 @@ file-tree-container{
    from body). Do not promote any of this to an unscoped rule. */
 html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; word-spacing:-2.5px; gap:3px }
 
-/* Trailing fade on the pinned-crew chip row. The row is a single nowrap line
-   with overflow:hidden so the trailing dropdown stays against the last chip
-   (see InstanceTabBar.CrewChipRow), which means the chip at the boundary is cut
-   rather than dropped. The fade marks that edge so a cut chip reads as "there is
-   more, in the dropdown next to me" instead of as a rendering fault.
+/* Cut-edge rule on the pinned-crew chip row. The row is a single nowrap line with
+   overflow:hidden so the trailing dropdown stays against the last chip (see
+   InstanceTabBar.CrewChipRow), which means the chip at the boundary is cut rather
+   than dropped, and that cut needs saying.
 
-   Written here rather than as a Tailwind arbitrary value because the WebKit
-   prefix is still required and Tailwind emits only the unprefixed property. */
-.crew-chip-row-fade {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
-  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+   It is said with a 1px rule AT the boundary, not with an alpha fade ACROSS the
+   last pixels. A chip's unread badge is its trailing element, so any cut reaches
+   the badge first: a fade there does not soften an edge, it dissolves the count —
+   an 18px ramp is wider than the 16px badge, so at the rungs where the crew name
+   has already collapsed the whole glyph goes. Nothing about the count is lost to
+   the cut either way: it is already rolled into the dropdown trigger's aggregate
+   badge, whose roll-up counts exactly the crews whose chips measured as cut.
+
+   `::after` so the rule takes no layout: the row is sized from the space the
+   trigger leaves, and an in-flow 1px would feed its own clip measurement. */
+.crew-chip-row[data-cut='true']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  right: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }

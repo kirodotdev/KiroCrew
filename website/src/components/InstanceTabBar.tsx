@@ -525,14 +525,42 @@ function SwitcherChip({
   active,
   onSelect,
   className = '',
+  shrinkable = false,
 }: {
   entry: SwitcherEntry
   active: boolean
   onSelect: () => void
   /** Extra classes for the caller's own layout hooks (see `tb-crew-active-chip`). */
   className?: string
+  /**
+   * Let the chip give up NAME width when its row is short of room, instead of
+   * holding its full width and letting the row cut whichever chip lands on the
+   * boundary. Only the pinned row passes this: the crew ON SCREEN keeps its full
+   * name, because it is the one label that says where you are.
+   *
+   * The shortage lands on the name because that is the only part of a chip with
+   * slack — the state dot, the unread badge and the padding are all `shrink-0`,
+   * and the name carries `truncate`, so it ellipsises rather than wrapping.
+   *
+   * The floor is on the CHIP, not on the name, and that placement is forced: a
+   * flex item's `min-width:auto` resolves to its content-based minimum, which for
+   * nowrap text is the FULL name — so leaving it `auto` means the chip never
+   * shrinks, while `min-w-0` lets the row squeeze it past its own content and the
+   * name paints outside its border. An explicit floor is the only third option.
+   *
+   * The floor's non-name half is read off this chip's own classes: `px-2` (16) +
+   * `border` (2) + the `w-1.5` dot (6) + one `gap-1.5` (6) = 30px, plus, when an
+   * unread badge is present, a second gap (6) + `ml-0.5` (2) + the badge's
+   * `min-w-[16px]` (16) = 54px. Keep them in sync with the classes below;
+   * `capture-crew-chip-shrink.mjs` asserts the declared floor against the measured
+   * one, so a drift cannot pass silently. A chip carrying a state WORD is never
+   * shrinkable (see `CrewChipRow`), because that word's width is not fixed and
+   * would break the arithmetic.
+   */
+  shrinkable?: boolean
 }) {
   const isLocal = entry.id === null
+  const hasBadge = entry.unread > 0
   return (
     <button
       type="button"
@@ -543,7 +571,11 @@ function SwitcherChip({
       className={
         className +
         ' ' +
-        'flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap transition-colors shrink-0 border focus-ring ' +
+        'flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap transition-colors border focus-ring ' +
+        // Both spellings are literal so Tailwind's content scan sees them.
+        (shrinkable
+          ? (hasBadge ? 'min-w-[calc(5ch+54px)] ' : 'min-w-[calc(5ch+30px)] ')
+          : 'shrink-0 ') +
         (active
           ? 'bg-accent-subtle text-accent font-bold border-transparent'
           : 'border-border text-text hover:bg-bg-hover')
@@ -563,7 +595,13 @@ function SwitcherChip({
           `.tb-left` a container rung hides the name so the chip goes icon-only
           rather than pushing the trailing dropdown out of the clip box on a phone.
           The name stays in `aria-label`/`title`, so the chip keeps its accessible
-          name either way. */}
+          name either way.
+
+          On a shrinkable chip the row squeezes the CHIP down to its declared floor
+          and this span absorbs the difference: `truncate`'s `overflow:hidden` gives
+          a flex item an automatic minimum size of zero, so the name is the part
+          that gives way, ellipsised rather than clipped. The 5ch floor lives on the
+          chip, not here, so there is one source of truth for it. */}
       <span className="tb-drop-crew-name truncate max-w-[140px]">{entry.name}</span>
       {entry.unread > 0 ? (
         <UnreadBadge
@@ -664,13 +702,30 @@ function useClippedChipIds(
  * The pinned crews, as always-visible chips between the active crew and the
  * dropdown.
  *
- * One nowrap line, clipped. Wrapping into a hidden second row would keep every
- * chip whole, but it leaves the row holding its full ALLOCATED width with the
- * wrapped chips' space empty — which pushes the trailing dropdown away from the
- * last visible chip by a gap that changes with the viewport. Filling the row
- * instead keeps the dropdown against the chips, at the cost of the boundary chip
- * being cut rather than dropped. The fade marks that edge, so a cut chip reads as
- * "there is more" and the dropdown immediately after it is where the rest is.
+ * One nowrap line that ADAPTS TO ITS OWN TRACK rather than spending the shortage
+ * on one chip. The chips are `shrinkable`, so a row short of room takes the
+ * shortage out of every chip's name (each carries `truncate`) instead of holding
+ * them at full width and letting whichever chip lands on the boundary be sliced
+ * through its unread badge. Nothing outside this group moves: the topbar's grid
+ * hands the identity group a width derived from the WINDOW (both side tracks are
+ * `minmax(0,1fr)` and the group's `container-type:inline-size` keeps its content
+ * out of that calculation), so widening the group would have to be paid for by
+ * the centred search — which stays put.
+ *
+ * Wrapping into a hidden second row is the other way to keep chips whole, and it
+ * is rejected: the row would hold its full ALLOCATED width with the wrapped
+ * chips' space empty, pushing the trailing dropdown away from the last visible
+ * chip by a gap that changes with the viewport.
+ *
+ * A chip's floor is its icon-only form — the state dot, unread badge and padding
+ * are all `shrink-0` — so a cut is still reachable once even those do not fit.
+ * That cut is marked on the EDGE, never over the chips: an alpha fade across the
+ * last pixels reads as a rendering fault rather than as an affordance, because
+ * the unread badge is a chip's trailing element and is therefore the first thing
+ * any cut reaches — a fade there dissolves the one glyph the chip exists to show.
+ * `data-cut` drives a 1px rule at the boundary (index.css), and the count itself
+ * survives twice over: the cut crew's unread is already rolled into the dropdown
+ * trigger's aggregate badge, and its row there says `no_room`.
  *
  * The row needs no width cap of its own: it sits in the topbar's left grid track
  * (`minmax(0,1fr)`) inside `.tb-left`, which carries `min-width:0` and
@@ -698,10 +753,14 @@ function CrewChipRow({
     <div
       ref={rowRef}
       data-testid="crew-chip-row"
+      // Reflects the measurement, so the boundary rule paints only when a chip is
+      // really cut. Safe to feed back: the rule is an absolutely-positioned
+      // pseudo-element, so it takes no layout and cannot change what got clipped.
+      data-cut={clipped.size > 0 ? 'true' : 'false'}
       // `relative` is load-bearing, not cosmetic: it makes this element the chips'
       // offsetParent so useClippedChipIds can compare their offsetLeft against
       // this row's own clientWidth.
-      className="relative flex flex-nowrap items-center gap-1 min-w-0 overflow-hidden crew-chip-row-fade"
+      className="crew-chip-row relative flex flex-nowrap items-center gap-1 min-w-0 overflow-hidden"
     >
       {chips.map(entry => (
         <SwitcherChip
@@ -709,6 +768,11 @@ function CrewChipRow({
           entry={entry}
           active={(entry.id ?? null) === activeId}
           onSelect={() => onSelect(entry.id)}
+          // A chip showing a state WORD ("error", "connecting") is not shrinkable:
+          // that word is text of unknown width, so the chip's declared floor —
+          // which is arithmetic over fixed parts — would not hold for it, and it is
+          // the chip a user most needs to read whole anyway.
+          shrinkable={!entry.state || entry.state === 'connected'}
         />
       ))}
     </div>
