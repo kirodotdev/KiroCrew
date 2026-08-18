@@ -221,7 +221,11 @@ model's title **and** the raw command:
   that read credential paths, reach the cloud metadata endpoint under any IP
   encoding, or dump credential environment variables. Regex fast-path first, then
   a tokenizing pass that resolves quoting, empty-string concatenation, `$HOME`
-  and tilde before routing path-like tokens through `is_sensitive_path()`.
+  and tilde before routing path-like tokens through `is_sensitive_path()`. The
+  home-anchored patterns also carry the RESOLVED data home, so an install with a
+  non-default `KIROCREW_HOME` is fenced on the shell path against the same files
+  the Layer 1 tool gate fences — that gate resolves through the override, and a
+  file protected on only one of the two paths is not protected.
 - **Exfiltration shapes** (`audit_bash_exfiltration`): data-egress and
   reverse-shell forms, narrowly scoped so it can be a hard deny at the gate
   without blocking benign local commands.

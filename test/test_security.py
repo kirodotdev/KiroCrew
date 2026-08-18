@@ -4889,6 +4889,318 @@ class TestDeniedCommandsKeystone:
             assert is_sensitive_bash_command(cmd) is not None, cmd
 
 
+class TestBashGateFollowsACustomKirocrewHome:
+    """The bash gate must fence the SAME files the tool gate does (#4082).
+
+    ``is_sensitive_write_path`` resolves through the data home, so it follows a
+    non-default ``KIROCREW_HOME``. ``is_sensitive_bash_command`` was a string
+    matcher over the home SPELLINGS a command can carry (``~``, ``$HOME``,
+    ``/home/<user>``) plus the crew prefixes (``.kiro/crew``, ``.kirocrew``), and
+    a resolved override path carries neither -- so on such an install a
+    write-protected file was fenced against the agent's file tools and reachable
+    by a bash redirect naming its real path.
+
+    The invariant these tests pin is PARITY, not the branch: every assertion
+    below states what the tool gate already answers and requires the shell gate
+    to answer the same. A custom home is a normal single-instance install --
+    ``kirocrew pod`` and ``dev-backend.sh`` both use one.
+    """
+
+    LEAF = "apps/ops-mission-control/data/rotation.yaml"
+
+    def _resolved(self, home: Path, leaf: str) -> str:
+        return str(home.joinpath(*leaf.split("/")))
+
+    def test_the_two_gates_agree_on_a_write_protected_leaf(self, tmp_path, monkeypatch):
+        """The parity statement itself: same file, same answer, both gates."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        path = self._resolved(tmp_path, self.LEAF)
+
+        assert security.is_sensitive_write_path(path), (
+            "precondition: the tool gate follows the override -- if this ever "
+            "goes False the asymmetry is gone for a different reason and this "
+            "whole class is asserting nothing"
+        )
+        assert is_sensitive_bash_command(f"echo 'who: attacker' > {path}") is not None
+
+    def test_every_write_form_is_refused_not_just_a_redirect(self, tmp_path, monkeypatch):
+        """Verb-independent, like every other branch of this gate.
+
+        A narrow verb allowlist is bypassed by a quoted redirect, ``cp``, or any
+        novel write verb, so the resolved-home branch is asserted across forms
+        rather than at one of them.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        path = self._resolved(tmp_path, self.LEAF)
+
+        for cmd in (
+            f"echo 'who: attacker' > {path}",
+            f"cp /tmp/evil.yaml {path}",
+            f"tee {path}",
+            f"""python -c "open('{path}','w').write('x')" """,
+            f"sed -i s/alice/attacker/ {path}",
+            f"mv /tmp/evil.yaml {path}",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, f"not blocked: {cmd!r}"
+
+    def test_a_crew_secret_leaf_under_the_override_is_blocked_too(self, tmp_path, monkeypatch):
+        """Not only the write-protected leaves: the credential floor moves as well.
+
+        ``_SENSITIVE_HOME_DIRS``' crew-prefixed entries are re-anchored under the
+        override by the tool gate, so the shell gate owes them the same coverage.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        path = str(tmp_path / ".env")
+
+        assert security.is_sensitive_path(path), "precondition: the tool gate blocks it"
+        assert is_sensitive_bash_command(f"cat {path}") is not None
+
+    def test_either_separator_spells_the_same_root(self, tmp_path, monkeypatch):
+        """The resolved literal is all-backslash on Windows; commands are not.
+
+        git-bash and msys tooling render the same root with ``/``, and a gate
+        that matched only the native rendering would be bypassed by the spelling
+        the shell actually carries.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        path = self._resolved(tmp_path, self.LEAF)
+
+        assert is_sensitive_bash_command(f"echo x > {path}") is not None
+        assert is_sensitive_bash_command("echo x > " + path.replace("\\", "/")) is not None
+
+    def test_an_escaped_ordinary_character_does_not_bypass_the_fence(
+        self, tmp_path, monkeypatch
+    ):
+        """A shell backslash before ANY character, not just whitespace.
+
+        An UNQUOTED backslash escapes the next character and is removed by the
+        shell whatever that character is, so ``.../cr\\ewhome/...`` reaches the
+        very file ``.../crewhome/...`` names. Measured, not assumed::
+
+            cr\\ewhome   -> crewhome      (unquoted: the escape collapses)
+            "cr\\ewhome" -> cr\\ewhome    (quoted: the backslash survives)
+
+        Tolerating the backslash only before whitespace left every other
+        position open, which is a bypass of the fence rather than a cosmetic
+        gap: the tool gate resolves the path and refuses it, so the shell gate
+        answering differently is exactly the asymmetry this class exists to
+        forbid.
+        """
+        home = tmp_path / "crewhome"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        resolved = self._resolved(home, self.LEAF).replace("\\", "/")
+
+        def escaped_at(text: str, needle: str, offset: int) -> str:
+            cut = text.index(needle) + offset
+            return text[:cut] + "\\" + text[cut:]
+
+        # The tool gate is the reference answer for every spelling below.
+        assert security.is_sensitive_write_path(self._resolved(home, self.LEAF))
+
+        for label, spelling in (
+            ("mid-segment in the root", escaped_at(resolved, "crewhome", 2)),
+            ("first character of a root segment", escaped_at(resolved, "crewhome", 0)),
+            ("mid-segment in the remainder", escaped_at(resolved, "rotation", 3)),
+            ("mid-segment in an intermediate dir", escaped_at(resolved, "apps", 2)),
+        ):
+            assert security.is_sensitive_bash_command(
+                "echo 'who: attacker' > " + spelling
+            ) is not None, (
+                "escaped spelling bypasses the fence ({}): {!r}".format(label, spelling)
+            )
+            # An embedded interpreter carries the same text past the tokenizer.
+            assert security.is_sensitive_bash_command(
+                """python -c "open('{}','w').write('x')" """.format(spelling)
+            ) is not None, "escaped spelling bypasses the fence via a script ({})".format(
+                label
+            )
+
+        # Controls -- tolerating a backslash must not fence MORE than the root.
+        assert security.is_sensitive_bash_command(
+            "echo hi > " + escaped_at(resolved, "crewhome", 2).replace(self.LEAF, "notes.txt")
+        ) is None, "an ordinary file under the override must stay writable"
+        sibling = self._resolved(tmp_path / "crewhome-two", self.LEAF).replace("\\", "/")
+        assert security.is_sensitive_bash_command(
+            "echo x > " + escaped_at(sibling, "crewhome", 2)
+        ) is None, "a sibling root that merely shares a prefix is not the data home"
+
+    def test_a_home_with_a_space_is_fenced_in_every_shell_spelling(
+        self, tmp_path, monkeypatch
+    ):
+        """A space in the home is the ordinary case on Windows, not a corner.
+
+        ``C:\\Users\\First Last`` is a perfectly normal profile directory, so a
+        ``KIROCREW_HOME`` under one is normal too. A path with a space cannot
+        appear bare in a command: the shell requires it quoted or
+        backslash-escaped. The quoted forms keep the raw space and match a plain
+        literal, but ``.../my\\ home/...`` carries a backslash the literal does
+        not have -- so a literal anchor would fence three spellings out of four
+        and leave the fourth open, which is not a fence.
+        """
+        home = tmp_path / "my home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        path = self._resolved(home, self.LEAF).replace("\\", "/")
+
+        assert security.is_sensitive_write_path(path), "precondition: tool gate blocks it"
+        for spelling in (
+            path,                       # bare (only legal inside quotes anyway)
+            f'"{path}"',                # double-quoted
+            f"'{path}'",                # single-quoted
+            path.replace(" ", "\\ "),    # backslash-escaped
+        ):
+            assert is_sensitive_bash_command(f"echo x > {spelling}") is not None, (
+                f"shell write not blocked for spelling: {spelling!r}"
+            )
+
+    def test_a_canonical_no_op_spelling_of_the_root_still_anchors(
+        self, tmp_path, monkeypatch
+    ):
+        """The ROOT is as spellable as the remainder, so it needs the same tolerance.
+
+        ``/x/./home``, ``/x//home`` and ``/x/zz/../home`` all name the same
+        directory. The tool gate fences every one of them because it RESOLVES
+        the path; a root anchored as an exact literal fences none, which is a
+        one-character bypass of the whole branch.
+
+        The negative controls below are what keep the tolerance honest: a
+        sibling root that merely shares a prefix must NOT be fenced.
+        """
+        home = tmp_path / "crew home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        parent = str(tmp_path).replace("\\", "/")
+        tail = "/" + self.LEAF
+
+        for spelling in (
+            f"{parent}/crew home{tail}",
+            f"{parent}/./crew home{tail}",
+            f"{parent}//crew home{tail}",
+            f"{parent}/zz/../crew home{tail}",
+            f"{parent}/./crew home{tail}".replace("/", "\\"),
+        ):
+            assert is_sensitive_bash_command(f"echo x > {spelling}") is not None, (
+                f"shell write not blocked for root spelling: {spelling!r}"
+            )
+
+        assert is_sensitive_bash_command(f"echo x > {parent}/other home{tail}") is None
+        assert is_sensitive_bash_command(f"echo hi > {parent}/crew home/notes.txt") is None
+
+    def test_both_spellings_of_a_relocated_root_are_fenced(self, tmp_path, monkeypatch):
+        """A symlinked ``KIROCREW_HOME`` has two spellings; the gate owes both.
+
+        When the override is a symlink -- or a junction, or any path whose real
+        location differs from the one that was configured -- the LEXICAL path is
+        what the operator set and therefore what a command carries, while
+        ``_resolved_root_key`` reports the RESOLVED real path. An anchor built
+        from the resolved path alone is bypassed by naming the lexical one:
+        ``python -c "open('<lexical>','w')"`` reaches the governance file
+        through a root the pattern never saw, while the tool gate refuses it.
+
+        The divergence is injected at the RESOLVER seam rather than by creating
+        a real symlink. ``os.symlink`` needs elevation or Developer Mode on
+        Windows, and the causal condition under test is
+        ``lexical spelling != resolved spelling`` -- not the OS call that
+        produces it, which would make the case skip on exactly the platform
+        where a junction is the ordinary way to relocate a data home. The seam
+        is patched to its real contract (``_resolved_root_key`` returns
+        ``(home, crew_home | None, kiro_home | None)``) with the genuine home
+        AND kiro home preserved, so only the crew root moves -- the
+        ``~/.kiro/agents`` anchor keyed on the third element is left intact.
+        """
+        alias = tmp_path / "alias-home"
+        real = tmp_path / "real-home"
+        alias.mkdir()
+        real.mkdir()
+
+        home, _, kiro_home = security._resolved_root_key()
+        monkeypatch.setenv("KIROCREW_HOME", str(alias))
+        monkeypatch.setattr(
+            security, "_resolved_root_key", lambda: (home, str(real), kiro_home)
+        )
+
+        for label, root in (("resolved", real), ("lexical", alias)):
+            path = self._resolved(root, self.LEAF)
+            posix = path.replace("\\", "/")
+            for cmd in (
+                f"echo 'who: attacker' > {path}",
+                f"""python -c "open('{posix}','w').write('x')" """,
+            ):
+                assert is_sensitive_bash_command(cmd) is not None, (
+                    f"{label} spelling of the same protected leaf is not fenced: {cmd!r}"
+                )
+
+        # Controls -- widening the anchor to two roots must not fence more than
+        # the two roots. An ordinary file under the lexical home stays writable,
+        # and a SIBLING root that merely shares its prefix is not the data home.
+        assert is_sensitive_bash_command(f"echo hi > {alias / 'notes.txt'}") is None
+        sibling = self._resolved(tmp_path / "alias-home-two", self.LEAF)
+        assert is_sensitive_bash_command(f"echo x > {sibling}") is None
+
+    def test_an_ordinary_file_under_the_override_stays_writable(self, tmp_path, monkeypatch):
+        """The branch fences named leaves, not the whole data home.
+
+        Blocking everything under the override would refuse the agent its own
+        workspace on exactly the installs this fix targets.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+
+        assert is_sensitive_bash_command(f"echo hi > {tmp_path / 'notes.txt'}") is None
+
+    def test_the_home_spellings_are_unchanged(self, tmp_path, monkeypatch):
+        """The pre-existing strategies must survive the added branch.
+
+        Asserted WITH an override set, because that is the configuration whose
+        pattern is rebuilt: a command naming ``~/.kiro/crew/...`` is still a
+        command naming a fenced path, whatever the resolved home is.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+
+        for home in ("~", "$HOME", "/home/alice", "/Users/alice"):
+            cmd = f"echo x > {home}/.kiro/crew/{self.LEAF}"
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_changing_the_override_re_keys_the_compiled_pattern(self, tmp_path, monkeypatch):
+        """The pattern embeds the resolved home, so it cannot be cached forever.
+
+        Both directions matter. A stale pattern built for the PREVIOUS home
+        fails OPEN on the current one -- the bug this fix exists to close,
+        reintroduced through the cache.
+        """
+        home_a = tmp_path / "a"
+        home_b = tmp_path / "b"
+        home_a.mkdir()
+        home_b.mkdir()
+        path_a = self._resolved(home_a, self.LEAF)
+        path_b = self._resolved(home_b, self.LEAF)
+
+        monkeypatch.setenv("KIROCREW_HOME", str(home_a))
+        assert is_sensitive_bash_command(f"echo x > {path_a}") is not None
+
+        monkeypatch.setenv("KIROCREW_HOME", str(home_b))
+        assert is_sensitive_bash_command(f"echo x > {path_b}") is not None, (
+            "the pattern was still built for the previous home -- the gate is "
+            "open on the home actually in use"
+        )
+
+    def test_dropping_the_override_returns_to_the_default_home(self, tmp_path, monkeypatch):
+        """A path that was the data home is an ordinary directory once it is not.
+
+        Keeping it fenced would leave a test or embedder blocked on a tmp dir
+        for the rest of the process.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        path = self._resolved(tmp_path, self.LEAF)
+        assert is_sensitive_bash_command(f"echo x > {path}") is not None
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        assert is_sensitive_bash_command(f"echo x > {path}") is None
+        assert (
+            is_sensitive_bash_command(f"echo x > ~/.kiro/crew/{self.LEAF}") is not None
+        ), "the default-home spellings must still be gated with no override set"
+
+
 class TestAuditBashCommand:
     """Tests for audit_bash_command()."""
 
