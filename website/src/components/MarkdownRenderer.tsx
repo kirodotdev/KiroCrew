@@ -818,14 +818,21 @@ function jiraCardMeta(link: PullRequestLink): LinkMeta {
 
 const MD_COMPONENTS: Components = {
   code({ className, children, ...props }) {
+    // Only a <code> inside a <pre> may render a block-level component here
+    // (CodeBlock / MermaidBlock / ExcalidrawBlock are each rooted in a <div>).
+    // rehypeMarkFencedCode stamps those with `data-fenced`; a bare <code> in
+    // prose stays inline whatever class it carries, because a <div> inside the
+    // enclosing <p> crashes React's reconciler. That comment carries the full
+    // reasoning. `data-fenced` is destructured out so it never reaches the DOM.
+    const { 'data-fenced': fenced, ...rest } = props as Record<string, unknown>
+    if (fenced === undefined) return <InlineCode {...rest}>{children}</InlineCode>
+
     const match = /language-(\w+)/.exec(className || '')
     const lang = match?.[1]
     const codeStr = String(children).replace(/\n$/, '')
 
     if (lang === 'mermaid') return <MermaidBlock code={codeStr} />
     if (lang === 'excalidraw') return <ExcalidrawBlock code={codeStr} />
-
-    if (!className) return <InlineCode {...props}>{children}</InlineCode>
 
     return <CodeBlock code={codeStr} lang={lang} complete={true} />
   },
@@ -1366,6 +1373,68 @@ const BLOCK_ELEMENTS = new Set([
   'main', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'ul',
 ])
 
+/**
+ * Stamps `data-fenced` on every `<code>` that is the child of a `<pre>`.
+ *
+ * `MD_COMPONENTS.code` renders a block-level component for a code element that
+ * carries a class (`CodeBlock`, `MermaidBlock` and `ExcalidrawBlock` are each
+ * rooted in a `<div>`). Real fenced blocks never reach it — `useBlockAssembler`
+ * segments those out of the source and `BlockRenderer` draws them directly — so
+ * the only classed code elements arriving here come from raw HTML in prose.
+ * `<pre><code class="language-js">` is the legitimate shape: the `<pre>` is
+ * block-level, so `rehypeUnwrapBlocks` hoists it clear of any surrounding `<p>`
+ * and the block renders as a sibling.
+ *
+ * A BARE `<code class="language-js">` mid-sentence is not. The sanitizer
+ * allowlists `class` globally (see GLOBAL_ATTRS), so it survives, keeps its
+ * class, and renders a `<div>` inside the enclosing `<p>`. The browser hoists
+ * that `<div>` out of the `<p>`, React's VDOM does not follow, and the next
+ * reconciliation throws:
+ *   "Failed to execute 'removeChild' on 'Node': The node to be removed is not
+ *    a child of this node."
+ *
+ * `rehypeUnwrapBlocks` cannot catch this, because it decides block-ness from the
+ * HAST tag name and `code` is inline there — the block only appears in what the
+ * component renders. Marking the genuinely fenced ones lets the override keep
+ * inline code inline whatever class it carries, which is also what the source
+ * asked for.
+ */
+function rehypeMarkFencedCode() {
+  return (tree: HastRoot) => {
+    const walk = (node: HastRoot | HastElement) => {
+      if (!node.children) return
+      const isPre = node.type === 'element' && node.tagName === 'pre'
+      for (const child of node.children) {
+        if (child.type !== 'element') continue
+        // The marker is ours to set and no one else's. `isAllowedAttr` admits
+        // every `data-*`, so raw HTML in the message can carry its own
+        // `data-fenced` — and an inline `<code data-fenced class="language-js">`
+        // would then claim block rendering and reintroduce the very crash this
+        // plugin exists to prevent.
+        //
+        // Deleting a fixed key spelling is not enough. The HTML parser
+        // lowercases attribute names, so `dataFenced` arrives as the hast
+        // property `datafenced`, which the JSX serializer still hands to the
+        // component as `data-fenced`. Strip by NORMALIZED form so every casing
+        // and dash placement that can reach the override as the marker is
+        // removed here.
+        if (child.properties) {
+          for (const key of Object.keys(child.properties)) {
+            if (key.toLowerCase().replace(/-/g, '') === 'datafenced') {
+              delete child.properties[key]
+            }
+          }
+        }
+        if (isPre && child.tagName === 'code') {
+          child.properties = { ...(child.properties ?? {}), 'data-fenced': '' }
+        }
+        walk(child)
+      }
+    }
+    walk(tree)
+  }
+}
+
 function rehypeUnwrapBlocks() {
   return (tree: HastRoot) => {
     const walk = (parent: HastRoot | HastElement) => {
@@ -1447,7 +1516,7 @@ function rehypeUnwrapBlocks() {
   }
 }
 
-const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
+const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing
 // space before the break doesn't survive as its own text node. Mirrors the
@@ -1522,7 +1591,7 @@ function rehypeSourcepos() {
     walk(tree)
   }
 }
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeMarkFencedCode, rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
