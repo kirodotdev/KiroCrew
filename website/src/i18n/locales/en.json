@@ -6363,8 +6363,6 @@
       }
     },
     "overviewPage": {
-      "apply_config_changes_by_restarting_all_sessions": "Apply config changes by restarting all sessions",
-      "apply_restart": "Apply & Restart",
       "back_to_overview": "Back to Overview",
       "days_of_history": "days of history",
       "h_idle": "h idle",
@@ -6373,11 +6371,8 @@
       "memory_graph_and_store_internals_live_on_the_dev": "Memory graph and store internals live on the Developer page",
       "messages": "messages",
       "overview": "Overview",
-      "restart": "Restart",
-      "restarting": "Restarting…",
       "semantic_memory_active": "· semantic memory active",
       "sessions": "sessions ·",
-      "sessions_restarted": "Sessions restarted.",
       "summarizes_chats_into_memory_after": "Summarizes chats into memory after",
       "today": "Today:",
       "tokens": "tokens",

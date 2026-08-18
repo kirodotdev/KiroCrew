@@ -16,7 +16,6 @@ vi.mock('../hooks/useUptime', () => ({
 
 vi.mock('../api/client', () => ({
   api: {
-    restartSessions: vi.fn().mockResolvedValue({}),
     memorySettings: vi.fn().mockResolvedValue({ history_idle_hours: 3, history_max_days: 90, migrated: false }),
   },
 }))
@@ -107,8 +106,12 @@ describe('OverviewPage — mission control', () => {
     expect(screen.queryByTestId('usage-tab')).not.toBeInTheDocument()
   })
 
-  it('keeps the Apply & Restart action in the hero', () => {
+  // Overview reads state and edits nothing, so it offers no apply/restart
+  // action: the button that used to sit here had no change to apply, and its
+  // one effect (dropping live agent sessions) belongs with the surfaces that
+  // edit the config those sessions load. Asserted so it is not re-added.
+  it('offers no restart action in the hero', () => {
     renderWithProviders(<OverviewPage />, { store: statusStore() })
-    expect(screen.getByRole('button', { name: /Restart/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Restart/i })).not.toBeInTheDocument()
   })
 })
