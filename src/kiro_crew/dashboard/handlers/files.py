@@ -1932,8 +1932,6 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
     (file-raw) performs no content scan at all. The probe exists to catch
     the honest-mistake shape: a text file wearing a forged media magic.
     """
-    import os  # noqa: F811
-
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
 
     def _log(outcome: str, res: str) -> None:
@@ -2015,9 +2013,12 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
     result = await asyncio.to_thread(_open_media, raw_path)
     if result[0] == "refused":
         _, code, res = result
-        outcome = "not_found" if code == "not_found" else (
-            "failure" if code == "read_failed" else "denied"
-        )
+        if code == "not_found":
+            outcome = "not_found"
+        elif code == "read_failed":
+            outcome = "failure"
+        else:
+            outcome = "denied"
         _log(outcome, res)
         # One literal response per refusal class: the error-response contract
         # requires the {"error", "code"} body and the status to be statically
@@ -2198,6 +2199,31 @@ async def api_file_write(request: web.Request) -> web.Response:
         return web.json_response({"error": "failed to write file"}, status=500)
 
 
+def _subsequence_run(q: str, haystack: str) -> tuple[int, int]:
+    """Greedily match ``q`` as a subsequence of ``haystack``.
+
+    Returns how many of ``q``'s characters were consumed in order, and the
+    longest run of matches that landed on consecutive ``haystack`` positions
+    within that single greedy pass -- NOT the longest contiguous occurrence of
+    ``q``, since the scan never backtracks over an earlier isolated match
+    (``q="ab"`` against ``"axxab"`` consumes both chars but reports a run of
+    1). A consumed count below ``len(q)`` means ``haystack`` does not contain
+    ``q`` as a subsequence at all; the caller normalizes the run length by
+    ``len(q)`` into the contiguity term of the fuzzy score.
+    """
+    qi = 0
+    consecutive = 0
+    max_run = 0
+    for ch in haystack:
+        if qi < len(q) and ch == q[qi]:
+            qi += 1
+            consecutive += 1
+            max_run = max(max_run, consecutive)
+        else:
+            consecutive = 0
+    return qi, max_run
+
+
 def _fuzzy_score(q: str, name: str, rel: str) -> float:
     """Score a file match. Higher = better. Returns 0 for no match."""
     nl = name.lower()
@@ -2215,31 +2241,14 @@ def _fuzzy_score(q: str, name: str, rel: str) -> float:
     elif q in rl:
         score += 10.0
     else:
-        # Fuzzy: check if query chars appear in order in filename
+        # Fuzzy: check whether the query chars appear in order in the
+        # filename, falling back to the search-root-relative path when the
+        # filename alone does not carry the query as an in-order subsequence.
         matched_on_name = True
-        qi = 0
-        consecutive = 0
-        max_run = 0
-        for ch in nl:
-            if qi < len(q) and ch == q[qi]:
-                qi += 1
-                consecutive += 1
-                max_run = max(max_run, consecutive)
-            else:
-                consecutive = 0
+        qi, max_run = _subsequence_run(q, nl)
         if qi < len(q):
-            # Try path if filename didn't match all chars
             matched_on_name = False
-            qi = 0
-            consecutive = 0
-            max_run = 0
-            for ch in rl:
-                if qi < len(q) and ch == q[qi]:
-                    qi += 1
-                    consecutive += 1
-                    max_run = max(max_run, consecutive)
-                else:
-                    consecutive = 0
+            qi, max_run = _subsequence_run(q, rl)
         if qi < len(q):
             return 0.0  # not all query chars found
         # Score based on coverage ratio and longest consecutive run
@@ -3425,8 +3434,6 @@ async def api_file_sheet(request: web.Request) -> web.Response:
     soft-imported: without it the endpoint answers 501 and the frontend
     degrades to the download card.
     """
-    import os  # noqa: F811
-
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
 
     def _log(outcome: str, res: str) -> None:
