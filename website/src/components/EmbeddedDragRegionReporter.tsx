@@ -13,22 +13,36 @@
  * (relayed via the host model) — a browser host has no native window to drag, so
  * there is nothing to report. No-op everywhere else.
  */
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useAppSelector } from '../store'
 import { isEmbeddedPane } from '../lib/embedded'
 import { computeHeaderDragGaps } from '../lib/dragGaps'
 
 export default function EmbeddedDragRegionReporter() {
   // The host model tells the pane whether its host is an Electron window; only
-  // then is a draggable title bar meaningful.
-  const hostElectron = useAppSelector(s => !!s.instances.host?.electron)
+  // then is a draggable title bar meaningful. We also watch the model OBJECT
+  // itself (not just the electron flag): the host relays a fresh model every
+  // time it re-engages this pane (tab switch, pane readiness, the instances
+  // poll), and each such relay is our cue to RE-ASSERT the gaps.
+  const hostModel = useAppSelector(s => s.instances.host)
+  const hostElectron = !!hostModel?.electron
+
+  // A single mc-drag-gaps post is fire-and-forget: if the host drops it (its
+  // listener/port map not yet ready when a pane first shows) the geometry-change
+  // dedup below means nothing re-sends it, so the pane silently stays undraggable
+  // until an incidental header reflow. These refs let a second effect force a
+  // re-post whenever the host re-engages, closing that race.
+  const lastJsonRef = useRef('')
+  const scheduleRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     if (!isEmbeddedPane() || !hostElectron) return
     const parent = window.parent
     if (!parent || parent === window) return
 
-    let lastJson = ''
+    // A fresh (re)subscription re-asserts: clear the dedup so the first post
+    // always fires even if the geometry is unchanged from a prior mount.
+    lastJsonRef.current = ''
     let raf = 0
     const post = () => {
       raf = 0
@@ -39,8 +53,8 @@ export default function EmbeddedDragRegionReporter() {
       if (!header || window.innerWidth === 0) return
       const gaps = computeHeaderDragGaps(header, window.innerWidth)
       const json = JSON.stringify(gaps)
-      if (json === lastJson) return
-      lastJson = json
+      if (json === lastJsonRef.current) return
+      lastJsonRef.current = json
       try {
         // The host validates our loopback ORIGIN (resolveTunnelOrigin), so the
         // wildcard target is safe and matches the sibling mc-embedded-ready ping.
@@ -61,6 +75,9 @@ export default function EmbeddedDragRegionReporter() {
       if (raf) window.cancelAnimationFrame(raf)
       raf = window.requestAnimationFrame(post)
     }
+    // Expose the live scheduler so the re-engagement effect below can trigger a
+    // re-post without tearing down and re-attaching the observers.
+    scheduleRef.current = schedule
 
     const header = document.querySelector('header.topbar-glass')
     // Header-scoped observers only — cheap, and they catch every reflow that
@@ -87,8 +104,22 @@ export default function EmbeddedDragRegionReporter() {
       ro.disconnect()
       mo.disconnect()
       window.removeEventListener('resize', schedule)
+      scheduleRef.current = () => {}
     }
   }, [hostElectron])
+
+  // Re-assert the gaps whenever the host relays a fresh model. The host
+  // rebroadcasts on every tab switch / pane-ready / poll (InstancesViewport's
+  // broadcast effect), so this fires exactly when the host has (re)started
+  // listening — the moment a previously-dropped initial post would otherwise be
+  // lost forever. Clearing the dedup makes the re-post fire even if the geometry
+  // is byte-identical to what we last sent. Cheap: the host reads only the active
+  // pane's gaps, so an extra post to a background pane is harmless.
+  useEffect(() => {
+    if (!isEmbeddedPane() || !hostElectron) return
+    lastJsonRef.current = ''
+    scheduleRef.current()
+  }, [hostModel, hostElectron])
 
   return null
 }
