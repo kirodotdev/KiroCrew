@@ -8,7 +8,26 @@ import ApprovalCard from '../components/ApprovalCard'
 describe('ApprovalCard', () => {
   it('renders tool title when no toolInput', () => {
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
-    expect(screen.getByText('Running: ls /tmp')).toBeInTheDocument()
+    expect(screen.getByText('ls /tmp')).toBeInTheDocument()
+  })
+
+  it('does not double the Running: prefix for shell titles (#4396)', () => {
+    const { container } = render(<ApprovalCard title="Running: gh api repos/o/r" toolInput="" showButtons onApprove={() => {}} />)
+    const text = container.textContent || ''
+    expect(text.match(/Running:/g)).toHaveLength(1)
+    expect(text).toContain('gh api repos/o/r')
+  })
+
+  it('keeps the raw title in the label-less wrench branch', () => {
+    const { container } = render(<ApprovalCard title="Running: gh api repos/o/r" toolInput="" showButtons={false} onApprove={() => {}} />)
+    const text = container.textContent || ''
+    expect(text.match(/Running:/g)).toHaveLength(1)
+    expect(screen.getByText('Running: gh api repos/o/r')).toBeInTheDocument()
+  })
+
+  it('renders a non-shell title verbatim in the labeled branch (ChannelPage passes a role here)', () => {
+    render(<ApprovalCard title="TaskeiGetTask" toolInput="" showButtons onApprove={() => {}} />)
+    expect(screen.getByText('TaskeiGetTask')).toBeInTheDocument()
   })
 
   it('renders tool approval requested when toolInput present', () => {

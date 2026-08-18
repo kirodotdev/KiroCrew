@@ -15,13 +15,18 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
   const isShell = title.startsWith('Running: ')
   const normalized = title.replace(/^(Running: |Reading )/, '')
   const baseCmd = normalized.split(/\s+/)[0] || normalized
+  // The showButtons branch renders its own i18n "Running:" label, so a shell
+  // title (which carries the "Running: " prefix) must be de-prefixed there to
+  // avoid "Running: Running: …". The wrench branch renders no label, so the
+  // raw title keeps its verb ("Running: " / "Reading ") for context.
+  const displayTitle = showButtons && isShell ? normalized : title
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
 
   return (
     <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`}>
       {toolInput
         ? <><strong>{i18nT('components.approvalCard.tool_approval_requested')}</strong></>
-        : <>{showButtons ? <><Package className="lucide-inline" /> {i18nT('components.approvalCard.running')} </> : <><Wrench className="lucide-inline" /> </>}<strong>{title}</strong>{showButtons ? ' wants to run' : ''}</>
+        : <>{showButtons ? <><Package className="lucide-inline" /> {i18nT('components.approvalCard.running')} </> : <><Wrench className="lucide-inline" /> </>}<strong>{displayTitle}</strong>{showButtons ? ' wants to run' : ''}</>
       }
       {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
       {showButtons && !decided && (
