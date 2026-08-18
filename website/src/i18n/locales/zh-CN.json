@@ -6394,7 +6394,9 @@
       "next_match": "下一个匹配",
       "no_results": "无结果",
       "previous": "上一个（{{mod}}）",
-      "previous_match": "上一个匹配"
+      "previous_match": "上一个匹配",
+      "no_results_loaded_only": "已加载的历史记录中无结果",
+      "results_loaded_only": "已加载的历史记录中第 {{current}}/{{total}} 条结果"
     },
     "searchResultsList": {
       "assistant": "助手",
@@ -8152,7 +8154,11 @@
         "turn_took_credits_cost": "本轮次耗时 {{elapsed}}，消耗 {{credits}} 额度（API 成本 {{cost}}）",
         "use_as_plan_count": "用作计划（{{count}} 个步骤）",
         "pin_message": "置顶消息",
-        "unpin_message": "取消置顶"
+        "unpin_message": "取消置顶",
+        "needs_earlier_history": "选择以加载下一页更早的历史记录",
+        "more_actions": "更多操作",
+        "needs_active_chat": "此对话完成打开后可用",
+        "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -8574,6 +8580,9 @@
         "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
         "title": "文件",
         "tree_error": "无法加载文件树"
+      },
+      "deepLink": {
+        "message_unavailable": "此消息已不在此对话中。"
       }
     },
     "chatPage": {

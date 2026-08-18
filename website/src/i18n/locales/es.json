@@ -6598,7 +6598,9 @@
       "next_match": "Coincidencia siguiente",
       "no_results": "Sin resultados",
       "previous": "Anterior ({{mod}})",
-      "previous_match": "Coincidencia anterior"
+      "previous_match": "Coincidencia anterior",
+      "no_results_loaded_only": "Sin resultados en el historial cargado",
+      "results_loaded_only": "{{current}}/{{total}} resultados en el historial cargado"
     },
     "searchResultsList": {
       "assistant": "Asistente",
@@ -8390,7 +8392,13 @@
         "turn_took_credits_cost": "El turno tardó {{elapsed}} y consumió {{credits}} créditos ({{cost}} de coste de API)",
         "use_as_plan_count": "Usar como plan ({{count}} pasos)",
         "pin_message": "Fijar mensaje",
-        "unpin_message": "Desfijar mensaje"
+        "unpin_message": "Desfijar mensaje",
+        "needs_earlier_history": "Selecciona para cargar la página siguiente del historial anterior",
+        "more_actions": "Más acciones",
+        "needs_active_chat": "Disponible cuando esta conversación termine de abrirse",
+        "needs_earlier_history_count_one": "Selecciona para cargar el historial anterior: queda {{count}} mensaje anterior",
+        "needs_earlier_history_count_many": "Selecciona para cargar el historial anterior: quedan {{count}} mensajes anteriores",
+        "needs_earlier_history_count_other": "Selecciona para cargar el historial anterior: quedan {{count}} mensajes anteriores"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -8832,6 +8840,9 @@
         "select_file_hint": "Selecciona un archivo del árbol para abrirlo en una nueva pestaña",
         "title": "Archivos",
         "tree_error": "No se pudo cargar el árbol de archivos"
+      },
+      "deepLink": {
+        "message_unavailable": "Este mensaje ya no está en esta conversación."
       }
     },
     "chatPage": {

@@ -6496,7 +6496,9 @@
       "next_match": "Nächster Treffer",
       "no_results": "Keine Ergebnisse",
       "previous": "Zurück ({{mod}})",
-      "previous_match": "Vorheriger Treffer"
+      "previous_match": "Vorheriger Treffer",
+      "no_results_loaded_only": "Keine Ergebnisse im geladenen Verlauf",
+      "results_loaded_only": "{{current}}/{{total}} Ergebnisse im geladenen Verlauf"
     },
     "searchResultsList": {
       "assistant": "Assistent",
@@ -8271,7 +8273,12 @@
         "turn_took_credits_cost": "Zug dauerte {{elapsed}} und verbrauchte {{credits}} Credits ({{cost}} API-Kosten)",
         "use_as_plan_count": "Als Plan verwenden ({{count}} Schritte)",
         "pin_message": "Nachricht anheften",
-        "unpin_message": "Nachricht loslösen"
+        "unpin_message": "Nachricht loslösen",
+        "needs_earlier_history": "Auswählen, um die nächste Seite des früheren Verlaufs zu laden",
+        "more_actions": "Weitere Aktionen",
+        "needs_active_chat": "Verfügbar, sobald diese Unterhaltung vollständig geöffnet ist",
+        "needs_earlier_history_count_one": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachricht",
+        "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -8703,6 +8710,9 @@
         "select_file_hint": "Wähle eine Datei im Baum, um sie in einem neuen Tab zu öffnen",
         "title": "Dateien",
         "tree_error": "Der Dateibaum konnte nicht geladen werden"
+      },
+      "deepLink": {
+        "message_unavailable": "Diese Nachricht ist nicht mehr in dieser Unterhaltung."
       }
     },
     "chatPage": {

@@ -6496,7 +6496,9 @@
       "next_match": "अगला मिलान",
       "no_results": "कोई परिणाम नहीं",
       "previous": "पिछला ({{mod}})",
-      "previous_match": "पिछला मिलान"
+      "previous_match": "पिछला मिलान",
+      "no_results_loaded_only": "लोड किए गए इतिहास में कोई परिणाम नहीं",
+      "results_loaded_only": "लोड किए गए इतिहास में {{current}}/{{total}} परिणाम"
     },
     "searchResultsList": {
       "assistant": "असिस्टेंट",
@@ -8271,7 +8273,12 @@
         "turn_took_credits_cost": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए ({{cost}} API लागत)",
         "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)",
         "pin_message": "संदेश पिन करें",
-        "unpin_message": "संदेश अनपिन करें"
+        "unpin_message": "संदेश अनपिन करें",
+        "needs_earlier_history": "पुराने इतिहास का अगला पृष्ठ लोड करने के लिए चुनें",
+        "more_actions": "अधिक क्रियाएँ",
+        "needs_active_chat": "यह चैट पूरी तरह खुल जाने पर उपलब्ध होगा",
+        "needs_earlier_history_count_one": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराना संदेश शेष है",
+        "needs_earlier_history_count_other": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराने संदेश शेष हैं"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -8703,6 +8710,9 @@
         "select_file_hint": "ट्री से फ़ाइल चुनें, वह नए टैब में खुलेगी",
         "title": "फ़ाइलें",
         "tree_error": "फ़ाइल ट्री लोड नहीं हो सका"
+      },
+      "deepLink": {
+        "message_unavailable": "यह संदेश अब इस बातचीत में नहीं है।"
       }
     },
     "chatPage": {

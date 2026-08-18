@@ -190,3 +190,47 @@ describe('SearchBar', () => {
     expect(input).not.toHaveAttribute('aria-activedescendant')
   })
 })
+
+describe('SearchBar scope disclosure', () => {
+  // Bounding the initial fetch means search covers only the loaded window. A bare
+  // "No results" would be a false negative, so the scope has to be stated.
+  it('states the loaded-window scope when there are no matches', () => {
+    renderBar({ term: 'needle', matches: [], scopeLimited: true })
+    expect(screen.getByText(/in loaded history/i)).toBeTruthy()
+  })
+
+  it('states the loaded-window scope alongside a match count', () => {
+    renderBar({ term: 'needle', matches: [{ msgIdx: 1, occ: 0 }, { msgIdx: 4, occ: 0 }], currentIdx: 0, scopeLimited: true })
+    // Names the scope rather than reading as load progress ("1/2 loaded").
+    expect(screen.getByText('1/2 results in loaded history')).toBeTruthy()
+  })
+
+  it('keeps the plain wording when the whole history is loaded', () => {
+    renderBar({ term: 'needle', matches: [], scopeLimited: false })
+    expect(screen.queryByText(/loaded history/i)).toBeNull()
+    expect(screen.getByText('No results')).toBeTruthy()
+  })
+  it('lets the partial-scope count wrap rather than clipping its qualifier', () => {
+    // The qualifier sits at the END, so clipping leaves a count that reads as complete.
+    renderBar({ term: 'needle', matches: [{ msgIdx: 1, occ: 0 }, { msgIdx: 4, occ: 0 }], currentIdx: 0, scopeLimited: true })
+    const span = screen.getByText('1/2 results in loaded history')
+    // Assert a class that IS present first: a missing element or empty className
+    // would pass the absence check below vacuously.
+    expect(span.className).toContain('tabular-nums')
+    expect(span.className).not.toContain('truncate')
+  })
+
+  it('still carries the full partial-scope string on title as a fallback', () => {
+    renderBar({ term: 'needle', matches: [{ msgIdx: 1, occ: 0 }, { msgIdx: 4, occ: 0 }], currentIdx: 0, scopeLimited: true })
+    const span = screen.getByText('1/2 results in loaded history')
+    expect(span).toHaveAttribute('title', '1/2 results in loaded history')
+  })
+
+  it('caps the action row: a bounded scope adds no further action', () => {
+    // The handler is still passed deliberately: it is what rendered a fifth action
+    // before, so passing it is what makes this fail rather than pass vacuously.
+    renderBar({ term: 'needle', matches: [], scopeLimited: true, onLoadEarlier: vi.fn() })
+    const labels = screen.getAllByRole('button').map(b => b.getAttribute('aria-label'))
+    expect(labels).toEqual(['Case sensitive', 'Previous match', 'Next match', 'Close (Esc)'])
+  })
+})

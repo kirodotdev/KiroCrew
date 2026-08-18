@@ -6394,7 +6394,9 @@
       "next_match": "다음 일치",
       "no_results": "결과 없음",
       "previous": "이전 ({{mod}})",
-      "previous_match": "이전 일치"
+      "previous_match": "이전 일치",
+      "no_results_loaded_only": "불러온 기록에 결과 없음",
+      "results_loaded_only": "불러온 기록에서 결과 {{current}}/{{total}}"
     },
     "searchResultsList": {
       "assistant": "어시스턴트",
@@ -8152,7 +8154,11 @@
         "turn_took_credits_cost": "턴에 {{elapsed}} 걸렸고 크레딧 {{credits}}을(를) 사용했습니다(API 비용 {{cost}})",
         "use_as_plan_count": "플랜으로 사용({{count}}단계)",
         "pin_message": "Pin message",
-        "unpin_message": "Unpin message"
+        "unpin_message": "Unpin message",
+        "needs_earlier_history": "선택하면 이전 기록을 다음 페이지만큼 불러옵니다",
+        "more_actions": "추가 작업",
+        "needs_active_chat": "이 채팅이 완전히 열리면 사용할 수 있습니다",
+        "needs_earlier_history_count_other": "선택하면 이전 기록을 불러옵니다 — 이전 메시지 {{count}}개가 남아 있습니다"
       },
       "chatFooter": {
         "compacting": "압축 중…",
@@ -8574,6 +8580,9 @@
         "select_file_hint": "트리에서 파일을 선택하면 새 탭에서 열립니다",
         "title": "파일",
         "tree_error": "파일 트리를 불러올 수 없습니다"
+      },
+      "deepLink": {
+        "message_unavailable": "이 메시지는 이 대화에 더 이상 없습니다."
       }
     },
     "chatPage": {

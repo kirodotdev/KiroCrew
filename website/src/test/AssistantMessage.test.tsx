@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import AssistantMessage, { fmtTurnElapsed, fmtCredits, fmtTurnModel } from '../pages/chat/AssistantMessage'
 import { parseOptions } from '../app-sdk/protocol'
 // Imported from the defining module, not the `protocol` barrel, which deliberately
@@ -151,11 +151,16 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('md')).toHaveTextContent('v1')
   })
 
-  it('renders fork button when onFork is provided and calls it on click', () => {
+  /* Only the UNAVAILABLE state sits behind the overflow trigger; a loaded window keeps
+   * fork/plan as row buttons. Radix opens on POINTERDOWN, not click. */
+  const openOverflow = () => fireEvent.pointerDown(
+    screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' },
+  )
+
+  it('renders fork action when onFork is provided and calls it on click', async () => {
     const onFork = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} forkIndex={0} />)
-    const forkBtn = screen.getByTitle('Fork conversation from here')
-    fireEvent.click(forkBtn)
+    fireEvent.click(screen.getByTitle('Fork conversation from here'))
     expect(onFork).toHaveBeenCalledTimes(1)
     expect(onFork).toHaveBeenCalledWith(0)
   })
@@ -165,10 +170,274 @@ describe('AssistantMessage', () => {
     expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
   })
 
-  it('does not render fork button when forkIndex is undefined (gated by parent)', () => {
+  it('does not grow the pre-existing footer row when forkIndex is undefined', () => {
     const onFork = vi.fn()
-    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} />)
-    expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
+    const { container } = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onSpeak={vi.fn()} onRegenerate={vi.fn()} />)
+    // `max-two-buttons-per-row` measures what the diff ADDS: a bounded window must
+    // not put more controls in this row than a fully loaded one does.
+    const bounded = container.querySelectorAll('button').length
+    // The bounded row collapses fork+plan into ONE overflow trigger, so it carries fewer
+    // controls than a loaded row -- never more, which is what this gate measures.
+    expect(screen.queryAllByTitle('Fork conversation from here')).toHaveLength(0)
+    expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
+    cleanup()
+    const { container: full } = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onSpeak={vi.fn()} onRegenerate={vi.fn()} forkIndex={0} />)
+    const loaded = full.querySelectorAll('button').length
+    expect(bounded).toBeLessThanOrEqual(loaded)
+    // A loaded row restores fork/plan in place, exactly as the base branch had them.
+    expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
+    expect(screen.getByTitle('Plan from here').tagName).toBe('BUTTON')
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+  })
+
+  it('keeps the unavailable overflow trigger OUT of the footer action row', () => {
+    // The row must match BASE's shape in the SAME state, not a loaded row: without an
+    // index base rendered no fork/plan at all, so a trigger inside the row is a net +1.
+    const props = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false, onSpeak: vi.fn(), onRegenerate: vi.fn() }
+    render(<AssistantMessage {...props} />)
+    const baseRowButtons = (screen.getByTitle('Copy').parentElement as HTMLElement).querySelectorAll('button').length
+    cleanup()
+    render(<AssistantMessage {...props} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} />)
+    const row = screen.getByTitle('Copy').parentElement as HTMLElement
+    expect(row).not.toContainElement(screen.getByTestId('assistant-more-actions'))
+    expect(row.querySelectorAll('button')).toHaveLength(baseRowButtons)
+  })
+
+  it('keeps an unavailable fork item reachable, so its reason can actually be read', () => {
+    // Radix sets data-disabled AND pointer-events-none for a `disabled` item, so the
+    // reason would be unreachable by keyboard nav and by hover alike.
+    const onFork = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} />)
+    openOverflow()
+    const forkItem = screen.getByTestId('fork-from-here')
+    expect(forkItem).toHaveAttribute('role', 'menuitem')
+    expect(forkItem).toHaveAttribute('aria-disabled', 'true')
+    expect(forkItem).not.toHaveAttribute('data-disabled')
+    expect(forkItem.textContent).toContain('Fork conversation from here')
+    // The reason is VISIBLE text, not a tooltip: a keyboard user arrow-navigating here
+    // gets the why without a pointer, and `title` alone would have hidden it from them.
+    const reason = screen.getByTestId('fork-unavailable-reason')
+    // At its true INCREMENT: one activation pages ONE page, so "load earlier
+    // history" over-promised on a chat that needs many selects.
+    expect(reason.textContent).toBe('Select to load the next page of earlier history')
+    expect(forkItem).toHaveAttribute('aria-describedby', reason.id)
+    expect(forkItem).not.toHaveAttribute('title')
+    // The sibling names its OWN action rather than repeating fork's.
+    expect(screen.getByText('Plan from here')).toBeTruthy()
+    // Reachable is not actionable: the guarded onSelect still refuses to fork.
+    fireEvent.click(forkItem)
+    expect(onFork).not.toHaveBeenCalled()
+  })
+
+  it('states a refusal, not an inert remedy, while the cursor names the chat we left', () => {
+    // canForkAtWindow is false in TWO states; only more-history can page, so ChatPage
+    // passes no handler for the other. "Select to load" there is an action that no-ops.
+    const onFork = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} />)
+    openOverflow()
+    const reason = screen.getByTestId('fork-unavailable-reason')
+    expect(reason.textContent).toBe('Available once this chat finishes opening')
+    expect(reason.textContent).not.toMatch(/select to load/i)
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onFork).not.toHaveBeenCalled()
+  })
+
+  it('uses the singular noun at count=1, so the remedy does not read as broken copy', () => {
+    // i18next selects `_one`/`_other` from the `count` var; one un-suffixed key renders
+    // "1 earlier messages remain", which reads as a defect to the reader it is helping.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} earlierRemaining={1} />)
+    openOverflow()
+    const reason = screen.getByTestId('fork-unavailable-reason')
+    expect(reason.textContent).toContain('1 earlier message remains')
+    expect(reason.textContent).not.toMatch(/1 earlier messages/)
+  })
+
+  it('states the remaining distance, so repeated paging reads as converging', () => {
+    // One activation pages ONE page, so without a count a long session is N blind selects.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} earlierRemaining={2400} />)
+    openOverflow()
+    const reason = screen.getByTestId('fork-unavailable-reason')
+    expect(reason.textContent).toContain('2400')
+    // Still stated as an action: the capture harness asserts this phrasing survives.
+    expect(reason.textContent).toMatch(/load earlier history/i)
+  })
+
+  it('routes an unavailable fork/plan item to the remedy it names', () => {
+    // The reason names a control at the TOP of the transcript, so selecting the item
+    // has to take the reader there -- stating a fix and doing nothing is the defect.
+    const onFork = vi.fn()
+    const onPlanFromHere = vi.fn()
+    const onLoadEarlier = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} onLoadEarlier={onLoadEarlier} />)
+    openOverflow()
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    expect(onFork).not.toHaveBeenCalled()
+    expect(onPlanFromHere).not.toHaveBeenCalled()
+  })
+
+  it('keeps paging from ONE select instead of one page per select', () => {
+    // A remedy that advances one page per deliberate re-select is a treadmill on
+    // exactly the long chats the bound targets. One select owns the whole walk.
+    const onFork = vi.fn()
+    const onLoadEarlier = vi.fn()
+    const at = (remaining: number) => (
+      <AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onLoadEarlier={onLoadEarlier} earlierRemaining={remaining} />
+    )
+    const view = render(at(30))
+    openOverflow()
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    // Each landed page shrinks the remainder; paging continues with NO further select.
+    view.rerender(at(20))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(2)
+    view.rerender(at(10))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(3)
+    expect(onFork).not.toHaveBeenCalled()
+  })
+
+  it('stops paging the moment the fork target resolves', () => {
+    // Termination arm 1: an index means the row is in the window, so keep walking
+    // past it and the reader pages history they never asked for.
+    const onFork = vi.fn()
+    const onLoadEarlier = vi.fn()
+    const at = (remaining: number, forkIndex?: number) => (
+      <AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onLoadEarlier={onLoadEarlier} earlierRemaining={remaining} forkIndex={forkIndex} />
+    )
+    const view = render(at(30))
+    openOverflow()
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    view.rerender(at(20, 7))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops paging when a landed page did not shrink the remainder', () => {
+    // Termination arm 2, deliberately NOT a page cap: a cap false-reports distant
+    // but reachable rows. No progress is the honest signal that walking cannot help.
+    const onFork = vi.fn()
+    const onLoadEarlier = vi.fn()
+    const at = (remaining: number) => (
+      <AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onLoadEarlier={onLoadEarlier} earlierRemaining={remaining} />
+    )
+    const view = render(at(30))
+    openOverflow()
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    view.rerender(at(20))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(2)
+    // Remainder unchanged: the walk is not advancing, so it must stop rather than spin.
+    view.rerender(at(20))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(2)
+    view.rerender(at(20))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(2)
+  })
+
+  it('does NOT route to the remedy once fork is available', () => {
+    // Negative control for the branch above: with an index the item must fork, and
+    // must not divert to paging.
+    const onFork = vi.fn()
+    const onLoadEarlier = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} forkIndex={3} onLoadEarlier={onLoadEarlier} />)
+    fireEvent.click(screen.getByTestId('fork-from-here'))
+    expect(onFork).toHaveBeenCalledWith(3)
+    expect(onLoadEarlier).not.toHaveBeenCalled()
+    // With no reason to state, neither the visible line nor its reference exists.
+    expect(screen.queryByTestId('fork-unavailable-reason')).toBeNull()
+    expect(screen.getByTestId('fork-from-here')).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('restores fork/plan as ROW buttons once the window is loaded, so the everyday case stays one click', () => {
+    // The menu exists for the UNAVAILABLE state's visible reason; routing the available
+    // controls through it taxed every fully-loaded chat with an extra open.
+    const onFork = vi.fn()
+    const onPlanFromHere = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={4} />)
+    // Reachable WITHOUT opening anything, and as a row button rather than a menu item.
+    const fork = screen.getByTitle('Fork conversation from here')
+    expect(fork.tagName).toBe('BUTTON')
+    expect(fork).not.toHaveAttribute('role', 'menuitem')
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    const plan = screen.getByTitle('Plan from here')
+    expect(plan.tagName).toBe('BUTTON')
+    expect(plan).not.toHaveAttribute('role', 'menuitem')
+    fireEvent.click(fork)
+    expect(onFork).toHaveBeenCalledWith(4)
+    // Clicking one sets busyAction, which disables its sibling (base's own behaviour),
+    // so Plan is exercised from a clean render rather than after Fork.
+    cleanup()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={onPlanFromHere} forkIndex={4} />)
+    fireEvent.click(screen.getByTitle('Plan from here'))
+    expect(onPlanFromHere).toHaveBeenCalledWith(4)
+  })
+
+  it('keeps the menu treatment for the UNAVAILABLE state, reason and remedy intact', () => {
+    // Negative control that matters most: making fork look operable without an index
+    // re-opens the trust hole the cursor threading exists to close.
+    const onLoadEarlier = vi.fn()
+    const onFork = vi.fn()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={vi.fn()} onLoadEarlier={onLoadEarlier} />)
+    // No row button may appear while the index is unknown.
+    expect(screen.queryByTitle('Fork conversation from here')).toBeNull()
+    expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
+    openOverflow()
+    const forkItem = screen.getByTestId('fork-from-here')
+    expect(forkItem).toHaveAttribute('role', 'menuitem')
+    expect(forkItem).toHaveAttribute('aria-disabled', 'true')
+    expect(forkItem).toHaveAttribute('aria-describedby')
+    expect(screen.getByTestId('fork-unavailable-reason').textContent).toBeTruthy()
+    fireEvent.click(forkItem)
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    expect(onFork).not.toHaveBeenCalled()
+  })
+
+  it('mounts the overflow trigger whenever fork/plan exist, since the unavailable item still ACTS', () => {
+    // The menu holds fork/plan ONLY, and an unavailable item is no longer inert -- it pages
+    // earlier history -- so handler presence IS actionability, and an index gate would hide it.
+    const variants = [{ content: 'ready' }, { content: 'ok' }]
+    const short = 'ready'
+    // 1. No handlers at all (the app-SDK renderer's shape): nothing to offer.
+    const a = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} variants={variants} />)
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    a.unmount()
+    // 2. Handlers but NO index: the trigger MUST appear -- the item's action is the remedy.
+    const b = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} variants={variants} />)
+    expect(screen.getAllByTitle('More actions').length).toBeGreaterThan(0)
+    b.unmount()
+    // 3. Actionable fork: NO trigger -- the control returns to the row.
+    const c = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} variants={variants} />)
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
+    c.unmount()
+    // 4. Speak and raw-view are ROW buttons, so they neither mount the trigger nor sit
+    //    inside it -- they have no relation to the bounded window.
+    const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} variants={variants} />)
+    expect(screen.queryAllByTitle('More actions')).toHaveLength(0)
+    expect(screen.getByTitle('Raw markdown')).toBeTruthy()
+    // `speak` is the TITLE and `speak_message` the aria-label, as on base: the
+    // relabel that swapped them is out of this PR's scope.
+    expect(screen.getByTitle('Speak')).toBeTruthy()
+    expect(screen.getByLabelText('Speak message')).toBeTruthy()
+    d.unmount()
+    // 5. Fork unavailable keeps its disabled-in-place explanation, as documented.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} variants={variants} />)
+    openOverflow()
+    expect(screen.getByTestId('fork-from-here')).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('shows an in-flight spinner on the unavailable item while earlier history loads', () => {
+    // The dead-click defect: selecting the item pages off-screen at the transcript top, so
+    // without a cue HERE the reader perceives nothing happening and clicks again.
+    const idle = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} />)
+    openOverflow()
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    idle.unmount()
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} loadingOlder />)
+    openOverflow()
+    // Both items carry it, so the cue is on whichever one the reader is looking at.
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(screen.getByTestId('plan-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
   })
 
   it('does not render fork button while streaming', () => {
@@ -193,55 +462,44 @@ describe('AssistantMessage', () => {
 
   // Spinner-scoping: fork and plan each own their spinner slot so clicking one
   // does not spin the other's icon.
-  it('spins only the Plan button when Plan is clicked; fork icon stays a GitFork, not a spinner', async () => {
+  it('spins only the Plan action when Plan is clicked; fork icon stays a GitFork, not a spinner', async () => {
     let resolvePlan!: () => void
     const onPlanFromHere = vi.fn(() => new Promise<void>(res => { resolvePlan = res }))
     const onFork = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
-
-    const planBtn = screen.getByTitle('Plan from here')
-    const forkBtn = screen.getByTitle('Fork conversation from here')
-
-    fireEvent.click(planBtn)
-
-    // Plan button shows its Loader2 spinner (aria-hidden svg has no title, so
-    // assert via the disabled state + absence of the ClipboardList icon class
-    // is fragile; instead assert both buttons are disabled (busyAction !== null)
-    // while only the fork button still renders its GitFork icon svg).
-    expect(planBtn).toBeDisabled()
-    expect(forkBtn).toBeDisabled()
-    // Fork icon (GitFork, lucide class "lucide-git-fork") must remain the fork
-    // button's icon -- it must NOT have been swapped for a spinner.
-    expect(forkBtn.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    // Plan button's icon IS the spinner while its action is in flight.
-    expect(planBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(planBtn.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Plan from here'))
+    const planItem = screen.getByTitle('Plan from here')
+    const forkItem = screen.getByTitle('Fork conversation from here')
+    expect(planItem).toBeDisabled()
+    expect(forkItem).toBeDisabled()
+    // Fork keeps its GitFork icon -- it must NOT have been swapped for a spinner.
+    expect(forkItem.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    // Plan's icon IS the spinner while its own action is in flight.
+    expect(planItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(planItem.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
 
     await act(async () => { resolvePlan(); await Promise.resolve() })
-    expect(planBtn).not.toBeDisabled()
+    expect(screen.getByTitle('Plan from here')).not.toBeDisabled()
   })
 
-  it('spins only the Fork button when Fork is clicked; plan icon stays a ClipboardList, not a spinner', async () => {
+  it('spins only the Fork action when Fork is clicked; plan icon stays a ClipboardList, not a spinner', async () => {
     let resolveFork!: () => void
     const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
     const onPlanFromHere = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
-
-    const planBtn = screen.getByTitle('Plan from here')
-    const forkBtn = screen.getByTitle('Fork conversation from here')
-
-    fireEvent.click(forkBtn)
-
-    expect(forkBtn).toBeDisabled()
-    expect(planBtn).toBeDisabled()
-    expect(planBtn.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
-    expect(planBtn.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(forkBtn.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Fork conversation from here'))
+    const planItem = screen.getByTitle('Plan from here')
+    const forkItem = screen.getByTitle('Fork conversation from here')
+    expect(forkItem).toBeDisabled()
+    expect(planItem).toBeDisabled()
+    expect(planItem.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
+    expect(planItem.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
 
     await act(async () => { resolveFork(); await Promise.resolve() })
-    expect(forkBtn).not.toBeDisabled()
+    expect(screen.getByTitle('Fork conversation from here')).not.toBeDisabled()
   })
 
 })

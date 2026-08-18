@@ -6700,7 +6700,9 @@
       "next_match": "Следующее совпадение",
       "no_results": "Ничего не найдено",
       "previous": "Предыдущее ({{mod}})",
-      "previous_match": "Предыдущее совпадение"
+      "previous_match": "Предыдущее совпадение",
+      "no_results_loaded_only": "В загруженной истории ничего не найдено",
+      "results_loaded_only": "{{current}}/{{total}} результатов в загруженной истории"
     },
     "searchResultsList": {
       "assistant": "Ассистент",
@@ -8509,7 +8511,14 @@
         "turn_took_credits_cost": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов (стоимость API: {{cost}})",
         "use_as_plan_count": "Использовать как план (шагов: {{count}})",
         "pin_message": "Закрепить сообщение",
-        "unpin_message": "Открепить сообщение"
+        "unpin_message": "Открепить сообщение",
+        "needs_earlier_history": "Выберите, чтобы загрузить следующую страницу более ранней истории",
+        "more_actions": "Другие действия",
+        "needs_active_chat": "Будет доступно, когда этот чат полностью откроется",
+        "needs_earlier_history_count_one": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщение",
+        "needs_earlier_history_count_few": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщения",
+        "needs_earlier_history_count_many": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
+        "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -8961,6 +8970,9 @@
         "select_file_hint": "Выберите файл в дереве, чтобы открыть его в новой вкладке",
         "title": "Файлы",
         "tree_error": "Не удалось загрузить дерево файлов"
+      },
+      "deepLink": {
+        "message_unavailable": "Этого сообщения больше нет в этом разговоре."
       }
     },
     "chatPage": {

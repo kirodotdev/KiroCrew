@@ -6598,7 +6598,9 @@
       "next_match": "Corrispondenza successiva",
       "no_results": "Nessun risultato",
       "previous": "Precedente ({{mod}})",
-      "previous_match": "Corrispondenza precedente"
+      "previous_match": "Corrispondenza precedente",
+      "no_results_loaded_only": "Nessun risultato nella cronologia caricata",
+      "results_loaded_only": "{{current}}/{{total}} risultati nella cronologia caricata"
     },
     "searchResultsList": {
       "assistant": "Assistente",
@@ -8390,7 +8392,13 @@
         "turn_took_credits_cost": "Il turno ha richiesto {{elapsed}} e ha consumato {{credits}} crediti ({{cost}} di costo API)",
         "use_as_plan_count": "Usa come piano ({{count}} passaggi)",
         "pin_message": "Fissa messaggio",
-        "unpin_message": "Rimuovi fissaggio"
+        "unpin_message": "Rimuovi fissaggio",
+        "needs_earlier_history": "Seleziona per caricare la pagina successiva della cronologia precedente",
+        "more_actions": "Altre azioni",
+        "needs_active_chat": "Disponibile quando questa conversazione ha finito di aprirsi",
+        "needs_earlier_history_count_one": "Seleziona per caricare la cronologia precedente: resta {{count}} messaggio precedente",
+        "needs_earlier_history_count_many": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
+        "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -8832,6 +8840,9 @@
         "select_file_hint": "Seleziona un file dall'albero per aprirlo in una nuova scheda",
         "title": "File",
         "tree_error": "Non è stato possibile caricare l’albero dei file"
+      },
+      "deepLink": {
+        "message_unavailable": "Questo messaggio non è più in questa conversazione."
       }
     },
     "chatPage": {

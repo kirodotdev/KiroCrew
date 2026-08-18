@@ -2067,7 +2067,9 @@
     "searchBar": {
       "next": "Next ({{mod}})",
       "no_results": "No results",
-      "previous": "Previous ({{mod}})"
+      "previous": "Previous ({{mod}})",
+      "no_results_loaded_only": "No results in loaded history",
+      "results_loaded_only": "{{current}}/{{total}} results in loaded history"
     },
     "searchResultsList": {
       "assistant": "Assistant",
@@ -2886,7 +2888,12 @@
         "rendered_view": "Rendered view",
         "switch_to_raw_markdown_view": "Switch to raw markdown view",
         "switch_to_rendered_view": "Switch to rendered view",
-        "use_as_plan_count": "Use as Plan ({{count}} steps)"
+        "use_as_plan_count": "Use as Plan ({{count}} steps)",
+        "needs_earlier_history": "Select to load the next page of earlier history",
+        "more_actions": "More actions",
+        "needs_active_chat": "Available once this chat finishes opening",
+        "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
+        "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -3114,6 +3121,9 @@
         "hide_tool_calls": "Hide tool calls",
         "worked_through_step_one": "Worked through {{count}} step",
         "worked_through_step_other": "Worked through {{count}} steps"
+      },
+      "deepLink": {
+        "message_unavailable": "This message is no longer in this conversation."
       }
     },
     "chatPage": {

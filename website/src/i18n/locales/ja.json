@@ -6394,7 +6394,9 @@
       "next_match": "次の一致",
       "no_results": "結果がありません",
       "previous": "前へ（{{mod}}）",
-      "previous_match": "前の一致"
+      "previous_match": "前の一致",
+      "no_results_loaded_only": "読み込み済みの履歴に結果がありません",
+      "results_loaded_only": "読み込み済みの履歴で {{current}}/{{total}} 件"
     },
     "searchResultsList": {
       "assistant": "アシスタント",
@@ -8152,7 +8154,11 @@
         "turn_took_credits_cost": "ターンに {{elapsed}} かかり {{credits}} クレジットを使用しました({{cost}} の API コスト)",
         "use_as_plan_count": "プランとして使用({{count}} ステップ)",
         "pin_message": "メッセージをピン留め",
-        "unpin_message": "メッセージのピン留めを解除"
+        "unpin_message": "メッセージのピン留めを解除",
+        "needs_earlier_history": "選択すると以前の履歴を次の1ページ分読み込みます",
+        "more_actions": "その他の操作",
+        "needs_active_chat": "このチャットを開き終えると利用できます",
+        "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -8574,6 +8580,9 @@
         "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
         "title": "ファイル",
         "tree_error": "ファイルツリーを読み込めませんでした"
+      },
+      "deepLink": {
+        "message_unavailable": "このメッセージはこの会話にはもうありません。"
       }
     },
     "chatPage": {

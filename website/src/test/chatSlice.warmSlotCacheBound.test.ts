@@ -56,6 +56,9 @@ describe('warmSlotCache hydrate bound', () => {
     const store = makeStore('active-slot')
     await store.dispatch(switchSlot('active-slot') as never)
     expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot', OLDER_PAGE_LIMIT)
+    // The PANE bound must not reach the active slot: distinct constants, so a
+    // future edit collapsing them cannot pass this file unnoticed.
+    expect(OLDER_PAGE_LIMIT).not.toBe(PANE_HYDRATE_LIMIT)
     await store.dispatch(refreshSlot('active-slot') as never)
     expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot')
   })

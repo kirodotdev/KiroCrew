@@ -65,7 +65,7 @@ import McpToolsPanel from './chat/McpToolsPanel'
 import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
-import { shouldPaginateOlder } from './chat/pagination'
+import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited } from './chat/pagination'
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { addPendingFile, parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, hasExactRelMention, normalizeWindowsPath, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
@@ -769,6 +769,25 @@ const REFUSED_PRESS_TITLE_KEYS = {
   switch_variant: 'pages.chatPage.could_not_switch_variant',
 } as const
 type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
+
+/**
+ * Where a jump-to-message came from, because the three entry points owe the
+ * reader different copy when the target cannot be found.
+ *
+ *  - `pin`     the pins list, so pin wording is accurate;
+ *  - `earlier` the earlier-messages control, which has its own paging copy;
+ *  - `link`    a `?msg=` share link, minted by copy-link-to-message for ANY
+ *              message. That reader may never have pinned anything, so naming a
+ *              pin would report an action they did not take.
+ */
+type PendingJumpOrigin = 'pin' | 'earlier' | 'link'
+
+/** SINGLE writer for the not-found copy, so a new origin cannot reach the reader
+ *  wearing another origin's wording. */
+const jumpUnavailableNotice = (origin: PendingJumpOrigin): string =>
+  origin === 'earlier' ? i18nT('components.chatPane.earlier_messages_unavailable')
+    : origin === 'link' ? i18nT('pages.chat.deepLink.message_unavailable')
+      : i18nT('pages.chat.pins.message_unavailable')
 
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
@@ -5585,7 +5604,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!shouldPaginateOlder({ loadingOlder: chat.loadingOlder, slotHasMore: chat.slotHasMore })) return
     void dispatch(loadOlderMessages())
   }, [dispatch])
-  // The click path needs no gate beyond the in-flight check the thunk already makes.
+  /**
+   * The click path needs no gate beyond the in-flight check the thunk already makes.
+   *
+   * Also the remedy for affordances NOT adjacent to it: the unavailable fork/plan items
+   * and the partial-scope search count both name "load earlier history" as the fix while
+   * that control sits at the top of the transcript. Those callers page from where the
+   * statement is read, and this deliberately does NOT scroll or move focus -- the reader
+   * is mid-transcript at the message they mean to fork, or typing in the search field,
+   * and satisfying the condition takes many pages, so relocating them on each one costs
+   * more than the hunt it saves. Their in-flight cue is a spinner on the item instead.
+   */
   const handleLoadEarlier = useCallback(() => {
     if (store.getState().chat.loadingOlder) return
     void dispatch(loadOlderMessages())
@@ -5872,20 +5901,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     slotKey: string
     messageTs: string
     mid?: string
-    // Required, not optional: the two entry points render different copy, and a
-    // new caller that omitted it would silently show pin wording.
-    origin: 'pin' | 'earlier'
+    // Required, not optional: the entry points render different copy, and a new
+    // caller that omitted it would silently show pin wording.
+    origin: PendingJumpOrigin
   } | null>(null)
   const pinnedJumpPageLoadsRef = useRef(0)
   const jumpToLoadedPinnedMessage = useCallback((messageTs: string, mid?: string): boolean => {
-    // Prefer mid-based resolution (unique identity); fall back to ts for legacy pins.
-    let msgIdx = -1
-    if (mid) {
-      msgIdx = messages.findIndex(m => (m.meta as Record<string, unknown> | undefined)?.mid === mid)
-    }
-    if (msgIdx < 0) {
-      msgIdx = messages.findIndex(m => m.ts === messageTs)
-    }
+    // Mid-based resolution when a mid is known; ts ONLY for legacy pins that carry none.
+    // Falling through to ts with a mid in hand takes a same-tick twin, which is the wrong row.
+    const msgIdx = mid
+      ? messages.findIndex(m => (m.meta as Record<string, unknown> | undefined)?.mid === mid)
+      : messages.findIndex(m => m.ts === messageTs)
     if (msgIdx < 0) return false
     const di = messageToDisplayIdxRef.current.get(msgIdx)
     if (di === undefined) return false
@@ -5895,16 +5921,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setTimeout(() => setHighlightTs(null), 3000)
     return true
   }, [messages, navToDisplayIndex])
-  const handleJumpToPinnedMessage = useCallback((messageTs: string, mid?: string) => {
+  const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin }: { origin: PendingJumpOrigin }) => {
     if (jumpToLoadedPinnedMessage(messageTs, mid)) return
     if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
       pinnedJumpPageLoadsRef.current = 0
       setPinNotice(null)
-      setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid, origin: 'pin' })
+      setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid, origin })
       return
     }
-    setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
+    // Same writer as the async branch below, so the synchronous dead-link case
+    // cannot drift into pin wording while the paging case reports the truth.
+    setPinNotice(jumpUnavailableNotice(origin))
   }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, slotHasMore, slotOldestIndex])
+  // The pins list's own entry point, so pin copy is claimed HERE by a caller that
+  // means it rather than inherited by one that passed nothing.
+  const handleJumpToPin = useCallback((messageTs: string, mid?: string) => {
+    handleJumpToPinnedMessage(messageTs, mid, { origin: 'pin' })
+  }, [handleJumpToPinnedMessage])
   useEffect(() => {
     if (!pendingPinnedJump) return
     if (pendingPinnedJump.slotKey !== activeSlot) {
@@ -5914,12 +5947,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // Captured per effect run so the async branches below report the entry point
     // this jump came from, not whichever one ran last.
-    const notFoundNotice = pendingPinnedJump.origin === 'earlier'
-      ? i18nT('components.chatPane.earlier_messages_unavailable')
-      : i18nT('pages.chat.pins.message_unavailable')
-    // A fetch that errored is transient, so the not-found copy would tell the
-    // reader their history is gone. Pin origin has no paging-error string.
-    const loadFailedNotice = pendingPinnedJump.origin === 'earlier'
+    const notFoundNotice = jumpUnavailableNotice(pendingPinnedJump.origin)
+    // A fetch that errored is transient, so the not-found copy would tell the reader
+    // their history is gone. `link` shares the retry copy: it makes no origin claim.
+    const loadFailedNotice = pendingPinnedJump.origin === 'earlier' || pendingPinnedJump.origin === 'link'
       ? i18nT('components.chatPane.earlier_messages_load_failed')
       : notFoundNotice
     if (jumpToLoadedPinnedMessage(pendingPinnedJump.messageTs, pendingPinnedJump.mid)) {
@@ -6105,8 +6136,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const targetTs = initialMsgRef.current
     const targetMid = initialMidRef.current
     if (!targetTs || messages.length === 0) return
-    const msgIdx = resolveMsgIndex(messages, targetTs, targetMid)
-    if (msgIdx < 0) return
+    // `messages` can still be the chat being left while a ?sid= switch settles,
+    // so decide only once this window is known to belong to the target chat.
+    if (initialSidRef.current && initialSidRef.current !== activeSlot) return
+    if (!cursorIsForActiveSlot) return
+    const resolved = resolveMsgIndex(messages, targetTs, targetMid)
+    // A mid that is merely OFF-PAGE falls back to ts in the helper, and that is a
+    // DIFFERENT row of the same tick -- treat it as unresolved so the hand-off runs.
+    const msgIdx = targetMid && messages[resolved]?.meta?.mid !== targetMid ? -1 : resolved
+    if (msgIdx < 0) {
+      // A bounded first page need not contain the target; the jump path already
+      // gates on the cursor and reports a dead link, so the decision lives there.
+      initialMsgRef.current = null
+      // Carries `targetMid`: paging back re-resolves, and ts alone would pick the
+      // wrong message of a same-ts pair that the mid exists to disambiguate.
+      handleJumpToPinnedMessage(targetTs, targetMid ?? undefined, { origin: 'link' })
+      return
+    }
     const di = messageToDisplayIdx.get(msgIdx)
     if (di === undefined) return
     initialMsgRef.current = null
@@ -6116,7 +6162,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setHighlightTs(targetTs)
       setTimeout(() => setHighlightTs(null), 3000)
     }, 500)
-  }, [messages, messageToDisplayIdx]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messages, messageToDisplayIdx, slotHasMore, slotOldestIndex, handleJumpToPinnedMessage, activeSlot, cursorIsForActiveSlot]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Precomputed O(n) map from message index → visible (user/assistant) index,
   // used by the fork button. Avoids a per-row O(i) filter that would make the
@@ -6233,7 +6279,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Pass a stable handleFork (useCallback) + primitive index so memo()
     // on AssistantMessage can short-circuit when only unrelated state changes.
     // visibleIndexMap is O(1) per row.
-    const canFork = !isStreaming && !isInject && !slotHasMore
+    const canFork = canForkAtWindow({ isStreaming, isInject, slotHasMore, cursorIsForActiveSlot })
     const forkIndex = canFork ? visibleIndexMap.get(i) : undefined
     const msgTime = fmtMessageTime(m.ts)
     const msgTimeFull = fmtMessageTimeFull(m.ts)
@@ -6292,7 +6338,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 return !slotRunning
               })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdx && !slotRunning && !regenerating && activeSlot ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdx && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
                 showRefusedPress('switch_variant', e)
-              }) } : undefined} onFork={handleFork} onPlanFromHere={handlePlanFromHere} forkIndex={forkIndex} onApplyPlan={handleApplyPlan} />
+              }) } : undefined} onFork={handleFork} onPlanFromHere={handlePlanFromHere} forkIndex={forkIndex} onLoadEarlier={cursorIsForActiveSlot ? handleLoadEarlier : undefined} loadingOlder={loadingOlder} earlierRemaining={slotOldestIndex} onApplyPlan={handleApplyPlan} />
             </div>
           )}
         </div>
@@ -6304,7 +6350,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress])
+    // cursorIsForActiveSlot/slotOldestIndex/handleLoadEarlier belong here: a switch
+    // back restores the cursor while changing no other dep, stranding Fork shut.
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress])
 
   /**
    * Mobile sessions drawer, as ONE value rather than an open flag plus a
@@ -7689,7 +7737,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {search.isOpen && (
           <DetailPanel
             key="search-panel"
-            title={<SearchBar docked term={search.term} setTerm={search.setTerm} matches={search.matches} currentIdx={search.currentIdx} next={search.next} prev={search.prev} close={search.close} caseSensitive={search.caseSensitive} toggleCaseSensitive={search.toggleCaseSensitive} focusNonce={search.focusNonce} goTo={search.goTo} />}
+            title={<SearchBar docked term={search.term} setTerm={search.setTerm} matches={search.matches} currentIdx={search.currentIdx} next={search.next} prev={search.prev} close={search.close} caseSensitive={search.caseSensitive} toggleCaseSensitive={search.toggleCaseSensitive} focusNonce={search.focusNonce} goTo={search.goTo} scopeLimited={searchScopeIsLimited({ slotHasMore, cursorIsForActiveSlot })} />}
             onClose={search.close}
             initialWidth={400}
             minWidth={320}
@@ -7737,7 +7785,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
-              pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPinnedMessage} onUnpin={handleUnpinById}
+              pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onUnpin={handleUnpinById}
               slotTitle={activeSlotTitle} chatMode={mode}
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
@@ -7776,7 +7824,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               issues={panelIssues} selectedIssueUrl={selectedIssueUrl} onSelectIssue={selectIssueUrl} onReconcileIssue={reconcileIssueUrl}
               onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
-                pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPinnedMessage} onUnpin={handleUnpinById}
+                pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onUnpin={handleUnpinById}
                 slotTitle={activeSlotTitle} chatMode={mode}
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}

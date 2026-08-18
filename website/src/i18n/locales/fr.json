@@ -6598,7 +6598,9 @@
       "next_match": "Résultat suivant",
       "no_results": "Aucun résultat",
       "previous": "Précédent ({{mod}})",
-      "previous_match": "Résultat précédent"
+      "previous_match": "Résultat précédent",
+      "no_results_loaded_only": "Aucun résultat dans l'historique chargé",
+      "results_loaded_only": "{{current}}/{{total}} résultats dans l’historique chargé"
     },
     "searchResultsList": {
       "assistant": "Assistant",
@@ -8390,7 +8392,13 @@
         "turn_took_credits_cost": "Le tour a pris {{elapsed}} et consommé {{credits}} crédits ({{cost}} de coût API)",
         "use_as_plan_count": "Utiliser comme plan ({{count}} étapes)",
         "pin_message": "Épingler le message",
-        "unpin_message": "Désépingler le message"
+        "unpin_message": "Désépingler le message",
+        "needs_earlier_history": "Sélectionnez pour charger la page suivante de l’historique antérieur",
+        "more_actions": "Plus d'actions",
+        "needs_active_chat": "Disponible dès que cette conversation a fini de s’ouvrir",
+        "needs_earlier_history_count_one": "Sélectionnez pour charger l’historique antérieur – {{count}} message antérieur restant",
+        "needs_earlier_history_count_many": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
+        "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants"
       },
       "chatFooter": {
         "compacting": "Compactage…",
@@ -8832,6 +8840,9 @@
         "select_file_hint": "Sélectionnez un fichier dans l'arborescence pour l'ouvrir dans un nouvel onglet",
         "title": "Fichiers",
         "tree_error": "Impossible de charger l’arborescence des fichiers"
+      },
+      "deepLink": {
+        "message_unavailable": "Ce message n’est plus dans cette conversation."
       }
     },
     "chatPage": {

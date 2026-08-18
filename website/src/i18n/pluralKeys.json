@@ -118,6 +118,7 @@
   "pages.channelPage.agent_2",
   "pages.channelPage.agent_joining",
   "pages.channelPage.reply_2",
+  "pages.chat.assistantMessage.needs_earlier_history_count",
   "pages.chat.collapsibleToolGroup.tool_call",
   "pages.chat.sessionSummary.open_items",
   "pages.chat.sideChat.turn",
