@@ -2392,6 +2392,63 @@ class TestToSlackMrkdwnKeepTables:
         assert "```mermaid" not in result
 
 
+class TestToSlackMrkdwnImages:
+    """Markdown IMAGE syntax must survive conversion untouched.
+
+    Slack mrkdwn has no image form, so running an image through the
+    ``[text](url)`` -> ``<url|text>`` rewrite emits a stray ``!`` in front of a
+    clickable link to a destination Slack cannot open (a local path is not even
+    reachable from Slack's servers). Raw passthrough is what the reader can act
+    on, and it matches Discord, whose renderer rewrites no links at all.
+    """
+
+    def test_image_with_local_path_is_untouched(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("![shot](/tmp/x.png)") == "![shot](/tmp/x.png)"
+
+    def test_image_with_http_url_is_untouched(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        text = "![diagram](https://example.com/d.png)"
+        assert to_slack_mrkdwn(text) == text
+
+    def test_regular_link_still_converts(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("[docs](https://example.com)") == "<https://example.com|docs>"
+
+    def test_mixed_line_converts_only_the_link(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("see ![a](/x.png) and [b](https://y)")
+        assert out == "see ![a](/x.png) and <https://y|b>"
+
+    def test_escaped_bang_is_still_treated_as_an_image(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        # CommonMark reads ``\![x](p)`` as an escaped literal ``!`` followed by a
+        # LINK, so a strict reader would convert it. This converter has no
+        # backslash-unescaping layer, so honouring that in detection alone would
+        # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
+        # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
+        # which registers ``\![x](p)`` as an image on the dashboard side.
+        assert to_slack_mrkdwn(r"\![x](p)") == r"\![x](p)"
+
+    def test_sentence_bang_before_a_link_is_an_image_per_commonmark(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        # No space between ``!`` and ``[``: CommonMark binds the ``!`` into image
+        # syntax, so this is an image, not "exclamation mark, then link".
+        assert to_slack_mrkdwn("Wow![click](https://x)") == "Wow![click](https://x)"
+
+    def test_image_inside_a_code_fence_is_untouched(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        text = "```\n![a](/x.png)\n```"
+        assert to_slack_mrkdwn(text) == text
+
+
 class TestMermaidSequenceArrows:
     """Regression: dashed sequence-diagram arrows were rendered by a dead branch.
 

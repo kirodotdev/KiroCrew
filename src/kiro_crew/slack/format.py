@@ -412,8 +412,13 @@ def to_slack_mrkdwn(text: str, *, keep_tables: bool = False, in_code: bool = Fal
 
 # ── Inline conversions (outside code blocks) ──
 
-# Markdown link [text](url) → Slack <url|text>
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+# Markdown link [text](url) → Slack <url|text>. The lookbehind holds IMAGE
+# syntax out of the rewrite: Slack mrkdwn has no image form, so converting
+# ``![alt](dest)`` yields a stray ``!`` plus a clickable link to a destination
+# Slack cannot open — a local screenshot path is not even reachable from its
+# servers. Images pass through raw instead, as they do on Discord, until the
+# outbound upload path claims them.
+_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 # Headings: # text → *text*
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 # Horizontal rule: --- or *** or ___ (3+ chars)
