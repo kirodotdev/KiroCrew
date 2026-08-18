@@ -42,6 +42,7 @@ from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
     _valid_override_home,
     kiro_agents_dir,
+    project_agents_dir,
 )
 from kiro_crew.constants import MIN_NODE_MAJOR
 from kiro_crew.dashboard.crash_dump_store import (
@@ -71,6 +72,7 @@ from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS as _OPT_IN_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
+from kiro_crew.model_registry import acp_id_correction
 from kiro_crew.platform import (
     PlatformCompositionError,
     current_context,
@@ -78,6 +80,7 @@ from kiro_crew.platform import (
 )
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
+from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.service import apparmor
 from kiro_crew.service import common as common_service
@@ -358,6 +361,112 @@ _CLAUDE_ACP_BIN = "claude-agent-acp"
 # command must not silently undo that.  Doctor still repairs the ``tools`` entry,
 # which only makes the server's tools *reachable*, never pre-approved.
 _NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER}) | frozenset(_OPT_IN_MCPS)
+
+
+def _strict_agent_json_specs(directory: Path) -> list[Path]:
+    """Enumerate real spec candidates while preserving directory-read failures."""
+    try:
+        with os.scandir(directory) as entries:
+            return sorted(
+                (
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.name.endswith(".json") and not entry.name.startswith("._")
+                ),
+                key=lambda path: path.stem,
+            )
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
+def _agent_spec_model_problems(
+    agents_dir: Path | None = None,
+    project_dir: str | Path | None = None,
+    provider: str = "acp",
+) -> list[tuple[str, str, str]] | None:
+    """Agent specs whose ``model`` names a model kiro-cli does not serve.
+
+    Returns ``(agent name, pinned value, correct id)`` for each spec the registry
+    can positively correct, an EMPTY list when every pin checked out, or ``None``
+    when the check could not run at all. That third state is deliberate: a
+    diagnostic that reports green for a check it never performed is worse than
+    one that admits it could not look, which is the whole failure class this
+    audit exists to close.
+
+    *project_dir* is forwarded so project-scoped specs are audited too. A project
+    spec SHADOWS a user-level agent of the same name, so a global-only scan can
+    miss the exact spec a session in that project runs.
+
+    Read through the hardened spec reader rather than opening files here, so a
+    spec symlinked at something sensitive is refused the same way every other
+    consumer refuses it.
+
+    Reports only ids the registry recognizes under a different spelling. An
+    unrecognized id is deliberately NOT reported: a real-but-unregistered id (a
+    regional profile, or a model newer than this build's registry) is
+    legitimate, and entitlement cannot be judged offline at all — that needs a
+    live session's advertised set.
+    """
+    # The retained claude_code seam accepts its own registered wire ids. The
+    # correction below is specifically an ACP/kiro-cli spelling audit.
+    if provider == "claude_code":
+        return []
+
+    problems: list[tuple[str, str, str]] = []
+    try:
+        global_dir = agents_dir or _agents_dir()
+        global_specs = _strict_agent_json_specs(global_dir)
+        if project_dir:
+            if is_sensitive_path(str(project_dir)):
+                return None
+            project_specs = _strict_agent_json_specs(project_agents_dir(project_dir))
+        else:
+            project_specs = []
+
+        # Normal discovery deliberately skips malformed or denied specs so one
+        # bad file cannot break the agent picker. Doctor has the opposite
+        # contract: a skipped candidate makes the audit incomplete, so read each
+        # candidate directly through discovery's hardened reader and fail the
+        # check to UNKNOWN when any one is refused.
+        for path, project_scoped in (
+            *((path, False) for path in global_specs),
+            *((path, True) for path in project_specs),
+        ):
+            data = _read_agent_spec(path)
+            if data is None:
+                return None
+            model = normalize_agent_model(data.get("model"))
+            correction = acp_id_correction(model)
+            if not correction:
+                continue
+            if project_scoped:
+                raw_name = data.get("name")
+                name = raw_name if isinstance(raw_name, str) and raw_name else path.stem
+            else:
+                raw_name = data.get("name")
+                name = raw_name if isinstance(raw_name, str) else path.stem
+            problems.append((name, model, correction))
+    except Exception:
+        return None
+    return problems
+
+
+def _format_model_pin_problem(name: str, pin: str, correction: str) -> tuple[str, str]:
+    """The two report lines for one unusable pin.
+
+    Every field is repr'd, including the NAME: all three come from an agent
+    spec's own contents, so a planted or packaged spec could otherwise carry
+    terminal control sequences (cursor moves, screen clears, OSC) and rewrite or
+    hide this report. ``repr`` escapes every control character, and is what the
+    pin and correction already relied on.
+
+    Separated from the printing so the escaping is a testable contract rather
+    than a property of how far ``doctor()`` happens to get.
+    """
+    return (
+        f"  model pin:   ❌ {name!r}: {pin!r} is not a model kiro-cli serves",
+        f"                  the registry maps that spelling to {correction!r}",
+    )
 
 
 def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
@@ -1838,6 +1947,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     elif not stale_project:
         print("  project dir: ⚠️  not set (run kirocrew setup from project root)")
 
+    cfg = KiroCrewConfig.load()
+
     # ── Agent config ──
     print("\nAgent")
     agent_path = _agents_dir() / AGENT_FILENAME
@@ -1847,10 +1958,31 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("  config:      ❌ not found (run kirocrew setup)")
         issues.append("agent config")
 
+    # Model pins across ALL specs, not just the default one. A pin kiro-cli
+    # cannot serve kills every session and subagent using that agent seconds
+    # after startup, and nothing else reports it before something spawns: the
+    # entitlement guards all sit behind session init, while kiro-cli reads this
+    # field when the child starts.
+    #
+    # The project dir is threaded through because a project spec SHADOWS a
+    # user-level agent of the same name — scanning only the global scope would
+    # miss the very spec a session in this project actually runs, and report a
+    # clean bill of health for it.
+    _bad_pins = _agent_spec_model_problems(project_dir=proj or None, provider=cfg.agent.provider)
+    if _bad_pins is None:
+        print("  model pins:  ⚠️  could not check (agent specs unreadable)")
+        issues.append("agent model pins unchecked")
+    elif _bad_pins:
+        for _agent_name, _pin, _correction in _bad_pins:
+            for _line in _format_model_pin_problem(_agent_name, _pin, _correction):
+                print(_line)
+        issues.append("agent model pin")
+    else:
+        print("  model pins:  ✅ no unusable spellings in agent specs")
+
     # ── Config ──
     print("\nConfiguration")
     cfg_dir = config_dir()
-    cfg = KiroCrewConfig.load()
     if cfg_dir.exists():
         print(f"  config dir:  ✅ {cfg_dir}")
     else:

@@ -122,6 +122,16 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 - `agent.provider` is fixed to `"acp"` (enum `["acp"]`); there is no provider to choose.
 - `create_provider_factory()` returns a `Callable` that creates the kiro-cli `AcpProvider`.
 
+An agent spec's model is consumed by kiro-cli before Kiro Crew reaches
+`session/new`, so the live-session entitlement guard cannot diagnose a wrong
+wire spelling at spawn time. Agent create/update validate a pin before
+persisting it: they reuse the role-model validator for advertised ids and
+`model_registry.acp_id_correction` for the offline positive case where the
+registry recognizes a non-ACP spelling and can name its ACP id. Unknown ids are
+allowed because they may be valid regional or newly released ids; empty and
+`auto` continue to defer. Doctor applies the same correction audit to every
+discoverable user- and project-scoped spec.
+
 ### MCP Server Registration
 
 MCP servers are passed directly in the `session/new` params. The two managed

@@ -3612,7 +3612,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "agent": agent_name, "workspace": workspace})
 
 
-def _model_rejected_reason(model_name: str) -> str | None:
+def _model_rejected_reason(model_name: str, provider: str | None = None) -> str | None:
     """Reason to reject ``model_name`` for the active provider, or None to allow.
 
     The dashboard model dropdown falls back to canonical registry keys (e.g.
@@ -3624,13 +3624,20 @@ def _model_rejected_reason(model_name: str) -> str | None:
     call, or the openai-compat path can never persist a canonical key. ``auto``
     and ``""`` (provider default) always pass; for the ``claude_code`` provider
     canonical keys ARE the wire format, so they pass there too.
+
+    *provider* lets a caller that has already loaded the config supply it, so
+    this adds no read of its own: ``KiroCrewConfig.load()`` deep-copies the
+    validated dict even on a cache hit, and on a miss it reads and validates
+    files — work that must not land on the event loop under a held lock. Omit it
+    and the provider is resolved here, preserving the original behaviour.
     """
     if not model_name or model_name == "auto":
         return None
-    try:
-        provider = KiroCrewConfig.load().agent.provider
-    except Exception:  # pragma: no cover - config load is resilient
-        provider = ""
+    if provider is None:
+        try:
+            provider = KiroCrewConfig.load().agent.provider
+        except Exception:  # pragma: no cover - config load is resilient
+            provider = ""
     if provider == "claude_code":
         return None
     if model_registry.is_canonical_key(model_name):
