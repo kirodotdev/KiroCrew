@@ -548,24 +548,70 @@ class TestWhatIsWrittenStaysReadable:
         assert still["comments"] == [{"cid": "c1"}]
 
     def test_anything_the_writer_accepts_the_reader_returns(self, isolated_queue):
-        """Round-trip at the boundary, so an off-by-one cannot hide between them."""
-        rid = "1700000000000-atlimit"
-        fp = server._request_file(server.QUEUE_DIR, rid)
-        # Grow a record until the writer refuses, then prove the last accepted
-        # one is still readable — that is the invariant, not any single size.
-        pad = "a" * 1000
-        req: dict = {"id": rid, "notes": []}
-        for _ in range(4000):
-            req["notes"].append(pad)
-            try:
-                server._write_request(fp, req)
-            except server._RecordTooLarge:
-                req["notes"].pop()
-                break
-        else:
-            pytest.fail("never reached the ceiling — the guard may be inert")
+        """Round-trip AT the ceiling, so an off-by-one cannot hide between them.
+
+        The writer refuses `len(data) > max_bytes` and the reader refuses
+        `st_size > MAX_RECORD_BYTES`, so a record serialising to exactly the
+        ceiling is the single input both must accept. Either bound flipping to
+        `>=` rejects it, and no other test in this file writes a record of
+        exactly that size.
+        """
+        fp = server._request_file(server.QUEUE_DIR, _AT_LIMIT_RID)
+        at_ceiling = _record_serialising_to(_AT_LIMIT_RID, server.MAX_RECORD_BYTES)
+        server._write_request(fp, at_ceiling)
+        assert fp.stat().st_size == server.MAX_RECORD_BYTES, (
+            "the record no longer lands on the ceiling, so the boundary is untested"
+        )
         assert server._read_request(fp) is not None, (
             "the largest record the writer accepted is unreadable"
+        )
+
+    def test_one_byte_over_the_ceiling_is_refused(self, isolated_queue):
+        """Pins the ceiling exactly.
+
+        `test_an_oversized_write_is_refused` uses a grossly oversized record, which
+        an off-by-one bound still refuses; only the +1 case can tell the two apart.
+        """
+        fp = server._request_file(server.QUEUE_DIR, _AT_LIMIT_RID)
+        over = _record_serialising_to(_AT_LIMIT_RID, server.MAX_RECORD_BYTES + 1)
+        with pytest.raises(server._RecordTooLarge):
+            server._write_request(fp, over)
+
+    def test_the_boundary_round_trip_stays_inside_an_io_budget(
+        self, isolated_queue, monkeypatch
+    ):
+        """Bound the I/O, because a quadratic probe is invisible to a pass/fail assert.
+
+        Establishing the ceiling by growing a record and calling the real writer at
+        each step costs sum(k) bytes, not O(k): measured at 2081 writer calls and
+        2.03 GiB serialised and written to reach a 2 MiB answer. On windows-latest
+        that overran the 180s per-test timeout, and replacing the killed worker
+        pushed the whole shard past its 40-minute job cap, so every other test in
+        that shard went unreported. The ceiling is arithmetic on the serialised
+        bytes, so candidates must be measured in memory.
+        """
+        offered: list[int] = []
+        real_write_json = server._atomic_write_json
+
+        def counting(path: Path, payload: dict, **kw: Any) -> None:
+            offered.append(len(json.dumps(payload, indent=2).encode("utf-8")))
+            return real_write_json(path, payload, **kw)
+
+        monkeypatch.setattr(server, "_atomic_write_json", counting)
+
+        fp = server._request_file(server.QUEUE_DIR, _AT_LIMIT_RID)
+        server._write_request(
+            fp, _record_serialising_to(_AT_LIMIT_RID, server.MAX_RECORD_BYTES)
+        )
+        assert server._read_request(fp) is not None
+
+        assert len(offered) <= 2, (
+            f"{len(offered)} writer calls to establish one ceiling; a real write per "
+            "candidate size is quadratic and hangs the Windows shard"
+        )
+        assert sum(offered) <= 2 * server.MAX_RECORD_BYTES, (
+            f"the boundary round-trip pushed {sum(offered)} bytes through the writer "
+            f"for a {server.MAX_RECORD_BYTES}-byte answer"
         )
 
     def test_the_writer_bound_covers_every_route(self):
@@ -2667,6 +2713,29 @@ def _widen_the_race(monkeypatch, delay: float = 0.05):
         real_write(fp, req)
 
     monkeypatch.setattr(server, "_write_request", slow_write)
+
+
+_AT_LIMIT_RID = "1700000000000-atlimit"
+
+
+def _record_serialising_to(rid: str, size: int) -> dict:
+    """A queue record whose `json.dumps(..., indent=2)` encoding is exactly `size` bytes.
+
+    Solved, not searched. The writer's ceiling is a property of the serialised
+    bytes, so a candidate can be measured in memory; growing a record and calling
+    the real writer at each step spends O(n^2) bytes of fsynced disk I/O to learn
+    the same number. The pad is `a`, which JSON never escapes, so length is linear
+    in the pad and the correction below lands in one step.
+    """
+    req: dict = {"id": rid, "notes": [""]}
+    for _ in range(3):
+        have = len(json.dumps(req, indent=2).encode("utf-8"))
+        if have == size:
+            return req
+        if len(req["notes"][0]) + size - have < 0:
+            raise AssertionError(f"{size} bytes is below the record skeleton")
+        req["notes"][0] = "a" * (len(req["notes"][0]) + size - have)
+    raise AssertionError(f"could not serialise to exactly {size} bytes")
 
 
 def _submit(project_id: str, text: str, extra: dict | None = None) -> _JsonHandler:
