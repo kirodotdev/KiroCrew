@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isArtifactEditing } from '../utils/artifactEditGuard'
+import { isReconcileNote } from '../lib/noteContract'
 import { useAppDispatch } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
@@ -953,8 +954,11 @@ export function useWebSocket() {
             // trigger (no-op unless an L2 theme with that manifest sound is
             // active + unmuted). User/tool messages don't chime.
             if (data.role === 'assistant') emitThemeSound('message-received')
-            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); voiceProgressRef.current = null; synthChainRef.current = Promise.resolve() }
-            if (data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
+            // A note breadcrumb starts no turn, so no chat_done arrives to undo either
+            // effect: cutting speech would strand it and a thinking status would never clear.
+            const isPassiveNote = data.role === 'inject' && isReconcileNote(data.cls)
+            if (!isPassiveNote && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) { stopVoice(); voiceProgressRef.current = null; synthChainRef.current = Promise.resolve() }
+            if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))
             }
             break
