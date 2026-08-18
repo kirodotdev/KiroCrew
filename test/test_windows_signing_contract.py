@@ -505,6 +505,35 @@ def test_the_signing_gate_also_requires_the_prod_environment() -> None:
     )
 
 
+def test_the_pairing_guard_runs_before_the_upload_and_fails_hard() -> None:
+    """An orphaned installer must never be uploaded (#4301).
+
+    The guard exists so an .exe with no .blockmap beside it fails the build
+    BEFORE the artifact is produced: the publish lane then takes its
+    documented build-produced-nothing skip path instead of hard-failing an
+    insider run, which would block stable promotion of the mac, Linux and CLI
+    artifacts (the coupling soft_fail exists to prevent). Nothing else fails
+    at PR time if the step is deleted or reordered, so it is pinned here like
+    the other load-bearing properties of this workflow.
+    """
+    guard = _step("installer/blockmap")
+    run = guard["run"]
+    assert "exit 1" in run, "the guard must fail the job, not merely annotate"
+    assert "::error::" in run, "the failure must annotate the run"
+    assert "GITHUB_STEP_SUMMARY" in run, (
+        "soft_fail keeps the run green, so the reason must reach the run "
+        "summary page rather than living only in the job log"
+    )
+    names = [s.get("name", "") for s in _build_job()["steps"]]
+    guard_i = next(i for i, n in enumerate(names) if "installer/blockmap" in n)
+    upload_i = names.index("Upload desktop artifact")
+    build_i = names.index("Build desktop app")
+    assert build_i < guard_i < upload_i, (
+        f"expected build({build_i}) < guard({guard_i}) < upload({upload_i}): "
+        "the guard must inspect the built dist and refuse the upload"
+    )
+
+
 def test_artifact_paths_contain_no_yaml_comments() -> None:
     """`path:` is a block scalar, where a '#' line is a glob, not a comment.
 
