@@ -181,7 +181,8 @@ answer out of its own blocked response — or resolve a card the owner is still
 looking at, feeding the agent an answer the owner never gave.
 `is_owner_dashboard_request` is reused rather than re-derived so "owner" has one
 definition: an exact `owner_id` match, or a signed `local-app` / `local-startup`
-bootstrap subject when no owner is configured. That is also the identity the
+bootstrap subject — a host-local, gateway-minted principal that is
+owner-equivalent even when an `owner_id` is also configured. That is also the identity the
 `ask_question` tool itself carries, since its token is minted as
 `generate_token(owner_id or "local-app")`.
 

@@ -69,9 +69,12 @@ def _is_dashboard_owner(request: web.Request) -> bool:
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
-    return request.get("app") == "" and (
-        (owner_id and caller == owner_id)
-        or (not owner_id and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS)
+    # A signed local bootstrap subject (local-app / local-startup) is
+    # owner-equivalent — host-local and gateway-minted — so accept it whether
+    # or not a (Slack) owner_id is also configured (see #4418).
+    return request.get("app") == "" and bool(caller) and (
+        caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
+        or (bool(owner_id) and caller == owner_id)
     )
 
 

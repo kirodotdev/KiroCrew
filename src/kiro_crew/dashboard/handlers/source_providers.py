@@ -4031,9 +4031,17 @@ def is_owner_dashboard_request(request: web.Request) -> bool:
     caller = str(request.get("user") or "")
     if "app" not in request or request["app"] != "" or not caller:
         return False
-    if owner_id:
-        return caller == owner_id
-    return caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
+    # A signed local bootstrap subject (local-app / local-startup) is
+    # owner-equivalent: it is mintable only via the loopback + local-secret
+    # token endpoint or the gateway's own startup output — i.e. the host owner.
+    # Accept it whether or not a (Slack) owner_id is also configured. The two
+    # are different names for the same single principal; comparing them directly
+    # locks a bootstrap-seeded dashboard session out of its own owner endpoints
+    # the moment owner_id is set, because the session subject is baked at mint
+    # time and never re-derived from owner_id (see #4418).
+    if caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+        return True
+    return bool(owner_id) and caller == owner_id
 
 
 def _audit_source_api(
@@ -4063,7 +4071,10 @@ def _authorize_owner_request(
 
     When no owner is configured, read-only operations may allow either signed
     standalone-local bootstrap identity. Mutations remain owner-only. Once an
-    owner is configured, every operation requires an exact owner match.
+    owner is configured, every operation requires the owner — an exact
+    ``owner_id`` match OR a signed ``local-app`` / ``local-startup`` bootstrap
+    subject, which is a host-local, gateway-minted principal that is
+    owner-equivalent (see #4418).
     """
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
@@ -4083,7 +4094,7 @@ def _authorize_owner_request(
     if not caller:
         _audit_source_api(request, operation, "denied", "non_owner")
         return web.json_response({"error": "forbidden"}, status=403)
-    if caller != owner_id:
+    if caller != owner_id and caller not in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
         _audit_source_api(request, operation, "denied", "non_owner")
         return web.json_response({"error": "forbidden"}, status=403)
     return None
