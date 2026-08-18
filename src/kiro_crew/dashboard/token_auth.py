@@ -40,6 +40,11 @@ from kiro_crew.dashboard.refresh_tokens import (
     refresh_cookie_name,
 )
 
+
+def internal_path_matches(path: str, entries: Iterable[str]) -> bool:
+    """Return whether *path* is an exact or child path of an internal route."""
+    return any(path == entry or path.startswith(entry + "/") for entry in entries)
+
 # Canonical revocation-generation definitions live in revocation_gen so the
 # refresh-token module can consult the counter without recreating the
 # token_auth <-> refresh_tokens import cycle (same pattern as token_secret
@@ -1661,13 +1666,8 @@ def token_auth_middleware(
         # Internal API paths: loopback + secret grants immediate access.
         # If the secret is missing (browser request), fall through to
         # normal cookie auth so dashboard pages can call these routes.
-        _matches_strict = internal_paths and (
-            path in internal_paths or any(path.startswith(p + "/") for p in internal_paths)
-        )
-        _matches_mixed = mixed_internal_paths and (
-            path in mixed_internal_paths
-            or any(path.startswith(p + "/") for p in mixed_internal_paths)
-        )
+        _matches_strict = internal_path_matches(path, internal_paths)
+        _matches_mixed = internal_path_matches(path, mixed_internal_paths)
         # local_only=False: treat ALL internal paths as mixed (backward compat
         # with mainline's local_only semantics — user opted into remote access)
         if not local_only and _matches_strict and not _matches_mixed:
