@@ -77,6 +77,22 @@ export type McpShareRecommendation = {
   reasons: McpShareReason[]
 }
 
+/**
+ * Where an operator-requested measurement pass got to.
+ *
+ * ``running`` is the only field a caller may branch on to decide whether to keep
+ * polling: ``done`` and ``total`` are a readout, and both are 0 both before a
+ * pass starts and when a pass found nothing to measure. ``error`` names the
+ * exception class of a pass that stopped early, because a pass that dies
+ * silently is indistinguishable from one that finished with nothing to do.
+ */
+export type McpMeasureProgress = {
+  running: boolean
+  done: number
+  total: number
+  error?: string
+}
+
 export type McpManagedServer = {
   name: string
   stub: boolean            // effective: can_stub AND in_allowlist
@@ -1899,6 +1915,10 @@ export const api = {
   mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; sessions: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
   mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpManagedServer[] }>,
   mcpGatewaySetStub: (name: string, stub: boolean) => post('/api/mcp-gateway/servers/stub', { name, stub }).then(j) as Promise<{ ok: boolean; name: string; stub: boolean; enabled?: boolean; applied?: boolean; stub_servers?: string[] }>,
+  // Starting a measurement pass returns immediately: it spawns two processes per
+  // unmeasured server, so the answer arrives through the progress read, not here.
+  mcpMeasureStart: () => post('/api/mcp/measure', {}).then(j) as Promise<McpMeasureProgress>,
+  mcpMeasureProgress: () => fetch('/api/mcp/measure').then(j) as Promise<McpMeasureProgress>,
   // Batch form of the above — one config write + one pool re-apply for the whole
   // set, so "toggle all" can't land the allowlist half-flipped.
   mcpGatewaySetStubMany: (names: string[], stub: boolean) => post('/api/mcp-gateway/servers/stub', { names, stub }).then(j) as Promise<{ ok: boolean; names: string[]; stub: boolean; enabled?: boolean; applied?: boolean; stub_servers?: string[] }>,

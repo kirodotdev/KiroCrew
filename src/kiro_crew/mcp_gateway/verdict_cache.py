@@ -50,7 +50,17 @@ VERDICT_CACHE_FILENAME = "shareability-verdicts.json"
 #: Bump when the pre-flight learns a new check, so older verdicts are re-derived
 #: rather than trusted. Part of the identity string, so bumping it makes every
 #: stored row read as stale instead of wiping the file.
-SCHEMA = 1
+SCHEMA = 2
+
+#: How much of a server-reported version string reaches a log line. The value is
+#: whatever the SERVER chose to call itself, so it is remote-controlled text in a
+#: sink an operator reads in a terminal. It is interpolated with ``%r`` rather than
+#: ``%s`` so a newline cannot forge a second log line and an ESC cannot recolor or
+#: overwrite the surrounding output; escaping is preferred over dropping those
+#: characters because it keeps the evidence that the server sent them. ``%r`` does
+#: not bound length, so the cap closes the remaining hazard of one field becoming a
+#: wall of text. A real version string is far shorter than this.
+_VERSION_LOG_LEN_CAP = 120
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,17 @@ class Identity:
         return "\u0000".join(
             (self.command_args_hash, self.env_hash, self.binary_version, str(self.schema))
         )
+
+
+def _identity_matches_schema(identity: str) -> bool:
+    """True when *identity* was written under the SCHEMA this build compares.
+
+    Reads the trailing field of the identity string rather than parsing the whole
+    thing, because the other fields are opaque hashes whose meaning is not this
+    function's business. An identity that is empty or shaped differently reads as
+    NOT matching, which sends the row to be re-measured -- the safe direction.
+    """
+    return identity.rpartition("\u0000")[2] == str(SCHEMA) and "\u0000" in identity
 
 
 @dataclass(frozen=True)
@@ -85,6 +106,14 @@ class CachedPreflight:
     server's current identity compares it; a reader that only knows the name (the
     dashboard row builder, which does no IO) reads the row as-is and accepts that
     a just-changed server shows its previous measurement until the next probe.
+
+    ``reported_version`` is what the server called itself in the handshake, kept
+    as a SECOND validity input rather than folded into ``identity``. Two reasons
+    it cannot live in there: the identity is the material ``PoolKey`` is built
+    from and a self-reported string is not part of a pool key, and an absent
+    version has to mean "no information" rather than a distinct value — folding
+    it in would make one unprobeable pass discard a good measurement, because a
+    flat string comparison cannot express "compatible".
     """
 
     ran: bool
@@ -92,6 +121,7 @@ class CachedPreflight:
     reasons: tuple[str, ...]
     evaluated_at: float
     identity: str = ""
+    reported_version: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -100,6 +130,7 @@ class CachedPreflight:
             "reasons": list(self.reasons),
             "evaluatedAt": self.evaluated_at,
             "identity": self.identity,
+            "reportedVersion": self.reported_version,
         }
 
 
@@ -144,13 +175,29 @@ class VerdictCache:
         for name, value in entries.items():
             if not isinstance(name, str) or not name or not isinstance(value, dict):
                 continue
+            stored_identity = value.get("identity")
+            stored_identity = stored_identity if isinstance(stored_identity, str) else ""
+            if not _identity_matches_schema(stored_identity):
+                # A row measured under a different compared-facet set describes a
+                # narrower or wider check than the current one, so it is not
+                # evidence about this build's question. Dropped at LOAD rather than
+                # refused at read, because the dashboard row builder reads by name
+                # without checking either validity input: a row left here would be
+                # rendered as a verdict, the server would count as measured, and
+                # the action offering to measure it would be disabled -- on exactly
+                # the installs a schema bump exists to re-derive. Safe to drop
+                # unconditionally because SCHEMA is our own constant and cannot
+                # differ for a transient reason, unlike a binary fingerprint.
+                logger.info(
+                    "shareability cache: dropping %s, measured under a different schema", name
+                )
+                continue
             ran = value.get("ran")
             if not isinstance(ran, bool):
                 # A row that cannot say whether the pre-flight ran is unusable:
                 # treating it as "ran" would fabricate evidence.
                 continue
             reasons = value.get("reasons")
-            identity = value.get("identity")
             self._entries[name] = CachedPreflight(
                 ran=ran,
                 caller_sensitive=value.get("callerSensitive") is True,
@@ -161,17 +208,57 @@ class VerdictCache:
                 # A row written before identities were stored reads as identity
                 # "", which matches nothing, so it is re-measured rather than
                 # trusted. That is the safe direction for a format change.
-                identity=identity if isinstance(identity, str) else "",
+                identity=stored_identity,
+                reported_version=(
+                    rv if isinstance(rv := value.get("reportedVersion"), str) else ""
+                ),
             )
 
-    def get(self, server_name: str, identity: Identity) -> CachedPreflight | None:
-        """The row for *server_name*, only if it was measured under *identity*.
+    def get(
+        self, server_name: str, identity: Identity, reported_version: str = ""
+    ) -> CachedPreflight | None:
+        """The row for *server_name*, only if it still describes this server.
 
         An identity mismatch reads as "not measured": the stored conclusion
         describes a program that is no longer what this name launches.
+
+        *reported_version* is what the server calls itself right now. It closes the
+        blind spot the launch fingerprint cannot see: a runtime-resolved launch
+        (``npx some-server@latest``) keeps a byte-identical command, env and
+        interpreter fingerprint while the code behind it is replaced, so the
+        fingerprint alone would trust a measurement of a program that no longer
+        exists.
+
+        A version is only allowed to INVALIDATE, never to validate on its own, and
+        only when both sides actually know one. An empty side means "no
+        information" — the server was not probed this pass, or it reports no
+        version at all — and treating that as a mismatch would throw away a good
+        measurement every time a probe failed once.
+
+        A version mismatch DROPS the row rather than only hiding it from this
+        caller. Refusing to return it is not enough: the dashboard row builder
+        reads rows through :meth:`get_by_name`, which checks nothing, so a row left
+        in place after the pre-flight fails to re-measure would still be rendered —
+        as a measurement of code that has been replaced, in the permissive
+        direction. Dropping is safe on this branch specifically because both sides
+        being non-empty and different is positive evidence that the program
+        changed. It is deliberately NOT done for an identity mismatch, where
+        ``binary_version`` is the string ``"unknown"`` for a binary mid-install, an
+        ``OSError`` or a ``which`` miss alike — there a mismatch can mean "could not
+        tell", and dropping would discard a good measurement on a transient read.
         """
         row = self._entries.get(server_name)
         if row is None or row.identity != identity.as_str():
+            return None
+        if reported_version and row.reported_version and reported_version != row.reported_version:
+            logger.info(
+                "shareability cache: %s reports %r but was measured at %r; dropping the row",
+                server_name,
+                reported_version[:_VERSION_LOG_LEN_CAP],
+                row.reported_version[:_VERSION_LOG_LEN_CAP],
+            )
+            del self._entries[server_name]
+            self._dirty = True
             return None
         return row
 
@@ -192,6 +279,7 @@ class VerdictCache:
             reasons=verdict.reasons,
             evaluated_at=verdict.evaluated_at,
             identity=identity.as_str(),
+            reported_version=verdict.reported_version,
         )
         self._dirty = True
 

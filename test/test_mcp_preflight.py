@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -91,6 +93,125 @@ class TestIdentityInvalidation:
         assert vc.load_cache(tmp_path).get("srv", _ident(binary_version="v0")) is None
 
 
+class TestSchemaTracksTheComparedSurface:
+    def test_widening_the_compared_surface_forces_a_schema_bump(self) -> None:
+        """A stored row means "passed the checks THIS schema ran", nothing wider.
+
+        The facet set IS what the pre-flight compares, so a row measured under a
+        narrower set must never be read as having passed a wider one. Binding the
+        two constants in one assertion is what makes that impossible to forget:
+        adding a facet fails here until the schema moves with it.
+        """
+        assert (pf.FACET_INIT, pf.FACET_TOOLS) == ("initialize", "tools")
+        assert vc.SCHEMA == 2
+
+
+class TestReportedVersionInvalidation:
+    """The blind spot the launch fingerprint cannot see, and its no-flap rule.
+
+    A runtime-resolved launch (``npx some-server@latest``) keeps a byte-identical
+    command, env and interpreter fingerprint while the code behind it is replaced.
+    The version the server reports is the only signal that survives that, so it is
+    allowed to invalidate — but only when both sides know one, or a single failed
+    probe would discard a good measurement.
+    """
+
+    def test_the_same_version_still_hits(self, tmp_path) -> None:
+        cache = vc.VerdictCache(tmp_path / "v.json")
+        ident = _ident()
+        cache.put(
+            "srv",
+            ident,
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=False, reasons=(), evaluated_at=1.0,
+                reported_version="1.2.3",
+            ),
+        )
+        assert cache.get("srv", ident, "1.2.3") is not None
+
+    def test_a_changed_version_misses_on_an_unchanged_fingerprint(self, tmp_path) -> None:
+        """The npx case: identity identical, code replaced upstream."""
+        cache = vc.VerdictCache(tmp_path / "v.json")
+        ident = _ident()
+        cache.put(
+            "srv",
+            ident,
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=False, reasons=(), evaluated_at=1.0,
+                reported_version="1.2.3",
+            ),
+        )
+        assert cache.get("srv", ident, "1.2.4") is None
+
+    def test_an_unknown_current_version_does_not_discard_the_row(self, tmp_path) -> None:
+        """A probe that could not run is no information, not a mismatch."""
+        cache = vc.VerdictCache(tmp_path / "v.json")
+        ident = _ident()
+        cache.put(
+            "srv",
+            ident,
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=False, reasons=(), evaluated_at=1.0,
+                reported_version="1.2.3",
+            ),
+        )
+        assert cache.get("srv", ident, "") is not None
+
+    def test_a_row_stored_without_a_version_is_not_discarded(self, tmp_path) -> None:
+        """Rows written before versions were recorded stay usable."""
+        cache = vc.VerdictCache(tmp_path / "v.json")
+        ident = _ident()
+        cache.put("srv", ident, _verdict())
+        assert cache.get("srv", ident, "9.9.9") is not None
+
+    def test_the_version_survives_a_round_trip_through_the_file(self, tmp_path) -> None:
+        path = tmp_path / "v.json"
+        cache = vc.VerdictCache(path)
+        ident = _ident()
+        cache.put(
+            "srv",
+            ident,
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=False, reasons=(), evaluated_at=1.0,
+                reported_version="1.2.3",
+            ),
+        )
+        cache.flush()
+        fresh = vc.VerdictCache(path)
+        fresh.load()
+        # The matching read first: the stored version still validates the row.
+        assert fresh.get("srv", ident, "1.2.3") is not None
+        # Then the mismatch, which both refuses AND drops -- see
+        # TestSupersededRowIsNotReadable for why refusing alone is not enough.
+        assert fresh.get("srv", ident, "1.2.4") is None
+        assert fresh.get_by_name("srv") is None
+
+    def test_a_non_string_version_in_the_file_reads_as_absent(self, tmp_path) -> None:
+        """The file is operator-editable, so a wrong type must not raise."""
+        path = tmp_path / "v.json"
+        ident = _ident()
+        path.write_text(
+            json.dumps(
+                {
+                    "entries": {
+                        "srv": {
+                            "ran": True,
+                            "callerSensitive": False,
+                            "reasons": [],
+                            "evaluatedAt": 1.0,
+                            "identity": ident.as_str(),
+                            "reportedVersion": {"not": "a string"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        cache = vc.VerdictCache(path)
+        cache.load()
+        assert cache.get("srv", ident, "1.2.3") is not None
+
+
 class TestCacheDegradesSafely:
     def test_absent_file_is_empty(self, tmp_path) -> None:
         assert len(vc.load_cache(tmp_path)) == 0
@@ -142,9 +263,15 @@ class _FakeProbe:
 
     Mutates the passed server the way the real probe does, so the pre-flight is
     exercised through the same interface it uses in production.
+
+    An answer is ``(status, capabilities)``, or ``(status, capabilities, extra)``
+    where *extra* sets the other facets a real probe fills in — ``tools``,
+    ``tool_annotations``, ``protocol_version``, ``server_info``. The two-element
+    form is kept because most cases only care about capabilities, and spelling
+    every field in every case would bury which one the test is about.
     """
 
-    def __init__(self, answers: dict[str, tuple[str, dict[str, Any] | None]]) -> None:
+    def __init__(self, answers: dict[str, tuple[Any, ...]]) -> None:
         self.answers = answers
         self.identities: list[str] = []
 
@@ -153,9 +280,12 @@ class _FakeProbe:
     ) -> McpServerInfo:
         name = (client_info or {}).get("name", "default")
         self.identities.append(name)
-        status, caps = self.answers[name]
+        answer = self.answers[name]
+        status, caps = answer[0], answer[1]
         server.status = status
         server.capabilities = caps
+        for field_name, value in (answer[2] if len(answer) > 2 else {}).items():
+            setattr(server, field_name, value)
         if status != "ok":
             server.error = "boom"
         return server
@@ -163,7 +293,7 @@ class _FakeProbe:
 
 @pytest.fixture
 def patch_probe(monkeypatch: pytest.MonkeyPatch):
-    def _install(answers: dict[str, tuple[str, dict[str, Any] | None]]) -> _FakeProbe:
+    def _install(answers: dict[str, tuple[Any, ...]]) -> _FakeProbe:
         fake = _FakeProbe(answers)
         # Patch the CONSUMER namespace: preflight imports probe_server at module
         # scope, so it holds its own reference and patching the source module
@@ -522,3 +652,883 @@ class TestPreflight:
         assert server.status == "unknown"
         assert server.tools == ["kept"]
         assert server.capabilities is None
+
+
+class TestToolSurfaceIsCompared:
+    """The tool list is a facet of its own, and the only one an old server has.
+
+    Tool ANNOTATIONS arrived in MCP 2025-03-26, so a server older than that can
+    be measured on nothing else — these pin that it is measured at all, and that
+    the three ways this comparison could produce a false positive do not.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_different_tool_set_per_caller_is_caught(self, patch_probe) -> None:
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["read", "write"]}),
+                _ID_B: ("ok", caps, {"tools": ["read", "admin"]}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and result.caller_sensitive
+        # The reason must name the measurement that caught it, not the handshake.
+        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        # One reason code covers every facet; ``detail`` is what still names which
+        # measurement caught it, and it is what the log line carries.
+        assert result.detail == f"{pf.FACET_TOOLS}_shape_differs"
+
+    @pytest.mark.asyncio
+    async def test_a_server_with_no_annotations_is_still_measurable(self, patch_probe) -> None:
+        """The case the whole facet exists for: no annotations, still decidable."""
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["a"], "tool_annotations": []}),
+                _ID_B: ("ok", caps, {"tools": ["a", "b"], "tool_annotations": []}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and result.caller_sensitive
+        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.detail == f"{pf.FACET_TOOLS}_shape_differs"
+
+    @pytest.mark.asyncio
+    async def test_tool_ORDER_alone_is_not_divergence(self, patch_probe) -> None:
+        """A pooled backend replays one cached list, so order is not a promise.
+
+        Nothing in the protocol fixes enumeration order, and a server that walks
+        a dict would otherwise be condemned on every probe.
+        """
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["read", "write"]}),
+                _ID_B: ("ok", caps, {"tools": ["write", "read"]}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and not result.caller_sensitive
+
+    @pytest.mark.asyncio
+    async def test_a_reordered_annotation_list_is_not_a_divergence(
+        self, patch_probe
+    ) -> None:
+        """Annotations arrive positionally, so a reorder must not read as a change."""
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: (
+                    "ok",
+                    caps,
+                    {
+                        "tools": ["read", "write"],
+                        "tool_annotations": [{"readOnlyHint": True}, {"readOnlyHint": False}],
+                    },
+                ),
+                _ID_B: (
+                    "ok",
+                    caps,
+                    {
+                        "tools": ["write", "read"],
+                        "tool_annotations": [{"readOnlyHint": False}, {"readOnlyHint": True}],
+                    },
+                ),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and not result.caller_sensitive
+
+    @pytest.mark.asyncio
+    async def test_a_changed_annotation_for_the_same_tool_is_caught(self, patch_probe) -> None:
+        """Telling one caller a tool is read-only and another that it is not."""
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["x"], "tool_annotations": [{"readOnlyHint": True}]}),
+                _ID_B: (
+                    "ok",
+                    caps,
+                    {"tools": ["x"], "tool_annotations": [{"readOnlyHint": False}]},
+                ),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and result.caller_sensitive
+        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.detail == f"{pf.FACET_TOOLS}_shape_differs"
+
+
+class TestHandshakeFacetsBeyondCapabilities:
+    """``initialize`` carries more than capabilities, and the backend replays it all."""
+
+    @pytest.mark.asyncio
+    async def test_a_different_protocol_version_per_caller_is_caught(self, patch_probe) -> None:
+        patch_probe(
+            {
+                _ID_A: ("ok", {"tools": {}}, {"protocol_version": "2025-06-18"}),
+                _ID_B: ("ok", {"tools": {}}, {"protocol_version": "2024-11-05"}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and result.caller_sensitive
+        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+
+    @pytest.mark.asyncio
+    async def test_server_info_gaining_a_key_per_caller_is_caught(self, patch_probe) -> None:
+        patch_probe(
+            {
+                _ID_A: ("ok", {"tools": {}}, {"server_info": {"name": "s", "version": "1"}}),
+                _ID_B: (
+                    "ok",
+                    {"tools": {}},
+                    {"server_info": {"name": "s", "version": "1", "tier": "pro"}},
+                ),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and result.caller_sensitive
+        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+
+    @pytest.mark.asyncio
+    async def test_a_varying_build_id_in_server_info_is_not_divergence(
+        self, patch_probe
+    ) -> None:
+        """Values inside ``serverInfo`` are projected away, and must be.
+
+        A build id or per-spawn nonce there is not caller sensitivity, and
+        comparing values would condemn such a server on every single probe. The
+        cost of this projection is that a server varying only its version STRING
+        per caller reads as agreeing — which the pool can survive, because the
+        replayed string is diagnostic rather than behavioural.
+        """
+        patch_probe(
+            {
+                _ID_A: ("ok", {"tools": {}}, {"server_info": {"name": "s", "build": "aaa"}}),
+                _ID_B: ("ok", {"tools": {}}, {"server_info": {"name": "s", "build": "zzz"}}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran and not result.caller_sensitive
+
+    @pytest.mark.asyncio
+    async def test_the_handshake_is_named_when_both_facets_diverge(self, patch_probe) -> None:
+        """One row reports one reason, so the earlier promise is the one named."""
+        patch_probe(
+            {
+                _ID_A: ("ok", {"tools": {}}, {"tools": ["a"]}),
+                _ID_B: ("ok", {"resources": {}}, {"tools": ["b"]}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.detail == f"{pf.FACET_INIT}_shape_differs"
+        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+
+
+class TestAnnotationsAreNeverPairedWithATool:
+    """Annotations are compared unpaired, because alignment is not recoverable.
+
+    ``mcp_discovery`` builds ``tools`` and ``tool_annotations`` in two comprehensions
+    over the same list with INDEPENDENT predicates: a tool joins ``tools`` when its
+    name is truthy and joins ``tool_annotations`` when it carries an ``annotations``
+    dict. Neither list records which tool an entry came from, so equal LENGTHS do not
+    imply equal membership -- checking the lengths is as much a guess as pairing by
+    index. These tests pin the comparison to a name set plus an unordered multiset of
+    annotation shapes, which makes the alignment question unreachable rather than
+    answered.
+    """
+
+    def _srv(self, tools, anns):
+        return SimpleNamespace(
+            capabilities={"tools": {}},
+            protocol_version="2025-06-18",
+            server_info={},
+            tools=list(tools),
+            tool_annotations=list(anns),
+            name="srv",
+        )
+
+    def test_a_reordered_tool_list_is_not_a_divergence(self) -> None:
+        # Same names, same annotation content, different enumeration ORDER --
+        # which is exactly what index pairing misread as a per-caller difference.
+        a = self._srv(["read", "write", "admin"], [{"readOnlyHint": True}])
+        b = self._srv(["admin", "read", "write"], [{"readOnlyHint": True}])
+        assert pf._tool_surface(a) == pf._tool_surface(b)
+
+    def test_equal_lengths_do_not_imply_alignment(self) -> None:
+        """The case that retired the length guard.
+
+        A tool with an empty name is dropped from ``tools`` but its annotations are
+        kept, so these two lists are both length 1 and describe DIFFERENT tools. A
+        length check passes here and index pairing then attaches ``read``'s name to
+        the other tool's claim. Comparing unpaired, the two servers agree -- because
+        they did make the same claim -- instead of producing a verdict from a pairing
+        that was never real.
+        """
+        # As the prober would emit for [{"name": "read"}, {"name": "", "annotations": ...}]
+        a = self._srv(["read"], [{"readOnlyHint": True}])
+        # ... and for [{"name": "read", "annotations": ...}, {"name": ""}]
+        b = self._srv(["read"], [{"readOnlyHint": True}])
+        assert pf._tool_surface(a) == pf._tool_surface(b)
+
+    def test_a_dict_valued_annotation_does_not_raise(self) -> None:
+        """Ordering the shapes must not repeat the tool-name crash class.
+
+        The projection yields dicts, and ``sorted()`` over dicts raises TypeError --
+        the same failure that malformed tool names caused. Canonicalising each shape
+        to a string before sorting is what keeps this a comparison and not a crash.
+        """
+        a = self._srv(["x", "y"], [{"audience": {"a": 1}}, {"audience": {"b": 2}}])
+        b = self._srv(["x", "y"], [{"audience": {"b": 2}}, {"audience": {"a": 1}}])
+        assert pf._tool_surface(a) == pf._tool_surface(b), "a reorder is not a divergence"
+
+    def test_a_changed_claim_is_caught_even_when_the_tool_is_unknown(self) -> None:
+        """The signal the length guard used to throw away.
+
+        The server told one caller ``readOnlyHint: true`` and the other ``false``.
+        Which tool it was about is unknowable, and does not matter: a pooled backend
+        replays the first answer, so the second session would receive a claim this
+        server would not have made to it. Dropping the facet here -- as a length
+        check did, since one list was shorter than the names -- discarded a real
+        divergence to avoid guessing at an attribution nothing reads.
+        """
+        a = self._srv(["read", "write"], [{"readOnlyHint": True}])
+        b = self._srv(["read", "write"], [{"readOnlyHint": False}])
+        assert pf._tool_surface(a) != pf._tool_surface(b)
+
+    def test_annotating_a_different_subset_is_not_a_divergence(self) -> None:
+        """The other direction: same claims, different tool annotated.
+
+        Both spawns made exactly one ``readOnlyHint: true`` claim. Nothing a pooled
+        session could observe differs, so this must not read as caller-sensitive.
+        """
+        a = self._srv(["read", "write"], [{"readOnlyHint": True}])
+        b = self._srv(["write", "read"], [{"readOnlyHint": True}])
+        assert pf._tool_surface(a) == pf._tool_surface(b)
+
+    def test_a_complete_annotation_list_is_still_compared(self) -> None:
+        """The facet must still detect a differing claim in the ordinary case."""
+        a = self._srv(["read", "write"], [{"readOnlyHint": True}, {"readOnlyHint": True}])
+        b = self._srv(["read", "write"], [{"readOnlyHint": True}, {"readOnlyHint": False}])
+        assert pf._tool_surface(a) != pf._tool_surface(b)
+
+
+class TestOnePassAtATime:
+    """The verdict store is rewritten whole, so passes must not interleave.
+
+    Two overlapping passes each load the file, measure, and flush their own copy;
+    the later flush drops every row the other wrote, reverting freshly measured
+    servers to "not measured". The operator pass runs for minutes and the probe
+    path calls the same evaluator, so the overlap is the normal case.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_second_pass_does_not_erase_the_first_pass_rows(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        started: list[str] = []
+        release = asyncio.Event()
+
+        async def slow_preflight(server):
+            started.append(server.name)
+            if server.name == "slow-mcp":
+                await release.wait()
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", slow_preflight)
+
+        def srv(name):
+            return McpServerInfo(name=name, command="/bin/true")
+
+        first = asyncio.create_task(
+            ev.evaluate_new_servers([srv("slow-mcp")], tmp_path, budget=None)
+        )
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            ev.evaluate_new_servers([srv("other-mcp")], tmp_path, budget=None)
+        )
+        await asyncio.sleep(0.05)
+
+        # The lock must keep the second pass out until the first has flushed.
+        assert started == ["slow-mcp"], started
+        release.set()
+        await first
+        await second
+
+        stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        stored.load()
+        assert stored.server_names() == {"slow-mcp", "other-mcp"}, stored.server_names()
+
+
+class TestProgressArrivesDuringThePass:
+    """A readout that only updates at the end is not progress."""
+
+    @pytest.mark.asyncio
+    async def test_the_hook_fires_before_the_last_measurement_finishes(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        gate = asyncio.Event()
+        seen: list[tuple[int, int]] = []
+
+        async def preflight(server):
+            if server.name == "last-mcp":
+                await gate.wait()
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", preflight)
+        servers = [
+            McpServerInfo(name="first-mcp", command="/bin/true"),
+            McpServerInfo(name="last-mcp", command="/bin/true"),
+        ]
+        task = asyncio.create_task(
+            ev.evaluate_new_servers(
+                servers, tmp_path, budget=None, on_progress=lambda d, t: seen.append((d, t))
+            )
+        )
+        # Give the fast one time to land while the slow one is still blocked.
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if seen:
+                break
+        assert seen == [(1, 2)], f"progress did not arrive mid-pass: {seen}"
+        gate.set()
+        await task
+        assert seen[-1] == (2, 2), seen
+
+
+class TestMalformedToolNames:
+    """A server that cannot name its own tools must not take the pass down.
+
+    The prober copies a tool's ``name`` straight from ``tools/list`` and only drops
+    falsy values, so a non-string name survives into ``server.tools``. Ordering a
+    mixed list raises ``TypeError``; because the evaluator flushes only after every
+    measurement completes, that exception would discard the verdicts of every
+    server already measured in the same pass.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_non_string_tool_name_reads_as_unmeasurable(self, patch_probe) -> None:
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["read", 123]}),
+                _ID_B: ("ok", caps, {"tools": ["read", 123]}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran is False
+        assert result.caller_sensitive is False
+        assert result.detail == "malformed_tool_names"
+        # "Could not measure" must never read as evidence against the server.
+        assert result.reasons == (pf.REASON_PREFLIGHT_UNAVAILABLE,)
+
+    @pytest.mark.asyncio
+    async def test_one_side_malformed_is_enough_to_abstain(self, patch_probe) -> None:
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["read"]}),
+                _ID_B: ("ok", caps, {"tools": [456]}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran is False, "a malformed second answer must not be compared"
+
+    @pytest.mark.asyncio
+    async def test_all_string_names_are_still_measured(self, patch_probe) -> None:
+        """The guard must not make every server unmeasurable."""
+        caps = {"tools": {}}
+        patch_probe(
+            {
+                _ID_A: ("ok", caps, {"tools": ["read", "write"]}),
+                _ID_B: ("ok", caps, {"tools": ["write", "read"]}),
+            }
+        )
+        result = await pf.preflight(_server())
+        assert result.ran is True and result.caller_sensitive is False
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_server_does_not_discard_the_pass(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The consequence, not just the exception: earlier verdicts must survive.
+
+        Ordering is forced so the malformed server is measured LAST, which is the
+        arrangement in which a raised TypeError would take the already-measured
+        rows down with it.
+        """
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        real = pf.preflight
+
+        async def route(server):
+            if server.name == "bad-mcp":
+                probe = SimpleNamespace(
+                    status="ok", capabilities={"tools": {}}, protocol_version="",
+                    server_info={}, tools=["ok", 7], tool_annotations=[], name=server.name,
+                )
+                # Exercise the real guard against a real mixed list.
+                assert pf._tool_names_are_comparable(probe) is False
+                return pf.PreflightResult(ran=False, detail="malformed_tool_names")
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", route)
+        assert real is not None
+        servers = [
+            McpServerInfo(name="good-mcp", command="/bin/true"),
+            McpServerInfo(name="bad-mcp", command="/bin/true"),
+        ]
+        out = await ev.evaluate_new_servers(servers, tmp_path, budget=None)
+        assert "good-mcp" in out, out
+
+        stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        stored.load()
+        # The good one is persisted; the malformed one is deliberately NOT cached,
+        # because a pre-flight that could not run is never stored.
+        assert stored.server_names() == {"good-mcp"}, stored.server_names()
+
+
+class TestOneServerCannotEndThePass:
+    """The pass survives a server whose payload breaks the projection.
+
+    Every facet the pre-flight compares is JSON the server chose, walked by code
+    that recurses. The varieties that can make that walk raise are not enumerable
+    from the consumer side, and the flush happens only after the whole loop, so
+    without a boundary at the measurement one bad server discards every verdict the
+    pass already paid two spawns each for.
+    """
+
+    @pytest.mark.asyncio
+    async def test_deep_annotations_do_not_discard_the_other_verdicts(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The exact trigger GPT named: nesting deep enough to exhaust the stack.
+
+        Built as a real payload rather than a synthetic ``raise`` so the test fails
+        if the projection stops recursing OR if the boundary is removed.
+        """
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        deep: dict = {}
+        node = deep
+        for _ in range(2000):
+            node["a"] = {}
+            node = node["a"]
+
+        # Confirm the payload really is hostile to the projection, so a future
+        # change that makes the walk iterative turns this into a live assertion
+        # rather than a silently vacuous one.
+        with pytest.raises(RecursionError):
+            pf._capability_shape(deep)
+
+        async def route(server):
+            if server.name == "deep-mcp":
+                probe = SimpleNamespace(
+                    status="ok", capabilities={"tools": {}}, protocol_version="",
+                    server_info={}, tools=["x"], tool_annotations=[deep],
+                    name=server.name, error="",
+                )
+                # Reach the real projection through the real comparison path.
+                return pf._replayed_surface(probe)
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", route)
+        servers = [
+            McpServerInfo(name="good-mcp", command="/bin/true"),
+            McpServerInfo(name="deep-mcp", command="/bin/true"),
+        ]
+        out = await ev.evaluate_new_servers(servers, tmp_path, budget=None)
+
+        # The pass completed and reported BOTH servers.
+        assert set(out) == {"good-mcp", "deep-mcp"}, out
+        assert out["deep-mcp"].ran is False
+        assert out["deep-mcp"].caller_sensitive is False
+
+        # The healthy verdict was flushed -- this is the data loss being prevented.
+        stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        stored.load()
+        assert stored.server_names() == {"good-mcp"}, stored.server_names()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_is_not_swallowed_as_a_verdict(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Shutdown must stay shutdown, not become 'this server is unmeasurable'."""
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        async def route(server):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(ev, "preflight", route)
+        with pytest.raises(asyncio.CancelledError):
+            await ev.evaluate_new_servers(
+                [McpServerInfo(name="s", command="/bin/true")], tmp_path, budget=None
+            )
+
+
+class TestSupersededRowIsNotReadable:
+    """A row for replaced code must not survive where the dashboard can read it.
+
+    ``get`` refusing to return a row is not enough on its own: the dashboard row
+    builder reads through ``get_by_name``, which checks neither identity nor
+    version. So a row left in place after the pre-flight fails to re-measure is
+    still rendered -- as evidence about code that no longer exists, and in the
+    permissive direction.
+    """
+
+    def _cache(self, tmp_path, reported_version: str):
+        cache = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        cache.load()
+        ident = vc.Identity(
+            command_args_hash="cah", env_hash="eh", binary_version="bv"
+        )
+        cache.put(
+            "srv",
+            ident,
+            vc.CachedPreflight(
+                ran=True,
+                caller_sensitive=False,
+                reasons=(),
+                evaluated_at=1.0,
+                reported_version=reported_version,
+            ),
+        )
+        return cache, ident
+
+    def test_a_version_mismatch_drops_the_row_from_get_by_name_too(self, tmp_path) -> None:
+        cache, ident = self._cache(tmp_path, "1.0")
+        assert cache.get_by_name("srv") is not None, "row should start present"
+
+        assert cache.get("srv", ident, "2.0") is None, "the read must refuse it"
+        # The point of the fix: the dashboard's own reader can no longer see it.
+        assert cache.get_by_name("srv") is None
+        assert "srv" not in cache.server_names()
+
+    def test_the_drop_is_persisted(self, tmp_path) -> None:
+        """Marked dirty, or the row returns on the next load."""
+        cache, ident = self._cache(tmp_path, "1.0")
+        cache.flush()
+        assert cache.get("srv", ident, "2.0") is None
+        cache.flush()
+
+        reloaded = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        reloaded.load()
+        assert reloaded.get_by_name("srv") is None, "the drop did not reach the file"
+
+    def test_an_identity_mismatch_does_NOT_drop_the_row(self, tmp_path) -> None:
+        """The asymmetry, pinned deliberately.
+
+        ``binary_version`` is the literal string ``"unknown"`` for a binary
+        mid-install, an ``OSError`` and a ``which`` miss alike, so an identity
+        mismatch can mean "could not tell" rather than "the program changed".
+        Dropping there would discard a good measurement on a transient read.
+        """
+        cache, _ = self._cache(tmp_path, "1.0")
+        moved = vc.Identity(
+            command_args_hash="cah", env_hash="eh", binary_version="unknown"
+        )
+        assert cache.get("srv", moved, "1.0") is None, "must still refuse the read"
+        assert cache.get_by_name("srv") is not None, "but the row must survive"
+
+    def test_one_absent_side_neither_refuses_nor_drops(self, tmp_path) -> None:
+        """The no-flap guarantee still holds after the drop was added."""
+        cache, ident = self._cache(tmp_path, "1.0")
+        assert cache.get("srv", ident, "") is not None, "an unprobed pass must not invalidate"
+        assert cache.get_by_name("srv") is not None
+
+        blank, ident2 = self._cache(tmp_path / "b", "")
+        assert blank.get("srv", ident2, "9.9") is not None, "a server with no version is not stale"
+        assert blank.get_by_name("srv") is not None
+
+    @pytest.mark.asyncio
+    async def test_the_dashboard_reads_nothing_after_a_failed_remeasure(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The whole chain GPT named, through the real evaluator.
+
+        Upgraded server, version known on both sides, and the re-measure fails --
+        so nothing is written back. The store must end up with no row for it.
+        """
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        seed = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        seed.load()
+        srv = McpServerInfo(name="up-mcp", command="/bin/true")
+        # ``identity_for`` does blocking IO and evaluate.py asserts it is off-loop.
+        ident = await asyncio.to_thread(ev.identity_for, srv)
+        seed.put(
+            "up-mcp",
+            ident,
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=False, reasons=(),
+                evaluated_at=1.0, reported_version="1.0",
+            ),
+        )
+        seed.flush()
+
+        # The server now reports a different version, and the pre-flight fails.
+        monkeypatch.setattr(ev, "reported_version", lambda s: "2.0")
+
+        async def failed(server):
+            return SimpleNamespace(ran=False, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", failed)
+        out = await ev.evaluate_new_servers([srv], tmp_path, budget=None)
+        assert out["up-mcp"].ran is False
+
+        stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        stored.load()
+        assert stored.get_by_name("up-mcp") is None, (
+            "the stale row survived, so the dashboard would still render a verdict "
+            "measured against replaced code"
+        )
+
+
+class TestVersionIsNotLoggedRaw:
+    """A server-reported version reaches a log line, so it cannot go in raw.
+
+    ``reported_version`` is whatever the server called itself in its handshake --
+    remote-controlled text in a sink an operator reads in a terminal. A newline in
+    it would forge a second gateway log line and an ESC would recolor or overwrite
+    the surrounding output.
+    """
+
+    def _drop(self, tmp_path, stored: str, now: str):
+        cache = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        cache.load()
+        ident = vc.Identity(command_args_hash="c", env_hash="e", binary_version="b")
+        cache.put(
+            "srv",
+            ident,
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=False, reasons=(),
+                evaluated_at=1.0, reported_version=stored,
+            ),
+        )
+        return cache.get("srv", ident, now)
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "9.9\nWARNING kirocrew: forged entry",
+            "9.9\rforged",
+            "9.9\x1b[31mrecoloured\x1b[0m",
+            "9.9\x00hidden",
+            "9.9\u2028forged",
+            "9.9\u202eforged",
+        ],
+    )
+    def test_no_control_character_reaches_the_log(self, tmp_path, caplog, hostile) -> None:
+        with caplog.at_level(logging.INFO, logger="kiro_crew.mcp_gateway.verdict_cache"):
+            assert self._drop(tmp_path, "1.0", hostile) is None
+
+        assert caplog.records, "the drop must still be logged"
+        for rec in caplog.records:
+            line = rec.getMessage()
+            # One record must render as ONE line, or the server has forged an entry.
+            assert len(line.splitlines()) <= 1, f"forged a line break: {line!r}"
+            leaked = [c for c in line if ord(c) < 0x20 or ord(c) == 0x7F]
+            assert not leaked, f"raw control characters reached the log: {leaked!r}"
+            assert all(c.isprintable() or c == " " for c in line), (
+                f"an unprintable character reached the log: {line!r}"
+            )
+
+    def test_the_version_is_still_reported_for_diagnosis(self, tmp_path, caplog) -> None:
+        """Escaping, not omitting -- the operator still sees what the server said."""
+        with caplog.at_level(logging.INFO, logger="kiro_crew.mcp_gateway.verdict_cache"):
+            assert self._drop(tmp_path, "1.0.0", "2.0.0") is None
+        line = " ".join(r.getMessage() for r in caplog.records)
+        assert "1.0.0" in line and "2.0.0" in line, line
+        assert "srv" in line
+
+    def test_an_overlong_version_is_bounded(self, tmp_path, caplog) -> None:
+        """``%r`` escapes but does not bound length; one field is not a wall of text."""
+        with caplog.at_level(logging.INFO, logger="kiro_crew.mcp_gateway.verdict_cache"):
+            assert self._drop(tmp_path, "1.0", "9." + "A" * 10_000) is None
+        line = " ".join(r.getMessage() for r in caplog.records)
+        assert len(line) < 2 * vc._VERSION_LOG_LEN_CAP + 200, f"unbounded: {len(line)} chars"
+        assert "A" * (vc._VERSION_LOG_LEN_CAP + 1) not in line
+
+
+class TestBudgetedPassYields:
+    """A request-path pass must not wait minutes behind an operator pass.
+
+    ``probe_all`` has already produced the status and tools the request was for by
+    the time the shareability step runs, so waiting on the lock holds a computed
+    response rather than doing useful work. An uncapped pass runs for minutes and a
+    probe firing during one is the normal case, not the unlucky one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _own_lock(self, monkeypatch):
+        """A lock belonging to THIS test's event loop.
+
+        ``_PASS_LOCK`` is a module global, and an ``asyncio.Lock`` binds to the loop
+        that first waits on it. pytest-asyncio gives each test its own loop, so
+        touching the shared instance leaks state between tests in both directions.
+        """
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        monkeypatch.setattr(ev, "_PASS_LOCK", asyncio.Lock())
+
+    @pytest.mark.asyncio
+    async def test_a_budgeted_call_serves_stored_rows_while_a_pass_runs(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        srv = McpServerInfo(name="known-mcp", command="/bin/true")
+        seed = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        seed.load()
+        seed.put(
+            "known-mcp",
+            await asyncio.to_thread(ev.identity_for, srv),
+            vc.CachedPreflight(
+                ran=True, caller_sensitive=True, reasons=("caller_sensitive_initialize",),
+                evaluated_at=1.0, reported_version="1.0",
+            ),
+        )
+        seed.flush()
+
+        measured: list[str] = []
+
+        async def never_called(server):
+            measured.append(server.name)
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", never_called)
+
+        async with ev._PASS_LOCK:
+            out = await ev.evaluate_new_servers([srv], tmp_path)
+
+        assert measured == [], "a yielding pass must not measure"
+        # It still served the stored verdict, which is what the row renders from.
+        assert out["known-mcp"].caller_sensitive is True
+        assert out["known-mcp"].ran is True
+
+    @pytest.mark.asyncio
+    async def test_an_uncapped_pass_still_waits_for_the_lock(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Only the BUDGETED path yields.
+
+        Two operator passes must still serialize or they clobber each other's rows,
+        which is the reason the lock exists.
+        """
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        async def ok(server):
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", ok)
+        srv = McpServerInfo(name="s", command="/bin/true")
+
+        await ev._PASS_LOCK.acquire()
+        task = asyncio.ensure_future(
+            ev.evaluate_new_servers([srv], tmp_path, budget=None)
+        )
+        try:
+            # Let the task reach the lock, then confirm it is parked there.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert not task.done(), "an uncapped pass must block on the lock"
+        finally:
+            ev._PASS_LOCK.release()
+        out = await task
+        assert "s" in out
+
+    @pytest.mark.asyncio
+    async def test_yielding_does_not_invent_a_verdict(self, tmp_path, monkeypatch) -> None:
+        """A server with no stored row stays absent, so it reads as unmeasured."""
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        async def ok(server):
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", ok)
+        async with ev._PASS_LOCK:
+            out = await ev.evaluate_new_servers(
+                [McpServerInfo(name="fresh-mcp", command="/bin/true")], tmp_path
+            )
+        assert out == {}, out
+
+
+class TestStaleSchemaRowsAreDropped:
+    """A verdict measured under a different compared-facet set is not evidence.
+
+    Refusing it at read is not enough: the dashboard row builder reads by name
+    without checking either validity input, so a surviving row renders as a
+    verdict, the server counts as measured, and the action offering to measure it
+    is disabled -- on exactly the installs a schema bump exists to re-derive.
+    """
+
+    def _write(self, tmp_path, schema: int):
+        f = tmp_path / vc.VERDICT_CACHE_FILENAME
+        ident = "\u0000".join(("cah", "eh", "bv", str(schema)))
+        f.write_text(
+            json.dumps(
+                {
+                    "entries": {
+                        "srv": {
+                            "ran": True,
+                            "callerSensitive": False,
+                            "reasons": [],
+                            "evaluatedAt": 1.0,
+                            "identity": ident,
+                            "reportedVersion": "1.0",
+                        }
+                    },
+                    "applied": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return f
+
+    def test_an_older_schema_row_is_not_readable_by_name(self, tmp_path) -> None:
+        self._write(tmp_path, vc.SCHEMA - 1)
+        cache = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        cache.load()
+        # The dashboard's own reader must not see it, or the row renders as a
+        # verdict and the measure action is disabled for that server.
+        assert cache.get_by_name("srv") is None
+        assert cache.server_names() == set()
+        assert len(cache) == 0
+
+    def test_a_current_schema_row_survives(self, tmp_path) -> None:
+        """The drop must not empty the cache on every load."""
+        self._write(tmp_path, vc.SCHEMA)
+        cache = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        cache.load()
+        row = cache.get_by_name("srv")
+        assert row is not None and row.ran is True
+        assert row.reported_version == "1.0"
+
+    def test_a_row_with_no_identity_is_dropped(self, tmp_path) -> None:
+        """Written before identities were stored, so it describes an unknown check."""
+        f = tmp_path / vc.VERDICT_CACHE_FILENAME
+        f.write_text(
+            json.dumps(
+                {"entries": {"srv": {"ran": True, "callerSensitive": True}}, "applied": []}
+            ),
+            encoding="utf-8",
+        )
+        cache = vc.VerdictCache(f)
+        cache.load()
+        assert cache.get_by_name("srv") is None, "an identity-less row is not evidence"
+
+    def test_the_matcher_reads_the_schema_field_not_a_substring(self) -> None:
+        """A hash that merely ends in the schema digits must not pass."""
+        good = vc.Identity(command_args_hash="a", env_hash="b", binary_version="c").as_str()
+        assert vc._identity_matches_schema(good) is True
+        assert vc._identity_matches_schema("") is False
+        # No separator at all: a bare number is not an identity.
+        assert vc._identity_matches_schema(str(vc.SCHEMA)) is False
+        # Right shape, wrong schema.
+        stale = "\u0000".join(("a", "b", "c", str(vc.SCHEMA - 1)))
+        assert vc._identity_matches_schema(stale) is False

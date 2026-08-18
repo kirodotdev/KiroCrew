@@ -452,12 +452,25 @@ class TestHostileRecordNumbers:
         assert led.codes_for_name("srv") == (hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,)
 
     def test_a_huge_timestamp_does_not_take_the_verdict_cache_down(self, tmp_path) -> None:
-        vc.cache_path(tmp_path).write_text(
-            '{"schema": 1, "entries": {"srv\\u0000c\\u0000e\\u0000b\\u00001":'
-            ' {"ran": true, "callerSensitive": false, "reasons": [],'
-            ' "evaluatedAt": %s}}}' % self.HUGE,
-            encoding="utf-8",
-        )
+        # A current-schema identity, so the loader's schema check keeps the row
+        # and this test goes on exercising the TIMESTAMP, which is its subject.
+        ident = vc.Identity(
+            command_args_hash="c", env_hash="e", binary_version="b"
+        ).as_str()
+        payload = json.dumps(
+            {
+                "entries": {
+                    "srv": {
+                        "ran": True,
+                        "callerSensitive": False,
+                        "reasons": [],
+                        "evaluatedAt": 0,
+                        "identity": ident,
+                    }
+                }
+            }
+        ).replace('"evaluatedAt": 0', '"evaluatedAt": %s' % self.HUGE)
+        vc.cache_path(tmp_path).write_text(payload, encoding="utf-8")
 
         cache = vc.load_cache(tmp_path)
 

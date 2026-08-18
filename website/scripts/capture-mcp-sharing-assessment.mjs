@@ -96,6 +96,19 @@ const stubbed = servers.filter(s => s.stub).map(s => s.name)
 /** Flipped between shots so the warning can be shown appearing and gone. */
 let sharingEnabled = true
 
+/**
+ * What ``GET /api/mcp/measure`` answers, swapped between shots.
+ *
+ * The idle answer is what a page that has never run a pass sees, so the control
+ * is captured in the state a first-time reader meets it in.
+ */
+let measureProgress = { running: false, done: 0, total: 0 }
+
+/** Flipped for the shot where nothing is left to measure. */
+let everythingMeasured = false
+
+const measured = rec('no_objection', false, [{ code: 'no_objection_found', detail: '' }])
+
 const { srv, base } = await serveDist()
 const browser = await chromium.launch()
 const context = await browser.newContext({
@@ -107,7 +120,16 @@ logPageProblems(page)
 
 await stubDashboardApi(page, {
   extra: (path, route) => {
-    if (path === '/api/mcp-gateway/servers') return json(route, { servers }), true
+    if (path === '/api/mcp-gateway/servers') {
+      // With everything measured the control has nothing to offer, which is the
+      // steady state a healthy fleet ends up in.
+      const rows = everythingMeasured
+        ? servers.map(s => ({ ...s, recommendation: s.recommendation ?? measured }))
+          .map(s => (s.recommendation.strength === 'unknown' ? { ...s, recommendation: measured } : s))
+        : servers
+      return json(route, { servers: rows }), true
+    }
+    if (path === '/api/mcp/measure') return json(route, measureProgress), true
     if (path === '/api/mcp-gateway/status') {
       return json(route, {
         enabled: sharingEnabled,
@@ -149,6 +171,33 @@ await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2400)
 await openAssessment()
 await shot('03-sharing-off-no-warning')
+
+// 4. The measurement control, in the state a first-time reader meets it: the
+//    button says what it does and how many rows still have no verdict.
+sharingEnabled = true
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await openAssessment()
+await shot('04-measure-button-labelled')
+
+// 5. A pass in flight. Progress is a readout next to the button rather than a
+//    modal, because the operator can keep reading the table while it runs. The
+//    total agrees with the two unmeasured rows above: a frame whose numbers
+//    contradict its own button documents a state the product cannot reach.
+measureProgress = { running: true, done: 1, total: 2 }
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await openAssessment()
+await shot('05-measure-running')
+
+// 6. Nothing left to measure: the same button reports the state and is disabled,
+//    rather than inviting a press that would spawn nothing.
+measureProgress = { running: false, done: 0, total: 0 }
+everythingMeasured = true
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await openAssessment()
+await shot('06-measure-nothing-left')
 
 await context.close()
 await browser.close()

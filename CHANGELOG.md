@@ -4,6 +4,29 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **MCP servers can now be measured for shareability on purpose, and the answer
+  survives until the server itself changes.** The Sharing assessment could only
+  say as much as the number of servers carrying a measurement, and reaching one
+  was neither deliberate nor durable: the only trigger was an icon-only refresh
+  that evaluated two servers per press, so a fleet of thirty needed fifteen
+  presses and a guess about what the icon did. MCP Management now carries a
+  labelled action that names how much is left ("Measure 2 unmeasured servers")
+  and runs the whole set as a background pass with progress, while the
+  per-request budget of two stays exactly where it was. Two gaps in the
+  measurement itself are closed at the same time. The pre-flight already spawned
+  each server twice under two client identities, but compared only the
+  `initialize` capabilities, so a server that served a different TOOL SET per
+  caller passed; it now compares the tool list too, which costs no extra spawn
+  because the probe already fetched it and is the one facet decidable on a server
+  too old to send tool annotations at all. Which facet diverged is logged for
+  diagnosis but not reported per-row: every consumer of a stored measurement
+  reduces it to one boolean, so naming the facet to an operator is a change to
+  that whole path rather than to the prober. And a stored verdict now records the
+  version the server reported, so a runtime-resolved launch (`npx thing@latest`)
+  that swaps its own code upstream is re-measured instead of trusted -- the
+  launch fingerprint cannot see that, since command, environment and interpreter
+  all stay byte-identical.
+
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
   `kiro-cli` child holds its credential for the life of the session, so an

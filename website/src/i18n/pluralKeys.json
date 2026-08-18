@@ -111,6 +111,8 @@
   "pages.devFleetPage.commits_behind_main_2",
   "pages.knowledge.sourcesList.files_failed_count",
   "pages.knowledge.sourcesList.supported_file_found",
+  "pages.mcpManagement.assessment.measure_finished",
+  "pages.mcpManagement.assessment.measure_unmeasured",
   "pages.overview.mcpTab.pending_change",
   "pages.overview.memoryTab.session",
   "pages.overview.skillsTab.agent",

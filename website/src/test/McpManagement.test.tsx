@@ -73,7 +73,6 @@ describe('McpManagement', () => {
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
     // The broker failed to start: the endpoint still answers 200.
     vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
-      ok: true,
       name: 'alpha-mcp',
       stub: true,
       applied: false,
@@ -421,6 +420,148 @@ describe('sharing assessment', () => {
     // The servers view owns every control on this page; a verdict is evidence,
     // not a fifth thing to toggle.
     expect(screen.queryAllByRole('switch')).toHaveLength(0)
+  })
+  // The measurement control. The assessment is only worth as much as the number
+  // of rows carrying a verdict, and the pass that produces them was previously
+  // reachable only through an icon whose purpose lived in an aria-label.
+  const unknown: Rec = {
+    strength: 'unknown',
+    recommendShare: false,
+    reasons: [{ code: 'not_probed', detail: '' }],
+  }
+  const idle = { running: false, done: 0, total: 0 }
+
+  it('names how many servers are unmeasured, in visible text', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idle as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [
+        withRec({ name: 'alpha-mcp' }, unknown),
+        withRec({ name: 'bravo-mcp' }, unknown),
+        withRec({ name: 'charlie-mcp' }, noObjection),
+      ],
+    } as never)
+    await openAssessment()
+    expect(
+      await screen.findByRole('button', { name: /measure 2 unmeasured servers/i }),
+    ).toBeTruthy()
+  })
+
+  it('counts a row carrying no verdict at all as unmeasured', async () => {
+    // An older gateway reached through Make Live sends no verdict field; that row
+    // is exactly as unmeasured as one whose verdict says so.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idle as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' })],
+    } as never)
+    await openAssessment()
+    expect(
+      await screen.findByRole('button', { name: /measure 1 unmeasured server$/i }),
+    ).toBeTruthy()
+  })
+
+  it('offers nothing to press when every server is measured', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idle as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, noObjection)],
+    } as never)
+    await openAssessment()
+    const btn = await screen.findByRole('button', { name: /every server has been measured/i })
+    expect((btn as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('starts the pass through the measure endpoint', async () => {
+    // A probe pass measures a couple of servers and is not what this promises.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idle as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    const start = vi
+      .spyOn(api, 'mcpMeasureStart')
+      .mockResolvedValue({ running: true, done: 0, total: 1 } as never)
+    await openAssessment()
+    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+  })
+
+  it('reports where a running pass got to', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(
+      { running: true, done: 4, total: 9 } as never,
+    )
+    await openAssessment()
+    expect(await screen.findByText(/measuring, 4 of 9 done/i)).toBeTruthy()
+  })
+
+  it('re-reads the servers when a pass finishes, so the table stops lying', async () => {
+    // Without this the operator watches progress reach the end and then reads a
+    // table still saying "not measured" beside a button still offering the same
+    // count. That contradiction is the end of every single use of the control.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    const servers = vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    // Running first, then settled: the refresh must key on that edge.
+    vi.spyOn(api, 'mcpMeasureProgress')
+      .mockResolvedValueOnce({ running: true, done: 0, total: 1 } as never)
+      .mockResolvedValue({ running: false, done: 1, total: 1 } as never)
+    await openAssessment()
+    await screen.findByText(/measuring, 0 of 1 done/i)
+    const before = servers.mock.calls.length
+    await waitFor(
+      () => expect(servers.mock.calls.length).toBeGreaterThan(before),
+      { timeout: 4000 },
+    )
+  })
+
+  it('does not close with the attempted count when the pass stopped early', async () => {
+    // A pass that dies at 1 of 5 rendered the failure line AND a closure line
+    // reading "Measured 5 servers", so it reported both that it stopped and that
+    // it did all five. The closure line counts what was MEASURED, and is withheld
+    // entirely when the pass failed.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue(
+      { running: true, done: 0, total: 5 } as never,
+    )
+    // Running first, then stopped early: the readout must not close on the total.
+    vi.spyOn(api, 'mcpMeasureProgress')
+      .mockResolvedValueOnce({ running: true, done: 0, total: 5 } as never)
+      .mockResolvedValue(
+        { running: false, done: 1, total: 5, error: 'RuntimeError' } as never,
+      )
+    await openAssessment()
+    // The press is what makes a closure line eligible at all, so the bug needs it.
+    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+
+    await waitFor(() => expect(screen.getByText(/stopped early/i)).toBeTruthy(), {
+      timeout: 4000,
+    })
+    // No closure line at all on a failed pass, whatever number it would carry:
+    // "stopped early" and "Measured N server(s)" together is the contradiction.
+    expect(screen.queryByText(/^measured \d+ server/i)).toBeNull()
+  })
+
+  it('says a pass stopped early rather than letting it read as finished', async () => {
+    // A pass that died is otherwise indistinguishable from one that had nothing
+    // to do, which is the difference between measured and never measured.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(
+      { running: false, done: 1, total: 5, error: 'RuntimeError' } as never,
+    )
+    await openAssessment()
+    expect(await screen.findByText(/stopped early/i)).toBeTruthy()
   })
 })
 

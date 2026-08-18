@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.mcp_discovery import PROBE_MAX_CONCURRENCY
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
-from kiro_crew.mcp_gateway.preflight import preflight
+from kiro_crew.mcp_gateway.preflight import PreflightResult, preflight
 from kiro_crew.mcp_gateway.stub import binary_fingerprint
 from kiro_crew.mcp_gateway.verdict_cache import (
     CachedPreflight,
@@ -49,6 +50,21 @@ MAX_EVALUATIONS_PER_PASS = 2
 #: default executor, so two independent caps would let this pass flood the pool
 #: the prober's own bound exists to protect.
 _PROBE_FAN_OUT = PROBE_MAX_CONCURRENCY
+
+
+#: Serializes one evaluator pass end to end, from the cache read to the flush.
+#:
+#: The store is a single JSON object rewritten whole, so a pass is a
+#: read-modify-write. Two overlapping passes each load the file, measure, and
+#: flush their own in-memory copy: whichever flushes LAST silently drops every row
+#: the other wrote, reverting freshly measured servers to "not measured".
+#:
+#: That is reachable rather than theoretical: the operator-initiated pass runs for
+#: minutes, and the dashboard's own probe path calls this evaluator too, so a probe
+#: firing while a measurement pass is in flight is the normal case rather than the
+#: unlucky one. One lock per process is enough because the file has a single writer
+#: — this evaluator — and every caller reaches it through here.
+_PASS_LOCK = asyncio.Lock()
 
 
 def _assert_off_loop(what: str) -> None:
@@ -145,12 +161,39 @@ def _load_and_identify(
     return load_cache(runtime_dir), {s.name: identity_for(s) for s in servers}
 
 
-async def evaluate_new_servers(servers: list[Any], runtime_dir: Path) -> dict[str, CachedPreflight]:
+def reported_version(server: Any) -> str:
+    """The version the server called itself in its handshake, or ``""``.
+
+    Free because the probe already stores the whole ``serverInfo``. Empty means
+    the question is unanswered — not probed this pass, or a server that reports
+    no version — and ``VerdictCache.get`` treats it as no information rather than
+    as a value that differs.
+    """
+    info = getattr(server, "server_info", None)
+    version = info.get("version") if isinstance(info, dict) else None
+    return version if isinstance(version, str) else ""
+
+
+async def evaluate_new_servers(
+    servers: list[Any],
+    runtime_dir: Path,
+    *,
+    budget: int | None = MAX_EVALUATIONS_PER_PASS,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> dict[str, CachedPreflight]:
     """Pre-flight the servers with no current measurement; return every known one.
 
     *servers* are ``McpServerInfo`` objects. Returns name -> verdict for every
     server that has one, stored or freshly derived, so a caller can render
     without a second lookup.
+
+    *budget* caps how many servers are measured in this pass. ``None`` lifts the
+    cap, which is for an operator who explicitly asked to measure everything and
+    is watching progress — never for a request that renders a page, where an
+    uncapped pass would spawn two processes per configured server while somebody
+    waits. *on_progress* is called with ``(done, total)`` after each measurement
+    so that caller can report where it is; it runs on the event loop, so it must
+    not block.
 
     Nothing is deleted here. One server owns one row, so a row is replaced by its
     own server's next measurement and by nothing else — there is no inventory to
@@ -162,14 +205,56 @@ async def evaluate_new_servers(servers: list[Any], runtime_dir: Path) -> dict[st
     Every filesystem touch here is offloaded: this runs inside a request handler
     on the gateway's event loop, and a slow disk would otherwise stall every chat
     sharing that loop, not just this probe.
+
+    One pass runs at a time, and a BUDGETED pass does not queue behind an uncapped
+    one. An uncapped operator pass runs for minutes; the budgeted caller is a
+    request somebody is waiting on, and waiting for the lock would hold its
+    already-computed response for the whole pass. A budgeted call therefore takes
+    the lock only if it is free and otherwise returns what is already stored.
+    Nothing is lost by yielding: the caller's own cap means it was only ever going
+    to measure a couple of servers, "not measured yet" is a state it already
+    renders, and the uncapped pass holding the lock is measuring the same servers
+    anyway.
     """
+    if budget is not None and _PASS_LOCK.locked():
+        logger.debug("shareability: a pass is already running; serving stored rows")
+        return await asyncio.to_thread(_stored_verdicts, servers, runtime_dir)
+    async with _PASS_LOCK:
+        return await _evaluate_pass(servers, runtime_dir, budget, on_progress)
+
+
+def _stored_verdicts(servers: list[Any], runtime_dir: Path) -> dict[str, CachedPreflight]:
+    """Every verdict already on disk for *servers*, measuring nothing.
+
+    Blocking IO, so it is called through a thread. Reads by name rather than by
+    identity because this path deliberately spends nothing: resolving an identity
+    means fingerprinting a binary per server, which is the cost the caller is
+    yielding to avoid. A row whose identity has moved on is corrected by the pass
+    that is already running.
+    """
+    cache = load_cache(runtime_dir)
+    known: dict[str, CachedPreflight] = {}
+    for server in servers:
+        row = cache.get_by_name(server.name)
+        if row is not None:
+            known[server.name] = row
+    return known
+
+
+async def _evaluate_pass(
+    servers: list[Any],
+    runtime_dir: Path,
+    budget: int | None,
+    on_progress: Callable[[int, int], None] | None,
+) -> dict[str, CachedPreflight]:
+    """One pass, holding ``_PASS_LOCK``. Split out so the lock has one owner."""
     cache, identities = await asyncio.to_thread(_load_and_identify, servers, runtime_dir)
 
     known: dict[str, CachedPreflight] = {}
     due: list[Any] = []
-    budget = MAX_EVALUATIONS_PER_PASS
+    remaining = budget
     for server in servers:
-        hit = cache.get(server.name, identities[server.name])
+        hit = cache.get(server.name, identities[server.name], reported_version(server))
         if hit is not None:
             known[server.name] = hit
             continue
@@ -177,9 +262,10 @@ async def evaluate_new_servers(servers: list[Any], runtime_dir: Path) -> dict[st
             # A disabled server must not be spawned (probing is the act consent
             # gates), and a server with no command has no stdio pipe to stub.
             continue
-        if budget <= 0:
-            continue
-        budget -= 1
+        if remaining is not None:
+            if remaining <= 0:
+                continue
+            remaining -= 1
         due.append(server)
 
     # Bounded fan-out, not a sequential walk. This is awaited by a request the
@@ -194,14 +280,46 @@ async def evaluate_new_servers(servers: list[Any], runtime_dir: Path) -> dict[st
 
     async def _measure(server: Any) -> tuple[Any, Any]:
         async with sem:
-            return server, await preflight(server)
+            try:
+                return server, await preflight(server)
+            except Exception:
+                # One server's payload must never end the pass. Every facet the
+                # pre-flight compares is JSON this server chose, projected by code
+                # that walks it — so the ways a hostile or broken server can make
+                # that projection raise are not enumerable from here (a name that
+                # is not a string, nesting deep enough to exhaust the stack, and
+                # whatever the next one turns out to be). The flush happens after
+                # this loop, so an escaping exception discards every verdict the
+                # pass has already paid two spawns each for.
+                #
+                # Failing to measure a server is a state the module already has an
+                # honest answer for, so it takes that answer: unmeasurable, which
+                # reads as ``unknown`` and is never evidence against the server.
+                # ``CancelledError`` is a ``BaseException`` and so passes through —
+                # shutdown is not a measurement outcome.
+                logger.warning(
+                    "shareability: %s could not be measured; treating as unmeasurable",
+                    getattr(server, "name", "?"), exc_info=True,
+                )
+                return server, PreflightResult(ran=False, detail="preflight_error")
 
-    for server, result in await asyncio.gather(*(_measure(s) for s in due)):
+    total = len(due)
+    completed = 0
+    # ``as_completed``, not ``gather``: gather resolves only once every pre-flight
+    # has finished, so a progress hook driven from its result would report 0 of N
+    # for the whole pass and then jump straight to N of N — useless for the one
+    # caller that exists, an operator watching a minutes-long pass.
+    for finished in asyncio.as_completed([_measure(s) for s in due]):
+        server, result = await finished
         verdict = CachedPreflight(
             ran=result.ran,
             caller_sensitive=result.caller_sensitive,
             reasons=result.reasons,
             evaluated_at=now(),
+            # Read from the server passed in, not from the pre-flight's throwaway
+            # copies: this is the identification the dashboard is showing, and it
+            # is what the next pass will compare against.
+            reported_version=reported_version(server),
         )
         if result.ran:
             cache.put(server.name, identities[server.name], verdict)
@@ -214,6 +332,14 @@ async def evaluate_new_servers(servers: list[Any], runtime_dir: Path) -> dict[st
             # pay the spawn again next time.
             logger.info("shareability: %s could not be evaluated yet", server.name)
         known[server.name] = verdict
+        completed += 1
+        if on_progress is not None:
+            # A reporting hook must never be able to abandon measurements that
+            # already cost two spawns each, so its failure is logged and dropped.
+            try:
+                on_progress(completed, total)
+            except Exception:
+                logger.debug("shareability: progress hook raised", exc_info=True)
         logger.info(
             "shareability: evaluated %s -> ran=%s caller_sensitive=%s",
             server.name, result.ran, result.caller_sensitive,

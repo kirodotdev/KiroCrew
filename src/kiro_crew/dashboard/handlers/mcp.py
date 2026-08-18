@@ -721,6 +721,77 @@ async def _evaluate_shareability(servers: list[Any]) -> None:
     )
 
 
+#: Progress of the operator-requested measurement pass. One pass at a time per
+#: gateway: the work is bounded by the configured server count, and a second
+#: concurrent pass would double the spawn load for no new measurements, since
+#: both would pick the same unmeasured set.
+_measure_progress: dict[str, Any] = {
+    "running": False,
+    "done": 0,
+    "total": 0,
+    "error": "",
+}
+
+
+async def _bg_measure_all() -> None:
+    """Measure every server that has no current verdict, reporting progress.
+
+    Runs uncapped, which is safe here and is not on the request path: an operator
+    asked for it and is watching a progress readout, so the cost is expected
+    rather than paid by somebody loading a page. The per-pass fan-out ceiling
+    still applies inside the evaluator, so this is a longer pass and not a
+    heavier one.
+    """
+    from kiro_crew.mcp_discovery import probe_all  # noqa: F811
+    from kiro_crew.mcp_gateway.evaluate import evaluate_new_servers
+
+    def report(done: int, total: int) -> None:
+        _measure_progress["done"] = done
+        _measure_progress["total"] = total
+
+    try:
+        servers = await probe_all()
+        await evaluate_new_servers(
+            list(servers),
+            records_dir(KiroCrewConfig.load().mcp_gateway.socket_path),
+            budget=None,
+            on_progress=report,
+        )
+    except Exception as exc:
+        # Surfaced in the progress payload rather than only logged: the operator
+        # is watching this readout, and a pass that silently stops looks
+        # identical to one that finished with nothing to do.
+        logger.warning("shareability: measurement pass failed: %s", exc)
+        _measure_progress["error"] = type(exc).__name__
+    finally:
+        _measure_progress["running"] = False
+
+
+async def api_mcp_measure_start(request: web.Request) -> web.Response:
+    """POST /api/mcp/measure — measure every server with no current verdict.
+
+    Returns immediately. The pass spawns two processes per unmeasured server and
+    can take minutes on a large configuration, so it must not be awaited by a
+    request: poll ``GET /api/mcp/measure`` for progress.
+
+    A second call while a pass is running is reported rather than queued, because
+    both passes would select the same unmeasured set and simply double the spawns.
+    """
+    if _measure_progress["running"]:
+        return web.json_response({"ok": False, "running": True, **_measure_progress})
+    _measure_progress.update(running=True, done=0, total=0, error="")
+    state: DashboardState = request.app["state"]
+    task = asyncio.create_task(_bg_measure_all())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    return web.json_response({"ok": True, "running": True, **_measure_progress})
+
+
+async def api_mcp_measure_progress(request: web.Request) -> web.Response:
+    """GET /api/mcp/measure — where the current or last measurement pass got to."""
+    return web.json_response({"ok": True, **_measure_progress})
+
+
 async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     """GET /api/mcp/probe — return cached probe results (non-blocking)."""
     global _mcp_probe_in_progress

@@ -14,9 +14,25 @@ from ``clientInfo`` would silently hand session B session A's capability set.
 That is documented there as an assumption the gateway cannot verify at runtime.
 
 It IS verifiable offline. Spawn the server twice under two different
-``clientInfo`` identities and compare what it advertises. Divergence is proof of
-caller sensitivity; agreement is strong evidence against it. Two sequential
-spawns, no broker, no synthetic co-tenancy.
+``clientInfo`` identities and compare every facet the backend replays: the
+advertised capabilities, the negotiated protocol version, the server's own
+identification, and the ``tools/list`` answer. Divergence on any of them is
+proof of caller sensitivity; agreement is strong evidence against it. Two
+sequential spawns, no broker, no synthetic co-tenancy.
+
+Which facet diverged is logged and carried in ``detail`` for diagnosis, but the
+verdict is one boolean: every consumer of a stored measurement reduces it to
+"caller sensitive or not", so reporting the facet to an operator would be a
+change to that whole path rather than to this module.
+
+Why the tool list is part of it
+------------------------------
+The tool list is mandatory in every revision of the protocol, while tool
+ANNOTATIONS only exist from MCP 2025-03-26. Comparing the list is therefore the
+one facet that is decidable on a server too old to describe its own tools — the
+servers most likely to predate any thought of co-tenancy. The probe already
+issues ``tools/list`` and stores the answer, so this costs no extra spawn and no
+extra request; the earlier shape of this module simply discarded it.
 
 What this does NOT catch, on purpose
 ------------------------------------
@@ -35,6 +51,7 @@ pass, never while rendering a page.
 
 from __future__ import annotations
 
+import json
 import logging
 from copy import deepcopy
 from dataclasses import dataclass
@@ -70,8 +87,39 @@ PREFLIGHT_IDENTITY_NAMES: tuple[str, str] = (_IDENTITY_A["name"], _IDENTITY_B["n
 #: Reason codes this module can contribute. Kept here (not in ``shareability``)
 #: because they describe how the evidence was OBTAINED, and the verdict engine
 #: only needs to know they are disqualifying.
+#:
+#: One caller-sensitive code covers every facet, because every consumer collapses
+#: the measurement to a single boolean: the row builder keeps ``(ran,
+#: caller_sensitive)`` and the verdict engine derives the reason itself. Naming
+#: which facet caught the divergence would need that whole path to carry the
+#: stored reason, so it is a change of its own rather than a constant declared
+#: here with nothing reading it.
 REASON_CALLER_SENSITIVE_INIT = "caller_sensitive_initialize"
 REASON_PREFLIGHT_UNAVAILABLE = "preflight_unavailable"
+
+
+def _tool_names_are_comparable(server: Any) -> bool:
+    """True when this server's tool names can be compared at all.
+
+    The prober takes a tool's ``name`` straight from the server's ``tools/list``
+    and only drops falsy values, so a non-string name (``{"name": 123}``) reaches
+    ``server.tools`` intact. Ordering a mixed list raises ``TypeError``, and that
+    exception would escape the whole evaluation pass — which flushes only after
+    every measurement completes, so one malformed server would discard the
+    verdicts of every server measured before it.
+
+    A server that cannot name its own tools is not a server this check can reach a
+    conclusion about, so it reads as unmeasurable. That is the same answer the
+    module already gives for a server it could not start: honest, and it lands as
+    ``unknown`` rather than as evidence against the server.
+    """
+    return all(isinstance(n, str) for n in (getattr(server, "tools", None) or []))
+
+
+#: The facets compared across the two identities. Their NAMES are internal: they
+#: order the comparison and appear in the log line that says which one diverged.
+FACET_INIT = "initialize"
+FACET_TOOLS = "tools"
 
 
 @dataclass(frozen=True)
@@ -125,6 +173,79 @@ def _capability_shape(capabilities: dict[str, Any] | None) -> Any:
     return project(capabilities)
 
 
+def _tool_surface(server: Any) -> Any:
+    """What ``tools/list`` answered, projected so only real divergence shows.
+
+    The probe already pays for this round-trip and stores the result, so widening
+    the comparison here costs no extra spawn and no extra request. It is what
+    makes the check decidable on a server that sends no annotations at all: the
+    tool LIST is mandatory in every MCP revision, so a server too old to carry
+    ``readOnlyHint`` is still fully measurable on this facet.
+
+    Two projections keep ordering out of the comparison, because a pooled backend
+    replays the cached answer and a server free to enumerate its tools in a
+    different order each spawn is not thereby caller-sensitive:
+
+    * names become a SET — a different set is a real divergence, a different
+      order is not;
+    * annotation shapes become a sorted MULTISET, never paired with a name.
+
+    That second projection is deliberately unpaired, and this is the load-bearing
+    part. The prober builds ``tools`` and ``tool_annotations`` in two comprehensions
+    over the same list with INDEPENDENT predicates — a tool is kept in ``tools``
+    when its name is truthy, and in ``tool_annotations`` when it carries an
+    ``annotations`` dict. Neither list records which tool an entry came from, so a
+    tool with an empty name but an annotation object is dropped from one and kept in
+    the other: the two lists can be the same LENGTH and still describe different
+    tools. Any attempt to re-establish alignment on this side of the wire is
+    therefore guessing, whether it pairs by index or first checks the lengths.
+
+    So the alignment question is removed rather than answered. Comparing the
+    shapes as an unordered multiset still detects the thing this facet exists to
+    detect — a server that makes a different annotation claim to the second caller
+    changes the multiset — while a reorder, a partial list, and a mismatched filter
+    all become unobservable instead of becoming a wrong verdict. Per-tool
+    attribution is not lost, because nothing consumed it: one reason code covers
+    every facet, and no caller reads which tool diverged.
+
+    Each shape is canonicalised to a JSON string before sorting. The projection
+    yields dicts, and ordering dicts directly would raise ``TypeError`` — the same
+    crash class this module already guards against for tool names.
+
+    Annotation VALUES are compared through the same shape projection as
+    capabilities: what matters is that the server made the same claim to both
+    callers, and a free-form leaf it varies per spawn is not that claim.
+    """
+    names = list(getattr(server, "tools", None) or [])
+    annotations = list(getattr(server, "tool_annotations", None) or [])
+    shapes = sorted(
+        json.dumps(
+            _capability_shape(ann if isinstance(ann, dict) else None),
+            sort_keys=True,
+        )
+        for ann in annotations
+    )
+    return (tuple(sorted(names)), tuple(shapes))
+
+
+def _replayed_surface(server: Any) -> dict[str, Any]:
+    """Every facet a pooled backend caches from one caller and serves to the next.
+
+    ``Backend`` replays the first stub's handshake AND its tool list, so each of
+    these is a promise the server has to keep identically for co-tenancy to be
+    safe. Anything the backend does NOT replay is deliberately absent: comparing
+    it would fail servers on differences no session could ever observe.
+    """
+    return {
+        FACET_INIT: (
+            _capability_shape(getattr(server, "capabilities", None)),
+            getattr(server, "protocol_version", "") or "",
+            _capability_shape(getattr(server, "server_info", None) or None),
+        ),
+        FACET_TOOLS: _tool_surface(server),
+    }
+
+
 async def preflight(server: Any) -> PreflightResult:
     """Run the shareability pre-flight for one configured server.
 
@@ -161,19 +282,31 @@ async def preflight(server: Any) -> PreflightResult:
         # a verdict this evidence does not support.
         return PreflightResult(ran=False, detail=second.error or second.status)
 
-    shape_a = _capability_shape(first.capabilities)
-    shape_b = _capability_shape(second.capabilities)
-    diverged = shape_a != shape_b
-    if diverged:
+    # Checked BEFORE any comparison, and against BOTH answers: the comparison
+    # orders tool names, so a non-string name would raise out of this function and
+    # abort the caller's whole pass before it flushes anything.
+    if not (_tool_names_are_comparable(first) and _tool_names_are_comparable(second)):
+        logger.info("preflight %s: tool names are not all strings; unmeasurable", server.name)
+        return PreflightResult(ran=False, detail="malformed_tool_names")
+
+    surface_a = _replayed_surface(first)
+    surface_b = _replayed_surface(second)
+    # Ordered so the reported facet is stable rather than dict-iteration
+    # dependent, and so the handshake is named ahead of the tool list when a
+    # server diverges on both — the handshake is the earlier promise.
+    diverged_facet = next(
+        (f for f in (FACET_INIT, FACET_TOOLS) if surface_a[f] != surface_b[f]), ""
+    )
+    if diverged_facet:
         logger.info(
-            "preflight %s: advertises different capabilities per clientInfo; "
-            "not shareable",
+            "preflight %s: %s differs per clientInfo; not shareable",
             server.name,
+            diverged_facet,
         )
     return PreflightResult(
         ran=True,
-        caller_sensitive=diverged,
+        caller_sensitive=bool(diverged_facet),
         capabilities_a=first.capabilities,
         capabilities_b=second.capabilities,
-        detail="capability_shape_differs" if diverged else "",
+        detail=f"{diverged_facet}_shape_differs" if diverged_facet else "",
     )

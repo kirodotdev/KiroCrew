@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ExternalLink, ListChecks, Server as ServerIcon } from 'lucide-react'
+import { AlertTriangle, ExternalLink, Gauge, ListChecks, Server as ServerIcon } from 'lucide-react'
 import {
   api,
   type McpManagedServer,
@@ -290,6 +290,118 @@ function AssessmentRow({
  * the two views can never disagree about which servers exist, and opening this tab
  * costs no request and starts no server.
  */
+/**
+ * The one control on this view: measure the servers that have no verdict yet.
+ *
+ * It exists because the assessment is only as useful as the number of rows that
+ * carry a measurement, and the pass that produces them was previously reachable
+ * only as a side effect of an icon-only refresh that measures a couple of servers
+ * per press. A fleet of thirty needs fifteen presses and a guess about what the
+ * icon does, which is why this button says what it does and how much is left.
+ *
+ * Progress is polled rather than streamed: the pass is minutes long at worst, a
+ * two-second read costs nothing next to two process spawns per server, and a
+ * dropped poll self-corrects on the next one where a dropped stream event does
+ * not.
+ */
+function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
+  const qc = useQueryClient()
+  const [asked, setAsked] = useState(false)
+
+  const progress = useQuery({
+    queryKey: ['mcp-measure-progress'],
+    queryFn: () => api.mcpMeasureProgress(),
+    // Only poll while a pass is actually running. Polling a finished pass forever
+    // would keep a timer alive on a settings page nobody is looking at.
+    refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
+    // A pass started from another tab (or before this page mounted) still has to
+    // show up here, so the first read happens on mount rather than on click --
+    // which is the default, stated here because the interval above is not.
+  })
+
+  const start = useMutation({
+    mutationFn: () => api.mcpMeasureStart(),
+    onSuccess: (data) => {
+      setAsked(true)
+      qc.setQueryData(['mcp-measure-progress'], data)
+    },
+  })
+
+  const running = progress.data?.running === true
+  const done = progress.data?.done ?? 0
+  const total = progress.data?.total ?? 0
+
+  // The verdicts the pass just wrote live in a DIFFERENT query, and nothing else
+  // refetches it: without this the operator watches progress reach the end and
+  // then reads a table still saying "not measured", beside a button still
+  // offering the same count. That contradiction is the end of every single use of
+  // this control, so the refresh belongs here and not in a manual reload.
+  //
+  // Keyed on the running edge rather than on the mutation, because a pass started
+  // from another tab settles here too and its result is just as stale.
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    if (wasRunning.current && !running) {
+      void qc.invalidateQueries({ queryKey: ['mcpGatewayServers'] })
+    }
+    wasRunning.current = running
+  }, [running, qc])
+
+  // A pass that stopped early. Deliberately NOT gated on this session: a died
+  // pass is otherwise indistinguishable from one that had nothing to do, which is
+  // the difference between measured and never measured.
+  const failed = !!progress.data?.error && !running
+
+  // A pass this session that has stopped and measured something. Not shown for a
+  // pass that only ever ran in some earlier session: "finished" with no numbers
+  // attached tells the reader nothing they can use. Excludes a failed pass, and
+  // counts what was actually MEASURED rather than what was attempted -- a pass
+  // that died at 1 of 5 must not close with "Measured 5 servers".
+  const settled = asked && !running && done > 0 && !failed
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        onClick={() => start.mutate()}
+        disabled={running || start.isPending || unmeasuredCount === 0}
+        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Gauge size={14} className="shrink-0" />
+        {unmeasuredCount > 0
+          ? i18nT('pages.mcpManagement.assessment.measure_unmeasured', {
+              count: unmeasuredCount,
+            })
+          : i18nT('pages.mcpManagement.assessment.measure_none_left')}
+      </button>
+
+      {running && (
+        <span role="status" className="text-[12.5px] text-[var(--muted)]">
+          {i18nT('pages.mcpManagement.assessment.measure_running', { done, total })}
+        </span>
+      )}
+      {settled && (
+        <span role="status" className="text-[12.5px] text-[var(--muted)]">
+          {i18nT('pages.mcpManagement.assessment.measure_finished', { count: done })}
+        </span>
+      )}
+      {/* A pass that stopped early is reported here rather than only in the log:
+          the operator is watching this readout and would otherwise read a short
+          pass as a completed one. */}
+      {failed && (
+        <span role="status" className="text-[12.5px] text-[var(--danger)]">
+          {i18nT('pages.mcpManagement.assessment.measure_failed')}
+        </span>
+      )}
+      {start.isError && (
+        <span role="status" className="text-[12.5px] text-[var(--danger)]">
+          {i18nT('pages.mcpManagement.assessment.measure_failed')}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function AssessmentView({
   servers,
   sharingOn,
@@ -297,6 +409,7 @@ function AssessmentView({
   isError,
   onOpenServers,
   unsupportedCount,
+  unmeasuredCount,
 }: {
   servers: McpManagedServer[]
   sharingOn: boolean
@@ -304,6 +417,7 @@ function AssessmentView({
   isError: boolean
   onOpenServers: () => void
   unsupportedCount: number
+  unmeasuredCount: number
 }) {
   return (
     <div className="space-y-4">
@@ -331,6 +445,8 @@ function AssessmentView({
             ),
         )}
       </p>
+
+      <MeasureControl unmeasuredCount={unmeasuredCount} />
 
       {/* Only ever shown when there is something to show. A count of zero is the
           normal state and saying so every time trains people to ignore the line. */}
@@ -494,6 +610,15 @@ export function McpManagement() {
 
   const canEnableSharing = supported && stubCount > 0
 
+  // How many rows the measurement pass would actually act on. A row with no
+  // ``recommendation`` at all counts too: an older gateway reached through Make
+  // Live sends no verdict field, and that row is exactly as unmeasured as one
+  // whose verdict says so.
+  const unmeasuredCount = useMemo(
+    () => servers.filter(s => !s.recommendation || s.recommendation.strength === 'unknown').length,
+    [servers],
+  )
+
   // Local state, not a URL param. The sibling in-pane tab rails in this repo
   // (ConnectionsPage, knowledge) hold it the same way, this pane is already
   // addressed by the Developer page's own `?tab=`, and a second param would need
@@ -538,6 +663,7 @@ export function McpManagement() {
           isError={serversQ.isError}
           onOpenServers={() => setView('servers')}
           unsupportedCount={unsupportedCount}
+          unmeasuredCount={unmeasuredCount}
         />
       ) : (
         <>
