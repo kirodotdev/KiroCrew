@@ -627,15 +627,23 @@ jobs:
   # Without this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
   # even though branch protection treats breaking it as a blocking offence.
   #
-  # The shards now COLLECT these two files as well (nothing is deselected any more), but
-  # there the `skipif(not userns_available())` tests skip -- so this job is still what
-  # actually asserts the sandbox behaviour.
+  # The shards COLLECT all eleven of these files (nothing is deselected any more), but the
+  # `skipif(not userns_available())` tests inside SIX of them skip there -- so this job is
+  # the only place those 85 assertions execute, the ~/.kiro/crew sensitive-path keystone
+  # among them. The other five carry no such guard and run fully in the shards too; they
+  # are listed here because running them against a REAL sandbox is a different test than
+  # running them against a stubbed one, and this is the only lane that can.
   #
-  # The nine ops/auto_improvement suites belong here too, for the same reason, and were
-  # rejected the first time as "~6 minutes against a real git". That cost was the
-  # launcher's pre-exec hardlink scan arming on every spawn; measured after the fix, all
-  # eleven run in 38s under this job's environment. Adding them waits on that fix
-  # landing, so it is not part of this change.
+  # The list is hand-maintained, so `test_coverage_omit_contract.py` asserts that every
+  # file carrying the guard appears on the argv below. Without that, a twelfth guarded
+  # file would skip in every shard, join no lane, and be silently green -- which is
+  # exactly how these nine came to execute nowhere.
+  #
+  # The nine ops/auto_improvement suites were rejected from this job once, as "~6 minutes
+  # against a real git" and "a poor fit for a 20-minute job". That cost was the launcher's
+  # pre-exec hardlink scan arming on every spawn (1.5s per sandboxed spawn), since fixed.
+  # MEASURED afterwards under this job's own environment -- real sandbox, no gh token, no
+  # user session bus -- all eleven: 694 passed, 1 skipped, 38s.
   #
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
@@ -668,10 +676,24 @@ jobs:
         run: unshare --mount --map-root-user true
 
       - name: Run sandbox-dependent tests
+        # `--no-cov` deliberately. This is the only lane that reaches these lines, so
+        # measuring it is what would let setup.cfg drop the omit for the six guarded test
+        # files -- but that needs this job's data uploaded as an artifact and
+        # `coverage-combine` taught to consume it, which couples the coverage gate to a
+        # job it does not depend on today. Separate change; the omit carries the pointer.
         run: |
           pytest -q --timeout=180 --no-cov \
             test/test_script_hooks.py \
-            test/test_cron_script.py
+            test/test_cron_script.py \
+            src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
+            src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
 
   coverage-combine:
     name: Coverage Combine

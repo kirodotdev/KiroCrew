@@ -34,6 +34,8 @@ the text", so the thing worth testing is git.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import shutil
 import subprocess
@@ -41,6 +43,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -867,3 +870,56 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
         """An unreadable ledger must not turn into an unexplained refusal."""
         _ledger, sync, _entry = self._use(self.home_a)
         self.assertEqual(sync._credential_bearing_lines(), [])
+
+
+class _StopSpawn(Exception):
+    """Aborts `_git` at the spawn boundary, so no subprocess runs."""
+
+
+class TestTheAppCommitsUnderItsOwnIdentity(unittest.TestCase):
+    """A ledger commit must not depend on the operator having a git identity.
+
+    Nothing here needs git, a sandbox, or a repository: the assertion is on the ARGV the
+    module builds, which is where the property lives. That matters because the failure it
+    guards is invisible on a developer machine — git auto-detects an identity from a
+    fully-qualified hostname, so the missing-identity path never runs locally. On a host
+    where it cannot (a fresh container, a CI runner, a locked-down image) `git commit`
+    refuses with "Author identity unknown", the push that follows has nothing to send, and
+    the operator sees only "push errored". MEASURED: 18 of this file's 39 tests failed that
+    way the first time CI ran them with a real sandbox.
+    """
+
+    def test_every_git_invocation_carries_the_identity(self) -> None:
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger_sync
+
+        seen: dict[str, list[str]] = {}
+
+        def _capture(argv, **_kwargs):
+            seen["argv"] = list(argv)
+            raise _StopSpawn
+
+        with mock.patch.object(ledger_sync, "sandboxed_spawn_argv", _capture):
+            with contextlib.suppress(_StopSpawn):
+                asyncio.run(ledger_sync._git("commit", "--no-edit", "-q", "-m", "x"))
+
+        argv = seen["argv"]
+        assert argv[0] == ledger_sync._GIT_BINARY
+        # `-c` pairs BEFORE the subcommand: git only accepts them there, and they must also
+        # precede it to override a repo-local `user.email` an agent could have written.
+        assert argv[1 : 1 + len(ledger_sync._COMMIT_IDENTITY)] == list(
+            ledger_sync._COMMIT_IDENTITY
+        )
+        assert argv[1 + len(ledger_sync._COMMIT_IDENTITY)] == "commit"
+        joined = " ".join(argv)
+        assert "user.name=" in joined and "user.email=" in joined
+
+    def test_the_identity_email_cannot_route(self) -> None:
+        """`.invalid` is reserved for exactly this (RFC 2606), so mail cannot escape."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger_sync
+
+        email = next(
+            opt.split("=", 1)[1]
+            for opt in ledger_sync._COMMIT_IDENTITY
+            if opt.startswith("user.email=")
+        )
+        assert email.endswith(".invalid"), email

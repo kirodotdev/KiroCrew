@@ -545,7 +545,16 @@ async def test_git_decodes_both_streams_and_unlinks_the_temp_profile(omc, monkey
     rc, out, err = await _REAL_GIT("symbolic-ref", "--short", "HEAD")
 
     assert (rc, out, err) == (0, "main\n", "hint\n")
-    assert seen[0]["argv"] == ["git", "symbolic-ref", "--short", "HEAD"]
+    # The identity `-c` pairs sit between the binary and the verb on EVERY invocation,
+    # including a read-only one like this: scoping them to `commit` would miss the next
+    # verb that makes a commit. See ledger_sync._COMMIT_IDENTITY.
+    assert seen[0]["argv"] == [
+        "git",
+        *ls._COMMIT_IDENTITY,
+        "symbolic-ref",
+        "--short",
+        "HEAD",
+    ]
     assert seen[0]["kwargs"]["cwd"] == str(ls._repo_root())
     assert seen[0]["kwargs"]["env"] == {"PATH": "/usr/bin"}
     assert not profile.exists(), "the caller owns unlinking the temp profile"
@@ -911,12 +920,20 @@ async def test_stage_and_commit_swallows_nothing_to_commit(omc, caplog):
 
 @pytest.mark.asyncio
 async def test_stage_and_commit_logs_a_real_commit_failure(omc, caplog):
+    """At WARNING, not debug: this is the only place the real reason is ever stated.
+
+    The push that follows a refused commit fails with git's `src refspec HEAD does not
+    match any`, which names the push and says nothing about the commit -- so a
+    debug-level record left the operator with "push errored" and no cause. Asserted at
+    WARNING so a demotion back to debug fails here.
+    """
     omc.git.when("status", out=" M ledger.jsonl\n").when(
         "commit", rc=1, err="fatal: could not read Username\n"
     )
-    with caplog.at_level(logging.DEBUG, logger=ls.logger.name):
+    with caplog.at_level(logging.WARNING, logger=ls.logger.name):
         assert await ls._stage_and_commit("update ops ledger") is False
-    assert "commit skipped" in caplog.text
+    assert "commit refused" in caplog.text
+    assert "could not read Username" in caplog.text, "the reason must reach the record"
 
 
 # ── pull ─────────────────────────────────────────────────────────────────────

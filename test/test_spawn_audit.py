@@ -148,6 +148,14 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
         # futex, never exec'd, never exited, and pinned every fd it inherited --
         # including gateway.lock and the dashboard listener.
         "kiro_prerequisite.py::_run_process",
+        # Spawns NOTHING. It PATCHES `sandboxed_spawn_argv` and raises from the
+        # replacement, so the argv is captured at the boundary and no child is ever
+        # created -- but the name appears in the function body, which is what this scan
+        # matches on. A resource ceiling has nothing to apply to. Deliberately NOT in
+        # BENIGN_SPAWNS: that set is for an UNROUTED spawn, and the staleness check
+        # correctly rejects this key there.
+        "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py"
+        "::test_every_git_invocation_carries_the_identity",
     }
 )
 

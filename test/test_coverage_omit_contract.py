@@ -30,6 +30,13 @@ That gives a rule worth enforcing in both directions:
   never going red when its reason expires.
 
 The two lists must still agree, and no pattern may swallow product code.
+
+One more drift gate lives here for the same reason -- it is the file that already reads
+``ci.yml``. The capability guard only defers a test; something has to RUN it. That is
+``backend-test-sandbox``, whose suite list is enumerated by hand, so a twelfth guarded file
+added later would skip in every shard and never join that lane: silently green, and exactly
+the gap this pair of changes closed. So every file carrying the guard must appear in that
+job's argv.
 """
 
 from __future__ import annotations
@@ -54,6 +61,22 @@ _FIXTURE_ESCAPES = {"*/pytest-of-*/*", "*/kirocrew-wt-example/*"}
 #: skip where the capability is absent. Matched as source text so the check needs no
 #: import of the suite under test.
 _CAPABILITY_GUARD = "userns_available"
+
+#: A guard USED, not merely mentioned. `test_sandbox_probe.py` and
+#: `test_sandbox_backend_cache.py` call `userns_available()` as the function under test,
+#: which is not the same thing as deferring to it.
+#: `.*?` and not `[^)]*`: the real guards read
+#: `skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available()`,
+#: whose argument list contains a `)` of its own. A character class that stopped there
+#: matched NONE of the six files and made the drift gate below silently vacuous -- caught
+#: by removing a suite from the job and watching the gate stay green.
+_GUARD_USE_RE = re.compile(r"skipif\(\s*not\s+.*?" + _CAPABILITY_GUARD + r"\(\)")
+
+#: This file documents the pattern it enforces, so its own prose matches the regex above.
+_GUARD_PROSE_ONLY = {"test/test_coverage_omit_contract.py"}
+
+#: The workflow step whose argv must name every guarded suite.
+_SANDBOX_STEP = "Run sandbox-dependent tests"
 
 
 def _ci_deselected_paths() -> list[tuple[str, str]]:
@@ -205,3 +228,55 @@ def test_omit_patterns_do_not_swallow_product_code() -> None:
             f"omit pattern {pattern!r} is neither a pytest-tmp escape nor a specific "
             "test file -- a broad pattern here can silently stop measuring product code."
         )
+
+
+def _capability_guarded_test_files() -> set[str]:
+    """Repo-relative paths of every test file that DEFERS to the capability guard."""
+    roots = [REPO_ROOT / "test", REPO_ROOT / "src" / "kiro_crew" / "apps" / "builtins"]
+    found: set[str] = set()
+    for root in roots:
+        for path in root.rglob("test_*.py"):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if rel in _GUARD_PROSE_ONLY:
+                continue
+            if _GUARD_USE_RE.search(path.read_text(encoding="utf-8")):
+                found.add(rel)
+    return found
+
+
+def _sandbox_job_targets() -> set[str]:
+    """Test paths on the namespace-sandbox job's pytest argv."""
+    lines = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    first = next(i for i, line in enumerate(lines) if _SANDBOX_STEP in line)
+    # Read to the end of the step: its own body is indented deeper than the `- name:` key,
+    # so the first non-blank line at or above that level starts the next step or job.
+    body: list[str] = []
+    for line in lines[first + 1 :]:
+        if line.strip() and not line.startswith(" " * 8):
+            break
+        body.append(line)
+    return set(re.findall(r"((?:test|src)/[\w./-]+\.py)", "\n".join(body)))
+
+
+def test_every_capability_guarded_suite_runs_in_the_sandbox_job() -> None:
+    """A guard defers a test; this job is what still runs it.
+
+    Fixing the instance is not enough -- the job's list is hand-maintained, and it had
+    already rotted once: nine guarded suites skipped in every shard and appeared in no
+    sandbox lane, so 85 assertions (the ~/.kiro/crew keystone among them) executed nowhere
+    while CI stayed green. A new guarded file recreates that silently, which is precisely
+    the shape a ratchet is for.
+    """
+    missing = sorted(_capability_guarded_test_files() - _sandbox_job_targets())
+    assert not missing, (
+        f"these files defer tests to {_CAPABILITY_GUARD}() but are not on the "
+        f"namespace-sandbox job's argv, so those tests run nowhere: {missing}. Add them to "
+        f"the '{_SANDBOX_STEP}' step in ci.yml."
+    )
+
+
+def test_the_sandbox_job_target_parse_is_not_silently_empty() -> None:
+    """Guard the parser: a reshaped workflow must fail loudly, not pass vacuously."""
+    targets = _sandbox_job_targets()
+    assert len(targets) >= 11, f"parsed only {len(targets)} sandbox-job targets: {targets}"
+    assert all(t.endswith(".py") for t in targets), targets

@@ -59,6 +59,24 @@ logger = logging.getLogger(__name__)
 
 _GIT_BINARY = "git"
 
+#: The identity this app commits under, supplied on the argv of every git invocation.
+#:
+#: These commits are the APP's, not the operator's: a ledger sync is machine-to-machine,
+#: it runs unattended, and the repository lives under the data home where nobody edits it
+#: by hand. Naming the app is therefore the honest attribution -- and it is also what makes
+#: the behaviour the same on every host. Relying on the ambient `user.email` meant that on
+#: a host with no git identity configured (a fresh container, a CI runner, a locked-down
+#: image) `git commit` refused with "Author identity unknown", the push that followed had
+#: nothing to send, and the operator saw only "push errored" with no reason.
+#:
+#: `.invalid` is the reserved TLD for exactly this (RFC 2606), so the address cannot route.
+_COMMIT_IDENTITY = (
+    "-c",
+    "user.name=Kiro Crew ops-mission-control",
+    "-c",
+    "user.email=ops-mission-control@kirocrew.invalid",
+)
+
 #: Config keys. A remote URL is not a credential (auth is the remote's job — an SSH
 #: key or a `gh` login the operator already has), so these live in plain app config.
 _ENABLED_KEY = "ledger_sync_enabled"
@@ -341,7 +359,11 @@ async def _git(*args: str) -> tuple[int, str, str]:
     same limits after ``exec`` instead. Caught by ``test/test_spawn_preexec_guard.py``
     (issue #935), a core gate this app had not been run against.
     """
-    argv, env, cleanup = sandboxed_spawn_argv([_GIT_BINARY, *args])
+    # Identity on the ARGV, not in the repo's config: `-c` beats config, so it holds
+    # even against a repo-local `user.email` an agent could have written, and it needs
+    # no `git config` write of our own. Passed on every verb -- the read-only ones
+    # ignore it, and scoping it to `commit` would miss the next verb that makes one.
+    argv, env, cleanup = sandboxed_spawn_argv([_GIT_BINARY, *_COMMIT_IDENTITY, *args])
     try:
         proc = await create_subprocess_limited(
             *argv,
@@ -785,7 +807,12 @@ async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = Fa
         return False
     rc, _, err = await _git("commit", "--no-edit", "-q", "-m", message)
     if rc != 0 and "nothing to commit" not in err.lower():
-        logger.debug("ops-mission-control: ledger commit skipped: %s", err.strip()[:200])
+        # WARNING, not debug. A refused commit is not a quiet no-op: the push that follows
+        # then has nothing to send and fails with git's `src refspec HEAD does not match
+        # any`, which names the push and says nothing about the commit that never
+        # happened. That is how the real cause stayed invisible on a host where the commit
+        # could not be made at all -- the operator sees "push errored" and no reason.
+        logger.warning("ops-mission-control: ledger commit refused: %s", err.strip()[:200])
         return False
     return rc == 0
 
