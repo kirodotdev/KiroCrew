@@ -439,6 +439,7 @@ class TestListSessions:
         mtime = (tmp_path / "s1.jsonl").stat().st_mtime
         log._msg_cache["s1"] = (
             mtime,
+            log._cache_gen("s1"),
             [
                 {"role": "assistant", "content": "skip"},
                 {"role": "user", "content": "cached title"},

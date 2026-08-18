@@ -275,7 +275,11 @@ class TestFoldDoesNotPinParsedTranscripts:
         # Poison the parsed cache under the CURRENT mtime — an mtime guard alone
         # would happily reuse this entry.
         mtime = log._path("s0").stat().st_mtime
-        log._msg_cache["s0"] = (mtime, [{"role": "user", "content": "phantom text"}])
+        log._msg_cache["s0"] = (
+            mtime,
+            log._cache_gen("s0"),
+            [{"role": "user", "content": "phantom text"}],
+        )
 
         built = log._build_folded("s0", mtime)
         assert built is not None

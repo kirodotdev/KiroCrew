@@ -240,7 +240,11 @@ class TestMessageCacheRewriteSerialization:
         seen: list[bool] = []
         real_locked = log._read_messages_locked
 
-        def observed(key: str) -> list[dict]:
+        def observed(
+            key: str,
+            gen: int | None = None,
+            flock_witness: tuple[int, int] | None = None,
+        ) -> list[dict]:
             # ``RLock`` exposes no owner query, and it is reentrant for THIS
             # thread — so a FOREIGN thread failing a non-blocking acquire is the
             # observable proof that the fill runs under the lock. Acquire and
@@ -258,7 +262,7 @@ class TestMessageCacheRewriteSerialization:
             t.start()
             t.join(5)
             seen.append(not box[0])
-            return real_locked(key)
+            return real_locked(key, gen=gen, flock_witness=flock_witness)
 
         log._read_messages_locked = observed  # type: ignore[method-assign]
         assert len(log._read_messages("k")) == 1
@@ -302,33 +306,49 @@ class TestMessageCacheRewriteSerialization:
             release.set()
             t.join(5)
 
-    def test_unlocked_fill_publishes_nothing(self, tmp_path: Path) -> None:
-        """An unlocked fill must not leave its parse in the cache.
+    def test_unlocked_fill_publishes_under_unmoved_generation(self, tmp_path: Path) -> None:
+        """An unlocked fill KEEPS its parse when no invalidation raced it.
 
         It runs exactly while a writer holds the lock, so its parse may predate
-        a rewrite that restores the file's mtime — an entry nothing could ever
-        invalidate. Serving the read is fine; publishing it is the original bug.
+        a rewrite that restores the file's mtime. Two witnesses distinguish the
+        cases: the invalidation generation (unmoved across the fill window ⇒
+        no LOCAL preserved-mtime rewrite landed) and the cross-process
+        flock-hold witness (this process held the flock throughout ⇒ no
+        EXTERNAL writer could touch the file), so the holder here takes the
+        FULL writer lock the way a real local writer does. Publishing the
+        proven-valid parse spares the next reader a full re-parse. (The
+        moved-generation and no-flock discards are pinned in
+        test_history_cache_fill_race.py.)
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("k", "user", "hello")
         log._invalidate_cache("k")
 
         acquired, release = threading.Event(), threading.Event()
-        t = self._hold(log._file_lock("k"), acquired, release)
+
+        def hold_writer_lock() -> None:
+            with log._locked("k"):
+                acquired.set()
+                release.wait(5)
+
+        t = threading.Thread(target=hold_writer_lock, daemon=True)
+        t.start()
+        assert acquired.wait(5)
         try:
 
             async def on_loop() -> list[dict]:
                 return log._read_messages("k")
 
             assert len(asyncio.run(on_loop())) == 1, "the unlocked fill must still serve the read"
-            assert log._msg_cache.get("k") is None, (
-                "an unlocked fill published a cache entry; a pre-rewrite parse stored "
-                "under a restored mtime is undetectable and would serve removed messages"
+            assert log._msg_cache.get("k") is not None, (
+                "an invalidation-free unlocked fill was discarded; the generation "
+                "guard proves the parse valid, so dropping it re-pays the full "
+                "re-parse on every contended on-loop read"
             )
         finally:
             release.set()
             t.join(5)
-        # Once the writer is gone the next read fills normally, under the lock.
+        # Once the writer is gone the next read is a warm hit on the kept fill.
         assert len(log._read_messages("k")) == 1
         assert log._msg_cache.get("k") is not None
 

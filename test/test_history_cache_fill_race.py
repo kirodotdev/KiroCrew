@@ -1,74 +1,575 @@
-"""Preserved-mtime cache-fill races in ConversationLog's mtime-keyed memos.
+"""Regression tests for the unlocked ``_msg_cache`` fill's generation guard.
 
-The mtime-keyed caches assume "same mtime == same content". Housekeeping
-rewrites break that assumption on purpose: compaction, rotation, metadata
-edits and consolidation bookkeeping restore the pre-write mtime
-(``_restore_mtime``) so they do not reorder ``list_sessions``. A cache FILL
-that stats the file before such a rewrite and publishes after its
-``_invalidate_cache`` therefore parks pre-rewrite data under an mtime the
-file still has — nothing can ever detect the staleness, so it is served for
-the life of the process.
-
-The race tests here inject the rewrite at the exact moment the fill
-publishes (a proxy around the cache runs it immediately before delegating
-the first store), which is inside the fill's stat → read → publish window by
-construction. Note the technique's reach: the proxy fires strictly between
-``_publish_if_current``'s generation pre-check and its store, so it
-exercises the store-after-full-invalidation and bump-between-check-and-store
-arms of the protocol. The remaining arm — a store completing before the
-invalidation's bump, which is what makes bump-BEFORE-pop ordering in
-``_invalidate_cache`` load-bearing — is unreachable this way and is pinned
-separately by the direct ordering test at the bottom; do not treat that
-test as redundant with the race tests. Each assertion is on the NEXT read:
-it must observe the post-rewrite content, i.e. the racing fill must not have
-survived in the cache. On a publish-anyway fill these tests go red — the
-stale entry's stored mtime matches the restored file mtime, so every later
-read is a cache hit on pre-rewrite data.
-
-``_msg_cache`` (``_read_messages``) is deliberately not covered here: its
-fill-vs-rewrite ordering is owned by a separate serialization mechanism.
+The mtime guard cannot protect a cache FILL against housekeeping rewrites that
+restore the pre-write mtime (``_restore_mtime``): a fill spanning one would
+park pre-rewrite messages under an mtime the file still has, undetectably. The
+locked fill path orders itself against writers via ``_file_lock``; the UNLOCKED
+fallback — taken exactly while a writer holds that lock — instead publishes
+through a per-key invalidation generation, snapshotted before the fill's stat
+and verified around the publish. An invalidation-free fill is kept (sparing the
+next reader a full re-parse), while one racing a preserved-mtime rewrite is
+discarded so the next read re-parses the file and returns the post-rewrite
+messages.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import os
+import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
+import pytest
+
+import kiro_crew.history as history_mod
 from kiro_crew.history import ConversationLog
 
 
+def _line(role: str, content: str) -> str:
+    return json.dumps({"role": role, "content": content}) + "\n"
+
+
+def _preserved_mtime_rewrite(log: ConversationLog, key: str, content: str) -> None:
+    """Rewrite *key*'s transcript in place, restoring the pre-write mtime.
+
+    Models the housekeeping rewrites (compaction / rotation / consolidation
+    marks) that deliberately keep the file's mtime: write new bytes, put the
+    old mtime back, then invalidate — the generation bump inside
+    ``_invalidate_cache`` is the only signal a racing fill can see.
+    """
+    path = log._path(key)
+    st = path.stat()
+    path.write_text(content, encoding="utf-8")
+    os.utime(path, (st.st_atime, st.st_mtime))
+    log._invalidate_cache(key)
+
+
 class _RewriteOnFirstStore:
-    """Cache proxy that runs *hook* once, just before the first ``__setitem__``.
+    """``_msg_cache`` stand-in that runs *hook* once, just before the first store.
 
-    Models a housekeeping rewrite landing between a fill's read and its
-    publish: by the time the store executes, the file has been rewritten, its
-    mtime restored, and ``_invalidate_cache`` has run — so the value being
-    stored is provably pre-rewrite. Everything else delegates to the real
-    cache, including the re-entrant calls the hook itself triggers (guarded by
-    ``fired`` so the rewrite runs exactly once). Tests assert ``fired`` after
-    the racing fill so "the injection never ran" fails distinctly instead of
-    masquerading as a stale-cache report.
-
-    ``__setitem__`` must be defined explicitly (dunder lookup bypasses
-    ``__getattr__``); ``get``/``pop``/``pop_prefix`` reach the inner cache via
-    ``__getattr__``.
+    Deterministically lands a rewrite inside the fill's read → publish window:
+    by the time the store reaches this wrapper the fill has already read the
+    pre-rewrite bytes and passed its generation pre-check, so the caller's
+    post-store re-check is the only thing left that can catch the invalidation
+    the hook performs.
     """
 
     def __init__(self, inner: Any, hook: Callable[[], None]) -> None:
         self._inner = inner
-        self._hook = hook
+        self._hook: Callable[[], None] | None = hook
+        #: True once the hook has run — asserted by tests so "the injection
+        #: never ran" fails distinctly instead of masquerading as a
+        #: stale-cache report.
         self.fired = False
 
     def __setitem__(self, key: str, value: Any) -> None:
-        if not self.fired:
+        hook, self._hook = self._hook, None
+        if hook is not None:
             self.fired = True
-            self._hook()
+            hook()
         self._inner[key] = value
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
 
+def _hold_lock(lock: threading.RLock) -> tuple[threading.Thread, threading.Event]:
+    """Hold *lock* from a foreign thread until the returned event is set."""
+    acquired, release = threading.Event(), threading.Event()
+
+    def run() -> None:
+        with lock:
+            acquired.set()
+            # Bounded even if the test body raises before releasing, so a
+            # failure can never strand this thread holding the lock.
+            release.wait(5)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    assert acquired.wait(5)
+    return t, release
+
+
+def _hold_writer_lock(log: ConversationLog, key: str) -> tuple[threading.Thread, threading.Event]:
+    """Hold the FULL writer lock (``_locked``: RLock + cross-process flock)
+    from a foreign thread until the returned event is set.
+
+    Models a real local writer mid-mutation: readers degrade to the unlocked
+    fill (the RLock is busy) while the flock-hold witness proves external
+    processes are locked out — the state in which the unlocked fill is allowed
+    to publish. A bare RLock hold (``_hold_lock``) models the OTHER state, a
+    local writer still waiting on an external process's flock, in which the
+    fill must refuse to publish.
+    """
+    acquired, release = threading.Event(), threading.Event()
+
+    def run() -> None:
+        with log._locked(key):
+            acquired.set()
+            release.wait(5)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    assert acquired.wait(5)
+    return t, release
+
+
+class TestUnlockedFillGenerationGuard:
+    def test_fill_racing_preserved_mtime_rewrite_is_discarded(self, tmp_path: Path) -> None:
+        """A preserved-mtime rewrite held across an unlocked on-loop fill must
+        not let the pre-rewrite parse survive: the next read returns the
+        post-rewrite messages."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "old")
+        log._invalidate_cache("k")  # force a cold fill
+
+        # A writer holds the full per-session writer lock (flock included), so
+        # the on-loop read degrades to the unlocked fill with a valid
+        # flock-hold witness — the generation is what must catch the rewrite.
+        holder, release = _hold_writer_lock(log, "k")
+
+        # ...and the rewrite lands exactly inside that fill's read → publish
+        # window, replacing the transcript under the same mtime.
+        def rewrite() -> None:
+            _preserved_mtime_rewrite(log, "k", _line("user", "new"))
+
+        log._msg_cache = _RewriteOnFirstStore(log._msg_cache, rewrite)  # type: ignore[assignment]
+        try:
+
+            async def on_loop() -> list[dict]:
+                return log._read_messages("k")
+
+            served = asyncio.run(on_loop())
+            # The racing fill parsed the pre-rewrite file; serving that one
+            # read is the documented tolerance. CACHING it is the bug: the
+            # rewrite restored the mtime, so nothing could ever evict it.
+            assert [m["content"] for m in served] == ["old"]
+            assert log._msg_cache.get("k") is None, (
+                "a fill that raced a preserved-mtime rewrite was published; the "
+                "entry holds pre-rewrite messages under an mtime the file still "
+                "has, so every future read would serve replaced messages"
+            )
+        finally:
+            release.set()
+            holder.join(5)
+
+        # The next read re-parses the file and sees the post-rewrite content.
+        msgs = log._read_messages("k")
+        assert [m["content"] for m in msgs] == ["new"]
+
+    def test_publish_precheck_skips_store_when_generation_already_moved(
+        self, tmp_path: Path
+    ) -> None:
+        """A generation moved BEFORE the publish attempt suppresses the store
+        entirely (no transient stale entry), while the read is still served."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "old")
+        log._invalidate_cache("k")
+        gen = log._cache_gen("k")
+
+        # The rewrite lands after the caller's snapshot; the fill cannot tell
+        # whether its read straddled the rewrite, so it must not publish. The
+        # flock is held (a valid witness), so the GENERATION clause is what
+        # must refuse the store.
+        _preserved_mtime_rewrite(log, "k", _line("user", "new"))
+
+        with log._locked("k"):
+            messages = log._read_messages_locked(
+                "k", gen=gen, flock_witness=log._flock_hold_witness("k")
+            )
+        assert [m["content"] for m in messages] == ["new"]
+        assert log._msg_cache.get("k") is None, (
+            "a fill whose pre-stat generation snapshot no longer matches must "
+            "discard itself at the publish pre-check"
+        )
+
+    def test_locked_fill_still_publishes_unconditionally(self, tmp_path: Path) -> None:
+        """The locked path passes ``gen=None``: the writer lock already orders
+        the fill against every rewrite, so a generation moving between the
+        caller's snapshot and the store must not suppress the publish."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        log._invalidate_cache("k")
+
+        real_cache_fill_lock = log._cache_fill_lock
+
+        @contextlib.contextmanager
+        def bump_then_lock(key: str) -> Iterator[bool]:
+            # Lands after the caller's pre-fill snapshot and before the fill:
+            # a locked fill that (wrongly) compared against the snapshot would
+            # now discard itself.
+            log._bump_cache_gen(key, log._cache_key_identities(key))
+            with real_cache_fill_lock(key) as held:
+                yield held
+
+        log._cache_fill_lock = bump_then_lock  # type: ignore[method-assign]
+        assert len(log._read_messages("k")) == 1
+        assert log._msg_cache.get("k") is not None, (
+            "a LOCKED fill discarded itself on a moved generation; the writer "
+            "lock already orders it against rewrites, so it must publish "
+            "unconditionally (gen=None)"
+        )
+
+
+class TestGenerationIdentityClosure:
+    """One session file is reachable under several cache-key spellings, and the
+    writer and reader do not always use the same one — a caller may invalidate
+    under the sanitized file stem while readers pass the logical session key. A
+    bump under any spelling must be visible to a snapshot under any other, or
+    the guard is blind to exactly the rewrite class it exists to catch."""
+
+    def test_legacy_stem_bump_visible_to_canonical_reader(self, tmp_path: Path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        key = "slack:1234567890.123456"
+        gen = log._cache_gen(key)
+        # Rotation derives its invalidation key from the file name; a legacy
+        # Slack transcript's stem is the bare thread_ts.
+        log._invalidate_cache("1234567890.123456")
+        assert log._cache_gen(key) != gen
+
+    def test_canonical_key_bump_visible_to_legacy_stem_reader(self, tmp_path: Path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        gen = log._cache_gen("1234567890.123456")
+        log._invalidate_cache("slack:1234567890.123456")
+        assert log._cache_gen("1234567890.123456") != gen
+
+    def test_logical_key_and_sanitized_stem_share_a_counter(self, tmp_path: Path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        key = "channel:general"
+        stem = log._path(key).stem
+        assert stem != key  # the sanitization is what creates the split
+        gen = log._cache_gen(stem)
+        log._invalidate_cache(key)
+        assert log._cache_gen(stem) != gen
+
+
+class TestRotationEvictsThePublishedFill:
+    def test_fill_published_inside_the_append_rotate_window_is_evicted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotation restores the pre-append mtime, and its invalidation runs
+        AFTER an unlocked fill's post-check — too late for the generation to
+        catch. The identity-wide pops under the LOGICAL key are what evict the
+        published entry; invalidating under the sanitized ``path.stem`` alone
+        would miss it and serve the pre-rotation parse for the process
+        lifetime."""
+        log = ConversationLog(base_dir=tmp_path)
+        key = "dashboard:abc"  # namespaced: logical spelling != path.stem
+        for i in range(40):
+            log.append(key, "user", f"m{i:02d}")
+
+        served: list[list[dict]] = []
+        real_rotate = log._maybe_rotate
+
+        def rotate_with_reader(path: Path, k: str) -> None:
+            # The append's own invalidation has already run; rotation has not.
+            # An on-loop reader released here fills UNLOCKED (this thread holds
+            # the writer RLock) across an invalidation-free window, so it
+            # publishes the pre-rotation parse.
+            def read_on_loop() -> None:
+                async def go() -> list[dict]:
+                    return log._read_messages(key)
+
+                served.append(asyncio.run(go()))
+
+            t = threading.Thread(target=read_on_loop, daemon=True)
+            t.start()
+            t.join(10)
+            assert log._msg_cache.get(key) is not None, (
+                "premise broken: the unlocked fill inside the rotate window " "did not publish"
+            )
+            real_rotate(path, k)
+
+        log._maybe_rotate = rotate_with_reader  # type: ignore[method-assign]
+        # Make the NEXT append blow the byte budget so it rotates.
+        monkeypatch.setattr(history_mod, "_SESSION_MAX_BYTES", log._path(key).stat().st_size)
+        log.append(key, "user", "m40")
+
+        assert len(served) == 1 and len(served[0]) == 41
+        assert log._msg_cache.get(key) is None, (
+            "rotation could not evict the fill published inside its window; "
+            "the entry holds all 41 pre-rotation messages under the restored "
+            "mtime, so every future read would serve rotated-away messages"
+        )
+        after = log._read_messages(key)
+        assert 0 < len(after) < 41
+        # The retained tail is the newest messages, rotation's contract.
+        assert [m["content"] for m in after] == [
+            f"m{i:02d}" if i < 40 else "m40" for i in range(41 - len(after), 41)
+        ]
+
+
+class TestGenerationIsProcessWide:
+    """The lock whose contention forces a reader onto the unlocked fill is
+    class-level (``_file_locks``), so the writer holding it may live on a
+    DIFFERENT ``ConversationLog`` instance over the same directory. The
+    generation table must have the same scope, or that writer's bump is
+    invisible to the reader's snapshot."""
+
+    def test_cross_instance_invalidation_moves_the_generation(self, tmp_path: Path) -> None:
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        gen = reader._cache_gen("k")
+        writer._invalidate_cache("k")
+        assert reader._cache_gen("k") != gen
+
+    def test_distinct_base_dirs_do_not_share_counters(self, tmp_path: Path) -> None:
+        one = ConversationLog(base_dir=tmp_path / "one")
+        other = ConversationLog(base_dir=tmp_path / "other")
+        gen = one._cache_gen("k")
+        other._invalidate_cache("k")
+        assert one._cache_gen("k") == gen
+
+    def test_fill_racing_cross_instance_rewrite_is_discarded(self, tmp_path: Path) -> None:
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        reader.append("k", "user", "old")
+        reader._invalidate_cache("k")
+        # The premise: both instances share one per-path lock, so the writer
+        # can force the reader onto the unlocked fill at all.
+        assert reader._file_lock("k") is writer._file_lock("k")
+
+        holder, release = _hold_writer_lock(reader, "k")
+
+        def rewrite_via_writer() -> None:
+            _preserved_mtime_rewrite(writer, "k", _line("user", "new"))
+
+        reader._msg_cache = _RewriteOnFirstStore(  # type: ignore[assignment]
+            reader._msg_cache, rewrite_via_writer
+        )
+        try:
+
+            async def on_loop() -> list[dict]:
+                return reader._read_messages("k")
+
+            served = asyncio.run(on_loop())
+            assert [m["content"] for m in served] == ["old"]
+            assert reader._msg_cache.get("k") is None, (
+                "a rewrite performed through a SECOND ConversationLog instance "
+                "was invisible to the reader's generation snapshot; the stale "
+                "parse survived under the restored mtime"
+            )
+        finally:
+            release.set()
+            holder.join(5)
+        assert [m["content"] for m in reader._read_messages("k")] == ["new"]
+
+    def test_entry_published_before_a_cross_instance_rewrite_is_unhit(self, tmp_path: Path) -> None:
+        """An already-published entry cannot be popped by another instance's
+        ``_invalidate_cache`` (pops are instance-local), so the warm HIT must
+        consult the process-wide generation: the entry records the generation
+        it was stored under, and the cross-instance bump makes it miss."""
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        reader.append("k", "user", "old")
+        reader._invalidate_cache("k")
+        assert [m["content"] for m in reader._read_messages("k")] == ["old"]
+        assert reader._msg_cache.get("k") is not None  # premise: entry published
+
+        _preserved_mtime_rewrite(writer, "k", _line("user", "new"))
+
+        assert [m["content"] for m in reader._read_messages("k")] == ["new"], (
+            "the reader's warm hit served an entry that predates a preserved-"
+            "mtime rewrite performed through a second ConversationLog "
+            "instance; mtime matches and the pop never reached this cache, so "
+            "only the per-entry generation check can unhit it"
+        )
+
+    def test_unlocked_publish_then_late_cross_instance_invalidation_is_unhit(
+        self, tmp_path: Path
+    ) -> None:
+        """The writer-holds-lock variant: the reader publishes an unlocked fill
+        (valid at publish time), and the lock-holding writer's rewrite +
+        invalidation land only AFTER the reader's post-check — too late for
+        the fill guard, unreachable by the writer's pops. The next read must
+        still see the rewrite via the per-entry generation."""
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        reader.append("k", "user", "old")
+        reader._invalidate_cache("k")
+
+        holder, release = _hold_writer_lock(reader, "k")
+        try:
+
+            async def on_loop() -> list[dict]:
+                return reader._read_messages("k")
+
+            assert [m["content"] for m in asyncio.run(on_loop())] == ["old"]
+            assert reader._msg_cache.get("k") is not None  # published, validly
+            # The lock holder's rewrite lands strictly after the fill completed.
+            _preserved_mtime_rewrite(writer, "k", _line("user", "new"))
+        finally:
+            release.set()
+            holder.join(5)
+
+        assert [m["content"] for m in reader._read_messages("k")] == ["new"], (
+            "an unlocked fill published before the lock-holding writer's "
+            "rewrite stayed hittable afterwards; the pop cannot cross "
+            "instances, so the warm path must reject the entry on its "
+            "recorded generation"
+        )
+
+    def test_title_fallback_ignores_an_entry_predating_a_cross_instance_rewrite(
+        self, tmp_path: Path
+    ) -> None:
+        """``list_sessions``' title fallback reads ``_msg_cache`` under the
+        file stem; its hit must consult the generation too, or a cross-
+        instance preserved-mtime rewrite leaves the session titled by a first
+        user message the transcript no longer contains."""
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        key = "dashboard:title-probe"
+        reader.append(key, "user", "old title text")
+        stem = reader._path(key).stem
+        # Warm the cache under the STEM spelling — the one the title fallback
+        # reads — then rewrite through the second instance.
+        assert [m["content"] for m in reader._read_messages(stem)] == ["old title text"]
+        assert reader._msg_cache.get(stem) is not None  # premise: stem-keyed hit exists
+
+        _preserved_mtime_rewrite(writer, key, _line("user", "new title text"))
+
+        (row,) = [r for r in reader.list_sessions() if r["key"] == stem]
+        assert row["title"] == "new title text", (
+            "list_sessions' title fallback served a stem-keyed entry that "
+            "predates a cross-instance preserved-mtime rewrite; only the "
+            "generation clause on that hit can reject it"
+        )
+
+
+class TestPopWidthMatchesBumpWidth:
+    def test_preserved_mtime_rewrite_invalidates_the_stem_keyed_search_fold(
+        self, tmp_path: Path
+    ) -> None:
+        """``search_sessions`` keys its fold by ``path.stem`` (list_sessions'
+        ``meta["key"]``) while writers invalidate under the LOGICAL key. The
+        identity-wide pops are what connect them; without them a rewrite that
+        restores the mtime leaves the fold matching text the file no longer
+        has."""
+        log = ConversationLog(base_dir=tmp_path)
+        key = "dashboard:probe"
+        log.append(key, "user", "SECRETNEEDLE alpha")
+        log.append(key, "user", "keepme beta")
+        assert [h["key"] for h in log.search_sessions("SECRETNEEDLE")] == [log._path(key).stem]
+
+        before = log._path(key).stat().st_mtime
+        log.rewrite_session(
+            key, [m for m in log.read_messages(key) if "SECRET" not in m["content"]]
+        )
+        assert log._path(key).stat().st_mtime == before, "premise: the rewrite preserved the mtime"
+
+        assert log.search_sessions("SECRETNEEDLE") == [], (
+            "the stem-keyed search fold survived a preserved-mtime rewrite; "
+            "search still matches text the transcript no longer contains"
+        )
+
+
+class TestFlockHoldWitness:
+    """External processes are the one writer class the in-process generation
+    cannot witness: their ``_invalidate_cache`` bumps a table in THEIR
+    process. What excludes them is the cross-process flock — an unlocked fill
+    may publish only while this process provably held it for the whole fill
+    window."""
+
+    def test_unlocked_fill_without_the_flock_does_not_publish(self, tmp_path: Path) -> None:
+        """A bare RLock hold with the flock NOT held by this process is
+        exactly the state in which a local writer is still waiting on an
+        external process's flock — the file is externally rewritable, so the
+        fill must serve the read but refuse to publish, generation or no
+        generation."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        log._invalidate_cache("k")
+
+        holder, release = _hold_lock(log._file_lock("k"))
+        try:
+
+            async def on_loop() -> list[dict]:
+                return log._read_messages("k")
+
+            assert len(asyncio.run(on_loop())) == 1, "the fill must still serve the read"
+            assert log._msg_cache.get("k") is None, (
+                "an unlocked fill published without a cross-process flock "
+                "hold; an external process's preserved-mtime rewrite in that "
+                "window bumps no generation in this process, so the entry "
+                "would serve replaced messages for the process lifetime"
+            )
+        finally:
+            release.set()
+            holder.join(5)
+
+    def test_witness_present_only_under_a_held_flock(self, tmp_path: Path) -> None:
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        assert log._flock_hold_witness("k") is None
+
+        holder, release = _hold_writer_lock(log, "k")
+        try:
+            assert log._flock_hold_witness("k") is not None
+        finally:
+            release.set()
+            holder.join(5)
+
+    def test_witness_comparison_includes_the_release_epoch(self, tmp_path: Path) -> None:
+        """Equal fds at two instants cannot prove a continuous hold (a release
+        and re-acquire can recycle the fd number); the epoch is the component
+        that moves on every release, so the witness must carry it."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "hello")
+        holder, release = _hold_writer_lock(log, "k")
+        try:
+            first = log._flock_hold_witness("k")
+            assert first is not None
+            lock_key = str(log._path("k"))
+            with ConversationLog._flock_guard:
+                ConversationLog._flock_epochs[lock_key] = (
+                    ConversationLog._flock_epochs.get(lock_key, 0) + 1
+                )
+            assert log._flock_hold_witness("k") != first, (
+                "the witness ignored the release epoch; a broken hold with a "
+                "recycled fd would be indistinguishable from a continuous one"
+            )
+        finally:
+            release.set()
+            holder.join(5)
+
+
+class _GenAtPop:
+    """``_msg_cache`` stand-in recording the key's generation at each pop."""
+
+    def __init__(self, inner: Any, gen_of: Callable[[], int]) -> None:
+        self._inner = inner
+        self._gen_of = gen_of
+        self.gens_at_pop: list[int] = []
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        self.gens_at_pop.append(self._gen_of())
+        return self._inner.pop(key, default)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class TestInvalidateOrdering:
+    def test_invalidate_bumps_before_it_pops(self, tmp_path: Path) -> None:
+        """The bump must precede the pops: a fill storing between a pop and a
+        later bump would pass its re-check and resurrect the dropped entry."""
+        log = ConversationLog(base_dir=tmp_path)
+        before = log._cache_gen("k")
+        recorder = _GenAtPop(log._msg_cache, lambda: log._cache_gen("k"))
+        log._msg_cache = recorder  # type: ignore[assignment]
+        log._invalidate_cache("k")
+        assert recorder.gens_at_pop, "no pop observed"
+        assert all(g > before for g in recorder.gens_at_pop), (
+            "_invalidate_cache popped before bumping; a concurrent fill "
+            "storing in that gap passes its generation re-check and "
+            "resurrects the entry the pop just removed"
+        )
+
+
+# ── Fill-race pins for the mtime-keyed memo caches (meta / list / recent) ──
 class TestPreservedMtimeFillRace:
     def test_read_metadata_fill_discarded_after_racing_metadata_rewrite(
         self, tmp_path: Path
