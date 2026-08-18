@@ -566,6 +566,10 @@ export interface GovernancePolicyData {
    *  Rendered so a reader can see that a host row's "disabled" is one surface's
    *  posture, not the whole install's. */
   other_bound_surfaces?: string[]
+  /** True when the resolved profile is a deny-all fallback because the file
+   *  could not be read or parsed — enforcement is correct (fail-closed) but the
+   *  operator should know the ceiling is synthetic, not intentional. */
+  fallback_profiles?: string[]
   /** True when governance resolution failed — the viewer shows a soft notice. */
   unavailable: boolean
   scopes: GovernanceScope[]

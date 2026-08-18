@@ -488,3 +488,109 @@ class TestEndpoint:
         assert payload["unavailable"] is True
         assert payload["scopes"] == []
         assert payload["has_policy"] is False
+
+    def test_fallback_profiles_lists_the_broken_host_profile(
+        self, profiles_dir, monkeypatch
+    ):
+        """A resolved profile that is a deny-all fallback is named in the list."""
+        # Write a profile with a valid bind but invalid controls — the bind is
+        # salvaged so the surface resolves to the deny-all fallback.
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "tools": {"mode": "banana"},  # invalid → parse_profile raises
+            },
+        )
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        # The profile resolves to a deny-all fallback with the bind salvaged.
+        assert snap["fallback_profiles"] == ["host"]
+        assert snap["profile"] == "host"
+
+    def test_fallback_profiles_reports_a_broken_NON_host_profile(self, profiles_dir):
+        """The whole point of a list: a broken sibling surface is reported too.
+
+        A bound non-host profile deny-alls its own surface just as silently as the
+        host's. It appears in ``other_bound_surfaces`` looking healthy, so without
+        naming it here the operator is back to reading server logs — the harm this
+        signal exists to remove. A host-only boolean could not express this.
+        """
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "tools": {"mode": "allow", "allow": ["read"]},
+            },
+        )
+        _write(
+            profiles_dir,
+            "cron",
+            {
+                "name": "cron",
+                "bind": {"type": "surface", "id": "cron"},
+                "tools": {"mode": "banana"},  # invalid → deny-all fallback
+            },
+        )
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert snap["fallback_profiles"] == ["cron"]
+        # ... while the host profile it resolved is itself perfectly fine.
+        assert snap["profile"] == "host"
+
+    def test_fallback_profiles_is_sorted(self, profiles_dir):
+        """Stable order, so the rendered banner does not reshuffle between polls."""
+        for stem in ("subagent", "cron", "host"):
+            _write(
+                profiles_dir,
+                stem,
+                {
+                    "name": stem,
+                    "bind": {"type": "surface", "id": stem},
+                    "tools": {"mode": "banana"},
+                },
+            )
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert snap["fallback_profiles"] == ["cron", "host", "subagent"]
+
+    def test_fallback_profiles_empty_when_valid_profile(self, profiles_dir):
+        """No entries for a correctly-parsed profile."""
+        _write(
+            profiles_dir,
+            "host",
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "tools": {"mode": "allow", "allow": ["read"]},
+            },
+        )
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert snap["fallback_profiles"] == []
+
+    def test_fallback_profiles_empty_when_no_profile(self, profiles_dir):
+        """No entries when there is no profile at all."""
+        _install_ceiling(None)
+        snap = build_governance_policy_snapshot()
+        assert snap["fallback_profiles"] == []
+        assert snap["profile"] is None
+
+    def test_fallback_profiles_empty_in_unavailable_response(
+        self, profiles_dir, monkeypatch
+    ):
+        """The unavailable response always reports an empty list."""
+        import kiro_crew.dashboard.handlers.security as sec
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("resolution glitch")
+
+        monkeypatch.setattr(sec, "resolve_active_scope", _boom, raising=False)
+        monkeypatch.setattr("kiro_crew.platform.governance_profiles.resolve_active_scope", _boom)
+        snap = build_governance_policy_snapshot()
+        assert snap["unavailable"] is True
+        assert snap["fallback_profiles"] == []

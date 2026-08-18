@@ -65,11 +65,19 @@ class _Snapshot:
     ``ungoverned`` default-permit — a fail-OPEN on a host that does have
     restrictive profiles. ``_ensure_fresh`` uses this to decide that the FIRST
     load may not be skipped.
+
+    ``fallback_profiles`` records file stems where the deny-all fallback was
+    substituted because the file could not be read or parsed. This is distinct
+    from ``unrecoverable`` (which tracks bind-unrecoverable files for boot-abort).
+    A profile in ``fallback_profiles`` is still governed (deny-all), so
+    enforcement is correct — but the operator cannot tell a deliberate lockdown
+    from a broken file without this signal.
     """
 
     by_name: Dict[str, Profile] = field(default_factory=dict)
     by_bind: Dict[Tuple[str, str], str] = field(default_factory=dict)
     unrecoverable: Tuple[str, ...] = ()
+    fallback_profiles: "frozenset[str]" = field(default_factory=frozenset)
     loaded: bool = False
 
 
@@ -403,6 +411,7 @@ class ProfileStore:
         by_name: Dict[str, Profile] = {}
         by_bind: Dict[Tuple[str, str], str] = {}
         unrecoverable: list[str] = []
+        fallback_stems: set[str] = set()
         try:
             files = [p for p in sorted(directory.iterdir()) if p.suffix == ".json"]
         except FileNotFoundError:
@@ -524,6 +533,7 @@ class ProfileStore:
                     )
                     by_name[stem] = fallback
                     unrecoverable.append(path.name)
+                fallback_stems.add(stem)
                 continue
             try:
                 data = json.loads(raw)
@@ -557,6 +567,7 @@ class ProfileStore:
                 else:
                     by_name[stem] = fallback
                     unrecoverable.append(path.name)
+                fallback_stems.add(stem)
         # Pass 2: resolve ``extends`` (monotonic narrowing) now that all are parsed.
         # The "non-trivial chain" guard must read each parent's ORIGINAL ``extends``,
         # not the live dict: ``compose_profiles`` resets a composed profile's
@@ -591,6 +602,12 @@ class ProfileStore:
                     if profile.bind is not None:
                         fallback = replace(fallback, bind=profile.bind)
                     by_name[name] = fallback
+                    # Third substitution site, and the least obvious: the file
+                    # itself parsed fine, so only the broken ``extends`` chain
+                    # makes it deny-all. Recording it here is what stops a deleted
+                    # or mis-chained PARENT from rendering as a deliberate
+                    # lockdown, which is the same symptom as an unparseable file.
+                    fallback_stems.add(name)
                 else:
                     by_name[name] = compose_profiles(parent, profile)
         # Build the bind index.  Last writer wins on a duplicate bind, logged.
@@ -618,7 +635,13 @@ class ProfileStore:
         # governed fleet boot-aborts via ``assert_profiles_within_ceiling``; a
         # standalone host tolerates it. A directory that could not be enumerated
         # already returned early above, leaving the prior snapshot fully intact.
-        self._snap = _Snapshot(by_name=by_name, by_bind=by_bind, unrecoverable=unrec, loaded=True)
+        self._snap = _Snapshot(
+            by_name=by_name,
+            by_bind=by_bind,
+            unrecoverable=unrec,
+            fallback_profiles=frozenset(fallback_stems),
+            loaded=True,
+        )
         # Runtime observability for a POST-BOOT unrecoverable file. The boot floor
         # (``assert_profiles_within_ceiling``) only runs once; a governed RUNNING
         # host that hot-loads a NEW unreadable profile (no prior entry to preserve)
@@ -731,6 +754,27 @@ def bound_surfaces() -> Tuple[str, ...]:
     return tuple(
         sorted({bind_id for (bind_type, bind_id) in snap.by_bind if bind_type == "surface"})
     )
+
+
+def fallback_profile_names() -> "frozenset[str]":
+    """Profile stems currently substituted by the deny-all fallback.
+
+    A non-empty result means at least one profile is present on disk but could not
+    be USED by this build — it was unreadable, it failed to parse, or its
+    ``extends`` parent is missing or chained. Its surface is correctly denied
+    (enforcement is intact), but the operator cannot tell a deliberate lockdown
+    from a broken file. The Security page uses this to render a warning banner.
+
+    All three substitution sites in ``_reload`` record here, so "substituted" means
+    substituted for any reason rather than "failed to parse" specifically — the
+    caller must not narrate a cause it has not established.
+
+    Returns ``frozenset()`` when the store cannot be trusted yet (never-loaded,
+    mid first-load), matching the fail-quiet contract a display caller needs.
+    """
+    if not _STORE.resolved():
+        return frozenset()
+    return _STORE.snapshot().fallback_profiles
 
 
 def any_configured_profile_governs(ref: str) -> bool:

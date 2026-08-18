@@ -1379,3 +1379,150 @@ def test_resolution_is_checked_before_bind_lookups(profiles_dir, monkeypatch):
     assert prof.name.startswith("_deny_all_unloaded"), prof.name
     assert not resolve(None, prof, "channels", "slack").permitted
     assert not looked_up, "resolution must be checked BEFORE any bind lookup"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# fallback_profile_names — visibility into which profiles are deny-all fallbacks
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_fallback_profile_names_empty_on_valid_profiles(profiles_dir):
+    """A correctly-parsed profile does not appear in fallback_profile_names."""
+    _write(
+        profiles_dir,
+        "host",
+        {
+            "name": "host",
+            "bind": {"type": "surface", "id": "host"},
+            "tools": {"mode": "allow", "allow": ["read"]},
+        },
+    )
+    assert gp.fallback_profile_names() == frozenset()
+
+
+def test_fallback_profile_names_includes_unreadable_file(profiles_dir, monkeypatch):
+    """A present-but-unreadable file lands in fallback_profile_names."""
+    path = profiles_dir / "host.json"
+    _write_host_profile(path)
+    _make_read_text_raise(monkeypatch, path, OSError("permission denied"))
+    gp.reset_store()
+    assert "host" in gp.fallback_profile_names()
+
+
+def test_fallback_profile_names_includes_invalid_utf8(profiles_dir):
+    """An invalid-encoding file lands in fallback_profile_names."""
+    path = profiles_dir / "cron.json"
+    path.write_bytes(b"\xff\xfe invalid utf8")
+    gp.reset_store()
+    assert "cron" in gp.fallback_profile_names()
+
+
+def test_fallback_profile_names_includes_invalid_json(profiles_dir):
+    """A file with invalid JSON lands in fallback_profile_names."""
+    (profiles_dir / "host.json").write_text("not valid json {{{")
+    gp.reset_store()
+    assert "host" in gp.fallback_profile_names()
+
+
+def test_fallback_profile_names_includes_invalid_schema(profiles_dir):
+    """A file with valid JSON but invalid schema lands in fallback_profile_names."""
+    _write(
+        profiles_dir,
+        "host",
+        {
+            "name": "host",
+            "bind": {"type": "surface", "id": "host"},
+            "tools": {"mode": "banana"},  # invalid mode
+        },
+    )
+    assert "host" in gp.fallback_profile_names()
+
+
+def test_fallback_profile_names_valid_profile_not_in_set(profiles_dir):
+    """A valid profile coexisting with a broken one does not appear in fallback."""
+    _write(
+        profiles_dir,
+        "cron",
+        {
+            "name": "cron",
+            "bind": {"type": "surface", "id": "cron"},
+            "tools": {"mode": "allow", "allow": ["read"]},
+        },
+    )
+    (profiles_dir / "broken.json").write_text("not json")
+    gp.reset_store()
+    names = gp.fallback_profile_names()
+    assert "broken" in names
+    assert "cron" not in names
+
+
+def test_fallback_profile_names_includes_broken_extends_chain(profiles_dir):
+    """A profile whose ``extends`` parent is missing is also a deny-all fallback.
+
+    This is the third substitution site in ``_reload`` and the least obvious one:
+    the file itself parses perfectly, so nothing about it looks broken — only the
+    unresolvable chain makes it deny-all. Without it recorded here the operator
+    sees the same total-lockdown page with no explanation, which is exactly the
+    symptom the fallback signal exists to remove.
+    """
+    _write(
+        profiles_dir,
+        "cron",
+        {
+            "name": "cron",
+            "bind": {"type": "surface", "id": "cron"},
+            "extends": "no-such-parent",
+            "tools": {"mode": "allow", "allow": ["read"]},
+        },
+    )
+    gp.reset_store()
+    assert "cron" in gp.fallback_profile_names()
+    # And the surface is still BOUND to that deny-all rather than falling through
+    # to the ceiling alone — the fail-closed invariant the branch exists for.
+    resolved = gp.resolve_active_scope("cron:job-7:run-1")
+    assert resolved is not None
+    assert resolved.name == "cron"
+
+
+def test_fallback_profile_names_excludes_a_valid_extends_chain(profiles_dir):
+    """The companion guard: a RESOLVABLE chain must not be reported as a fallback.
+
+    Without this, the assertion above would still pass if every ``extends`` user
+    were flagged, which would put a permanent false banner on a perfectly good
+    profile hierarchy.
+    """
+    _write(
+        profiles_dir,
+        "base",
+        {"name": "base", "tools": {"mode": "allow", "allow": ["read", "write"]}},
+    )
+    _write(
+        profiles_dir,
+        "cron",
+        {
+            "name": "cron",
+            "bind": {"type": "surface", "id": "cron"},
+            "extends": "base",
+            "tools": {"mode": "allow", "allow": ["read"]},
+        },
+    )
+    gp.reset_store()
+    assert gp.fallback_profile_names() == frozenset()
+
+
+def test_fallback_profile_names_bind_preserved_unreadable(profiles_dir, monkeypatch):
+    """A bind-preserving deny-all (from a prior load) still appears in fallback."""
+    import os
+
+    path = profiles_dir / "host.json"
+    _write_host_profile(path)
+    gp.reset_store()
+    # First load succeeds.
+    assert gp.fallback_profile_names() == frozenset()
+
+    # Make unreadable and bump mtime.
+    _make_read_text_raise(monkeypatch, path, OSError("permission denied"))
+    st = path.stat()
+    os.utime(path, (st.st_atime, st.st_mtime + 5))
+
+    assert "host" in gp.fallback_profile_names()

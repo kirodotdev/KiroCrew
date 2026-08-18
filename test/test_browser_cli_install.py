@@ -740,7 +740,7 @@ class TestFailureDetailIsRedactedAtTheSource:
         doubles the ratio on each doubling of input, while linear growth
         keeps it near 2.0.
 
-        Two measurement details keep the ratio itself stable on a shared CI
+        Three measurement details keep the ratio itself stable on a shared CI
         runner, matching what ``TestIsDeniedReDoSResistance`` already does
         for the same class of assertion:
 
@@ -752,20 +752,42 @@ class TestFailureDetailIsRedactedAtTheSource:
           identically.
         * Best-of-3 per size: this is a floor measurement, and scheduler
           noise only ever ADDS, so the minimum is the closest estimate of
-          the true cost. A single sample per size (what this test used
-          before) let one unlucky small-input reading — the denominator —
-          push the ratio over the limit on an otherwise-healthy matcher,
-          which is how this failed CI intermittently at ~3.1-3.2x.
+          the true cost.
+        * Each sample redacts REPEATEDLY, and the repeat count is grown at
+          runtime until the small sample clears ``_MIN_TRUSTED_SAMPLE``.
+          This is what makes the ratio meaningful on a coarse-tick platform,
+          and it is the fix for the failure mode the two details above did
+          NOT cover: ``thread_time`` on Windows advances in ~15.625ms steps,
+          so a single 25k-char redaction (~31ms there) is only two ticks and
+          the ratio can only land on 2.0, 2.5, 3.0, 3.5 … A healthy matcher
+          measured as 6 ticks over 2 ticks reports EXACTLY 3.0 and fails a
+          `< 3.0` bound — observed in CI as
+          "0.0938s / 0.0312s = 3.0x", both values exact multiples of the
+          tick. Growing the repeat count until the denominator is tens of
+          ticks makes quantization a few per cent instead of fifty.
+
+          Adaptive rather than a hardcoded count so it holds on both a fast
+          developer machine (where a fixed count would measure too little)
+          and a slow runner (where it would waste seconds).
 
         Neither change weakens the guarantee: the bound stays at 3.0x, and
-        quadratic growth still lands at >=4x on every sample.
+        quadratic growth still lands at >=4x on every sample. Measured
+        locally, the ratio is 2.00 at every repeat count from 1 to 50.
         """
         import time
 
-        def cost(text: str) -> float:
-            """CPU consumed by THIS thread redacting *text*."""
+        #: A sample below this is not trustworthy on a platform whose
+        #: per-thread clock advances in ~15.625ms steps. Not derived from
+        #: ``get_clock_info('thread_time').resolution``, which reports 1ns on
+        #: Windows and so describes the API rather than the tick.
+        _MIN_TRUSTED_SAMPLE = 0.05
+        _MAX_REPS = 128
+
+        def cost(text: str, reps: int) -> float:
+            """CPU consumed by THIS thread redacting *text* *reps* times."""
             start = time.thread_time()
-            mod._redact(text)
+            for _ in range(reps):
+                mod._redact(text)
             return time.thread_time() - start
 
         # Adversarial: all chars match the env-var prefix class [A-Z0-9_],
@@ -777,15 +799,28 @@ class TestFailureDetailIsRedactedAtTheSource:
         # Warm up (JIT, import overhead).
         mod._redact(small)
 
-        t_small = min(cost(small) for _ in range(3))
-        t_large = min(cost(large) for _ in range(3))
+        reps = 4
+        while True:
+            t_small = min(cost(small, reps) for _ in range(3))
+            if t_small >= _MIN_TRUSTED_SAMPLE or reps >= _MAX_REPS:
+                break
+            reps *= 2
+
+        if t_small < _MIN_TRUSTED_SAMPLE:
+            pytest.skip(
+                f"per-thread clock cannot resolve {reps} redactions "
+                f"({t_small:.4f}s < {_MIN_TRUSTED_SAMPLE}s); a ratio from this "
+                "would be quantization noise, not evidence about scaling"
+            )
+
+        t_large = min(cost(large, reps) for _ in range(3))
 
         # Linear growth ⇒ ratio ≈ 2.0; allow up to 3.0 for noise.
         # ReDoS (quadratic+) yields ratio ≥ 4.0 reliably.
-        ratio = t_large / max(t_small, 1e-9)
+        ratio = t_large / t_small
         assert ratio < 3.0, (
             f"Redaction scaled super-linearly: {t_large:.4f}s / "
-            f"{t_small:.4f}s = {ratio:.1f}x (limit 3.0x)"
+            f"{t_small:.4f}s = {ratio:.1f}x (limit 3.0x, {reps} reps/sample)"
         )
 
 

@@ -141,7 +141,14 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['only.ts'] }))
     await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
 
-    expect(treeMock.last().calls.resetPaths).toEqual([PATHS, ['only.ts']])
+    // waitFor, not a bare expect: the refetch resolving and the effect that
+    // calls resetPaths are two separate ticks, so asserting straight after act()
+    // races the second one and intermittently sees only the initial reset. The
+    // sibling assertions above are safe because they check a COUNT that is
+    // already final; this one waits for the second entry to land.
+    await waitFor(() =>
+      expect(treeMock.last().calls.resetPaths).toEqual([PATHS, ['only.ts']]),
+    )
   })
 
   it('reports an empty workspace instead of an empty tree', async () => {

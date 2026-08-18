@@ -733,6 +733,51 @@ describe('SecurityPanel — governance policy viewer', () => {  beforeEach(() =>
       screen.queryByText(/A surface with its own profile can allow what the host cannot/),
     ).not.toBeInTheDocument()
   })
+
+  it('shows a warning banner naming the unusable profiles', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({ fallback_profiles: ['host'] }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Deny-all fallback in effect')).toBeInTheDocument()
+    expect(screen.getByText(/fail-closed deny-all ceiling/)).toBeInTheDocument()
+    expect(screen.getByText(/Affected: host\./)).toBeInTheDocument()
+    // The remedy is only useful if it says WHERE the file is.
+    expect(screen.getByText(/profiles folder of your Kiro Crew data home/)).toBeInTheDocument()
+    // Causes and the restart caveat live on the demoted line, not in the body.
+    expect(screen.getByText(/extends a profile that is missing/)).toBeInTheDocument()
+  })
+
+  it('names every unusable profile, not just the host one', async () => {
+    // The reason the contract is a list: a broken sibling surface deny-alls
+    // itself just as silently, and a host-only boolean could not report it.
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({ fallback_profiles: ['cron', 'subagent'] }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('Deny-all fallback in effect')).toBeInTheDocument()
+    expect(screen.getByText(/Affected: cron, subagent\./)).toBeInTheDocument()
+  })
+
+  it('does not show fallback banner when fallback_profiles is empty', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({ fallback_profiles: [] }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    await screen.findByText('Policy v1')
+    expect(screen.queryByText('Deny-all fallback in effect')).not.toBeInTheDocument()
+  })
+
+  it('does not show fallback banner when fallback_profiles is absent', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govGoverned())
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    await screen.findByText('Policy v1')
+    expect(screen.queryByText('Deny-all fallback in effect')).not.toBeInTheDocument()
+  })
 })
 
 describe('SecurityPanel — posture disclosure', () => {

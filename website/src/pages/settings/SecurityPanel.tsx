@@ -1119,6 +1119,28 @@ function GovernancePolicyViewer() {
                 <Badge variant="muted"><ListChecks size={11} className="lucide-inline" /> {i18nT('pages.settings.securityPanel.profile')} {data.profile}</Badge>
               )}
             </div>
+            {(data?.fallback_profiles?.length ?? 0) > 0 && (
+              <div className="flex items-start gap-2.5 py-2.5 mt-1 mb-1 rounded-md bg-warn/10 border border-warn/30 px-3">
+                <AlertTriangle size={14} className="lucide-inline text-warn shrink-0 mt-0.5" />
+                <div className="text-[12px] text-text leading-relaxed">
+                  {/* Title on its OWN line, not joined to the body by a space:
+                      inline they render as one run-on sentence ("… in effect A
+                      profile named below could not be loaded"). */}
+                  <div className="font-semibold">{i18nT('pages.settings.securityPanel.profile_unusable_title')}</div>
+                  <div>
+                    {i18nT('pages.settings.securityPanel.profile_unusable_body')}
+                    {/* fmtList for the same reason the other_bound_surfaces block
+                        below gives: zh joins with 、 and no spaces, so a literal
+                        ', ' renders wrong in several of the twelve locales. */}
+                    {' '}{i18nT('pages.settings.securityPanel.profile_unusable_which', { profiles: fmtList(data!.fallback_profiles!, { type: 'unit' }) })}
+                  </div>
+                  {/* The cause list and the restart caveat are the rare edge of a
+                      rare state; demoted so the two sentences that matter are not
+                      buried in a paragraph wall at 12px. */}
+                  <div className="text-muted mt-1">{i18nT('pages.settings.securityPanel.profile_unusable_detail')}</div>
+                </div>
+              </div>
+            )}
             {planeRows.map(({ plane, rows }) => rows.length === 0 ? null : (
               <div key={plane.key} className="border-t border-border first:border-t-0 pt-1.5 mt-1.5 first:mt-0 first:pt-0">
                 <div className="flex items-center gap-1.5 py-1">
