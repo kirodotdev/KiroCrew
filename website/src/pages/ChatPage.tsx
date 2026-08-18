@@ -6514,6 +6514,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             ) : (
             <div
               ref={scrollerRef}
+              // -1 so the bar can hand focus here on unmount without adding a tab stop.
+              tabIndex={-1}
               // stable theming hook 'chat-container' — see website/docs/theming-contract.md
               className="chat-container"
               style={{
@@ -6555,7 +6557,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Mid-switch `slotHasMore` still describes the outgoing chat, so the cursor
                   key gates the bar to match the paging thunk's own precondition. */}
               {slotHasMore && cursorIsForActiveSlot && (
-                <EarlierMessagesBar loading={loadingOlder} failed={olderFailed} onLoad={handleLoadEarlier} />
+                <EarlierMessagesBar loading={loadingOlder} failed={olderFailed} onLoad={handleLoadEarlier} onFocusRelease={() => scrollerRef.current?.focus()} />
               )}
               {/* Top sentinel: drives upward window expansion via virtualizer's IO. */}
               <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />

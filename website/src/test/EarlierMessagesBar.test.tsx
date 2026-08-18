@@ -35,6 +35,33 @@ describe('EarlierMessagesBar', () => {
     expect(document.activeElement).toBe(bar())
   })
 
+  // The last page unmounts this bar outright, which strands the same users the
+  // aria-disabled choice above exists to protect.
+  it('hands focus onward when it unmounts while holding it, instead of dropping to body', () => {
+    const onFocusRelease = vi.fn()
+    const { unmount } = render(
+      <EarlierMessagesBar loading={false} failed={false} onLoad={vi.fn()} onFocusRelease={onFocusRelease} />,
+    )
+    bar().focus()
+    expect(document.activeElement).toBe(bar())
+    unmount()
+    expect(onFocusRelease).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves focus alone when it unmounts without holding it', () => {
+    const onFocusRelease = vi.fn()
+    const { unmount } = render(
+      <>
+        <button data-testid="elsewhere">elsewhere</button>
+        <EarlierMessagesBar loading={false} failed={false} onLoad={vi.fn()} onFocusRelease={onFocusRelease} />
+      </>,
+    )
+    screen.getByTestId('elsewhere').focus()
+    expect(document.activeElement).toBe(screen.getByTestId('elsewhere'))
+    unmount()
+    expect(onFocusRelease).not.toHaveBeenCalled()
+  })
+
   it('does not fire while a fetch is already in flight', () => {
     const onLoad = vi.fn()
     render(<EarlierMessagesBar loading failed={false} onLoad={onLoad} />)
