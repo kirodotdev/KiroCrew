@@ -601,6 +601,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 - `AppsLoader.registry_rows() -> List[Dict]` — ADD-only merged by
   `apps/registry.py::_load_registry_file` after bundled `app-registry.json`
   (same-`name` core row wins). Default `[]`.
+- `AppsLoader.default_registries() -> List[Dict]` — external app registries the
+  edition pins, merged with the operator's `config.registries` by
+  `apps/registry.py::_effective_registries`, which is the single list every
+  registry consumer reads (index fetch/refresh, the trusted-host allowlist, row
+  lookup, install, the blob-proxy allowlist). Rows are the field shape of
+  `ExternalRegistryConfig` (`{name, repo, branch, trust}`). Unlike
+  `registry_rows`, the **edition row wins** a `name` collision — and when the two
+  rows name DIFFERENT repositories, **neither** is served, because the index cache
+  is keyed by name and the displaced row's cache would otherwise be read under the
+  winner's identity. Merged at the
+  consumption sites, never inside `KiroCrewConfig`, so a config save can never
+  persist an edition default into the operator's file. Default `[]`.
 - `DashboardContributor.on_user_message(app, message)` — fired once per user
   message by `dashboard/chat_handlers.py::api_chat` before the turn, inside a
   fail-safe `safe_context_call`. OBSERVER only. Default no-op.

@@ -333,10 +333,11 @@ export default function AppsPage() {
 
   // ---- Discover data -------------------------------------------------------
 
-  // EXPLORE HAS EXACTLY TWO SOURCES: the official registry and the user's own
-  // added registries. Both arrive as rows on `GET /api/apps/registry`, already
-  // carrying display copy, artwork, version and server-stamped trust/state, so
-  // this list is those rows — nothing is synthesized here.
+  // EXPLORE'S SOURCES ARE ALL REGISTRIES: the official registry, the user's own
+  // added registries, and any this build pins. All arrive as rows on
+  // `GET /api/apps/registry`, already carrying display copy, artwork, version and
+  // server-stamped trust/state, so this list is those rows — nothing is
+  // synthesized here, and a new kind of registry needs no change on this side.
   //
   // In particular a BUILT-IN appears on the shelf because the published catalog
   // lists it, NOT because this client read the wheel's own manifests. Rendering

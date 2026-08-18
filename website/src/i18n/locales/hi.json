@@ -6004,7 +6004,11 @@
       "these_hosts": "ये होस्ट",
       "this_host": "यह होस्ट",
       "you_are_now_trusting_apps_from": "आप अब इस स्रोत के ऐप्स पर भरोसा कर रहे हैं:",
-      "registry_url_install_public_repos_only": "रजिस्ट्री-URL इंस्टॉल केवल सार्वजनिक रिपॉज़िटरी के लिए काम करता है। निजी रिपॉज़िटरी के लिए पहले उसे स्थानीय रूप से क्लोन करें, फिर नीचे दिए गए Install from Path का उपयोग करें।"
+      "registry_url_install_public_repos_only": "रजिस्ट्री-URL इंस्टॉल केवल सार्वजनिक रिपॉज़िटरी के लिए काम करता है। निजी रिपॉज़िटरी के लिए पहले उसे स्थानीय रूप से क्लोन करें, फिर नीचे दिए गए Install from Path का उपयोग करें।",
+      "name_is_taken_by_a_build_pinned_registry": "“{{name}}” इस बिल्ड द्वारा प्रदान की गई रजिस्ट्री का नाम है — कोई दूसरा चुनें",
+      "included_with_this_installation": "इस इंस्टॉलेशन के साथ शामिल",
+      "trusted_source": "विश्वसनीय स्रोत",
+      "trusted_source_clones_with_your_git_credentials": "विश्वसनीय स्रोत — इस रजिस्ट्री के ऐप्स इस मशीन के Git क्रेडेंशियल से क्लोन होते हैं।"
     },
     "remoteArtifactCard": {
       "clone": "क्लोन करें",

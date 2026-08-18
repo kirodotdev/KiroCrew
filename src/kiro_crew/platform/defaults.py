@@ -355,6 +355,12 @@ class DefaultAppsLoader:
         # apps/app-registry.json. A companion returns its internal catalog rows.
         return []
 
+    def default_registries(self) -> List[Dict[str, Any]]:
+        # The public edition pins no external registry: the only registries are
+        # the ones the operator typed into config.registries. A companion returns
+        # its organisation's official registry.
+        return []
+
 
 class DefaultPackageManager:
     """Public brew/curl/pip install strategy (delegated to cli_doctor logic).

@@ -6004,7 +6004,11 @@
       "these_hosts": "এই হোস্টগুলো",
       "this_host": "এই হোস্ট",
       "you_are_now_trusting_apps_from": "আপনি এখন অ্যাপ বিশ্বাস করছেন এই রেজিস্ট্রি থেকে:",
-      "registry_url_install_public_repos_only": "রেজিস্ট্রি-URL ইনস্টল কেবল পাবলিক রিপোজিটরির জন্য কাজ করে। প্রাইভেট রিপোজিটরির জন্য প্রথমে সেটি লোকালি ক্লোন করুন, তারপর নিচের Install from Path ব্যবহার করুন।"
+      "registry_url_install_public_repos_only": "রেজিস্ট্রি-URL ইনস্টল কেবল পাবলিক রিপোজিটরির জন্য কাজ করে। প্রাইভেট রিপোজিটরির জন্য প্রথমে সেটি লোকালি ক্লোন করুন, তারপর নিচের Install from Path ব্যবহার করুন।",
+      "name_is_taken_by_a_build_pinned_registry": "“{{name}}” এই বিল্ড দ্বারা প্রদত্ত একটি রেজিস্ট্রির নাম — অন্য একটি বেছে নিন",
+      "included_with_this_installation": "এই ইনস্টলেশনের সাথে অন্তর্ভুক্ত",
+      "trusted_source": "বিশ্বস্ত উৎস",
+      "trusted_source_clones_with_your_git_credentials": "বিশ্বস্ত উৎস — এই রেজিস্ট্রির অ্যাপগুলি আপনার Git ক্রেডেনশিয়াল দিয়ে ক্লোন হয়।"
     },
     "remoteArtifactCard": {
       "clone": "ক্লোন করুন",

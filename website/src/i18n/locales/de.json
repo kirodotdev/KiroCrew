@@ -6004,7 +6004,11 @@
       "these_hosts": "diese Hosts",
       "this_host": "dieser Host",
       "you_are_now_trusting_apps_from": "Sie vertrauen nun Apps von",
-      "registry_url_install_public_repos_only": "Die Installation per Registry-URL funktioniert nur für öffentliche Repositorys. Klonen Sie ein privates Repository zuerst lokal und verwenden Sie dann unten „Install from Path“."
+      "registry_url_install_public_repos_only": "Die Installation per Registry-URL funktioniert nur für öffentliche Repositorys. Klonen Sie ein privates Repository zuerst lokal und verwenden Sie dann unten „Install from Path“.",
+      "name_is_taken_by_a_build_pinned_registry": "„{{name}}“ ist der Name einer von diesem Build bereitgestellten Registry – bitte einen anderen wählen",
+      "included_with_this_installation": "Mit dieser Installation ausgeliefert",
+      "trusted_source": "Vertrauenswürdige Quelle",
+      "trusted_source_clones_with_your_git_credentials": "Vertrauenswürdige Quelle – Apps aus dieser Registry werden mit Ihren Git-Anmeldedaten geklont."
     },
     "remoteArtifactCard": {
       "clone": "Klonen",

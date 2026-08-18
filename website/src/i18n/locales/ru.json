@@ -6180,7 +6180,11 @@
       "these_hosts": "этих хостов",
       "this_host": "этого хоста",
       "you_are_now_trusting_apps_from": "Теперь вы доверяете приложениям из",
-      "registry_url_install_public_repos_only": "Установка по URL реестра работает только для публичных репозиториев. Для приватного репозитория сначала клонируйте его локально, затем используйте «Install from Path» ниже."
+      "registry_url_install_public_repos_only": "Установка по URL реестра работает только для публичных репозиториев. Для приватного репозитория сначала клонируйте его локально, затем используйте «Install from Path» ниже.",
+      "name_is_taken_by_a_build_pinned_registry": "«{{name}}» — имя реестра, предоставляемого этой сборкой. Выберите другое",
+      "included_with_this_installation": "Входит в эту установку",
+      "trusted_source": "Доверенный источник",
+      "trusted_source_clones_with_your_git_credentials": "Доверенный источник — приложения из этого реестра клонируются с вашими учётными данными Git."
     },
     "remoteArtifactCard": {
       "clone": "Клонировать",

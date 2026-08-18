@@ -74,7 +74,12 @@ from kiro_crew.apps.manager import (
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
 from kiro_crew.apps.official_editorial import load_category_order, load_sections
 from kiro_crew.apps.registry import (
+    _REGISTRY_TRUST_TIERS,
+    _TRUST_INDEX,
+    _TRUST_OWNER,
     _git_url_host,
+    _pinned_registries,
+    _registry_identity_key,
     get_registry_app_by_repo,
     get_server_platform,
     install_from_registry,
@@ -2556,16 +2561,30 @@ async def handle_registries(request: web.Request) -> web.Response:
     """GET/PUT /api/apps/registries — manage external federated registries."""
     if request.method == "GET":
         config = KiroCrewConfig.load()
+        # Operator rows report `index` as their tier because that is what is in
+        # FORCE for them: `registry._registry_trust_tier` resolves `owner` only
+        # from build-pinned rows, since `config.json` is agent-writable. Echoing a
+        # hand-edited `owner` back would report a grant the runtime does not honour.
         registries = [
-            {"name": r.name, "repo": r.repo, "branch": r.branch} for r in config.registries
+            {"name": r.name, "repo": r.repo, "branch": r.branch, "trust": _TRUST_INDEX}
+            for r in config.registries
+        ]
+        # Edition-pinned registries are reported SEPARATELY and read-only. They
+        # are not part of ``registries`` because PUT replaces that list verbatim:
+        # a GET→edit→PUT round-trip would persist an edition default into the
+        # operator's config.json, where a later edition change could no longer
+        # move it. The client renders these as non-editable rows.
+        pinned = [
+            {"name": r.name, "repo": r.repo, "branch": r.branch, "trust": r.trust}
+            for r in _pinned_registries()
         ]
         sel().log_api_access(
             caller="dashboard",
             operation="registries.read",
             outcome="success",
-            resources=f"count={len(registries)}",
+            resources=f"count={len(registries)} pinned={len(pinned)}",
         )
-        return web.json_response({"registries": registries})
+        return web.json_response({"registries": registries, "pinned": pinned})
 
     def _deny(msg: str, resources: str = "") -> web.Response:
         sel().log_api_access(
@@ -2589,6 +2608,13 @@ async def handle_registries(request: web.Request) -> web.Response:
     # Validate each entry
     validated: list[dict[str, str]] = []
     _blocked_repos = {"KiroCrew"}
+    # Keyed the same way `_effective_registries` decides a contest — by the cache
+    # file the registry would use, not the raw string. Comparing raw names here
+    # would let `Official` past the guard against a pinned `official`, persist it,
+    # and then have the merge drop BOTH as contested: exactly the inert-registry
+    # outcome this guard exists to prevent, now with the operator's own row lost too.
+    _pinned_names = {_registry_identity_key(r.name or r.repo) for r in _pinned_registries()}
+    _pinned_repos = {r.repo for r in _pinned_registries()}
     for entry in entries:
         if not isinstance(entry, dict):
             return _deny("each registry must be an object")
@@ -2604,6 +2630,10 @@ async def handle_registries(request: web.Request) -> web.Response:
             return _deny(
                 f"{repo!r} is the core registry — no need to add it", f"blocked_repo={repo}"
             )
+        if repo in _pinned_repos:
+            return _deny(
+                f"{repo!r} is already provided by this build", f"pinned_repo={repo}"
+            )
         # Bare names default the display name to the repo (legacy). Full URLs
         # derive a safe slug from host+path so two URL registries never collide
         # on a default name.
@@ -2614,7 +2644,32 @@ async def handle_registries(request: web.Request) -> web.Response:
         branch = str(entry.get("branch", "main")).strip() or "main"
         if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_\-./]*$", branch) or ".." in branch:
             return _deny(f"invalid branch name: {branch!r}", f"branch={branch}")
-        validated.append({"name": name, "repo": repo, "branch": branch})
+        # `trust` is accepted only as `index` for an operator row, and that is the
+        # value stored. `registry._registry_trust_tier` resolves `owner` solely
+        # from `default_registries()` — the build — because `config.json` is
+        # agent-writable, so a tier persisted here could never be honoured.
+        # Accepting it would hand back a setting the runtime ignores, and there is
+        # correspondingly no tier to PRESERVE across a replace-all PUT: an omitted
+        # value simply means `index`, which is what an operator row always is.
+        raw_trust = entry.get("trust")
+        trust = _TRUST_INDEX if raw_trust is None else (str(raw_trust).strip() or _TRUST_INDEX)
+        if trust not in _REGISTRY_TRUST_TIERS:
+            return _deny(f"invalid registry trust: {trust!r}", f"trust={trust}")
+        if trust == _TRUST_OWNER:
+            return _deny(
+                "the trusted tier is supplied by this build, not by configuration",
+                f"owner_trust_refused={name}",
+            )
+        # A name an edition-pinned registry already owns is refused rather than
+        # persisted: `_effective_registries` drops a same-named operator row, so
+        # storing it would leave a registry in config.json that never loads and
+        # whose per-row refresh 404s, with nothing telling the operator why.
+        if _registry_identity_key(name) in _pinned_names:
+            return _deny(
+                f"{name!r} is the name of a registry this build provides — choose another",
+                f"pinned_name_collision={name}",
+            )
+        validated.append({"name": name, "repo": repo, "branch": branch, "trust": trust})
 
     # Update config file (atomic write to prevent corruption on crash)
     cfg = Path(config_path())

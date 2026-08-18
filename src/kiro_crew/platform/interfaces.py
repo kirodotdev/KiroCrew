@@ -814,6 +814,35 @@ class AppsLoader(Protocol):
         """
         ...
 
+    def default_registries(self) -> List[Dict[str, Any]]:
+        """External app registries the edition ships as defaults (ADD-only merge).
+
+        WIRED: ``apps/registry.py::_effective_registries`` merges these with the
+        operator's ``config.registries`` for EVERY consumer of the registry list —
+        index fetch/refresh, the trusted-host allowlist, row lookup, install, and
+        the blob-proxy allowlist. Merging at the consumption sites rather than
+        inside ``KiroCrewConfig`` is deliberate: an edition default must never be
+        written back into the operator's ``config.json`` by a config save, and must
+        never be shadowed by a stale copy that a past save persisted.
+
+        Each row is the field shape of ``config.loader.ExternalRegistryConfig``
+        (``{"name", "repo", "branch", "trust"}``); dicts, not dataclass instances,
+        so a companion need not import the config module. Missing keys take the
+        dataclass default.
+
+        An edition default WINS on a ``name`` collision with an operator entry.
+        That direction is the fail-closed one: a registry the edition pins carries
+        a ``trust`` tier, and letting a same-named operator entry replace it would
+        let a hand-edited ``config.json`` inherit that tier while repointing
+        ``repo`` somewhere else. An operator can still add registries freely — just
+        not silently repoint one the edition pinned.
+
+        The public Default returns ``[]``, so standalone behaviour is byte-identical
+        to reading ``config.registries`` alone. v1 method addition (no
+        ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
 
 class KnowledgeProvider(Protocol):
     """Extra knowledge-base connectors the edition contributes.
