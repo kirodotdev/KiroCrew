@@ -113,7 +113,7 @@ class TestVoiceConfig:
         self, tmp_path, monkeypatch
     ):
         # Regression test: PUT {"autoSpeak": ...} used to flip `global_enabled`
-        # (the master voice switch) instead of the dedicated `auto_speak` field —
+        # (the primary voice switch) instead of the dedicated `auto_speak` field —
         # so unchecking "Auto-speak responses" in Settings silently disabled
         # voice entirely, including the manual speak button.
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

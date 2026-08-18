@@ -664,7 +664,7 @@ All notable changes to KiroCrew are documented in this file.
   canonical key, but the stored reference has to be re-pointed. (#3369)
 
 - **Dashboard auto-speak now reads the right config flag.** `GET/PUT
-  /api/voice/config`'s `autoSpeak` field was aliased to the master voice
+  /api/voice/config`'s `autoSpeak` field was aliased to the primary voice
   `enabled` switch instead of the dedicated `auto_speak` setting, so toggling
   "Auto-speak Responses" off in Settings could silently disable voice
   entirely (including the manual 🔊 Speak button), and a config with

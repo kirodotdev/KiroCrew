@@ -64,7 +64,7 @@ Stored in `~/.kiro/crew/config.json` under `voice_reply`:
 | `engine` | generative | generative, neural, long-form, standard (Polly only) |
 | `rate` | 100% | 50%–200% (Polly only) |
 | `pitch` | +0% | -20% to +20% (Polly only) |
-| `enabled` | true | Master voice switch; gates Slack voice replies. Independent of `auto_speak` |
+| `enabled` | true | Primary voice switch; gates Slack voice replies. Independent of `auto_speak` |
 | `auto_speak` | false | Dashboard auto-speak: speak each assistant reply automatically. Independent of `enabled` — the manual 🔊 Speak button works regardless of either flag |
 | `aws_profile` | _(empty)_ | AWS CLI profile name for Polly calls. Empty = use default credentials |
 | `region` | _(empty)_ | AWS region for Polly. Empty = use CLI default |
