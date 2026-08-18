@@ -8,6 +8,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [install.md](install.md) | Installing and building Kiro Crew: source, wheel, and first run. |
 | [windows-install.md](windows-install.md) | Native Windows setup, and the per-feature status on Windows. |
 | [docker.md](docker.md) | Running Kiro Crew as a container. |
+| [docker-troubleshooting.md](docker-troubleshooting.md) | Diagnosing common Docker deployment issues. |
 | [remote-and-mobile.md](remote-and-mobile.md) | Running 24/7 on a remote host, keeping it alive as a service, and reaching it from a phone over a tunnel. |
 | [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md) | How a cloud-launched instance is reached through the Instances hub: the native AWS SSM transport vs the legacy SSH-over-`ProxyCommand` path. |
 | [remote-crew-on-ec2.md](remote-crew-on-ec2.md) | Reaching a Remote Crew gateway on EC2 over SSH or AWS SSM, plus the common EC2 setup gotchas (sandbox backend, linger, port/tunnel matching). |
