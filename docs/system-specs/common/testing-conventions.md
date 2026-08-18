@@ -296,6 +296,24 @@ where it costs the in-package suites nothing.
   That mode is off by default because a directory per test is exactly the per-test cost
   the fixture audit below exists to avoid.
 
+- **A missing host capability is guarded on the TEST, never deselected on the file.**
+  `--deselect` is the wrong tool three ways: it is invisible in the run output, it takes
+  the file's other tests with it, and nothing goes red when its reason expires. A
+  `skipif` names the capability, on the test that needs it, in the report.
+
+  Measured: eleven files were deselected from every CI backend invocation because a GH
+  runner denies `unshare(CLONE_NEWNS)`, which kept **608 tests** — the ops autonomy gate
+  among them — off every pull request. The sandbox-dependent tests inside them already
+  carried `skipif(not userns_available())`, so 85 would have skipped and **523 would have
+  run**, on Linux, Windows and macOS alike. The reason had also expired: the "~6 minutes
+  against a real git" that justified keeping them out was the launcher's hardlink scan
+  arming on every spawn, and all eleven now run in 38s.
+
+  Two mechanisms replace it, both of which say what they exclude:
+  `test/windows-expected-failures.txt` for a per-node-id Windows gap, and
+  `skipif(not userns_available())` for the sandbox. `test_coverage_omit_contract.py`
+  ratchets the rest: a returning `--deselect` fails it unless the coverage omit comes
+  with it, because a file CI cannot run must not be charged to the denominator either.
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio`
 

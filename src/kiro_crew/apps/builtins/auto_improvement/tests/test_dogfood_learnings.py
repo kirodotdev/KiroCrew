@@ -30,6 +30,19 @@ from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 from kiro_crew.apps.builtins.auto_improvement.backend import store
 from kiro_crew.apps.builtins.auto_improvement.spine.driver import BudgetCaps
 
+#: Windows' extended-length path prefix. ``os.readlink`` returns an absolute target with
+#: it attached, and ``pathlib`` reads the prefix as part of the drive, so it survives
+#: ``resolve()`` too -- it has to be stripped explicitly to compare paths across
+#: platforms.
+_EXTENDED_LENGTH_PREFIX = "\\\\?\\"
+
+
+def _without_extended_prefix(target: str) -> str:
+    """*target* with the Windows extended-length prefix removed; unchanged elsewhere."""
+    if target.startswith(_EXTENDED_LENGTH_PREFIX):
+        return target[len(_EXTENDED_LENGTH_PREFIX) :]
+    return target
+
 
 class TestMetricDirectionIsPlumbed:
     """The keeper accepts ``direction`` — but a parameter nobody passes is dead code."""
@@ -4846,7 +4859,17 @@ class TestRepoControlledGitHooksDoNotExecuteHostSide:
         )
         # Copied verbatim as a link (its stored target is the original path), NOT resolved
         # into a real file that materialized the secret bytes inside the RED tree.
-        assert os.readlink(staged_link) == str(secret), "the staged link's target was rewritten"
+        #
+        # Compared as PATHS with the Windows extended-length prefix stripped, not as the
+        # raw string `os.readlink` returns. Windows stores an absolute symlink target as
+        # `\\?\C:\...`, and neither a string comparison nor `Path.resolve()` closes that
+        # gap -- `pathlib` reads `\\?\C:` as the drive and keeps it. Comparing `Path`
+        # objects also gets Windows' case-insensitivity for free. The assertion still says
+        # what it did: a target rewritten to point inside the RED tree is a different path,
+        # and the sibling `is_symlink()` check above is what catches a dereferenced copy.
+        assert Path(_without_extended_prefix(os.readlink(staged_link))) == secret, (
+            "the staged link's target was rewritten"
+        )
 
 
 class TestANestedProcessCannotAuthenticateToGitHub:

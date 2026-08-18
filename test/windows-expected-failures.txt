@@ -263,3 +263,9 @@ src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestClon
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py::TestLintFindingsOnDisk::test_findings_from_a_real_tree_carry_codes
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_suite_scope.py::TestSuiteScopeDerivation::test_a_test_dir_named_test_is_accepted
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_suite_scope.py::TestSuiteScopeDerivation::test_narrowed_globs_scope_to_the_nearest_tests_dir
+# Added when the CI deselect of this file was removed, so Windows collects it for the
+# first time. `PermissionError [Errno 13]` from `pathlib` writing the linked worktree's
+# `.git` pointer file: Windows refuses the write where POSIX allows it. The security
+# property it guards (a repointed gitdir must be refused) is POSIX-shaped; the other
+# 12,782 tests on that shard pass.
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_a_repointed_worktree_gitdir_is_refused

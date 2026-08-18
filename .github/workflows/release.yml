@@ -118,24 +118,11 @@ jobs:
 
       - name: Run release candidate tests
         run: |
-          # The sysctl above enables the namespace sandbox on this runner,
-          # so all sandbox-dependent tests can run here.  If for any reason
-          # the sysctl is reverted, uncomment the deselects below to match
-          # ci.yml's sharded matrix (which cannot sysctl and deselects them
-          # into a dedicated namespace-sandbox job instead).
-          #
-          # Fallback deselects (mirror of ci.yml BACKEND_DESELECTS):
-          #   --deselect=test/test_script_hooks.py
-          #   --deselect=test/test_cron_script.py
-          #   --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py
-          #   --deselect=src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py
-          #   --deselect=src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
+          # The sysctl above enables the namespace sandbox on this runner, so the
+          # sandbox-dependent tests run for real here rather than skipping. No fallback
+          # deselect list any more: if the sysctl is reverted, those tests skip
+          # themselves on `skipif(not userns_available())` and the rest of the suite
+          # still runs -- which is what ci.yml's sharded matrix relies on too.
           pytest -q -n auto --timeout=120 --no-cov
 
   resolve-promotion:

@@ -210,6 +210,12 @@ missed.**
 - Windows gaps are tracked as burn-down lists, not scattered skips:
   `test/windows-collect-ignore.txt` and `test/windows-expected-failures.txt`. Anything
   NOT listed still fails the job. Delete a line when you fix its test.
+- **Never `--deselect` a whole file for a missing host capability.** Guard the test that
+  needs it — `skipif(not userns_available())` for the OS sandbox — so the report names the
+  capability. A deselect is invisible in the output, takes the file's other tests with it,
+  and never goes red when its reason expires: eleven such files kept 608 tests off every
+  PR, of which 523 would have run on all three platforms, long after the cost that
+  justified the exclusion had been fixed.
 
 ## Rule 4 — Diagnosing a residue failure
 

@@ -37,7 +37,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/cloudwatch.py 
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/github_issues.py 58.4   # 52/89
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8   # 35/65
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/pagerduty.py 68.8   # 75/109
-src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/schedule_file.py 50.7   # 102/201
 src/kiro_crew/apps/builtins/personal_shopper/backend/routes.py 71.5   # 186/260
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
 src/kiro_crew/apps/hooks_integration.py 43.0   # 65/151
@@ -55,7 +54,6 @@ src/kiro_crew/context_management.py 74.2   # 178/240
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/dashboard/handlers/agents.py 77.4   # 579/748
 src/kiro_crew/dashboard/handlers/cron.py 70.9   # 400/564
-src/kiro_crew/dashboard/handlers/feedback.py 29.9   # 23/77
 src/kiro_crew/dashboard/handlers/portability.py 17.0   # 15/88
 src/kiro_crew/dashboard/handlers/prompts.py 64.5   # 260/403
 src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253

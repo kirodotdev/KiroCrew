@@ -1137,6 +1137,13 @@ class TestSshTunnelArgvCompression:
 
 requires_ssh = pytest.mark.skipif(shutil.which("ssh") is None, reason="ssh not available")
 
+#: Hang guard for a ``ssh -G`` config resolution, NOT a performance budget. The call does
+#: no network work, so any real duration is process-spawn overhead -- and on a loaded
+#: 4-core Windows runner that starves: at 30s this timed out and failed the shard on a
+#: config that was correct. Widening the guard cannot weaken an assertion (a genuine hang
+#: still fails, a few seconds later); pinning it low turns runner load into a red build.
+_SSH_CONFIG_PROBE_TIMEOUT_SECS = 120
+
 
 def _ssh_effective_config(tmp_path, config_text: str, ssh_args: list[str], host: str) -> dict:
     """Return ssh's OWN resolved settings (``ssh -G``) for *ssh_args* under a config.
@@ -1155,7 +1162,7 @@ def _ssh_effective_config(tmp_path, config_text: str, ssh_args: list[str], host:
         ["ssh", "-G", "-F", str(cfg), *ssh_args, host],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_SSH_CONFIG_PROBE_TIMEOUT_SECS,
     )
     assert out.returncode == 0, f"ssh -G failed: {out.stderr}"
     # Repeated keys are accumulated, not overwritten: ssh prints one
@@ -1260,7 +1267,7 @@ Host {host}
             ["ssh", "-G", "-F", str(cfg), *args, self._HOST],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=_SSH_CONFIG_PROBE_TIMEOUT_SECS,
         )
         assert out.returncode == 0, f"production argv broke a working config: {out.stderr}"
         assert "bad configuration option" not in out.stderr.lower()
