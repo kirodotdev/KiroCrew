@@ -10,6 +10,7 @@ import McpBrowserModal from '../../components/McpBrowserModal'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
+import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { fmtDateTime, fmtTime } from '../../i18n/format'
 
 /** Same calendar day as now — the boundary where a bare time stops being honest. */
@@ -339,6 +340,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     tools: (a: McpServer, b: McpServer) => (a.tools?.length || 0) - (b.tools?.length || 0),
   }), [])
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })
+  // Measured overflow state for the servers table's scroller — gates the pinned
+  // Actions column's seam (border + fade). Measured, not breakpoint-inferred:
+  // the table overflows whenever its container is narrower than its content,
+  // which a resizable nav rail can cause at any viewport size.
+  const [attachMcpScroller, mcpTableEdges, , attachMcpTable] = useScrollEdges<HTMLDivElement>()
 
   return (<>
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
@@ -382,16 +388,40 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
         {filtered.map(s => <Badge key={s.name} variant={mcpStatusVariant(s.status)}><Plug className="lucide-inline" /> {s.name}</Badge>)}
       </div>
       {isLoading ? <ContentSkeleton rows={6} /> : (
-        <div className="overflow-x-auto">
-        <table className="w-full border-collapse table-striped"><thead><tr>
+        <div ref={attachMcpScroller} className="overflow-x-auto">
+        {/* This table is AUTO layout (`w-full border-collapse`, no table-fixed),
+            so column edges depend on content and a wrapper-anchored cue cannot
+            know where the pinned column starts. The seam therefore lives INSIDE
+            the pinned cells — but NOT as a cell border: under
+            `border-collapse: collapse` a cell border belongs to the collapsed
+            table grid and paints at the cell's LAYOUT slot, so it stays behind
+            while the sticky cell travels. It is a 1px child div instead
+            (`left-0 w-px bg-border`), which the sticky cell carries, painted
+            alongside a `right-full` gradient child hanging just left of it —
+            both gated on the measured overflow flag, so a table that fits
+            renders neither. Same treatment as the Hooks and Schedule tables.
+            The table itself is the observed content node: auto layout means the
+            ROWS set scrollWidth, which the scroller's own box never reports. */}
+        <table ref={attachMcpTable} className="w-full border-collapse table-striped"><thead><tr>
           <SortableHeader label={i18nT('pages.overview.mcpTab.name')} sortKey="name" sort={mcpSort} onToggle={toggleMcpSort} />
           <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.kirocrew')}</th>
           <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.globals')}</th>
           <SortableHeader label={i18nT('pages.overview.mcpTab.status')} sortKey="status" sort={mcpSort} onToggle={toggleMcpSort} />
           <SortableHeader label={i18nT('pages.overview.mcpTab.tools')} sortKey="tools" sort={mcpSort} onToggle={toggleMcpSort} />
-          <th className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{i18nT('pages.overview.mcpTab.actions')}</th>
+          {/* Actions is the LAST column, so in a container narrower than the
+              table's content it starts past the scroll edge and every
+              Edit/Uninstall costs a horizontal scroll. `sticky right-0` pins it
+              to the scrollport's right edge while the other columns scroll
+              under it — which is why the cell needs an OPAQUE `bg-card` (the
+              Card's own surface): the default cell background is transparent
+              and the scrolling columns would show through. */}
+          <th className="sticky right-0 bg-card text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">
+            {mcpTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+            {mcpTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+            {i18nT('pages.overview.mcpTab.actions')}
+          </th>
         </tr></thead>
-          <tbody>{servers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_mcp_servers_configured')}</td></tr> : sortedServers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_matching_servers')}</td></tr> : sortedServers.map(s => {
+          <tbody>{servers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_mcp_servers_configured')}</td></tr> : sortedServers.length === 0 ? <tr><td colSpan={6} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.mcpTab.no_matching_servers')}</td></tr> : sortedServers.map((s, i) => {
             const p = pending[s.name]
             const pendingUninstall = p?.uninstall === true
             const eff = effectivePresence(s, p)
@@ -404,7 +434,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                 ? 'border-l-2 border-[var(--warn)]'
                 : ''
             return (
-              <tr key={s.name} className={`hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }}>
+              <tr key={s.name} className={`group/mcprow hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }}>
                 <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]">
                   <div className="flex items-center gap-1.5">
                     <code className={`font-semibold ${pendingUninstall ? 'line-through' : ''}`}>{s.name}</code>
@@ -509,7 +539,21 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     })}</div></motion.div>}</AnimatePresence>
                   </div>) : '—'}
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-sm text-right whitespace-nowrap">
+                {/* Pinned like the header cell, on an OPAQUE `bg-card`. The row
+                    states live on the <tr>, which the opaque base would hide, so
+                    the overlay re-applies them: even rows mirror
+                    `.table-striped`'s translucent `--card-hl` zebra (which
+                    outranks the row's hover utility by specificity, so hover is
+                    deliberately NOT mirrored there), odd rows mirror the hover
+                    tint via the named row group. */}
+                <td className="sticky right-0 bg-card px-2.5 py-2 border-b border-border text-sm text-right whitespace-nowrap">
+                  <div aria-hidden className={`absolute inset-0 -z-10 transition-colors ${i % 2 === 1 ? 'bg-[var(--card-hl)]' : 'group-hover/mcprow:bg-bg-hover'}`} />
+                  {mcpTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+                  {/* The fade must ramp toward the surface it abuts: on a hovered
+                      odd row that is the hover tint, not the card (even rows
+                      keep from-card — zebra outranks the row's hover utility,
+                      so their surface never changes). */}
+                  {mcpTableEdges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent ${i % 2 === 1 ? '' : 'group-hover/mcprow:from-bg-hover'}`} />}
                   {pendingUninstall ? (
                     <Btn onClick={() => revertRow(s.name)}>{i18nT('pages.overview.mcpTab.undo')}</Btn>
                   ) : (

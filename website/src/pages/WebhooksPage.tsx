@@ -43,6 +43,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skeleton } from '../components/ui'
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { timeAgo } from '../utils/timeAgo'
 
 import { fmtBytes, fmtDateTime, fmtDuration, fmtNumber, fmtUnit } from '../i18n/format'
@@ -380,6 +381,11 @@ export default function WebhooksPage() {
   // click — that direction is not destructive.
   const [switchArmed, setSwitchArmed] = useState(false)
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null)
+  // Measured overflow state for the tokens table's scroller — gates the pinned
+  // Revoke column's seam (border + fade). Measured, not breakpoint-inferred:
+  // the table overflows whenever the detail pane is narrower than the token
+  // columns, which the resizable rail can cause at any viewport size.
+  const [attachTokensScroller, tokensTableEdges, , attachTokensTable] = useScrollEdges<HTMLDivElement>()
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<WebhookTestResult | null>(null)
   // null ⇒ follow whatever the current tokens require.
@@ -850,19 +856,41 @@ export default function WebhooksPage() {
             // viewport the table scrolls sideways inside its own box rather than
             // being clipped by the pane. `min-w-max` keeps the columns at their
             // natural width instead of crushing the token strings.
-            <div className="mt-3 -mx-1 px-1 overflow-x-auto">
-              <table className="w-full min-w-max text-[13px] border-collapse table-striped">
+            <div ref={attachTokensScroller} className="mt-3 -mx-1 px-1 overflow-x-auto">
+              {/* This table is AUTO layout (`min-w-max`, no table-fixed), so
+                  column edges depend on content and a wrapper-anchored cue
+                  cannot know where the pinned column starts. The seam therefore
+                  lives INSIDE the pinned cells — as a 1px CHILD DIV, not a cell
+                  border: under `border-collapse: collapse` a cell border
+                  belongs to the collapsed table grid and paints at the cell's
+                  LAYOUT slot, so it stays behind while the sticky cell travels.
+                  Same treatment as the Hooks and Schedule tables. The table is
+                  the observed content node: auto layout means the ROWS set
+                  scrollWidth, which the scroller's own box never reports. */}
+              <table ref={attachTokensTable} className="w-full min-w-max text-[13px] border-collapse table-striped">
               <thead>
                 <tr>
-                  {[i18nT('pages.webhooksPage.label'), i18nT('pages.webhooksPage.token'), i18nT('pages.webhooksPage.signing'), i18nT('pages.webhooksPage.created'), i18nT('pages.webhooksPage.last_used'), ''].map(h => (
+                  {[i18nT('pages.webhooksPage.label'), i18nT('pages.webhooksPage.token'), i18nT('pages.webhooksPage.signing'), i18nT('pages.webhooksPage.created'), i18nT('pages.webhooksPage.last_used')].map(h => (
                     <th key={h} className="text-left text-[11px] uppercase tracking-[.07em] text-muted font-semibold py-1.5 border-b border-border">
                       {h}
                     </th>
                   ))}
+                  {/* Revoke is the LAST of six columns the page itself concedes
+                      cannot reflow below ~560px, so on a phone it starts past
+                      the scroll edge. `sticky right-0` pins it to the
+                      scrollport's right edge while the other columns scroll
+                      under it — which is why the cell needs an OPAQUE `bg-bg`
+                      (the detail pane's own surface): the default cell
+                      background is transparent and the scrolling columns would
+                      show through. The header cell was already unlabelled. */}
+                  <th className="sticky right-0 bg-bg text-left text-[11px] uppercase tracking-[.07em] text-muted font-semibold py-1.5 border-b border-border">
+                    {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+                    {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-bg to-transparent" />}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {view.tokens.map(t => (
+                {view.tokens.map((t, i) => (
                   <tr key={t.id} className="border-b border-border last:border-b-0">
                     <td className="py-2 pr-3 text-text-strong">
                       {t.label}
@@ -874,7 +902,16 @@ export default function WebhooksPage() {
                     </td>
                     <td className="py-2 pr-3 text-muted">{timeAgo(t.created_at)}</td>
                     <td className="py-2 pr-3 text-muted">{usedAgo(t.last_used_at)}</td>
-                    <td className="py-2 text-right">
+                    {/* Pinned like the header cell, on an OPAQUE `bg-bg`. These
+                        rows carry no hover tint, but `.table-striped` zebra
+                        lives on the <tr>, which the opaque base would hide —
+                        the overlay re-applies the same translucent `--card-hl`
+                        token on even rows so the pinned cell matches the rest
+                        of the row exactly. */}
+                    <td className="sticky right-0 bg-bg py-2 text-right">
+                      <div aria-hidden className={`absolute inset-0 -z-10 ${i % 2 === 1 ? 'bg-[var(--card-hl)]' : ''}`} />
+                      {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
+                      {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-bg to-transparent" />}
                       <RevokeButton
                         token={t}
                         confirming={confirmRevoke === t.id}
