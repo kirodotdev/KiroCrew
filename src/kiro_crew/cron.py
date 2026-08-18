@@ -25,6 +25,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import random
 import re
 import time
@@ -50,7 +51,7 @@ from kiro_crew import cron_script, platform_compat, sel, shutdown_event
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
 from kiro_crew.resource_status import admission_check
 from kiro_crew.validation import MAX_CRON_MESSAGE
 
@@ -121,6 +122,121 @@ _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
 _AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
+
+
+def _pool_queue_allowance(job: CronJob | None) -> int:
+    """Queue budget a command/script job may spend before its own code runs.
+
+    Single-sourced deliberately. TWO deadlines bound one run -- the execution
+    guard in :meth:`CronService._execute_with_timeout` and the reaper's
+    defence-in-depth sweep -- and the cron pool's queue wait happens inside both.
+    If only one of them accounts for that wait, the other pre-empts it, and the
+    two failures are opposite and both silent: a reaper that does not account for
+    it cancels a job that never executed (a skipped run), while an execution
+    deadline that does not account for it kills a job still sitting in the pool
+    queue and reports it as an overrun (the misdiagnosis this change exists to
+    remove, which also lets a claimed subprocess run on while the overlap guards
+    clear). Deriving both from this one function is what keeps them from drifting.
+
+    Only command and script jobs dispatch through the pool to EXECUTE, so only
+    they need the allowance; a message job gets none and neither deadline is
+    widened for it. That scoping holds only because the one piece of pool work
+    every job kind shares -- the fire-time governance gate -- is dispatched to
+    the GOVERNANCE pool rather than this one. Gating on the cron pool would put
+    a message job's gate behind job-duration work while its deadline was already
+    armed, spending an execution budget it has no allowance to cover; the fix
+    for that belongs at the gate's dispatch, not in a wider deadline here, since
+    widening would also delay the wedged-delivery backstop for runs that never
+    queue at all. See the gate sites in slack/gateway.py.
+    """
+    if job is None:
+        return 0
+    return _CRON_QUEUE_WAIT_SECS if (job.command or job.script) else 0
+
+
+def _gate_budget_allowance(job: CronJob | None) -> int:
+    """Seconds the fire-time gate may consume inside a pool-dispatching job's deadline.
+
+    A third term of the same shape as :func:`_pool_queue_allowance`.  The gate is
+    awaited BEFORE the pool dispatch and inside the deadline armed for the whole
+    run, so a gate that spends its full bound leaves the subprocess that much
+    less -- and a thread cannot be interrupted, so when the deadline then fires
+    with a worker already claimed, the overlap guards clear while the subprocess
+    runs on and the next wake duplicates its side effects.  That is the hazard
+    ``_SUBPROC_CLEANUP_ALLOWANCE_SECS`` exists for; the queue wait was a second
+    term it did not account for, and the gate bound is a third.
+
+    Scoped to command/script for the same reason the queue allowance is: only
+    those dispatch through the pool to EXECUTE, so only they carry the
+    claimed-worker hazard.  A message job's budget is left exactly as set -- its
+    protection is that :func:`cron_gate_budget` lands strictly below the wake
+    deadline and is the gate's TOTAL across both its phases, so the gate's own
+    bound fires first and the run is retained.
+
+    Rounded UP to an int: the value is added to a deadline that reaches the
+    operator as ``Timed out after {deadline}s``, and a float would render there
+    as ``2.0s``.  Up is the safe direction -- it can only add headroom.
+    """
+    if job is None or not (job.command or job.script):
+        return 0
+    return math.ceil(cron_gate_budget(effective_wake_budget(job)))
+
+
+def _vet_allowance(job: CronJob | None) -> int:
+    """Seconds the CLAIM-TIME vet may consume inside a pool-dispatching job's deadline.
+
+    A FOURTH term of the same shape as the three above, and it exists for the
+    same reason :func:`_gate_budget_allowance` does.  The fire-time gate runs
+    ``vet_job_at_fire_time`` BEFORE the pool dispatch; the claim-time vet runs
+    the SAME function again INSIDE the worker, ahead of the subprocess it
+    authorises -- so it too is spent inside the deadline armed for the whole run,
+    and a vet that spends its bound leaves the subprocess that much less.  A
+    thread cannot be interrupted, so when the deadline then fires with the
+    subprocess already started, the overlap guards clear while it runs on and the
+    next wake duplicates its side effects.  That is the hazard
+    :data:`_SUBPROC_CLEANUP_ALLOWANCE_SECS` exists for; the queue wait was a
+    second term it did not account for, the gate bound a third, and this a
+    fourth.
+
+    Sized from :func:`_gate_budget_allowance` rather than from a second copy of
+    its expression: it is the same work under the same bound, and two copies
+    would drift.  The direction of drift matters -- an allowance SMALLER than the
+    bound the vet is actually held to is exactly the unaccounted margin this
+    closes.
+
+    Scoped to command/script for the reason the other two are: only those
+    dispatch through the pool to EXECUTE, so only they carry the claimed-worker
+    hazard.  A message job never reaches ``_vet_at_claim_then`` at all.
+    """
+    return _gate_budget_allowance(job)
+
+
+def effective_wake_budget(job: CronJob) -> int:
+    """Seconds :meth:`CronService._execute_with_timeout` will allow this run.
+
+    Extracted so the fire-time gate can cap its own bound against the same
+    number rather than re-deriving the rule.  A second copy would drift, and the
+    direction it drifts matters: a gate bound that exceeded the real wake budget
+    would let the wake deadline fire first, which is the state where starvation
+    is indistinguishable from an overrun and a one-shot gets consumed by a run
+    that never dispatched.
+
+    Returns an int: the value reaches the operator through
+    ``last_error = f"Timed out after {deadline}s"``, and a float would render
+    there as ``2.0s``.
+
+    A non-numeric ``timeout_secs`` falls back to the default rather than raising.
+    ``_execute_with_timeout`` was the only caller when this rule lived inline, so
+    a duck-typed job never reached the comparison; the fire-time gate now derives
+    its own bound from this and runs on every job kind, so the rule has to
+    tolerate a store entry (or a test double) whose field is not a number.
+    """
+    raw = getattr(job, "timeout_secs", None)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return _JOB_TIMEOUT_SECS
+    return int(raw) if 1 <= raw <= 86400 else _JOB_TIMEOUT_SECS
+
+
 # Bound skip_date advancement by a WALL-CLOCK horizon rather than an iteration
 # count. An iteration cap couples the bound to schedule granularity: sized for a
 # weekly cron (old 52) it broke daily crons; re-sized for daily it would then
@@ -243,6 +359,16 @@ class CronJob:
     # loosening. Recurring jobs need neither: they wait for their next slot.
     # Reset at the start of every run.
     fire_time_denied: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run never
+    # started because every pool worker was busy for the whole queue budget.
+    # Deliberately NOT fire_time_denied, even though both must retain a one-shot:
+    # that flag ALSO forces an "at" job disabled and is documented as a *policy*
+    # refusal, so reusing it would park a starved job needing an operator to
+    # re-enable it and would mislabel pool saturation as a governance denial in
+    # history. Starvation clears on its own, so this field is retention-only --
+    # read solely where a one-shot would otherwise be consumed by a run it never
+    # had. Reset at the start of every run.
+    run_never_started: bool = False
     last_result: str | None = None
     # Runtime-only (never serialized): True once THIS run produced a result
     # via set_run_result(). For AGENT jobs ``last_result`` is a cross-run
@@ -930,6 +1056,10 @@ class CronService:
                     max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS)
                     if job
                     else _JOB_TIMEOUT_SECS
+                ) + (
+                    _pool_queue_allowance(job)
+                    + _gate_budget_allowance(job)
+                    + _vet_allowance(job)
                 )
                 jitter_allowance = self._job_jitter.get(job_id, 0.0)
                 if elapsed <= deadline + jitter_allowance:
@@ -2886,25 +3016,51 @@ class CronService:
 
     async def _execute_with_timeout(self, job: CronJob) -> None:
         """Execute a job with a timeout guard."""
-        timeout = job.timeout_secs if 1 <= job.timeout_secs <= 86400 else _JOB_TIMEOUT_SECS
+        timeout = effective_wake_budget(job)
+        # The cron pool's QUEUE WAIT happens inside this deadline, so the wake
+        # budget has to cover it as well as the execution.  Excluding queue wait
+        # from the per-call `timeout=` kwarg (see run_in_cron_pool) is not enough
+        # on its own: without the term below, a job still sitting in the pool
+        # queue is killed here and reported as an execution overrun, which is the
+        # exact misdiagnosis this whole change exists to remove.  Worse, a thread
+        # cannot be interrupted -- so if a worker claimed the call as this
+        # deadline fired, the subprocess runs on while the overlap guards clear
+        # and the next wake duplicates its side effects.  That is the hazard
+        # _SUBPROC_CLEANUP_ALLOWANCE_SECS was written for, and the queue wait is
+        # a second term it never accounted for, and the fire-time gate's own bound
+        # is a third -- it is awaited before the dispatch and inside this same
+        # deadline, so _gate_budget_allowance covers it.  The CLAIM-time vet is a
+        # fourth: the same vet again, inside the worker, ahead of the subprocess
+        # it authorises -- so _vet_allowance covers it, and without that term a
+        # widened inner backstop in the gateway is simply pre-empted here.
+        # All three allowances are
+        # shared with the reaper so the two deadlines cannot drift and pre-empt
+        # one another.  Only command/script jobs go through the pool, so a
+        # message job's budget is left exactly as set.
+        deadline = (
+            timeout
+            + _pool_queue_allowance(job)
+            + _gate_budget_allowance(job)
+            + _vet_allowance(job)
+        )
         # Fresh run: no failure counted yet. The timeout handler below reads
         # this to avoid double-counting a run that already recorded its
         # failure and then overran the deadline during cleanup.
         job.failure_recorded = False
         try:
-            await asyncio.wait_for(self._execute(job), timeout=timeout)
+            await asyncio.wait_for(self._execute(job), timeout=deadline)
         except asyncio.TimeoutError:
             # NB: Timeout bypasses _cron_callback's except block entirely —
             # which also means it bypasses all Slack notification logic. Adding
             # a timeout Slack alert is a separate feature and is intentionally
             # out of scope here.
             # Clear failure dedup state so a subsequent real error isn't
-            # suppressed as a dup of the pre-timeout failure, but STILL count
-            # the timeout toward the auto-pause threshold: a job that times out
-            # on every run must eventually auto-pause instead of running forever
-            # with zero user signal.
+            # suppressed as a dup of the pre-timeout failure, and count the
+            # timeout toward the auto-pause threshold for a run that actually
+            # DISPATCHED: a job that times out on every run must eventually
+            # auto-pause instead of running forever with zero user signal.
             job.last_status = "error"
-            job.last_error = f"Timed out after {timeout}s"
+            job.last_error = f"Timed out after {deadline}s"
             job.last_run_ts = time.time()
             job.last_failure_hash = ""
             job.last_failure_at = 0.0
@@ -2912,9 +3068,22 @@ class CronService:
             # delivery-path exception followed by cleanup overrunning the
             # deadline): one failed run is one failure, whichever handler
             # observes it last.
-            if not job.failure_recorded:
+            #
+            # Skip it too when the payload NEVER STARTED. A stall that pushes
+            # wall clock past the wake deadline while the fire-time gate is
+            # still awaited cancels this coroutine AT that await, so no handler
+            # inside the gate runs and the marker set before it survives -- and
+            # the timeout lands here on a run that dispatched nothing. Counting
+            # it would auto-pause at _AUTO_PAUSE_THRESHOLD, and a paused job
+            # never fires again, so repeated event-loop saturation durably
+            # disables a job that has not run a line. This is the same
+            # discriminator the starvation, gate-deny and vet-overrun paths
+            # already use: a state that PREVENTED the run is not a defect OF
+            # the run. A genuine execution overrun still counts, because
+            # _execute resets the marker to False before invoking the callback.
+            if not job.failure_recorded and not job.run_never_started:
                 job.record_failure()
-            logger.error("Cron job '%s' timed out after %ds", job.name, timeout)
+            logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
 
     async def _execute(self, job: CronJob) -> None:
         """Run the job callback and update runtime fields (last_run_ts, last_status)."""
@@ -2923,6 +3092,7 @@ class CronService:
         # "ok" decision below. Same for the fire-time denial marker.
         job.last_status = None
         job.fire_time_denied = False
+        job.run_never_started = False
         try:
             if self._on_job:
                 await self._on_job(job)
@@ -3019,7 +3189,12 @@ class CronService:
             # A fire-time-DENIED run is a policy refusal, not a completed run:
             # deleting the one-shot here would make the documented
             # resume-on-policy-loosening semantic impossible for at-jobs.
-            if job.delete_after_run and not job.fire_time_denied:
+            # A run that never STARTED is the same story for a different reason --
+            # every pool worker was busy for the whole queue budget -- so consuming
+            # the one-shot would destroy scheduled work that never got a chance to
+            # run. Only the delete is suppressed: unlike a policy denial this needs
+            # no operator action, so the job stays enabled and simply retries.
+            if job.delete_after_run and not (job.fire_time_denied or job.run_never_started):
                 self._jobs = [j for j in self._jobs if j.id != job.id]
             self._save()
 

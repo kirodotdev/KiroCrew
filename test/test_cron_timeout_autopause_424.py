@@ -80,3 +80,48 @@ async def test_timeout_after_recorded_failure_counts_once(tmp_path, monkeypatch)
     await svc._execute_with_timeout(job)
     assert job.consecutive_failures == 1
     assert job.last_status == "error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("never_started,expected_count", [(True, 0), (False, 1)])
+async def test_a_never_started_run_does_not_consume_the_failure_budget(
+    tmp_path, monkeypatch, never_started, expected_count
+):
+    """A run that dispatched nothing must not count toward auto-pause.
+
+    A stall that pushes wall clock past the wake deadline while the fire-time
+    gate is still awaited cancels the coroutine AT that await, so no handler
+    inside the gate runs and the marker set before it survives -- and the
+    TimeoutError lands here on a run that executed no payload. Counting it
+    auto-pauses at _AUTO_PAUSE_THRESHOLD, and a paused job never fires again,
+    so repeated event-loop saturation durably disables a job that has not run a
+    line. The starvation, gate-deny and vet-overrun paths already decline for
+    this reason; this handler was the one that did not.
+
+    Parametrised over BOTH directions on purpose: asserting only the exemption
+    would also pass if the count were deleted outright, so the never_started
+    =False case is what pins the count still firing for a genuine overrun.
+    """
+    svc = CronService(base_dir=tmp_path)
+    job = CronJob(id="j4", name="slow", message="hi", timeout_secs=1)
+
+    async def _timeout_immediately(coro, timeout, _m=never_started):
+        coro.close()
+        # _execute resets this to False before invoking the callback; the
+        # gateway's gate helper sets it True before its own await.
+        job.run_never_started = _m
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(cron_mod.asyncio, "wait_for", _timeout_immediately)
+    await svc._execute_with_timeout(job)
+
+    assert job.consecutive_failures == expected_count, (
+        "a never-started run consumed the failure budget, so repeated gate "
+        "stalls will auto-pause a job that dispatched nothing"
+        if never_started
+        else "a genuine execution overrun stopped counting, so a job that times "
+        "out on every run would never auto-pause"
+    )
+    # The run is still reported as an error either way -- only the counter differs.
+    assert job.last_status == "error"
+    assert job.auto_paused is False

@@ -80,7 +80,14 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
-from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
+from kiro_crew.cron import (
+    _SUBPROC_CLEANUP_ALLOWANCE_SECS,
+    CronJob,
+    CronService,
+    CronStoreBusy,
+    build_cron_session_context,
+    effective_wake_budget,
+)
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
@@ -130,8 +137,11 @@ from kiro_crew.embeddings import (
     start_background_model_download,
 )
 from kiro_crew.executors import (
-    cron_executor,
+    CronQueueTimeout,
+    cron_gate_budget,
     maintenance_executor,
+    run_in_cron_gate_pool,
+    run_in_cron_pool,
     run_in_embed_pool,
     subprocess_executor,
 )
@@ -759,6 +769,298 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     job.last_failure_at = 0.0
     job.record_success()
     return False
+
+
+async def _await_cron_fire_time_gate(
+    job: CronJob, *, tool_name: str, tool_kind: str
+) -> tuple[str | None, bool]:
+    """Await the fire-time governance gate, bounded, returning ``(reason, starved)``.
+
+    The gate used to be awaited as a bare ``run_in_executor`` on the shared
+    governance pool, with no timeout of its own, INSIDE the wake deadline
+    ``_execute_with_timeout`` has already armed.  Two things followed, and a
+    review lane raised both:
+
+    * that pool is paced by REMOTE senders, so an inbound burst put an unbounded
+      FIFO backlog ahead of a cron gate; and
+    * a message job carries no ``_pool_queue_allowance``, so the whole backlog
+      was charged to its execution budget.  When the wake deadline expired
+      first, ``_execute_with_timeout`` caught the ``TimeoutError`` and returned
+      normally, so ``_merge_job_result`` saw an ordinary finished run -- and a
+      ``delete_after_run`` job was consumed by a run that never dispatched.
+
+    The gate now runs on its own pool and its TOTAL wait -- queue plus execution,
+    which is why the budget is split across those phases rather than given to
+    each -- is bounded below the wake budget, so starvation surfaces as
+    ``CronQueueTimeout`` BEFORE the deadline can fire.  That is what makes the
+    retention marker reachable: ``starved`` is reported to the caller and
+    ``run_never_started`` is set here, which ``cron.py``'s delete site already
+    honours.  The marker is deliberately not
+    ``fire_time_denied`` -- that flag also parks an at-job disabled and records
+    the event as a policy denial, and pool capacity is neither.
+
+    ``record_failure()`` is deliberately NOT called, matching both the deny path
+    and the command/script starvation handlers: a fleet-capacity state must not
+    auto-pause a job that never ran a line.
+    """
+    budget = cron_gate_budget(effective_wake_budget(job))
+    # Default to RETAIN for exactly the duration of the await.  The marker used to
+    # be set only INSIDE the handler below -- that is, only when the await raised
+    # something that handler catches.  A recoverable event-loop stall can carry
+    # wall clock past the gate's own bounds AND the wake deadline, and the
+    # ``asyncio.wait_for`` in ``_execute_with_timeout`` then cancels this coroutine
+    # AT the await: no handler runs, the marker stays False, that timeout is caught
+    # and returns normally, and ``_merge_job_result`` consumes a
+    # ``delete_after_run`` job that never dispatched.  Sizing the internal bounds
+    # correctly cannot prevent it, because nothing inside the call is scheduled to
+    # notice.  ``CancelledError`` is a ``BaseException`` on both interpreters in
+    # this matrix, so it escapes the ``except Exception`` below and the marker
+    # survives -- which is the fix.
+    job.run_never_started = True
+    try:
+        reason = await run_in_cron_gate_pool(vet_job_at_fire_time, job, timeout=budget)
+    except CronQueueTimeout as exc:
+        # Scoped exactly as _run_job_isolated's own result-less clear
+        # (cron.py:2852). For an agent/message job ``last_result`` is the
+        # cross-run dedup context build_cron_session_context prepends as "do
+        # NOT repeat", and a run starved here produced no result to replace it
+        # -- clearing it made the NEXT run repeat content it had already sent.
+        # Command and script jobs still clear: the prompt built for them is
+        # discarded, so a carried value could only show a previous run's output
+        # beside this run's status. The message fire-time deny path below never
+        # clears either, so all three sites now agree.
+        if job.command or job.script:
+            job.clear_carried_result()
+        job.last_status = "error"
+        # Distinct from the pool-starvation text so the two are not conflated:
+        # this run never even reached its own dispatch decision.
+        job.last_error = f"fire-time gate {exc}"
+        # Already True from above; kept so this handler still reads correctly on
+        # its own and a later reordering cannot silently drop the retention.
+        job.run_never_started = True
+        try:
+            sel().log_tool_invocation(
+                session_key=f"cron:{job.id}",
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                outcome="error",
+                error=job.last_error,
+            )
+        except Exception:
+            logger.debug("SEL logging failed in cron fire-time gate starvation path", exc_info=True)
+        return None, True
+    except Exception:
+        # The gate reached its own WORK and failed there -- a failed dispatch
+        # DECISION, not a run that never started.  Clearing preserves the very
+        # distinction :class:`CronGateWorkTimeout` was introduced to make.
+        job.run_never_started = False
+        raise
+    # A verdict came back, so this run reached its dispatch decision.  Clearing is
+    # not optional: hold the marker past a verdict and a HEALTHY one-shot is
+    # retained instead, so it fires again or never leaves the queue -- the same
+    # data-integrity failure pointing the other way.  A DENY clears it too, because
+    # its retention is owned by ``fire_time_denied``, whose readers also park an
+    # at-job disabled; conflating them would park a job for a policy decision that
+    # was never made.
+    job.run_never_started = False
+    return reason, False
+
+
+class CronClaimTimeDenied(Exception):
+    """Governance refused the job when the worker CLAIMED its execution.
+
+    Distinct from the fire-time deny, which happens before the execution is
+    submitted at all.  Deliberately a plain ``Exception``: it must not be caught
+    by the :class:`CronQueueTimeout` clause (whose retention semantics are for
+    runs that never got a worker) nor by ``asyncio.TimeoutError``, and it must
+    be handled BEFORE the generic ``except Exception`` arm, which calls
+    ``record_failure()`` and would feed a policy decision into the auto-pause
+    counter.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class CronClaimAbandoned(Exception):
+    """The awaiter gave up before the worker reached the payload, so it must not run.
+
+    Deliberately NOT a :class:`CronClaimTimeDenied` subclass -- an abandoned call
+    is a deadline, not a policy decision, and recording it as a denial would
+    misreport it.  Deliberately NOT a :class:`CronQueueTimeout` or
+    ``asyncio.TimeoutError`` subclass either: by the time this is raised the
+    awaiter has already left, so nothing catches it and it exists to say in the
+    logs which of the two timeout shapes happened.
+    """
+
+
+class _ClaimHandoff:
+    """Serialises a worker starting its payload against its awaiter giving up.
+
+    :func:`run_in_cron_pool` reaches its execution phase only once a worker has
+    CLAIMED the call, and a thread cannot be interrupted -- so when that phase
+    times out the submitted callable keeps running.  That was tolerable while
+    the claimed thread was already inside the sandbox, whose own ``timeout``
+    bounds it.  With the claim-time vet the vet runs FIRST, so the deadline can
+    land while the payload has not started, and it would then start after the
+    caller's ``finally`` released the overlap guard -- running alongside the
+    next fire.  ``run_in_cron_pool``'s own docstring names that harm for the
+    queue phase ("reporting a queue timeout here would release the caller's
+    overlap guard while the command runs, letting the next fire duplicate its
+    side effects"); this closes the same hole for a deadline landing mid-vet.
+
+    The lock is what makes the outcome DETERMINISTIC rather than a race.
+    Exactly one of :meth:`claim` and :meth:`abandon` observes an unset flag, so
+    a payload either starts -- and is reported as still running, which is the
+    pre-existing claimed-and-running case -- or never starts at all.  Without
+    it ``claim`` could read an unset flag that ``abandon`` sets an instant
+    later, and the refusal would silently not happen.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._abandoned = False
+        self._started = False
+
+    def abandon(self) -> bool:
+        """Record that the awaiter gave up; True if the payload had already started.
+
+        Idempotent, because the ``finally`` that releases the overlap guard runs
+        on every exit path including the ones that already called this.
+        """
+        with self._lock:
+            self._abandoned = True
+            return self._started
+
+    def claim(self) -> bool:
+        """Ask permission to start the payload.  False means refuse."""
+        with self._lock:
+            if self._abandoned:
+                return False
+            self._started = True
+            return True
+
+
+class CronVetOverran(Exception):
+    """The claim-time vet spent more than the allowance the deadline carries for it.
+
+    Starting the payload anyway is the harm: the remaining budget no longer
+    covers the subprocess bound plus
+    :data:`~kiro_crew.cron._SUBPROC_CLEANUP_ALLOWANCE_SECS`, so the deadline
+    would fire with the subprocess already running -- and a thread cannot be
+    interrupted, so the overlap guard would clear while it runs on and the next
+    fire would duplicate its side effects.  Refusing before the payload starts
+    trades a reported missed run for a silent duplicate execution.
+
+    Deliberately NOT a :class:`CronClaimTimeDenied` subclass -- an overrun is a
+    budget fact, not a policy decision, and recording it as a denial would park
+    an at-job disabled for a decision never made.  Deliberately NOT a
+    :class:`CronQueueTimeout` subclass either: that arm reports "never got a
+    worker slot", which a vet that ran for its full bound plainly did.
+    """
+
+    def __init__(self, elapsed: float, bound: float) -> None:
+        super().__init__(f"claim-time vet took {elapsed:.2f}s of a {bound:.2f}s allowance")
+        self.elapsed = elapsed
+        self.bound = bound
+
+
+def claim_vet_bound(job: CronJob) -> float:
+    """Seconds the claim-time vet may spend before its payload must be refused.
+
+    The same bound the FIRE-time gate is held to for the same
+    ``vet_job_at_fire_time`` work, so the two do not drift, and the number
+    ``kiro_crew.cron._vet_allowance`` adds to the run deadline.  Read from
+    :func:`cron_gate_budget` rather than kept as a literal, which is what makes
+    the widened backstop below a guarantee instead of a hope.
+    """
+    return cron_gate_budget(effective_wake_budget(job))
+
+
+def _claim_backstop(job: CronJob, subprocess_bound: int) -> float:
+    """The inner ``run_in_cron_pool`` bound: subprocess + teardown + vet.
+
+    One budget covers all three serially, so each needs a term.  ``+ 5`` used to
+    be written here as a literal duplicate of
+    :data:`~kiro_crew.cron._SUBPROC_CLEANUP_ALLOWANCE_SECS`; reading the constant
+    keeps the teardown margin single-sourced, and adding
+    :func:`claim_vet_bound` stops the vet spending the teardown's share of it.
+    """
+    return subprocess_bound + _SUBPROC_CLEANUP_ALLOWANCE_SECS + claim_vet_bound(job)
+
+
+def _vet_at_claim_then(
+    handoff: _ClaimHandoff, job: CronJob, fn: Callable[..., Any], *args: Any
+) -> Any:
+    """Re-vet inside the worker, immediately before the execution it authorises.
+
+    The fire-time gate authorises a run and then the execution is submitted to
+    the cron pool, whose queue wait is deliberately NOT charged to the job's
+    deadline (that uncharging is this change's sibling and the point of the
+    surrounding work).  So the authorisation and the use it authorises are
+    separated by a wait bounded only by ``_CRON_QUEUE_WAIT_SECS`` -- and both
+    inputs to the decision can change inside it:
+
+    * a script's BODY, because ``run_script_sandboxed``'s launcher re-reads the
+      file in the sandboxed child (``open`` + ``compile`` + ``exec``), so the
+      bytes that run are whatever is on disk when the worker gets there, not
+      the bytes the gate scanned;
+    * the governance POLICY, which applies to ``command`` jobs too even though
+      a command's text is already captured in ``job.command``.
+
+    Running the vet here closes that window to nil: the queue wait now happens
+    BEFORE the decision, and the decision holds at the moment of use.
+
+    This is deliberately an ADDITIONAL vet, not a moved one.  Keeping the
+    fire-time gate means a denial is still refused early and cheaply, without
+    occupying a cron worker for the queue's duration, and it leaves the gate's
+    starvation/retention plumbing (``gate_starved`` ->
+    ``run_never_started``) untouched.  The cost is one extra governance
+    evaluation, and for scripts one extra capped body read, per EXECUTED run.
+    That work runs inside a worker this job already holds, so unlike gating on
+    this pool it puts no policy check behind other jobs' queue -- the property
+    the governance-pool split at the call sites protects.  It does count against
+    the ``+5s`` backstop the call sites arm, which is why the vet must stay
+    short and bounded.
+
+    Consequence for the audit trail, by design: an EXECUTED command/script run
+    now leaves TWO ``governance_decision`` events per gate (gate time and claim
+    time) rather than one.  They are genuinely distinct decisions -- the second
+    is the one that authorised the bytes that ran -- and
+    ``vet_job_at_fire_time`` already audits every decision "in its own right so
+    the SEL trail shows every permission decision that authorized this
+    execution".  A reader counting events per run should expect the pair.
+
+    Because the vet now runs BEFORE the payload inside the same budget, the
+    caller's deadline can land while the vet is still going -- with the payload
+    not yet started.  ``handoff`` is what stops that call dispatching anyway
+    once the caller has given up and released its overlap guard; see
+    :class:`_ClaimHandoff`.  The check sits immediately before the dispatch and
+    nowhere earlier on purpose: the vet itself takes time, so a check made
+    before it would be stale by the time it mattered.
+
+    The vet is also BOUNDED here rather than merely asked to "stay short".  The
+    caller's backstop carries an allowance for it (:func:`_claim_backstop`), and
+    an allowance is only a guarantee if the thing it covers cannot exceed it --
+    so a vet that overruns refuses its payload instead of starting one whose
+    remaining margin no longer covers the subprocess and its teardown.  Measured
+    on ``monotonic`` so a clock adjustment cannot make an overrun look fine.
+    """
+    started_at = time.monotonic()
+    reason = vet_job_at_fire_time(job)
+    if reason:
+        raise CronClaimTimeDenied(reason)
+    elapsed = time.monotonic() - started_at
+    bound = claim_vet_bound(job)
+    if elapsed > bound:
+        raise CronVetOverran(elapsed, bound)
+    if not handoff.claim():
+        raise CronClaimAbandoned(
+            f"cron '{job.name}': awaiter gave up during the claim-time vet; "
+            "payload refused rather than run beside the next fire"
+        )
+    return fn(*args)
 
 
 async def _cron_stream_with_posttoken_resume(
@@ -2529,6 +2831,11 @@ class GatewayOrchestrator:
             # ── Command mode: direct shell execution (sandboxed) ──
             if job.command:
                 self._running_script_ids.add(job.id)
+                # Bound to the overlap guard's own lifetime, and created HERE rather
+                # than at the submit below so the ``finally`` that releases the guard
+                # can always reach it -- including on the fire-time deny paths that
+                # return before anything is submitted.
+                handoff = _ClaimHandoff()
                 try:
                     try:
                         sel().log_tool_invocation(
@@ -2552,9 +2859,30 @@ class GatewayOrchestrator:
                     # Off-loop: the script variant of this gate reads the script
                     # file from disk, and governance profile resolution can touch
                     # the filesystem too — neither may block the event loop.
-                    gate_reason = await asyncio.get_running_loop().run_in_executor(
-                        cron_executor(), vet_job_at_fire_time, job
+                    #
+                    # On the GOVERNANCE pool, deliberately NOT the cron pool. This
+                    # await sits inside the deadline _execute_with_timeout arms
+                    # BEFORE the callback runs, so whatever this gate waits for is
+                    # charged to the job's own execution budget. The cron pool is
+                    # bounded at _MAX_CRON_WORKERS and its workers are held for a
+                    # whole job's DURATION, so gating there puts a short policy
+                    # check behind however many long-running command/script jobs
+                    # currently occupy it -- and a job whose budget is spent that
+                    # way is killed having run no code, reported as an overrun,
+                    # and (if delete_after_run) deleted without ever dispatching.
+                    # The governance pool holds only short, bounded policy work,
+                    # which is what makes the residual wait here proportionate.
+                    #
+                    # The alternative -- widening every job's deadline by the pool
+                    # allowance instead -- is the wrong lever twice over: it would
+                    # delay the wedged-delivery backstop by that allowance for
+                    # runs that never queue, and it would leave THIS wait
+                    # unbounded and still misreported, merely later.
+                    gate_reason, gate_starved = await _await_cron_fire_time_gate(
+                        job, tool_name="cron_command_exec", tool_kind="cron_command"
                     )
+                    if gate_starved:
+                        return None
                     if gate_reason:
                         # Deliberately NOT record_failure(): a governance denial
                         # is a policy state, not a job defect. Counting it would
@@ -2581,15 +2909,26 @@ class GatewayOrchestrator:
                             )
                         return None
                     cmd_timeout = job.timeout or 300
-                    result = await asyncio.wait_for(
-                        asyncio.get_running_loop().run_in_executor(
-                            cron_executor(),
-                            run_command_sandboxed,
-                            job.command,
-                            cmd_timeout,
-                            job.id,
-                        ),
-                        timeout=cmd_timeout + 5,
+                    # Queue wait is NOT charged to cmd_timeout: see
+                    # run_in_cron_pool.  The timeout here is a backstop only --
+                    # run_command_sandboxed already enforces cmd_timeout on the
+                    # subprocess itself -- but it must stay, or a wedged worker
+                    # leaves this entry un-failed forever.
+                    #
+                    # Submitted through _vet_at_claim_then for the same reason as
+                    # the script site: the command TEXT cannot be substituted
+                    # (it is already captured in job.command), but the governance
+                    # POLICY it was vetted against can tighten during the queue
+                    # wait, and the gate above ran before that wait.
+                    result = await run_in_cron_pool(
+                        _vet_at_claim_then,
+                        handoff,
+                        job,
+                        run_command_sandboxed,
+                        job.command,
+                        cmd_timeout,
+                        job.id,
+                        timeout=_claim_backstop(job, cmd_timeout),
                     )
                     if result.get("status") == "cancelled":
                         # User-initiated cancel: CronService.cancel() owns the
@@ -2634,11 +2973,81 @@ class GatewayOrchestrator:
                             "SEL logging failed in cron command result path", exc_info=True
                         )
                     return job.last_result
+                except CronQueueTimeout as exc:
+                    # Pool starvation, not a broken command: every worker was
+                    # busy for the whole budget so this never started.  Say so,
+                    # or the next saturation reads as N independent failures.
+                    job.clear_carried_result()
+                    job.last_error = str(exc)
+                    job.last_status = "error"
+                    # Retention-only marker: a one-shot must not be consumed by a
+                    # run it never had.  NOT fire_time_denied -- that would also
+                    # park an at-job disabled and call this a policy denial.
+                    job.run_never_started = True
+                    # Deliberately NOT record_failure(): starvation is a fleet
+                    # state, not a job defect, exactly as a fire-time governance
+                    # denial is a policy state.  Counting it would auto-pause the
+                    # job after _AUTO_PAUSE_THRESHOLD starved wakes, and a paused
+                    # job never fires again -- so a pool that recovers would leave
+                    # a perfectly healthy job disabled and its work unscheduled.
+                    # The distinct error text above is what makes the saturation
+                    # legible; the counter is for runs that actually ran.
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome="error",
+                            error=str(exc),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in cron command queue-timeout path",
+                            exc_info=True,
+                        )
+                    return None
                 except asyncio.TimeoutError:
+                    # Retain the one-shot when the payload never started. This arm
+                    # is the CLAIM BACKSTOP expiring, and it fires for two
+                    # different runs: a slow claim-time vet that burned the bound
+                    # before ``claim()`` was ever granted, and a payload that DID
+                    # start and then overran. Only the first is a never-started
+                    # run, and ``abandon()`` is the only thing that can tell them
+                    # apart -- it returns whether the payload had started, and
+                    # ``claim()`` refuses once it has been called, so a False here
+                    # can never become True later. Without this the marker stayed
+                    # unset and ``_merge_job_result`` consumed a
+                    # ``delete_after_run`` job that dispatched nothing.
+                    #
+                    # Deliberately scoped to THIS arm rather than to the shared
+                    # ``finally`` below, which also runs on the fire-time deny
+                    # path: a deny reaches it with the payload equally unstarted,
+                    # but its retention is owned by ``fire_time_denied``, whose
+                    # readers park an at-job disabled. Setting this marker there
+                    # would park a job for a policy decision never made -- the
+                    # opposite silent failure. ``abandon()`` is documented
+                    # idempotent, so calling it here and again in the ``finally``
+                    # is safe.
+                    started = handoff.abandon()
+                    job.run_never_started = not started
                     job.clear_carried_result()
                     job.last_error = f"timeout ({cmd_timeout + 5}s)"
                     job.last_status = "error"
-                    job.record_failure()
+                    # Count only a run that DISPATCHED. The same reasoning the
+                    # starvation, gate-deny and vet-overrun arms above already
+                    # apply: a backstop that expired before ``claim()`` means no
+                    # line of this job ran, so it is a fleet state rather than a
+                    # job defect, and counting it auto-pauses at
+                    # _AUTO_PAUSE_THRESHOLD -- a paused job never fires again, so
+                    # repeated wedged wakes would permanently disable a healthy
+                    # job and leave its work unscheduled. ``cron.py``'s
+                    # _execute_with_timeout guard already refuses to count a
+                    # never-started run, but this arm calls record_failure()
+                    # DIRECTLY and so never reaches it. A genuine overrun (the
+                    # payload started, then ran long) still counts, which is what
+                    # keeps this a discriminator rather than a deletion.
+                    if started:
+                        job.record_failure()
                     try:
                         sel().log_tool_invocation(
                             session_key=f"cron:{job.id}",
@@ -2651,6 +3060,83 @@ class GatewayOrchestrator:
                             "SEL logging failed in cron command timeout path", exc_info=True
                         )
                     return None
+                except CronClaimTimeDenied as exc:
+                    # Governance refused this run when the worker claimed it --
+                    # the policy tightened during the queue wait.  Same
+                    # disposition as the fire-time deny above, deliberately:
+                    # result-less, keeps the job, and NOT record_failure(),
+                    # because a policy state must not feed the auto-pause
+                    # counter.  This clause exists so the run cannot reach the
+                    # generic arm below, which does count it.
+                    job.clear_carried_result()
+                    job.last_status = "error"
+                    job.last_error = redact(exc.reason)
+                    job.fire_time_denied = True
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome="denied",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in cron command claim-time deny path",
+                            exc_info=True,
+                        )
+                    return None
+                except CronVetOverran as exc:
+                    # The vet outran the allowance the deadline carries for it, so
+                    # the payload was REFUSED rather than started with a margin
+                    # that no longer covers its own bound plus teardown.  Nothing
+                    # ran, so this is retention-shaped like starvation: mark the
+                    # run never-started and deliberately do NOT record_failure() --
+                    # a slow governance read is a fleet state, not a job defect,
+                    # and counting it would auto-pause a healthy job at
+                    # _AUTO_PAUSE_THRESHOLD.  NOT fire_time_denied: no policy
+                    # decision was made, and that flag also parks an at-job.
+                    logger.warning("Cron '%s': %s; payload refused", job.name, exc)
+                    job.clear_carried_result()
+                    job.last_error = str(exc)
+                    job.last_status = "error"
+                    job.run_never_started = True
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name="cron_command_exec",
+                            tool_kind="cron_command",
+                            outcome="error",
+                            error=str(exc),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in cron command vet-overrun path", exc_info=True
+                        )
+                    return None
+                except asyncio.CancelledError:
+                    # The wake deadline cancelled this callback outright, so none of
+                    # the arms above ran: CancelledError is a BaseException, which
+                    # the ``except Exception`` below deliberately does not catch.
+                    # Without this the run reaches cron.py's delete site with
+                    # neither retention flag set, so a ``delete_after_run`` one-shot
+                    # is consumed having never executed.
+                    #
+                    # ``abandon()`` is the discriminator, exactly as the claim
+                    # backstop above uses it: it reports whether the payload had
+                    # already started, and ``claim()`` refuses once abandoned, so a
+                    # False can never later become True.  Assigning ``not started``
+                    # rather than setting True unconditionally is what keeps the
+                    # opposite failure closed -- a payload that DID run reports True,
+                    # so the marker stays clear and the one-shot is still consumed
+                    # instead of firing a second time.
+                    #
+                    # Deliberately NOT in the shared ``finally`` below, which the
+                    # fire-time deny path also reaches with the payload equally
+                    # unstarted: retention there is owned by ``fire_time_denied``,
+                    # and setting this marker would park an at-job disabled for a
+                    # policy decision that was never made.
+                    job.run_never_started = not handoff.abandon()
+                    raise
                 except Exception as exc:
                     logger.exception("Command cron '%s' failed: %s", job.name, exc)
                     job.clear_carried_result()
@@ -2669,11 +3155,24 @@ class GatewayOrchestrator:
                         logger.debug("SEL logging failed in cron command error path", exc_info=True)
                     return None
                 finally:
+                    # Abandon BEFORE releasing the overlap guard, and do it here
+                    # rather than in the timeout arm because this ``finally`` is the
+                    # single place the guard is released -- so it also covers any
+                    # exit no ``except`` arm above handles.  A no-op on the success
+                    # path: the payload already ran.  ``abandon()`` is idempotent,
+                    # so the cancellation arm above having already called it changes
+                    # nothing observed here.
+                    handoff.abandon()
                     self._running_script_ids.discard(job.id)
 
             # ── Code-based script execution (deterministic, no LLM) ──
             if job.script:
                 self._running_script_ids.add(job.id)
+                # Bound to the overlap guard's own lifetime, and created HERE rather
+                # than at the submit below so the ``finally`` that releases the guard
+                # can always reach it -- including on the fire-time deny paths that
+                # return before anything is submitted.
+                handoff = _ClaimHandoff()
                 try:
                     try:
                         sel().log_tool_invocation(
@@ -2696,9 +3195,12 @@ class GatewayOrchestrator:
                     # policy loosening lets it resume on its own.
                     # Off-loop: reads the script body from disk (up to the scan
                     # cap) — must not block the event loop on a wedged FS.
-                    gate_reason = await asyncio.get_running_loop().run_in_executor(
-                        cron_executor(), vet_job_at_fire_time, job
+                    # Governance pool, not the cron pool: see the command site.
+                    gate_reason, gate_starved = await _await_cron_fire_time_gate(
+                        job, tool_name="cron_script_exec", tool_kind="cron_script"
                     )
+                    if gate_starved:
+                        return None
                     if gate_reason:
                         # No record_failure() — see the command-path deny above:
                         # a policy denial must not feed the auto-pause counter.
@@ -2723,16 +3225,29 @@ class GatewayOrchestrator:
                         return None
                     # Run in sandboxed subprocess via wrap_argv()
                     script_timeout = job.timeout or 30
-                    result = await asyncio.wait_for(
-                        asyncio.get_running_loop().run_in_executor(
-                            cron_executor(),
-                            run_script_sandboxed,
-                            job.script,
-                            job.id,
-                            job.message,
-                            script_timeout,
-                        ),
-                        timeout=script_timeout + 5,
+                    # Queue wait is NOT charged to script_timeout: see
+                    # run_in_cron_pool.  The timeout here is a backstop only --
+                    # run_script_sandboxed already enforces script_timeout on
+                    # the subprocess itself -- but it must stay, or a wedged
+                    # worker leaves this entry un-failed forever.
+                    #
+                    # Submitted through _vet_at_claim_then, not bare: the gate
+                    # above ran before the queue wait, and the launcher re-reads
+                    # the body from disk in the child, so the gate's scan alone
+                    # authorises bytes that may no longer be there.  The re-vet
+                    # runs inside the worker, after the wait, so the decision
+                    # holds at the moment of use.  It also now shares the
+                    # backstop below, which is why it must stay short.
+                    result = await run_in_cron_pool(
+                        _vet_at_claim_then,
+                        handoff,
+                        job,
+                        run_script_sandboxed,
+                        job.script,
+                        job.id,
+                        job.message,
+                        script_timeout,
+                        timeout=_claim_backstop(job, script_timeout),
                     )
                     status = result.get("status", "error")
                     if status == "cancelled":
@@ -2826,14 +3341,59 @@ class GatewayOrchestrator:
                     else:
                         err = result.get("error", "unknown error")
                         raise RuntimeError(err)
+                except CronQueueTimeout as exc:
+                    # Pool starvation, not a broken script: every worker was
+                    # busy for the whole budget so this never ran a line.  The
+                    # distinct text is what makes the next saturation legible
+                    # instead of looking like N scripts that each overran.
+                    logger.warning(
+                        "Script cron '%s' never got a worker slot: %s", job.name, exc
+                    )
+                    job.clear_carried_result()
+                    job.last_error = str(exc)
+                    job.last_status = "error"
+                    # Retention-only marker: see the command path.
+                    job.run_never_started = True
+                    # Deliberately NOT record_failure(): see the command path.
+                    # Starvation means the script never ran a line, so counting it
+                    # would auto-pause a healthy job after _AUTO_PAUSE_THRESHOLD
+                    # starved wakes and leave it disabled once the pool recovered.
+                    # The auto-pause log that used to sit here went with it: this
+                    # path can no longer reach the threshold.
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name=job.script,
+                            tool_kind="cron_script",
+                            outcome="error",
+                            error=str(exc),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in cron script queue-timeout path",
+                            exc_info=True,
+                        )
+                    return None
                 except asyncio.TimeoutError:
+                    # See the command path above: this is the claim backstop, and
+                    # only ``abandon()`` distinguishes a vet that burned the bound
+                    # before ``claim()`` from a payload that started and overran.
+                    # Scoped to this arm, not the shared ``finally``, so the
+                    # fire-time deny path keeps its retention in
+                    # ``fire_time_denied`` instead of parking an at-job disabled.
+                    started = handoff.abandon()
+                    job.run_never_started = not started
                     logger.warning(
                         "Script cron '%s' timed out after %ds", job.name, script_timeout + 5
                     )
                     job.clear_carried_result()
                     job.last_error = f"timeout ({script_timeout + 5}s)"
                     job.last_status = "error"
-                    job.record_failure()
+                    # See the command path: count only a run that DISPATCHED, so a
+                    # backstop that expired before ``claim()`` cannot auto-pause a
+                    # job that never ran a line. A genuine overrun still counts.
+                    if started:
+                        job.record_failure()
                     if job.auto_paused:
                         logger.warning(
                             "Script cron '%s' auto-paused after %d consecutive errors",
@@ -2853,6 +3413,70 @@ class GatewayOrchestrator:
                             "SEL logging failed in cron script timeout path", exc_info=True
                         )
                     return None
+                except CronClaimTimeDenied as exc:
+                    # Governance refused this run when the worker claimed it --
+                    # the body on disk, or the policy, changed during the queue
+                    # wait.  Same disposition as the fire-time deny above,
+                    # deliberately: result-less, keeps the job, and NOT
+                    # record_failure(), because a policy state must not feed the
+                    # auto-pause counter.  This clause exists so the run cannot
+                    # reach the generic arm below, which does count it.
+                    job.clear_carried_result()
+                    job.last_status = "error"
+                    job.last_error = redact(exc.reason)
+                    job.fire_time_denied = True
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name=job.script,
+                            tool_kind="cron_script",
+                            outcome="denied",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in cron script claim-time deny path",
+                            exc_info=True,
+                        )
+                    return None
+                except CronVetOverran as exc:
+                    # The vet outran the allowance the deadline carries for it, so
+                    # the payload was REFUSED rather than started with a margin
+                    # that no longer covers its own bound plus teardown.  Nothing
+                    # ran, so this is retention-shaped like starvation: mark the
+                    # run never-started and deliberately do NOT record_failure() --
+                    # a slow governance read is a fleet state, not a job defect,
+                    # and counting it would auto-pause a healthy job at
+                    # _AUTO_PAUSE_THRESHOLD.  NOT fire_time_denied: no policy
+                    # decision was made, and that flag also parks an at-job.
+                    logger.warning("Cron '%s': %s; payload refused", job.name, exc)
+                    job.clear_carried_result()
+                    job.last_error = str(exc)
+                    job.last_status = "error"
+                    job.run_never_started = True
+                    try:
+                        sel().log_tool_invocation(
+                            session_key=f"cron:{job.id}",
+                            tool_name=job.script,
+                            tool_kind="cron_script",
+                            outcome="error",
+                            error=str(exc),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "SEL logging failed in cron script vet-overrun path", exc_info=True
+                        )
+                    return None
+                except asyncio.CancelledError:
+                    # See the command path above: a wake deadline cancelling this
+                    # callback runs no ``except`` arm, because CancelledError is a
+                    # BaseException, so without this the delete site consumes a
+                    # one-shot that never executed.  ``abandon()`` reports whether
+                    # the payload had started, so ``not started`` retains only the
+                    # run that dispatched nothing and leaves a completed run
+                    # deletable.  Not in the shared ``finally``, whose deny path
+                    # retention belongs to ``fire_time_denied``.
+                    job.run_never_started = not handoff.abandon()
+                    raise
                 except Exception as exc:
                     logger.exception("Script cron '%s' failed: %s", job.name, exc)
                     job.clear_carried_result()
@@ -2878,6 +3502,14 @@ class GatewayOrchestrator:
                         logger.debug("SEL logging failed in cron script error path", exc_info=True)
                     return None
                 finally:
+                    # Abandon BEFORE releasing the overlap guard, and do it here
+                    # rather than in the timeout arm because this ``finally`` is the
+                    # single place the guard is released -- so it also covers any
+                    # exit no ``except`` arm above handles.  A no-op on the success
+                    # path: the payload already ran.  ``abandon()`` is idempotent,
+                    # so the cancellation arm above having already called it changes
+                    # nothing observed here.
+                    handoff.abandon()
                     self._running_script_ids.discard(job.id)
 
             # ── Fire-time governance gate: message (LLM) jobs ──
@@ -2886,10 +3518,15 @@ class GatewayOrchestrator:
             # had NO fire-time capabilities.cron check at all, so disabling the
             # cron capability after scheduling never affected them. Same deny
             # semantics as the other kinds: mark the run failed, keep the job.
-            # Off-loop for the same reason as the command/script sites above.
-            gate_reason = await asyncio.get_running_loop().run_in_executor(
-                cron_executor(), vet_job_at_fire_time, job
+            # Off-loop for the same reason as the command/script sites above, and
+            # on the GOVERNANCE pool for the same reason: a message job gets no
+            # pool allowance on either deadline, so gating it on the cron pool
+            # charged a saturated pool's queue directly to its execution budget.
+            gate_reason, gate_starved = await _await_cron_fire_time_gate(
+                job, tool_name="cron_message_dispatch", tool_kind="cron_message"
             )
+            if gate_starved:
+                return None
             if gate_reason:
                 # No record_failure() — see the command-path deny above: a
                 # policy denial must not feed the auto-pause counter.
