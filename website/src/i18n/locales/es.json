@@ -7193,7 +7193,9 @@
       "update_other": "{{count}} actualizaciones",
       "updating_progress": "Actualizando {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo abajo para habilitarlo."
+      "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo abajo para habilitarlo.",
+      "synced_from_its_source_directory": "Se sincronizó {{name}} desde su directorio de origen.",
+      "updated_from_the_registry": "Se actualizó {{name}} desde el registro."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mes",

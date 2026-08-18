@@ -7289,7 +7289,9 @@
       "update_other": "{{count}} обновления",
       "updating_progress": "Обновление {{done}}/{{total}}...",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} установлено. Включите его ниже, чтобы активировать."
+      "installed_app_find_in_library_and_enable": "{{name}} установлено. Включите его ниже, чтобы активировать.",
+      "synced_from_its_source_directory": "{{name}} синхронизировано из исходного каталога.",
+      "updated_from_the_registry": "{{name}} обновлено из реестра."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/мес",

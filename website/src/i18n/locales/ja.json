@@ -7001,7 +7001,9 @@
       "update_other": "{{count}} 更新",
       "updating_progress": "更新中 {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。下でオンにして有効化してください。"
+      "installed_app_find_in_library_and_enable": "{{name}} をインストールしました。下でオンにして有効化してください。",
+      "synced_from_its_source_directory": "{{name}} をソースディレクトリから同期しました。",
+      "updated_from_the_registry": "{{name}} をレジストリから更新しました。"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",

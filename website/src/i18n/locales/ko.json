@@ -7001,7 +7001,9 @@
       "update_other": "업데이트 {{count}}개",
       "updating_progress": "업데이트 중 {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 아래에서 켜서 활성화하세요."
+      "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 아래에서 켜서 활성화하세요.",
+      "synced_from_its_source_directory": "{{name}}을(를) 소스 디렉터리에서 동기화했습니다.",
+      "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/월",

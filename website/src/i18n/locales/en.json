@@ -4838,7 +4838,9 @@
       "update_one": "{{count}} update",
       "update_other": "{{count}} updates",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "Installed {{name}}. Turn it on below to enable it."
+      "installed_app_find_in_library_and_enable": "Installed {{name}}. Turn it on below to enable it.",
+      "synced_from_its_source_directory": "Synced {{name}} from its source directory.",
+      "updated_from_the_registry": "Updated {{name}} from the registry."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mo",

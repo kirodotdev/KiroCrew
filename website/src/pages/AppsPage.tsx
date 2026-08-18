@@ -36,7 +36,7 @@ import TrustAppModal, { isTrustDeniedError, useTrustGate, type TrustAppTarget } 
 import SourcesPopover from '../components/appstore/SourcesPopover'
 import { categoryFor, categoryCounts, mergeCategoryOrder, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
-import { isVerified, normalizeInstalledApp, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
+import { isRegistrySourced, isVerified, normalizeInstalledApp, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 import { isBuiltinServerRow } from '../components/appstore/mergeBuiltinRow'
 
 import { i18nT } from '../i18n/t'
@@ -578,19 +578,42 @@ export default function AppsPage() {
       }
       return
     }
-    // Update navigates to detail page (streaming install UI). Blocked while
-    // Update All is running so the same update can't run twice concurrently.
+    // Update dispatches on the RECORDED SOURCE, mirroring ``handle_update_app``'s
+    // own branch. A registry-sourced app is re-cloned from its registry and the
+    // detail page owns that flow (streaming log plus the trust consent modal), so
+    // it navigates there. An app installed from a path has no registry row: it is
+    // refreshed in place from the directory recorded at install — the same call
+    // Update All makes — and routing it at the registry instead failed every sync
+    // with "not found in registry". A row absent from this list carries no source
+    // to read, so it navigates and the detail page re-dispatches on the record it
+    // loads. Blocked while Update All is running so the same update can't run
+    // twice concurrently.
     if (action === 'update') {
       if (updatingAll) return
-      updateApp(name)
-      return
+      const target = apps.find(a => a.name === name)
+      if (!target || isRegistrySourced(target)) {
+        updateApp(name)
+        return
+      }
     }
     setActionLoading(`${name}:${action}`)
     setError('')
     try {
       if (action === 'enable') await runEnable(name)
       else if (action === 'disable') await api.disableApp(name)
+      else if (action === 'update') await api.updateApp(name)
       invalidate()
+      // An in-place sync is the one action here whose success is otherwise
+      // INVISIBLE: re-copying a source directory usually carries the same
+      // version, so the card re-renders byte-identical and the dev cannot tell
+      // whether new bytes landed. Reflect it the way `disable` already does.
+      if (action === 'update') {
+        const app = apps.find(a => a.name === name)
+        setSuccessMsg(i18nT('pages.appsPage.synced_from_its_source_directory', {
+          name: app?.displayName || name,
+        }))
+        setTimeout(() => setSuccessMsg(''), 4000)
+      }
       // Show toast when hiding a builtin app
       if (action === 'disable') {
         const app = apps.find(a => a.name === name)

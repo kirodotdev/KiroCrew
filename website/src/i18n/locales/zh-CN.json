@@ -7001,7 +7001,9 @@
       "update_other": "{{count}} 项更新",
       "updating_progress": "正在更新 {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "已安装 {{name}}。在下方打开开关即可启用。"
+      "installed_app_find_in_library_and_enable": "已安装 {{name}}。在下方打开开关即可启用。",
+      "synced_from_its_source_directory": "已从源目录同步 {{name}}。",
+      "updated_from_the_registry": "已从注册表更新 {{name}}。"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",

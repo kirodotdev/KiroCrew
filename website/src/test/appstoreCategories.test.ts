@@ -4,6 +4,7 @@ import { gradientFor } from '../components/appstore/gradient'
 import {
   sourceLabel,
   isVerified,
+  isRegistrySourced,
   normalizeRegistryApp,
   normalizeInstalledApp,
   normalizeInstalledApps,
@@ -139,6 +140,55 @@ describe('provenance helpers', () => {
     // A real built-in (no _registry) still verifies and labels correctly.
     expect(isVerified({ origin: 'builtin', author: 'whoever' })).toBe(true)
     expect(sourceLabel({ origin: 'builtin' })).toBe('Built-in')
+  })
+})
+
+describe('isRegistrySourced', () => {
+  it('reads the registry: prefix the gateway records on a cloned app', () => {
+    expect(isRegistrySourced({ source: 'registry:secretary' })).toBe(true)
+    expect(isRegistrySourced({ source: 'registry:secretary', origin: 'local' })).toBe(true)
+  })
+
+  it('treats a directory install as local however the path is spelled', () => {
+    expect(isRegistrySourced({ source: '/home/u/apps/orchestrator-switch' })).toBe(false)
+    // A path that merely CONTAINS the word must not read as a registry ref —
+    // only the prefix the gateway writes counts.
+    expect(isRegistrySourced({ source: '/home/u/registry:copy' })).toBe(false)
+    expect(isRegistrySourced({ source: 'C:\\apps\\orchestrator-switch' })).toBe(false)
+  })
+
+  it('falls back to origin for a record written before source was stored', () => {
+    expect(isRegistrySourced({ origin: 'registry' })).toBe(true)
+    expect(isRegistrySourced({ origin: 'local' })).toBe(false)
+    expect(isRegistrySourced({})).toBe(false)
+    // A stored source always wins over origin — it is the value the backend's
+    // own update branch reads.
+    expect(isRegistrySourced({ source: '/srv/app', origin: 'registry' })).toBe(false)
+  })
+
+  it('survives a non-string source from an index-controlled catalog row', () => {
+    // The detail page spreads a CATALOG row into its app object when the
+    // installed-record fetch fails, and registry.py copies index keys verbatim
+    // for a row it has not installed — so `source` can arrive as an object even
+    // though the type says string. This runs inside the autoAction effect, where
+    // an unguarded startsWith throws and Sync never dispatches.
+    const objectSource = { source: { type: 'git' }, origin: 'registry' } as unknown as
+      Parameters<typeof isRegistrySourced>[0]
+    expect(() => isRegistrySourced(objectSource)).not.toThrow()
+    expect(isRegistrySourced(objectSource)).toBe(true)
+
+    // With no usable origin either, it must answer false (treat as path-installed
+    // and let the update endpoint report the real problem) rather than throw.
+    const noOrigin = { source: { type: 'git' } } as unknown as
+      Parameters<typeof isRegistrySourced>[0]
+    expect(() => isRegistrySourced(noOrigin)).not.toThrow()
+    expect(isRegistrySourced(noOrigin)).toBe(false)
+
+    for (const bad of [42, true, [], {}]) {
+      const app = { source: bad } as unknown as Parameters<typeof isRegistrySourced>[0]
+      expect(() => isRegistrySourced(app)).not.toThrow()
+      expect(isRegistrySourced(app)).toBe(false)
+    }
   })
 })
 

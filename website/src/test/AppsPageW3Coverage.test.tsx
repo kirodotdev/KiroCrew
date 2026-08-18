@@ -620,6 +620,66 @@ describe('AppsPage — Library enable and update', () => {
     expect(updateApp).not.toHaveBeenCalled()
   })
 
+  it('syncs a PATH-installed app in place instead of routing at the registry', async () => {
+    // A directory install has no registry row, so the streaming registry install
+    // the detail page runs can only answer "not found in registry". Its refresh
+    // is POST /api/apps/{name}/update, which re-copies the recorded directory.
+    listApps.mockResolvedValue([{
+      ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
+      source: '/home/u/apps/orchestrator-switch', origin: 'local',
+    }])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderPage()
+    await screen.findByText('No apps available')
+    goLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync' }))
+    await waitFor(() => expect(updateApp).toHaveBeenCalledWith('orchestrator-switch'))
+    expect(screen.queryByTestId('detail-route')).toBeNull()
+  })
+
+  it('reflects a completed in-place sync, which is otherwise invisible', async () => {
+    // Re-copying a source directory usually carries the SAME version, so the
+    // card re-renders identically and silence is indistinguishable from a
+    // no-op. Without this the primary action the fix creates has no success
+    // signal at all.
+    listApps.mockResolvedValue([{
+      ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
+      source: '/home/u/apps/orchestrator-switch', origin: 'local',
+    }])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderPage()
+    await screen.findByText('No apps available')
+    goLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync' }))
+    expect(await screen.findByText(/Synced Orchestrator Switch from its source directory/)).toBeInTheDocument()
+  })
+
+  it('surfaces a failed in-place sync instead of leaving the card silent', async () => {
+    listApps.mockResolvedValue([{
+      ...SECRETARY, name: 'orchestrator-switch', displayName: 'Orchestrator Switch',
+      source: '/home/u/apps/orchestrator-switch', origin: 'local',
+    }])
+    listRegistry.mockResolvedValue({ apps: [] })
+    updateApp.mockRejectedValue(new Error('source path no longer exists'))
+    renderPage()
+    await screen.findByText('No apps available')
+    goLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync' }))
+    expect(await screen.findByText('source path no longer exists')).toBeInTheDocument()
+  })
+
+  it('still routes a registry-sourced app at the registry when it has no update', async () => {
+    listApps.mockResolvedValue([{ ...SECRETARY, source: 'registry:secretary' }])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderPage()
+    await screen.findByText('No apps available')
+    goLibrary()
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync' }))
+    const probe = await screen.findByTestId('detail-route')
+    expect(probe).toHaveAttribute('data-auto', 'update')
+    expect(updateApp).not.toHaveBeenCalled()
+  })
+
   it('enables a switched-off installed app from the Library', async () => {
     listApps.mockResolvedValue([{ ...SECRETARY, enabled: false }])
     renderPage()

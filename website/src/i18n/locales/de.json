@@ -7097,7 +7097,9 @@
       "update_other": "{{count}} Aktualisierungen",
       "updating_progress": "Aktualisierung {{done}}/{{total}}…",
       "v": "v",
-      "installed_app_find_in_library_and_enable": "{{name}} installiert. Schalten Sie es unten ein, um es zu aktivieren."
+      "installed_app_find_in_library_and_enable": "{{name}} installiert. Schalten Sie es unten ein, um es zu aktivieren.",
+      "synced_from_its_source_directory": "{{name}} aus dem Quellverzeichnis synchronisiert.",
+      "updated_from_the_registry": "{{name}} aus der Registry aktualisiert."
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/Mon.",
