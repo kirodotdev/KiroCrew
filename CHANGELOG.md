@@ -4,6 +4,18 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
+  `The bearer token included in the request is invalid.` with no way out.** A
+  `kiro-cli` child holds its credential for the life of the session, so an
+  external account switch invalidates it underneath a running session. That
+  rejection carries no status code and never uses expiry wording, so it matched
+  none of the auth classifiers: it reached the user as the raw upstream string
+  with no sign-in affordance, and counted as a retryable backend fault that
+  spent the whole retry ladder on a credential no retry can revive. A rejected
+  credential is now classified alongside session expiry — terminal, and carrying
+  the existing actionable "run `kiro-cli login`, then start a new chat"
+  guidance. (#3393)
+
 - **xlsx files now render inline in the file viewer** instead of a
   download-only card. A new `GET /api/file-sheet` endpoint parses OOXML
   workbooks server-side with openpyxl (read-only, worker thread, ZIP

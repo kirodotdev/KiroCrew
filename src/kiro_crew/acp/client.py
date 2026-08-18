@@ -1046,16 +1046,33 @@ _RE_SESSION_EXPIRED = re.compile(
     r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
     re.IGNORECASE,
 )
+# Credential REJECTED rather than expired. Switching the active Kiro account
+# invalidates the credential a long-lived kiro-cli child still holds, and the
+# upstream rejection reports only that the bearer token is invalid: it carries
+# no status code and never uses expiry wording, so neither _RE_AUTH_STATUS nor
+# _RE_SESSION_EXPIRED matches it and the failure reaches the user as the raw
+# upstream string with no sign-in affordance. Grouped with session expiry
+# because the remedy is identical — sign in again; no retry can make a rejected
+# credential valid. The gap between the two words is fenced to one sentence and
+# one line so the pattern cannot span unrelated errors in a combined haystack.
+_RE_INVALID_BEARER = re.compile(
+    r"\b(?:bearer\s+token\b[^.\n]{0,80}?\binvalid|invalid\s+bearer\s+token)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_session_expired(haystack: str) -> bool:
-    """True when the failure is an expired session rather than a backend fault.
+    """True when the session credential is expired or rejected, not a backend fault.
 
-    Both signals are terminal: retrying cannot refresh a login. Checked before
-    the 5xx family so an aborted request's transport error does not shadow the
-    real cause.
+    All three signals are terminal: retrying can neither refresh a login nor
+    revive a credential the upstream has rejected. Checked before the 5xx family
+    so an aborted request's transport error does not shadow the real cause.
     """
-    return bool(_RE_AUTH_STATUS.search(haystack) or _RE_SESSION_EXPIRED.search(haystack))
+    return bool(
+        _RE_AUTH_STATUS.search(haystack)
+        or _RE_SESSION_EXPIRED.search(haystack)
+        or _RE_INVALID_BEARER.search(haystack)
+    )
 
 
 # Account/plan capacity is EXHAUSTED — terminal. Distinct from a throttle: a

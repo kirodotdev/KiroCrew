@@ -7598,6 +7598,48 @@ class TestFormatAcpError:
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
 
+    def test_invalid_bearer_token_rewrite(self):
+        """The account-switch rejection: a credential the running child still
+        holds is rejected as invalid, with no status code and no expiry wording,
+        so it must still reach the sign-in guidance instead of the raw string."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "The bearer token included in the request is invalid.",
+        }
+        out = _format_acp_error(err)
+        assert "kiro-cli login" in out.lower()
+        assert "retry" in out.lower() and "will not help" in out.lower()
+        # Must NOT show the misleading transient-5xx advice.
+        assert "transient error" not in out.lower()
+        assert "retry in a moment" not in out.lower()
+
+    def test_invalid_bearer_token_wins_over_transport_error(self):
+        """An aborted request leaves a transport error beside the rejection; the
+        credential branch is checked first so the 5xx family cannot win."""
+        err = {
+            "code": -32603,
+            "message": "Encountered an error in the response stream",
+            "data": "DispatchFailure ConnectionResetError: the bearer token is invalid",
+        }
+        out = _format_acp_error(err)
+        assert "kiro-cli login" in out.lower()
+        assert "transient error" not in out.lower()
+
+    def test_unrelated_invalid_does_not_read_as_credential_failure(self):
+        """The fenced gap must not let an unrelated 'invalid' in a combined
+        haystack turn a validation fault into a sign-in prompt."""
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": (
+                "ValidationException: refreshed the bearer token successfully. "
+                "Field 'temperature' is invalid"
+            ),
+        }
+        out = _format_acp_error(err)
+        assert "kiro-cli login" not in out.lower()
+
     def test_genuine_5xx_still_transient_with_auth_absent(self):
         """The new auth-status branch must not swallow real 5xx errors."""
         err = {
@@ -7706,6 +7748,41 @@ class TestIsTransientRawError:
         )
         assert _is_transient_raw_error(None) is False
         assert _is_transient_raw_error("boom") is False
+
+    def test_invalid_bearer_token_is_not_transient(self):
+        """A rejected credential must be terminal, not fed to the retry ladder.
+
+        The rejection carries no status code and no expiry wording, so without
+        its own pattern it reaches the 5xx family — and a co-occurring transport
+        error is enough to make it look retryable, spending the whole ladder on
+        a credential no retry can revive.
+        """
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        assert (
+            _is_transient_raw_error(
+                {"data": "The bearer token included in the request is invalid."}
+            )
+            is False
+        )
+        assert _is_transient_raw_error({"data": "invalid bearer token"}) is False
+        # A co-occurring transport error must not flip it to retryable.
+        assert (
+            _is_transient_raw_error(
+                {
+                    "message": "Encountered an error in the response stream",
+                    "data": "ConnectionResetError: the bearer token is invalid",
+                }
+            )
+            is False
+        )
+        # An unrelated 'invalid' must stay out of the credential class.
+        assert (
+            _is_transient_raw_error(
+                {"data": "ServiceUnavailableException: HTTP 503, invalid window"}
+            )
+            is True
+        )
 
     def test_session_expired_is_not_transient(self):
         """Regression test: kiro-cli session expiry must be terminal.
