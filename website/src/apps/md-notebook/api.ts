@@ -10,7 +10,7 @@
 import { i18nT } from '../../i18n/t'
 import { API_BASE } from './constants'
 import { vaultContentPath } from './utils'
-import type { Note, NoteDoc, SearchHit, SyncResult, Vault } from './types'
+import type { Note, NoteDoc, NotesSettings, SearchHit, SyncResult, Vault } from './types'
 
 /** An API failure that carries the response payload callers need. */
 export class ApiError extends Error {
@@ -111,7 +111,8 @@ export const notesApi = {
   moveNote: (vault: string | null, from: string, to: string) =>
     mdnbCall<{ ok: boolean; path: string }>('POST', mdnbVaultQuery('/note/move', vault), { from, to }),
 
-  sync: (vault: string | null) => mdnbCall<{ result: SyncResult }>('POST', mdnbVaultQuery('/sync', vault)),
+  sync: (vault: string | null) =>
+    mdnbCall<{ result: SyncResult; lastSync: number | null }>('POST', mdnbVaultQuery('/sync', vault)),
 
   /** Commit pending edits to local git history only — never pushes. */
   commit: (vault: string | null) =>
@@ -136,6 +137,19 @@ export const notesApi = {
       'GET',
       mdnbVaultQuery(`/changes?since=${since}`, vault),
     ),
+
+  /** The user's sync settings. Not vault-scoped: they apply to every vault. */
+  settings: () => mdnbCall<{ settings: NotesSettings }>('GET', '/settings'),
+
+  /**
+   * Update sync settings. The caller sends the FULL desired {autoSync,
+   * autoSyncMins} so a winning write never drops the other field. Writes are
+   * serialized single-flight on the client and applied in arrival order by the
+   * server; no client ordering token is sent. `lastSync` is server-owned and is
+   * never accepted here.
+   */
+  saveSettings: (patch: { autoSync?: boolean; autoSyncMins?: number }) =>
+    mdnbCall<{ settings: NotesSettings }>('PUT', '/settings', patch),
 }
 
 // ---------------------------------------------------------------------------

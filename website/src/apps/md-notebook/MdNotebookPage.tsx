@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import type { CSSProperties } from 'react'
 import {
@@ -35,10 +35,9 @@ import {
   DEFAULT_SYNC_SHORTCUT,
   FONT_BODY,
   FONT_MONO,
+  LEGACY_LS,
   LS,
-  MAX_AUTO_SYNC_MINS,
   MENU_SECTION_LABEL,
-  MIN_AUTO_SYNC_MINS,
   PANEL_DEFAULT_WIDTH,
   PANEL_MAX_WIDTH,
   PANEL_MIN_WIDTH,
@@ -63,6 +62,8 @@ import {
   FM_RE,
   agoBucket,
   buildTree,
+  clampAutoSyncMins,
+  clearPref,
   loadPref,
   matchesShortcut,
   neighborAfterDelete,
@@ -181,10 +182,16 @@ export default function MdNotebookPage() {
   const [activeVaultId, setActiveVaultId] = useState<string | null>(() =>
     loadPref<string | null>(LS.activeVault, null),
   )
-  const [autoSync, setAutoSync] = useState(() => loadPref<boolean>(LS.autoSync, false))
-  const [autoSyncMins, setAutoSyncMins] = useState(() =>
-    loadPref<number>(LS.autoSyncMins, DEFAULT_AUTO_SYNC_MINS),
-  )
+  // Server-owned, so they start at the defaults and are replaced by the seed
+  // effect below once `GET /settings` answers. Deliberately NOT read from
+  // localStorage: the backend runs its own sync loop against these values, and a
+  // per-browser copy would disagree with what it is actually doing.
+  const [autoSync, setAutoSync] = useState(false)
+  const [autoSyncMins, setAutoSyncMins] = useState(DEFAULT_AUTO_SYNC_MINS)
+  // A failed settings WRITE, surfaced next to the controls in Settings. The
+  // editor's own `error` banner does not render while Settings is open, so
+  // reusing it would drop the report of a click that did not take effect.
+  const [settingsWriteError, setSettingsWriteError] = useState<string | null>(null)
   const [autoCommit, setAutoCommit] = useState(() =>
     loadPref<boolean>(LS.autoCommit, DEFAULT_AUTO_COMMIT),
   )
@@ -195,15 +202,137 @@ export default function MdNotebookPage() {
   // not also fire a sync.
   const recordingShortcutRef = useRef(false)
 
-  const setAutoSyncPref = useCallback((on: boolean) => {
-    setAutoSync(on)
-    savePref(LS.autoSync, on)
-  }, [])
-  const setAutoSyncMinsPref = useCallback((n: number) => {
-    const v = Math.min(MAX_AUTO_SYNC_MINS, Math.max(MIN_AUTO_SYNC_MINS, Math.round(n) || DEFAULT_AUTO_SYNC_MINS))
-    setAutoSyncMins(v)
-    savePref(LS.autoSyncMins, v)
-  }, [])
+  /**
+   * Persist part of the sync settings, reporting a rejection instead of dropping
+   * it. Returns whether the server took the value, so a caller can roll its
+   * optimistic local state back on failure. On success it invalidates the
+   * settings query so the cache refetches the server's authoritative state.
+   */
+  const qc = useQueryClient()
+  // Live mirrors of the two editable settings so a write can snapshot the FULL
+  // desired state at the moment it is sent, not the value captured when a
+  // debounce timer was armed — otherwise a delayed autoSyncMins write would
+  // carry a stale autoSync and could revert a toggle the user made in between.
+  const autoSyncRef = useRef(autoSync)
+  const autoSyncMinsRef = useRef(autoSyncMins)
+  useEffect(() => {
+    autoSyncRef.current = autoSync
+  }, [autoSync])
+  useEffect(() => {
+    autoSyncMinsRef.current = autoSyncMins
+  }, [autoSyncMins])
+  // Single-flight serialization: each write chains onto the previous so only one
+  // PUT is ever in flight from this tab and they reach the server in the order
+  // the user made the gestures. That, plus sending the full desired state, is
+  // what stops a single tab racing itself; ordering ACROSS tabs is the server's
+  // job (it applies writes in arrival order under its settings lock). The client
+  // supplies no ordering token — a per-tab counter cannot form a global order.
+  const writeChainRef = useRef<Promise<unknown>>(Promise.resolve())
+  // How many settings writes this tab has in flight or debounced. The settings
+  // poll reconciles the editable controls to server truth only while this is 0
+  // (see the seed effect), so a refetch never yanks a value the user is mid-way
+  // through changing.
+  const writePendingRef = useRef(0)
+  // The server's authoritative interval (updated on every settings response), so
+  // a rejected interval write rolls the field back to server truth.
+  const serverMinsRef = useRef(autoSyncMins)
+  const putSyncSettings = useCallback(
+    async (patch: { autoSync?: boolean; autoSyncMins?: number }): Promise<boolean> => {
+      setSettingsWriteError(null)
+      // Snapshot the FULL desired state from the live refs — a winning write must
+      // carry both fields so it never drops the one it did not change.
+      const bodyToSend = {
+        autoSync: patch.autoSync ?? autoSyncRef.current,
+        autoSyncMins: patch.autoSyncMins ?? autoSyncMinsRef.current,
+      }
+      writePendingRef.current += 1
+      const run = writeChainRef.current.then(() => notesApi.saveSettings(bodyToSend))
+      // Keep the chain alive on failure so a later write still runs.
+      writeChainRef.current = run.then(
+        () => undefined,
+        () => undefined,
+      )
+      try {
+        await run
+        // Converge the fresh-forever settings cache to the server's ACTUAL state
+        // by refetching, so every later read agrees with what the backend stored.
+        void qc.invalidateQueries({ queryKey: ['md-notebook', 'settings'] })
+        return true
+      } catch (e) {
+        setSettingsWriteError(
+          i18nT('apps.mdNotebook.settings.prefsSaveFailed', {
+            message: e instanceof Error ? e.message : String(e),
+          }),
+        )
+        return false
+      } finally {
+        writePendingRef.current -= 1
+      }
+    },
+    [qc],
+  )
+
+  const setAutoSyncPref = useCallback(
+    (on: boolean) => {
+      // Roll the toggle back if the write is rejected: otherwise a failed enable
+      // leaves the control (and the foreground timer it gates) showing ON while
+      // the server kept it OFF.
+      const prev = autoSync
+      setAutoSync(on)
+      // A switch produces one value per gesture, so it writes straight through.
+      void putSyncSettings({ autoSync: on }).then(ok => {
+        if (!ok) setAutoSync(prev)
+      })
+    },
+    [autoSync, putSyncSettings],
+  )
+  // The interval's number input fires on EVERY keystroke, so typing "45" would
+  // PUT 4 and then 45 — and 4 is a real cadence the backend would start syncing
+  // on. Debounced with the same timer-in-a-ref shape the note save uses, rather
+  // than a new dependency.
+  const minsTimer = useRef<number | null>(null)
+  const pendingMins = useRef<number | null>(null)
+  const setAutoSyncMinsPref = useCallback(
+    (n: number) => {
+      const v = clampAutoSyncMins(n)
+      setAutoSyncMins(v)
+      pendingMins.current = v
+      if (minsTimer.current !== null) window.clearTimeout(minsTimer.current)
+      minsTimer.current = window.setTimeout(() => {
+        minsTimer.current = null
+        pendingMins.current = null
+        // Roll the field back to the server's value if the write is rejected —
+        // otherwise a typed interval the server refused stays displayed as if it
+        // had been saved (the toggle already rolls back the same way).
+        void putSyncSettings({ autoSyncMins: v }).then(ok => {
+          if (!ok) setAutoSyncMins(serverMinsRef.current)
+        })
+      }, SAVE_DEBOUNCE_MS)
+    },
+    [putSyncSettings],
+  )
+  // Leaving the app inside the debounce window would silently discard a value the
+  // user watched land in the field, so a pending write is sent rather than
+  // cancelled. Routed through the same write chain (after any in-flight write,
+  // never concurrent with it) and carrying the FULL desired state, so it obeys
+  // the same single-flight ordering as every other write. Fire-and-forget: there
+  // is no section left to report a failure in.
+  useEffect(
+    () => () => {
+      if (minsTimer.current === null) return
+      window.clearTimeout(minsTimer.current)
+      const v = pendingMins.current
+      if (v === null) return
+      const body = { autoSync: autoSyncRef.current, autoSyncMins: v }
+      writeChainRef.current = writeChainRef.current
+        .then(() => notesApi.saveSettings(body))
+        .then(
+          () => undefined,
+          () => undefined,
+        )
+    },
+    [],
+  )
   const setSyncShortcutPref = useCallback((sc: Shortcut) => {
     setSyncShortcut(sc)
     savePref(LS.syncShortcut, sc)
@@ -233,7 +362,15 @@ export default function MdNotebookPage() {
       )
     }
   }, [])
-  const [lastSync, setLastSync] = useState<number | null>(null)
+  /**
+   * Last conflict-free sync per vault id, as the server reports it.
+   *
+   * Keyed by vault rather than held as one value so switching vaults shows each
+   * one's own time instead of the last one looked at, and sourced from the server
+   * so a sync the BACKEND performed on its own timer still ages the label — a
+   * page-written timestamp could only ever record syncs this tab ran itself.
+   */
+  const [lastSyncByVault, setLastSyncByVault] = useState<Record<string, number>>({})
 
   const saveTimer = useRef<number | null>(null)
   const contentRef = useRef('')
@@ -302,6 +439,68 @@ export default function MdNotebookPage() {
   // this is false, so a delete cannot be offered before the backend has said it
   // trashes rather than unlinks.
   const canTrash = (health?.features ?? []).includes('trash')
+
+  // ---- sync settings ----------------------------------------------------
+  // React Query for the read, like every other server read here, so it is cached
+  // and shares the app's query-key namespace. The controls below then work off
+  // local state seeded from it: a refetch must not yank a value out from under a
+  // keystroke mid-edit.
+  const { data: settingsData, error: settingsLoadError } = useQuery({
+    queryKey: ['md-notebook', 'settings'],
+    queryFn: () => notesApi.settings(),
+    retry: false,
+    // Poll so a sync the BACKEND ran (this page never initiates auto-sync) ages
+    // the "Synced N ago" label and surfaces the server-owned lastSync without an
+    // interaction. Only server-owned fields (lastSync, seq) are re-applied on a
+    // refetch — the editable controls are seeded once (below), so the poll never
+    // yanks the toggle or interval field mid-edit.
+    refetchInterval: 60_000,
+  })
+  /**
+   * A failed READ matters as much as a failed write: it leaves the page showing
+   * the defaults, which is a different setting from the user's own, so the switch
+   * would claim auto sync is off while the backend keeps pushing. Write errors win
+   * because they report the more recent action.
+   */
+  const settingsError =
+    settingsWriteError ?? (settingsLoadError instanceof Error ? settingsLoadError.message : null)
+
+  const legacyCleared = useRef(false)
+  useEffect(() => {
+    const s = settingsData?.settings
+    // Guard the shape, do not just truthiness-check `settingsData`: a malformed or
+    // older backend response without `settings` must degrade to the defaults the
+    // controls already hold, not crash the whole Notes page reading `s.autoSync`.
+    if (!s) return
+    // `lastSync` is SERVER-OWNED and moves as the background loop syncs, so merge
+    // it on EVERY response. Merge rather than replace so a just-set per-vault
+    // stamp from `runSync` is not dropped by a slightly older read.
+    setLastSyncByVault(prev => ({ ...prev, ...(s.lastSync ?? {}) }))
+    // The server's authoritative interval, tracked on every response, so a
+    // REJECTED interval write can roll the field back to server truth.
+    serverMinsRef.current = clampAutoSyncMins(s.autoSyncMins)
+    // Clear the dead localStorage prefs exactly once. `autoSync`/`autoSyncMins`
+    // used to live here; they are server-owned now and the old values are NEVER
+    // read for migration — a stale `mdnb-auto-sync=true` must not re-authorize
+    // unattended push for a user who had turned it off.
+    if (!legacyCleared.current) {
+      legacyCleared.current = true
+      clearPref(LEGACY_LS.autoSync)
+      clearPref(LEGACY_LS.autoSyncMins)
+    }
+    // Reconcile the EDITABLE controls to the server's value on every response —
+    // so another tab's enable/disable/interval change, and the refetch after our
+    // own write, both reach this tab — but ONLY while this tab has no write in
+    // flight and no interval keystroke pending. Skipping then is what keeps the
+    // poll from yanking a value the user is mid-way through changing; the write
+    // already in flight (or about to fire) carries the newer intent.
+    if (writePendingRef.current > 0 || minsTimer.current !== null) return
+    setAutoSync(s.autoSync)
+    // CLAMPED, not only on write: a stored 0 — written before the clamp existed,
+    // or by an older backend — must not surface as a real cadence. 0 means "no
+    // interval expressed" and lands on the default.
+    setAutoSyncMins(clampAutoSyncMins(s.autoSyncMins))
+  }, [settingsData])
 
   const loadVaults = useCallback(async () => {
     try {
@@ -464,7 +663,8 @@ export default function MdNotebookPage() {
     vaultRef.current = activeVaultId
     if (!activeVaultId) return
     savePref(LS.activeVault, activeVaultId)
-    setLastSync(loadPref<number | null>(`mdnb-last-sync-${activeVaultId}`, null))
+    // No last-sync read here: it is server state, held per vault in
+    // `lastSyncByVault`, so switching vaults needs no local lookup.
     // Pins are per-vault, so they are re-read here rather than carried over —
     // a path pinned in one vault means nothing in another. Collapsed folders
     // are per-vault for the same reason: the trees are unrelated.
@@ -938,14 +1138,21 @@ export default function MdNotebookPage() {
       // while the user's unsaved edit sits unreconciled in the editor — backing
       // up content they did not choose. `finally` still clears the spinner.
       if (dirtyRef.current) return
-      const { result } = await notesApi.sync(vaultRef.current)
+      // Captured, not re-read: the reply's `lastSync` belongs to the vault this
+      // run synced, and a vault switch during the round trip would otherwise
+      // stamp the new vault's label with the old vault's time.
+      const vault = vaultRef.current
+      if (!vault) return
+      const { result, lastSync: syncedAt } = await notesApi.sync(vault)
       // Only a conflict-free run counts as synced — with conflicts nothing was
-      // pushed, so reporting success would mislead.
-      if (!result.conflicts.length && vaultRef.current) {
-        const now = Date.now()
-        setLastSync(now)
-        savePref(`mdnb-last-sync-${vaultRef.current}`, now)
-      } else if (result.conflicts.length) {
+      // pushed, so reporting success would mislead. The server says so too by
+      // sending a null `lastSync`; the check is kept here so the label cannot
+      // claim a sync even if a backend reports both.
+      if (!result.conflicts.length) {
+        if (typeof syncedAt === 'number') {
+          setLastSyncByVault(prev => ({ ...prev, [vault]: syncedAt }))
+        }
+      } else {
         setError(
           i18nT('apps.mdNotebook.banner.syncConflict', {
             paths: result.conflicts.map(c => c.path).join(', '),
@@ -978,12 +1185,14 @@ export default function MdNotebookPage() {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [syncShortcut])
 
-  // Auto sync on a timer: the same bidirectional operation as the button.
-  useEffect(() => {
-    if (!autoSync || !activeVaultId) return
-    const id = window.setInterval(() => void runSyncRef.current(), autoSyncMins * 60_000)
-    return () => window.clearInterval(id)
-  }, [autoSync, autoSyncMins, activeVaultId])
+  // No foreground auto-sync timer. Auto sync runs entirely in the app BACKEND
+  // (syncer.py), which re-reads settings.json every few seconds and pushes every
+  // writable vault on the configured interval — so it keeps working with the tab
+  // closed, and it stops within one tick when the user turns auto sync off in ANY
+  // tab. A page-scoped timer here would be redundant with it and, because this
+  // page's autoSync state is seeded once, would keep pushing this vault after a
+  // revocation made in another tab. The manual Sync button/shortcut below is the
+  // only page-initiated sync.
 
   // Periodic autosave: commit pending edits to LOCAL git history, never push.
   // Separate from auto sync on purpose — a commit stays on this machine, so it is
@@ -1200,6 +1409,7 @@ export default function MdNotebookPage() {
   // no destination, clears itself on the next autosave, and reads as "not saved"
   // — so the row shows nothing.
   const showSyncBadge = !activeVault?.localOnly
+  const lastSync = activeVaultId ? (lastSyncByVault[activeVaultId] ?? null) : null
   const ago = lastSync ? agoBucket(lastSync) : null
   // A local-only vault has no remote, so the button commits to local git history
   // and nothing else — label it for what it does, and drop the "Synced N ago"
@@ -1705,6 +1915,7 @@ export default function MdNotebookPage() {
           autoSync={autoSync}
           autoSyncMins={autoSyncMins}
           autoCommit={autoCommit}
+          syncPrefsError={settingsError}
           shortcut={syncShortcut}
           onClose={() => setSettingsOpen(false)}
           onSwitchVault={id => {

@@ -879,6 +879,7 @@ async def sync(
     trusted_gitdir: Optional[str] = None,
     local_only: bool = False,
     commit_only: bool = False,
+    notes_only: Optional[bool] = None,
     author_name: str = DEFAULT_AUTHOR_NAME,
     author_email: str = DEFAULT_AUTHOR_EMAIL,
 ) -> dict[str, Any]:
@@ -896,6 +897,14 @@ async def sync(
     autosave, so it deliberately skips the remote-identity checks: nothing it
     does can reach a remote, and a vault whose remote drifted must still get its
     edits into local history rather than silently stop saving.
+
+    ``notes_only`` selects what the commit stages. ``None`` (the default) ties it
+    to ``commit_only`` — the historical behaviour where a user-initiated Sync
+    stages the whole scope and only an autosave stages notes alone. Passing it
+    explicitly decouples the two: the background auto-sync loop pushes (so
+    ``commit_only`` is False) yet must stage notes ONLY, because a timer — not the
+    user — chose the moment, and a stray non-note file dropped in the vault must
+    not enter history and then the remote without the user deciding to send it.
     """
     # Validate before ANY git call: `target` is passed as a positional to
     # `fetch`/`merge`/`push`, so a persisted branch like `--upload-pack=<prog>`
@@ -976,8 +985,10 @@ async def sync(
             # An UNATTENDED commit stages only notes. A user-initiated Sync keeps
             # staging the whole scope, because the user chose that moment; a timer
             # did not, and a stray file in the vault must not enter history — and
-            # then the remote — without them deciding to send it.
-            notes_only=commit_only,
+            # then the remote — without them deciding to send it. `notes_only`
+            # defaults to that coupling but the background loop overrides it to
+            # True so a timed push still stages notes alone.
+            notes_only=(commit_only if notes_only is None else notes_only),
             author_name=author_name,
             author_email=author_email,
         )

@@ -99,7 +99,27 @@ def _home() -> Path:
 
 
 def _vaults_json() -> Path:
-    return _home() / "vaults.json"
+    # The vault REGISTRY carries each vault's remoteUrl/gitDir, which the
+    # unattended auto-sync loop trusts as the `git push` target and its anti-tamper
+    # pins. Like the PAT and the sync settings it therefore MUST live under the
+    # protected crew data home, never under MD_NOTEBOOK_HOME — otherwise an
+    # operator's (or a prompt-injected agent's) MD_NOTEBOOK_HOME could relocate the
+    # registry outside is_sensitive_path()'s fence and repoint the push. The clone
+    # DATA (`_clone_root`) stays under _home(): it is bulk per-instance content, not
+    # an authorization surface. The _HOME test hook still applies for tmp isolation.
+    base = _HOME if _HOME is not None else _crew_data_home()
+    return base / "vaults.json"
+
+
+def _settings_json() -> Path:
+    # Like the PAT, the sync settings MUST live under the protected crew data
+    # home, never under MD_NOTEBOOK_HOME, so the `autoSync` bit — which authorizes
+    # the background loop's unattended `git push` — always sits behind
+    # is_sensitive_path()'s floor. Resolving via `_home()` would let an operator's
+    # MD_NOTEBOOK_HOME relocate it outside the fence, where an agent could flip it.
+    # The _HOME test hook still applies so tests keep their tmp isolation.
+    base = _HOME if _HOME is not None else _crew_data_home()
+    return base / "settings.json"
 
 
 def _pat_file() -> Path:
@@ -133,6 +153,8 @@ FEATURES = [
     "trashOpen",
     "knowledge",
     "pickFolder",
+    "settings",
+    "autoSyncLoop",
 ]
 
 # A write we made ourselves is ignored by change detection for this long, so
@@ -148,6 +170,17 @@ MTIME_TOLERANCE_MS = 1
 # baseMtime the client echoes back to confirm "yes, recreate this deleted note".
 # A real mtime is never negative, so it can't collide with a genuine timestamp.
 _RECREATE_SENTINEL = -1
+
+# Auto-sync interval bounds, in minutes. These mirror DEFAULT_AUTO_SYNC_MINS /
+# MIN_AUTO_SYNC_MINS / MAX_AUTO_SYNC_MINS in
+# website/src/apps/md-notebook/constants.ts: the picker's range and the
+# scheduler's clamp must agree, or the UI would offer a value the backend then
+# silently rewrites.
+DEFAULT_AUTO_SYNC_MINS = 10
+# The floor is load-bearing rather than cosmetic: 0 would make the scheduler a
+# busy loop, pushing to the remote continuously.
+MIN_AUTO_SYNC_MINS = 1
+MAX_AUTO_SYNC_MINS = 1440
 
 # Per-note-path save locks. The save guard reads the mtime and then writes; two
 # concurrent saves of the same note (two tabs debounce-flushing from one
@@ -183,6 +216,14 @@ async def _save_locks_for(*paths: str) -> "AsyncIterator[None]":
 # concurrent mutations from separate tabs would both read the old list and the
 # last writer would discard the other's change (lost update).
 _vaults_lock = asyncio.Lock()
+
+# Serializes every settings.json read-modify-write, for the same lost-update
+# reason as _vaults_lock — but with three writers rather than two: the settings
+# PUT, the manual sync handler, and the background loop, the last two both
+# stamping `lastSync`. Without it a sync landing during a settings save would
+# have its timestamp discarded by the save's atomic write, so the UI would report
+# notes as never synced when they had just been pushed.
+_settings_lock = asyncio.Lock()
 
 
 # Upper bound on the Untitled-N search when creating a note.
@@ -270,11 +311,12 @@ def _atomic_write_text_sync(path: Path, content: str) -> None:
 
 
 def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
-    _home().mkdir(parents=True, exist_ok=True)
-    tmp = _vaults_json().with_name(f"vaults.json.{uuid.uuid4().hex}.tmp")
+    target = _vaults_json()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"vaults.json.{uuid.uuid4().hex}.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(vaults, fh, indent=2)
-    os.replace(tmp, _vaults_json())
+    os.replace(tmp, target)
 
 
 def _read_pat_sync() -> Optional[str]:
@@ -323,6 +365,123 @@ async def write_vaults(vaults: list[dict[str, Any]]) -> None:
 
 async def read_pat() -> Optional[str]:
     return await asyncio.to_thread(_read_pat_sync)
+
+
+# ---------------------------------------------------------------------------
+# App settings (auto-sync)
+# ---------------------------------------------------------------------------
+
+
+def _default_settings() -> dict[str, Any]:
+    """A fresh defaults dict.
+
+    ``autoSync`` defaults to False and that default is the app's authorization
+    boundary, not a taste call: enabling it is what lets this backend run
+    ``git push`` to a remote with nobody watching.
+    """
+    return {
+        "autoSync": False,
+        "autoSyncMins": DEFAULT_AUTO_SYNC_MINS,
+        "lastSync": {},
+    }
+
+
+def _coerce_auto_sync_mins(value: Any) -> Optional[int]:
+    """Clamp *value* into MIN..MAX minutes, or None if it is not an interval.
+
+    Out-of-range is CLAMPED rather than refused because the intent is
+    unambiguous — 0 means "as often as possible", 99999 means "rarely" — while a
+    non-integer carries no interval to clamp at all. Returning None rather than a
+    default lets each caller pick the right response to that: a read falls back
+    to the default (it has nobody to hand an error to), a write returns 400.
+
+    ``bool`` is excluded explicitly because ``isinstance(True, int)`` is True, and
+    a client sending ``true`` for a minute count is a bug to surface, not a
+    request for a one-minute interval.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return max(MIN_AUTO_SYNC_MINS, min(MAX_AUTO_SYNC_MINS, value))
+
+
+def _read_settings_sync() -> dict[str, Any]:
+    """Load settings, treating the file's SHAPE and its FIELDS as untrusted.
+
+    ``settings.json`` sits in the app's data directory, which the agent and the
+    user can both edit, so the document may be any JSON at all. A non-dict
+    document, a wrong-typed field, or an out-of-range interval degrades to that
+    field's default: this is the single read chokepoint, so no caller has to
+    re-check a type, and a corrupt settings file must not stop the app from
+    opening notes.
+
+    ``autoSync`` is the strictest of the three — only a real boolean enables it,
+    never a truthy string — because a garbled file must fail toward NOT pushing.
+    """
+    out = _default_settings()
+    try:
+        with open(_settings_json(), encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return out
+    except (OSError, json.JSONDecodeError):
+        logger.warning("md-notebook: unreadable settings, using defaults")
+        return out
+    if not isinstance(raw, dict):
+        return out
+    if isinstance(raw.get("autoSync"), bool):
+        out["autoSync"] = raw["autoSync"]
+    mins = _coerce_auto_sync_mins(raw.get("autoSyncMins"))
+    if mins is not None:
+        out["autoSyncMins"] = mins
+    stored_last = raw.get("lastSync")
+    if isinstance(stored_last, dict):
+        # Per-entry filtering, not whole-map rejection: one mangled timestamp
+        # must not cost the user every other vault's sync time. A bool passes
+        # isinstance(int) so it is excluded, and a negative epoch is not a time.
+        out["lastSync"] = {
+            str(vault_id): stamp
+            for vault_id, stamp in stored_last.items()
+            if isinstance(stamp, int) and not isinstance(stamp, bool) and stamp >= 0
+        }
+    return out
+
+
+def _write_settings_sync(settings: dict[str, Any]) -> None:
+    # Create the settings file's OWN parent, like the PAT write does — since
+    # settings.json now resolves under the crew data home (or the _HOME test
+    # hook), not under _home(), the two dirs diverge and mkdir'ing _home() would
+    # leave the settings dir absent and the write failing with ENOENT.
+    target = _settings_json()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text_sync(target, json.dumps(settings, indent=2))
+
+
+async def read_settings() -> dict[str, Any]:
+    return await asyncio.to_thread(_read_settings_sync)
+
+
+def synced_cleanly(result: dict[str, Any]) -> bool:
+    """Whether a ``git_ops.sync`` result has earned a ``lastSync`` stamp.
+
+    A conflicted run aborted its merge and pushed nothing, so stamping it would
+    tell the user their notes are backed up when they are still only local.
+    """
+    return not result.get("conflicts")
+
+
+async def record_last_sync(vault_id: str) -> int:
+    """Stamp *vault_id*'s last conflict-free sync and return it (epoch ms).
+
+    The backend is the ONLY writer of ``lastSync``, for both the manual and the
+    background trigger, so a client cannot claim a sync happened and the two
+    paths cannot disagree about when one did.
+    """
+    now = int(time.time() * 1000)
+    async with _settings_lock:
+        settings = await read_settings()
+        settings["lastSync"][vault_id] = now
+        await asyncio.to_thread(_write_settings_sync, settings)
+    return now
 
 
 # ---------------------------------------------------------------------------
@@ -1103,6 +1262,95 @@ async def api_vault_knowledge(request: web.Request) -> web.Response:
     return web.json_response({"vault": target})
 
 
+async def api_settings_get(request: web.Request) -> web.Response:
+    return web.json_response({"settings": await read_settings()})
+
+
+async def api_settings_put(request: web.Request) -> web.Response:
+    """Merge-patch the app's own settings. Accepts only ``autoSync`` and
+    ``autoSyncMins``.
+
+    Two phases with nothing interleaved: every field is validated into a local
+    before any field is written, so a request carrying one bad value changes
+    NOTHING. That matters most for the pair here — a request that turned
+    ``autoSync`` on and then 400'd on a malformed interval would leave unattended
+    pushing enabled from a request the user was told had failed.
+
+    ``lastSync`` is server-owned and REFUSED rather than dropped: a client sending
+    one is trying to claim a sync happened, and ignoring it silently would let the
+    UI show a backup time nothing earned.
+
+    Unknown keys are dropped, so a stale or hostile client cannot grow the file
+    with arbitrary content.
+    """
+    body = await json_body(request)
+    if "lastSync" in body:
+        raise ApiError(
+            "lastSync is recorded by the server and cannot be set by a client",
+            400,
+            code="last_sync_read_only",
+        )
+
+    # PHASE 1 — validate into locals. Only `raise ApiError` below this line, never
+    # a write.
+    auto_sync: Optional[bool] = None
+    if "autoSync" in body:
+        if not isinstance(body["autoSync"], bool):
+            raise ApiError("autoSync must be a boolean", 400, code="invalid_auto_sync")
+        auto_sync = body["autoSync"]
+
+    auto_sync_mins: Optional[int] = None
+    if "autoSyncMins" in body:
+        auto_sync_mins = _coerce_auto_sync_mins(body["autoSyncMins"])
+        if auto_sync_mins is None:
+            raise ApiError(
+                "autoSyncMins must be a whole number of minutes between "
+                f"{MIN_AUTO_SYNC_MINS} and {MAX_AUTO_SYNC_MINS}",
+                400,
+                code="invalid_auto_sync_mins",
+            )
+
+    # PHASE 2 — apply. Nothing here can fail validation.
+    async with _settings_lock:
+        settings = await read_settings()
+        prev_auto_sync = settings["autoSync"]
+        # Writes apply in the order the server receives them, serialized by the
+        # settings lock. This lock IS the ordering authority: the client sends one
+        # write at a time (single-flight) carrying the full desired state, so a
+        # single tab cannot race itself, and across tabs the last write the server
+        # accepts wins — the only ordering a server can establish without a shared
+        # client clock. A revocation therefore always applies (nothing is ever
+        # dropped as "stale"), so auto-sync can never stay authorized against a
+        # user who turned it off.
+        # Enabling authorizes unattended `git push`; audit that BEFORE persisting
+        # it and fail closed (critical=True) so push is never authorized without a
+        # record. Run the SEL write in a thread — it flushes synchronously to disk,
+        # which must not block the event loop.
+        if auto_sync is True and prev_auto_sync is False:
+            await asyncio.to_thread(
+                sel().log_api_access,
+                caller="md-notebook",
+                operation="md_notebook.settings.autoSync",
+                outcome="enabled",
+                resources=f"autoSyncMins={auto_sync_mins if auto_sync_mins is not None else settings['autoSyncMins']}",
+                critical=True,
+            )
+        if auto_sync is not None:
+            settings["autoSync"] = auto_sync
+        if auto_sync_mins is not None:
+            settings["autoSyncMins"] = auto_sync_mins
+        await asyncio.to_thread(_write_settings_sync, settings)
+        if auto_sync is False and prev_auto_sync is True:
+            await asyncio.to_thread(
+                sel().log_api_access,
+                caller="md-notebook",
+                operation="md_notebook.settings.autoSync",
+                outcome="disabled",
+                resources=f"autoSyncMins={settings['autoSyncMins']}",
+            )
+    return web.json_response({"settings": settings})
+
+
 async def api_pat(request: web.Request) -> web.Response:
     """Set or clear the stored token: an empty value clears it."""
     body = await json_body(request)
@@ -1487,7 +1735,12 @@ async def api_sync(request: web.Request) -> web.Response:
         local_only=bool(vault.get("localOnly")),
     )
     await rebuild_cache(vault)
-    return web.json_response({"result": result})
+    # Stamped here as well as in the background loop, so the backend is the single
+    # writer of `lastSync` for both trigger paths. Returned alongside the result
+    # so the UI shows the new time without a second round-trip. Null on a
+    # conflicted run — nothing reached the remote, so nothing is backed up.
+    last_sync = await record_last_sync(vault["id"]) if synced_cleanly(result) else None
+    return web.json_response({"result": result, "lastSync": last_sync})
 
 
 async def api_commit(request: web.Request) -> web.Response:
@@ -1653,6 +1906,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/vaults/attach", api_vault_attach)
     app.router.add_delete("/api/vaults", api_vault_forget)
     app.router.add_put("/api/vaults/knowledge", api_vault_knowledge)
+    app.router.add_get("/api/settings", api_settings_get)
+    app.router.add_put("/api/settings", api_settings_put)
     app.router.add_put("/api/pat", api_pat)
     app.router.add_get("/api/changes", api_changes)
     app.router.add_get("/api/notes", api_notes)
@@ -1667,6 +1922,14 @@ def create_app() -> web.Application:
     app.router.add_post("/api/trash/open", api_trash_open)
     app.router.add_get("/api/search", api_search)
     app.router.add_post("/api/pick-folder", api_pick_folder)
+    # Auto-sync runs in this backend process, not in the dashboard page, so the
+    # interval is honoured with no Notes tab open. Imported here rather than at
+    # module scope because `syncer` imports this module for the settings store and
+    # the vault helpers, and a module-level import in both directions is a cycle.
+    from kiro_crew.apps.builtins.md_notebook import syncer
+
+    app.on_startup.append(syncer.start_syncer)
+    app.on_cleanup.append(syncer.stop_syncer)
     return app
 
 

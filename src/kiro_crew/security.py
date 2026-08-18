@@ -4291,6 +4291,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     # agent must not be able to write it. The app's own backend opens it directly
     # rather than through this gate, so it keeps working.
     "workspace/md-notebook/vaults.json",
+    # The Notes builtin's sync settings. ``autoSync`` here is the bit that
+    # AUTHORIZES the background loop's unattended ``git push`` (using the
+    # app's stored PAT), and ``autoSyncMins`` sets its cadence. A prompt-injected
+    # agent that could write this file would flip on unattended pushing without
+    # the operator's consent — the same escalation the ``vaults.json`` entry
+    # above guards against, one step earlier. The user toggles it through the
+    # HMAC-gated ``PUT /api/settings``; the app's own backend opens the file
+    # directly rather than through this gate, so it keeps working.
+    "workspace/md-notebook/settings.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
     # The optional Playwright extension token. It removes the browser-side approval

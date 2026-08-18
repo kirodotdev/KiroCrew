@@ -66,6 +66,8 @@ const mockApi = {
   openTrash: vi.fn(),
   search: vi.fn(),
   changes: vi.fn(),
+  settings: vi.fn(),
+  saveSettings: vi.fn(),
 }
 
 vi.mock('../apps/md-notebook/api', async () => {
@@ -179,6 +181,9 @@ describe('MdNotebookPage', () => {
     mockApi.moveNote.mockResolvedValue({ ok: true, path: 'moved.md' })
     mockApi.sync.mockResolvedValue({
       result: { pushed: true, pulled: true, committed: [], conflicts: [] },
+      // Server-stamped: the page no longer invents this, so a sync the backend ran
+      // on its own timer ages the label too.
+      lastSync: Date.now(),
     })
     mockApi.commit.mockResolvedValue({
       result: { pushed: false, pulled: false, committed: [], conflicts: [] },
@@ -186,6 +191,12 @@ describe('MdNotebookPage', () => {
     mockApi.openTrash.mockResolvedValue({ opened: true, empty: false, path: '/home/u/notes/.trash' })
     mockApi.search.mockResolvedValue({ results: [] })
     mockApi.changes.mockResolvedValue({ rev: 0, changed: [], watching: true })
+    mockApi.settings.mockResolvedValue({
+      settings: { autoSync: false, autoSyncMins: 10, lastSync: {} },
+    })
+    mockApi.saveSettings.mockResolvedValue({
+      settings: { autoSync: false, autoSyncMins: 10, lastSync: {} },
+    })
   })
 
   afterEach(() => {
@@ -399,6 +410,8 @@ describe('MdNotebookPage', () => {
         committed: [],
         conflicts: [{ path: 'One.md', local: 'a', remote: 'b' }],
       },
+      // Null on a conflicted run: nothing was pushed, so there is no sync to stamp.
+      lastSync: null,
     })
     await renderPage()
     await userEvent.click(await screen.findByRole('button', { name: 'Sync' }))
@@ -742,7 +755,12 @@ describe('MdNotebookPage', () => {
   async function renderOnFakeTimers() {
     vi.useFakeTimers()
     const view = await renderPage()
-    // Two ticks: the vault read and the note read it triggers.
+    // Three ticks: the vault read, the note read it triggers, and the settings
+    // read whose values arm the auto-sync timer — that timer does not exist until
+    // the server has answered, so advancing before this would find nothing.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
@@ -794,20 +812,30 @@ describe('MdNotebookPage', () => {
     expect(mockApi.commit).not.toHaveBeenCalled()
   })
 
-  it('syncs on the auto-sync timer once it is enabled', async () => {
-    localStorage.setItem('mdnb-auto-sync', 'true')
-    localStorage.setItem('mdnb-auto-sync-mins', '1')
+  it('does not auto-sync on a page timer — the backend owns auto sync', async () => {
+    // Auto sync moved into the app backend (syncer.py), which runs with the tab
+    // closed and stops within a tick when the setting is turned off in any tab.
+    // The page must NOT also sync on its own interval: a page timer would be
+    // redundant and, seeded once, would keep pushing after a cross-tab revocation.
+    mockApi.settings.mockResolvedValue({
+      settings: { autoSync: true, autoSyncMins: 1, lastSync: {} },
+    })
     await renderOnFakeTimers()
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000)
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
     })
-    expect(mockApi.sync).toHaveBeenCalledWith('v1')
+    expect(mockApi.sync).not.toHaveBeenCalled()
   })
 
-  // NOT covered on purpose: a stored `mdnb-auto-sync-mins` of 0 is read back
-  // unclamped (only the setter clamps), so the auto-sync effect schedules
-  // `setInterval(…, 0)` — a tight sync loop. A test for that either pins the
-  // defect or fails, so it is reported rather than written; the page clamps the
-  // stored panel width and validates the stored sort id, and this value needs
-  // the same treatment at load.
+  it("shows the server's last-sync time for the active vault without syncing", async () => {
+    // Written by the BACKEND's own sync loop, which the page never observes. A
+    // page-owned timestamp is why this label used to read "Sync" after a
+    // background run had just completed.
+    mockApi.settings.mockResolvedValue({
+      settings: { autoSync: false, autoSyncMins: 10, lastSync: { v1: Date.now() } },
+    })
+    await renderPage()
+    expect(await screen.findByRole('button', { name: 'Synced just now' })).toBeTruthy()
+    expect(mockApi.sync).not.toHaveBeenCalled()
+  })
 })

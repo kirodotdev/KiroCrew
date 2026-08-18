@@ -79,6 +79,24 @@ export interface SyncResult {
   localOnly?: boolean
 }
 
+/**
+ * Per-user sync settings, owned by the app's backend.
+ *
+ * These live server-side rather than in localStorage because the backend runs its
+ * own sync loop and has to honour the same choice the UI shows, and because one
+ * decision about pushing notes to a remote should not differ per browser.
+ */
+export interface NotesSettings {
+  autoSync: boolean
+  autoSyncMins: number
+  /**
+   * Epoch ms of the last conflict-free sync, keyed by vault id. Written only by
+   * the server — including by syncs the backend ran with nobody watching, which
+   * is what a page-owned timestamp could never see. Never sent back on a PUT.
+   */
+  lastSync: Record<string, number>
+}
+
 /** A recorded keyboard shortcut. */
 export interface Shortcut {
   key: string

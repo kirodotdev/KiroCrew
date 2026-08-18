@@ -5,7 +5,14 @@
  * module and no test runner could import it; the editor behaviour (indent
  * measurement, list continuation, caret placement) was therefore unverifiable.
  */
-import { INDENT_COL_PX, LIST_INDENT, TAB_STOP } from './constants'
+import {
+  DEFAULT_AUTO_SYNC_MINS,
+  INDENT_COL_PX,
+  LIST_INDENT,
+  MAX_AUTO_SYNC_MINS,
+  MIN_AUTO_SYNC_MINS,
+  TAB_STOP,
+} from './constants'
 import type { Note, Shortcut, TreeNode } from './types'
 import { fmtDateFields } from '../../i18n/format'
 import { WINDOWS_ABS_PATH_RE, urlTransform } from '../../utils/urlTransform'
@@ -396,6 +403,35 @@ export function savePref(key: string, value: unknown): void {
   } catch {
     /* storage unavailable — preferences simply do not persist */
   }
+}
+
+/** Forget a stored preference, ignoring quota or privacy-mode failures. */
+export function clearPref(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    /* storage unavailable — there was nothing persisted to forget */
+  }
+}
+
+/**
+ * An auto-sync interval coerced into a cadence that can actually be scheduled.
+ *
+ * Two steps, in this order, because they answer different questions. `Math.round(n)
+ * || DEFAULT` first: 0, NaN and '' all mean the user expressed no interval at all
+ * (an emptied number input reports ''), so they land on the default rather than on
+ * MIN — a one-minute push loop is not what clearing the field asks for. Only then
+ * is a real number clamped into the allowed range.
+ *
+ * Applied when a value is READ as well as when it is written. An unclamped 0
+ * reaching the auto-sync timer schedules `setInterval(…, 0)`, which syncs in a
+ * tight loop and pushes to the remote continuously.
+ */
+export function clampAutoSyncMins(n: number): number {
+  return Math.min(
+    MAX_AUTO_SYNC_MINS,
+    Math.max(MIN_AUTO_SYNC_MINS, Math.round(n) || DEFAULT_AUTO_SYNC_MINS),
+  )
 }
 
 /**

@@ -57,6 +57,13 @@ export interface SettingsPageProps {
   autoSync: boolean
   autoSyncMins: number
   autoCommit: boolean
+  /**
+   * A settings read or write that failed, shown inside the Sync section. These
+   * two prefs are stored server-side, so unlike the device-local ones a click
+   * here can be refused — and the page's editor banner is not on screen while
+   * this page is.
+   */
+  syncPrefsError: string | null
   shortcut: Shortcut
   onClose: () => void
   onSwitchVault: (id: string) => void
@@ -79,6 +86,7 @@ export function SettingsPage({
   autoSync,
   autoSyncMins,
   autoCommit,
+  syncPrefsError,
   shortcut,
   onClose,
   onSwitchVault,
@@ -753,6 +761,17 @@ export function SettingsPage({
                 <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
                   {i18nT('apps.mdNotebook.settings.minutes')}
                 </span>
+              </div>
+            )}
+
+            {/* Outside the interval block on purpose: the switch itself can be
+                refused, and that report must not depend on auto sync being on. */}
+            {syncPrefsError && (
+              <div
+                role="alert"
+                style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '8px' }}
+              >
+                {syncPrefsError}
               </div>
             )}
 

@@ -51,10 +51,24 @@ export const LS = {
   openNote: 'mdnb-open-note',
   sort: 'mdnb-sort',
   view: 'mdnb-view',
-  autoSync: 'mdnb-auto-sync',
-  autoSyncMins: 'mdnb-auto-sync-mins',
   autoCommit: 'mdnb-auto-commit',
   syncShortcut: 'mdnb-sync-shortcut',
+} as const
+
+/**
+ * Keys that USED to hold auto-sync settings, kept only so an existing choice can
+ * be migrated into the backend once (see the settings seed in MdNotebookPage).
+ *
+ * Auto-sync moved server-side because the backend runs the sync loop itself and
+ * cannot read a browser's storage, so a value here could never be honoured — and
+ * because "push my notes to a remote on a timer" is a decision about the vault,
+ * not about the machine that happened to make it. Deleting these keys outright
+ * would have turned auto sync off for everyone who had enabled it, with no
+ * message; they are read once and then removed.
+ */
+export const LEGACY_LS = {
+  autoSync: 'mdnb-auto-sync',
+  autoSyncMins: 'mdnb-auto-sync-mins',
 } as const
 
 /**

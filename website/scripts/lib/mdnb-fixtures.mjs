@@ -35,7 +35,7 @@ export const MDNB_VAULT = {
 const MDNB_FEATURES = [
   'trash', 'move', 'createdAt', 'attach', 'changes', 'saveGuard',
   'forget', 'pat', 'newNote', 'duplicate', 'localOnly', 'autoCommit',
-  'trashOpen', 'knowledge', 'pickFolder',
+  'trashOpen', 'knowledge', 'pickFolder', 'settings', 'autoSyncLoop',
 ]
 
 /**
@@ -65,7 +65,17 @@ export function mdnbNoteDoc(path, content) {
  * Build the `extra` handler `stubDashboardApi` delegates to, answering the
  * Notes app's own routes from the given fixtures.
  */
-export function mdnbApiStub({ vault = MDNB_VAULT, notes, doc }) {
+export function mdnbApiStub({ vault = MDNB_VAULT, notes, doc, settings }) {
+  // Held per stub instance so a PUT is reflected by the next GET: the switch in
+  // Settings writes and then re-reads, and a stub that forgot the write would
+  // photograph the control snapping back to its old position.
+  const settingsState = {
+    autoSync: false,
+    autoSyncMins: 10,
+    lastSync: {},
+    ...(settings ?? {}),
+  }
+
   return async function mdnbApi(path, route) {
     if (!path.startsWith('/apps/md-notebook/api/')) return false
     const appPath = path.slice('/apps/md-notebook/api'.length)
@@ -75,6 +85,17 @@ export function mdnbApiStub({ vault = MDNB_VAULT, notes, doc }) {
     }
     if (appPath === '/vaults') {
       return json(route, { vaults: [vault], hasPat: false, hasGhAuth: false }), true
+    }
+    // Answered explicitly rather than by the catch-all below: `{}` carries no
+    // `settings` object, so the page would render its defaults no matter what a
+    // harness asked for and every auto-sync frame would look identical.
+    if (appPath.startsWith('/settings')) {
+      if (route.request().method() === 'PUT') {
+        const patch = JSON.parse(route.request().postData() || '{}')
+        if (typeof patch.autoSync === 'boolean') settingsState.autoSync = patch.autoSync
+        if (typeof patch.autoSyncMins === 'number') settingsState.autoSyncMins = patch.autoSyncMins
+      }
+      return json(route, { settings: { ...settingsState } }), true
     }
     if (appPath.startsWith('/notes')) return json(route, { notes }), true
     if (appPath.startsWith('/note') && !appPath.startsWith('/note/')) return json(route, doc), true

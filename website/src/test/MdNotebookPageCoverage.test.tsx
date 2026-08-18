@@ -74,6 +74,8 @@ const api = {
   openTrash: vi.fn(),
   search: vi.fn(),
   changes: vi.fn(),
+  settings: vi.fn(),
+  saveSettings: vi.fn(),
 }
 
 vi.mock('../apps/md-notebook/api', async () => {
@@ -257,6 +259,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     })
     api.sync.mockResolvedValue({
       result: { pushed: true, pulled: true, committed: [], conflicts: [] },
+      lastSync: Date.now(),
     })
     api.commit.mockResolvedValue({
       result: { pushed: false, pulled: false, committed: [], conflicts: [] },
@@ -264,6 +267,14 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     api.openTrash.mockResolvedValue({ opened: true, empty: false, path: '/home/u/notes/.trash' })
     api.search.mockResolvedValue({ results: [] })
     api.changes.mockResolvedValue({ rev: 0, changed: [], watching: true })
+    // Auto-sync prefs are server-owned now: the defaults the backend reports for a
+    // user who has never touched them.
+    api.settings.mockResolvedValue({
+      settings: { autoSync: false, autoSyncMins: 10, lastSync: {} },
+    })
+    api.saveSettings.mockResolvedValue({
+      settings: { autoSync: false, autoSyncMins: 10, lastSync: {} },
+    })
   })
 
   afterEach(() => {
@@ -277,31 +288,115 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     await screen.findByRole('button', { name: 'One' })
     await openSettings()
 
-    // Autosave ships ON, so the first click is the one that turns it off.
+    // Autosave stays device-local — a local commit is this machine's business —
+    // so it is still a stored preference.
     await userEvent.click(screen.getByRole('switch', { name: 'Autosave to history' }))
     expect(localStorage.getItem('mdnb-auto-commit')).toBe('false')
 
+    // Auto sync is not: the backend runs the sync loop, so the value has to reach
+    // the server rather than this browser's storage. The write carries the FULL
+    // desired state plus a monotonic seq (the server's stale-write guard), so
+    // match on the autoSync intent rather than an exact partial patch.
     await userEvent.click(screen.getByRole('switch', { name: 'Auto sync' }))
-    expect(localStorage.getItem('mdnb-auto-sync')).toBe('true')
+    await waitFor(() =>
+      expect(api.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ autoSync: true })),
+    )
+    expect(localStorage.getItem('mdnb-auto-sync')).toBeNull()
   })
 
-  it('clamps the auto-sync interval into its allowed range', async () => {
+  it('clamps the auto-sync interval into its allowed range before saving it', async () => {
+    api.settings.mockResolvedValue({
+      settings: { autoSync: true, autoSyncMins: 10, lastSync: {} },
+    })
+    await mount()
+    await screen.findByRole('button', { name: 'One' })
+    await openSettings()
+    // The interval renders only while auto sync is on, so finding it is also the
+    // proof that the server's settings have been applied to the controls.
+    const interval = (await screen.findByRole('spinbutton', {
+      name: 'Auto sync interval in minutes',
+    })) as HTMLInputElement
+
+    // The field shows the clamped value immediately; the write is debounced,
+    // because onChange fires on every keystroke.
+    fireEvent.change(interval, { target: { value: '45' } })
+    expect(interval.value).toBe('45')
+
+    // Above the ceiling: pinned rather than accepted.
+    fireEvent.change(interval, { target: { value: '99999' } })
+    expect(interval.value).toBe('1440')
+
+    // Zero is not a cadence — it falls back to the default rather than to the
+    // minimum, which would be a one-minute push loop nobody asked for.
+    fireEvent.change(interval, { target: { value: '0' } })
+    expect(interval.value).toBe('10')
+
+    // One PUT, for the value that settled — not one per keystroke, each of which
+    // is an interval the backend would otherwise start syncing on. The write is
+    // full-state + seq, so match the interval rather than an exact partial patch.
+    await waitFor(
+      () =>
+        expect(api.saveSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ autoSyncMins: 10 }),
+        ),
+      { timeout: 3000 },
+    )
+    expect(api.saveSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not re-enable auto sync from a value left in storage by an older build', async () => {
+    // A stale browser pref must never re-authorize unattended push. `autoSync`
+    // gates a background `git push`, and the server (reporting off here) is the
+    // source of truth — the old keys are cleared WITHOUT being read, so a user
+    // who turned auto sync off does not find it back on after upgrading.
     localStorage.setItem('mdnb-auto-sync', 'true')
+    localStorage.setItem('mdnb-auto-sync-mins', '30')
     await mount()
     await screen.findByRole('button', { name: 'One' })
     await openSettings()
 
-    const interval = screen.getByRole('spinbutton', { name: 'Auto sync interval in minutes' })
-    fireEvent.change(interval, { target: { value: '45' } })
-    expect(localStorage.getItem('mdnb-auto-sync-mins')).toBe('45')
+    // No seeding write from the stale value, and the interval control — which
+    // only shows while auto sync is ON — stays absent, proving it was not
+    // re-enabled.
+    expect(api.saveSettings).not.toHaveBeenCalled()
+    expect(
+      screen.queryByRole('spinbutton', { name: 'Auto sync interval in minutes' }),
+    ).toBeNull()
+    // The dead keys are gone so they cannot resurface on a later load.
+    expect(localStorage.getItem('mdnb-auto-sync')).toBeNull()
+    expect(localStorage.getItem('mdnb-auto-sync-mins')).toBeNull()
+  })
 
-    // Above the ceiling: pinned rather than accepted.
-    fireEvent.change(interval, { target: { value: '99999' } })
-    expect(localStorage.getItem('mdnb-auto-sync-mins')).toBe('1440')
+  it('rolls the auto-sync toggle back when the enable is rejected', async () => {
+    api.saveSettings.mockRejectedValue(new Error('settings file is read-only'))
+    await mount()
+    await screen.findByRole('button', { name: 'One' })
+    await openSettings()
 
-    // Zero is not a cadence — it falls back to the default rather than to zero.
-    fireEvent.change(interval, { target: { value: '0' } })
-    expect(localStorage.getItem('mdnb-auto-sync-mins')).toBe('10')
+    await userEvent.click(screen.getByRole('switch', { name: 'Auto sync' }))
+    // The rejection is reported...
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('settings file is read-only')
+    // ...and the control returns to OFF, so the foreground timer it gates is not
+    // left armed against a value the server refused (the interval row disappears).
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('spinbutton', { name: 'Auto sync interval in minutes' }),
+      ).toBeNull(),
+    )
+  })
+
+  it('reports a settings write the backend refused rather than losing it silently', async () => {
+    api.saveSettings.mockRejectedValue(new Error('settings file is read-only'))
+    await mount()
+    await screen.findByRole('button', { name: 'One' })
+    await openSettings()
+
+    // Unlike a device-local pref, this write can be refused — and the editor's own
+    // banner is not on screen while Settings is, so it reports in the section.
+    await userEvent.click(screen.getByRole('switch', { name: 'Auto sync' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('settings file is read-only')
   })
 
   it('records a new manual-sync shortcut without that keystroke also syncing', async () => {
