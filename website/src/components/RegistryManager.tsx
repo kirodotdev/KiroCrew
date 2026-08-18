@@ -14,6 +14,7 @@ import { api } from '../api/client'
 import { Card, CardTitle, Btn, Input, EmptyState, Badge } from './ui'
 import InfoTip from './InfoTip'
 import Clickable from './Clickable'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
@@ -64,6 +65,7 @@ function repoWebUrl(repo: string): string {
  */
 export default function RegistryManager({ bare = false }: { bare?: boolean } = {}) {
   const queryClient = useQueryClient()
+  const ime = useImeGuard()
   const [adding, setAdding] = useState(false)
   const [editName, setEditName] = useState('')
   const [editRepo, setEditRepo] = useState('')
@@ -259,7 +261,13 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 placeholder={i18nT('components.registryManager.https_github_com_org_app_registry')}
                 value={editRepo}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRepo(e.target.value)}
-                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
+                {...ime.bindComposition()}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key !== 'Enter') return
+                  // Rule 1: single-line input — decline the IME's committing Enter only.
+                  if (ime.isComposing(e)) return
+                  handleAdd()
+                }}
               />
             </div>
             <div>
@@ -271,7 +279,13 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 placeholder={i18nT('components.registryManager.main')}
                 value={editBranch}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditBranch(e.target.value)}
-                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
+                {...ime.bindComposition()}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key !== 'Enter') return
+                  // Rule 1: single-line input — one shared instance covers both fields.
+                  if (ime.isComposing(e)) return
+                  handleAdd()
+                }}
               />
             </div>
           </div>

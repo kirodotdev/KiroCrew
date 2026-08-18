@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, X, Zap } from 'lucide-react'
 import type { ChatTag } from '../types'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { api } from '../api/client'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 
@@ -38,6 +39,7 @@ export interface TagManagerListProps {
  */
 export default function TagManagerList({ mode, selectedIds = [], onToggleTag, createTestId = 'tag-create' }: TagManagerListProps) {
   const queryClient = useQueryClient()
+  const ime = useImeGuard()
   const { data: tags = [] } = useQuery<ChatTag[]>({ queryKey: ['chat-tags'], queryFn: () => api.chatTags() })
   /** Tag id whose inline colour palette is expanded (manage mode only). */
   const [openColorId, setOpenColorId] = useState<string | null>(null)
@@ -189,14 +191,16 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           data-testid={createTestId}
           placeholder={i18nT('components.tagManagerList.new_tag')}
           className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60"
+          {...ime.bindComposition()}
           onKeyDown={e => {
-            if (e.key === 'Enter') {
-              const el = e.currentTarget as HTMLInputElement
-              const v = el.value.trim()
-              if (!v) return
-              createTagMutation.mutate({ name: v })
-              el.value = ''
-            }
+            if (e.key !== 'Enter') return
+            // Rule 1: single-line input — the guard alone; emptiness stays outside.
+            if (ime.isComposing(e)) return
+            const el = e.currentTarget as HTMLInputElement
+            const v = el.value.trim()
+            if (!v) return
+            createTagMutation.mutate({ name: v })
+            el.value = ''
           }}
           onClick={e => e.stopPropagation()}
         />

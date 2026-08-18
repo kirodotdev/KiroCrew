@@ -8,6 +8,7 @@
  * Poll faster during streaming (1s), slower when idle (5s).
  */
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import ChatMessageList from './ChatMessageList'
@@ -57,6 +58,7 @@ interface ChatSlotData {
 
 function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend }: ChatEmbedProps) {
   const api = useAppApi()
+  const ime = useImeGuard()
   const [input, setInput] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -181,7 +183,13 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
           className="flex-1 min-w-0 px-3 py-2 text-sm bg-bg-elevated border border-border rounded-md text-text outline-none focus:border-accent transition-colors"
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && input.trim()) { e.preventDefault(); send() } }}
+          {...ime.bindComposition()}
+          onKeyDown={e => {
+            if (e.key !== 'Enter' || e.shiftKey) return
+            // Rule 1: single-line input; the emptiness test stays outside the guard.
+            if (ime.isComposing(e)) return
+            if (input.trim()) { e.preventDefault(); send() }
+          }}
           placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
           disabled={sendMutation.isPending}
         />

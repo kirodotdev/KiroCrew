@@ -5,6 +5,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import { applySearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
@@ -35,6 +36,7 @@ interface UserMessageProps {
 
 const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin }: UserMessageProps) {
   const [editing, setEditing] = useState(false)
+  const ime = useImeGuard()
   const [draft, setDraft] = useState(content)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -152,7 +154,13 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-none text-sm leading-relaxed"
             value={draft}
             onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } if (e.key === 'Escape') cancel() }}
+            {...ime.bindComposition()}
+            onKeyDown={e => {
+              // Rule 1: textarea — claim the key, so a declined (IME) Enter is
+              // still consumed instead of inserting a newline into the draft.
+              if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+              if (e.key === 'Escape') { ime.reset(); cancel() }
+            }}
           />
         </div>
         {/* Actions sit BELOW the bubble (like the read-only action row) so they
