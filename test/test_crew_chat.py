@@ -2722,3 +2722,217 @@ class TestGptRoundSixteen:
             "ingest returned without forcing the slot to disk — the echoed user "
             "message and the acknowledgement were memory-only"
         )
+
+
+def _crew_config(mapping: dict[str, str]) -> MagicMock:
+    """A config whose `agents` maps crew name -> kiro_agent template."""
+    cfg = MagicMock()
+    cfg.agents = {
+        name: MagicMock(kiro_agent=template) for name, template in mapping.items()
+    }
+    return cfg
+
+
+def _bindings(mapping: dict[str, str]):
+    """`resolve_agent_bindings` stand-in honouring *mapping*, else passthrough."""
+
+    def _resolve(_cfg, agent_name=None, project_dir=None):  # type: ignore[no-untyped-def]
+        del project_dir
+        return MagicMock(kiro_agent=mapping.get(agent_name or "", agent_name or ""))
+
+    return _resolve
+
+
+class TestCrewNameResolvesToTemplate:
+    """`slot.agent` is a CREW name; `spawn(agent=)` validates TEMPLATE names.
+
+    They coincide for every crew whose `kiro_agent` repeats its own name, so the
+    defect only ever showed on the default crew (`default` -> `kirocrew`) — which
+    is the crew every session starts on, making crew mode unusable by default.
+    """
+
+    def _patches(self, mapping: dict[str, str]):
+        return (
+            patch.object(crew_mod.KiroCrewConfig, "load", staticmethod(
+                lambda: _crew_config(mapping))),
+            patch.object(crew_mod, "resolve_agent_bindings", _bindings(mapping)),
+        )
+
+    @pytest.mark.asyncio
+    async def test_default_crew_dispatches_as_its_template(self) -> None:
+        cfg_patch, bind_patch = self._patches({"default": "kirocrew"})
+        subagents = MagicMock()
+        subagents.spawn = MagicMock(return_value=_spawn_info("r1"))
+        orch = _orch(subagents=subagents)
+        slot = _slot(agent="default")
+        st = orch._store("s1")
+        e = st.add_msg("build X")
+        with cfg_patch, bind_patch, patch.object(orch, "_post"):
+            await orch._apply(slot, st, {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
+        # The crew name would be refused by _validate_agent: no template is named
+        # "default".
+        assert subagents.spawn.call_args.kwargs["agent"] == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_crew_whose_name_matches_its_template_is_unchanged(self) -> None:
+        cfg_patch, bind_patch = self._patches({"cr-analyst": "cr-analyst"})
+        subagents = MagicMock()
+        subagents.spawn = MagicMock(return_value=_spawn_info("r1"))
+        orch = _orch(subagents=subagents)
+        st = orch._store("s1")
+        e = st.add_msg("review this")
+        with cfg_patch, bind_patch, patch.object(orch, "_post"):
+            await orch._apply(_slot(agent="cr-analyst"), st,
+                              {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
+        assert subagents.spawn.call_args.kwargs["agent"] == "cr-analyst"
+
+    @pytest.mark.asyncio
+    async def test_empty_agent_resolves_to_the_default_binding(self) -> None:
+        # Empty must NOT pass "" through to spawn(): the governance agent-scope
+        # check (capabilities.spawn.scopes.agents) only vets a NAMED agent, so
+        # agent="" would run the default agent outside the administrator's
+        # allowlist. Resolving as None pins the default binding's template.
+        def _resolve(_cfg, agent_name=None, project_dir=None):  # type: ignore[no-untyped-def]
+            del project_dir
+            assert agent_name is None  # empty crew resolves as the default
+            return MagicMock(kiro_agent="kirocrew", requested_resolved=True)
+
+        cfg_patch = patch.object(crew_mod.KiroCrewConfig, "load", staticmethod(
+            lambda: _crew_config({"default": "kirocrew"})))
+        bind_patch = patch.object(crew_mod, "resolve_agent_bindings", _resolve)
+        subagents = MagicMock()
+        subagents.spawn = MagicMock(return_value=_spawn_info("r1"))
+        orch = _orch(subagents=subagents)
+        st = orch._store("s1")
+        e = st.add_msg("build X")
+        with cfg_patch, bind_patch, patch.object(orch, "_post"):
+            await orch._apply(_slot(agent=""), st,
+                              {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
+        assert subagents.spawn.call_args.kwargs["agent"] == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_resolution_failure_falls_back_to_the_crew_name(self) -> None:
+        # A broken config must degrade to the previous behaviour, not lose the
+        # dispatch: the crew name still resolves for the 40 crews where name ==
+        # template.
+        subagents = MagicMock()
+        subagents.spawn = MagicMock(return_value=_spawn_info("r1"))
+        orch = _orch(subagents=subagents)
+        st = orch._store("s1")
+        e = st.add_msg("build X")
+        boom = patch.object(crew_mod.KiroCrewConfig, "load", staticmethod(
+            MagicMock(side_effect=RuntimeError("unreadable config"))))
+        with boom, patch.object(orch, "_post"):
+            await orch._apply(_slot(agent="cr-analyst"), st,
+                              {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
+        assert subagents.spawn.call_args.kwargs["agent"] == "cr-analyst"
+
+    @pytest.mark.asyncio
+    async def test_warm_still_runs_before_resolution(self) -> None:
+        # The resolved template may itself be a project agent, which
+        # _validate_agent only ever sees through the warmed cache.
+        cfg_patch, bind_patch = self._patches({"default": "kirocrew"})
+        orch = _orch()
+        with cfg_patch, bind_patch, patch.object(
+            orch, "_warm_agent_cache", new=AsyncMock()
+        ) as warm:
+            resolved = await orch._dispatch_agent(_slot(agent="default"))
+        assert resolved == "kirocrew"
+        warm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_continuation_dispatches_as_the_template(self) -> None:
+        cfg_patch, bind_patch = self._patches({"default": "kirocrew"})
+        orch = _orch()
+        st = orch._store("s1")
+        slot = _slot(agent="default")
+        e = st.add_msg("first")
+        info0 = _spawn_info("r1")
+        orch._subagents.spawn = MagicMock(return_value=info0)
+        with cfg_patch, bind_patch, patch.object(orch, "_post"):
+            await orch._apply(slot, st, {"do": "spawn", "msg_id": e["msg_id"], "title": "T"})
+        t = st.topic("r1")
+        t["status"] = "idle"
+        follow = st.add_msg("follow up")
+        orch._subagents.continue_conversation = MagicMock(return_value=_spawn_info("r2"))
+        with cfg_patch, bind_patch, patch.object(orch, "_post"):
+            await orch._apply(slot, st, {"do": "route", "msg_id": follow["msg_id"],
+                                         "topic_id": t["topic_id"]})
+        kwargs = orch._subagents.continue_conversation.call_args.kwargs
+        assert kwargs["agent"] == "kirocrew"
+
+
+class TestUnknownCrewNameStaysFailClosed:
+    """An UNKNOWN crew name must not dispatch as the default agent.
+
+    `resolve_agent_bindings` answers an unknown name with the DEFAULT binding
+    and signals it via `requested_resolved=False`. Dispatching that binding
+    would silently run the default agent under a stale/unknown crew name —
+    `_dispatch_agent` must return the raw crew name instead, which
+    `_validate_agent` refuses because no template carries it.
+    """
+
+    @staticmethod
+    def _unknown_bindings(default_template: str):
+        """Resolver stub: unknown names fall back to the default binding."""
+
+        def _resolve(_cfg, agent_name=None, project_dir=None):  # type: ignore[no-untyped-def]
+            del project_dir
+            return MagicMock(
+                kiro_agent=default_template,
+                requested_resolved=False,
+            )
+
+        return _resolve
+
+    @pytest.mark.asyncio
+    async def test_unknown_crew_returns_the_raw_name_not_the_default(self) -> None:
+        cfg_patch = patch.object(
+            crew_mod.KiroCrewConfig, "load",
+            staticmethod(lambda: _crew_config({"default": "kirocrew"})))
+        bind_patch = patch.object(
+            crew_mod, "resolve_agent_bindings", self._unknown_bindings("kirocrew"))
+        orch = _orch()
+        with cfg_patch, bind_patch:
+            resolved = await orch._dispatch_agent(_slot(agent="ghost-crew"))
+        # NOT "kirocrew": the default binding must not be dispatched under an
+        # unknown name. The raw name is what _validate_agent refuses.
+        assert resolved == "ghost-crew"
+
+    @pytest.mark.asyncio
+    async def test_unknown_crew_spawn_is_refused_downstream(self) -> None:
+        # End-to-end through _apply: the unknown name reaches spawn(agent=)
+        # unchanged, so _validate_agent (which only accepts real template
+        # names) refuses the dispatch instead of silently running the default
+        # agent.
+        cfg_patch = patch.object(
+            crew_mod.KiroCrewConfig, "load",
+            staticmethod(lambda: _crew_config({"default": "kirocrew"})))
+        bind_patch = patch.object(
+            crew_mod, "resolve_agent_bindings", self._unknown_bindings("kirocrew"))
+        subagents = MagicMock()
+        subagents.spawn = MagicMock(return_value=_spawn_info("r1"))
+        orch = _orch(subagents=subagents)
+        st = orch._store("s1")
+        e = st.add_msg("build X")
+        with cfg_patch, bind_patch, patch.object(orch, "_post"):
+            await orch._apply(_slot(agent="ghost-crew"), st,
+                              {"do": "spawn", "msg_id": e["msg_id"], "title": "X"})
+        assert subagents.spawn.call_args.kwargs["agent"] == "ghost-crew"
+
+    @pytest.mark.asyncio
+    async def test_known_crew_is_unaffected_by_the_guard(self) -> None:
+        # requested_resolved defaults True for constructions predating the
+        # field; a known crew keeps resolving to its template.
+        def _resolve(_cfg, agent_name=None, project_dir=None):  # type: ignore[no-untyped-def]
+            del project_dir
+            return MagicMock(kiro_agent="kirocrew", requested_resolved=True)
+
+        cfg_patch = patch.object(
+            crew_mod.KiroCrewConfig, "load",
+            staticmethod(lambda: _crew_config({"default": "kirocrew"})))
+        bind_patch = patch.object(crew_mod, "resolve_agent_bindings", _resolve)
+        orch = _orch()
+        with cfg_patch, bind_patch:
+            resolved = await orch._dispatch_agent(_slot(agent="default"))
+        assert resolved == "kirocrew"
