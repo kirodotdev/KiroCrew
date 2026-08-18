@@ -185,7 +185,7 @@ import DetailPanel from '../components/DetailPanel'
 import type { ChatMessage, Artifact } from '../types'
 
 import ToolCallLine from './chat/ToolCallLine'
-import { shouldMountSidePanel, isSidePanelHidden } from './chat/sidePanelMount'
+import { shouldMountSidePanel, isSidePanelHidden, sidePanelDockMotion } from './chat/sidePanelMount'
 import { optsForReplace } from './chat/replaceGuard'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch } from './chat/SubagentRunCard'
@@ -4665,6 +4665,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const sidebarAutoHidden = useRef<boolean | null>(null)
   const isMobile = useIsMobile()
   const [sidePanelDock] = useSidePanelDock()
+  // Recomputed on every dock flip: the wrapper keeps one React key across the
+  // flip, so both axes have to stay named or the flipped-away one gets driven
+  // back to its base (see sidePanelDockMotion).
+  const sidePanelDockAnim = useMemo(() => sidePanelDockMotion(sidePanelDock), [sidePanelDock])
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const v = parseInt(localStorage.getItem('mc-sidebar-width') || '', 10)
     return !isNaN(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 260
@@ -7105,9 +7109,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
-              initial={sidePanelDock === 'bottom' ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
-              animate={sidePanelDock === 'bottom' ? { height: 'auto', opacity: 1 } : { width: 'auto', opacity: 1 }}
-              exit={sidePanelDock === 'bottom' ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
+              initial={sidePanelDockAnim.initial}
+              animate={sidePanelDockAnim.animate}
+              exit={sidePanelDockAnim.exit}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
               className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
               style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}

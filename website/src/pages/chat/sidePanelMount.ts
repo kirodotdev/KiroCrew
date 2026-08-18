@@ -1,3 +1,5 @@
+import type { TargetAndTransition } from 'framer-motion'
+
 /**
  * When the tabbed side panel must stay MOUNTED.
  *
@@ -53,4 +55,45 @@ export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTa
 export function isSidePanelHidden(input: SidePanelMountInput): boolean {
   if (!shouldMountSidePanel(input)) return false
   return input.searchOpen || !input.activityOpen
+}
+
+/** One axis of the open/close animation, plus the cross axis held at its
+ *  full-bleed size. Typed as framer-motion's own target so the three props can
+ *  be spread onto `motion.div` without a cast — the animated axis travels
+ *  between `0` and `'auto'`, which no narrower shape admits. */
+export interface SidePanelDockMotion {
+  initial: TargetAndTransition
+  animate: TargetAndTransition
+  exit: TargetAndTransition
+}
+
+/**
+ * Motion targets for the side panel's dock wrapper: it grows along ONE axis —
+ * width in the right column, height in the bottom row — while the other axis
+ * stays full-bleed.
+ *
+ * Both axes appear in every target even though only one of them moves, and that
+ * redundancy is the whole point. The wrapper has a STABLE React key, so flipping
+ * the dock re-renders it rather than remounting it, and framer-motion does not
+ * release a key that disappears from `animate`: it keeps owning the inline style
+ * and holds the value it last resolved. Targeting one axis per dock therefore
+ * left the flipped-away axis frozen at the size the OTHER dock gave it — a panel
+ * sent to the bottom and brought back came home with the bottom row's height
+ * (measured 850px -> 352px at a 900px viewport) pinned inline, and an inline
+ * style outranks the `h-full` class that is supposed to size it. Naming the
+ * cross axis keeps it under the animation's control at exactly the 100% its
+ * class already asks for, so no axis is ever un-targeted and none can be frozen.
+ */
+export function sidePanelDockMotion(dock: 'right' | 'bottom'): SidePanelDockMotion {
+  return dock === 'bottom'
+    ? {
+      initial: { height: 0, width: '100%', opacity: 0 },
+      animate: { height: 'auto', width: '100%', opacity: 1 },
+      exit: { height: 0, width: '100%', opacity: 0 },
+    }
+    : {
+      initial: { width: 0, height: '100%', opacity: 0 },
+      animate: { width: 'auto', height: '100%', opacity: 1 },
+      exit: { width: 0, height: '100%', opacity: 0 },
+    }
 }
