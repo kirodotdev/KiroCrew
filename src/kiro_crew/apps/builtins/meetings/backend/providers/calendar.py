@@ -87,6 +87,14 @@ class CalendarEvent:
     organizer: str = ""
     attendees: list[str] = field(default_factory=list)
     description: str = ""
+    #: A whole-day event. ``start``/``end`` keep the date's midnight UTC as a
+    #: DATE ANCHOR, not an instant: the renderer must display the calendar date
+    #: without timezone conversion, or a browser west of UTC shows the event on
+    #: the previous day. Every provider parsing a date-only value (an iCalendar
+    #: ``VALUE=DATE``, a date-without-time from any other calendar API) sets
+    #: this instead of dropping the event or leaving the flag to the renderer
+    #: to guess from a midnight timestamp — a real 00:00 meeting is not all-day.
+    all_day: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -231,11 +239,34 @@ def _event_id_for(uid: str) -> str:
     return f"{stem}-{digest}"
 
 
+def _is_date_only(value: str) -> bool:
+    """True when *value* is an RFC 5545 DATE body — a whole-day value, no time part.
+
+    The body's SHAPE decides: a DATE is exactly eight digits (``YYYYMMDD``) and
+    every timed form is longer, so the ``VALUE`` parameter is deliberately not
+    consulted. Exporters in the wild emit a date body with the parameter
+    missing, vendor-prefixed (``X-VALUE=DATE``), or mislabeled
+    (``VALUE=DATE-TIME``); a parameter test drops those events (the body then
+    fails every DATE-TIME format), while the shape test keeps them visible as
+    the dates they are — the module's never-drop convention.
+
+    One predicate shared by the parse (:func:`_parse_dt`) and the ``all_day``
+    classification in :func:`parse_ics`, so the two can never disagree about
+    which values are whole-day.
+    """
+    raw = value.strip()
+    return len(raw) == 8 and raw.isdigit()
+
+
 def _parse_dt(value: str, params: str) -> datetime | None:
     """Parse an iCalendar DATE-TIME / DATE value into an aware UTC datetime.
 
     Handles the three forms RFC 5545 allows: UTC (``…Z``), local time with a
-    ``TZID``, and a whole-day DATE.
+    ``TZID``, and a whole-day DATE. A DATE parses to the date's midnight UTC —
+    a **date anchor**, not an instant. The caller records date-onlyness
+    separately (:func:`_is_date_only` → ``CalendarEvent.all_day``) so the
+    renderer can display the calendar date without zone conversion; reading the
+    anchor as an instant shows the previous day everywhere west of UTC.
 
     A ``TZID`` is RESOLVED, not assumed to be UTC. Treating
     ``DTSTART;TZID=America/Los_Angeles:20260803T090000`` as UTC displayed a 09:00
@@ -255,7 +286,7 @@ def _parse_dt(value: str, params: str) -> datetime | None:
     raw = value.strip()
     if not raw:
         return None
-    if "VALUE=DATE" in params.upper() and len(raw) == 8:
+    if _is_date_only(raw):
         try:
             return datetime.strptime(raw, "%Y%m%d").replace(tzinfo=timezone.utc)
         except ValueError:
@@ -328,6 +359,11 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
             current["title"] = _unescape(value)
         elif name == "DTSTART":
             current["start"] = _parse_dt(value, params)
+            # Whether the event is whole-day is a property of DTSTART's raw
+            # body, decided here where that body is still in hand — a midnight
+            # timestamp alone cannot prove it later (a real 00:00 meeting is
+            # not all-day).
+            current["all_day"] = _is_date_only(value)
         elif name == "DTEND":
             current["end"] = _parse_dt(value, params)
         elif name == "DURATION":
@@ -416,7 +452,12 @@ def _finalize_event(
     end = raw.get("end")
     if not isinstance(end, datetime):
         delta = _duration_delta(str(raw.get("duration") or ""))
-        end = start + (delta or timedelta(hours=1))
+        # RFC 5545 §3.6.1: a DATE-valued DTSTART with neither DTEND nor
+        # DURATION spans that whole calendar date; only a timed event defaults
+        # to a nominal hour.
+        if delta is None:
+            delta = timedelta(days=1) if raw.get("all_day") else timedelta(hours=1)
+        end = start + delta
 
     def clean(value: object) -> str:
         return redact(str(value or "").strip())[:_MAX_FIELD_LEN]
@@ -431,6 +472,7 @@ def _finalize_event(
         organizer=clean(raw.get("organizer")),
         attendees=[clean(a) for a in raw.get("attendees", []) if str(a).strip()],
         description=clean(raw.get("description"))[:_MAX_FIELD_LEN],
+        all_day=bool(raw.get("all_day")),
     )
 
 

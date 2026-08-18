@@ -52,6 +52,7 @@ interface Row {
   title: string
   start: string
   end: string
+  allDay: boolean
   status: MeetingSummary['status'] | 'scheduled'
   touched: boolean
 }
@@ -72,6 +73,7 @@ function mergeRows(events: CalendarEvent[], meetings: MeetingSummary[]): Row[] {
       title: event.title,
       start: event.start,
       end: event.end,
+      allDay: event.all_day,
       status: 'scheduled',
       touched: false,
     })
@@ -84,6 +86,10 @@ function mergeRows(events: CalendarEvent[], meetings: MeetingSummary[]): Row[] {
       title: meeting.title || existing?.title || i18nT('apps.meetings.session.untitled'),
       start: existing?.start ?? meeting.started_at,
       end: existing?.end ?? meeting.ended_at,
+      // The flag travels with the start it describes: when the calendar event's
+      // date anchor wins above, its all-day reading must win with it. A
+      // meeting-only row's `started_at` is a real instant, never all-day.
+      allDay: existing?.allDay ?? false,
       status: meeting.status,
       touched: true,
     })
@@ -103,6 +109,18 @@ function formatWhen(row: Row): string {
   // `fmtDateFields`, not the raw `toLocale*`: a meeting row sits inside a
   // translated UI, so the weekday and the 12h/24h choice have to follow the app's
   // language rather than whatever locale the browser happens to be set to.
+  if (row.allDay) {
+    // A whole-day event's `start` is a DATE ANCHOR — the date's midnight UTC,
+    // not an instant. The fields are read back in UTC and no time is shown:
+    // converting the anchor to the browser's zone renders the previous day for
+    // everyone west of UTC, which is the wrong-day defect this branch exists for.
+    return fmtDateFields(start, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    })
+  }
   const date = fmtDateFields(start, { weekday: 'short', month: 'short', day: 'numeric' })
   const time = fmtDateFields(start, { hour: '2-digit', minute: '2-digit' })
   return `${date} · ${time}`

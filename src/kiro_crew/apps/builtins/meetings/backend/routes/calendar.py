@@ -43,12 +43,19 @@ def _read_cached_calendar(root: Any) -> tuple[dict[str, Any], list[dict[str, Any
 
 
 async def handle_get_calendar(request: web.Request) -> web.Response:
-    """The last successful sync's events, straight from the cache."""
+    """The last successful sync's events, straight from the cache.
+
+    Each event is normalized to carry ``all_day``: a cache written before the
+    field existed lacks the key, and the frontend's wire type declares it
+    required. All-day-ness is not recoverable from a stale row (midnight alone
+    cannot prove it), so a legacy row normalizes to ``false`` and renders as a
+    timed event until the next sync rewrites the cache with real flags.
+    """
     config, events = await asyncio.to_thread(_read_cached_calendar, data_root(request))
     calendar_cfg = config.get("calendar") or {}
     return web.json_response(
         {
-            "events": events,
+            "events": [{**event, "all_day": bool(event.get("all_day"))} for event in events],
             "provider": calendar_cfg.get("provider", k.DEFAULT_CALENDAR_PROVIDER),
             "configured": bool(calendar_cfg.get("source")),
         }

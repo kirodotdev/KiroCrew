@@ -77,6 +77,7 @@ function event(overrides: Record<string, unknown> = {}) {
     title: 'zzz Planning',
     start: '2026-08-09T09:00:00Z',
     end: '2026-08-09T10:00:00Z',
+    all_day: false,
     location: '',
     organizer: '',
     attendees: [],

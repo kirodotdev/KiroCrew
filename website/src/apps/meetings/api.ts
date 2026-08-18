@@ -141,6 +141,11 @@ export interface CalendarEvent {
   title: string
   start: string
   end: string
+  /** Whole-day event: `start` is a DATE ANCHOR (the date's midnight UTC), not
+   *  an instant. The UI shows the calendar date with the fields read back in
+   *  UTC and no time — converting the anchor to the browser's zone renders the
+   *  previous day for everyone west of UTC. */
+  all_day: boolean
   location: string
   organizer: string
   attendees: string[]

@@ -268,6 +268,23 @@ a local `.ics` path or a published `https://` URL.
 5545 engine, and silently showing wrong occurrence times is worse than showing
 only the series' first instance.
 
+A whole-day `VALUE=DATE` event parses to the date's midnight UTC as a **date
+anchor**, never dropped, and the event carries `all_day: true`. Classification
+is by the body's shape (exactly eight digits), not the `VALUE` parameter, so a
+date body whose parameter is missing, vendor-prefixed (`X-VALUE=DATE`), or
+mislabeled (`VALUE=DATE-TIME`) is still kept and flagged — a parameter test
+would drop those events, which the never-drop convention forbids. The dashboard
+renders an all-day event as the calendar date alone — no time, and the date
+fields read back in UTC rather than the browser's zone — because reading the
+anchor as an instant shows the event on the previous day for every browser west
+of UTC. The flag is set by the parser, where the value's form is still in hand:
+a midnight timestamp alone cannot prove all-day-ness (a real 00:00 meeting is
+not all-day), so any future provider parsing a date-without-time value must set
+`all_day` the same way. For the same reason the flag cannot be recovered from a
+cache written before it existed: `GET /calendar` normalizes a missing key to
+`false` (keeping the wire type honest), and a legacy all-day row renders as a
+timed event until the next sync rewrites the cache with real flags.
+
 Fetch safety:
 
 * an `https://` source is fetched with **aiohttp** (never `requests`/`urllib`,

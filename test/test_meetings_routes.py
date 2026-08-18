@@ -1572,6 +1572,23 @@ class TestCalendarRoutes:
             }
 
     @pytest.mark.asyncio
+    async def test_get_calendar_normalizes_all_day_on_legacy_cache_rows(self, app, root):
+        """A cache written before `all_day` existed must still satisfy the wire type.
+
+        The frontend declares `all_day: boolean` required, and the GET route
+        serves the cache verbatim otherwise — so a pre-upgrade row must be
+        normalized to `false` here, not left keyless for JSON.parse to pass
+        through as `undefined`.
+        """
+        store.write_calendar_cache(
+            [{"event_id": "legacy-1", "title": "Legacy", "start": "2026-08-20T00:00:00Z"}],
+            root,
+        )
+        async with client_for(app) as client:
+            body = await (await client.get(f"{BASE}/calendar")).json()
+            assert body["events"][0]["all_day"] is False
+
+    @pytest.mark.asyncio
     async def test_providers_endpoint(self, app):
         async with client_for(app) as client:
             body = await (await client.get(f"{BASE}/calendar/providers")).json()

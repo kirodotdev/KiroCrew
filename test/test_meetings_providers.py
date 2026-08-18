@@ -367,6 +367,13 @@ class TestParseIcs:
         assert event.attendees == ["Bob Example", "carol@example.test"]
 
     def test_whole_day_event(self):
+        """A VALUE=DATE event is kept — anchored at midnight UTC — and flagged all-day.
+
+        The anchor is a DATE, not an instant: without `all_day` the renderer reads
+        it in the browser's zone and shows the previous day everywhere west of UTC.
+        The flag is what lets the UI display the calendar date unconverted, so it
+        must be True here and must survive `to_dict` (the sync route's wire format).
+        """
         today = datetime.now(timezone.utc).strftime("%Y%m%d")
         text = (
             "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:day\nSUMMARY:All day\n"
@@ -375,6 +382,91 @@ class TestParseIcs:
         events = cal.parse_ics(text)
         assert len(events) == 1
         assert events[0].title == "All day"
+        assert events[0].all_day is True
+        assert events[0].to_dict()["all_day"] is True
+
+    def test_a_timed_event_is_not_all_day(self):
+        """A real 00:00 meeting is a timed instant, not an all-day event.
+
+        All-day-ness is decided from DTSTART's FORM (VALUE=DATE), never inferred
+        from a midnight timestamp — the two are indistinguishable once parsed.
+        """
+        midnight = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y%m%dT000000Z")
+        text = _ics(_vevent(UID="mid", SUMMARY="Midnight standup", DTSTART=midnight))
+        event = cal.parse_ics(text)[0]
+        assert event.all_day is False
+        assert event.to_dict()["all_day"] is False
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("20260818", True),
+            ("20260818T090000Z", False),  # timed body is never a date
+            ("20260818T090000", False),
+            ("2026081", False),  # too short to be YYYYMMDD
+            ("202608180", False),  # too long
+            ("2026081a", False),  # non-digit
+        ],
+    )
+    def test_date_only_is_decided_by_the_body_shape(self, value, expected):
+        """A DATE is exactly eight digits; the VALUE parameter is not consulted.
+
+        Exporters emit a date body with the parameter missing, vendor-prefixed
+        (X-VALUE=DATE), or mislabeled (VALUE=DATE-TIME); a parameter test drops
+        those events, a shape test keeps them visible as the dates they are.
+        """
+        assert cal._is_date_only(value) is expected
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            "",  # bare date body, no VALUE parameter at all
+            ";X-VALUE=DATE",  # vendor-prefixed parameter
+            ";VALUE=DATE-TIME",  # mislabeled: DATE body under a DATE-TIME label
+            ';VALUE="DATE"',  # RFC 5545 §3.2 quoted form
+            ";value=date",  # parameters are case-insensitive
+        ],
+    )
+    def test_a_date_body_is_kept_and_flagged_whatever_the_parameter_says(self, params):
+        """Never-drop: every date-shaped DTSTART yields a visible all-day event.
+
+        The module's convention — a visible meeting beats a silently missing
+        one — must hold for nonconformant parameter spellings too.
+        """
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        text = (
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:day\nSUMMARY:All day\n"
+            f"DTSTART{params}:{today}\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+        events = cal.parse_ics(text)
+        assert len(events) == 1
+        assert events[0].all_day is True
+
+    def test_a_timed_body_under_a_date_label_stays_timed(self):
+        """A mislabeled VALUE=DATE with a DATE-TIME body names an instant."""
+        stamp = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y%m%dT%H%M%SZ")
+        text = (
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:mis\nSUMMARY:S\n"
+            f"DTSTART;VALUE=DATE:{stamp}\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+        event = cal.parse_ics(text)[0]
+        assert event.all_day is False
+
+    def test_an_all_day_event_without_dtend_spans_the_whole_day(self):
+        """RFC 5545 §3.6.1: a DATE DTSTART with no DTEND/DURATION ends next midnight.
+
+        The generic default is a nominal hour, which for a whole-day event would
+        put `end` at 01:00 of the same day on the wire.
+        """
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        text = (
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:day\nSUMMARY:All day\n"
+            f"DTSTART;VALUE=DATE:{today}\nEND:VEVENT\nEND:VCALENDAR\n"
+        )
+        event = cal.parse_ics(text)[0]
+        start = datetime.strptime(event.start, "%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.strptime(event.end, "%Y-%m-%dT%H:%M:%SZ")
+        assert (end - start) == timedelta(days=1)
 
     def test_duration_instead_of_dtend(self):
         text = _ics(_vevent(UID="dur", SUMMARY="S", DTSTART=_stamp(1), DURATION="PT45M"))
