@@ -1178,6 +1178,20 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     return result
 
 
+def _is_external_row(entry: dict[str, Any]) -> bool:
+    """Whether *entry* is an EXTERNAL registry's row, for trust-field stamping.
+
+    Refuses on the PRESENCE of an external marker rather than granting from its
+    absence: ``_registry`` is attached server-side per configured registry and
+    cannot be forged by index content, and ``provenance == "external"`` is the
+    server-computed stamp derived from it. Deliberately NOT
+    :func:`_remote_controlled_url`: a ``_catalog`` row is remote-controlled for
+    CREDENTIAL purposes but is still an app WE list, so its trust fields are
+    first-party.
+    """
+    return bool(entry.get("_registry")) or entry.get("provenance") == "external"
+
+
 def _enrich_with_install_status(
     entries: list[dict[str, Any]],
     installed_map: dict[str, dict[str, Any]],
@@ -1198,7 +1212,15 @@ def _enrich_with_install_status(
         if existing:
             entry["installedVersion"] = existing.get("version", "")
             entry["enabled"] = existing.get("enabled", False)
-            entry["origin"] = existing.get("origin", "registry")
+            # ``origin`` is trust-adjacent (surfaces read ``"builtin"`` as
+            # first-party), and ``installed_map`` matches by NAME alone — so an
+            # external registry's row named after an installed built-in must not
+            # inherit that app's ``origin``, or the gateway emits a row whose
+            # ``origin`` contradicts the ``provenance: "external"`` stamped
+            # beside it by ``_apply_trust_fields``. External rows keep whatever
+            # the trust boundary decides for them instead.
+            if not _is_external_row(entry):
+                entry["origin"] = existing.get("origin", "registry")
             entry["resources"] = existing.get("resources", "gateway")
             entry["lifecycle"] = existing.get("lifecycle", "gateway")
             entry["updateAvailable"] = _version_newer(
@@ -1297,6 +1319,10 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     - ``featured``: dropped entirely from external rows so an external index
       can never self-flag into the Discover spotlight, regardless of client
       logic. Core-entry ``featured`` flags are preserved.
+    - ``origin``: on external rows, any value other than the server-stamped
+      ``"external"`` is dropped, so the wire never carries an ``origin`` that
+      contradicts ``provenance: "external"`` — neither an index-published one
+      nor one cross-stamped from an installed same-named app.
     """
     for entry in entries:
         index_author = entry.pop("_index_author", None)
@@ -1305,6 +1331,19 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entry["provenance"] = "external"
             entry["verified"] = False
             entry.pop("featured", None)
+            # ``origin`` is trust-adjacent (``"builtin"`` reads as first-party
+            # to every consumer), and on an external row it can arrive from
+            # untrusted content: an index may publish the key itself, and it
+            # survives a failed manifest fetch because ``_resolve_manifest``
+            # returns the row as-is on that path. The only value the server
+            # itself stamps on an external row is ``"external"``
+            # (``detectInstalled`` hits in ``_enrich_with_install_status``);
+            # anything else must not go on the wire beside
+            # ``provenance: "external"``. Scrubbed HERE and not only at the
+            # sources because this function is the trust boundary — a rule
+            # stated anywhere else is a rule some later assignment can undo.
+            if entry.get("origin") != "external":
+                entry.pop("origin", None)
         else:
             builtin = entry.get("origin") == "builtin"
             entry["provenance"] = "builtin" if builtin else "official"

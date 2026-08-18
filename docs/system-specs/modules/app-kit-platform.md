@@ -76,6 +76,17 @@ zero-width rendering of our name does not silently lose it. Folding WIDENS the
 match, which is safe only because the `_registry` short-circuit runs first:
 the author is consulted exclusively for rows whose index we ship or sign.
 
+`origin` on a registry row is stamped under the same rule. The install-status
+enrichment matches installed apps by NAME alone, so it withholds the `origin`
+copy from external rows (`_is_external_row`): an external index publishing an
+app named after an installed built-in must not inherit `origin: "builtin"`
+beside the `provenance: "external"` stamped on the same row.
+`_apply_trust_fields` additionally scrubs any `origin` other than the
+server-stamped `"external"` (a `detectInstalled` hit) from `_registry` rows,
+because an index-published `origin` key survives a failed manifest fetch —
+`_resolve_manifest` returns the row unprojected on that path — and would
+otherwise reach the wire.
+
 `"official"` means "an app WE list". The bundled `app-registry.json` is one
 delivery of that list — the offline seed shipped inside the wheel — so it
 carries the same value a signed remote catalog will, not a second one. Two
