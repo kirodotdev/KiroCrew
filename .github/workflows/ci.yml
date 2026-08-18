@@ -788,14 +788,20 @@ jobs:
     # on ordinary noise. Raise a floor only after main has held the higher
     # number for a while, and never above the LOWEST recent main measurement.
     #
-    #   Backend  measured 90.57% on main (2026-08-18) -> floor 88%
-    #   Frontend measured 91.32-91.34% on main (2026-08-18) -> floor 89%
+    #   Backend  measured 90.57% on main (2026-08-18) -> floor 90%
+    #   Frontend measured 91.32-91.47% on main (2026-08-18) -> floor 90%
     #
     # Both were sampled across three consecutive successful main runs, because
     # the policy above is written against the LOWEST recent measurement and one
-    # sample cannot establish that. Frontend's floor sits HIGHER than backend's
-    # because its measured rate is higher, not because it is held to a stricter
-    # standard -- each lane keeps roughly 2.3pp.
+    # sample cannot establish that.
+    #
+    # The headroom is deliberately THIN, and asymmetrically so: frontend keeps
+    # ~1.5pp, backend only ~0.6pp. At 0.6pp a single merge that adds a few
+    # hundred uncovered statements reds the gate, so backend coverage now has to
+    # be maintained with each change rather than recovered in later waves. That
+    # is the intended trade: the two lanes are held at the round number they
+    # actually reached. If backend does start bouncing off 90, the fix is to
+    # lower THAT floor to 89 and say why -- not to weaken the gate's logic.
     #
     # Why not 85%, which is where this change started: the lanes crossed 90%
     # while it sat unmerged, and a floor 5-6pp under main protects almost
@@ -824,14 +830,14 @@ jobs:
     #   88.29%  #3132, where three surfaces starting at or near 0% produced 739
     #           of its 1,470 statements while ChatPage.tsx -- the single largest
     #           target by uncovered count, 481 -- produced nothing measurable
-    #   91.32%  work merged since
+    #   91.47%  work merged since
     # Two lessons in those two lines, both of which cost a wave to learn: rank
     # candidates by how UNCOVERED a file is and not merely by its uncovered
     # count, because a file near 0% converts far better than a large page
     # already at 80%; and do not size a frontend wave off a backend one.
     env:
-      BACKEND_MIN: 88
-      FRONTEND_MIN: 89
+      BACKEND_MIN: 90
+      FRONTEND_MIN: 90
       # The per-file floor, applied to BOTH lanes with a per-lane baseline of
       # the files that were already below it. A project-wide average lets a
       # well-covered large file pay for a bare small one, so it can be satisfied
@@ -951,7 +957,7 @@ jobs:
           F=backend-cov/coverage.xml
           test -f "$F" || { echo "::error::coverage.xml missing from coverage-backend artifact"; exit 1; }
           # Compare the raw line-rate against the threshold; round only for
-          # display (a round-then-compare would let 87.95%..87.99% pass 88%).
+          # display (a round-then-compare would let 89.95%..89.99% pass 90%).
           python3 - "$F" "$BACKEND_MIN" Backend <<'PY'
           import sys, xml.etree.ElementTree as ET
           path, floor, label = sys.argv[1], float(sys.argv[2]), sys.argv[3]

@@ -391,7 +391,7 @@ jobs:
           cfn-lint, Semgrep, Dependency Audit, 12 pytest shards
           (Linux 3.10/3.12 + Windows), an offline Playwright e2e suite with
           strict on-loop-persist assertions, and a FAIL-CLOSED Coverage Gate
-          (backend 88% / frontend 89%).
+          (backend 90% / frontend 90%).
 
           NOTE — FORK LANE: CodeQL does NOT run on fork PRs (fork tokens lack
           security-events:write), so the deep-dataflow security analysis it
