@@ -31,7 +31,6 @@ function stubElectron() {
       created.push(this);
     }
     setFocusable() {}
-    setAcceptFirstMouse() {}
     setContentProtection() {}
     setIgnoreMouseEvents(ignore, opts) { this.ignoreMouse = { ignore, opts }; }
     setVisibleOnAllWorkspaces() {}

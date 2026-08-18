@@ -65,6 +65,24 @@ function createOverlayFor(display) {
     hasShadow: false,
     enableLargerThanScreen: true,
     show: false,
+    /*
+     * Deliver the FIRST click to the page — a constructor option, the only place
+     * this can be set.
+     *
+     * On macOS a click into an inactive window is consumed to activate it, and this
+     * overlay is `setFocusable(false)` + `showInactive()`, so it never becomes the
+     * active window: EVERY click is a first-mouse click. Without this the window
+     * accepted `mousemove` (ignore-mouse is set with `forward: true`) but never the
+     * `mousedown` behind it — so the bubble's hover-revealed ✕ appeared under the
+     * cursor and did nothing when clicked, and the notification could not be
+     * dismissed at all.
+     *
+     * It used to be attempted as `win.setAcceptFirstMouse?.(true)` after
+     * construction. No such method exists on BrowserWindow — `acceptFirstMouse` is
+     * a BaseWindow CONSTRUCTOR option only — and the optional call swallowed the
+     * miss silently, which is why it read as done for so long.
+     */
+    acceptFirstMouse: true,
     webPreferences: {
       preload: path.join(__dirname, "pet-preload.js"),
       contextIsolation: true,
@@ -76,7 +94,6 @@ function createOverlayFor(display) {
   });
 
   win.setFocusable(false);
-  win.setAcceptFirstMouse?.(true);
   // Refuse input by default; the renderer re-enables it over the sprite alone.
   win.setIgnoreMouseEvents(true, { forward: true });
   // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows

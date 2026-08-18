@@ -657,6 +657,13 @@ function createOverlayForDisplay(display) {
     hasShadow: false,
     enableLargerThanScreen: true,
     show: false,
+    // Deliver the FIRST click to the page. This overlay is never focusable and is
+    // shown inactive, so on macOS every click is a first-mouse click and would
+    // otherwise be eaten activating a window that can never activate — leaving the
+    // pet hoverable but unclickable. Constructor-only: there is no
+    // `setAcceptFirstMouse()` on BrowserWindow, and the optional call that used to
+    // sit below hid that fact.
+    acceptFirstMouse: true,
     webPreferences: {
       preload: path.join(__dirname, "pet-preload.js"),
       contextIsolation: true,
@@ -668,7 +675,6 @@ function createOverlayForDisplay(display) {
   });
 
   win.setFocusable(false);
-  win.setAcceptFirstMouse?.(true);
   win.setIgnoreMouseEvents(true, { forward: true });
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows

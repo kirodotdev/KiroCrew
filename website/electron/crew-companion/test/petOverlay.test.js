@@ -30,7 +30,6 @@ function stubElectron() {
       created.push(this);
     }
     setFocusable(v) { this.focusable = v; }
-    setAcceptFirstMouse() {}
     setContentProtection(v) { this.contentProtection = v; }
     setIgnoreMouseEvents(ignore, opts) { this.ignoreMouse = { ignore, opts }; }
     setVisibleOnAllWorkspaces(v, opts) { this.workspaces = { v, opts }; }
@@ -170,6 +169,37 @@ test("the overlay is excluded from screen capture", () => {
     for (const win of stub.created) {
       assert.strictEqual(win.contentProtection, true);
     }
+  } finally {
+    stub.restore();
+  }
+});
+
+test("the overlay accepts the first mouse click, or nothing in it can be clicked", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    const win = stub.created[0];
+
+    /*
+     * A never-focusable window shown inactive never becomes active, so on macOS
+     * every click into it is a "first mouse" click. Without this option that click
+     * is spent activating the window instead of reaching the page: the bubble's ✕
+     * revealed itself on hover (mousemove is forwarded) and then did nothing.
+     *
+     * Asserted on the CONSTRUCTOR options on purpose. `acceptFirstMouse` can only
+     * be set there — the earlier `win.setAcceptFirstMouse?.(true)` called a method
+     * BrowserWindow does not have, and the optional call made the miss invisible.
+     * The fake window deliberately does not define that method, so reintroducing
+     * the call fails loudly instead of silently doing nothing.
+     */
+    assert.strictEqual(win.opts.acceptFirstMouse, true);
+    assert.strictEqual(
+      typeof win.setAcceptFirstMouse,
+      "undefined",
+      "BrowserWindow has no setAcceptFirstMouse; the fake must not invent one",
+    );
   } finally {
     stub.restore();
   }
