@@ -7758,8 +7758,9 @@
         "null": "[ñùĺĺ ······]",
         "waiting_for_approval": "[Ẁàìţìñğ ƒøŕ àþþŕøṽàĺ ··················]",
         "details_unavailable_for_historical_tool_calls": "[Ðèţàìĺş ùñàṽàìĺàƀĺè ƒøŕ ĥìşţøŕìçàĺ ţøøĺ çàĺĺş. ·······················]",
+        "formatted": "[Ƒøŕɱàţţèð ··············]",
         "no_input_or_output_captured_for_this_tool_call": "[Ñø ìñþùţ øŕ øùţþùţ çàþţùŕèð ƒøŕ ţĥìş ţøøĺ çàĺĺ. ························]",
-        "not_yet_available": "[{{label}} ñøţ ýèţ àṽàìĺàƀĺè ················]",
+        "raw": "[Ŕàẁ ·····]",
         "render_escaped_whitespace_as_real_line_breaks": "[Ŕèñðèŕ èşçàþèð ẁĥìţèşþàçè àş ŕèàĺ ĺìñè ƀŕèàķş ·······················]",
         "show_the_exact_payload_escaping_preserved": "[Şĥøẁ ţĥè èẋàçţ þàýĺøàð, èşçàþìñğ þŕèşèŕṽèð ·····················]"
       },

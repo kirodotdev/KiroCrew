@@ -117,24 +117,23 @@ describe('ToolCallLine inline expansion', () => {
     expect(screen.getByText('only-output')).toBeTruthy()
   })
 
-  it('renders both segments with the missing one disabled', () => {
+  it('labels the one available section instead of offering a dead segment', () => {
     const store = createTestStore({
       chat: {
         messages: [toolMsg()],
-        // Output present, no input → Input segment should be disabled, Output active.
+        // Output present, no input → nothing to switch between, so the control
+        // is a label naming what is on screen, not a two-segment capsule with
+        // one segment greyed out.
         toolLog: [{ type: 'tool', text: 'echo hello', purpose: 'Say hello', tool_call_id: 'tc_1', output: 'only-output', ts: 1 }],
         slotRunning: false,
       } as unknown as ChatState,
     })
     renderWithProviders(<ToolCallLine message={toolMsg()} running={false} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /Show details/i }))
-    const inputBtn = screen.getByRole('button', { name: 'Input' })
-    const outputBtn = screen.getByRole('button', { name: 'Output' })
-    expect(inputBtn.hasAttribute('disabled')).toBe(true)
-    expect(outputBtn.hasAttribute('disabled')).toBe(false)
-    expect(inputBtn.getAttribute('title')).toBe('Input not yet available')
-    // Clicking the disabled Input segment must not flip the panel
-    fireEvent.click(inputBtn)
+    expect(screen.queryByRole('button', { name: 'Input' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Output' })).toBeNull()
+    // The section is still named, so the user knows which half they are reading.
+    expect(screen.getByText('Output')).toBeTruthy()
     expect(screen.getByText('only-output')).toBeTruthy()
   })
 

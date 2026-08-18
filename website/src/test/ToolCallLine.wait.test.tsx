@@ -456,19 +456,21 @@ describe('ToolCallLine wait countdown — End wait button', () => {
     renderWait()
 
     expect(pill().getAttribute('aria-expanded')).toBe('false')
-    expect(screen.queryByRole('button', { name: 'Input' })).toBeNull()
+    expect(screen.queryByText('Input')).toBeNull()
 
     fireEvent.click(endBtn())
 
     expect(pill().getAttribute('aria-expanded')).toBe('false')
-    // The details panel's segment control is the observable proof it did not open.
-    expect(screen.queryByRole('button', { name: 'Input' })).toBeNull()
+    // The details panel's section label is the observable proof it did not open.
+    // This fixture has input but no output, so the label is text rather than a
+    // segment button — there is nothing to switch between.
+    expect(screen.queryByText('Input')).toBeNull()
 
     // Positive control: the panel CAN open, so its absence above is meaningful
     // rather than an artifact of this fixture never rendering details at all.
     fireEvent.click(pill())
     expect(pill().getAttribute('aria-expanded')).toBe('true')
-    expect(screen.getByRole('button', { name: 'Input' })).toBeTruthy()
+    expect(screen.getByText('Input')).toBeTruthy()
   })
 
   it('re-enables the button when the request fails', async () => {

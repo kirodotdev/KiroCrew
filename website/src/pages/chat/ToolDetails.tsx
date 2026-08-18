@@ -13,10 +13,11 @@
  * payload blocks — with no risk of drift.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Zap, Wrench } from 'lucide-react'
 import { ToolInputText } from '../../components/ToolInputText'
 import { PierreCode } from '../../pierre'
+import SegmentedControl from '../../components/SegmentedControl'
 
 /** Compact single-value rendering inside the tool-details table: no gutter,
  *  wrapped lines, transparent background so the row's own surface shows. */
@@ -90,6 +91,12 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
   const activeText = active === 'input' ? input : output
   const activeIsJson = /^\s*[{[]/.test(activeText)
   const rawMode = viewMode === 'raw'
+  // Whether to offer a section control at all. Two sections is always a real
+  // choice. ONE section only earns a naming label on the inline panel, which the
+  // user reads at length; the approval bar's compact ghost stays bare, matching
+  // the `compact` contract above — and there the label would say nothing anyway,
+  // since a ghost only ever mirrors a pending call, which has input and no output.
+  const showSection = (hasInput && hasOutput) || !compact
   // Only show the purpose line when it adds info the pill isn't already showing.
   const showPurpose = !!purpose && purpose.trim() !== pillLabel.trim()
   // Show the raw tool name when the pill is displaying something else (the
@@ -107,10 +114,17 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
   return (
     <div className={`${flush ? '' : 'ml-3'} mt-1 mb-2 border-l-2 pl-3 flex flex-col gap-2`} style={{ borderLeftColor: barColor }}>
       {(auto || pending || ts > 0 || showToolName || showPurpose || hasInput || hasOutput) && (
-        <div className="flex items-end gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Capped and clipped: `toolName` is kiro-cli's display TITLE, and for a
+              shell call that title is the whole command line — wide enough to
+              consume the row on its own. The full string stays reachable via the
+              tooltip and is rendered verbatim in the payload table below. */}
           {showToolName && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-text text-[11px] font-mono">
-              <Wrench size={10} className="text-muted shrink-0" /> {toolName}
+            <span
+              className="inline-flex items-center gap-1 min-w-0 max-w-[min(100%,320px)] px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-text text-[11px] font-mono"
+              title={toolName}
+            >
+              <Wrench size={10} className="text-muted shrink-0" /> <span className="truncate">{toolName}</span>
             </span>
           )}
           {ts > 0 && <span className="inline-flex items-center px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] font-mono">{fmtTime(ts)}</span>}
@@ -128,51 +142,68 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
           )}
           {auto && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] font-mono"><Zap size={10} /> {i18nT('pages.chat.toolDetails.auto')}</span>}
           {showPurpose && <span className={`text-[12px] text-muted/50 break-words min-w-0 ${compact ? 'line-clamp-1' : ''}`}>→ {purpose}</span>}
-          {(activeIsJson || (compact ? (hasInput && hasOutput) : (hasInput || hasOutput))) && (
-            <div className="ml-auto shrink-0 flex items-center gap-1.5">
-              {activeIsJson && (
-                <ViewModeToggle mode={viewMode} onChange={setViewMode} layoutId={`${layoutId}-view`} />
-              )}
-              {(compact ? (hasInput && hasOutput) : (hasInput || hasOutput)) && (
-                <ToolSegmented
-                  active={active}
-                  hasInput={hasInput}
-                  hasOutput={hasOutput}
-                  onChange={onSectionChange}
-                  layoutId={layoutId}
-                />
-              )}
-            </div>
-          )}
         </div>
       )}
       {(hasInput || hasOutput) && (
-        <AnimatePresence mode="wait" initial={false}>
-          {active === 'input' && hasInput && (
-            <motion.div
-              key="input"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-              className="overflow-hidden"
-            >
-              <PayloadView text={input} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[400px]'} />
-            </motion.div>
+        <>
+          {(showSection || activeIsJson) && (
+          /* A bare row of its own, directly above the payload it controls. In the
+              meta row these needed `ml-auto` to reach the right edge, which once
+              the chips filled the line stranded them right-aligned on an empty
+              wrapped row. Nothing else lives here, so `justify-between` is honest:
+              section on the left, render mode on the right. No frame — the payload
+              box below already carries one, and a second around this pair reads as
+              boxes inside boxes.
+
+              `flex-wrap` matters: the capsules are `inline-flex` with the default
+              `min-width: auto`, so they cannot shrink, and the transcript row's
+              disclosure wrapper clips overflow — without wrapping, the render-mode
+              toggle is cut off in the composer's compact mirror and on a phone.
+              Wrapping here cannot recreate the stranding it replaced: a wrapped
+              line holds one item, and `justify-between` leaves a lone item at the
+              start rather than pushing it to the right. */
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            {showSection && (
+              <ToolSegmented
+                active={active}
+                hasInput={hasInput}
+                hasOutput={hasOutput}
+                onChange={onSectionChange}
+                layoutId={layoutId}
+              />
+            )}
+            {activeIsJson && (
+              <ViewModeToggle mode={viewMode} onChange={setViewMode} layoutId={`${layoutId}-view`} />
+            )}
+          </div>
           )}
-          {active === 'output' && hasOutput && (
-            <motion.div
-              key="output"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-              className="overflow-hidden"
-            >
-              <PayloadView text={output} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[500px]'} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+          <AnimatePresence mode="wait" initial={false}>
+            {active === 'input' && hasInput && (
+              <motion.div
+                key="input"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+                className="overflow-hidden"
+              >
+                <PayloadView text={input} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[400px]'} />
+              </motion.div>
+            )}
+            {active === 'output' && hasOutput && (
+              <motion.div
+                key="output"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+                className="overflow-hidden"
+              >
+                <PayloadView text={output} raw={rawMode} maxH={compact ? 'max-h-[160px]' : 'max-h-[500px]'} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </>
       )}
       {reallyEmpty && (
         <div className="text-[12px] text-muted/60 italic">
@@ -183,13 +214,28 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
   )
 }
 
-/** Two-segment toggle styled to match the Activity sidebar's `SegmentedControl`
- *  full mode (border + bg-elevated capsule, accent text + bg-card pill on the
- *  active segment via a shared `layoutId` framer animation). Unavailable
- *  segments render in a disabled state (dimmed, no hover, no click). We render
- *  this inline rather than reusing `SegmentedControl` because its adaptive
- *  collapse measures parent width — and our `shrink-0` wrapper kept forcing
- *  it into dropdown mode. We always want the full pill here. */
+/** Catalog key per payload section — the same resolvable shape as
+ *  `FILTER_LABEL_KEY` in ChatSidebar. Reuses the Activity panel's own
+ *  Input/Output keys rather than minting a second pair: identical words for the
+ *  same two halves of a tool call, and a duplicate pair is translation debt in
+ *  eleven catalogs for no gain. */
+const SECTION_LABEL_KEY: Record<'input' | 'output', string> = {
+  input: 'pages.chat.activityViewer.input',
+  output: 'pages.chat.activityViewer.output',
+}
+
+/** Section switch for the payload below.
+ *
+ *  `collapse={false}` is required and is the escape hatch `SegmentedControl`
+ *  documents for a parent that hugs its content: the responsive full → compact →
+ *  dropdown measurement reads the PARENT's width, so in a content-sized row it
+ *  measures this control itself and the answer is circular.
+ *
+ *  With only one section available there is nothing to switch between, so the
+ *  control degrades to a plain label. A live tool spends its whole pre-approval
+ *  life in that state, and a two-segment capsule with one segment greyed out
+ *  advertises a choice the user does not have. The label keeps the one thing
+ *  that capsule was still carrying: which section is on screen. */
 function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
   active: 'input' | 'output'
   hasInput: boolean
@@ -197,97 +243,57 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
   onChange: (s: 'input' | 'output') => void
   layoutId: string
 }) {
-  const segments: { key: 'input' | 'output'; label: string; enabled: boolean }[] = [
-    { key: 'input', label: 'Input', enabled: hasInput },
-    { key: 'output', label: 'Output', enabled: hasOutput },
-  ]
+  if (!hasInput || !hasOutput) {
+    return (
+      <span className="text-[11px] font-mono text-muted px-1 py-0.5 tracking-wide">
+        {i18nT(SECTION_LABEL_KEY[active])}
+      </span>
+    )
+  }
   return (
-    <LayoutGroup id={layoutId}>
-      <div className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
-        {segments.map(s => {
-          const isActive = s.key === active
-          const disabled = !s.enabled
-          return (
-            <motion.button
-              key={s.key}
-              layout
-              type="button"
-              disabled={disabled}
-              title={disabled ? i18nT('pages.chat.toolDetails.not_yet_available', { label: s.label }) : s.label}
-              aria-disabled={disabled || undefined}
-              onClick={() => { if (!disabled) onChange(s.key) }}
-              transition={{ duration: 0.15 }}
-              className={`relative flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium border-none transition-colors z-[1] ${
-                disabled
-                  ? 'text-muted/30 cursor-not-allowed bg-transparent'
-                  : isActive
-                    ? 'text-accent cursor-pointer'
-                    : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
-              }`}
-            >
-              {isActive && !disabled && (
-                <motion.div
-                  layoutId={`${layoutId}-indicator`}
-                  className="absolute inset-0 bg-card rounded-md shadow-sm"
-                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                />
-              )}
-              <span className="relative z-[1]">{s.label}</span>
-            </motion.button>
-          )
-        })}
-      </div>
-    </LayoutGroup>
+    <SegmentedControl<'input' | 'output'>
+      segments={[
+        { key: 'input', label: i18nT(SECTION_LABEL_KEY.input) },
+        { key: 'output', label: i18nT(SECTION_LABEL_KEY.output) },
+      ]}
+      value={active}
+      onChange={onChange}
+      layoutId={layoutId}
+      collapse={false}
+    />
   )
 }
 
-/** Formatted vs Raw payload toggle. Mirrors {@link ToolSegmented}'s
- *  visual language — a two-segment capsule with an animated active pill — so
- *  the two controls read as siblings. Both segments are always enabled; the
- *  parent only renders this for JSON-ish payloads where the modes differ. */
+/** Formatted vs Raw payload rendering. Only shown for JSON-ish payloads, where
+ *  the two modes actually differ. Same `collapse={false}` reasoning as
+ *  {@link ToolSegmented}. */
 function ViewModeToggle({ mode, onChange, layoutId }: {
   mode: 'formatted' | 'raw'
   onChange: (m: 'formatted' | 'raw') => void
   layoutId: string
 }) {
-  const segments: { key: 'formatted' | 'raw'; label: string }[] = [
-    { key: 'formatted', label: 'Formatted' },
-    { key: 'raw', label: 'Raw' },
-  ]
   return (
-    <LayoutGroup id={layoutId}>
-      <div className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
-        {segments.map(s => {
-          const isActive = s.key === mode
-          return (
-            <motion.button
-              key={s.key}
-              layout
-              type="button"
-              title={s.key === 'raw' ? i18nT('pages.chat.toolDetails.show_the_exact_payload_escaping_preserved') : i18nT('pages.chat.toolDetails.render_escaped_whitespace_as_real_line_breaks')}
-              onClick={() => onChange(s.key)}
-              transition={{ duration: 0.15 }}
-              className={`relative flex items-center px-2.5 py-1 rounded-md text-[12px] font-medium border-none transition-colors z-[1] ${
-                isActive
-                  ? 'text-accent cursor-pointer'
-                  : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'
-              }`}
-            >
-              {isActive && (
-                <motion.div
-                  layoutId={`${layoutId}-indicator`}
-                  className="absolute inset-0 bg-card rounded-md shadow-sm"
-                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                />
-              )}
-              <span className="relative z-[1]">{s.label}</span>
-            </motion.button>
-          )
-        })}
-      </div>
-    </LayoutGroup>
+    <SegmentedControl<'formatted' | 'raw'>
+      segments={[
+        {
+          key: 'formatted',
+          label: i18nT('pages.chat.toolDetails.formatted'),
+          tooltip: i18nT('pages.chat.toolDetails.render_escaped_whitespace_as_real_line_breaks'),
+        },
+        {
+          key: 'raw',
+          label: i18nT('pages.chat.toolDetails.raw'),
+          tooltip: i18nT('pages.chat.toolDetails.show_the_exact_payload_escaping_preserved'),
+        },
+      ]}
+      value={mode}
+      onChange={onChange}
+      layoutId={layoutId}
+      collapse={false}
+    />
   )
 }
+
 
 /** Parse text as a JSON object for the Formatted table view. Returns null for
  *  non-objects, arrays, or unparseable/streaming payloads so the caller can
@@ -362,9 +368,14 @@ function JsonTable({ data }: { data: Record<string, unknown> }): ReactNode {
 
 /** Payload block for the Input/Output panes. Formatted mode renders a parsed
  *  JSON object as a {@link JsonTable}; Raw mode (and any unparseable payload)
- *  falls back to the verbatim/highlighted {@link ToolInputText} in a <pre>. */
+ *  falls back to the verbatim/highlighted {@link ToolInputText} in a <pre>.
+ *
+ *  This box is the panel's ONLY frame — the controls above it are a bare row, so
+ *  nothing here nests a border inside a border. `px-2` matches the meta-row
+ *  chips' own padding, giving the chip row and the table one shared inner inset
+ *  rather than a 2px step between them. */
 function PayloadView({ text, raw, maxH }: { text: string; raw: boolean; maxH: string }): ReactNode {
-  const base = `px-2.5 py-2 bg-bg-elevated rounded-md text-[12px] font-mono ${maxH} overflow-y-auto leading-relaxed border border-border`
+  const base = `px-2 py-2 bg-bg-elevated rounded-md text-[12px] font-mono ${maxH} overflow-y-auto leading-relaxed border border-border`
   if (!raw) {
     const parsed = tryParseJsonObject(text)
     if (parsed) {

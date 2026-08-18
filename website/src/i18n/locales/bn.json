@@ -7906,9 +7906,10 @@
       "toolDetails": {
         "auto": "স্বয়ংক্রিয়",
         "details_unavailable_for_historical_tool_calls": "পুরোনো টুল কলের বিস্তারিত পাওয়া যায় না।",
+        "formatted": "ফরম্যাট করা",
         "no_input_or_output_captured_for_this_tool_call": "এই টুল কলের কোনো ইনপুট বা আউটপুট রাখা হয়নি।",
-        "not_yet_available": "{{label}} এখনও পাওয়া যাচ্ছে না",
         "null": "null",
+        "raw": "মূল",
         "render_escaped_whitespace_as_real_line_breaks": "এস্কেপ করা হোয়াইটস্পেস সত্যিকারের লাইন ব্রেক হিসেবে দেখাও",
         "show_the_exact_payload_escaping_preserved": "হুবহু পেলোড দেখাও, এস্কেপিং অপরিবর্তিত",
         "waiting_for_approval": "অনুমোদনের অপেক্ষায়"

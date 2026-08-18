@@ -7906,9 +7906,10 @@
       "toolDetails": {
         "auto": "स्वतः",
         "details_unavailable_for_historical_tool_calls": "पुराने टूल कॉल के लिए विवरण उपलब्ध नहीं है।",
+        "formatted": "फ़ॉर्मैट",
         "no_input_or_output_captured_for_this_tool_call": "इस टूल कॉल के लिए कोई इनपुट या आउटपुट कैप्चर नहीं हुआ।",
-        "not_yet_available": "{{label}} अभी उपलब्ध नहीं है",
         "null": "null",
+        "raw": "रॉ",
         "render_escaped_whitespace_as_real_line_breaks": "एस्केप किए गए व्हाइटस्पेस को असली लाइन ब्रेक के रूप में रेंडर करें",
         "show_the_exact_payload_escaping_preserved": "पेलोड बिलकुल वैसा ही दिखाएँ, एस्केपिंग बनी रहेगी",
         "waiting_for_approval": "स्वीकृति की प्रतीक्षा"

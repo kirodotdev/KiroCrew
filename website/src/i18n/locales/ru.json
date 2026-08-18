@@ -8112,9 +8112,10 @@
       "toolDetails": {
         "auto": "Авто",
         "details_unavailable_for_historical_tool_calls": "Подробности недоступны для прошлых вызовов инструментов.",
+        "formatted": "Форматировано",
         "no_input_or_output_captured_for_this_tool_call": "Для этого вызова инструмента не записаны входные и выходные данные.",
-        "not_yet_available": "{{label}} пока недоступно",
         "null": "null",
+        "raw": "Исходник",
         "render_escaped_whitespace_as_real_line_breaks": "Отображать экранированные пробелы как настоящие переводы строк",
         "show_the_exact_payload_escaping_preserved": "Показать точные данные, экранирование сохранено",
         "waiting_for_approval": "Ожидает подтверждения"

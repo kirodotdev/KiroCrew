@@ -7803,9 +7803,10 @@
       "toolDetails": {
         "auto": "自动",
         "details_unavailable_for_historical_tool_calls": "历史工具调用的详情不可用。",
+        "formatted": "格式化",
         "no_input_or_output_captured_for_this_tool_call": "此工具调用未捕获输入或输出。",
-        "not_yet_available": "{{label}} 暂不可用",
         "null": "null",
+        "raw": "原始",
         "render_escaped_whitespace_as_real_line_breaks": "将转义的空白字符渲染为真实换行",
         "show_the_exact_payload_escaping_preserved": "显示精确载荷，保留转义",
         "waiting_for_approval": "等待审批"

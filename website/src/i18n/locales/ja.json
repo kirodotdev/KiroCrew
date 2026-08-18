@@ -7803,9 +7803,10 @@
       "toolDetails": {
         "auto": "自動",
         "details_unavailable_for_historical_tool_calls": "過去のツール呼び出しの詳細は表示できません。",
+        "formatted": "整形",
         "no_input_or_output_captured_for_this_tool_call": "このツール呼び出しの入力または出力は記録されていません。",
-        "not_yet_available": "{{label}} はまだ利用できません",
         "null": "null",
+        "raw": "生",
         "render_escaped_whitespace_as_real_line_breaks": "エスケープされた空白を実際の改行として表示",
         "show_the_exact_payload_escaping_preserved": "エスケープを維持して正確なペイロードを表示",
         "waiting_for_approval": "承認待ち"

@@ -2786,8 +2786,9 @@
       },
       "toolDetails": {
         "details_unavailable_for_historical_tool_calls": "Details unavailable for historical tool calls.",
+        "formatted": "Formatted",
         "no_input_or_output_captured_for_this_tool_call": "No input or output captured for this tool call.",
-        "not_yet_available": "{{label}} not yet available",
+        "raw": "Raw",
         "render_escaped_whitespace_as_real_line_breaks": "Render escaped whitespace as real line breaks",
         "show_the_exact_payload_escaping_preserved": "Show the exact payload, escaping preserved"
       },

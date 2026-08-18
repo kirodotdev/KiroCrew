@@ -8009,9 +8009,10 @@
       "toolDetails": {
         "auto": "Auto",
         "details_unavailable_for_historical_tool_calls": "Détails indisponibles pour les appels d’outils antérieurs.",
+        "formatted": "Formaté",
         "no_input_or_output_captured_for_this_tool_call": "Aucune entrée ni sortie enregistrée pour cet appel d’outil.",
-        "not_yet_available": "{{label}} n’est pas encore disponible",
         "null": "null",
+        "raw": "Brut",
         "render_escaped_whitespace_as_real_line_breaks": "Afficher les espaces échappés comme de vrais sauts de ligne",
         "show_the_exact_payload_escaping_preserved": "Afficher la charge utile exacte, échappement conservé",
         "waiting_for_approval": "En attente d'approbation"

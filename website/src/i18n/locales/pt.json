@@ -8009,9 +8009,10 @@
       "toolDetails": {
         "auto": "Auto",
         "details_unavailable_for_historical_tool_calls": "Detalhes indisponíveis para chamadas de ferramenta antigas.",
+        "formatted": "Formatado",
         "no_input_or_output_captured_for_this_tool_call": "Nenhuma entrada ou saída foi capturada para esta chamada de ferramenta.",
-        "not_yet_available": "{{label}} ainda não disponível",
         "null": "null",
+        "raw": "Bruto",
         "render_escaped_whitespace_as_real_line_breaks": "Renderizar espaços escapados como quebras de linha reais",
         "show_the_exact_payload_escaping_preserved": "Mostrar o payload exato, com os escapes preservados",
         "waiting_for_approval": "Aguardando aprovação"
