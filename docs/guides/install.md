@@ -238,13 +238,11 @@ Optional extras (install with e.g. `pip install "kirocrew[voice]"`):
 | `otlp` | `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP metrics export. Installing it does not enable egress; that still needs an explicit `telemetry.otlp_endpoint` |
 | `perf` | `py-spy` | Out-of-process profiling (`kirocrew perf sample --pid`). The in-process sampler needs nothing extra |
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |
-| `desktop` | `pyinstaller` | Building a frozen backend from `packaging/kirocrew-backend.spec` |
 | `dev` | pytest, black, isort, flake8, mypy, ... | Contributor tooling; what `make build` installs |
 
-The `desktop` extra exists, but neither `make desktop` nor `make backend-bin`
-needs it: both run `packaging/build-desktop.sh`, which embeds a
-python-build-standalone interpreter instead of freezing one. PyInstaller is only
-required if you invoke `packaging/kirocrew-backend.spec` directly.
+`make desktop` and `make backend-bin` need no extra: both run
+`packaging/build-desktop.sh`, which provisions a python-build-standalone
+interpreter and pip-installs the project into it.
 
 ### d. Bundled desktop app
 

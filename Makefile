@@ -3,7 +3,7 @@
 #
 # Standalone distribution targets:
 #   make wheel     — self-contained pip wheel (dashboard bundled)
-#   make backend-bin — frozen standalone backend binary (PyInstaller)
+#   make backend-bin — standalone backend tree (bundled interpreter, no system Python)
 #   make desktop   — double-clickable desktop app (universal DMG on macOS / AppImage on Linux)
 .PHONY: all build frontend backend test clean wheel backend-bin desktop
 
@@ -87,9 +87,10 @@ wheel: frontend backend
 	$(PIP) install --upgrade build
 	$(VENV)/bin/python -m build --wheel
 
-# Frozen standalone backend binary (no system Python needed). Stages the
-# dashboard first so it's embedded in the bundle. Host-arch only (UNIVERSAL=0):
-# the standalone backend is a local-machine artifact, not a distributable app.
+# Standalone backend tree on a bundled python-build-standalone interpreter (no
+# system Python needed). Stages the dashboard first so it's embedded in the
+# bundle. Host-arch only (UNIVERSAL=0): the standalone backend is a
+# local-machine artifact, not a distributable app.
 backend-bin: frontend
 	UNIVERSAL=0 SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
 

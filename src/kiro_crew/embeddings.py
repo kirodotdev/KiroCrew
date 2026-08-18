@@ -268,7 +268,7 @@ def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
     running one. ``root`` defaults to the installed ``_vendor`` directory, so
     the same check runs against a source tree, an unpacked sdist, or an
     installed wheel — that cross-lane reuse is the point, since each packaging
-    lane (sdist rules, wheel package_data, PyInstaller spec) selects these
+    lane (sdist rules, wheel package_data) selects these
     files by a different mechanism and can therefore drop them independently.
 
     A platform dir that is entirely absent is reported as missing all of its

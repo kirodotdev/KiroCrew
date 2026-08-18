@@ -10,7 +10,7 @@
 # demand-paging, the kernel kills the process with
 # `EXC_BAD_ACCESS (SIGKILL (Code Signature Invalid))` /
 # `CODESIGNING, Code 2, Invalid Page`. This bites numpy especially (numpy.random
-# loads ~9 compiled extensions), breaking `make test` and the PyInstaller freeze
+# loads ~9 compiled extensions), breaking `make test` and the backend build
 # in `make desktop` / `make backend-bin`.
 #
 # Re-signing with `codesign --force --sign -` replaces the linker-signed

@@ -313,10 +313,10 @@ first, cached process-wide:
 1. `uv.find_uv_bin()` — the wheel's own locator (the normal `pip` case). It raises
    `UvNotFound`, a `FileNotFoundError` subclass, on an odd repackaging;
 2. the **frozen-bundle location** — `sys._MEIPASS` and `dirname(sys.executable)`,
-   joined with `uv` + `sysconfig`'s `EXE`. This is the DMG/Electron path:
-   PyInstaller's bundle has no scripts dir and no site-packages, so the wheel's
-   locator cannot find anything there, and `packaging/kirocrew-backend.spec` stages
-   the binary at the bundle root instead;
+   joined with `uv` + `sysconfig`'s `EXE`. A frozen one-folder bundle has no
+   scripts dir and no site-packages, so the wheel's locator cannot find anything
+   there and the binary is staged at the bundle root instead. Inert on the
+   current desktop bundle, which ships a real interpreter tree the locator walks;
 3. `shutil.which("uv")` — a user's own, possibly newer, uv still works;
 4. `None`, which fails provisioning with a message naming **only** `uv` (the old
    check said "`git` and `uv` must both be installed and on PATH" even when only

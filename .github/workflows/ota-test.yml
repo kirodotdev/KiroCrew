@@ -75,7 +75,7 @@ jobs:
 
       # The app only reaches initAutoUpdate after its gateway connects, and
       # find-bin.js falls back to a PATH `kirocrew`. Installing the package is
-      # cheaper and less brittle than building the PyInstaller bundle, and the
+      # cheaper and less brittle than building the desktop backend bundle, and the
       # script stubs an empty backend-dist so electron-builder's extraResources
       # does not fail on a missing source dir.
       - name: Install the gateway on PATH

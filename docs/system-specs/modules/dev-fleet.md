@@ -882,10 +882,9 @@ against each other (PR #353 arbiter finding). That single-copy rule is what
 matters here; where the one copy lives is a packaging question, and it lives in
 the packaged tree so `_ensure_builtin_skills` reaches every distribution. The
 project-dir mechanism reaches only some: `_project_skills_dir()` reads
-`KIROCREW_PROJECT_DIR`, which a repo checkout and the desktop bundle both
-provide (`packaging/kirocrew-backend.spec` ships the top-level `skills/` tree
-and `website/electron/main.js` sets the variable), but a `pip install` from the
-wheel or sdist provides neither.
+`KIROCREW_PROJECT_DIR`, which a repo checkout provides, but a `pip install` from
+the wheel or sdist does not — and neither does the desktop bundle, whose builder
+stages no top-level `skills/` tree.
 
 Skills are registered as symlinks into `~/.kiro/crew/skills/` via the app bridge at
 two lifecycle points:

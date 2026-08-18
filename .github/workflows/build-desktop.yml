@@ -82,7 +82,7 @@ jobs:
             # `arch -x86_64 uname -m` -> x86_64 and can host an x86_64
             # interpreter. macos-15 is the chosen target because it also keeps
             # OpenSSL 1.1.1w (same as macos-14); macos-26 jumps to OpenSSL
-            # 3.6.x + clang 21, which the PyInstaller backend has not been
+            # 3.6.x + clang 21, which the bundled backend has not been
             # validated against.
           - os: ubuntu-22.04
             artifact-name: build-linux-x64

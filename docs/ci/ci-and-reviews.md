@@ -170,16 +170,17 @@ PR-time proof only, no publishing.
 - **`build-desktop`** builds the Electron app unsigned on macos-15 and
   ubuntu-22.04 via `make desktop`, and uploads the artifacts.
 
-**Neither desktop lane ever RUNS the frozen binary.** `build-desktop` here and
-`build-desktop.yml` in the release lane both build the real PyInstaller
-`kirocrew-backend` (via `packaging/kirocrew-backend.spec`) and then only upload the
-artifact. The wheel lane at least runs `kirocrew --version`. So a packaging change
-that breaks the frozen app (a PyInstaller layout change, an executable rename, a
-missing hidden import that stops the binary from booting) passes every gate: the
-tests that cover frozen behavior monkeypatch `sys.frozen` and `sys.executable`, so
-they stay green against a simulated environment. The cheap fix is to run the
-already-built binary once in `build-desktop`, the frozen analogue of the wheel
-lane's `--version`.
+**Neither desktop lane ever RUNS the bundled backend.** `build-desktop` here and
+`build-desktop.yml` in the release lane both build the real `kirocrew-backend`
+tree via `packaging/build-desktop.sh` — which provisions a
+python-build-standalone interpreter and pip-installs the project into it — and
+then only upload the artifact. The wheel lane at least runs `kirocrew --version`.
+So a packaging change that breaks the packaged app (a layout change, a launcher
+rename, a dependency that fails to install into the bundled interpreter) passes
+every gate: the tests that cover packaged-app behavior monkeypatch `sys.frozen`
+and `sys.executable`, so they stay green against a simulated environment. The
+cheap fix is to run the already-built launcher once in `build-desktop`, the
+packaged analogue of the wheel lane's `--version`.
 
 ## `code-review.yml`: the deterministic pre-gate
 

@@ -20,7 +20,7 @@ set -euo pipefail
 #  - backend-dist: the packaged app resolves its gateway via find-bin.js, which
 #    falls back to a PATH `kirocrew`. This script therefore stubs an EMPTY
 #    backend-dist to satisfy electron-builder's extraResources (which errors on
-#    a missing source dir) instead of building the ~500MB PyInstaller bundle.
+#    a missing source dir) instead of building the ~500MB backend bundle.
 #    Have `kirocrew` on PATH (toolbox install) so a gateway can start. We
 #    isolate with a temp KIROCREW_HOME + the BETA flavor (port 7788) so this
 #    never touches your real :7777 gateway.
@@ -49,7 +49,7 @@ command -v ditto >/dev/null     || { echo "ERROR: ditto not found"; exit 1; }
 rm -rf "$OUT"; mkdir -p "$OUT/update" "$OUT/installed" "$OUT/home"
 
 # electron-builder's extraResources errors if `from: backend-dist` is missing.
-# We do NOT want the ~500MB PyInstaller bundle for a feed/swap test, and
+# We do NOT want the ~500MB backend bundle for a feed/swap test, and
 # find-bin.js falls back to a PATH `kirocrew`, so an empty dir is sufficient.
 # Only created if absent, and never deleted (a real bundle must survive).
 if [ ! -d backend-dist ]; then

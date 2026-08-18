@@ -12,7 +12,7 @@
 # The result is a double-clickable app that embeds the whole Python backend +
 # dashboard — no system Python, pip, npm, or node required by the end user.
 #
-# This REPLACES the old PyInstaller approach. PBS interpreters are self-contained
+# PBS interpreters are self-contained
 # and use @executable_path-relative dylib references, so the bundle is genuinely
 # portable across machines without needing the exact same system Python version.
 #

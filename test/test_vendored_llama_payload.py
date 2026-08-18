@@ -15,10 +15,11 @@ fix depend on rule ORDER — an ordinary-looking edit re-breaks it silently.
 
 These tests pin the payload per lane, because each lane selects these files by
 a different mechanism and can drop them independently: the source tree (what
-git carries), the sdist rules (MANIFEST.in), the wheel's package_data, and the
-PyInstaller spec. That the desktop bundle stayed correct while the wheel was
-broken is the evidence for keeping them separate — one lane passing says
-nothing about another.
+git carries), the sdist rules (MANIFEST.in), and the wheel's package_data. That
+the desktop bundle stayed correct while the wheel was broken is the evidence for
+keeping them separate — one lane passing says nothing about another. The desktop
+bundle has no mechanism of its own: it pip-installs the project into its bundled
+interpreter, so it inherits the wheel's package_data.
 
 Every check runs unconditionally. The higher-fidelity alternative, shelling out
 to build a real sdist, skips wherever `build`/`setuptools` is missing (this
@@ -176,17 +177,6 @@ def test_both_ci_lanes_run_the_shared_payload_verifier() -> None:
         assert "python -m build --wheel" not in text, (
             f"{lane} builds only the wheel, so MANIFEST.in is never evaluated there"
         )
-
-
-def test_pyinstaller_spec_bundles_the_vendor_tree() -> None:
-    """The desktop lane walks the tree itself and must include `_vendor`.
-
-    This lane never reads MANIFEST.in, which is why the desktop bundle stayed
-    correct while the wheel was broken — and why it needs its own assertion
-    rather than inheriting the sdist one.
-    """
-    spec = (_REPO_ROOT / "packaging" / "kirocrew-backend.spec").read_text(encoding="utf-8")
-    assert '"_vendor"' in spec
 
 
 def test_manifest_rules_keep_every_required_lib() -> None:

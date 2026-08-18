@@ -112,13 +112,14 @@ _uv_path_resolved = False
 def _frozen_bundle_dirs() -> list[str]:
     """Candidate directories for a bundled ``uv`` in a frozen build.
 
-    PyInstaller's one-folder bundle has neither a scripts dir nor site-packages,
-    so the uv wheel's own locator cannot find the binary there (it walks
-    ``sysconfig`` paths only) — it raises ``UvNotFound``. ``packaging/
-    kirocrew-backend.spec`` therefore stages the binary at the bundle root, which
-    is ``sys._MEIPASS`` at runtime and, for a one-folder build, the directory
-    holding ``sys.executable``. Both are checked because the two differ for a
-    one-FILE build (``_MEIPASS`` is the extraction temp dir).
+    A frozen one-folder bundle has neither a scripts dir nor site-packages, so
+    the uv wheel's own locator cannot find the binary there (it walks
+    ``sysconfig`` paths only) — it raises ``UvNotFound``. Such a build stages the
+    binary at the bundle root, which is ``sys._MEIPASS`` at runtime and, for a
+    one-folder build, the directory holding ``sys.executable``. Both are checked
+    because the two differ for a one-FILE build (``_MEIPASS`` is the extraction
+    temp dir). Returns ``[]`` on the current desktop bundle, which ships a real
+    python-build-standalone interpreter tree that the locator walks.
     """
     if not getattr(sys, "frozen", False):
         return []
