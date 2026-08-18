@@ -4,6 +4,33 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **A session that times out on startup now names the MCP server it was waiting
+  for.** Every cause of a stalled session start reported the same sentence,
+  `Request session/new timed out`, which named none of them: a slow MCP fleet, a
+  single unreachable remote server, a pending authorization, and an expired
+  credential were indistinguishable. The runtime already held both halves of the
+  answer at that moment and threw them away. It sends the server roster in the
+  request's own `mcpServers` array, and the reader loop stages every
+  `server_initialized` / `server_init_failure` / `oauth_request` frame that
+  arrives before the response, each carrying its server's name. A session-start
+  timeout now reads both and reports the difference, so the error says how many
+  servers reported out of how many were expected, which ones never reported,
+  which failed and why, and which are waiting on authorization. `session/load`
+  shares the budget and the staging, so it gets the same report. A failed
+  server's error text takes the same redaction the dashboard banner applies,
+  because a server's startup error can carry its own connection string, and each
+  listed name is redacted, collapsed onto one line and length-capped as well --
+  a name is config-derived, so an installed app chooses it, and an embedded
+  newline would otherwise forge a line in the gateway log while an unbounded one
+  would defeat the cap on how many names are listed. The reported count is taken
+  against the roster rather than against every staged frame, since the agent
+  spec's own servers report too and counting them produced impossible readings
+  like "2/1 reported". Timeouts now raise a dedicated `AcpRequestTimeout`, a subclass of
+  `AcpRuntimeError`, so a stall is distinguishable from a protocol fault without
+  changing what existing handlers catch. Startup telemetry also stops losing the
+  starts that failed: the `session_new` phase duration is recorded in a `finally`
+  like `session_load` already was, instead of only on success.
+
 - **Subagent rows in System → Sessions now report their process and MCP-stub
   counts.** Both columns rendered an em dash on every task row, which read as
   "a subagent carries no MCP stubs" — the opposite of the truth: a subagent

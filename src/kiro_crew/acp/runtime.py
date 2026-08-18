@@ -58,6 +58,7 @@ from kiro_crew.acp.kas_auth import (
     resolve_kas_access_token,
 )
 from kiro_crew.acp.session_handle import (
+    AcpRequestTimeout,
     AcpRuntimeDead,
     AcpRuntimeError,
     AcpRuntimeProtocol,
@@ -100,6 +101,7 @@ from kiro_crew.sandbox import (
     scrub_agent_denied_env,
     wrap_argv,
 )
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_pid import (
     _track_pid,
     _track_session_pid,
@@ -116,6 +118,7 @@ __all__ = [
     "AcpRuntime",
     "AcpRuntimeError",
     "AcpRuntimeDead",
+    "AcpRequestTimeout",
     "AcpRuntimeProtocol",
     "AcpSessionHandle",
 ]
@@ -147,6 +150,60 @@ _REQUEST_TIMEOUT = 30.0
 # raises it for agents whose MCP fleet legitimately needs longer (see
 # _resolve_session_start_timeout below).
 _SESSION_NEW_TIMEOUT = 90.0
+
+# Caps for the MCP progress line attached to a session-start timeout: a
+# 70-server agent must not turn one error into a multi-kilobyte string, and
+# neither a server's own error text nor its NAME is trusted for length. Both are
+# config-derived, and an installed app supplies its own server names.
+_MCP_PROGRESS_NAME_CAP = 8
+_MCP_PROGRESS_ERROR_CAP = 120
+_MCP_PROGRESS_NAME_LEN_CAP = 64
+
+
+def _strip_unprintable(text: str) -> str:
+    """Drop the control characters a whitespace collapse cannot reach.
+
+    ``str.split`` removes whitespace controls (newline, tab, CR), but ESC and
+    the other non-whitespace controls survive it, and a terminal rendering the
+    gateway log interprets them -- an MCP server's failure text could forge or
+    recolor terminal output. Spaces are printable, so a collapsed string keeps
+    its word separation.
+    """
+    return "".join(ch for ch in text if ch.isprintable())
+
+
+def _sanitize_progress_name(name: str) -> str:
+    """Make one MCP server name safe to put in a log line and an exception.
+
+    A name is config-derived, so an installed app chooses it. Four hazards, all
+    closed here rather than at each use: an embedded newline would forge a line
+    in the gateway log, a non-whitespace control (ESC) would inject terminal
+    escapes into it, an unbounded name would defeat the count cap that keeps
+    one error from becoming a wall of text, and a name carrying
+    credential-shaped text would leak it into a sink the error message reaches.
+    Whitespace collapse and the control strip run AFTER redaction so a
+    redaction marker cannot reintroduce a break.
+    """
+    scrubbed, _ = redact_exfiltration_urls(name)
+    scrubbed, _ = redact_credentials(scrubbed)
+    return _strip_unprintable(" ".join(scrubbed.split()))[
+        :_MCP_PROGRESS_NAME_LEN_CAP
+    ]
+
+
+def _capped_names(names: list[str]) -> str:
+    """Join names for an error line, truncating the tail to a countable summary.
+
+    A pure formatter: names arrive already sanitized from the two points that
+    admit them, so a composite like ``name (error)`` keeps its own error cap
+    instead of being re-truncated to a name's length.
+    """
+    head = names[:_MCP_PROGRESS_NAME_CAP]
+    rest = len(names) - len(head)
+    joined = ", ".join(head)
+    return f"{joined} (+{rest} more)" if rest > 0 else joined
+
+
 _INIT_NOTIFICATION_BUFFER_LIMIT = 100
 # Teardown must be snappy: a session is usually terminated on a hot path
 # (background task done, subagent reaped). kiro-cli's terminate handler responds
@@ -2068,6 +2125,110 @@ class AcpRuntime:
 
     # ── Session Management ──
 
+    def _mcp_init_progress(self, expected: Any) -> str:
+        """Describe MCP registration progress for a session start that stalled.
+
+        Reads the frames the reader loop already staged in
+        ``_pending_init_notifications`` so a session-start timeout can name the
+        servers that never reported, instead of reporting only the elapsed
+        budget. Must run BEFORE ``_finish_session_init``, which drops that
+        buffer once the last in-flight init closes.
+
+        ``expected`` is the ``mcpServers`` array sent with the request. Its
+        entries carry the roster names, and that is what makes the ABSENT
+        servers nameable rather than only the present ones.
+
+        Reports are runtime-wide rather than per-session: a request that never
+        answered has no session id to match its frames against, so a concurrent
+        init is called out in the text instead of being silently folded in.
+        Likewise the staging deque is bounded, so on a very large fleet the
+        reported count is a floor, not an exact tally.
+        """
+        roster = [
+            _sanitize_progress_name(str(e.get("name") or ""))
+            for e in (expected if isinstance(expected, list) else [])
+            if isinstance(e, dict) and e.get("name")
+        ]
+        ready: list[str] = []
+        failed: list[str] = []
+        failure_text: dict[str, str] = {}
+        awaiting_auth: list[str] = []
+        for msg in self._pending_init_notifications:
+            params = msg.params if isinstance(msg.params, dict) else {}
+            name = _sanitize_progress_name(
+                str(params.get("serverName") or params.get("name") or "")
+            )
+            if not name:
+                continue
+            if msg.is_method(METHOD_MCP_SERVER_INITIALIZED):
+                if name not in ready:
+                    ready.append(name)
+            elif msg.is_method(METHOD_MCP_SERVER_INIT_FAILURE):
+                # A failed server's error text can carry connection strings or
+                # tokens from its startup, so it takes the same scrub the
+                # dashboard banner applies before it lands in an exception.
+                err, _ = redact_exfiltration_urls(str(params.get("error") or ""))
+                err, _ = redact_credentials(err)
+                err = _strip_unprintable(" ".join(err.split()))[
+                    :_MCP_PROGRESS_ERROR_CAP
+                ]
+                if name not in failed:
+                    failed.append(name)
+                if err:
+                    failure_text[name] = err
+            elif msg.is_method(METHOD_MCP_OAUTH_REQUEST):
+                if name not in awaiting_auth:
+                    awaiting_auth.append(name)
+
+        reported = set(ready) | set(failed)
+        parts: list[str] = []
+        if roster:
+            # Count only reports that belong to the roster. kiro-cli initializes
+            # the agent spec's own servers as well as the session-injected ones,
+            # so the staged frames are a SUPERSET of the roster and a raw
+            # len(reported) can exceed the denominator -- "2/1 reported". The
+            # out-of-roster servers still appear by name in the failed and
+            # awaiting-authorization buckets, where naming them is the point.
+            parts.append(
+                f"{len(reported & set(roster))}/{len(roster)} MCP server(s) reported"
+            )
+            silent = [n for n in roster if n not in reported]
+            if silent:
+                parts.append(f"no report from {_capped_names(silent)}")
+        else:
+            parts.append(f"{len(reported)} MCP server(s) reported, roster unknown")
+        if failed:
+            parts.append(
+                "failed: "
+                + _capped_names(
+                    [f"{n} ({failure_text[n]})" if n in failure_text else n for n in failed]
+                )
+            )
+        if awaiting_auth:
+            parts.append(f"awaiting authorization: {_capped_names(awaiting_auth)}")
+        if self._session_inits_in_flight > 1:
+            parts.append(
+                f"{self._session_inits_in_flight} session inits in flight, "
+                "so these reports are runtime-wide"
+            )
+        return "; ".join(parts)
+
+    def _session_start_stalled(
+        self, exc: AcpRequestTimeout, method: str, expected: Any
+    ) -> AcpRequestTimeout:
+        """Attach MCP progress to a session-start timeout before it reaches the user.
+
+        Session start is the one request whose cost is dominated by work the
+        runtime can observe, so the bare budget is the least useful half of the
+        answer. Returns a replacement to raise rather than raising here, so the
+        caller keeps the ``from exc`` chain.
+        """
+        progress = self._mcp_init_progress(expected)
+        logger.warning("%s stalled: %s", method, progress or "no MCP reports staged")
+        if not progress:
+            return exc
+        return AcpRequestTimeout(f"{exc} ({progress})")
+
     def _finish_session_init(self, session_id: str) -> list[JsonRpcMessage]:
         """Take staged init frames for one session and close its init scope."""
         matched: list[JsonRpcMessage] = []
@@ -2202,6 +2363,9 @@ class AcpRuntime:
             session_id = str(resp.get("sessionId") or "")
             if not session_id:
                 raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
+        except AcpRequestTimeout as exc:
+            # Read the staged MCP reports before the finally below clears them.
+            raise self._session_start_stalled(exc, METHOD_SESSION_NEW, mcp_servers) from exc
         finally:
             buffered_init = self._finish_session_init(session_id)
 
@@ -2363,6 +2527,9 @@ class AcpRuntime:
                     f"session/load did not resume session {resume_sid}: {resp}"
                 )
             loaded_session_id = resume_sid
+        except AcpRequestTimeout as exc:
+            # Read the staged MCP reports before the finally below clears them.
+            raise self._session_start_stalled(exc, METHOD_SESSION_LOAD, mcp_servers) from exc
         finally:
             buffered_init = self._finish_session_init(loaded_session_id)
 
@@ -2484,7 +2651,7 @@ class AcpRuntime:
             self._pending_requests.pop(req_id, None)
             # Name the budget: a session-start timeout (90s) must be
             # distinguishable from a generic control-plane one (30s).
-            raise AcpRuntimeError(f"Request {method} timed out after {timeout:g}s")
+            raise AcpRequestTimeout(f"Request {method} timed out after {timeout:g}s")
 
     async def _drain_stderr(self) -> None:
         """Drain stderr to prevent subprocess blocking."""

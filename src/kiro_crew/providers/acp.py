@@ -781,7 +781,6 @@ class AcpProvider(LLMProvider):
             meta["resumed"] = resumed
 
             _t_sess = time.monotonic()
-            _ran_session_new = handle is None
 
             if handle is None:
                 # ── Fix B: respawn if runtime died during resume attempt ──
@@ -824,12 +823,14 @@ class AcpProvider(LLMProvider):
                     if runtime.saw_not_logged_in():
                         raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
                     raise
-            # session/new + MCP-toolset/system-prompt load done. Only recorded
-            # when create_session actually ran: a successful resume skips that
-            # block entirely, and reporting a near-zero session_new for it would
-            # understate the phase's real distribution.
-            if _ran_session_new:
-                phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
+                finally:
+                    # In a finally, mirroring session_load: a start that BLEW its
+                    # budget is the one whose duration matters most, and recording
+                    # it only after the try left startup telemetry with no row for
+                    # any failed start. Guarded by the enclosing ``handle is None``,
+                    # so a successful resume never reports a near-zero session_new
+                    # that would understate the phase's real distribution.
+                    phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
 
             # Apply the configured model override (mirrors AcpClient handshake).
             # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".

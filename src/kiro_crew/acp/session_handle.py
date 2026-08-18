@@ -343,6 +343,16 @@ class AcpRuntimeDead(AcpRuntimeError):
     """Raised when the underlying process has died."""
 
 
+class AcpRequestTimeout(AcpRuntimeError):
+    """Raised when a request's response does not arrive within its budget.
+
+    Distinguished from a plain ``AcpRuntimeError`` so a caller that knows what
+    the request was waiting on can attach that context before it reaches the
+    user. Subclasses the base so existing ``except AcpRuntimeError`` handlers
+    keep catching it.
+    """
+
+
 class AcpRuntimeProtocol(Protocol):
     """Minimal interface that AcpSessionHandle needs from AcpRuntime."""
 
