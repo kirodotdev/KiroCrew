@@ -91,3 +91,47 @@ describe('WorkflowCompletionCard rendering', () => {
     expect(store.getState().chat.activityTab).toBe('workflows')
   })
 })
+
+describe('card containment', () => {
+  // jsdom computes no layout, so these are class-list contracts, the same
+  // convention TranscriptRowGeometry.test.tsx pins: what must hold is that the
+  // classes carrying the containment survive on the exact elements they guard.
+  const store = () => createTestStore({ chat: {} as unknown as ChatState })
+
+  /** Render and expand: the result body is folded by default. */
+  function renderExpanded() {
+    renderWithProviders(<WorkflowCompletionCard message={completionMsg()} />, { store: store() })
+    fireEvent.click(screen.getByText('Show result'))
+    return screen.getByTestId('workflow-completion-body')
+  }
+
+  it('bounds the expanded body so a long workflow result scrolls inside the card', () => {
+    const body = renderExpanded()
+    // The literal bound, not a prefix match: a looser assertion would accept
+    // max-h-0, which hides the result entirely. 24rem = the 384px bound the
+    // capture runner asserts (BODY_MAX_PX in
+    // capture-workflow-completion-overflow.mjs).
+    expect(body.classList.contains('max-h-[24rem]')).toBe(true)
+    expect(body.classList.contains('overflow-y-auto')).toBe(true)
+    // Explicit, because a non-visible y-axis computes x's `visible` to `auto`:
+    // without this the body is a two-axis scroller nothing needs (long inline
+    // code and body text both wrap).
+    expect(body.classList.contains('overflow-x-hidden')).toBe(true)
+  })
+
+  it('makes the scroll region keyboard-reachable and named after the headline', () => {
+    const body = renderExpanded()
+    // Unfocusable, an inner scroller cannot be scrolled by a keyboard at all.
+    expect(body.getAttribute('tabindex')).toBe('0')
+    expect(body.getAttribute('role')).toBe('region')
+    const labelId = body.getAttribute('aria-labelledby')
+    expect(labelId).toBeTruthy()
+    expect(document.getElementById(labelId!)?.textContent).toContain('kirocrew-bug-deep-dive')
+    // The ring must be inset: the card root's overflow-hidden clips anything
+    // painted outside the box, and the global :focus-visible outline is
+    // disabled, so a non-inset ring renders as no indicator at all.
+    expect(body.classList.contains('focus-visible:ring-2')).toBe(true)
+    expect(body.classList.contains('focus-visible:ring-inset')).toBe(true)
+    expect(body.classList.contains('focus-visible:ring-accent')).toBe(true)
+  })
+})

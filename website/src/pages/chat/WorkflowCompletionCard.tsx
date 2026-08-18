@@ -13,7 +13,7 @@
  * based (not the WS `kind`, which is dropped when the message is persisted), so
  * it works live and when a conversation is reloaded from history.
  */
-import { memo } from 'react'
+import { memo, useId } from 'react'
 import { Workflow, CheckCircle2, AlertCircle, ChevronDown } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppDispatch } from '../../store'
@@ -78,6 +78,9 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
 }) {
   const dispatch = useAppDispatch()
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
+  // Names the expanded body's scroll region after the headline. useId keeps it
+  // unique when a transcript renders many cards.
+  const headlineId = useId()
   const parsed = parseWorkflowCompletion(message.content || '')
   if (!parsed) return null
 
@@ -101,7 +104,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
           )}
         </span>
         <Workflow size={12} className="text-accent/70 shrink-0" />
-        <span className="truncate text-[13px] leading-5 font-medium text-text-strong">{label}</span>
+        <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">{label}</span>
         <span
           className={`shrink-0 text-[10px] leading-4 px-1.5 py-0.5 rounded border ${
             ok
@@ -138,7 +141,28 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         </div>
       </div>
       {expanded && body && (
-        <div className="px-3 pb-2 pt-1 border-t border-accent/10">
+        // max-h + overflow-y-auto: the body is a workflow's full result — a
+        // machine-composed injected payload of unbounded length — so a long run
+        // renders taller than the viewport. The body scrolls internally past
+        // 24rem, so its height cannot displace the transcript rows below.
+        // overflow-x-hidden is explicit because a non-visible y-axis computes
+        // x's `visible` to `auto`: without it this becomes a two-axis scroller.
+        // Nothing legitimately overflows x — inline code breaks (index.css
+        // word-break:break-all) and body text wraps (break-words).
+        // tabIndex + region role: a scroll region with no focusable descendant
+        // is unreachable to a keyboard, so the scroller must itself be
+        // focusable, and the region name points at the card headline.
+        // The focus ring is inset: the card root clips at its rounded border
+        // (overflow-hidden), and the global :focus-visible outline is disabled
+        // (index.css), so an outward ring or UA outline would be swallowed on
+        // every edge that touches the root. ring-inset paints inside the box.
+        <div
+          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+          data-testid="workflow-completion-body"
+          role="region"
+          aria-labelledby={headlineId}
+          tabIndex={0}
+        >
           <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
         </div>
       )}
