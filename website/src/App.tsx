@@ -77,6 +77,7 @@ import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
+import TodayPage from './pages/TodayPage'
 import { useUpdateSubscription } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 
@@ -2706,6 +2707,7 @@ export default function App() {
           <MigrationCheck />
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
+            <Route path="/today" element={<ErrorBoundary><TodayPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
             <Route path="/notifications" element={<ErrorBoundary><NotificationsPage /></ErrorBoundary>} />
             <Route path="/knowledge" element={<ErrorBoundary><KnowledgePage /></ErrorBoundary>} />
