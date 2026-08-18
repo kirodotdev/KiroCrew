@@ -100,7 +100,18 @@ class TestHumanOverrideHandler:
         assert "issue_comment:" in workflow
         assert "pull_request_target:" not in workflow
         assert "actions/checkout@" not in workflow
-        assert "/ai-review override <fable|gpt|all> <current-sha>: <reason>" in workflow
+        assert "/ai-review override <fable|gpt|design|ux|first-principles|all> <current-sha>: <reason>" in workflow
+
+    def test_handler_covers_the_design_family_lanes(self) -> None:
+        # Promoting UX / First Principles to blocking is only safe if a false
+        # BLOCK has a human escape hatch. The override handler must accept the
+        # design-family targets and re-run those lanes -- the re-run's
+        # human-override step then skips the model and the gate passes.
+        workflow = _workflow("ai-review-human-override.yml")
+        assert "(fable|gpt|design|ux|first-principles|all)" in workflow
+        assert 'rerun_reviewer "design-review.yml"' in workflow
+        assert 'rerun_reviewer "ux-review.yml"' in workflow
+        assert 'rerun_reviewer "first-principles-review.yml"' in workflow
 
     def test_handler_requires_write_permission_fresh_sha_and_reason(self) -> None:
         workflow = _workflow("ai-review-human-override.yml")
@@ -141,6 +152,34 @@ class TestLineReviewHumanOverrides:
         assert "✅ human override accepted" in workflow
         assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 4.8" in workflow
         assert "/ai-review override fable $HEAD:" in workflow
+
+    @pytest.mark.parametrize(
+        "name,target,lane",
+        [
+            ("design-review.yml", "design", "Design Review"),
+            ("ux-review.yml", "ux", "UX Review"),
+            ("first-principles-review.yml", "first-principles", "First Principles Review"),
+        ],
+    )
+    def test_design_family_consumes_a_bot_authored_sha_scoped_record(self, name, target, lane) -> None:
+        # The newly-blocking lanes mirror the fable/gpt override contract: a
+        # bot-authored, SHA-scoped record skips the model review and passes the
+        # gate, so a false BLOCK is clearable without a code change.
+        workflow = _workflow(name)
+        assert f"target={target} head=$HEAD" in workflow
+        assert '.user.login == "github-actions[bot]"' in workflow
+        assert "steps.human_override.outputs.active != 'true'" in workflow
+        assert "✅ human override accepted" in workflow
+        assert f"overrides {lane} for $HEAD. Passing gate." in workflow
+        # The resolver MUST run before the OIDC/credentials step, and that step
+        # must itself be gated on the override -- otherwise an OIDC failure
+        # skips the resolver and the override can never clear an infra-failed
+        # lane (regression guard for the round-2 ordering finding).
+        assert workflow.index("name: Resolve human override") < workflow.index(
+            "uses: aws-actions/configure-aws-credentials"
+        )
+        creds_if = workflow.split("uses: aws-actions/configure-aws-credentials")[1].split("with:")[0]
+        assert "steps.human_override.outputs.active != 'true'" in creds_if
 
     def test_gpt_has_clear_verdict_banner_and_human_override(self) -> None:
         workflow = _workflow("codex-review.yml")

@@ -44,14 +44,40 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Resolve human override
+        id: human_override
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          exact="<!-- ai-review-human-override target=design head=$HEAD "
+          all="<!-- ai-review-human-override target=all head=$HEAD "
+          record="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>/dev/null \
+            | jq -sr --arg exact "$exact" --arg all "$all" \
+              'add // [] | [.[] | select(.user.login == "github-actions[bot]")
+              | select((.body | startswith($exact)) or (.body | startswith($all)))]
+              | (last.body // "")' 2>/dev/null || true)"
+          actor="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\1/p')"
+          source="$(printf '%s\n' "$record" | sed -nE '1s/^.* actor=([^ ]+) source=([0-9]+) -->$/\2/p')"
+          if [ -n "$actor" ] && [ -n "$source" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "actor=$actor" >> "$GITHUB_OUTPUT"
+            echo "source=$source" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Dependabot PRs run with a read-only token and NO secrets/OIDC, so the
       # Bedrock role assumption below can never succeed. Skip the review for
       # Dependabot (a design review adds little to a mechanical version bump)
       # and let the advisory status pass — same skip contract as the Opus 4.8 /
       # GPT 5.6 reviewers. github.actor is set by GitHub and cannot be spoofed by
-      # PR content.
+      # PR content. Also skip when a human override is recorded, so an OIDC
+      # failure can never keep the override from clearing the lane.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
@@ -66,7 +92,7 @@ jobs:
         # required checks; merge is gated by human review), so a red result is
         # override-able. The always()-run steps below still post a leak-safe
         # comment and log the outcome regardless.
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
@@ -318,8 +344,27 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
+          OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
           ACTOR: ${{ github.actor }}
         run: |
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            OV_MARKER="<!-- design-review -->"
+            {
+              echo "$OV_MARKER"
+              echo "## Design Review (Fable 5) — ✅ human override accepted"
+              echo
+              echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` via \`/ai-review override\` (this commit only)._"
+            } > /tmp/ai-override-note.md
+            ov_existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$OV_MARKER\"))) | .id" 2>/dev/null | head -n1 || true)"
+            if [ -n "$ov_existing" ] && [ "$ov_existing" != "null" ]; then
+              gh api --method PATCH "repos/$REPO/issues/comments/$ov_existing" --field body="$(cat /tmp/ai-override-note.md)" >/dev/null || true
+            else
+              gh pr comment "$PR" --body-file /tmp/ai-override-note.md || true
+            fi
+            echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR: design review skipped (no Bedrock secrets/OIDC)."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
@@ -359,7 +404,7 @@ jobs:
               echo "$MARKER"
               echo "## Design Review (Fable 5) — $badge"
               echo
-              echo "_Advisory design-level review of \`$HEAD\` — updated in place on each push; does **not** block merge._"
+              echo "_Design-level review of \`$HEAD\` — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
               printf '%s\n' "$summary"
             } > /tmp/design-comment.md
@@ -418,7 +463,13 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           ACTOR: ${{ github.actor }}
           VERDICT: ${{ steps.post.outputs.verdict }}
+          HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
+          OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
         run: |
+          if [ "$HUMAN_OVERRIDE" = "true" ]; then
+            echo "Human judgment by $OVERRIDE_ACTOR overrides Design Review for $HEAD. Passing gate."
+            exit 0
+          fi
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR: design review skipped (non-blocking)."
             exit 0
