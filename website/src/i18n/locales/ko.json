@@ -9705,6 +9705,7 @@
     "projectsPage": {
       "agent": "에이전트:",
       "analyzing_task_and_building_step_by_step_plan": "작업을 분석해 단계별 플랜을 구성하는 중",
+      "auto_approve": "자동 승인",
       "auto_approve_tool_calls": "도구 호출 자동 승인",
       "cancel": "취소",
       "chat": "채팅",

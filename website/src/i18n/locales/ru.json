@@ -10059,6 +10059,7 @@
     "projectsPage": {
       "agent": "Агент:",
       "analyzing_task_and_building_step_by_step_plan": "Анализ задачи и построение пошагового плана",
+      "auto_approve": "Автоподтверждение",
       "auto_approve_tool_calls": "Автоподтверждение вызовов инструментов",
       "cancel": "Отмена",
       "chat": "Чат",

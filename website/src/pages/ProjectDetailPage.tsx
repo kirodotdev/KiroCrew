@@ -10,7 +10,8 @@ import DagView from './aidlc/DagView';
 import PhasedView from './aidlc/PhasedView';
 import TaskDetailPanel from './aidlc/TaskDetailPanel';
 import { api } from '../api/client';
-import { AlertTriangle, Download, Hourglass } from 'lucide-react';
+import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
+import { Badge } from '../components/ui';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -179,6 +180,34 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             </>
           )}
           <div className="flex-1" />
+          {/* Auto-approve indicator — mirrors the badge on the ProjectsPage
+              rail card. Placed before Export YAML so it sits with the row's
+              secondary actions. Live-grant gated so a paused run whose grant
+              expired doesn't assert active trust (matches ProjectsPage.tsx's
+              sync effect). Uses the shared `Badge` primitive (variant='warn'
+              = amber pill) per GPT 5.6 Round 4 review (2026-08-19). The
+              detail-header row has more horizontal room than the 220px rail
+              card, so we keep the visible "Auto-approve" text above the
+              `sm` viewport breakpoint (per Fable UX 2026-08-18); below `sm`
+              (640px) — a narrow phone viewport or a heavily localized
+              locale — the text collapses to icon-only so the row cannot
+              overflow (per GPT 5.6 Round 3 2026-08-19). The `aria-label`
+              carries the accessible name in every state. */}
+          {(run.auto_approve_remaining_secs ?? 0) > 0 && (
+            <Badge
+              variant="warn"
+              role="img"
+              className="shrink-0 mr-2"
+              aria-label={i18nT('pages.projectsPage.auto_approve_tool_calls')}
+              title={i18nT('pages.projectsPage.auto_approve_tool_calls')}
+              data-testid="auto-approve-badge"
+            >
+              <Zap className="lucide-inline" />
+              <span className="hidden sm:inline">
+                {i18nT('pages.projectsPage.auto_approve')}
+              </span>
+            </Badge>
+          )}
           {!isPlanning && (run.task_details || []).length > 0 && (
             <button
               onClick={() => exportMutation.mutate()}

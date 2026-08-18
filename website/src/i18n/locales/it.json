@@ -9941,6 +9941,7 @@
     "projectsPage": {
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analisi dell'attività e creazione del piano passo a passo",
+      "auto_approve": "Approva automaticamente",
       "auto_approve_tool_calls": "Approva automaticamente le chiamate agli strumenti",
       "cancel": "Annulla",
       "chat": "Chat",

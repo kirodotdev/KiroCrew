@@ -6451,6 +6451,7 @@
     "projectsPage": {
       "agent": "Agent:",
       "analyzing_task_and_building_step_by_step_plan": "Analyzing task and building step-by-step plan",
+      "auto_approve": "Auto-approve",
       "auto_approve_tool_calls": "Auto-approve tool calls",
       "cancel": "Cancel",
       "chat": "Chat",

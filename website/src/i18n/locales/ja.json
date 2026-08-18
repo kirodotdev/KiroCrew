@@ -9705,6 +9705,7 @@
     "projectsPage": {
       "agent": "エージェント:",
       "analyzing_task_and_building_step_by_step_plan": "タスクを分析してステップバイステップのプランを構築中",
+      "auto_approve": "自動承認",
       "auto_approve_tool_calls": "ツール呼び出しを自動承認",
       "cancel": "キャンセル",
       "chat": "チャット",

@@ -9823,6 +9823,7 @@
     "projectsPage": {
       "agent": "एजेंट:",
       "analyzing_task_and_building_step_by_step_plan": "कार्य का विश्लेषण और चरण-दर-चरण प्लान तैयार किया जा रहा है",
+      "auto_approve": "स्वतः स्वीकृति",
       "auto_approve_tool_calls": "टूल कॉल स्वतः स्वीकृत करें",
       "cancel": "रद्द करें",
       "chat": "चैट",

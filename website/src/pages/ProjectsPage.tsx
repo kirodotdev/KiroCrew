@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen } from 'lucide-react'
+import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { TaskRunnerStatus, ProjectRun } from '../types'
-import { SendBtn, Btn, Checkbox, Input } from '../components/ui'
+import { SendBtn, Btn, Checkbox, Input, Badge } from '../components/ui'
 import ResizeHandle from '../components/ResizeHandle'
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -77,12 +77,32 @@ export default function ProjectsPage() {
   const [editNameValue, setEditNameValue] = useState('')
   const [refined, setRefined] = useState('')
   const [autoApprove, setAutoApprove] = useState(false)
+  // Compose-panel auto-approve intent. Distinct from `autoApprove` above, which
+  // is the run-detail toggle (bound to the selected run's live grant via the
+  // sync effect below). This one is a per-session, compose-scoped intent — the
+  // user declares "trust the tool calls of the next Run I kick off from here"
+  // BEFORE any plan exists. Slice 2 threads this into the auto-run path via a
+  // ref captured at click time (see `pendingAutoApproveRef`) so the sync effect
+  // cannot clobber it, and it never leaks across runs.
+  const [composeAutoApprove, setComposeAutoApprove] = useState(false)
   const [refineStatus, setRefineStatus] = useState<string>('idle')
   const [refineError, setRefineError] = useState('')
   const mountedRef = useRef(true)
   const loadingRef = useRef(false)
   const appliedRef = useRef<string | null>(null)
   const autoRunRef = useRef<string | null>(null)
+  // Compose-time auto-approve intent, keyed to the ORIGINATING task_id so it
+  // is structurally per-run. Written atomically alongside `autoRunRef` inside
+  // `doPlan`'s planTask-success branch; read by the auto-run useEffect only
+  // when `pending.taskId === selectedRun.task_id`, falling back to `false`
+  // otherwise. This solves three failure modes:
+  //   1) sync-effect race — the ref is a slot the sync effect never touches;
+  //   2) stale-`true` leak across sequential runs — cleared on read;
+  //   3) leak via a status-fetch failure + subsequent URL-triggered auto-run
+  //      on a DIFFERENT task — the URL trigger overwrites `autoRunRef` but
+  //      the stored `taskId` still points to the aborted originating run,
+  //      so the id-match falls through to `false` (GPT reviewer Issue B).
+  const pendingAutoApproveRef = useRef<{ taskId: string; autoApprove: boolean } | null>(null)
   const activePlanRef = useRef(false)
   // Run rail geometry — a real resizable column with drag-past-minimum collapse,
   // the same primitive Issue Radar's rail uses.
@@ -181,19 +201,32 @@ export default function ProjectsPage() {
   }, [searchParams, setSearchParams, load])
 
   useEffect(() => { sessionStorage.setItem('tr-mode', mode) }, [mode])
+  // Reset the compose-panel auto-approve intent whenever the user switches
+  // mode. The checkbox is only rendered inside `mode === 'compose'`, but
+  // `composeAutoApprove` is component-scoped state that would otherwise
+  // survive a mode change — silently governing `handleRun` calls from the
+  // spec/yaml Run buttons where no checkbox is on screen. Resetting on mode
+  // change ensures the intent cannot outlive its visible control. See Fable
+  // Design/UX review Issue C (2026-08-18).
+  useEffect(() => { setComposeAutoApprove(false) }, [mode])
 
   // Auto-execute when a planned run is selected via ?autoRun=true
   useEffect(() => {
     const id = autoRunRef.current
     if (!id || !selectedRun || selectedRun.task_id !== id || selectedRun.status !== 'planned') return
     autoRunRef.current = null
-    // Auto-run is a programmatic launch, NOT an affirmative per-run trust grant for
-    // THIS run — always pass false. (Per-run trust requires an explicit dashboard
-    // toggle + manual Execute.) Passing the component-wide `autoApprove` here would
-    // also race the sync effect below and could leak a stale `true` from a
-    // previously-selected run onto this one. Workspace is fixed at plan time
-    // (planTask baked it into work_dir), so execute never re-sends it.
-    api.executePlan(selectedRun.task_id, agent, false).then(r => { if (r.ok) load() })
+    // Read + clear the intent. Consume ONLY if the stored task_id matches the
+    // run we're about to execute — a URL trigger for a different task cannot
+    // inherit trust granted for the aborted originating run. Cleared before
+    // read to keep the "consumed exactly once" invariant regardless of match.
+    const pending = pendingAutoApproveRef.current
+    pendingAutoApproveRef.current = null
+    const composeAutoApproveIntent = pending?.taskId === selectedRun.task_id
+      ? pending.autoApprove
+      : false
+    // Workspace is fixed at plan time (planTask baked it into work_dir), so
+    // execute never re-sends it.
+    api.executePlan(selectedRun.task_id, agent, composeAutoApproveIntent).then(r => { if (r.ok) load() })
   }, [selectedRun, agent, load])
   // Sync the per-run auto-approve toggle from the selected run (default false).
   // Reflect only a LIVE trust grant (not stale persisted intent), so resuming a
@@ -204,12 +237,31 @@ export default function ProjectsPage() {
   useEffect(() => { sessionStorage.setItem('tr-spec', specText) }, [specText])
   useEffect(() => { sessionStorage.setItem('tr-yaml', yamlText) }, [yamlText])
 
-  const doPlan = async (input: string, source: string, spec: string | undefined, autoRun: boolean) => {
+  const doPlan = async (
+    input: string,
+    source: string,
+    spec: string | undefined,
+    autoRun: boolean,
+    composeAutoApproveIntent: boolean = false,
+  ) => {
     setIsPlanning(true); setPlanError(''); sessionStorage.setItem('tr-planning', '1'); activePlanRef.current = true
     try {
       const r = await api.planTask(input, source, spec, agent, workspaceDir)
       if (r.ok) {
-        if (autoRun && r.task_id) autoRunRef.current = r.task_id
+        if (autoRun && r.task_id) {
+          autoRunRef.current = r.task_id
+          // Guard the ref-write with the SAME planTask-success branch as
+          // `autoRunRef`, keyed to the originating task_id. A URL-triggered
+          // auto-run for a DIFFERENT task (see auto-run useEffect above)
+          // cannot inherit trust from this run — the id mismatch falls
+          // through to false. See fc-01 + GPT Issue B in `.review/findings.md`.
+          pendingAutoApproveRef.current = { taskId: r.task_id, autoApprove: composeAutoApproveIntent }
+          // Only reset the compose checkbox once the plan actually took.
+          // A failed plan leaves the box ticked so the user's retry keeps
+          // the grant — otherwise a silent retry after `planTask` failure
+          // would drop the intent (Fable UX review Issue D).
+          setComposeAutoApprove(false)
+        }
         const d = await api.taskRunnerStatus()
         setData(d)
         const planned = d.runs?.find((run: ProjectRun) => run.task_id === r.task_id)
@@ -219,13 +271,41 @@ export default function ProjectsPage() {
     } finally { sessionStorage.removeItem('tr-planning'); activePlanRef.current = false; if (mountedRef.current) setIsPlanning(false) }
   }
 
-  const generatePlan = (input: string, source: string, spec?: string) => doPlan(input, source, spec, false)
+  const generatePlan = (input: string, source: string, spec?: string) => {
+    // Clear the compose auto-approve checkbox before the plan starts.
+    //
+    // The Plan -> Review -> Execute path cannot carry compose intent:
+    // `handleRun` -> `doPlan(autoRun=true)` captures composeAutoApprove via
+    // `capturedComposeIntent`, but `generatePlan` -> `doPlan(autoRun=false)`
+    // does not, and the resulting Execute button reads `autoApprove` (the
+    // detail-row sync state, seeded from the run's LIVE grant which is 0
+    // for a freshly-planned run). If the checkbox stayed visibly ticked, a
+    // "hands-off" user would click Execute expecting an unattended run and
+    // stall on the first approval prompt.
+    //
+    // Fable UX Round 4 (2026-08-19) Concern 1 — clear the compose checkbox
+    // here so the trust decision is deliberately re-affirmed at Execute
+    // time via the detail-row toggle.
+    setComposeAutoApprove(false)
+    return doPlan(input, source, spec, false)
+  }
 
   const cancelPlan = async () => {
     try { await api.cancelPlan() } finally { setIsPlanning(false); sessionStorage.removeItem('tr-planning') }
   }
 
-  const handleRun = (input: string, source: string) => doPlan(input, source, '', true)
+  const handleRun = (input: string, source: string) => {
+    // Capture the compose-time intent to a local, NOT to
+    // `pendingAutoApproveRef`. The ref-write and the checkbox reset both
+    // live inside `doPlan`'s planTask-success branch so:
+    //   1) a failed plan leaves the ref at its default null, closing the
+    //      URL-triggered-auto-run leak (Spock fc-01 + GPT Issue B);
+    //   2) a failed plan leaves the checkbox ticked so the user's retry
+    //      still honours the grant (Fable UX Issue D — the previous
+    //      handleRun cleared the box unconditionally at click).
+    const capturedComposeIntent = composeAutoApprove
+    doPlan(input, source, '', true, capturedComposeIntent)
+  }
 
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -296,6 +376,30 @@ export default function ProjectsPage() {
               <div className="text-[13px] font-semibold text-text-strong truncate">{name}</div>
               <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.steps} · {r.running ? 'running' : r.status}</div>
             </div>
+            {/* Auto-approve indicator. Gated on the LIVE grant (matches the
+                run-detail toggle sync effect at line 225: "Reflect only a
+                LIVE trust grant (not stale persisted intent)") so a paused
+                run whose grant expired doesn't assert active trust. Rail
+                cards live inside a ~220px sidebar column, so this badge is
+                deliberately icon-only — the accessible label is carried by
+                `aria-label` and `title`. Uses the shared `Badge` primitive
+                (variant='warn' = amber pill) per GPT 5.6 Round 4 review
+                (2026-08-19: "hand-rolled status pills bypass the required
+                Badge primitive"). A wider detail-page badge in
+                ProjectDetailPage keeps the text visible above the `sm`
+                viewport breakpoint. */}
+            {(r.auto_approve_remaining_secs ?? 0) > 0 && (
+              <Badge
+                variant="warn"
+                role="img"
+                className="shrink-0 text-[11px]"
+                aria-label={i18nT('pages.projectsPage.auto_approve_tool_calls')}
+                title={i18nT('pages.projectsPage.auto_approve_tool_calls')}
+                data-testid="auto-approve-badge"
+              >
+                <Zap className="lucide-inline" />
+              </Badge>
+            )}
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
@@ -368,6 +472,10 @@ export default function ProjectsPage() {
           <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
             {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.refine_into_spec')}</button>}
             {!isRefining && <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</button>}
+            {!isRefining && <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title={i18nT('pages.projectsPage.run_unattended_auto_approve_this_run_s_tool_call')}>
+              <Checkbox checked={composeAutoApprove} onChange={e => setComposeAutoApprove(e.target.checked)} disabled={anyPlanning} />
+              {i18nT('pages.projectsPage.auto_approve_tool_calls')}
+            </label>}
             {!isRefining && <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>}
             {isRefining && <>
               <button className="inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>

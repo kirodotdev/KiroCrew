@@ -9705,6 +9705,7 @@
     "projectsPage": {
       "agent": "代理：",
       "analyzing_task_and_building_step_by_step_plan": "正在分析任务并制定分步计划",
+      "auto_approve": "自动审批",
       "auto_approve_tool_calls": "自动批准工具调用",
       "cancel": "取消",
       "chat": "聊天",

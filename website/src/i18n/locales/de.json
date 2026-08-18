@@ -9823,6 +9823,7 @@
     "projectsPage": {
       "agent": "Agent:",
       "analyzing_task_and_building_step_by_step_plan": "Aufgabe wird analysiert und Schritt-für-Schritt-Plan erstellt",
+      "auto_approve": "Automatisch genehmigen",
       "auto_approve_tool_calls": "Werkzeugaufrufe automatisch genehmigen",
       "cancel": "Abbrechen",
       "chat": "Chat",
