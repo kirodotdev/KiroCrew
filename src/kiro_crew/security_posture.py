@@ -117,6 +117,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacts at the source rather than at either boundary.",
     ),
     (
+        "Kanban card naming",
+        "apps/builtins/kanban/backend/routes.py",
+        "The title and description the naming model writes for a kanban card, on both "
+        "the synchronous naming route and the background namer. The reply is model "
+        "output derived from the user's own prompt text, so a credential pasted into "
+        "that prompt can be echoed back into the card -- and a card is DURABLE (it is "
+        "persisted to `board.json`) as well as rendered verbatim on the board and in "
+        "the task-detail modal. Both fields therefore run through the credential + "
+        "exfiltration-URL chain before they are returned or written, rather than at "
+        "the HTTP boundary, because the persisted copy outlives the response.",
+    ),
+    (
         "Session intent summaries",
         "session_summary.py",
         "Intent-summary payloads persisted to the `.intents` sidecar and served by "

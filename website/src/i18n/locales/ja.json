@@ -2354,6 +2354,94 @@
         "to_see_its_details": "その詳細を表示するには"
       }
     },
+    "kanban": {
+      "column": {
+        "no_tasks": "タスクなし"
+      },
+      "createTaskForm": {
+        "auto_generate_note": "タイトルと説明は自動生成されます。いつでも編集できます。",
+        "cancel": "キャンセル",
+        "create_task": "タスクを作成",
+        "new_task": "新しいタスク",
+        "prompt_placeholder": "タスクを自然な言葉で記述してください…\n\n例:「npm の依存関係をすべて更新し、破壊的変更を修正する」",
+        "refining": "調整中…",
+        "what_do_you_want": "エージェントに何をしてほしいですか？",
+        "close": "閉じる",
+        "discard": "破棄",
+        "discard_prompt_body": "入力した内容を破棄しますか？",
+        "discard_prompt_title": "未保存のプロンプト",
+        "keep_editing": "編集を続ける"
+      },
+      "kanbanPage": {
+        "dismiss_error": "エラーを閉じる",
+        "kanban": "Kanban",
+        "loading_board": "ボードを読み込み中…",
+        "match_count_other": "{{count}} 件が一致",
+        "new_task": "新しいタスク",
+        "search_tasks": "タスクを検索",
+        "search_tasks_placeholder": "タスクを検索…",
+        "task_count_other": "{{count}} 件のタスク"
+      },
+      "lanes": {
+        "backlog": "バックログ",
+        "done": "完了",
+        "failed": "失敗",
+        "running": "実行中",
+        "todo": "未着手"
+      },
+      "manifest": {
+        "description": "作業を列（バックログ、To Do、実行中、完了、失敗）に整理するカンバン方式のタスクボードです。実行プロンプト付きのタスクを作成し、実際のエージェントセッションで実行し、実行履歴を追跡できます。",
+        "display_name": "カンバン",
+        "highlight_1": "ドラッグ＆ドロップに対応した5列のカンバンボード",
+        "highlight_2": "実際のエージェントセッションでタスクを実行 — 「実行」をクリックしてエージェントの作業をその場で確認",
+        "highlight_3": "セッションのトランスクリプトへのリンク付きで実行履歴を追跡",
+        "highlight_4": "ページ読み込み時に実行中のタスクを自動で照合",
+        "page_label": "カンバン"
+      },
+      "taskCard": {
+        "drag_to_move": "ドラッグして移動",
+        "open_agent_session": "この実行のエージェントセッションを開く",
+        "priority_high": "高",
+        "run": "実行",
+        "run_again": "再実行",
+        "run_count_other": "{{count}} 回の実行",
+        "run_this_task": "このタスクを実行",
+        "view_session": "セッションを見る",
+        "watch_live": "ライブで見る"
+      },
+      "taskDetail": {
+        "agent_working": "エージェントが作業中です — 開いてライブで確認できます。",
+        "close": "閉じる",
+        "close_detail": "タスクの詳細を閉じる",
+        "delete": "削除",
+        "description_label": "説明",
+        "description_placeholder": "このタスクは何についてですか？",
+        "discard": "破棄する",
+        "execution_prompt_label": "実行プロンプト",
+        "keep_editing": "編集を続ける",
+        "move_to": "移動先",
+        "open": "開く",
+        "open_agent_session": "エージェントセッションを開く",
+        "prompt_placeholder": "このタスクの実行時にエージェントへ依頼する内容…",
+        "read_transcript": "エージェントの作業の全文記録を読む。",
+        "really_delete": "本当に削除",
+        "result_cancelled": "キャンセル",
+        "result_failed": "失敗",
+        "result_succeeded": "成功",
+        "run": "実行",
+        "run_again": "再実行",
+        "running": "実行中",
+        "running_pill": "実行中…",
+        "runs": "実行",
+        "save_changes": "変更を保存",
+        "session": "セッション",
+        "task_detail": "タスクの詳細",
+        "title_label": "タイトル",
+        "unsaved_changes": "未保存の変更",
+        "unsaved_changes_discard_prompt": "未保存の変更があります。破棄しますか？",
+        "updated": "更新"
+      }
+    },
     "mdNotebook": {
       "badge": {
         "deleting": "削除中",

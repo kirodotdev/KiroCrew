@@ -2364,6 +2364,97 @@
         "to_see_its_details": "— এর বিবরণ দেখতে।"
       }
     },
+    "kanban": {
+      "column": {
+        "no_tasks": "কোনো কাজ নেই"
+      },
+      "createTaskForm": {
+        "auto_generate_note": "শিরোনাম ও বিবরণ স্বয়ংক্রিয়ভাবে তৈরি হয় — যেকোনো সময় সম্পাদনা করুন।",
+        "cancel": "বাতিল",
+        "create_task": "কাজ তৈরি করুন",
+        "new_task": "নতুন কাজ",
+        "prompt_placeholder": "আপনার কাজটি সহজ ভাষায় লিখুন...\n\nযেমন «সব npm ডিপেনডেন্সি আপগ্রেড করুন এবং অসঙ্গত পরিবর্তন ঠিক করুন»",
+        "refining": "পরিমার্জন চলছে...",
+        "what_do_you_want": "আপনি এজেন্টকে কী করতে চান?",
+        "close": "বন্ধ করুন",
+        "discard": "বাতিল করুন",
+        "discard_prompt_body": "আপনি যা লিখেছেন তা বাতিল করবেন?",
+        "discard_prompt_title": "অসংরক্ষিত প্রম্পট",
+        "keep_editing": "সম্পাদনা চালিয়ে যান"
+      },
+      "kanbanPage": {
+        "dismiss_error": "ত্রুটি সরাও",
+        "kanban": "Kanban",
+        "loading_board": "বোর্ড লোড হচ্ছে…",
+        "match_count_one": "{{count}}টি মিল",
+        "match_count_other": "{{count}}টি মিল",
+        "new_task": "নতুন কাজ",
+        "search_tasks": "কাজ খুঁজুন",
+        "search_tasks_placeholder": "কাজ খুঁজুন…",
+        "task_count_one": "{{count}}টি কাজ",
+        "task_count_other": "{{count}}টি কাজ"
+      },
+      "lanes": {
+        "backlog": "ব্যাকলগ",
+        "done": "সম্পন্ন",
+        "failed": "ব্যর্থ",
+        "running": "চলছে",
+        "todo": "করতে হবে"
+      },
+      "manifest": {
+        "description": "একটি কানবান-শৈলীর টাস্ক বোর্ড যা কাজকে কলামে সাজায় (ব্যাকলগ, করার জন্য, চলছে, সম্পন্ন, ব্যর্থ)। এক্সিকিউশন প্রম্পট সহ টাস্ক তৈরি করুন, প্রকৃত এজেন্ট সেশনের মাধ্যমে চালান এবং এক্সিকিউশন ইতিহাস ট্র্যাক করুন।",
+        "display_name": "কানবান",
+        "highlight_1": "ড্র্যাগ-অ্যান্ড-ড্রপ সহ পাঁচ-কলামের কানবান বোর্ড",
+        "highlight_2": "প্রকৃত এজেন্ট সেশনের মাধ্যমে টাস্ক চালান — Run ক্লিক করুন এবং এজেন্টের কাজ দেখুন",
+        "highlight_3": "সেশন ট্রান্সক্রিপ্ট লিঙ্ক সহ এক্সিকিউশন ইতিহাস ট্র্যাক করুন",
+        "highlight_4": "পেজ লোড হলে চলমান টাস্ক স্বয়ংক্রিয়ভাবে মিলিয়ে নেয়",
+        "page_label": "কানবান"
+      },
+      "taskCard": {
+        "drag_to_move": "সরাতে টেনে নিন",
+        "open_agent_session": "এই রানের এজেন্ট সেশন খুলুন",
+        "priority_high": "উচ্চ",
+        "run": "চালান",
+        "run_again": "আবার চালান",
+        "run_count_one": "{{count}}টি রান",
+        "run_count_other": "{{count}}টি রান",
+        "run_this_task": "এই কাজটি চালান",
+        "view_session": "সেশন দেখুন",
+        "watch_live": "সরাসরি দেখুন"
+      },
+      "taskDetail": {
+        "agent_working": "এজেন্ট কাজ করছে — সরাসরি দেখতে খুলুন।",
+        "close": "বন্ধ করুন",
+        "close_detail": "কাজের বিবরণ বন্ধ করুন",
+        "delete": "মুছুন",
+        "description_label": "বিবরণ",
+        "description_placeholder": "এই কাজটি কী নিয়ে?",
+        "discard": "বাতিল করো",
+        "execution_prompt_label": "সম্পাদন প্রম্পট",
+        "keep_editing": "সম্পাদনা চালিয়ে যাও",
+        "move_to": "সরান",
+        "open": "খুলুন",
+        "open_agent_session": "এজেন্ট সেশন খুলুন",
+        "prompt_placeholder": "এই কাজ চললে এজেন্টকে যা করতে বলা হয়…",
+        "read_transcript": "এজেন্ট যা করেছে তার সম্পূর্ণ প্রতিলিপি পড়ুন।",
+        "really_delete": "নিশ্চিত মুছুন",
+        "result_cancelled": "বাতিল",
+        "result_failed": "ব্যর্থ",
+        "result_succeeded": "সফল",
+        "run": "চালান",
+        "run_again": "আবার চালান",
+        "running": "চলছে",
+        "running_pill": "চলছে…",
+        "runs": "রান",
+        "save_changes": "পরিবর্তন সংরক্ষণ করুন",
+        "session": "সেশন",
+        "task_detail": "কাজের বিবরণ",
+        "title_label": "শিরোনাম",
+        "unsaved_changes": "সংরক্ষিত হয়নি এমন পরিবর্তন",
+        "unsaved_changes_discard_prompt": "তোমার অসংরক্ষিত পরিবর্তন আছে। বাতিল করব?",
+        "updated": "হালনাগাদ"
+      }
+    },
     "mdNotebook": {
       "badge": {
         "deleting": "মুছে ফেলা হচ্ছে",

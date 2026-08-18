@@ -212,6 +212,17 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
       'apps.issueRadar.manifest.highlight_9',
     ],
   },
+  kanban: {
+    displayName: 'apps.kanban.manifest.display_name',
+    description: 'apps.kanban.manifest.description',
+    pageLabel: 'apps.kanban.manifest.page_label',
+    highlights: [
+      'apps.kanban.manifest.highlight_1',
+      'apps.kanban.manifest.highlight_2',
+      'apps.kanban.manifest.highlight_3',
+      'apps.kanban.manifest.highlight_4',
+    ],
+  },
   'md-notebook': {
     displayName: 'apps.mdNotebook.manifest.display_name',
     description: 'apps.mdNotebook.manifest.description',

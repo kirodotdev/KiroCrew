@@ -1,0 +1,40 @@
+{
+  "name": "kanban",
+  "version": "1.0.0",
+  "displayName": "Kanban",
+  "description": "A kanban-style task board for organizing work into columns (Backlog, Todo, Running, Done, Failed). Create tasks with execution prompts, run them via real agent sessions, and track execution history.",
+  "author": "kirocrew",
+  "tags": [
+    "productivity",
+    "tasks",
+    "kanban",
+    "automation"
+  ],
+  "highlights": [
+    "Five-column kanban board with drag-and-drop",
+    "Execute tasks via real agent sessions — click Run and watch the agent work",
+    "Track execution history with session transcript links",
+    "Reconciles running tasks automatically on page load"
+  ],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/kanban",
+      "/api/apps/kanban/*"
+    ],
+    "storage": true
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/kanban",
+        "label": "Kanban",
+        "icon": "KanbanSquare"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/kanban/icon.svg"
+}

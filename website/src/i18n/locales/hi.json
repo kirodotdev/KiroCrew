@@ -2364,6 +2364,97 @@
         "to_see_its_details": "चुनें ताकि उसका विवरण दिखे।"
       }
     },
+    "kanban": {
+      "column": {
+        "no_tasks": "कोई कार्य नहीं"
+      },
+      "createTaskForm": {
+        "auto_generate_note": "शीर्षक और विवरण स्वतः बन जाते हैं — इन्हें कभी भी संपादित करें।",
+        "cancel": "रद्द करो",
+        "create_task": "कार्य बनाओ",
+        "new_task": "नया कार्य",
+        "prompt_placeholder": "अपना कार्य सामान्य भाषा में लिखो...\n\nजैसे «सभी npm डिपेंडेंसी अपग्रेड करो और असंगत बदलाव ठीक करो»",
+        "refining": "परिष्कृत हो रहा है...",
+        "what_do_you_want": "एजेंट से क्या करवाना चाहते हो?",
+        "close": "बंद करें",
+        "discard": "छोड़ें",
+        "discard_prompt_body": "तुमने जो लिखा है उसे छोड़ दें?",
+        "discard_prompt_title": "असहेजा प्रॉम्प्ट",
+        "keep_editing": "संपादन जारी रखें"
+      },
+      "kanbanPage": {
+        "dismiss_error": "त्रुटि हटाओ",
+        "kanban": "Kanban",
+        "loading_board": "बोर्ड लोड हो रहा है…",
+        "match_count_one": "{{count}} मेल",
+        "match_count_other": "{{count}} मेल",
+        "new_task": "नया कार्य",
+        "search_tasks": "कार्य खोजो",
+        "search_tasks_placeholder": "कार्य खोजो…",
+        "task_count_one": "{{count}} कार्य",
+        "task_count_other": "{{count}} कार्य"
+      },
+      "lanes": {
+        "backlog": "बैकलॉग",
+        "done": "पूर्ण",
+        "failed": "विफल",
+        "running": "चल रहा है",
+        "todo": "करना है"
+      },
+      "manifest": {
+        "description": "एक कानबन-शैली का टास्क बोर्ड जो काम को कॉलम में व्यवस्थित करता है (बैकलॉग, करने के लिए, चल रहा है, पूर्ण, विफल)। एक्ज़ीक्यूशन प्रॉम्प्ट के साथ टास्क बनाएँ, उन्हें वास्तविक एजेंट सेशन के ज़रिए चलाएँ और एक्ज़ीक्यूशन इतिहास ट्रैक करें।",
+        "display_name": "कानबन",
+        "highlight_1": "ड्रैग-एंड-ड्रॉप वाला पाँच-कॉलम कानबन बोर्ड",
+        "highlight_2": "वास्तविक एजेंट सेशन के ज़रिए टास्क चलाएँ — Run पर क्लिक करें और एजेंट को काम करते हुए देखें",
+        "highlight_3": "सेशन ट्रांसक्रिप्ट लिंक के साथ एक्ज़ीक्यूशन इतिहास ट्रैक करें",
+        "highlight_4": "पेज लोड होने पर चल रहे टास्क का स्वतः मिलान करता है",
+        "page_label": "कानबन"
+      },
+      "taskCard": {
+        "drag_to_move": "खींचकर ले जाओ",
+        "open_agent_session": "इस रन का एजेंट सत्र खोलो",
+        "priority_high": "उच्च",
+        "run": "चलाओ",
+        "run_again": "फिर चलाओ",
+        "run_count_one": "{{count}} रन",
+        "run_count_other": "{{count}} रन",
+        "run_this_task": "यह कार्य चलाओ",
+        "view_session": "सत्र देखो",
+        "watch_live": "लाइव देखो"
+      },
+      "taskDetail": {
+        "agent_working": "एजेंट काम कर रहा है — लाइव देखने के लिए खोलो।",
+        "close": "बंद करो",
+        "close_detail": "कार्य विवरण बंद करें",
+        "delete": "हटाओ",
+        "description_label": "विवरण",
+        "description_placeholder": "यह कार्य किस बारे में है?",
+        "discard": "हटाओ",
+        "execution_prompt_label": "निष्पादन प्रॉम्प्ट",
+        "keep_editing": "संपादन जारी रखो",
+        "move_to": "यहाँ ले जाएँ",
+        "open": "खोलो",
+        "open_agent_session": "एजेंट सत्र खोलो",
+        "prompt_placeholder": "यह कार्य चलने पर एजेंट से क्या करने को कहा जाता है…",
+        "read_transcript": "एजेंट ने जो किया उसका पूरा प्रतिलेख पढ़ो।",
+        "really_delete": "पक्का हटाओ",
+        "result_cancelled": "रद्द",
+        "result_failed": "विफल",
+        "result_succeeded": "सफल",
+        "run": "चलाओ",
+        "run_again": "फिर चलाओ",
+        "running": "चल रहा है",
+        "running_pill": "चल रहा है…",
+        "runs": "रन",
+        "save_changes": "बदलाव सहेजो",
+        "session": "सत्र",
+        "task_detail": "कार्य विवरण",
+        "title_label": "शीर्षक",
+        "unsaved_changes": "बिना सहेजे बदलाव",
+        "unsaved_changes_discard_prompt": "तुम्हारे बदलाव सहेजे नहीं गए हैं। हटा दें?",
+        "updated": "अद्यतन"
+      }
+    },
     "mdNotebook": {
       "badge": {
         "deleting": "हटाया जा रहा है",

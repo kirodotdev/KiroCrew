@@ -2396,6 +2396,97 @@
         "to_see_its_details": "um seine Details zu sehen."
       }
     },
+    "kanban": {
+      "column": {
+        "no_tasks": "Keine Aufgaben"
+      },
+      "createTaskForm": {
+        "auto_generate_note": "Titel und Beschreibung werden automatisch erzeugt – jederzeit bearbeitbar.",
+        "cancel": "Abbrechen",
+        "create_task": "Aufgabe erstellen",
+        "new_task": "Neue Aufgabe",
+        "prompt_placeholder": "Beschreibe deine Aufgabe in natürlicher Sprache...\n\nz. B. „Alle npm-Abhängigkeiten aktualisieren und Breaking Changes beheben“",
+        "refining": "Wird verfeinert...",
+        "what_do_you_want": "Was soll der Agent tun?",
+        "close": "Schließen",
+        "discard": "Verwerfen",
+        "discard_prompt_body": "Eingegebenen Text verwerfen?",
+        "discard_prompt_title": "Nicht gespeicherter Prompt",
+        "keep_editing": "Weiter bearbeiten"
+      },
+      "kanbanPage": {
+        "dismiss_error": "Fehler ausblenden",
+        "kanban": "Kanban",
+        "loading_board": "Board wird geladen…",
+        "match_count_one": "{{count}} Treffer",
+        "match_count_other": "{{count}} Treffer",
+        "new_task": "Neue Aufgabe",
+        "search_tasks": "Aufgaben suchen",
+        "search_tasks_placeholder": "Aufgaben suchen…",
+        "task_count_one": "{{count}} Aufgabe",
+        "task_count_other": "{{count}} Aufgaben"
+      },
+      "lanes": {
+        "backlog": "Backlog",
+        "done": "Fertig",
+        "failed": "Fehlgeschlagen",
+        "running": "Läuft",
+        "todo": "Zu tun"
+      },
+      "manifest": {
+        "description": "Ein Aufgabenboard im Kanban-Stil, das Arbeit in Spalten organisiert (Backlog, To-do, Läuft, Fertig, Fehlgeschlagen). Erstelle Aufgaben mit Ausführungs-Prompts, führe sie in echten Agent-Sitzungen aus und verfolge den Ausführungsverlauf.",
+        "display_name": "Kanban",
+        "highlight_1": "Kanban-Board mit fünf Spalten und Drag-and-drop",
+        "highlight_2": "Aufgaben in echten Agent-Sitzungen ausführen – auf „Ausführen“ klicken und der Arbeit des Agenten zusehen",
+        "highlight_3": "Ausführungsverlauf mit Links zum Sitzungsprotokoll verfolgen",
+        "highlight_4": "Gleicht laufende Aufgaben beim Laden der Seite automatisch ab",
+        "page_label": "Kanban"
+      },
+      "taskCard": {
+        "drag_to_move": "Zum Verschieben ziehen",
+        "open_agent_session": "Die Agent-Sitzung dieses Durchlaufs öffnen",
+        "priority_high": "Hoch",
+        "run": "Ausführen",
+        "run_again": "Erneut ausführen",
+        "run_count_one": "{{count}} Ausführung",
+        "run_count_other": "{{count}} Ausführungen",
+        "run_this_task": "Diese Aufgabe ausführen",
+        "view_session": "Sitzung ansehen",
+        "watch_live": "Live ansehen"
+      },
+      "taskDetail": {
+        "agent_working": "Der Agent arbeitet — zum Live-Verfolgen öffnen.",
+        "close": "Schließen",
+        "close_detail": "Aufgabendetails schließen",
+        "delete": "Löschen",
+        "description_label": "Beschreibung",
+        "description_placeholder": "Worum geht es bei dieser Aufgabe?",
+        "discard": "Verwerfen",
+        "execution_prompt_label": "Ausführungs-Prompt",
+        "keep_editing": "Weiter bearbeiten",
+        "move_to": "Verschieben nach",
+        "open": "öffnen",
+        "open_agent_session": "Agent-Sitzung öffnen",
+        "prompt_placeholder": "Was der Agent tun soll, wenn diese Aufgabe läuft…",
+        "read_transcript": "Das vollständige Transkript der Agent-Arbeit lesen.",
+        "really_delete": "Wirklich löschen",
+        "result_cancelled": "Abgebrochen",
+        "result_failed": "Fehlgeschlagen",
+        "result_succeeded": "Erfolgreich",
+        "run": "Ausführen",
+        "run_again": "Erneut ausführen",
+        "running": "läuft",
+        "running_pill": "Läuft…",
+        "runs": "Läufe",
+        "save_changes": "Änderungen speichern",
+        "session": "Sitzung",
+        "task_detail": "Aufgabendetails",
+        "title_label": "Titel",
+        "unsaved_changes": "Nicht gespeicherte Änderungen",
+        "unsaved_changes_discard_prompt": "Du hast nicht gespeicherte Änderungen. Verwerfen?",
+        "updated": "Aktualisiert"
+      }
+    },
     "mdNotebook": {
       "badge": {
         "deleting": "wird gelöscht",
