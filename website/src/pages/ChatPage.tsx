@@ -91,6 +91,7 @@ import {
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
 
 import ChatInput from '../components/ChatInput'
+import ErrorNotice from '../components/ErrorNotice'
 import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
@@ -738,6 +739,16 @@ export function isBrowseCommand(preview: string | undefined | null): boolean {
   }
   return /(^|[;&|(]\s*)playwright-cli(\s|$)/.test(cmd)
 }
+
+// Per-action titles for the refused-press notice above the composer. A press
+// added later gets its refusal surfaced by adding one entry here and calling
+// `showRefusedPress` from its catch — the `as const` map keeps every key
+// statically resolvable for the catalog-key gate.
+const REFUSED_PRESS_TITLE_KEYS = {
+  regenerate: 'pages.chatPage.could_not_regenerate',
+  switch_variant: 'pages.chatPage.could_not_switch_variant',
+} as const
+type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
 
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
@@ -4816,6 +4827,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const t = setTimeout(() => { setRegenerating(false) }, 30_000)
     return () => clearTimeout(t)
   }, [regenerating])
+  // ---- Refused-press notice ---------------------------------------------------
+  // One surface for any press the server refuses. These endpoints re-check under
+  // the slot lock and can refuse a press the client believed was available (a
+  // turn already running, a stop in progress, a pending approval, a readiness
+  // probe that timed out). Left in the console, that refusal reaches the user as
+  // the button flicking to disabled and straight back — a control that promises
+  // action and then says nothing. The server names the reason; this shows it
+  // above the composer with a per-action title. One state slot serves every
+  // refusable press (the newest refusal wins), so a press added later inherits
+  // the surface by calling `showRefusedPress` instead of re-discovering
+  // console.warn. The title map is `as const` so the key gate resolves every
+  // member from the single render-site call.
+  const [refusedPress, setRefusedPress] = useState<{ action: RefusedPressAction; message: string } | null>(null)
+  const showRefusedPress = useCallback((action: RefusedPressAction, e: unknown) => {
+    setRefusedPress({ action, message: e instanceof Error && e.message ? e.message : String(e) })
+  }, [])
+  useEffect(() => { setRefusedPress(null) }, [activeSlot])
+  // A turn that actually starts retires the refusal: whatever the slot was busy
+  // with is over, so the old reason would now describe a state that passed.
+  useEffect(() => { if (slotRunning) setRefusedPress(null) }, [slotRunning])
   const handleRegenerate = useCallback(() => {
     if (!activeSlot || regenerating || slotRunning) return
     const uIdx = messages.slice(0, lastTextIdx).map(mm => mm.role).lastIndexOf('user')
@@ -4824,12 +4855,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dispatch(truncateAfterIndex(uIdx + 1))
     setRegenerating(true)
     api.regenerateSlot(activeSlot).catch((e: unknown) => {
-      // eslint-disable-next-line no-console -- surface regenerate failures for debugging
-      console.warn('regenerate failed', e)
+      showRefusedPress('regenerate', e)
       dispatch(replaceMessages(snapshot))
       setRegenerating(false)
     })
-  }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch])
+  }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch, showRefusedPress])
 
   // ---- Continue the thread ---------------------------------------------------
   // A turn can end without the assistant handing the floor back: the connection
@@ -5795,8 +5825,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 // End of messages — show footer only if agent is done
                 return !slotRunning
               })()} onSpeak={handleSpeak} onRegenerate={i === lastTextIdx && !slotRunning && !regenerating && activeSlot ? handleRegenerate : undefined} variants={m.variants} variantIdx={m.variant_idx} onSwitchVariant={i === lastTextIdx && m.variants && m.variants.length > 1 && activeSlot ? (idx: number) => { api.switchVariant(activeSlot, idx).catch((e: unknown) => {
-                // eslint-disable-next-line no-console -- surface switch-variant failures for debugging
-                console.warn('switch-variant failed', e)
+                showRefusedPress('switch_variant', e)
               }) } : undefined} onFork={handleFork} onPlanFromHere={handlePlanFromHere} forkIndex={forkIndex} onApplyPlan={handleApplyPlan} />
             </div>
           )}
@@ -5809,7 +5838,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // apply-plan handler, so it belongs here for correctness. approve/send/
     // dismissApproval are NOT referenced in this renderer (user/approval rows go
     // through renderUserContentCb), so they are omitted to keep it stable.
-  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn])
+  }, [messages, visibleIndexMap, slotRunning, slotState, lastTextIdx, handleFileOpen, handleArtifactOpen, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, renderUserContentCb, highlightTs, activeSlotTitle, mode, dispatch, handleOpenDiff, handlePlanFromHere, navigate, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress])
 
   const [mobileSessions, setMobileSessions] = useState(false)
   // Close mobile sessions panel when a session is selected
@@ -6639,6 +6668,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
+              {/* The refused-press answer sits directly above the composer,
+                  adjacent to the message-footer controls that raised it, so the
+                  press cannot fail silently. Shares the chat column's own
+                  container recipe (the page gutter + the theme content width)
+                  rather than capping itself: a narrower centred box reads as
+                  belonging to neither the transcript above nor the input below.
+
+                  The title names the refused action. Without it the notice
+                  reads as a generic error rather than "this is the answer to
+                  the button you just pressed" — a first-time reader then
+                  concludes the click did nothing and presses again. */}
+              {refusedPress && (
+                <div
+                  className="px-4 mb-1.5 mx-auto w-full"
+                  style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
+                  data-testid="refused-press-error"
+                >
+                  <ErrorNotice
+                    title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
+                    message={refusedPress.message}
+                    onDismiss={() => setRefusedPress(null)}
+                  />
+                </div>
+              )}
               {showHistorySuggestions && (
                 <div className="absolute left-0 right-0 bottom-full mb-1 mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]">
                   <div className="px-3.5 py-2.5 border-b border-border shrink-0">
