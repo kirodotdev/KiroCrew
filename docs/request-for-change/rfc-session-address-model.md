@@ -1,157 +1,291 @@
 ---
-title: Session Address Model — one authoritative session per conversation, surfaces attach to it
+title: Session Address Model — an opaque conversation identity with an attribute store
 status: partial
 author: nrb
 created: 2026-08-17
-last-audited: 2026-08-17
-audited-at: b23ab77af
+last-audited: 2026-09-11
+audited-at: 707b8aef2
 doc-pr: 4077
+revision: 3
 implementation-prs: [1366, 1455, 1480, 1539, 1921]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
-# RFC: Session Address Model — one authoritative session per conversation, surfaces attach to it
+# RFC: Session Address Model — an opaque conversation identity with an attribute store
 
 > **Current behaviour: see [`../system-specs/modules/session.md`](../system-specs/modules/session.md)**
 > for the mirror-resolver and key-addressing behaviour that ships. This
 > document owns the §9 address rule inherited from
 > [`rfc-channel-plugin-architecture.md`](rfc-channel-plugin-architecture.md);
-> its four phases are still a live proposal.
+> Phase 0 below is on main and Phases 1–4 are a live proposal.
 
-- Status: partial — the dashboard half of the address rule is shipped and load-bearing. A conversation that starts in a chat app is no longer copied when its dashboard tab opens: the tab resolves and holds the conversation's real key, and one function replaced the ~two dozen name-prefix tests that decided what a conversation was allowed to do. What is **not** done: a conversation's identity still encodes its origin surface in the key string, that encoding is destroyed by the filename fold and has to be recovered by a linear scan, surface capability is still a single boolean, and the failure path when the scan misses silently starts a second session against the same transcript file.
+- Status: **partial.** Phase 0 is on main — PR #1366 and follow-ups #1455, #1480, #1539, #1921 (August 2026) moved a conversation's capabilities off its origin and onto observed surface state, for one surface and one boolean. Phases 1–4 are not started. Phase 4 is additionally blocked on a maintainer ruling (§10.1).
+- Revision 3 adds the surface model in §5.3 — the dashboard as permanent host, channels as attachments, and per-turn ingress as the input that selects a capability set — and records the shipped work as Phase 0 rather than as background. Revision 2 rewrote revision 1, which described Phase 0 and stopped there. Nothing here claims the end state works today; §2.3 records exactly where it does not.
 - Author: nrb
-- Created: 2026-08-17
-- Related: rfc-channel-plugin-architecture.md (its §9 amendment decided the address rule this document implements half of, and left the dashboard-as-surface work explicitly out of scope), rfc-append-only-session-transcript.md (owns the transcript write path this document only reads)
+- Created: 2026-08-17 · Revised: 2026-09-11
+- Related: rfc-channel-plugin-architecture.md — its §9 amendment decided the opposite of §5.1 here, and §9.4's "exactly one builder/parser" is Phase 2 below. rfc-append-only-session-transcript.md owns the transcript write path this document only reads.
 
-Everything measured below was read at `b23ab77af`. Paths are repo-relative.
+Every claim below was measured at `707b8aef2`, current `main` on 2026-09-11. Citations name symbols rather than line numbers: this document's line citations rotted twice in three weeks (once between `fa6261c4f` and a maintainer's re-audit at `2ff4ce819`, and once when `session.py` shrank from 6489 lines to under 2800 after that re-audit), and a symbol survives the refactor that moves the line. Every symbol cited here was checked to exist in its named file at `707b8aef2`. Paths are relative to `src/kiro_crew/`.
 
-## 1. Problem statement
+## 1. Summary
 
-A conversation in Kiro Crew has one identity, the `session_key`. A dashboard tab is a `_ChatSlot`, and its name is that key with every `:` folded to `_`, because a slot name has to match a transcript filename on disk. Chat apps — seven of them — attach to conversations and detach from them.
+A conversation's identity is a meaningful string whose first segment names the surface it started on: `slack:<ts>`, `dashboard:chat-12-1786…`, `cron:<job_id>`. Dozens of code sites read that string's shape to decide something — whether the conversation survives a restart, what its approval policy is, whether it may write to memory, how an audit event labels it, whether it can be nudged, where a reply is delivered. A current grep finds at least 35 executable `dashboard:` prefix reads alone.
 
-Before PR #1366 (3 August 2026) the two directions were not symmetric. A conversation sent from the dashboard to a chat app stayed one conversation. A conversation that *started* in a chat app became **two** the moment its dashboard tab opened: the tab could only write a key beginning `dashboard:`, so it read one file and wrote another. It ran a second agent process seeded with the last 50 messages, and PRs #808 (29 July) and #1112 (2 August) added a 30-second job that compared the two transcripts and copied across the difference. That copying stopped for good the first time anything else wrote to the tab, and nothing said it had stopped.
+This proposes three things, in order of how much they change:
 
-The cause was not the chat app. It was that the code asked *"where did this conversation start?"* — `session_key.startswith("dashboard:")`, written out at about two dozen call sites — when what it meant to ask was *"can the user see a dashboard right now?"* For a chat-app conversation with its tab open those two questions have different answers, and every feature behind that test was denied: clickable choices, question cards, switching the project directory.
+1. **The identity carries no meaning** — an opaque `s_<12 hex>` — and every attribute currently inferred from the string becomes a field on the record `session_map.json` already keeps (§5.1, §5.2). Four fixed special identities require explicit treatment (§2.1); the scheme reserves rather than migrates them.
+2. **The channels a conversation can reach are enumerable and durable, and the dashboard is not one of them** — it is the permanent host with the richest capability set, while channels attach and detach (§5.3).
+3. **Every turn carries its ingress**, and the capability set that shapes a reply is the one belonging to the surface the reply is bound for — not the union of everything attached (§5.3).
 
-PR #1366 fixed both halves and deleted the reconciler. What it did not do is remove the reason the bug was reachable, which is that a conversation's identity carries its origin in its name and the name is the primary index. Four measurements at `b23ab77af`:
+The point of all three is a model that can answer, correctly and without parsing a string, *how should this reply be shaped for the person who will read it.* Today the system gets that wrong in a way the user can see (§2.3).
 
-- **The encoding is lossy, and the recovery is a scan.** `history._safe_key` (`src/kiro_crew/history.py:1222`) folds `:` to `_`, and the fold is not invertible — given `discord_kirocrew_direct_123` nothing says which underscores were colons, and an agent name may contain one. So the real key is recovered by iterating the session map and re-folding every entry until one matches (`src/kiro_crew/session_map.py:1613-1622`). That map is bounded only by "does the transcript file still exist" (`prune`, `src/kiro_crew/session_map.py:953`) with carve-outs that make a channel-bound entry immortal, and the file already names the hazard at `src/kiro_crew/session_map.py:972-975`.
-- **Conversion is spread across ~33 sites.** Twenty-three named helpers convert between a slot name, a session key and a filename stem, and about ten more strip the `dashboard:` prefix inline. Each of the main ones carries a docstring warning against the others: `_history_key_for` (`src/kiro_crew/dashboard/chat_utils.py:432`, 47 references), `effective_session_key` (`:564`, 76 references), `slot_history_key` (`:524`), `slot_transcript_key` (`:505`), `dashboard_slot_key` (`:447`), `_normalize_slot_key` (`src/kiro_crew/dashboard/state.py:934`), `channel_slot_name` (`src/kiro_crew/dashboard/channel_slots.py:106`), `_fold_key` (`src/kiro_crew/session.py:781`).
-- **The same classification is reimplemented five times.** The ladder that turns a key into a session *type* exists independently at `src/kiro_crew/validation.py:182-190`, `src/kiro_crew/sel.py:1052-1061`, `src/kiro_crew/mcp_gateway/claim.py:59-68`, `src/kiro_crew/mcp_gateway/stub.py:368`, and `src/kiro_crew/slack/sessions_view.py:67`. The third one's docstring admits it mirrors the fourth.
-- **Both spellings already leak into stored keys.** `src/kiro_crew/session_map.py:701` carries a repair for the corrupted double prefix `dashboard:dashboard_`, which only exists because a name is built in more than one place.
+**Phase 0 of this shipped in August 2026 and is the foundation the rest builds on.** It took the narrowest case — one surface, one capability, one boolean — and moved it off the identity onto observed state. That was the right direction and it held. It also stopped short in specific ways (§6, Phase 0), and one of them is a live defect rather than an omission. The first remaining phase is an unrelated defect fix that stands alone; the last changes identity itself and is blocked on a maintainer decision, because it contradicts a rule another RFC already settled.
 
-## 2. What shipped
+## 2. Motivation
 
-PR #1366 replaced every prefix test with one function, `has_dashboard_surface` (`src/kiro_crew/session_surface.py:42`). The dashboard republishes the set of conversations that currently have a tab open; the function tests membership in that set. It has **seven** callers, each deciding one capability:
+### 2.1 What the identity does today
 
-| caller | decides |
+There is no complete central inventory. `CHANNEL_SESSION_NAMESPACES` in `constants.py` — moved there by PR #8492 on 2026-09-05 and still re-exported from `messaging/link.py`, where most of the codebase reads it — owns eleven channel-session namespaces (`slack`, `discord`, `telegram`, `whatsapp`, `webex`, `wecom`, `teams`, `weixin`, `imessage`, `feishu`, `unified`). Local conversation prefixes in active use include `dashboard:`, `cron:`, `subagent:`, `taskrunner:`, `channel:`, `side:`, `hook:`, `wf-pool:`, `wf-author:` and `wf-unpooled:`, while `_bg` and `_hb` are exact shared session keys. `acp:` is a separate runtime-attribution key rather than a `SessionManager` conversation. `secretary:` remains declared in `session.py`'s `_STATELESS_PREFIXES` and `messaging/link.py`'s `channel_namespace_of`, with no construction site in `src/`. The disagreement between inventories is itself part of the problem: a total derived from any one tuple is incomplete.
+
+Four fixed names need an explicit migration rule, but they do not all play the same role. `cli_chat` and the `_host` sentinel identify a terminal or host caller without a `SessionMap` conversation; `cli_chat.py`'s `_chat` builds its provider directly. `_bg` and `_hb`, by contrast, are real shared `SessionManager` conversations (`BACKGROUND_KEY` and `HEARTBEAT_KEY` in `session.py`) that are deliberately stateless for resume purposes (`SessionManager.get_or_create`). All four are reused across invocations and participate in equality-based decisions (`_resolve_runtime_source` in `context.py`, `_infer_source` in `sel.py`, `_CLI_SESSION_KEY` in `computer_use/cli.py`), so none may be silently treated as a newly minted opaque conversation.
+
+Two grammars coexist. Chat surfaces mostly use `{surface}:{agent}:{chat_type}:{scope…}[:genN]`, built by `messaging/link.py` (`build_dm_session_key`), where `scope` is a path rather than a single segment. Slack predates it and uses `slack:<thread_ts>` plus a legacy bare `<thread_ts>` form. `dashboard:` has no owning constant at all — it is a bare literal at dozens of sites.
+
+There is one canonical channel parser, `messaging/link.py` (`parse_session_key`), and it is strict by design: fewer than four segments or an unrecognised surface returns `None`. So bare Slack timestamps, two-segment `slack:<ts>`, every `dashboard:` key and `channel:{id}:{agent}` all deliberately fail to parse. The key forms that fail that parser are among those with the most behaviour attached.
+
+### 2.2 Why the identity encoding was wrong — and what Phase 0 proved
+
+Before PR #1366, a conversation that started in a chat app became **two** conversations when its dashboard tab opened. A tab could only write a key beginning `dashboard:`, so it read one transcript and wrote another. A 30-second reconciler copied between the two, which is the shape of a workaround for a model that cannot express the situation.
+
+The diagnosis is in `session_surface.py`'s own module docstring: the prefix test *"answers 'where did this start?' and not 'can the user see a dashboard right now?'"* Those are different questions, and the identity could only answer the first. PR #1366 pointed the tab at the chat app's own session, deleted the reconciler, and replaced about two dozen `session_key.startswith("dashboard:")` capability tests with one function, `has_dashboard_surface` in `session_surface.py`, asked against observed state.
+
+That is the thesis of this document, executed once at the smallest possible scale, and it is the strongest argument here: **the replacement model was not theorised, it was shipped and it held.** What follows is not a proposal to try something new — it is a proposal to finish what that started, having learned from where it stopped.
+
+Phase 0 stopped short in three ways, each of which is a later phase:
+
+- The attach set is **in-memory only** (`_dashboard_surfaced` in `session_surface.py`), so nothing about surfaces survives a restart and no other layer can query it → Phase 3.
+- The `dashboard:` prefix survives as an internal fast-path (the prefix branch of `has_dashboard_surface`). The fence leaks, which §2.3 documents → Phase 2.
+- The identity itself is untouched, so the other shape-reads remain → Phase 4.
+
+### 2.3 The problems that remain
+
+**The capability question is asked in the wrong shape, and the user can see it.** This is the one problem here that is not a development-time cost, so it comes first.
+
+`has_dashboard_surface` returns true for **any** key beginning `dashboard:`, before consulting observed state at all:
+
+```python
+# session_surface.py, has_dashboard_surface
+if session_key.startswith("dashboard:") or session_key.startswith("dashboard_"):
+    return True
+return session_key in _dashboard_surfaced
+```
+
+So for a conversation started at the desktop the function is *permanently* true and the observed-state mechanism is bypassed entirely. The widget gate in `context.py`'s `_resolve_prompt_templates` consumes it at prompt-build time, which produces a prompt that contradicts itself: the `[RUNTIME]` line correctly names Slack as this turn's transport while the widget instructions are present anyway, because the session key starts with `dashboard:`. A user who starts a conversation at their desk, links it to Slack, and continues from Slack is offered HTML rendering for a surface that cannot render it.
+
+Two further conflations sit behind that:
+
+- **The published set answers a different question than the one being asked of it.** `_sync_dashboard_slots` in `dashboard/chat_utils.py` publishes `{effective_session_key(s) for s in state._slots.values()}` — *open tabs* — to two consumers: `set_active_dashboard_slots`, which `SessionManager` uses to reap orphaned sessions, and `set_dashboard_surfaced`, which answers capability. Open-tab membership is the right answer for liveness and the wrong one for capability: a conversation the user pushed into "Older sessions" leaves the set, yet the dashboard remains entirely able to display it.
+- **The primitive that would answer it correctly already exists and is not wired to it.** `_resolve_runtime_source` in `context.py` takes a `runtime_source` and its docstring states the case unprompted: *"the authoritative transport for the current turn. It is intentionally separate from `session_key`: a dashboard session can be resumed from Discord."* It was split out of `_runtime_display_name` precisely so that *"the [RUNTIME] line and every source-keyed decision can never disagree"*. The widget gate is a source-keyed decision and is not on that seam: it lives in `_resolve_prompt_templates(prompt, session_key)`, whose signature carries only a session key — so it could only ever ask a session-shaped question.
+
+None of this is a Phase 0 regression; the pre-existing prefix test had the same blind spot. It is the part of the foundation that was left unfinished, and §5.3 is the model that finishes it.
+
+**The encoding is lossy and recovery is a linear scan.** `_safe_key` in `history.py` folds every character outside `[\w\-.]` to `_` to build the transcript filename, so `slack:<ts>` becomes `slack_<ts>.jsonl`. The fold is not invertible — nothing says which underscores were colons, and an agent name may contain one. Recovering the real key means iterating the session map and re-folding every entry until one matches (`channel_key_for_stem` in `session_map.py`), whose own docstring says the fold "is NOT reversible" and that a miss must be left unbound rather than guessed. The map that scan walks is pruned by provider-specific resume validity and transcript existence (`SessionMap.prune`), with durable-flag and channel-binding exceptions that preserve rows beyond that baseline.
+
+**Conversion is spread across dozens of sites.** The main helpers each carry a docstring warning against the others: `_history_key_for`, `dashboard_slot_key`, `slot_transcript_key`, `slot_history_key` and `effective_session_key` in `dashboard/chat_utils.py`; `_normalize_slot_key` in `dashboard/state.py`; `channel_slot_name` in `dashboard/channel_slots.py`; and `_fold_key` in `session.py`. Inline prefix strips and constructed `dashboard:` keys remain alongside them; a brittle exact count is not used as a status gate.
+
+**Overlapping classification is reimplemented in at least seven shape-reading ladders** — `context.py` (`_resolve_runtime_source`), `validation.py` (`infer_use_case`), `sel.py` (`_infer_source`), `mcp_gateway/claim.py` (`classify_session_type`), `mcp_gateway/stub.py` (`_build_caller_block`) (whose docstring admits it mirrors the previous one), `dashboard/handlers/sessions.py` (`api_session_tool_policy`), and `messaging/link.py` (`telemetry_channel_of`). They do not return one identical enum — runtime source, use case, audit source, caller type, agent and telemetry label differ — but each independently recovers an attribute from the key. The last is inside the module §9.4 of the channel-plugin RFC nominates as the single owner of key grammar.
+
+**One authorization reader fails open, and the audit classifier mislabels an event.** `mcp_dashboard.py` (`_validate_args`) says its delegated-caller prefix list is knowingly incomplete and that a new key form "will read as unscoped until it is added here." It now separately fail-closes missing delegated and `dashboard:` callers, but every other unlocatable key still returns unscoped. `sel.py` (`_infer_source`) returns `"slack"` as the fallback for an unrecognised non-empty key, so a conversation the audit log cannot classify is recorded as a Slack conversation rather than as unknown.
+
+**Both spellings already leak into stored keys.** `session_map.py` (`_resolve_alias`) carries a repair for the corrupted double prefix `dashboard:dashboard_`, which exists only because more than one place builds the name. That is the Phase 0 fence, leaking.
+
+**And the store the string duplicates is already the authority.** `SessionMap` holds the unfolded keys and a growing set of optional per-conversation fields (including nested link, mirror and flags records). Everything it knows exactly is duplicated less reliably in the key string; describing every row as a fixed-width record would already be wrong.
+
+## 3. Goals
+
+| # | Goal | State after Phase 0 |
+|---|---|---|
+| 1 | A conversation's identity is opaque: reading it tells you nothing you could act on, so no site can regress into parsing it. | Not started |
+| 2 | Every attribute currently inferred from the identity is a stored field with one writer and an explicit "unknown", so a missing answer fails closed instead of defaulting. | Not started |
+| 3 | The channels attached to a conversation are known, enumerable and durable — not a boolean derived at read time from whichever tabs happen to be open. | **Partly.** Observed state exists and is load-bearing; it is one boolean, in memory, for one surface. |
+| 4 | Every turn carries its ingress: which surface it arrived from is an explicit input, never inferred from the conversation's name. | **Partly.** `runtime_source` exists (`_resolve_runtime_source` in `context.py`) and reaches the `[RUNTIME]` line; it does not reach any capability gate. |
+| 5 | Capability and governance are declared per surface, and a reply is shaped by the capabilities of the surface it is bound for. | Not started — capability is a single boolean, governance is conversation-level |
+| 6 | Adding a surface costs a declaration, not an edit to every mechanism that has to know about it. | Not started — the six capability calls in §5.4 must each be edited today |
+
+Goals 3–5 are the ones that let the model answer *how should this reply be shaped for whoever is about to read it.* That question is the reason the rest of this matters.
+
+## 4. Non-goals
+
+- Letting chat surfaces reach each other. They cannot today and this does not propose that they should.
+- Changing who may message the agent. Each surface authorises its own senders; untouched.
+- Owning the transcript write path — rfc-append-only-session-transcript.md owns it.
+- Rewriting history. The audit log is append-only and stays readable as written (§8).
+- A distributed or multi-user identity scheme. This is a single-user local tool and the id is not proposed as a security boundary (§8).
+- Making the dashboard interchangeable with a channel. §5.3 is explicit that it is not, and that treating it as one would be a modelling error.
+
+## 5. Design
+
+### 5.1 The identity
+
+```
+session_id := "s_" [0-9a-f]{12}          # secrets.token_hex(6), validated ^s_[0-9a-f]{12}$
+```
+
+The id is the **whole** key, not a prefix plus an opaque tail. That is the load-bearing choice: leaving a namespace prefix in place keeps `startswith("dashboard:")` a working expression, and every site in §2.3 would keep reading it. Phase 0's fast-path fence is the empirical case — a prefix kept "only as an internal optimisation" is still a prefix the code reads, the `dashboard:dashboard_` repair in `session_map.py`'s `_resolve_alias` is what that costs, and §2.3's capability defect is the prefix short-circuiting the mechanism built to replace it. A prefixed form also cannot make the filename fold a no-op, because `_safe_key` still folds the colon.
+
+Six conditions the charset satisfies, three of them non-obvious:
+
+| Condition | Why |
 |---|---|
-| `src/kiro_crew/context.py:1628` | whether the prompt carries the widget block |
-| `src/kiro_crew/context.py:2672` | whether the prompt mentions the question tool |
-| `src/kiro_crew/dashboard/chat_utils.py:475`, `:479` | which slot name, if any, displays a conversation |
-| `src/kiro_crew/dashboard/session_directive_apply.py:89` | whether a directive may retarget a session |
-| `src/kiro_crew/mcp_tools/control.py:745` | whether the question tool answers or refuses |
-| `src/kiro_crew/subagent.py:1583` | whether an orphan notice goes to the tab or a DM |
+| `_safe_key(id) == id` | the fold becomes a no-op; `s`, `_` and hex are all `\w` |
+| no `.` | `\d+\.\d+` is `_SLACK_TS_RE` in `messaging/link.py`; `canonical_key` runs at the map's write/read boundaries (`SessionMap.set` and peers) and would rewrite a dotted id into `slack:<id>` |
+| no leading `_` | collides with the `_bg` / `_hb` / `_host` fixed identities |
+| not `^chat-\d+-\d+$` | matched as a telemetry slot at `messaging/link.py` (`_TELEMETRY_CHAT_SLOT_RE`) |
+| not `(?:dashboard_)?chat-\d+-\d+$` | matched at `dashboard/state.py` (`_SLOT_KEY_TITLE_RE`) |
+| lowercase hex only | no path traversal, mirroring the artifact-slug guard at `artifacts.py` |
 
-Two properties make it usable from anywhere. The module imports nothing from `kiro_crew`, so prompt building, the audit log and the MCP gateway can all call it. And the old prefix test survives as its first branch (`src/kiro_crew/session_surface.py:51`, accepting both `dashboard:` and `dashboard_`), which keeps a genuinely dashboard-born conversation recognisable before the dashboard has published anything and makes an empty set fall back to previous behaviour rather than to a wrong answer.
+`secrets.token_hex` rather than `uuid4().hex[:12]` because the id travels in an `X-Session-Key` header and is persisted into `open_slots.json`; a CSPRNG costs nothing here and removes the question. Width and the typed prefix follow existing convention — twelve-hex ids are minted in `dashboard/state.py` (`get_or_create_slot`) and other stores, `f"c_{secrets.token_hex(4)}"` appears at `apps/builtins/issue_radar/backend/crew_store.py` (`create_crew`), and the already-validated lowercase-hex job-id shape `^[a-f0-9]{1,16}$` is at `validation.py`.
 
-PRs #1455, #1480, #1539 and #1921 closed the consequences of one file now having two writers: a reply no longer starts a second conversation, a message keeps its real origin across save and reload, a chat-app message appears in an open tab in arrival order, and a tab's reads and writes stay on one file.
+### 5.2 The record
 
-This is the dashboard half of §9 rule 1 of rfc-channel-plugin-architecture.md, which reads: *"`session_key` is THE address for every session … A slot is a dashboard-local alias resolved to a key at the dashboard edge."* `linked_session_key` on the slot is that alias, resolved once when the tab is surfaced. `_cancel_target` (`src/kiro_crew/dashboard/chat_handlers.py:1573`) applies the same rule to stop, and its docstring records the silent no-op that the rule prevents.
+`session_map.json` is today a flat `key → entry` object with **no envelope and no version marker** (`json.dumps(self._data)` in `SessionMap._serialize`); migration is shape-sniffing inside `SessionMap._load`. An opaque id is indistinguishable from a legacy dashboard slot key by inspection, so **a version envelope is a prerequisite, not a nicety** — `autonudge.py` already has `_STORE_VERSION = 1` and is the model.
 
-## 3. Where the design is incomplete
+The entry gains these fields. Each replaces exactly one shape-read, and each has one writer:
 
-### 3.1 An unbound tab silently starts a second session against the same file
+| Field | Replaces | Writer |
+|---|---|---|
+| `surface` | `sel.py`, `context.py`, `validation.py` prefix ladders | mint site |
+| `channels[]` | Phase 0's in-memory attach set (`_dashboard_surfaced` in `session_surface.py`) — persists what already exists, and holds channels only, per §5.3 | attach/detach |
+| `stateful` | `_STATELESS_PREFIXES` in `session.py` plus exact-key handling | mint site, mutable thereafter |
+| `restricted` | constructed `dashboard:` keys in dashboard persistence/handlers, read by `handlers/_shared.py:_is_restricted_session` | the restrict/unrestrict handler |
+| `approval_policy` | session policy lookups keyed by a constructed or effective session key | the approval handler |
+| `delegated` | `_DELEGATED_CALLER_PREFIXES`, read by `_validate_args` in `mcp_dashboard.py` | mint site |
+| `nudgeable`, `nudge_mode` | `binding_key_for` + `is_channel_key` (`autonudge.py` and its channel predicates) | mint site |
+| `agent` | the ladder at `dashboard/handlers/sessions.py` (`api_session_tool_policy`) | mint site |
+| `channel.thread_id` | `slack/gateway.py` (`_fire_slack_nudge`), which recovers the delivery thread *from the key* | the surface on attach |
+| `legacy_stems[]` | the reverse scan `channel_key_for_stem` | migration only |
 
-When the scan in §1 misses — a pruned map entry, or a thread older than the map — `surface_channel_session` deliberately surfaces the tab **unbound** rather than binding it to a guess, because a wrong key would answer the user from a session the chat app never reads (`src/kiro_crew/dashboard/channel_slots.py:291-309`). That choice is correct. What follows it is not.
+`channels[]` is not a new idea — Phase 0 already built the attach set and simply kept it in memory. Persisting it is what lets the other rows stop being prefix reads.
 
-Nothing prevents a turn from that tab. `POST /api/chat` has no check on the binding, and `_run_chat`'s first statement resolves the target with `effective_session_key` (`src/kiro_crew/dashboard/chat_runner.py:3642`), which falls back to `_history_key_for(slot.key)` (`src/kiro_crew/dashboard/chat_utils.py:578`) and yields `dashboard:<stem>`. Three consequences:
+`restricted` and `approval_policy` are shown here as conversation-level because that is what they are today. §5.3 argues governance is properly a per-surface property, which would make these a per-entry default that an attached channel can tighten. That expansion is deliberately left as §10.2 rather than assumed here.
 
-- **Two turn locks, one transcript.** The turn semaphore is a field on the session object (`src/kiro_crew/session.py:662`) in a registry keyed by session key (`:874`), so two keys are two locks and both turns can run at once. Meanwhile `slot_history_key`'s `channel_origin` branch (`src/kiro_crew/dashboard/chat_utils.py:559-560`) correctly routes the *transcript* back to the chat app's own file. The file itself is safe: `ConversationLog._locked` (`src/kiro_crew/history.py:1771`) holds an in-process RLock and a cross-process advisory `flock` keyed on the resolved file path (`:1785`), so appends from either writer — including another process — are serialised and the file cannot be torn. What is unserialised is the *turn*: two agents interleave turns into one conversation history with no mutual exclusion above the append, and neither knows the other spoke.
-- **The reply does not leave the browser.** The outbound binding lives on the chat app's key, not on `dashboard:<stem>`.
-- **Nobody is told.** The unbound path logs once at `info` when the tab is surfaced (`src/kiro_crew/dashboard/channel_slots.py:299`), never at send time. The frontend cannot tell the two states apart: `website/src/` contains no reference to `linked_session_key` or `channel_origin`, and the sidebar derives its badge from the slot *name* (`website/src/utils/channelOrigin.ts`).
+Two shapes must be preserved rather than simplified. Legacy maps can contain two conversations claiming one `channel.thread_id`; `SessionMap._rebuild_thread_index` heals that contest on load with a key-shape tie-break, while live `set_slack_link` writes evict rival claimants (`_evict_rival_claimants`). An opaque id removes the shape-read used by both paths, so the stored binding must identify its origin explicitly. And `stateful` must be a stored mutable field, not derived from `surface`, because `_is_continuable_key` in `session.py` already lets a caller opt out.
 
-This is the degraded path being read-only by intent while nothing enforces the intent. It is worth fixing on its own, independently of everything else in this document.
+Every reader gets an explicit miss. `_infer_source`'s `"slack"` fallback in `sel.py` becomes `"unknown"`; `mcp_dashboard.py`'s fail-open list becomes a refusal on absent `delegated`.
 
-### 3.2 Surface capability is one boolean
+**The record must also answer the inbound direction, which the table above does not.** Every field there replaces an *outbound* shape-read — given a conversation, decide something about it. Inbound is the opposite: a second Slack message arrives on a thread and the system must find the conversation that already owns it. The reverse index `_thread_to_session`, rebuilt by `SessionMap._rebuild_thread_index`, is already load-bearing for inbound Slack; it is rebuilt from entries on load and maintained by link writes. With a random id the generalized `(surface, conversation_id, thread_id) → session id` index becomes the only way any transport can recover an existing conversation, so attach/detach must maintain it without reconstructing ownership from key shapes.
 
-`has_dashboard_surface` answers a yes/no question, and where it answers no the product falls back to plain text. That makes every non-dashboard surface one bucket defined by its least capable member, and asserts each of them can at least render text. It is a reasonable stand-in and it is not what the design wants: rfc-channel-plugin-architecture.md §9 already commits to "one builtin surface with **declared capabilities**". A boolean cannot express a surface that renders *better* than the dashboard, which is what arrives when other Kiro surfaces become attachable.
+That index carries a shape-read the §2.3 inventory missed, and it is the sharpest one in the codebase. Its load-time tie-break in `_rebuild_thread_index` resolves legacy duplicate claims by asking whether a key *derives from* that thread — `"A slack:<ts> key whose ts IS the thread is the fork … any other key holds the real conversation."` The live writer's rival eviction uses the same self-derived distinction. That heuristic exists to clean up exactly the duplicate-conversation bug Phase 0 fixed. Under an opaque id no key derives from anything, so the fact that distinguishes an original binding from a fork must be stored before any id is minted.
 
-### 3.3 The dashboard is not a channel, and so every mechanism hand-rolls it
+### 5.3 Surfaces: one host, many attachments, one ingress per turn
 
-`src/kiro_crew/channels.py:50-56` is "the ONE place that knows every channel" and lists seven. The dashboard is not among them, and `is_channel_session_key` (`src/kiro_crew/messaging/link.py:84`) excludes its namespace — which is exactly what lets `channel_slots.py:291` refuse to bind a non-channel key. Yet the `dashboard:` namespace is treated like a channel namespace by approval policy, restricted-key bookkeeping, `_STATELESS_PREFIXES` membership (`src/kiro_crew/session.py:321-337`, where `dashboard:` is absent and therefore stateful by omission) and all five copies of the classification ladder. `src/kiro_crew/messaging/link.py` owns a real builder (`:202`) and parser (`:283`) and every chat-app package imports it, but it owns no `dashboard:` grammar at all — only the legacy shim at `:435`. So the namespace with the most behaviour attached to it is the one with no canonical parser.
+Three properties are deliberately separate here. Every defect in §2.3's first item comes from conflating two of them.
 
-### 3.4 Security state is keyed by a string two places must spell identically
+| Property | The question it answers | Lifetime |
+|---|---|---|
+| **Capability** | what can this surface render, and what input can it accept | static per surface type |
+| **Attachment** | is this channel currently bound to this conversation | episodic — channels attach and detach |
+| **Ingress** | which surface did *this turn* arrive from | exactly one, per turn |
 
-Restricted-key bookkeeping gates memory, artifact and lesson writes at roughly fifty call sites. The write side constructs the key as a literal (`src/kiro_crew/dashboard/chat_handlers.py:3877-3879`, `src/kiro_crew/dashboard/chat_persistence.py:482-483`) and the read side tests exact membership, then strips a prefix inline and special-cases the literal `"dashboard:ui"` (`src/kiro_crew/dashboard/handlers/_shared.py:1375-1384`). Approval policy is the same shape: set with `f"dashboard:{slot_key}"` at six sites in `src/kiro_crew/dashboard/chat_handlers.py` (`:3992`, `:3997`, `:4014`, `:4022`, `:4048`, `:4057`), stored per session (`src/kiro_crew/session.py:663`), read through `_fold_key`, which by design never rewrites a non-Slack namespace (`:795-796`).
+**The dashboard is the host, not an attachment.** It does not belong in `channels[]`, because there is no state in which it is absent: every conversation is displayable in it, it always accrues the transcript, and there is no detach operation. What varies is *attention* — a tab is foregrounded, backgrounded, or pushed into "Older sessions" — and attention is not capability. A conversation the user is not looking at loses nothing and can be reopened with full fidelity; it simply updates quietly. That is precisely the distinction `_sync_dashboard_slots` collapses today (§2.3), by publishing open tabs as though open-ness were the capability question.
 
-Neither mechanism performs a prefix *test*, so this is not a surviving capability gate. It is something narrower and more fragile: two independent places agree on a spelling, and the security property holds because they happen to agree. `slot_history_key` (`src/kiro_crew/dashboard/chat_utils.py:541-543`) documents the unbound tab keeping its `dashboard:` key specifically so this bookkeeping stays intact, which makes the fragility load-bearing on the degraded path from §3.1.
+So the model is: **the dashboard is a permanent surface holding the richest capability set, and channels are attachments that come and go.** This is an asymmetry, not a special case to be refactored away later, and it is load-bearing in one specific way — if the dashboard were an ordinary roster member, "no surfaces attached" would be a reachable state meaning *this conversation cannot be displayed anywhere*, which is never true. Any design that makes the dashboard detachable has to answer what that state means, and there is no useful answer.
 
-## 4. Goals
+It also settles a question the channel-plugin RFC left open: the dashboard is not the eleventh member of the builtin transport registry (`builtin_channel_descriptors` in `channels.py`). It is the thing the registry's members attach *to*.
 
-1. A conversation has one identity, and reading that identity tells you nothing you have to act on.
-2. What a conversation may do is a property of the surfaces currently attached to it, declared by those surfaces.
-3. Attaching or detaching a surface never changes identity, never forks a transcript, and never widens or narrows a security decision by accident.
-4. Adding a surface costs a declaration, not an edit to every mechanism that has to know about it.
+**Ingress selects the delivery surface; the delivery surface selects the capability set.** A reply is shaped for whoever is about to read it, which is one surface, not the union of everything attached. Concretely, on one unchanged conversation:
 
-## 5. Non-goals
+| Turn arrives from | Delivery surface | Widgets |
+|---|---|---|
+| the dashboard | dashboard | yes |
+| Slack | Slack | no |
+| Slack, dashboard tab also open | Slack | no — the open tab is not who asked |
 
-- Changing what the chat apps can do to each other. They still cannot reach one another, and this document does not propose that they should.
-- Changing who may message the agent. Each app authorises its own senders; none of that is touched.
-- Owning the transcript write path. rfc-append-only-session-transcript.md owns it; this document only reads.
-- Rewriting the existing `slack:` and `dashboard:` keys in place. Any migration here has to tolerate them, exactly as §9 of rfc-channel-plugin-architecture.md already accepts.
+The third row is the one today's code gets wrong in both directions: wrong via the prefix short-circuit for a desktop-born conversation, and wrong via open-tab membership for a Slack-born one. Attachment is the wrong input; ingress is the right one, and `_resolve_runtime_source` in `context.py` is already the value that carries it.
 
-## 6. Proposed direction: an opaque id with an attribute store
+This does not make attachment useless — it is what says *where else this conversation is reachable*, which is what an unprompted notification or a handoff digest needs (`_notify_orphan_impl` in `subagent_manager/monitoring.py`, reached through `subagent.py`'s `_notify_orphan`, is exactly that case). Ingress answers "how do I shape this reply"; attachment answers "where can I reach this person at all". Both are needed and they are not the same query.
 
-A conversation gets an opaque, meaningless id. Everything currently inferred from the key's shape becomes a record: origin surface, currently attached surfaces, each attached surface's declared capabilities, statefulness, approval policy, restricted-write state.
+**Governance belongs with capability, per surface.** Approval policy and restricted-write are conversation-level today. Whether the same conversation should carry the same tool-approval requirements when driven from a phone in Slack as when driven from the desktop is a real question and the answer is probably no. §10.2 holds it, because it widens an authorization surface and wants its own decision rather than being smuggled in here.
 
-The argument for it is that the store already exists and is already the authority. `SessionMap` holds the unfolded keys and is the only thing that can answer what a folded stem means (`src/kiro_crew/session_map.py:1606`). The name is a second, lossy copy of what the store knows exactly. Every cost in §1 and §3 comes from treating the copy as the index: the scan exists because the copy is lossy, the ~33 converters exist because the copy has several spellings, the five ladders exist because parsing the copy is easy enough to do locally, and the double-prefix repair at `src/kiro_crew/session_map.py:701` exists because two places built the copy differently. An opaque id makes the fold a non-event, because a name with no colons in it survives becoming a filename unchanged.
+### 5.4 Capabilities
 
-The argument against it is migration cost, and it is real: every existing key is a meaningful string, `_STATELESS_PREFIXES` routes on the first segment, and the security keying in §3.4 is spelled out at a dozen write sites. This is why the phases below put the store first and the opaque id last, and why the last one is blocked on a decision rather than scheduled.
+`has_dashboard_surface` — Phase 0's function — is currently invoked nine times across eight source lines. Three calls, all inside `dashboard_slot_key` in `dashboard/chat_utils.py`, sit in the slot-name resolver and are not capability questions. The other six ask four distinct questions through one boolean, which become four declared capabilities:
 
-## 7. Relationship to rfc-channel-plugin-architecture.md
+| Capability | Asked at | Gates |
+|---|---|---|
+| `can_render_rich_html` | `context.py` · `_resolve_prompt_templates` | the widget block in the system prompt |
+| `can_render_interactive_card` | `context.py` · `build_message`; `mcp_tools/control.py` · `ask_question`; `session_directive_apply.py` · `apply_session_directive` | the question/card feature at the prompt, tool and directive-consumer boundaries — three sites, one name, must not diverge |
+| `has_mutable_slot` | `session_directive_apply.py` · `_has_user_surface` | one input to whether a user-originated directive may retarget project or CWD |
+| `can_inject_turn` | `subagent_manager/monitoring.py` · `_notify_orphan_impl` | orphan notice as a turn, or fall back to a DM digest |
 
-That document's §9 decided **option B** — an opaque key with a canonical grammar and a single builder/parser — on 29 July 2026, five days before PR #1366 merged. This document does not contradict that decision; §2 above is its dashboard half. Three differences are worth stating plainly:
+Each surface type declares its set once. The four are not asked the same way, and the split follows §5.3: the first three are **delivery** questions, resolved against the capabilities of this turn's delivery surface. `can_inject_turn` is a **reachability** question — it is asked by a subagent with no turn of its own, so it has no ingress, and it resolves against `channels[]` plus the always-present host.
 
-1. **Order.** §9 ends by putting "the eventual dashboard-as-surface unification (dashboard = host + one builtin surface with declared capabilities)" explicitly out of scope for its PRs ①–⑤. PR #1366 did that unification early, before the registry and parser it was scheduled to sit on. The work in §2 therefore arrived out of the planned sequence.
-2. **Rule 4 is further away, not closer.** §9 wants exactly one builder/parser module, with the key munging dying in one place. There are now 23 named converters and five classification ladders. Nothing regressed — those predate #1366 — but the debt rule 4 exists to retire has not shrunk.
-3. **An option §9 did not evaluate.** Its table compares a typed address object, an opaque key with a canonical grammar, the two-level status quo, and a URI scheme. It does not consider an opaque id with **no** grammar plus an attribute store, which is §6 here. Under option B the first segment is deliberately the routing authority; §6 argues that routing should read the store. That is a genuine disagreement with a decided option, and it belongs to the maintainers to settle.
+A surface that renders *better* than the dashboard becomes expressible, which Phase 0's boolean cannot say because it can only answer "is the dashboard here."
 
-## 8. Phases
+### 5.5 Routing without parsing
+
+The sharpest dependency is `slack/gateway.py` (`_fire_slack_nudge`), whose comment reads `# Canonical keys embed the thread root ts.` and recovers the delivery target from the key; the same file's `_notif_meta` splits a key into `(channel, ts)` to build a permalink. Other channel-specific notification paths also split keys for routing, so Phase 4 must inventory all routing readers, not just Slack. Under this design they read `channel.conversation_id` and `channel.thread_id` from the record. `messaging/link.py` (`bind_origin_mirror`) skips origin-mirror binding when a key is `unified:` because that name identifies no single conversation — that becomes an absent `channel` record rather than a prefix test.
+
+## 6. Migration plan
 
 Each phase is independently shippable and independently abandonable.
 
-**Phase 1 — refuse a turn from an unbound tab.** Fixes §3.1. Depends on nothing here.
-Exit criteria: a turn started from a slot with `channel_origin` true and an empty `linked_session_key` is refused with a reason the user can see, rather than starting a `dashboard:<stem>` session; a test pins the refusal; the other turn entry points (the socket path and `api_chat_slot_continue`, `src/kiro_crew/dashboard/chat_handlers.py:1821`) are covered by the same guard or shown not to reach it.
+**Phase 0 — capability from observed state, not origin. ✅ On main, August 2026.** PR #1366 with follow-ups #1455, #1480, #1539, #1921. A dashboard tab opened on a chat conversation now joins that conversation instead of forking a second one; the 30-second reconciler that had been copying between the two is deleted; about two dozen `startswith("dashboard:")` capability tests became one `has_dashboard_surface` call.
 
-**Phase 2 — one converter, one classifier.** Fixes §3.3's parsing half and §1's spread.
-Exit criteria: `src/kiro_crew/messaging/link.py` owns the `dashboard:` namespace as well as the chat-app ones; the five classification ladders become one call; no `startswith("dashboard:")` remains in `src/` outside that module and the fast-path branch in `src/kiro_crew/session_surface.py`; the double-prefix repair at `src/kiro_crew/session_map.py:701` is deleted rather than moved, with a test proving the corrupted spelling can no longer be produced.
+*What it did not do,* which is why this document continues: the attach set is in-memory only, so nothing survives a restart and no other layer can query it; the capability is a single boolean covering four distinct questions and answering none of them in terms of the turn's ingress; the `dashboard:` prefix survives as a fast-path at `session_surface.py` (`has_dashboard_surface`, the prefix branch) and short-circuits the very mechanism it was meant to be replaced by; and the identity is unchanged, so the shape-reads in §2.3 remain.
 
-**Phase 3 — declared capabilities instead of one boolean.** Fixes §3.2.
-Exit criteria: each of the seven call sites in §2 asks a named capability ("can any attached surface render a widget?") rather than "is a dashboard attached?"; a surface declares its capabilities in one place; adding a surface that renders widgets requires no edit to those seven sites; `has_dashboard_surface` is either deleted or reduced to one capability query.
+*Per-PR attribution for the four follow-ups is not audited in this revision* — the set was verified as a whole. If the index needs a per-PR breakdown, that is a follow-up audit, flagged here rather than guessed.
 
-**Phase 4 — opaque id and attribute store.** Blocked on open question 1.
-Exit criteria: a newly created conversation's id contains no surface segment; routing, statefulness and security state are read from the store rather than parsed from the id; `channel_key_for_stem` and its scan are deleted; existing meaningful keys still resolve.
+**Phase 1 — refuse a turn from an unbound tab.** Fixes a live defect; depends on nothing else here. It is the residue of Phase 0: when `channel_key_for_stem` misses, `surface_channel_session` in `dashboard/channel_slots.py` deliberately surfaces the tab unbound, which is correct, but nothing then stops a turn. `effective_session_key` in `dashboard/chat_utils.py` falls back to `dashboard:<stem>` — a second session with its own turn semaphore — while its sibling `slot_history_key` correctly routes the transcript back to the chat app's file. So the duplicate-conversation bug Phase 0 closed still has one open door. The file cannot tear: `ConversationLog._locked` in `history.py` holds an in-process lock plus a cross-process advisory lock keyed on the resolved path. What is unserialised is the turn, and the reply never reaches the chat app.
 
-## 9. Security considerations
+*Exit criteria:* a turn started from a slot with `channel_origin` true and an empty `linked_session_key` is refused with a reason the user can see; a test pins the refusal; and the guard sits at **`_run_chat`'s entry** (`dashboard/chat_runner.py`) rather than at its callers. That placement is the criterion, not a convenience: every path reaches `_run_chat`, and enumerating callers has already been got wrong twice. The count keeps moving in the direction that proves the point: the maintainer's re-audit at `2ff4ce819` found thirteen direct call expressions; at `707b8aef2` there are about two dozen across thirteen modules — public chat, regenerate/rewind, OpenAI compatibility, orchestration, messaging/taskrunner, the Slack gateway and handler, the Issue Radar and Spec Builder apps, and internal follow-up paths. Revision 2 missed several of those; this criterion deliberately does not depend on the list staying complete.
 
-- **The keying in §3.4 is the main one.** Moving approval policy and restricted-write state off a constructed key string and onto a session attribute is a security-relevant change with a real failure mode: a session that silently reads as unrestricted because a lookup missed, where today it reads as unrestricted because a spelling differed. Phase 4 must state which way it fails and test that direction explicitly. Fail-closed is the only acceptable answer.
-- **§3.1 is a concurrency gap above the file, not a corruption risk in it.** The per-file lock in `src/kiro_crew/history.py:1771` serialises every append, so the transcript cannot be torn. What two semaphores over one conversation buy is two agents taking turns in it simultaneously, each blind to the other. Phase 1 closes that by refusing the turn; anything that instead *binds* the unbound tab has to explain why a guessed key is safe, which §1's fold says it is not.
-- **Capability is not authorisation.** Phase 3 changes what a surface can render, and must not become a path to changing who may drive a conversation. Sender authorisation stays per app, where it is today.
-- **The audit log reads the key's shape.** `src/kiro_crew/sel.py:1052-1061` derives its session-type label from the prefix, as do the two MCP caller-block builders (`src/kiro_crew/mcp_gateway/claim.py:59-68`, `src/kiro_crew/mcp_gateway/stub.py:368`). An opaque id removes that label's source, so Phase 4 has to supply it from the store or the audit trail loses a field.
+**Phase 2 — a version envelope and one converter.** Retires Phase 0's fast-path fence. *Exit criteria:* `session_map.json` carries a version envelope and `_load` dispatches on it rather than sniffing entry shape; `messaging/link.py` owns the `dashboard:` namespace with a builder and a parser that returns a value for it; the at-least-seven classification ladders consume one parsed attribute record, including the classifier already inside `link.py`; no `startswith("dashboard:")` remains in `src/` outside that module, *including the fast-path branch at `session_surface.py` (`has_dashboard_surface`, the prefix branch)*; and the `dashboard:dashboard_` repair at `session_map.py` (`_resolve_alias`) is deleted rather than moved, with a test proving the corrupt spelling can no longer be produced.
 
-## 10. Alternatives considered
+**Phase 3 — the surface model: durable channels, per-turn ingress, declared capabilities.** Generalises Phase 0 from one in-memory boolean to §5.3's three properties. *Exit criteria:* `channels[]` is persisted per §5.2 and holds channels only, so the answer survives a restart; the dashboard is modelled as the permanent host and is never an entry in it; the turn's ingress reaches the capability gates — concretely, `_resolve_prompt_templates` (`context.py`) takes the resolved runtime source as an argument rather than deriving anything from `session_key`; the four capabilities of §5.4 are declared per surface type, with the three delivery capabilities resolved against this turn's delivery surface and `can_inject_turn` against reachability; a test pins the case today's code fails — a `dashboard:`-born conversation, turn arriving via Slack, prompt built **without** the widget block; the capability set and the reaping set stop being one set, so pushing a session into "Older sessions" changes attention and not capability; adding a surface that renders widgets requires no edit to the six callers; and `has_dashboard_surface` is deleted.
 
-- **Keep the status quo.** Defensible for §3.2 and §3.3, which are costs paid at development time. Not defensible for §3.1, which is a live defect — hence Phase 1 standing alone.
-- **A typed address object everywhere** (§9's option A). Rejected there for touching every `sessions.*` call site; that reasoning is unchanged.
-- **An opaque key with a canonical grammar** (§9's option B, the decided one). Already the direction of Phases 1–3, which need no change to it. It is only Phase 4 that departs.
-- **Bind an unbound tab by guessing the key.** Rejected: the fold is not invertible, and a wrong key answers the user from a session the chat app never reads — the reasoning already recorded at `src/kiro_crew/session_map.py:1608-1611`.
-- **Keep the boolean and add a second one per surface.** Rejected: this is how ~two dozen prefix tests accumulated in the first place.
+**Phase 4 — the opaque id.** *Blocked on open question 1.* *Exit criteria:* a newly minted conversation's id matches `^s_[0-9a-f]{12}$`; every §5.2 field is read from the record rather than parsed from the id; **an inbound message on an existing thread resolves to its conversation through the `(surface, conversation_id, thread_id)` index rather than by constructing a key, and the fork tie-break is a stored fact rather than a key-shape test** (§5.2); `channel_key_for_stem` and its scan are deleted; the `stem.replace("_", ":", 1)` in `history.py`'s `_index_key_for_stem` is gone (it would split `s_3f9c…` into `s:3f9c…`); the four fixed identities of §2.1 are enumerated in one place with their conversation-versus-caller role, so none is silently left as a semantic key that code still compares against; and every legacy key still resolves per §7.
 
-## 11. Open questions
+## 7. Backward compatibility
 
-1. **Does the identity become opaque, or does the grammar stay?** §9 decided the grammar is the routing authority; §6 argues the store should be. Phase 4 cannot start until a maintainer rules, and the honest answer may be that Phases 1–3 are worth doing and Phase 4 is not.
-2. **Does the dashboard join the channel registry** (`src/kiro_crew/channels.py`) as a surface with no transport, or does it stay a host that owns a namespace? Phase 3's shape follows from the answer.
-3. **Who declares a capability, and at what granularity?** Per surface type, per attached instance, or negotiated at attach time. A chat app whose thread support differs between a direct message and a channel is the case that decides this.
-4. **Should the transcript be the unit that surfaces attach to, rather than the session?** rfc-append-only-session-transcript.md owns the write path, and §3.1's two-turn-locks-one-file behaviour is visible from both documents. If that RFC proceeds, the two need to agree on where turn-level serialisation lives before Phase 4 moves identity.
+Seven compatibility obligation groups follow. None can be skipped in Phase 4.
+
+1. **Transcript filenames on disk.** Either alias via `legacy_stems` — mirroring what `transcript_stems` and `_path`'s fallback in `history.py` already do for bare Slack timestamps — or rename with a symlink, which `ConversationLog.list_sessions` skips as a handoff alias. Sidecars share the stem and must move together. The input is not clean: stacked `dashboard_` stems already exist, which is why `_canonical_key` has to strip them.
+2. **The session map.** Needs the envelope first, and must preserve `sid` above all — `SessionMap.prune` (`session_map.py`) validates resumability and can delete a stale row.
+3. **Approval policy and restricted keys.** Nothing on disk, but every construction site must switch in one commit; a half-migrated set is a silent authorization miss, which `dashboard/chat_persistence.py` already documents for the `dashboard_` / `dashboard:` pair.
+4. **The Slack thread reverse index.** Derived, so mostly free — except `channel.thread_id` must be populated for every existing Slack conversation, because the key-derived fallback at `slack/gateway.py` (`_fire_slack_nudge`) disappears.
+5. **`_fold_key`.** Kept for legacy rows; new mints bypass it. §5.1's no-dot condition is what guarantees `canonical_key` can never mistake an opaque id for a bare Slack timestamp.
+6. **Persisted foreign keys and reconstruction fallbacks.** The list is larger than four: `CronJob.session_key` in `cron.py`, with `f"cron:{job_id}"` fallbacks such as the one in `_force_reap`; the subagent `conversation_key` on `SubagentInfo` in `subagent.py`, whose resume-mismatch path in `_run_inner` **refuses to execute** — a hard failure, not a degradation; `ChannelAgent.session_key` in `channel.py`, rebuilt from two ids in `ChannelAgent.deserialize`; versioned `autonudge.json` records (`_STORE_VERSION` and `NudgeLoop` in `autonudge.py`); the session ledger's `slot_key`; and transcript metadata's `linked_session_key`. Phase 4 must inventory persisted consumers rather than treating the first four found as exhaustive.
+7. **The audit log.** Append-only and not rewritten, so `_infer_source` must keep classifying legacy keys — which is why `_infer_source`'s `"slack"` fallback in `sel.py` becomes `"unknown"` rather than disappearing.
+
+Phase 3 adds one of its own: **a turn with no resolvable ingress must fail toward the least capable surface, not the most.** Today's absent-`runtime_source` path in `_resolve_runtime_source` falls back to prefix inference, which is the same disease; under §5.3 an unknown ingress means plain text.
+
+## 8. Security considerations
+
+- **The audit mislabel is a present bug, not a migration risk.** `_infer_source` in `sel.py` records an unclassifiable non-empty key as `"slack"`. Fixing it to `"unknown"` is in Phase 2's scope and is worth doing whether or not Phase 4 happens.
+- **One authorization reader still fails open for unknown key forms.** `_validate_args` in `mcp_dashboard.py` documents that an unrecognised non-delegated, non-dashboard key reads as unscoped. Under §5.2 an absent `delegated` field must refuse. Any phase that adds a field must state its failure direction, and fail-closed is the only acceptable answer.
+- **Capability must fail closed too, and today it fails open.** The prefix short-circuit in §2.3 hands a capability to a surface that does not have it. Phase 3's version of the rule: an unresolved ingress or an unknown surface yields the minimum capability set, never the host's.
+- **Per-surface governance widens an authorization surface, which is why it is a question and not a proposal.** If approval policy becomes per-surface (§10.2), the failure mode to design against is a channel that inherits the desktop's looser policy by omission. The default must be the tightest of the applicable policies, not the conversation's.
+- **Moving authorization state off existing identities is the risk to review.** Restricted-write state still uses constructed dashboard keys, while approval policy now follows `effective_session_key` for dashboard turns and the transport's session key for messaging turns. A half-migration can silently miss either lookup, so Phase 4 needs tests that an absent record cannot widen authorization and that revocation reaches the same identity approval granted.
+- **The id is not an authorization token.** It is non-sequential and CSPRNG-generated so that values appearing in a header or `open_slots.json` are not simple counters, but 48 bits must not be treated as an authorization boundary. Sender authorisation stays per surface, where it is today.
+- **Phase 1 closes a turn-serialisation gap, not a corruption risk.** Both lock layers are path-keyed, so the transcript cannot tear; what two semaphores buy is two agents taking turns in one conversation, each blind to the other.
+
+## 9. Alternatives considered
+
+- **Stop at Phase 0.** The strongest alternative, and it deserves stating rather than dismissing: the duplicate-conversation bug is fixed and the reconciler is gone. It is not defensible for Phase 1, a live user-visible defect, nor now for Phase 3 — §2.3's capability failure is also user-visible, and it is the kind that erodes trust quietly, by making the agent look like it does not know where it is talking.
+- **Make the dashboard an ordinary channel in the transport registry.** Symmetrical, and briefly attractive because it deletes the special case. Rejected in §5.3: it creates a reachable "no surfaces attached" state that has no meaning, and it invites a detach operation that should not exist. The dashboard is the richest surface and the only permanent one; a model that cannot say so is a worse model, not a simpler one.
+- **A typed address object everywhere** (option A in the channel-plugin RFC's §9). Rejected there for touching every `sessions.*` call site; that reasoning is unchanged.
+- **An opaque key with a canonical grammar** (option B, the decided one). Phases 1–3 need no change to it and are compatible with it. Only Phase 4 departs, and §9's table did not evaluate an attribute store — it compared A, B, the status quo, and a URI scheme.
+- **A namespace prefix with an opaque tail.** Rejected in §5.1, and Phase 0 is the evidence: it kept a prefix as a fast-path only, and that prefix now both corrupts (the `_resolve_alias` repair in `session_map.py`) and short-circuits a correctness gate (§2.3).
+- **Derive capability from the union of attached surfaces.** The obvious reading of "surfaces, not origin", and wrong for the same reason origin was: it answers where the conversation is reachable, not who is about to read this reply. It would render widgets into Slack whenever any tab was open.
+- **`uuid4().hex[:12]` instead of a CSPRNG.** Matches more existing precedent, and would be fine; rejected only because the id is externally visible and the cost of `secrets` is zero.
+- **Derive `stateful` from `surface`.** Rejected: `session.py` already lets a caller opt a conversation out, so the attribute must be independently settable.
+
+## 10. Open questions
+
+1. **Does the identity become opaque at all?** The channel-plugin RFC's §9 decided that the first segment is the routing authority; §5.1 here argues the record should be. Phase 4 cannot start until a maintainer rules, and the honest possibility is that Phases 1–3 are worth doing and Phase 4 is not.
+2. **Does governance become per-surface, and at what granularity?** §5.3 argues capability and governance belong together on the surface; §5.2 leaves `approval_policy` and `restricted` conversation-level because moving them widens an authorization surface. Per surface type, or per attached instance? The case that decides it: the same conversation driven from the desktop and from a phone, where the second probably warrants tighter tool approval, not equal.
+3. **At what granularity is a capability declared** — per surface type, per attached instance, or negotiated at attach? The case that forces it is a chat surface whose thread support differs between a direct message and a channel, which per-type cannot express.
+4. **Is `secretary:` dead?** It is declared in two places with no construction site in `src/`. If an external app can mint it, the namespace inventory in §2.1 is incomplete and Phase 2 must account for it.
+5. **Should the transcript, not the session, be what surfaces attach to?** rfc-append-only-session-transcript.md owns the write path, and Phase 1's two-semaphores-one-file behaviour is visible from both documents. If that RFC proceeds, the two need to agree on where turn-level serialisation lives before Phase 4 moves identity.
