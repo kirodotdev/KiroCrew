@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import platform_compat
-from kiro_crew.browser_cli import install, snapshots, view
+from kiro_crew.browser_cli import install, launch, snapshots, view
 
 
 @pytest.fixture()
@@ -47,17 +47,30 @@ def _operator_cli_config(home: Path) -> Path:
 
 
 class TestOperatorConfigIsNotOurs:
-    """The CLI's config file belongs to the operator, so we never write it."""
+    """The CLI's config file belongs to the operator, so we never write THEIRS.
+
+    Kiro Crew writes its OWN config under the data home and points
+    ``PLAYWRIGHT_MCP_CONFIG`` at it, which is a different file. Precedence,
+    measured against the real CLI, is what keeps that from becoming an override:
+    a ``<cwd>/.playwright/cli.config.json`` beats the env-named file, so an
+    operator's proxy and viewport survive. Their file is never read or rewritten.
+    """
 
     def test_the_package_has_exactly_one_destructive_operation(self):
         # A guard on the property the other cases depend on: if a future change adds
         # a config write, this fails and the reviewer has to justify it rather than
         # discovering it from a support report.
         #
-        # Exactly ONE write is sanctioned: token.py persists the optional attach
-        # token, which has to survive a restart to be worth configuring. It is
-        # named by module so that a second write in token.py still fails here.
-        sanctioned = {"token.py"}
+        # TWO writes are sanctioned, named by module so a SECOND write in either
+        # still fails here:
+        #   token.py  -- persists the optional attach token, which has to survive a
+        #                restart to be worth configuring.
+        #   launch.py -- generates Kiro Crew's OWN launch config under the data
+        #                home, naming the engine the product installs. It never
+        #                writes, reads, or supersedes the operator's
+        #                .playwright/cli.config.json; see
+        #                test_the_operator_config_path_is_never_written.
+        sanctioned = {"token.py", "launch.py"}
         pkg = Path(install.__file__).parent
         writes = []
         for source in sorted(pkg.glob("*.py")):
@@ -69,17 +82,43 @@ class TestOperatorConfigIsNotOurs:
                     writes.append(f"{source.name}:{lineno}")
         unexpected = [w for w in writes if w.split(":", 1)[0] not in sanctioned]
         assert unexpected == [], f"browser_cli must not write files: {unexpected}"
-        # And the sanctioned one must still be there: a token that stopped being
-        # persisted would silently stop working across restarts.
+        # And the sanctioned ones must still be there: a token that stopped being
+        # persisted would silently stop working across restarts, and a launch config
+        # that stopped being written would put browsing back on the CLI's default
+        # browser channel, which Kiro Crew does not install.
         assert any(w.startswith("token.py:") for w in writes), "token.py must persist the token"
+        assert any(w.startswith("launch.py:") for w in writes), "launch.py must write the config"
 
-    def test_a_gateway_restart_leaves_the_config_alone(self, home: Path):
+    def test_the_operator_config_path_is_never_written(self, home: Path):
+        """Ours goes under the data home, never at the CLI's discovered path."""
         config = _operator_cli_config(home)
         before = config.read_text(encoding="utf-8")
 
-        # What a restart actually does for browsing: republish the output directory
-        # and prune. Neither reads nor writes operator config.
-        os.environ.update(snapshots.cli_env_overrides())
+        written = launch.write_config()
+
+        assert written is not None
+        assert written != config
+        assert written.name != "cli.config.json"
+        assert ".playwright" not in written.parts
+        assert config.read_text(encoding="utf-8") == before
+
+    def test_a_gateway_restart_leaves_the_config_alone(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        config = _operator_cli_config(home)
+        before = config.read_text(encoding="utf-8")
+
+        # What a restart actually does for browsing: republish the output directory,
+        # publish the launch config, and prune. None of it touches operator config.
+        # Applied through monkeypatch so the variables do not outlive the test -- a
+        # bare os.environ.update would leak them to every later test on this xdist
+        # worker, where one expecting PLAYWRIGHT_MCP_CONFIG unset would then pass or
+        # fail on worker assignment.
+        for key, value in {
+            **snapshots.cli_env_overrides(),
+            **launch.cli_env_overrides(),
+        }.items():
+            monkeypatch.setenv(key, value)
         snapshots.prune()
 
         assert config.read_text(encoding="utf-8") == before

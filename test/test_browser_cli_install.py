@@ -913,9 +913,9 @@ _MANIFEST = {
 }
 
 
-def _write_manifest(root: Path, data: object) -> Path:
-    """Write *data* as ``<root>/node_modules/playwright-core/browsers.json``."""
-    core = root / "node_modules" / "playwright-core"
+def _write_manifest(node_modules: Path, data: object) -> Path:
+    """Write *data* as ``<node_modules>/playwright-core/browsers.json``."""
+    core = node_modules / "playwright-core"
     core.mkdir(parents=True, exist_ok=True)
     path = core / "browsers.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -923,20 +923,21 @@ def _write_manifest(root: Path, data: object) -> Path:
 
 
 def _install_root(root: Path, data: object) -> str:
-    """Model a standalone install under *root*: launcher + manifest.
+    """Model an `npm install -g` tree under *root*; return the CLI entry path.
 
-    Writes ``<root>/bin/playwright-cli`` and the ``playwright-core`` manifest,
-    and returns the launcher path to stub ``cli_path`` with -- a real on-disk
-    file, so ``Path(cli).resolve()`` canonicalises the same tree the manifest
-    was written into (a bare non-existent path can resolve a symlinked temp dir
-    to a different canonical root than the one the file physically lives under).
+    ``<root>/lib/node_modules/@playwright/cli/playwright-cli.js`` with
+    ``playwright-core`` hoisted beside it in the same ``node_modules``. That is
+    the layout the manifest resolution anchors on, and the entry point is a real
+    on-disk file so ``Path(cli).resolve()`` canonicalises the same tree the
+    manifest was written into.
     """
-    _write_manifest(root, data)
-    bindir = root / "bin"
-    bindir.mkdir(parents=True, exist_ok=True)
-    launcher = bindir / "playwright-cli"
-    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
-    return str(launcher)
+    node_modules = root / "lib" / "node_modules"
+    _write_manifest(node_modules, data)
+    package = node_modules / "@playwright" / "cli"
+    package.mkdir(parents=True, exist_ok=True)
+    entry = package / "playwright-cli.js"
+    entry.write_text("// entry\n", encoding="utf-8")
+    return str(entry)
 
 
 class TestRequiredRevisionMatch:
@@ -993,14 +994,34 @@ class TestRequiredRevisionMatch:
         assert mod.browsers_present()["chromium"] is False
         assert mod._browser_present() is False
 
-    def test_headless_shell_underscore_dir_matches_its_own_hyphenated_name(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    def test_cache_dir_name_is_the_hyphenated_revision_form(self) -> None:
+        """One name per engine-revision pair, and never an underscore variant.
+
+        The only caller passes engines from `BROWSER_ENGINES`, none of which
+        contains a hyphen, so an underscored form of the same name could not
+        match any directory -- and accepting one would let
+        `chromium_headless_shell-<rev>` satisfy `chromium`, which is the very
+        false positive this gate exists to reject.
+        """
+        assert mod._cache_dir_name_for("chromium", "1232") == "chromium-1232"
+        assert "_" not in mod._cache_dir_name_for("chromium", "1232")
+
+    def test_an_underscored_cache_dir_does_not_satisfy_the_engine(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_browser_cache: Path, tmp_path: Path
     ) -> None:
-        """The manifest name `chromium-headless-shell` is stored on disk as
-        `chromium_headless_shell-<rev>`; `_cache_dir_names_for` must accept it so
-        a hyphenated manifest name still resolves to its underscored dir."""
-        names = mod._cache_dir_names_for("chromium-headless-shell", "1232")
-        assert "chromium_headless_shell-1232" in names
+        """The same rejection asserted through `browsers_present`, not the helper.
+
+        Testing only `_cache_dir_name_for` would still pass if a future change
+        re-added an underscore fallback in the caller instead of the helper, which
+        is where the original prefix match lived.
+        """
+        launcher = _install_root(tmp_path / "cli-root", _MANIFEST)
+        monkeypatch.setattr(mod, "cli_path", lambda: launcher)
+        monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
+        (isolated_browser_cache / "chromium_1232").mkdir()
+
+        assert mod.browsers_present()["chromium"] is False
+        assert mod._browser_present() is False
 
     def test_each_engine_matched_against_its_own_revision(
         self, monkeypatch: pytest.MonkeyPatch, isolated_browser_cache: Path, tmp_path: Path
@@ -1107,7 +1128,8 @@ class TestRevisionDegradation:
                     "not-a-dict",
                     {"name": "chromium"},  # no revision
                     {"revision": "1"},  # no name
-                    {"name": "firefox", "revision": 1534},  # int revision is accepted
+                    {"name": "webkit", "revision": 2327},  # int revision -> skipped
+                    {"name": "firefox", "revision": "1534"},
                 ]
             },
         )
@@ -1115,6 +1137,10 @@ class TestRevisionDegradation:
         monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
 
         rev = _REAL_REQUIRED_REVISIONS()
+        # playwright-core ships string revisions, so a non-string is a malformed
+        # row like any other rather than a value to coerce. Skipping it leaves the
+        # engine without a required revision, which degrades to presence-only for
+        # that engine -- the safe direction.
         assert rev == {"firefox": "1534"}
 
     def test_manifest_without_browsers_list_is_none(
@@ -1129,33 +1155,48 @@ class TestRevisionDegradation:
 
 
 class TestManifestResolution:
-    """The manifest is found for BOTH on-disk layouts, anchored on the CLI."""
+    """The manifest is attributed to a `@playwright/cli` package, never searched for.
 
-    def test_standalone_launcher_layout(
+    Anchoring is the correctness property. An unbounded walk up from the launcher
+    passes through `$HOME` on the standalone layout, where one unrelated
+    `~/node_modules/playwright-core` would supply a revision from a DIFFERENT
+    install -- reporting a WORKING browser broken, and continuing to after the
+    download the panel offers, because the gate keeps reading the foreign file.
+    """
+
+    def test_npm_global_hoisted_sibling_layout(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """`<root>/bin/playwright-cli` -> `<root>/node_modules/playwright-core`."""
+        """`playwright-core` hoisted beside `@playwright/cli` in one node_modules."""
         root = tmp_path / "cli-root"
-        (root / "bin").mkdir(parents=True)
-        launcher = root / "bin" / "playwright-cli"
-        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
-        manifest = _write_manifest(root, _MANIFEST)
-        monkeypatch.setattr(mod, "cli_path", lambda: str(launcher))
+        entry = _install_root(root, _MANIFEST)
+        monkeypatch.setattr(mod, "cli_path", lambda: entry)
 
-        assert mod._browsers_manifest_path() == manifest
+        assert mod._browsers_manifest_path() == (
+            root / "lib" / "node_modules" / "playwright-core" / "browsers.json"
+        )
 
-    def test_npm_global_symlink_layout(
+    def test_nested_playwright_core_layout(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A symlinked bin resolves into the package tree; the sibling
-        playwright-core under the same node_modules is found by walking up."""
-        node_modules = tmp_path / "lib" / "node_modules"
-        pkg = node_modules / "@playwright" / "cli"
-        pkg.mkdir(parents=True)
-        entry = pkg / "playwright-cli.js"
-        entry.write_text("// entry\n", encoding="utf-8")
-        manifest = _write_manifest(node_modules.parent, _MANIFEST)  # node_modules/playwright-core
+        """npm nests a conflicting version under the package's own node_modules.
 
+        The nested copy is the one that serves this CLI, so it wins over a
+        hoisted sibling.
+        """
+        root = tmp_path / "cli-root"
+        entry = Path(_install_root(root, {"browsers": [{"name": "chromium", "revision": "1"}]}))
+        nested = _write_manifest(entry.parent / "node_modules", _MANIFEST)
+        monkeypatch.setattr(mod, "cli_path", lambda: str(entry))
+
+        assert mod._browsers_manifest_path() == nested
+
+    def test_npm_global_symlinked_bin_resolves_into_the_package(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`npm install -g` leaves a symlink; resolving it lands in the tree."""
+        root = tmp_path / "cli-root"
+        entry = _install_root(root, _MANIFEST)
         bindir = tmp_path / "bin"
         bindir.mkdir()
         link = bindir / "playwright-cli"
@@ -1165,9 +1206,132 @@ class TestManifestResolution:
             pytest.skip("symlinks not supported on this host")
         monkeypatch.setattr(mod, "cli_path", lambda: str(link))
 
+        assert mod._browsers_manifest_path() == (
+            root / "lib" / "node_modules" / "playwright-core" / "browsers.json"
+        )
+
+    def test_standalone_wrapper_resolves_via_its_known_prefix(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The standalone installer generates a WRAPPER SCRIPT, not a symlink.
+
+        The package tree is therefore not an ancestor of the launcher on PATH, so
+        no walk up from it can reach the manifest. The prefix is known, so it is
+        probed by path -- without which this install shape could never read a
+        revision and would silently keep the presence-only false positives.
+        """
+        prefix = tmp_path / "standalone"
+        _install_root(prefix, _MANIFEST)
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(prefix))
+        wrapper = tmp_path / "elsewhere" / "bin" / "playwright-cli"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\nexec node ...\n", encoding="utf-8")
+        monkeypatch.setattr(mod, "cli_path", lambda: str(wrapper))
+
+        assert mod._browsers_manifest_path() == (
+            prefix / "lib" / "node_modules" / "playwright-core" / "browsers.json"
+        )
+
+    def test_windows_npm_global_cmd_wrapper_finds_the_sibling_package(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`npm install -g` writes a .cmd BATCH WRAPPER on Windows, not a symlink.
+
+        It resolves to itself, so nothing in its ancestry is the package dir and
+        the package sits at <prefix>/node_modules/@playwright/cli beside it. Left
+        unreachable, this shape reads no revision and silently falls back to the
+        presence-only match the gate exists to replace.
+        """
+        prefix = tmp_path / "npm-prefix"
+        node_modules = prefix / "node_modules"
+        manifest = _write_manifest(node_modules, _MANIFEST)
+        package = node_modules / "@playwright" / "cli"
+        package.mkdir(parents=True)
+        (package / "playwright-cli.js").write_text("// entry\n", encoding="utf-8")
+        wrapper = prefix / "playwright-cli.cmd"
+        wrapper.write_text("@echo off\r\nnode ...\r\n", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "absent-prefix"))
+        monkeypatch.setattr(mod, "cli_path", lambda: str(wrapper))
+
         assert mod._browsers_manifest_path() == manifest
+
+    def test_posix_bin_wrapper_finds_the_lib_node_modules_package(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A non-symlink launcher at <prefix>/bin resolves to itself too."""
+        prefix = tmp_path / "posix-prefix"
+        manifest_root = prefix / "lib" / "node_modules"
+        manifest = _write_manifest(manifest_root, _MANIFEST)
+        package = manifest_root / "@playwright" / "cli"
+        package.mkdir(parents=True)
+        wrapper = prefix / "bin" / "playwright-cli"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\nexec node ...\n", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "absent-prefix"))
+        monkeypatch.setattr(mod, "cli_path", lambda: str(wrapper))
+
+        assert mod._browsers_manifest_path() == manifest
+
+    def test_standalone_windows_prefix_without_lib_resolves(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`npm --global --prefix` writes <prefix>/node_modules on Windows.
+
+        The POSIX form is <prefix>/lib/node_modules, so both are probed.
+        """
+        prefix = tmp_path / "standalone-win"
+        node_modules = prefix / "node_modules"
+        manifest = _write_manifest(node_modules, _MANIFEST)
+        (node_modules / "@playwright" / "cli").mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(prefix))
+        monkeypatch.setattr(mod, "cli_path", lambda: None)
+
+        assert mod._browsers_manifest_path() == manifest
+
+    def test_a_foreign_manifest_up_the_tree_is_never_adopted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """THE false-broken regression, and the inverse of the stale-cache one.
+
+        A stray `playwright-core` from an unrelated `npm i playwright` sits in an
+        ANCESTOR of the launcher, with no `@playwright/cli` beside it. Adopting it
+        would hand the gate a revision from a different install and flip a working
+        browser to reported-broken. Unattributable means None, which takes the
+        documented presence-only fallback instead.
+        """
+        home = tmp_path / "home"
+        _write_manifest(
+            home / "node_modules", {"browsers": [{"name": "chromium", "revision": "9"}]}
+        )
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "absent-prefix"))
+        wrapper = home / "bin" / "playwright-cli"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setattr(mod, "cli_path", lambda: str(wrapper))
+
+        assert mod._browsers_manifest_path() is None
+        assert _REAL_REQUIRED_REVISIONS() is None
+
+    def test_a_working_browser_is_not_reported_broken_by_a_foreign_manifest(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_browser_cache: Path, tmp_path: Path
+    ) -> None:
+        """The invariant the anchoring protects, asserted end to end."""
+        home = tmp_path / "home"
+        _write_manifest(
+            home / "node_modules", {"browsers": [{"name": "chromium", "revision": "9999"}]}
+        )
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", str(tmp_path / "absent-prefix"))
+        wrapper = home / "bin" / "playwright-cli"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setattr(mod, "cli_path", lambda: str(wrapper))
+        monkeypatch.setattr(mod, "_required_revisions", _REAL_REQUIRED_REVISIONS)
+        (isolated_browser_cache / "chromium-1232").mkdir()
+
+        assert mod.browsers_present()["chromium"] is True
 
     def test_no_cli_means_no_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod, "cli_path", lambda: None)
+        monkeypatch.setenv("KIROCREW_PLAYWRIGHT_CLI_HOME", "/nonexistent-prefix")
         assert mod._browsers_manifest_path() is None
         assert _REAL_REQUIRED_REVISIONS() is None

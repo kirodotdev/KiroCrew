@@ -99,6 +99,40 @@ once, at install, so registry auth applies at install time only.
    directory instead of the workspace.
 5. Record that the install happened.
 
+### Readiness
+
+`browser_ok` answers "is a build at the revision the installed CLI requires on
+disk". A cache directory carries its revision (`chromium-1232`), and
+playwright-core launches only the exact revision bound to its own version, so the
+match is **exact** on the revision the CLI requires. A prefix match ignores the
+revision, and a stale
+`chromium-1208` left from before a CLI upgrade then reads as present while the
+launch fails `Browser "chromium" is not installed` — and because the gate reads
+ready, the panel never offers the download that would fix it. The prefix form also
+let `chromium_headless_shell-<rev>` satisfy `chromium`, which is a different
+artifact.
+
+The required revision comes from `playwright-core/browsers.json`, the file
+`install-browser` itself consults. Reading it is a plain file read, so readiness
+stays subprocess-free.
+
+**The manifest is attributed to a `@playwright/cli` package, never searched for.**
+Resolution anchors on that package — the hoisted sibling in the same
+`node_modules`, a copy nested under the package, or the standalone installer's
+known prefix (`KIROCREW_PLAYWRIGHT_CLI_HOME`, else `<data home>/playwright-cli`).
+Anchoring is a correctness property, not an optimization: walking ancestors
+instead passes through `$HOME` on the standalone layout, where one unrelated
+`~/node_modules/playwright-core` supplies a revision from a **different** install.
+That reports a working browser broken and keeps doing so after the offered
+download, because the gate goes on reading the foreign file. The standalone prefix
+is probed by path because that installer generates a **wrapper script** rather
+than a symlink, so its package tree is not an ancestor of the launcher at all.
+
+When no manifest can be attributed, the revision is unknown and readiness falls
+back to the older presence-only answer. Absent metadata is an unknown, not
+evidence of a stale cache, so it must not turn a working browser into a reported
+broken one.
+
 ### Command surface
 
 The full reference lives in the skill the CLI installs in step 4, which is why the
@@ -161,6 +195,58 @@ surrounding quotes are removed for the same reason. Normalization also runs on
 read, so a stored value holding the whole assignment repairs itself instead of
 reporting "stored" while the extension keeps prompting.
 
+### Launch config
+
+Kiro Crew installs, gates on, and offers downloads for **Chromium**:
+`install-browser` fetches the Chromium build, `browser_ok` is
+`browsers_present()["chromium"]`, and `attach --extension` supports that family
+alone. The CLI's own default is a different browser — the branded Chrome
+*channel*, an OS-level install at a path like `/opt/google/chrome/chrome` that
+Kiro Crew never provisions and cannot install without root. So on a host that did
+everything the product asked, the first browse fails with
+
+```
+Chromium distribution 'chrome' is not found at /opt/google/chrome/chrome
+```
+
+while every readiness signal is honestly green, because the Chromium build really
+is downloaded. `browser_cli/launch.py` closes that gap by naming the engine.
+
+**Why a config file rather than a flag or a browser env var.** All three exist and
+only the file works for a whole session:
+
+| Mechanism | Why it cannot carry this |
+|---|---|
+| `--browser` | takes `chrome, firefox, webkit, msedge` — `chromium` is not accepted |
+| `PLAYWRIGHT_MCP_BROWSER` | the same four values, so it cannot name the installed engine either |
+| `--config` | accepted only on the session-establishing commands (`open`, `attach`) and rejected by the follow-up commands that make up most of a session |
+| `PLAYWRIGHT_MCP_CONFIG` | names a config **file** and applies to every invocation uniformly |
+
+The last one is the mechanism used, and for the same reason as
+[snapshot retention](#snapshot-retention): the agent runs the CLI as a shell
+command, so an inherited environment variable is the only channel that reaches an
+invocation Kiro Crew never constructs. The config is written under the data home
+at a fixed absolute path, independent of whichever working directory a turn ran in.
+
+The schema is **nested** under a `browser` key — `{"browser": {"browserName":
+"chromium"}}`. A flat top-level `browserName` parses without error and selects
+nothing, which presents as the branded-Chrome failure above rather than as a
+config error.
+
+**The generated config names the engine and nothing else.** Every added key
+becomes a default an operator must discover in order to override, and the engine
+is the only one the install flow already decided.
+
+**The browser sandbox is deliberately untouched.** Chromium's sandbox is a
+security boundary, so no generated default removes it. A host that cannot run it —
+a container lacking the kernel permissions, where the failure is
+`No usable sandbox!` — needs an operator decision rather than a default that
+quietly drops the boundary for every host. That is what the escape hatch is for:
+when `PLAYWRIGHT_MCP_CONFIG` is **already set** in the environment, Kiro Crew adds
+nothing and the operator's file wins entirely. Naming a config is how an operator
+selects a different engine, pins an `executablePath`, or accepts the sandbox
+trade-off on a host that requires it.
+
 ### Snapshot retention
 
 The CLI writes one timestamped YAML per command and documents no pruning, so the
@@ -206,6 +292,7 @@ exposes an interactive takeover surface to the network.
 | Capability grant | Presence of `playwright-cli` on PATH; see [Capability model](#capability-model) for what this does and does not cover |
 | Dashboard exposure | `show` is bound to `127.0.0.1`; `0.0.0.0` is never passed, because the served view carries remote input |
 | Saved state files | Owner-only permissions; they hold live session credentials |
+| Launch config | Write-protected from the agent on both the file-edit and shell gates, and readable. Deliberately anchored rather than bare-token: the filename is not itself the grant, since the agent can name its own `PLAYWRIGHT_MCP_CONFIG` — so what the entry removes is the durable form (rewriting the config the product installed), and a `cd`-relative write is the accepted residual, exactly as for `.data-home-ready` |
 | Page content | Treated as untrusted input. A URL, instruction, or form target read off a page never decides the next navigation |
 | Attach mode | Operates the operator's real logged-in browser, so it is the strongest form of the capability and the reason the accepted risk is recorded |
 | Approval | Page-scoped verbs run without a prompt; verbs that reach the local machine do not. Matched on the real command from `tool_input`, never the model-authored title. Verb AND flag allowlists, so both `eval` and `screenshot --filename=<path>` keep interactive approval. Logged as `reason: "browser_cli"` |

@@ -26,6 +26,7 @@ from kiro_crew.apps.hooks_integration import (
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.autonudge import get_instance as _autonudge_get
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
+from kiro_crew.browser_cli import launch as browser_cli_launch
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
@@ -3197,6 +3198,15 @@ async def start_dashboard(
     # agent runs the CLI as a shell command, so only an inherited environment
     # reaches it. Absent by default, in which case this adds nothing.
     os.environ.update(browser_cli_token.cli_env_overrides())
+    # Name the engine Kiro Crew actually installs. The CLI's own default is the
+    # branded Chrome channel at an OS path the product never provisions, so
+    # without this the first browse fails on a host where every readiness signal
+    # is honestly green. Same channel and same reason as the two above; defers to
+    # an operator who set the variable themselves.
+    #
+    # Off the event loop: computing the override writes the config file, and this
+    # runs on the gateway's startup path.
+    os.environ.update(await asyncio.to_thread(browser_cli_launch.cli_env_overrides))
     _snap_pruner = asyncio.create_task(_prune_browser_snapshots_loop())
     _snap_pruner.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     state._browser_snapshot_pruner = _snap_pruner  # prevent GC

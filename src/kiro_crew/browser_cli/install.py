@@ -34,6 +34,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.browser_cli import os_deps
+from kiro_crew.config.paths import config_dir
 from kiro_crew.env import augmented_path, find_node_tool, node_augmented_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -214,42 +215,130 @@ def _cached_browser_names() -> set[str] | None:
 _BROWSERS_MANIFEST = "browsers.json"
 _PLAYWRIGHT_CORE_PKG = "playwright-core"
 
+#: The CLI's own package coordinates. The manifest is only trusted when it is
+#: served to THIS package, so the scope and name are what anchors the search.
+_CLI_PKG_SCOPE = "@playwright"
+_CLI_PKG_NAME = "cli"
+
+#: Where the standalone installer puts the package tree. `npm --global --prefix`
+#: writes under ``<prefix>/lib/node_modules`` on POSIX and ``<prefix>/node_modules``
+#: on Windows, so both are probed.
+_STANDALONE_PREFIX_ENV = "KIROCREW_PLAYWRIGHT_CLI_HOME"
+_STANDALONE_PREFIX_DIR = "playwright-cli"
+_NODE_MODULES = "node_modules"
+
+
+def _standalone_node_modules() -> list[Path]:
+    """``node_modules`` roots of a standalone (unprivileged) CLI install.
+
+    Probed by KNOWN PATH rather than found by searching, because the standalone
+    installer generates a **wrapper script** instead of a symlink: the package
+    tree is not an ancestor of the launcher on PATH, so no walk up from the
+    resolved launcher can reach it. Without this the revision could not be read
+    for that install shape at all, and the check would silently degrade to the
+    presence-only answer whose false positives it exists to remove.
+    """
+    prefix_override = os.environ.get(_STANDALONE_PREFIX_ENV, "").strip()
+    prefix = Path(prefix_override) if prefix_override else config_dir() / _STANDALONE_PREFIX_DIR
+    return [prefix / "lib" / _NODE_MODULES, prefix / _NODE_MODULES]
+
+
+def _launcher_node_modules(anchor: Path) -> list[Path]:
+    """``node_modules`` roots to probe relative to the resolved launcher.
+
+    A launcher that is a SYMLINK resolves INTO the package tree, so an ancestor is
+    already the package directory and none of these are needed. A launcher that is
+    a real FILE resolves to itself, and then the tree has to be found beside it:
+    ``npm install -g`` writes a ``.cmd`` batch wrapper on Windows, and a generated
+    shell wrapper is what the standalone installer produces. Without this, those
+    shapes read no revision at all and fall back to presence-only -- the exact
+    false positive the revision gate exists to remove.
+
+    Bounded to the launcher's own install prefix rather than walked toward the
+    filesystem root, because an unbounded walk is what allowed a foreign tree to
+    supply the revision. Every candidate still has to hold ``@playwright/cli``
+    (see :func:`_cli_package_dirs`), so a stray ``playwright-core`` from an
+    unrelated install is still unreachable.
+    """
+    return [
+        # <prefix>/playwright-cli.cmd  ->  <prefix>/node_modules  (npm -g, Windows)
+        anchor.parent / _NODE_MODULES,
+        # <prefix>/bin/playwright-cli  ->  <prefix>/node_modules
+        anchor.parent.parent / _NODE_MODULES,
+        # <prefix>/bin/playwright-cli  ->  <prefix>/lib/node_modules  (npm -g, POSIX)
+        anchor.parent.parent / "lib" / _NODE_MODULES,
+    ]
+
+
+def _cli_package_dirs() -> list[Path]:
+    """``@playwright/cli`` package directories on this host, most specific first.
+
+    Three sources, in priority order: an ancestor of the resolved launcher (an
+    ``npm install -g`` symlink resolves into the package tree), a ``node_modules``
+    beside the launcher (a real-file wrapper resolves to itself, so nothing in its
+    ancestry is the package), and the standalone installer's known prefix.
+    """
+    dirs: list[Path] = []
+    cli = cli_path()
+    if cli is not None:
+        try:
+            anchor: Path | None = Path(cli).resolve()
+        except OSError:
+            anchor = None
+        if anchor is not None:
+            for parent in anchor.parents:
+                if parent.name == _CLI_PKG_NAME and parent.parent.name == _CLI_PKG_SCOPE:
+                    dirs.append(parent)
+                    break
+            for node_modules in _launcher_node_modules(anchor):
+                package = node_modules / _CLI_PKG_SCOPE / _CLI_PKG_NAME
+                if package.is_dir():
+                    dirs.append(package)
+    for node_modules in _standalone_node_modules():
+        package = node_modules / _CLI_PKG_SCOPE / _CLI_PKG_NAME
+        if package.is_dir():
+            dirs.append(package)
+    return dirs
+
+
+def _manifest_for_cli_package(package: Path) -> Path | None:
+    """The ``browsers.json`` of the ``playwright-core`` serving *package*.
+
+    Two layouts, both anchored ON the package so the manifest can only come from
+    the tree that will launch the browser: nested inside the package's own
+    ``node_modules``, or hoisted as a sibling in the ``node_modules`` that holds
+    ``@playwright/cli`` (``<pkg>/../..`` — up past ``@playwright``).
+    """
+    for candidate in (
+        package / _NODE_MODULES / _PLAYWRIGHT_CORE_PKG / _BROWSERS_MANIFEST,
+        package.parent.parent / _PLAYWRIGHT_CORE_PKG / _BROWSERS_MANIFEST,
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
 
 def _browsers_manifest_path() -> Path | None:
     """Locate the installed ``playwright-core/browsers.json``, or ``None``.
 
-    Anchored on the resolved CLI so it finds the manifest for the SAME install
-    the launch will use, not some other copy on the host. Two on-disk layouts
-    reach the same sibling ``node_modules``:
+    Resolution is anchored on the ``@playwright/cli`` package
+    (:func:`_cli_package_dirs`) rather than walked up from the launcher toward
+    the filesystem root. The anchor is the correctness property, not a
+    shortcut: an unbounded walk passes through ``$HOME`` on the standalone
+    layout, where a single unrelated ``~/node_modules/playwright-core`` would
+    supply a revision from a DIFFERENT install. That reports a **working**
+    browser broken, and keeps reporting it after the download the panel offers,
+    because the gate goes on reading the foreign manifest. Requiring the
+    manifest to be served to the CLI package makes a foreign tree unreachable.
 
-    * ``npm install -g`` leaves ``playwright-cli`` as a symlink into
-      ``.../node_modules/@playwright/cli/playwright-cli.js``; resolving the link
-      lands inside the package tree.
-    * the standalone launcher is a shell script at ``<root>/bin/playwright-cli``
-      whose sibling is ``<root>/node_modules``.
-
-    Both are covered by walking up from the resolved path and, at each ancestor,
-    probing ``<ancestor>/node_modules/playwright-core/browsers.json`` as well as a
-    ``<ancestor>/playwright-core/browsers.json`` (the ancestor already being a
-    ``node_modules`` dir, as when the resolved symlink sits inside the package).
+    ``None`` when no manifest can be attributed to a CLI package, which callers
+    treat as "revision unknown" and answer with the documented presence-only
+    fallback.
     """
-    cli = cli_path()
-    if cli is None:
-        return None
-    try:
-        # Follow a symlink (npm-global) to the real entry point; a shell-script
-        # launcher resolves to itself, which is fine -- its ancestors still hold
-        # the sibling node_modules.
-        anchor = Path(cli).resolve()
-    except OSError:
-        return None
-    for parent in [anchor, *anchor.parents]:
-        for candidate in (
-            parent / "node_modules" / _PLAYWRIGHT_CORE_PKG / _BROWSERS_MANIFEST,
-            parent / _PLAYWRIGHT_CORE_PKG / _BROWSERS_MANIFEST,
-        ):
-            if candidate.is_file():
-                return candidate
+    for package in _cli_package_dirs():
+        manifest = _manifest_for_cli_package(package)
+        if manifest is not None:
+            return manifest
     return None
 
 
@@ -282,21 +371,20 @@ def _required_revisions() -> dict[str, str] | None:
             continue
         name = entry.get("name")
         revision = entry.get("revision")
-        if isinstance(name, str) and isinstance(revision, (str, int)):
-            revisions[name] = str(revision)
+        if isinstance(name, str) and isinstance(revision, str):
+            revisions[name] = revision
     return revisions or None
 
 
-def _cache_dir_names_for(engine: str, revision: str) -> tuple[str, ...]:
-    """Cache directory names that satisfy *engine* at *revision*.
+def _cache_dir_name_for(engine: str, revision: str) -> str:
+    """The cache directory name that satisfies *engine* at *revision*.
 
-    Playwright names a cache dir ``<manifest-name>-<revision>``, and separately
-    stores ``<manifest-name>_headless_shell-<revision>`` with the hyphens in the
-    manifest name turned to underscores (e.g. ``chromium-headless-shell`` ->
-    ``chromium_headless_shell-1232``). Accept the underscore form of the same
-    name too, so a manifest name that carries hyphens still matches its dir.
+    Playwright names the directory ``<engine>-<revision>`` (``chromium-1232``).
+    One name, not a set: the only caller passes engines from
+    :data:`BROWSER_ENGINES`, none of which contains a hyphen, so an underscore
+    variant of the same name could never match anything.
     """
-    return (f"{engine}-{revision}", f"{engine.replace('-', '_')}-{revision}")
+    return f"{engine}-{revision}"
 
 
 def browsers_present() -> dict[str, bool]:
@@ -337,8 +425,8 @@ def browsers_present() -> dict[str, bool]:
             # revision it needs, so degrade to presence-only for this one engine.
             result[engine] = any(name.startswith(engine) for name in names)
             continue
-        wanted = set(_cache_dir_names_for(engine, revision))
-        result[engine] = bool(wanted & names)
+        wanted = _cache_dir_name_for(engine, revision)
+        result[engine] = wanted in names
     return result
 
 

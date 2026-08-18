@@ -4478,7 +4478,17 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # would make the next boot skip migration and ignore the legacy home's
     # governance policy + secrets. The migration code writes it directly and
     # does NOT route through this gate, so legitimate stamping still works.
-    for leaf in ("config.json", "config.local.json", ".data-home-ready")
+    # playwright-cli-config.json: the browse launch config
+    # (browser_cli/launch.py). It holds no secret and the CLI must READ it on
+    # every invocation, so it is write-protected rather than sensitive. But it is
+    # an INPUT TO A SECURITY DECISION: the schema accepts
+    # ``launchOptions.chromiumSandbox``, so an agent that could rewrite it would
+    # turn the browser sandbox OFF for every later browse, and the change persists
+    # until the next gateway start re-converges the file. Kiro Crew generates it
+    # directly and does NOT route through this gate, so its own write still works.
+    # Paired with the same leaf in _WRITE_PROTECTED_BASH_LEAVES — protected on one
+    # path only is not protected.
+    for leaf in ("config.json", "config.local.json", ".data-home-ready", "playwright-cli-config.json")
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
     # sensitive: it holds no secret and every teammate's instance must READ it to
@@ -4636,6 +4646,20 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     "apps/ops-mission-control/data/rotation.yaml",
     "apps/ops-mission-control/data/incidents/index.json",
     "connections-tool-aliases.json",
+    # The browse launch config (browser_cli/launch.py), paired with the same leaf
+    # in _WRITE_PROTECTED_HOME_PATHS so the file-edit and shell paths agree — a
+    # leaf on only one of the two is reachable through the other.
+    #
+    # Deliberately ANCHORED, not bare-token (see the SCOPE note below). The name
+    # is distinctive enough to qualify on that test, but it does not earn the wider
+    # blast radius, for the same shape of reason ``.data-home-ready`` does not: the
+    # agent can already point PLAYWRIGHT_MCP_CONFIG at a file of its own, so this
+    # filename is not the grant the way the alias record's is. What the anchored
+    # entry removes is the DURABLE form — silently rewriting the config the product
+    # installed, which every later browse consumes until the next gateway start
+    # re-converges it. The residual ``cd``-relative form is the low-severity case
+    # the scope note already accepts on purpose.
+    "playwright-cli-config.json",
 )
 
 # ── Anchor-INDEPENDENT leaf matching ──
