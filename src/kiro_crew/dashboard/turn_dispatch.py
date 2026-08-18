@@ -307,7 +307,8 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
     # copy carries it; reset in the finally so a direct `await _bounded_turn(...)`
     # cannot leak a spent deadline into the caller's context and starve the next
     # turn dispatched there.
-    deadline_token = _TURN_DEADLINE.set(loop.time() + timeout_secs)
+    previous_deadline = _TURN_DEADLINE.get()
+    _TURN_DEADLINE.set(loop.time() + timeout_secs)
     task: "asyncio.Task[Any]" = asyncio.ensure_future(coro)
     handle = loop.call_later(timeout_secs, _on_deadline)
     try:
@@ -328,7 +329,11 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
         return result
     finally:
         handle.cancel()
-        _TURN_DEADLINE.reset(deadline_token)
+        # Restore by value instead of retaining a ContextVar token. Test and
+        # shutdown harnesses may resume coroutine finalization in a copied
+        # Context (notably Windows xdist); reset(token) then raises and can take
+        # down the whole worker because tokens are context-bound.
+        _TURN_DEADLINE.set(previous_deadline)
         if not task.done():
             # The wrapper itself was cancelled; don't orphan the turn.
             task.cancel()

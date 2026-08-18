@@ -319,7 +319,7 @@ class TestArmTimeBudget:
     async def test_bounded_turn_publishes_then_clears_the_deadline(self) -> None:
         """The turn's own coroutine sees a deadline; the caller's context does not.
 
-        The reset matters: `chat_orchestrator` awaits `_bounded_turn` directly,
+        The restore matters: `chat_orchestrator` awaits `_bounded_turn` directly,
         so a leaked spent deadline would starve every later approval dispatched
         in that same context.
         """
