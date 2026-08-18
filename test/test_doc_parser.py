@@ -375,3 +375,42 @@ def test_missing_defusedxml_leaves_pdf_parsing_alone(monkeypatch, caplog):
     finally:
         os.unlink(path)
     assert not any("defusedxml" in r.message for r in caplog.records)
+
+
+# ── Aggregate extraction budget (max_chars) ──
+
+
+class TestMaxCharsBudget:
+    """extract_text(max_chars=...) bounds AGGREGATE retained text.
+
+    Added for the office-preview endpoint: a .pptx with thousands of slides,
+    each under the per-entry decompression cap, must not accumulate unbounded
+    text. Budget met => later slides are never decompressed or parsed.
+    """
+
+    def test_pptx_budget_stops_slide_iteration(self):
+        path = _make_pptx([["s" * 1000] for _ in range(50)])
+        try:
+            text = extract_text(path, filename="deck.pptx", max_chars=3000)
+        finally:
+            os.unlink(path)
+        assert len(text) < 10 * 1000, "budget must bound aggregate extraction"
+        assert "--- Slide 1 ---" in text
+        assert "--- Slide 50 ---" not in text
+
+    def test_docx_budget_bounds_paragraphs(self):
+        path = _make_docx(["p" * 1000 for _ in range(50)])
+        try:
+            text = extract_text(path, filename="long.docx", max_chars=3000)
+        finally:
+            os.unlink(path)
+        assert len(text) < 10 * 1000
+
+    def test_no_budget_extracts_everything(self):
+        """Without max_chars behavior is unchanged (existing callers unaffected)."""
+        path = _make_pptx([["alpha"], ["beta"], ["gamma"]])
+        try:
+            text = extract_text(path, filename="deck.pptx")
+        finally:
+            os.unlink(path)
+        assert "alpha" in text and "beta" in text and "gamma" in text

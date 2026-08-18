@@ -64,11 +64,21 @@ def is_parseable_document(mimetype: str = "", filename: str = "") -> bool:
     return ext in DOC_EXTENSIONS
 
 
-def extract_text(path: str, mimetype: str = "", filename: str = "") -> str:
+def extract_text(
+    path: str, mimetype: str = "", filename: str = "", max_chars: int | None = None,
+) -> str:
     """Extract readable text from a document file.
 
     Detects format from *mimetype* first, then falls back to file extension.
     Returns empty string on any failure.
+
+    *max_chars*, when given, bounds the AGGREGATE extracted text: parsing
+    stops as soon as at least that many characters have been collected (the
+    result may slightly overshoot, callers truncate to their exact cap).
+    Without it a multi-part container (e.g. a .pptx with thousands of
+    slides, each under the per-entry decompression cap) could accumulate
+    unbounded text in memory. Callers that only need a preview should pass
+    their cap + 1 so truncation stays detectable.
     """
     if is_sensitive_path(path):
         logger.warning("Refusing to read sensitive path: %s", path)
@@ -96,9 +106,9 @@ def extract_text(path: str, mimetype: str = "", filename: str = "") -> str:
         return ""
     try:
         if fmt == "docx":
-            return _extract_docx(path)
+            return _extract_docx(path, max_chars=max_chars)
         if fmt == "pptx":
-            return _extract_pptx(path)
+            return _extract_pptx(path, max_chars=max_chars)
         if fmt == "pdf":
             return _extract_pdf(path)
     except Exception:
@@ -143,7 +153,7 @@ def _read_zip_entry(
 _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
-def _extract_docx(path: str) -> str:
+def _extract_docx(path: str, max_chars: int | None = None) -> str:
     """Extract text from a .docx file (ZIP containing word/document.xml).
 
     Must only be called from extract_text() which enforces is_sensitive_path().
@@ -152,6 +162,7 @@ def _extract_docx(path: str) -> str:
     if is_sensitive_path(path):
         return ""
     paragraphs: list[str] = []
+    collected = 0
     with zipfile.ZipFile(path, "r") as zf:
         if "word/document.xml" not in zf.namelist():
             return ""
@@ -165,7 +176,11 @@ def _extract_docx(path: str) -> str:
                 if t_elem.text:
                     texts.append(t_elem.text)
             if texts:
-                paragraphs.append("".join(texts))
+                joined = "".join(texts)
+                paragraphs.append(joined)
+                collected += len(joined) + 1
+                if max_chars is not None and collected >= max_chars:
+                    break
     return "\n".join(paragraphs)
 
 
@@ -175,15 +190,20 @@ _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _SLIDE_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
 
 
-def _extract_pptx(path: str) -> str:
+def _extract_pptx(path: str, max_chars: int | None = None) -> str:
     """Extract text from a .pptx file (ZIP containing ppt/slides/*.xml).
 
     Must only be called from extract_text() which enforces is_sensitive_path().
+
+    With *max_chars* set, slide iteration stops as soon as the collected
+    text meets the budget — later slides are never decompressed or parsed,
+    so a deck with thousands of slides cannot accumulate unbounded text.
     """
     assert _xml_fromstring is not None  # extract_text() gates the None case
     if is_sensitive_path(path):
         return ""
     slides: list[tuple[int, str]] = []
+    collected = 0
     with zipfile.ZipFile(path, "r") as zf:
         slide_names = sorted(
             (n for n in zf.namelist() if _SLIDE_RE.match(n)),
@@ -200,7 +220,11 @@ def _extract_pptx(path: str) -> str:
                 if t_elem.text:
                     texts.append(t_elem.text)
             if texts:
-                slides.append((num, "\n".join(texts)))
+                slide_text = "\n".join(texts)
+                slides.append((num, slide_text))
+                collected += len(slide_text)
+                if max_chars is not None and collected >= max_chars:
+                    break
     parts: list[str] = []
     for num, text in slides:
         parts.append(f"--- Slide {num} ---\n{text}")

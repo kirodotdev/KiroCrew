@@ -26,3 +26,21 @@ export function fileDownloadUrl(filePath: string): string {
 export function fileStreamUrl(filePath: string): string {
   return withResolve('/api/file-stream?path=' + encodeURIComponent(filePath), filePath)
 }
+
+/** Build the /api/file-office-preview URL — extracts plaintext from a
+ * .docx / .pptx for inline preview in the file viewer.
+ *
+ * The backend uses `kiro_crew.doc_parser.extract_text` (defusedxml-hardened
+ * ZIP+XML parser, no python-docx / python-pptx dep). Returns 415 when the
+ * extension isn't previewable (.xls/.xlsx/.doc/.ppt/ODF) so the caller can
+ * fall back to the download card. See `api_file_office_preview` in
+ * `src/kiro_crew/dashboard/handlers/files.py`.
+ *
+ * Derived from fileDownloadUrl rather than restated: the two endpoints take
+ * the identical query shape (path + optional resolve=1), so swapping the
+ * endpoint segment keeps one owner for the construction. The swap cannot
+ * collide with the encoded path value — encodeURIComponent turns its
+ * slashes into %2F, so the raw endpoint string appears exactly once. */
+export function fileOfficePreviewUrl(filePath: string): string {
+  return fileDownloadUrl(filePath).replace('/api/file-download', '/api/file-office-preview')
+}

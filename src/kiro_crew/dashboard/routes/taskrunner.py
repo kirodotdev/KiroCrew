@@ -37,6 +37,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/reveal", handlers.api_reveal_path)
     app.router.add_get("/api/file-read", handlers.api_file_read)
     app.router.add_get("/api/file-download", handlers.api_file_download)
+    app.router.add_get("/api/file-office-preview", handlers.api_file_office_preview)
     app.router.add_get("/api/file-raw", handlers.api_file_raw)
     app.router.add_get("/api/file-stream", handlers.api_file_stream)
     app.router.add_get("/api/file-watch", handlers.api_file_watch)

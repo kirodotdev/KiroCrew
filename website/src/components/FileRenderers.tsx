@@ -1,10 +1,11 @@
 import { memo, useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Download, FileText, Film, Music } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
-import { fileDownloadUrl, fileStreamUrl } from '../utils/fileReadUrl'
+import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl } from '../utils/fileReadUrl'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -280,16 +281,31 @@ export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: strin
   )
 })
 
-/* ── Office viewer (download-only card for .docx/.xlsx/.pptx/etc.) ──
+/* ── Office viewer ─────────────────────────────────────────────────
  *
  * Office binary formats are ZIP archives (OOXML) or legacy OLE compound files
  * that browsers cannot render inline. Serving them through /api/file-read
  * decodes them as UTF-8 with errors='replace', producing garbled control-code
- * text (raw ZIP bytes starting with 'PK…'). This viewer replaces that broken
- * rendering with a filename + extension badge + Download button pointing at
- * /api/file-download, which streams the original bytes with attachment
- * disposition + nosniff so the file downloads cleanly instead. */
-export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: { filePath: string; hideHint?: boolean }) {
+ * text (raw ZIP bytes starting with 'PK…').
+ *
+ * Two rendering states:
+ *   1. **Preview** — for .docx and .pptx the backend can extract plaintext
+ *      via `kiro_crew.doc_parser.extract_text` (defusedxml-hardened, no
+ *      python-docx / python-pptx dep). We render that text in a scrollable
+ *      pre with a smaller "Download original" button pinned at the bottom.
+ *   2. **Download-only card** — for extensions the backend can't preview
+ *      (.xls / .xlsx / .doc / .ppt / .odt / .ods / .odp) we render the
+ *      original card: filename + extension badge + full-size Download button.
+ *      This is also the fallback when the preview fetch fails, the document
+ *      is empty, or extract_text returns "" (parse failure).
+ *
+ * The preview endpoint returns 415 for unsupported extensions, so anything
+ * other than a 2xx-with-non-empty-text falls through to the card without
+ * duplicating the previewable-ext list on the frontend. */
+
+/** Card body shared by both rendering states — full-size Download button
+ *  (fallback mode) or compact "Download original" affordance (preview mode). */
+function OfficeCard({ filePath, showBigDownload, hideHint }: { filePath: string; showBigDownload: boolean; hideHint?: boolean }) {
   // Split on BOTH separators — Kiro Crew ships native on Windows where paths
   // arrive as `C:\Users\…\report.docx`, and a `/`-only split would surface the
   // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx
@@ -298,30 +314,110 @@ export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: {
   const ext = extOf(filePath).replace('.', '').toUpperCase()
   const url = fileDownloadUrl(filePath)
   return (
-    <div className="h-full flex items-center justify-center p-4 bg-bg-elevated rounded-md border border-border">
-      <div className="flex flex-col items-center gap-3 max-w-md text-center">
-        <div className="relative">
-          <FileText size={64} className="text-muted" strokeWidth={1.25} />
-          <span
-            className="absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-accent text-white"
-            aria-hidden="true"
-          >{ext}</span>
+    <div className="flex flex-col items-center gap-3 max-w-md text-center mx-auto">
+      <div className="relative">
+        <FileText size={showBigDownload ? 64 : 40} className="text-muted" strokeWidth={1.25} />
+        <span
+          className={`absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded font-semibold bg-accent text-white text-[10px]`}
+          aria-hidden="true"
+        >{ext}</span>
+      </div>
+      <div className="text-sm text-text break-all">{filename}</div>
+      {showBigDownload && !hideHint && (
+        <div className="text-xs text-muted">
+          {i18nT('components.fileRenderers.office_download_hint')}
         </div>
-        <div className="text-sm text-text break-all">{filename}</div>
-        {!hideHint && (
-          <div className="text-xs text-muted">
-            {i18nT('components.fileRenderers.office_download_hint')}
+      )}
+      <a
+        href={url}
+        download={filename}
+        className={`inline-flex items-center gap-2 rounded no-underline bg-accent text-white hover:opacity-90 ${showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'}`}
+        aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+      >
+        <Download size={showBigDownload ? 16 : 14} aria-hidden="true" />
+        {showBigDownload
+          ? i18nT('components.fileRenderers.download')
+          : i18nT('components.fileRenderers.office_download_original')}
+      </a>
+    </div>
+  )
+}
+
+type OfficePreviewBody = { text?: string; truncated?: boolean }
+
+// Extensions the backend can actually extract (mirrors _OFFICE_PREVIEWABLE_EXT
+// in dashboard/handlers/files.py). Known-unsupported office formats render the
+// download card directly — no fetch, no "Loading preview…" flash for a
+// guaranteed 415. The 415 fallback below stays as the safety net if the two
+// lists ever drift.
+const OFFICE_PREVIEWABLE_EXTS = new Set(['.docx', '.pptx'])
+
+export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: { filePath: string; hideHint?: boolean }) {
+  const filename = filePath.split(/[\\/]/).pop() || filePath
+  const previewable = OFFICE_PREVIEWABLE_EXTS.has(extOf(filePath))
+  // React Query (repo convention for server fetches — see ArtifactPanel /
+  // AgentSkillsEditor). Keyed on filePath so navigating between .docx files
+  // in the tree never flashes a stale response; aborts via the provided
+  // signal on unmount/key change.
+  const previewQuery = useQuery<OfficePreviewBody | null>({
+    queryKey: ['office-preview', filePath],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(fileOfficePreviewUrl(filePath), { signal })
+      if (!res.ok) {
+        // 415 (unsupported ext), 404, 400, 500 → all fall through to the
+        // download-only card. We don't distinguish here because a broken
+        // preview should never block downloading the real file.
+        return null
+      }
+      return await res.json() as OfficePreviewBody
+    },
+    enabled: previewable,
+    // No staleTime: a reopened file must show its CURRENT contents — the
+    // document may have been edited since the last preview. Deduping within
+    // a single mount still applies; only remounts refetch.
+    staleTime: 0,
+    retry: false,
+  })
+
+  if (previewable && previewQuery.isLoading) {
+    return (
+      <div className="h-full flex items-center justify-center p-4 bg-bg-elevated rounded-md border border-border">
+        <div className="text-xs text-muted animate-pulse">
+          {i18nT('components.fileRenderers.office_preview_loading')}
+        </div>
+      </div>
+    )
+  }
+
+  const body = previewable && !previewQuery.isError ? previewQuery.data : null
+  if (!body?.text) {
+    return (
+      <div className="h-full flex items-center justify-center p-4 bg-bg-elevated rounded-md border border-border">
+        <OfficeCard filePath={filePath} showBigDownload={true} hideHint={hideHint} />
+      </div>
+    )
+  }
+
+  // Preview state — scrollable plaintext + compact download affordance at bottom.
+  // tabIndex + aria-label make the scroll container keyboard-reachable so long
+  // documents stay readable past the fold without a pointer.
+  return (
+    <div className="h-full flex flex-col bg-bg-elevated rounded-md border border-border overflow-hidden">
+      {/* Keyboard-scrollable region — same pattern as CodeBlock.tsx. */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+      <div className="flex-1 overflow-auto p-4" tabIndex={0} role="region" aria-label={filename}>
+        <pre className="text-sm text-text whitespace-pre-wrap break-words font-sans leading-relaxed">{body.text}</pre>
+      </div>
+      <div className="border-t border-border p-3 bg-bg">
+        {/* Truncation notice lives in the always-visible pinned bar (not after
+            the 512 KB of text) so users skimming the top of a large document
+            learn the preview is partial without scrolling to the end. */}
+        {body.truncated && (
+          <div className="mb-2 text-xs text-muted italic text-center">
+            {i18nT('components.fileRenderers.office_preview_truncated')}
           </div>
         )}
-        <a
-          href={url}
-          download={filename}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-white hover:opacity-90 no-underline"
-          aria-label={i18nT('components.fileRenderers.download_file', { filename })}
-        >
-          <Download size={16} aria-hidden="true" />
-          {i18nT('components.fileRenderers.download')}
-        </a>
+        <OfficeCard filePath={filePath} showBigDownload={false} />
       </div>
     </div>
   )
