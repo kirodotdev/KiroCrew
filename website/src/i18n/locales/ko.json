@@ -2141,7 +2141,12 @@
             "refresh_section": "새로 고침",
             "repositories": "저장소",
             "settings": "설정",
-            "your": "내"
+            "your": "내",
+            "agent_section": "에이전트",
+            "agent_intro": "조사 및 리뷰 에이전트가 결과를 보고하는 방식입니다.",
+            "agent_language": "에이전트 언어",
+            "agent_language_hint": "에이전트가 조사 결과와 리뷰 제안을 작성하는 언어입니다. 레이블 이름, 코드, 파일 경로는 원문 그대로 유지됩니다. 변경 후 시작한 세션에 적용되며, 이어서 진행하는 조사는 시작할 때의 언어를 유지합니다.",
+            "agent_language_follow": "대시보드와 동일({{language}})"
           },
           "repoSettings": {
             "ai_label_recommendations": "AI 레이블 추천",

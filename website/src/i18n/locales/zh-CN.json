@@ -2141,7 +2141,12 @@
             "refresh_section": "刷新设置",
             "repositories": "仓库",
             "settings": "设置",
-            "your": "你的"
+            "your": "你的",
+            "agent_section": "智能体",
+            "agent_intro": "调查和评审智能体如何汇报结论。",
+            "agent_language": "智能体语言",
+            "agent_language_hint": "智能体撰写调查结论和评审建议所用的语言。标签名称、代码和文件路径保持原文。仅对之后新开始的会话生效；恢复已有调查会沿用它开始时的语言。",
+            "agent_language_follow": "与仪表板一致（{{language}}）"
           },
           "repoSettings": {
             "ai_label_recommendations": "AI 标签推荐",

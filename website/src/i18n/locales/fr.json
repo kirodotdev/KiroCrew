@@ -2225,7 +2225,12 @@
             "refresh_section": "Actualisation",
             "repositories": "Dépôts",
             "settings": "Paramètres",
-            "your": "Votre identité"
+            "your": "Votre identité",
+            "agent_section": "Agent",
+            "agent_intro": "Comment les agents d'investigation et de revue rapportent leurs conclusions.",
+            "agent_language": "Langue de l'agent",
+            "agent_language_hint": "La langue dans laquelle l'agent rédige ses conclusions et ses propositions de commentaires de revue. Les noms de libellés, le code et les chemins de fichiers restent inchangés. S'applique aux sessions démarrées après la modification ; une investigation reprise conserve la langue dans laquelle elle a commencé.",
+            "agent_language_follow": "Comme le tableau de bord ({{language}})"
           },
           "repoSettings": {
             "ai_label_recommendations": "Recommandations d’étiquettes par IA",

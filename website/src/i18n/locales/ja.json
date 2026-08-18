@@ -2141,7 +2141,12 @@
             "refresh_section": "更新",
             "repositories": "リポジトリ",
             "settings": "設定",
-            "your": "あなたの"
+            "your": "あなたの",
+            "agent_section": "エージェント",
+            "agent_intro": "調査エージェントとレビューエージェントが結果をどのように報告するか。",
+            "agent_language": "エージェントの言語",
+            "agent_language_hint": "エージェントが調査結果とレビュー案を書く言語です。ラベル名、コード、ファイルパスは原文のままです。変更後に開始したセッションに適用され、再開した調査は開始時の言語を保ちます。",
+            "agent_language_follow": "ダッシュボードと同じ（{{language}}）"
           },
           "repoSettings": {
             "ai_label_recommendations": "AIラベル推奨",

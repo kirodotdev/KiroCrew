@@ -16,6 +16,8 @@ import { useCallback } from 'react'
 import { type Issue, type InvestigationRecord, type RepoRef } from '../api'
 import { buildInvestigationPrompt } from './investigate.prompt'
 import { truncate, useAgentSession } from './agentSession'
+import { resolveAiLanguage } from './format'
+import { useIssueRadar } from '../context'
 
 export interface UseInvestigate {
   /** Open (or resume) the investigation session for an issue, then navigate to
@@ -31,6 +33,10 @@ export interface UseInvestigate {
 
 export function useInvestigate(): UseInvestigate {
   const { openSession, busy, error } = useAgentSession()
+  // Read the live selection, not the stored one: a browser that refuses the
+  // persistence write (private mode, quota) still has to honour the language
+  // the user just picked, and the prompt is built at click time.
+  const { aiLanguage } = useIssueRadar()
 
   const investigate = useCallback(
     (
@@ -42,10 +48,12 @@ export function useInvestigate(): UseInvestigate {
         repoRef,
         number: issue.number,
         title: `#${issue.number} · ${truncate(issue.title)}`,
-        prompt: buildInvestigationPrompt(repoRef, repoRef.owner, repoRef.repo, issue),
+        prompt: buildInvestigationPrompt(
+          repoRef, repoRef.owner, repoRef.repo, issue, resolveAiLanguage(aiLanguage),
+        ),
         existing,
       }),
-    [openSession],
+    [openSession, aiLanguage],
   )
 
   return { investigate, busy, error }

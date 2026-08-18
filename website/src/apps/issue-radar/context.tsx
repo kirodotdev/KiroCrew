@@ -23,8 +23,8 @@ import { CREW_FILTERS, CREW_SORT_KEYS, CREW_VIEW_KINDS } from './lib/types'
 import { repoScopeKey } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
-  asArray, coerceDashboardTab, coerceRefreshPrefs, coerceSortKey, consumeAutoSelectFirstIssue,
-  loadUiState, saveUiState,
+  asArray, coerceAiLanguage, coerceDashboardTab, coerceRefreshPrefs, coerceSortKey, consumeAutoSelectFirstIssue,
+  loadUiState, patchUiState, saveUiState, storedAiLanguage,
 } from './lib/format'
 import type { RefreshPrefs } from './lib/format'
 import type { RepoRef } from './lib/refLinks'
@@ -269,6 +269,15 @@ export interface IssueRadarContextValue {
    * state, so it survives leaving the app and coming back. */
   setRefreshPrefs: (patch: Partial<RefreshPrefs>) => void
 
+  // ── AI output language ──
+  /** The language the Investigate and Review agents are told to write in, as a
+   * BCP-47 tag, or `''` for "follow the dashboard language". Independent of the
+   * dashboard language on purpose: an English interface with Chinese findings is
+   * a supported combination. */
+  aiLanguage: string
+  /** Choose the agent output language. `''` restores follow-the-dashboard. */
+  setAiLanguage: (code: string) => void
+
   // ── cross-reference sheet ──
   /** The open stack of same-repo issue/PR references, innermost LAST. Empty when
    * the sheet is closed. A ref opened from inside the sheet pushes onto it, so
@@ -397,6 +406,27 @@ export function IssueRadarProvider({
     setRefreshState((prev) => coerceRefreshPrefs({ ...prev, ...patch }))
   }, [])
 
+  const [aiLanguage, setAiLanguageState] = useState<string>(
+    () => coerceAiLanguage(restored.aiLanguage),
+  )
+
+  const setAiLanguage = useCallback((code: string) => {
+    const next = coerceAiLanguage(code)
+    setAiLanguageState(next)
+    // Written HERE as a targeted merge rather than left to the whole-document save
+    // below: that save rewrites every field from one tab's React state, so a second
+    // tab persisting an unrelated change would otherwise overwrite this choice with
+    // whatever it read at mount, and the agents would silently go back to English.
+    //
+    // This is a per-field guard, not the general fix. Every other field in the
+    // document still loses to a stale tab. If you are adding a field that needs the
+    // same protection, make `saveUiState` merge over the on-disk document instead of
+    // copying this pair of calls -- the cause is the whole-document write, and one
+    // carve-out per field does not scale. `patchUiState` deliberately excludes
+    // `refresh`, so that field needs its validated setter path either way.
+    patchUiState({ aiLanguage: next })
+  }, [])
+
   const [mainView, setMainView] = useState<MainView>(restored.mainView ?? 'dashboard')
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>(() => coerceDashboardTab(restored.dashboardTab))
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget>(restored.settingsTarget ?? { kind: 'general', anchor: 'account' })
@@ -482,6 +512,10 @@ export function IssueRadarProvider({
       prCreatedByMember,
       prStateFilter, prSortKey, prSortDir,
       refresh: refreshPrefs,
+      // Read back from the store rather than written from this tab's state: this
+      // save fires on any unrelated change, and a tab whose copy predates another
+      // tab's language change must not carry that stale value back to disk.
+      aiLanguage: storedAiLanguage(),
     })
   }, [
     mainView, dashboardTab, settingsTarget, selectedIssue, query,
@@ -1219,6 +1253,7 @@ export function IssueRadarProvider({
     prBulkMax: (prPersonFilterActive ? pullsSearchQuery.data?.bulk_max : pullsQuery.data?.bulk_max)
       ?? DEFAULT_BULK_CHUNK,
     refreshPrefs, setRefreshPrefs,
+    aiLanguage, setAiLanguage,
     countByPrLabel,
     prQuery, setPrQuery,
     prSelectedLabels, togglePrLabel,
@@ -1264,6 +1299,7 @@ export function IssueRadarProvider({
     pullsSearchQuery.dataUpdatedAt, pullsQuery.dataUpdatedAt, pullsSearchQuery.data, pullsQuery.data,
     pullsPartial, pullsFirstPageQuery.data,
     refreshPrefs, setRefreshPrefs, countByPrLabel, prQuery, setPrQuery,
+    aiLanguage, setAiLanguage,
     prSelectedLabels, togglePrLabel, prAuthoredByMe, togglePrAuthoredByMe,
     prAssignedToMe, togglePrAssignedToMe, prReviewRequestedByMe, togglePrReviewRequestedByMe,
     prDraftOnly, togglePrDraftOnly, prCreatedByMember, togglePrCreatedByMember, hasMemberPulls,

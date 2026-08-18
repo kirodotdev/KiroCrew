@@ -2183,7 +2183,12 @@
             "refresh_section": "Aktualisierung",
             "repositories": "Repositories",
             "settings": "Einstellungen",
-            "your": "Ihr"
+            "your": "Ihr",
+            "agent_section": "Agent",
+            "agent_intro": "Wie die Untersuchungs- und Review-Agenten ihre Ergebnisse berichten.",
+            "agent_language": "Agentensprache",
+            "agent_language_hint": "Die Sprache, in der der Agent seine Ergebnisse und vorgeschlagenen Review-Kommentare schreibt. Labelnamen, Code und Dateipfade bleiben unverändert. Gilt für Sitzungen, die nach der Änderung beginnen; eine fortgesetzte Untersuchung behält ihre ursprüngliche Sprache.",
+            "agent_language_follow": "Wie das Dashboard ({{language}})"
           },
           "repoSettings": {
             "ai_label_recommendations": "KI-Label-Empfehlungen",

@@ -8,16 +8,21 @@ import type { GeneralAnchor } from '../../lib/types'
 import { Toggle } from '../../../../components/ui'
 import SimpleSelect from '../../../../components/SimpleSelect'
 import {
+  AI_LANGUAGE_CHOICES, AI_LANGUAGE_FOLLOW,
   DETAIL_POLL_CHOICES_MS, LIST_POLL_CHOICES_MS, STALE_TIME_CHOICES_MS,
 } from '../../lib/format'
-import { fmtUnit } from '../../../../i18n/format'
+import { activeLocale, fmtUnit } from '../../../../i18n/format'
+import { languageLabel } from '../../../../i18n/languages'
 
 import { i18nT } from '../../../../i18n/t'
 /** General (app-wide) settings — full width. The GitHub identity and the list
  * of connected repos. Each repo card jumps to that repo's own settings page.
  * `anchor` scrolls to the requested sub-section when the rail asks for it. */
 export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
-  const { me, repos, onAddRepo, openSettings, active, refreshPrefs, setRefreshPrefs } = useIssueRadar()
+  const {
+    me, repos, onAddRepo, openSettings, active, refreshPrefs, setRefreshPrefs,
+    aiLanguage, setAiLanguage,
+  } = useIssueRadar()
   // The account shown is the one on the ACTIVE repo's provider — `me` is fetched
   // per provider, so naming the wrong CLI here would contradict the login above it.
   const terms = providerTerms(active)
@@ -106,6 +111,45 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
               hint={i18nT('apps.issueRadar.views.settings.generalSettings.prefetch_pulls_hint')}
               checked={refreshPrefs.prefetchPulls}
               onChange={(prefetchPulls) => setRefreshPrefs({ prefetchPulls })}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-10 scroll-mt-8">
+        <SectionHeader title={i18nT('apps.issueRadar.views.settings.generalSettings.agent_section')} />
+        <div className="rounded-xl border border-border bg-bg-elevated shadow-sm p-5">
+          <p className="text-[13px] text-muted mb-4">
+            {i18nT('apps.issueRadar.views.settings.generalSettings.agent_intro')}
+          </p>
+          {/* Stacked until `sm`, unlike the interval and toggle rows above: their
+              controls are a fixed-width switch or a short duration, while this
+              trigger renders a language ENDONYM, which can be long enough at 320px
+              to squeeze the hint into a sliver beside it. */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium">
+                {i18nT('apps.issueRadar.views.settings.generalSettings.agent_language')}
+              </div>
+              <div className="text-[12px] text-muted mt-0.5">
+                {i18nT('apps.issueRadar.views.settings.generalSettings.agent_language_hint')}
+              </div>
+            </div>
+            {/* Endonyms, not translated names: a picker that renders every option in
+                the CURRENT language is unusable to someone switching away from a
+                language they cannot read. The follow entry is the only translated one. */}
+            <SimpleSelect
+              options={[AI_LANGUAGE_FOLLOW, ...AI_LANGUAGE_CHOICES.map(l => l.code)]}
+              optionLabels={[
+                i18nT('apps.issueRadar.views.settings.generalSettings.agent_language_follow', {
+                  language: languageLabel(activeLocale()),
+                }),
+                ...AI_LANGUAGE_CHOICES.map(l => l.label),
+              ]}
+              value={aiLanguage}
+              onChange={setAiLanguage}
+              aria-label={i18nT('apps.issueRadar.views.settings.generalSettings.agent_language')}
+              style={{ flexShrink: 0 }}
             />
           </div>
         </div>

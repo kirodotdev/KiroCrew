@@ -2225,7 +2225,12 @@
             "refresh_section": "Aggiornamento",
             "repositories": "Repository",
             "settings": "Impostazioni",
-            "your": "Il tuo"
+            "your": "Il tuo",
+            "agent_section": "Agente",
+            "agent_intro": "Come gli agenti di indagine e di revisione riportano le loro conclusioni.",
+            "agent_language": "Lingua dell'agente",
+            "agent_language_hint": "La lingua in cui l'agente scrive le proprie conclusioni e i commenti di revisione proposti. I nomi delle etichette, il codice e i percorsi dei file restano invariati. Vale per le sessioni avviate dopo la modifica; un'indagine ripresa mantiene la lingua con cui e' iniziata.",
+            "agent_language_follow": "Come la dashboard ({{language}})"
           },
           "repoSettings": {
             "ai_label_recommendations": "Consigli IA per le etichette",

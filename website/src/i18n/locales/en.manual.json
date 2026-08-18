@@ -483,7 +483,12 @@
             "prefetch_pulls": "Load pull requests on open",
             "prefetch_pulls_hint": "Loads the pull-request list as soon as the app opens, so the first visit is instant. Costs one fetch even if you never open it.",
             "refresh_intro": "How often Issue Radar re-reads from {{provider}}. Shorter intervals feel more live but spend more of your hourly API budget.",
-            "refresh_section": "Refresh"
+            "refresh_section": "Refresh",
+            "agent_section": "Agent",
+            "agent_intro": "How the Investigate and Review agents report their findings.",
+            "agent_language": "Agent language",
+            "agent_language_hint": "The language the agent writes its findings and proposed review comments in. Label names, code, and file paths stay verbatim. Applies to sessions started after the change; a resumed investigation keeps the language it began in.",
+            "agent_language_follow": "Same as dashboard ({{language}})"
           }
         },
         "tagging": {

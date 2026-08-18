@@ -2225,7 +2225,12 @@
             "refresh_section": "Actualización",
             "repositories": "Repositorios",
             "settings": "Ajustes",
-            "your": "Tu identidad de"
+            "your": "Tu identidad de",
+            "agent_section": "Agente",
+            "agent_intro": "Cómo informan sus conclusiones los agentes de investigación y de revisión.",
+            "agent_language": "Idioma del agente",
+            "agent_language_hint": "El idioma en el que el agente escribe sus conclusiones y los comentarios de revisión propuestos. Los nombres de etiquetas, el código y las rutas de archivo se mantienen literales. Se aplica a las sesiones iniciadas después del cambio; una investigación reanudada conserva el idioma con el que empezó.",
+            "agent_language_follow": "Igual que el panel ({{language}})"
           },
           "repoSettings": {
             "ai_label_recommendations": "Recomendaciones de etiquetas con IA",

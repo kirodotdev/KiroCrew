@@ -6,6 +6,15 @@ import type { InvestigationRecord, PullRequest, RepoRef } from '../apps/issue-ra
 // leaves exactly what lives in review.ts under test: the seed prompt, the slot
 // title, and the record namespace the call is filed under.
 const openSession = vi.fn()
+// useReviewPr resolves the agent language from the provider; this file renders the
+// hook on its own, so stand in for it rather than mounting the whole workspace.
+vi.mock('../apps/issue-radar/context', async () => {
+  const actual = await vi.importActual<typeof import('../apps/issue-radar/context')>(
+    '../apps/issue-radar/context',
+  )
+  return { ...actual, useIssueRadar: () => ({ aiLanguage: '' }) }
+})
+
 vi.mock('../apps/issue-radar/lib/agentSession', async () => {
   const actual = await vi.importActual<typeof import('../apps/issue-radar/lib/agentSession')>(
     '../apps/issue-radar/lib/agentSession',

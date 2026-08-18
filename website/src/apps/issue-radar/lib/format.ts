@@ -1,7 +1,8 @@
 // Pure, side-effect-free helpers + localStorage accessors + constants for
 // Issue Radar. No React, no component imports — safe to pull into any module.
 import { AlertCircle, ArrowDownAZ, Clock, Hash, type LucideIcon } from 'lucide-react'
-import { fmtRelative, toDate } from '../../../i18n/format'
+import { activeLocale, fmtRelative, toDate } from '../../../i18n/format'
+import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, type LanguageEntry } from '../../../i18n/languages'
 import { i18nT } from '../../../i18n/t'
 import { loadColumnCollapsed, loadColumnWidth } from '../../../lib/columnWidth'
 import { DASHBOARD_TABS, SORT_KEYS } from './types'
@@ -204,6 +205,53 @@ export function coerceRefreshPrefs(raw: Partial<RefreshPrefs> | undefined): Refr
   }
 }
 
+/** "Follow the dashboard language" — the default, persisted as the empty string
+ * so an unset field already means follow, with no migration for existing users. */
+export const AI_LANGUAGE_FOLLOW = ''
+
+/** The languages an AI-output directive may name.
+ *
+ * A FOURTH question, deliberately not one of the three lists in `i18n/languages`
+ * (resolvable / browser-detectable / pickable): "what language may the agent be
+ * told to write in". The pseudolocale is excluded because it is a rendering
+ * device, not a language — instructing a model to answer in `en-XA` would produce
+ * garbage rather than padded text.
+ */
+export const AI_LANGUAGE_CHOICES: readonly LanguageEntry[] =
+  SUPPORTED_LANGUAGES.filter(l => !l.devOnly)
+
+/** Coerce a persisted AI-language choice. Anything unrecognized — a hand-edited
+ * value, or a language this build no longer ships — falls back to follow, which
+ * is the only value that cannot be wrong. */
+export function coerceAiLanguage(value: unknown): string {
+  if (typeof value !== 'string') return AI_LANGUAGE_FOLLOW
+  return AI_LANGUAGE_CHOICES.some(l => l.code === value) ? value : AI_LANGUAGE_FOLLOW
+}
+
+/** The BCP-47 tag an agent prompt should name, or `''` for "say nothing".
+ *
+ * English resolves to `''` rather than to `'en'`: the prompts are written in
+ * English, so a directive would restate the language they are already in, and
+ * suppressing it keeps every prompt byte-identical to what an English user
+ * sends today. `''` is therefore both "not configured" and "no directive
+ * needed", which is what makes the follow case free.
+ */
+export function resolveAiLanguage(pref: string): string {
+  const tag = coerceAiLanguage(pref) || activeLocale()
+  if (tag === DEFAULT_LANGUAGE) return ''
+  return AI_LANGUAGE_CHOICES.some(l => l.code === tag) ? tag : ''
+}
+
+/** The stored preference, coerced but NOT resolved (`''` still means follow).
+ *
+ * A whole-document save has to write back the value that is currently on disk,
+ * which for an unset preference is the empty string, so this deliberately does
+ * NOT resolve the follow-the-dashboard case to a concrete tag. */
+export function storedAiLanguage(): string {
+  return coerceAiLanguage(loadUiState().aiLanguage)
+}
+
+
 /** Compact "now / 5m ago / 3h ago / 2d ago" from an epoch-ms timestamp.
  * Used for the issue-list "Updated …" footer; returns '' for a falsy input
  * (e.g. before the first fetch).
@@ -392,6 +440,12 @@ export interface PersistedUiState {
   // per-repo home would make "how often does this poll" a property of the repo,
   // which is not what the setting means).
   refresh: RefreshPrefs
+  // ── AI output language ──
+  // Same reasoning as the refresh block: a per-browser view preference, not repo
+  // configuration. It is deliberately SEPARATE from `dashboard.language` so the
+  // interface and the agent's prose can differ — an English dashboard whose
+  // findings come back in Chinese is a supported combination, not a mismatch.
+  aiLanguage: string
 }
 
 /** Load the persisted UI state. Partial by design — any missing field falls
