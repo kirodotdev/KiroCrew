@@ -400,8 +400,11 @@ def test_ring_trim_skips_a_file_removed_concurrently(spool: Path, monkeypatch: p
 
     real_unlink = capture_macos.os.unlink
 
-    def _racy(path):
-        real_unlink(path)
+    # Accepts the keyword arguments os.unlink really takes (dir_fd): this replaces
+    # the os module attribute, so it is live for the whole test INCLUDING teardown,
+    # where pytest's own tmp_path cleanup calls unlink with dir_fd=.
+    def _racy(path, **kwargs):
+        real_unlink(path, **kwargs)
         raise FileNotFoundError(path)
 
     monkeypatch.setattr(capture_macos.os, "unlink", _racy)

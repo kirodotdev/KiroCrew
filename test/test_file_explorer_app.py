@@ -209,8 +209,8 @@ class TestGitStatus:
         assert server._git_repo_root(probe) is None
 
     def test_git_status_parsing(self, tmp_tree):
-        """Test _git_status with a mocked subprocess."""
-        with patch("subprocess.run") as mock_run:
+        """Test _git_status with a mocked spawn wrapper."""
+        with patch.object(server, "run_limited") as mock_run:
             # Mock branch
             branch_result = MagicMock()
             branch_result.returncode = 0
@@ -228,7 +228,7 @@ class TestGitStatus:
 
     def test_git_copy_entries_handled(self, tmp_tree):
         """Test that C (copy) entries skip the source path."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(server, "run_limited") as mock_run:
             branch_result = MagicMock()
             branch_result.returncode = 0
             branch_result.stdout = "main\n"
@@ -328,10 +328,12 @@ class TestSearchTccPruning:
             captured["cmd"] = list(cmd)
             return MagicMock(stdout="", returncode=0)
 
-        with patch.object(server.platform_compat, "IS_MACOS", True), self._home_ctx(home), \
-                patch.object(server, "cgroup_scope_argv", lambda argv: argv), \
-                patch.object(server, "resource_limit_preexec", lambda: None), \
-                patch("subprocess.run", fake_run):
+        with (
+            patch.object(server.platform_compat, "IS_MACOS", True),
+            self._home_ctx(home),
+            patch.object(server, "cgroup_scope_argv", lambda argv: argv),
+            patch.object(server, "run_limited", fake_run),
+        ):
             server._search_rg(root, "needle", "", "")
         return captured["cmd"]
 

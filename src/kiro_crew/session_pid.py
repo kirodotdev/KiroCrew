@@ -859,29 +859,24 @@ def cleanup_orphaned_session_roots() -> int:
             entries_to_remove.add(stripped)
             continue
 
-        # Additional PID-reuse guard: verify PPid is 1 (reparented to init)
-        # or the dead gateway PID (race window). A recycled PID would have
-        # a completely different parent. platform_compat.get_ppid returns
-        # -1 on failure (Linux /proc, macOS libproc, Windows snapshot).
-        try:
-            actual_ppid = platform_compat.get_ppid(child_pid)
-        except Exception:
-            actual_ppid = -1
-
-        # Valid orphan: PPid should be 1 (reparented to init/systemd) since
-        # the original parent (gateway) is dead. Also accept the dead gateway
-        # PID itself (brief race window before reparenting completes).
-        if actual_ppid not in (1, gw_pid, -1):
-            # PPid is something else entirely — PID was reused, prune
-            entries_to_remove.add(stripped)
-            continue
-
-        # Strongest PID-reuse guard: the entry recorded the child's start
+        # Strongest PID-reuse guard FIRST: the entry recorded the child's start
         # token at spawn (see _pid_start_token). A MISMATCH means this PID now
         # names a DIFFERENT process — prune, never kill. An unreadable live
         # token is "identity unknown", not a mismatch: retain the entry so a
         # live genuine orphan is not untracked (and thus leaked forever) on one
         # transient probe failure; the next sweep retries.
+        #
+        # A token that MATCHES is positive proof this PID is still the process
+        # we spawned, so it settles identity on its own and the weaker PPid
+        # heuristic below MUST NOT be allowed to veto it. That ordering is
+        # load-bearing: an orphan does not always reparent to init. A child
+        # placed in its own cgroup scope by the service manager reparents to
+        # that *user manager*, which is a subreaper, so its PPid is neither 1
+        # nor the dead gateway's. Running the PPid check first classified every
+        # such orphan as "PID recycled" and pruned its tracking entry WITHOUT
+        # killing it — sparing the process and then forgetting it, so no later
+        # sweep could ever reap it.
+        identity_confirmed = False
         if recorded_token is not None:
             live_token = _pid_start_token(child_pid)
             if live_token is not None and live_token != recorded_token:
@@ -889,6 +884,24 @@ def cleanup_orphaned_session_roots() -> int:
                 continue
             if live_token is None:
                 continue  # identity unknown — retain entry, retry next sweep
+            identity_confirmed = True
+
+        # Fallback PID-reuse guard for entries with NO recorded token (Windows,
+        # or a failed token probe at spawn): verify PPid is 1 (reparented to
+        # init) or the dead gateway PID (race window). A recycled PID would have
+        # a completely different parent. platform_compat.get_ppid returns -1 on
+        # failure (Linux /proc, macOS libproc, Windows snapshot). This is only
+        # reached when the token could not establish identity.
+        if not identity_confirmed:
+            try:
+                actual_ppid = platform_compat.get_ppid(child_pid)
+            except Exception:
+                actual_ppid = -1
+
+            if actual_ppid not in (1, gw_pid, -1):
+                # PPid is something else entirely — PID was reused, prune
+                entries_to_remove.add(stripped)
+                continue
 
         # Confirmed orphan: kill the process tree
         total_killed, root_killed = _kill_pid_tree(child_pid)

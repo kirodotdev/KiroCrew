@@ -11,6 +11,8 @@ and mode plumbing (_VALID_MODES, create validation).
 from __future__ import annotations
 
 import asyncio
+import errno
+import json
 import logging
 import os
 import subprocess
@@ -18,6 +20,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -75,6 +78,30 @@ def _slot_save(side_effect: BaseException | None = None):
     )
 
 
+def _durable_queue(slot_key: str = "s1") -> list[dict[str, Any]]:
+    """Read one slot's queue file, WITHOUT building a `CrewStore`.
+
+    Every caller of this asks the same question — "is this queue row on disk
+    yet?" — and `queue.json` is the only file the code under test awaits before
+    the moment being asserted. Building a store to answer it also reads
+    `topics.json` and `forwards.json`, which nothing awaits: `_reconcile` hands
+    them to the executor via `st.save()` and returns. So a store built here can
+    open a file that is mid-`replace()`, and on Windows that open fails with
+    `PermissionError` — issue #4142. Reading the one file the product promises
+    is durable keeps the assertion and drops the unpromised dependency.
+    """
+    path = crew_mod.data_home() / "crew" / crew_mod._store_name(slot_key) / "queue.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []                      # nothing enqueued yet, as `_load` reads it
+
+
+def _durable_entry(slot_key: str, msg_id: str) -> dict[str, Any] | None:
+    """`CrewStore.entry` against the queue FILE — see :func:`_durable_queue`."""
+    return next((e for e in _durable_queue(slot_key) if e.get("msg_id") == msg_id), None)
+
+
 # ── store ──
 
 
@@ -129,6 +156,99 @@ class TestCrewStore:
             assert (st.dir / "queue.json").exists()
 
 
+class TestWindowsReplaceWindow:
+    """Issue #4142: a store read must not race a store write nothing awaited.
+
+    `CrewStore` publishes each file by writing a temp file and calling
+    `Path.replace`. That is atomic on both platforms, but only POSIX makes it
+    invisible to a concurrent opener — on Windows the destination is briefly
+    unopenable and `open()` fails with `PermissionError` (errno 13), which
+    `_load` re-raises as `RuntimeError`. Windows CI is the only place that
+    fails, so the platform difference is emulated here to give the bug a
+    deterministic reproduction that runs everywhere.
+    """
+
+    @staticmethod
+    def _emulate_windows_replace(monkeypatch, target: str) -> tuple[set[str], threading.Event]:
+        """Make `target` unopenable while its write is in flight, as Windows does.
+
+        The write parks on the returned gate instead of sleeping, so the window
+        is open for as long as the test needs rather than for a guessed number of
+        milliseconds — a timing-based window would make this test itself flaky.
+        The gate has a timeout so a regression cannot hang CI.
+        """
+        inflight: set[str] = set()
+        gate = threading.Event()
+        real_write_text, real_replace, real_read_text = (
+            Path.write_text, Path.replace, Path.read_text)
+
+        def write_text(self, data, *a, **k):          # type: ignore[no-untyped-def]
+            if self.name == f".{target}.tmp":
+                inflight.add(str(self.parent / target))
+                gate.wait(timeout=10.0)
+            return real_write_text(self, data, *a, **k)
+
+        def replace(self, dest):                      # type: ignore[no-untyped-def]
+            try:
+                return real_replace(self, dest)
+            finally:
+                inflight.discard(str(dest))
+
+        def read_text(self, *a, **k):                 # type: ignore[no-untyped-def]
+            if str(self) in inflight:
+                raise PermissionError(errno.EACCES, "Permission denied", str(self))
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(Path, "write_text", write_text)
+        monkeypatch.setattr(Path, "replace", replace)
+        monkeypatch.setattr(Path, "read_text", read_text)
+        return inflight, gate
+
+    @pytest.mark.asyncio
+    async def test_the_durable_queue_read_does_not_touch_unawaited_files(
+            self, monkeypatch) -> None:            # type: ignore[no-untyped-def]
+        # `ingest` awaits `queue.json` by name and nothing else: `_reconcile`
+        # hands `topics.json` and `forwards.json` to the executor and never waits.
+        # So a durability assertion may read the queue and must not read the
+        # other two, which may still be mid-replace.
+        inflight, gate = self._emulate_windows_replace(monkeypatch, "topics.json")
+        orch, slot = _orch(), _slot(key="winrace")
+        shown: list[list[str]] = []
+        control: list[str] = []
+
+        def _on_append(*a: object, **k: object) -> None:
+            # The property: the queue row is on disk the moment the user can see
+            # their message. Answerable from the queue file alone.
+            shown.append([e["text"] for e in _durable_queue("winrace")])
+            # Positive control, in the same window: the three-file read this
+            # assertion used to do DOES fail here, so a pass above is the fix
+            # working and not an emulator that never armed.
+            assert inflight, "the topics.json write is not in flight — window missed"
+            try:
+                CrewStore("winrace")
+            except RuntimeError as exc:
+                control.append(str(exc))
+
+        slot.append = MagicMock(side_effect=_on_append)
+        try:
+            with patch.object(orch, "_post", return_value=True), \
+                    patch.object(orch, "_decide", new=AsyncMock()):
+                await orch.ingest(slot, "do the thing")
+        finally:
+            # Release the parked write AND join it. Left unjoined, the executor
+            # thread outlives the test: it straddles this monkeypatch teardown,
+            # and its write failure would surface in whatever runs next.
+            gate.set()
+            st = orch._stores.get("winrace")
+            if st is not None:
+                await st.wait_writes()
+
+        assert shown == [["do the thing"]], \
+            f"queue row was not readable while topics.json was mid-replace: {shown}"
+        assert control and "topics.json" in control[0], \
+            "building a whole store did NOT fail in the window — the emulator is inert"
+
+
 # ── ingest ──
 
 
@@ -179,7 +299,7 @@ class TestIngest:
         # The real harm: a later successful save must not resurrect it.
         st.save()
         await st.wait_writes()
-        assert CrewStore("s1").queue == [], "a later save persisted the rejected request"
+        assert _durable_queue() == [], "a later save persisted the rejected request"
         # Nothing was promised to the user, and nothing was routed.
         post.assert_not_called()
         assert decide.await_count == 0 and decide.call_count == 0
@@ -225,7 +345,7 @@ class TestIngest:
         assert (st.dir / "queue.json").read_text(encoding="utf-8") == "{ this is not json"
         # A file that was never written is a legitimate empty store.
         (st.dir / "queue.json").unlink()
-        assert CrewStore("s1").queue == []
+        assert _durable_queue() == []
 
     def test_enqueue_writes_only_the_queue_file(self) -> None:
         """A rollback-able write must touch ONLY the file it changed.
@@ -261,7 +381,7 @@ class TestIngest:
              patch.object(orch, "_post", return_value=True):
             await orch.ingest(slot, "do thing A")
 
-        on_disk = CrewStore("s1").queue
+        on_disk = _durable_queue()
         assert [e["text"] for e in on_disk] == ["do thing A"], \
             "an acknowledged request was dropped when only its transcript failed"
         assert on_disk[0]["state"] == "pending"
@@ -828,7 +948,7 @@ class TestGptRoundEleven:
         slot.key = "vis1"                    # own store; no state from other tests
         on_disk_when_shown: list[list[str]] = []
         slot.append = MagicMock(side_effect=lambda *a, **k: on_disk_when_shown.append(
-            [e["text"] for e in CrewStore("vis1").queue]))
+            [e["text"] for e in _durable_queue("vis1")]))
 
         with patch.object(orch, "_post", return_value=True), \
                 patch.object(orch, "_decide", new=AsyncMock()):
@@ -1809,7 +1929,7 @@ class TestGptRoundFive:
                           side_effect=lambda *a, **k: order.append("post") or True):
             assert await orch._settle_stragglers(slot) is False
         assert order.index("write") < order.index("post"), order
-        assert CrewStore("s1").queue[0]["state"] == "failed"
+        assert _durable_queue()[0]["state"] == "failed"
 
     @pytest.mark.asyncio
     async def test_steer_is_durable_before_it_reaches_the_run(self) -> None:
@@ -1828,7 +1948,7 @@ class TestGptRoundFive:
 
         async def _steer(rid, text):  # type: ignore[no-untyped-def]
             # What a crash at this instant would leave behind on disk.
-            seen_state.append((CrewStore("s1").entry(e["msg_id"]) or {}).get("state"))
+            seen_state.append((_durable_entry("s1", e["msg_id"]) or {}).get("state"))
             return True, ""
 
         orch._subagents.steer_run = AsyncMock(side_effect=_steer)
@@ -1933,7 +2053,7 @@ class TestGptRoundFive:
         orch._subagents.continue_conversation = MagicMock(
             side_effect=lambda cid, task, **kw: _spawn_info(kw["_preassigned_id"]))
         await orch._dispatch_continue(slot, st, t, e)
-        assert CrewStore("s1").entry(e["msg_id"])["topic_id"] == "t1"
+        assert _durable_entry("s1", e["msg_id"])["topic_id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_the_fallback_respawn_carries_a_durable_id(self) -> None:
@@ -1953,7 +2073,7 @@ class TestGptRoundFive:
 
         def _spawn(task, **kw):
             # The identity must be readable from a FRESH store at spawn time.
-            on_disk.append((CrewStore("s1").entry(e["msg_id"]) or {}).get("dispatch_id"))
+            on_disk.append((_durable_entry("s1", e["msg_id"]) or {}).get("dispatch_id"))
             assert kw.get("_preassigned_id"), "respawn must carry the id it persisted"
             return _spawn_info(kw["_preassigned_id"])
 
@@ -2099,8 +2219,7 @@ class TestContinuationIdentity:
         def _continue(conv_id, task, **kw):
             # At the moment of the side effect, the id must already be readable
             # from a FRESH store — i.e. it reached the file, not just the object.
-            fresh = CrewStore("s1")
-            on_disk.append((fresh.entry(e["msg_id"]) or {}).get("dispatch_id"))
+            on_disk.append((_durable_entry("s1", e["msg_id"]) or {}).get("dispatch_id"))
             assert kw.get("_preassigned_id"), "the caller must supply the id it persisted"
             return _spawn_info(kw["_preassigned_id"])
 
@@ -2476,13 +2595,13 @@ class TestGatewayCrewInit:
         st.queue[0]["text"] = "final"
         st.save()
         await st.wait_writes()
-        assert CrewStore("s1").queue[0]["text"] == "final"
+        assert _durable_queue()[0]["text"] == "final"
 
     def test_save_writes_inline_without_loop(self) -> None:
         # Sync callers (boot reconcile, tests) still get immediate durability.
         st = CrewStore("s1")
         st.add_msg("hello")
-        assert CrewStore("s1").entry(st.queue[0]["msg_id"]) is not None
+        assert _durable_entry("s1", st.queue[0]["msg_id"]) is not None
 
     def test_post_appends_without_implicit_broadcast(self) -> None:
         # GPT finding on 120fd95e: the explicit chat_message frame is the
@@ -2508,7 +2627,7 @@ class TestGatewayCrewInit:
         on_disk_at_ack: list[list[str]] = []
 
         def _ack(*a: object, **k: object) -> bool:
-            on_disk_at_ack.append([e["text"] for e in CrewStore("s1").queue])
+            on_disk_at_ack.append([e["text"] for e in _durable_queue()])
             return True
 
         with patch.object(orch, "_post", side_effect=_ack), \
@@ -2517,7 +2636,7 @@ class TestGatewayCrewInit:
             await orch.ingest(slot, "important request")
             await asyncio.sleep(0)
         assert on_disk_at_ack == [["important request"]]
-        assert CrewStore("s1").queue[0]["text"] == "important request"
+        assert _durable_queue()[0]["text"] == "important request"
 
     @pytest.mark.asyncio
     async def test_failed_steer_on_idle_topic_dispatches(self) -> None:
@@ -2552,7 +2671,7 @@ class TestGatewayCrewInit:
         assert st._written_seq.get("queue.json", 0) == 0  # still retryable
         st.save()  # retry with healthy disk
         await st.wait_writes()
-        assert CrewStore("s1").queue[0]["text"] == "doomed"
+        assert _durable_queue()[0]["text"] == "doomed"
 
 
 class TestGptRoundSixteen:

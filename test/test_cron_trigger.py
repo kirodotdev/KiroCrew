@@ -214,7 +214,9 @@ class TestCronTriggerMCP:
         monkeypatch.setenv("KIROCREW_HOME", str(cfg_dir))
         from kiro_crew import mcp_cron
         with patch.object(mcp_cron, "config_dir", return_value=cfg_dir), \
-             patch.object(mcp_cron, "DASHBOARD_PORT", port):
+             patch.object(
+                 mcp_cron, "resolve_serving_port", lambda: port
+             ):
             result = _call_tool_inner("cron_trigger", {"job_id": "abc12345"})
         assert "test-job-name" in result
         assert "abc12345" in result
@@ -266,7 +268,10 @@ class TestCronTriggerCLI:
         from unittest.mock import patch as _patch
 
         with _patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir), \
-             _patch("kiro_crew.cli_commands.DASHBOARD_PORT", port):
+             _patch(
+                 "kiro_crew.cli_commands.resolve_client_port_ex",
+                 lambda _cli: (port, True),
+             ):
             _cron(args)
 
         captured = capsys.readouterr()

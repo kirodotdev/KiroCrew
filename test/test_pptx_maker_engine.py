@@ -71,7 +71,7 @@ class TestSpawnSandboxing:
             mock.patch.object(
                 engine, "sandboxed_spawn_argv", return_value=(["py"], scrubbed, None)
             ) as chokepoint,
-            mock.patch.object(engine.subprocess, "run") as run,
+            mock.patch.object(engine, "run_limited") as run,
         ):
             run.return_value = mock.Mock(returncode=0, stdout="{}", stderr="")
             engine._spawn(["py"], cwd=str(tmp_path), timeout=5)
@@ -90,7 +90,7 @@ class TestSpawnSandboxing:
         would surface as an opaque 500 instead of a degraded status."""
         with (
             mock.patch.object(engine, "sandboxed_spawn_argv", return_value=(["py"], {}, None)),
-            mock.patch.object(engine.subprocess, "run", side_effect=OSError("ENOENT")),
+            mock.patch.object(engine, "run_limited", side_effect=OSError("ENOENT")),
         ):
             result = engine._spawn(["py"], cwd=str(tmp_path), timeout=5)
         assert result.returncode == 1
@@ -100,8 +100,8 @@ class TestSpawnSandboxing:
         with (
             mock.patch.object(engine, "sandboxed_spawn_argv", return_value=(["py"], {}, None)),
             mock.patch.object(
-                engine.subprocess,
-                "run",
+                engine,
+                "run_limited",
                 side_effect=subprocess.TimeoutExpired(cmd="py", timeout=3),
             ),
         ):
@@ -117,7 +117,7 @@ class TestSpawnSandboxing:
             mock.patch.object(
                 engine, "sandboxed_spawn_argv", return_value=(["py"], {}, str(profile))
             ),
-            mock.patch.object(engine.subprocess, "run", side_effect=OSError("boom")),
+            mock.patch.object(engine, "run_limited", side_effect=OSError("boom")),
         ):
             engine._spawn(["py"], cwd=str(tmp_path), timeout=5)
         assert not profile.exists()

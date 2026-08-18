@@ -155,8 +155,19 @@ class TestRunLoop:
     async def test_long_lived_connection_resets_the_backoff(
         self, client, no_sleep, monkeypatch
     ) -> None:
-        clock = iter([0.0, 100.0, 200.0, 200.0])
-        monkeypatch.setattr(client_mod.time, "monotonic", lambda: next(clock))
+        # A fixed-length iterator standing in for a monotonic clock is a trap:
+        # the loop reads it an implementation-defined number of times, and once
+        # the values run out `next()` raises StopIteration inside a coroutine,
+        # which PEP 479 surfaces as `RuntimeError: generator raised
+        # StopIteration` -- an error that names neither the clock nor this test.
+        # Hold the final value instead, so the scripted timeline is unchanged
+        # but the clock can be read any number of times.
+        scripted = [0.0, 100.0, 200.0, 200.0]
+
+        def _monotonic() -> float:
+            return scripted.pop(0) if len(scripted) > 1 else scripted[0]
+
+        monkeypatch.setattr(client_mod.time, "monotonic", _monotonic)
         calls = {"n": 0}
 
         async def _serve() -> None:

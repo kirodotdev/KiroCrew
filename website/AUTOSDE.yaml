@@ -69,6 +69,44 @@ custom-rules:
 
       See the design-token rules in website/docs/theming-contract.md.
 
+  - id: narrow-viewport-required
+    blocking: true
+    file-patterns:
+      - "src/pages/*.tsx"
+      - "src/apps/**/*.tsx"
+      - "src/components/**/*.tsx"
+    rule: |
+      A new feature ships its narrow layout WITH the feature, not as a follow-up.
+
+      Why: a phone is not a smaller desktop, and "we will do mobile later" has a
+      measured cost in this repo -- a long series of one-component-at-a-time patches,
+      several of which shipped a surface that was unusable at 390px in the meantime
+      (a 2px message column, a 34px text column, buttons painted over a title). Later
+      is also the expensive time to do it: the desktop shape is load-bearing by then,
+      so the fix arrives as an exception with a hand-synchronized counterpart instead
+      of a baseline.
+
+      What this requires of a NEW page, panel, or layout-owning component: it renders
+      usably at 390px AND 320px. Concretely, at least one of --
+        * responsive classes written narrow-first (unprefixed = phone, `md:` adds
+          desktop), or
+        * a narrow branch driven by a width signal (`useIsMobile`, a container query,
+          a `ResizeObserver` on the pane -- prefer the pane over the viewport when the
+          pane can be narrow at any window size), or
+        * a single-column layout that needs neither.
+
+      A fixed multi-column shell, a `shrink-0` rail, or a pinned pixel width with no
+      narrow provision does not satisfy this.
+
+      Does NOT count as satisfying it: hiding the surface below a breakpoint with no
+      entry point at that width. Hiding is not collapsing -- if a control is the only
+      host of an action, removing it on a phone removes the action.
+
+      Not in scope: a desktop-only surface may stay desktop-only when it says so in a
+      comment at the layout root, with the reason. State it; do not leave it implied.
+
+      Recommended baselines, NOT gates: website/docs/page-layout.md.
+
   - id: page-layout-pattern
     blocking: true
     file-patterns:
@@ -80,15 +118,33 @@ custom-rules:
     rule: |
       Dashboard pages must use the standard layout pattern, not custom wrappers.
 
-      Why: The dashboard shell renders pages inside a flex column (`flex-1 min-h-0`).
-      The old `p-6 max-w-[960px] mx-auto` wrapper breaks this contract — it prevents
-      `overflow-y-auto` from working correctly, causing double scrollbars or content
-      clipping. The `PageHeader` + `px-6 pb-8 overflow-y-auto flex-1 min-h-0` pattern
-      was established in the HooksPage redesign to fix this.
+      Why, on a desktop: the dashboard shell renders pages inside a flex column
+      (`flex-1 min-h-0`). The old `p-6 max-w-[960px] mx-auto` wrapper breaks that
+      contract — it prevents `overflow-y-auto` from working correctly, causing double
+      scrollbars or content clipping. The `PageHeader` + `px-4 md:px-6 pb-8
+      overflow-y-auto flex-1 min-h-0` pattern was established in the HooksPage redesign
+      to fix this.
+
+      Why, on a phone: write the structure NARROW-FIRST — the unprefixed classes are
+      the phone's, and `md:` adds the desktop. Tailwind is built that way, and a rule
+      whose unprefixed value is the desktop one forces every narrow fix to claw the
+      width back with `max-md:` plus, usually, a negative margin pinned by hand to a
+      value owned in another file. That is how this repo accumulated a long series of
+      one-component-at-a-time mobile patches. A page whose narrow layout is an
+      afterthought is not conformant to this pattern even when its class string
+      matches; see the narrow-viewport section of website/docs/page-layout.md for the
+      recommended baseline.
 
       Required structure:
       1. `<PageHeader title="..." subtitle="..." />` at top
-      2. `<div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">` as content container
+      2. `<div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">` as content
+         container. What this rule requires is the structure — `overflow-y-auto
+         flex-1 min-h-0` plus a horizontal gutter, not a specific gutter value. The
+         narrow gutter shown here is a RECOMMENDATION, not a requirement: see the
+         narrow-viewport section of website/docs/page-layout.md. A page using a single
+         gutter value at every width is conformant; do not flag it. When a page does
+         narrow its gutter, `PageHeader`'s must match, or the title sits inset from the
+         content it labels.
       3. `Card` + `CardTitle` + `InfoTip` for data sections
       4. `table-striped` tables with standard header style
       5. `Input`, `Btn`, `SendBtn`, `SearchInput` — never raw HTML elements

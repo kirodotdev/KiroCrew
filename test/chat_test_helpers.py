@@ -151,6 +151,7 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
         api_chat_slot_create,
         api_chat_slot_delete,
         api_chat_slot_detail,
+        api_chat_slot_reload,
         api_chat_slot_rename,
         api_chat_slot_resume,
         api_chat_slot_workspace,
@@ -165,6 +166,7 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
     app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
     app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
     app.router.add_post("/api/chat/slots/{slot}/workspace", api_chat_slot_workspace)
+    app.router.add_post("/api/chat/slots/{slot}/reload", api_chat_slot_reload)
     app.router.add_delete("/api/chat/slots/{slot}", api_chat_slot_delete)
     app.router.add_post("/api/chat/slots/{slot}/resume", api_chat_slot_resume)
     app.router.add_patch("/api/chat/slots/{slot}/title", api_chat_slot_rename)

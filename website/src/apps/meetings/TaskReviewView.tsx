@@ -61,7 +61,7 @@ export default function TaskReviewView({
   return (
     <div className="flex flex-col lg:flex-row h-full overflow-hidden">
       <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
-        <div className="flex-none px-6 py-4 border-b border-border flex items-center gap-3">
+        <div className="flex-none px-4 md:px-6 py-4 border-b border-border flex items-center gap-3">
           <Btn onClick={onBack}>{i18nT('apps.meetings.review.backToMeeting')}</Btn>
           <h2 className="text-lg font-semibold text-text-strong">
             {i18nT('apps.meetings.review.title')}
@@ -82,7 +82,7 @@ export default function TaskReviewView({
           )}
         </div>
 
-        <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+        <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
           <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] my-6">
             <StatCard label={i18nT('apps.meetings.review.statPending')} value={pending.length} accent />
             <StatCard label={i18nT('apps.meetings.review.statFiled')} value={filed.length} />
@@ -208,7 +208,7 @@ export default function TaskReviewView({
           )}
         </div>
 
-        <div className="flex-none px-6 py-4 border-t border-border flex justify-center">
+        <div className="flex-none px-4 md:px-6 py-4 border-t border-border flex justify-center">
           <SendBtn
             onClick={onClose}
             disabled={!canClose}

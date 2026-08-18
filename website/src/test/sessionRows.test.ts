@@ -45,6 +45,8 @@ const task = (over: Partial<TaskPayloadRow> = {}): TaskPayloadRow => ({
   rss_mb: 50,
   peak_rss_mb: 60,
   cpu_cores: 0.05,
+  procs: 7,
+  mcp: 6,
   started_at: Date.now() / 1000 - 30,
   shared: false,
   pid: 8,
@@ -208,6 +210,22 @@ describe('buildTree', () => {
     expect(t.rssMb).toBeNull()
     expect(t.peakMb).toBeNull()
     expect(t.cpuCores).toBeNull()
+  })
+
+  it('carries the proc and MCP-stub counts of a task', () => {
+    // These columns used to be hardcoded null on task rows, which read as
+    // "subagents carry no MCP stubs" — the opposite of the truth.
+    const rows = buildTree([session()], [task({ procs: 7, mcp: 6 })])
+    const t = rows[0].subRows![0]
+    expect(t.procs).toBe(7)
+    expect(t.mcp).toBe(6)
+  })
+
+  it('leaves uncounted task columns null rather than zero', () => {
+    const rows = buildTree([session()], [task({ procs: null, mcp: null })])
+    const t = rows[0].subRows![0]
+    expect(t.procs).toBeNull()
+    expect(t.mcp).toBeNull()
   })
 
   it('marks a co-tenant of a multiplexed runtime as shared', () => {

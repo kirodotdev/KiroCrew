@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { categoryFor, categoryCounts } from '../components/appstore/categories'
 import { gradientFor } from '../components/appstore/gradient'
-import { sourceLabel, isVerified, normalizeInstalledApp, normalizeRegistryApp, stringList, type InstalledApp, type RegistryApp } from '../components/appstore/types'
+import {
+  sourceLabel,
+  isVerified,
+  normalizeRegistryApp,
+  normalizeInstalledApp,
+  normalizeInstalledApps,
+  type InstalledApp,
+  type RegistryApp,
+} from '../components/appstore/types'
 import { pickFeatured } from '../pages/AppsPage'
 
 const app = (over: Partial<RegistryApp>): RegistryApp => ({
@@ -238,23 +246,76 @@ describe('normalizeRegistryApp', () => {
   })
 })
 
+describe('normalizeInstalledApp', () => {
+  it('supplies a manifest and its lists for a record that has none', () => {
+    // /api/apps mirrors on-disk records, so a hand-written or older app can
+    // arrive with no manifest at all. Every render site indexes these lists.
+    const out = normalizeInstalledApp({ name: 'bare', version: '1.0.0' } as unknown as InstalledApp)
+    expect(out.manifest).toBeTruthy()
+    expect(out.manifest.agents).toEqual([])
+    expect(out.manifest.skills).toEqual([])
+    expect(out.manifest.sops).toEqual([])
+    expect(out.manifest.crons).toEqual([])
+    expect(out.manifest.tags).toEqual([])
+    expect(out.manifest.jobFamilies).toEqual([])
+    expect(out.manifest.screenshots).toEqual([])
+    expect(out.manifest.highlights).toEqual([])
+    // The reads the Apps page and the detail page make, without a gate.
+    expect(() => out.manifest.agents.map(a => a.split('/').pop()).join(', ')).not.toThrow()
+    expect(() => out.manifest.crons.map(c => c.name).join(', ')).not.toThrow()
+  })
+
+  it('keeps published list contents and every non-list manifest field', () => {
+    const out = normalizeInstalledApp({
+      name: 'real',
+      manifest: {
+        displayName: 'Real', agents: ['agents/a.json'], crons: [{ name: 'nightly' }],
+        ui: { pages: [{ route: '/apps/real', label: 'Real', icon: 'Box' }] },
+      },
+    } as unknown as InstalledApp)
+    expect(out.manifest.agents).toEqual(['agents/a.json'])
+    expect(out.manifest.crons).toEqual([{ name: 'nightly' }])
+    expect(out.manifest.displayName).toBe('Real')
+    expect(out.manifest.ui?.pages?.[0]?.route).toBe('/apps/real')
+  })
+
+  it('coerces mistyped lists and drops members it cannot render', () => {
+    const out = normalizeInstalledApp({
+      name: 'weird',
+      manifest: { agents: 'agents/a.json', skills: ['s.md', 7, null], crons: [{ name: 'ok' }, {}, null] },
+    } as unknown as InstalledApp)
+    expect(out.manifest.agents).toEqual([])
+    expect(out.manifest.skills).toEqual(['s.md'])
+    // A cron is only ever rendered by name, so a nameless entry is dropped
+    // rather than shown as a blank row.
+    expect(out.manifest.crons).toEqual([{ name: 'ok' }])
+  })
+
+  it('preserves fields callers carry beyond InstalledApp', () => {
+    const out = normalizeInstalledApp({ name: 'x', managed: true, _newVersion: '2.0.0' } as unknown as InstalledApp)
+    expect((out as unknown as { managed: boolean }).managed).toBe(true)
+    expect((out as unknown as { _newVersion: string })._newVersion).toBe('2.0.0')
+  })
+
+  it('passes a non-object payload through instead of inventing a record', () => {
+    // getApp() rejects on 404, but a caller that swallows the failure must not
+    // be handed a synthetic app that looks installed.
+    expect(normalizeInstalledApp(null as unknown as InstalledApp)).toBeNull()
+    expect(normalizeInstalledApps(null as unknown as InstalledApp[])).toBeNull()
+  })
+
+  it('normalizes every row of a list payload', () => {
+    const out = normalizeInstalledApps([{ name: 'a' }, { name: 'b' }] as unknown as InstalledApp[])
+    expect(out.map(a => a.manifest.agents)).toEqual([[], []])
+  })
+})
+
 describe('categoryFor — malformed tags cannot crash the storefront', () => {
   it('tolerates non-array and non-string tags', () => {
     expect(categoryFor('github' as unknown)).toBe('Other')
     expect(categoryFor([7, null, undefined] as unknown)).toBe('Other')
     expect(categoryFor([null, 'github'] as unknown)).toBe('Developer Tools')
     expect(() => categoryCounts([{ tags: 'nope' }, { tags: [1, 2] }])).not.toThrow()
-  })
-})
-
-describe('stringList', () => {
-  it('collapses truthy non-arrays to [] and drops non-string members', () => {
-    // A mistyped truthy value ('abc' || [] yields 'abc') must never reach
-    // .map at a render site; stringList is the shared coercion for that.
-    expect(stringList('abc')).toEqual([])
-    expect(stringList({ 0: 'x' })).toEqual([])
-    expect(stringList(undefined)).toEqual([])
-    expect(stringList(['a', 7, null, 'b'])).toEqual(['a', 'b'])
   })
 })
 

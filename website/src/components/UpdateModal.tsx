@@ -57,6 +57,28 @@ export default function UpdateModal() {
   // unexplained quit — which reads as a crash.
   const installing = installMutation.isPending || installMutation.isSuccess
 
+  // A dispatched install normally ends in the app quitting, so isSuccess is a
+  // fine proxy for "about to restart" -- EXCEPT when the main process aborts
+  // the handoff (stage invalidated mid-dispatch) and the app keeps running.
+  // Without a reset, the stale isSuccess keeps `installing` true forever: the
+  // next downloaded version reopens this modal with every button disabled and
+  // no way out short of a reload. The dispatch is only "still live" while the
+  // state is 'installing' or 'downloaded' FOR THE VERSION the user clicked
+  // (tracked below) -- keying on the version matters because the IPC
+  // resolution can land after the abort/supersede states have already been
+  // pushed, at which point a bare state check reads the NEW version's
+  // 'downloaded' as the old dispatch still running.
+  const [installFor, setInstallFor] = useState<string | undefined>(undefined)
+  const state = update?.state
+  const stateVersion = update?.version
+  useEffect(() => {
+    if (!installMutation.isSuccess) return
+    const dispatchStillLive = state === 'installing'
+      || (state === 'downloaded' && stateVersion === installFor)
+    if (!dispatchStillLive) installMutation.reset()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset identity is stable; keying on state transition
+  }, [state, stateVersion, installFor, installMutation.isSuccess])
+
   const open = !!update && update.state === 'downloaded' && !update.replayed && !dismissed
 
   // Escape dismisses the modal (unless an install is in flight), matching the
@@ -184,7 +206,7 @@ export default function UpdateModal() {
           <button
             type="button"
             className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
-            onClick={() => installMutation.mutate()}
+            onClick={() => { setInstallFor(update!.version); installMutation.mutate() }}
             disabled={installing}
           >
             {installing ? i18nT('components.updateModal.restarting') : i18nT('components.updateModal.restart_update')}

@@ -41,7 +41,7 @@ export default function WorldsPage() {
         {...(collapsed ? { inert: '' } : {})}
       >
         <div style={{ overflow: 'hidden' }}>
-        <div className="px-5 pt-2 pb-2">
+        <div className="px-4 md:px-6 pt-2 pb-2">
           <div className="text-lg font-semibold text-text-strong"><Sparkles className="lucide-inline" /> {i18nT('pages.worldsPage.agent_worlds')}</div>
           <div className="text-sm text-muted">
             {i18nT('pages.worldsPage.agent', { count: agents.length })} {i18nT('pages.worldsPage.present')}{' '}
@@ -49,8 +49,8 @@ export default function WorldsPage() {
           </div>
         </div>
 
-        <div style={{
-          display: 'flex', gap: 6, padding: '0 20px 8px',
+        <div className="px-4 md:px-6 pb-2" style={{
+          display: 'flex', gap: 6,
           flexWrap: 'wrap',
         }}>
           {SCENES.map(s => (
@@ -84,7 +84,7 @@ export default function WorldsPage() {
       </div>
 
       {/* Scene canvas — fixed aspect wrapper so all scenes occupy the same space */}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'start', padding: '0 20px 20px', minHeight: 0 }}>
+      <div className="px-4 md:px-6 pb-5" style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'start', minHeight: 0 }}>
         <div style={{ position: 'relative', width: '100%', maxWidth: 480 * SCENE_LAYOUT_SCALE, aspectRatio: '3/2' }}>
           <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 20, display: 'flex', gap: 4 }}>
             <button

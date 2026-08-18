@@ -259,7 +259,8 @@ describe('LogViewer density', () => {
     await act(async () => {})
     emit({ level: 'INFO', msg: 'zz-roomy' })
     expect(screen.getByText('zz-roomy').className).toContain('text-[13px]')
-    expect(container.querySelector('.px-6')).not.toBeNull()
+    // The gutter is narrow-first now: 8px unprefixed, widened at `md`.
+    expect(container.innerHTML).toContain('md:px-6')
   })
 })
 

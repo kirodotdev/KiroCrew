@@ -4,15 +4,10 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import type { PasteBlock } from '../utils/pasteTokens'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
+import PastePreviewTooltip from './PastePreviewTooltip'
 
 import { i18nT } from '../i18n/t'
-
-/** Lines shown in the hover preview before truncating with a "+N more" footer. */
-export const PREVIEW_MAX_LINES = 12
-/** Hover dwell (ms) before the preview opens — avoids flicker on cursor pass-through. */
-const PREVIEW_OPEN_DELAY_MS = 300
-/** Max height of the preview panel (px); used for viewport flip positioning too. */
-const PREVIEW_MAX_HEIGHT = 240
 
 /**
  * Inline chip shown in a sent user bubble in place of a collapsed-paste token.
@@ -83,11 +78,6 @@ function PastedChip({ block }: { block: PasteBlock }) {
     setAnchor(null)
   }
 
-  const previewLines = block.content.split('\n')
-  const truncated = previewLines.length > PREVIEW_MAX_LINES
-  const previewText = previewLines.slice(0, PREVIEW_MAX_LINES).join('\n')
-  const moreCount = previewLines.length - PREVIEW_MAX_LINES
-
   const previewOpen = !!anchor && !expanded
 
   return (
@@ -114,33 +104,7 @@ function PastedChip({ block }: { block: PasteBlock }) {
         {i18nT('components.pastedChip.paste_lines', { seq: block.seq, count: block.lines })}
       </button>
       {createPortal(
-        <AnimatePresence>
-          {previewOpen && (
-            <motion.div
-              key="preview"
-              id={panelId}
-              role="tooltip"
-              data-testid={`paste-preview-${block.seq}`}
-              initial={{ opacity: 0, y: anchor!.below ? 2 : -2 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.12 }}
-              className="fixed z-[130] max-w-[min(420px,calc(100vw-16px))] w-max rounded-md border border-border bg-bg-elevated shadow-lg px-3 py-2 pointer-events-none"
-              style={{
-                left: Math.max(8, Math.min(anchor!.left, window.innerWidth - 436)),
-                top: anchor!.below ? anchor!.top : undefined,
-                bottom: anchor!.below ? undefined : window.innerHeight - anchor!.top,
-              }}
-            >
-              <pre className="m-0 overflow-hidden text-[11px] font-mono text-muted leading-[1.5] whitespace-pre-wrap" style={{ maxHeight: PREVIEW_MAX_HEIGHT - 40, wordBreak: 'break-word' }}>{previewText}</pre>
-              {truncated && (
-                <div className="pt-1 text-[10px] text-muted-strong border-t border-border mt-1.5">
-                  {i18nT('components.pastedChip.preview_more_lines', { count: moreCount })}
-                </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>,
+        <PastePreviewTooltip open={previewOpen} panelId={panelId} anchor={anchor} content={block.content} seq={block.seq} />,
         document.body,
       )}
       <AnimatePresence initial={false}>

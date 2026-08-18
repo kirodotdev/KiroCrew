@@ -55,3 +55,8 @@ export function syncedAgoLabel(unit: 'now' | 'm' | 'h' | 'd', n: number): string
       return i18nT('apps.mdNotebook.sync.ago_d', { n })
   }
 }
+
+/** Hint under a ` ```mermaid ` block whose source failed to render. */
+export function mermaidErrorLabel(): string {
+  return i18nT('apps.mdNotebook.preview.mermaidError')
+}

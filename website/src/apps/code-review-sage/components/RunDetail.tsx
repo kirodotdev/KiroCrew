@@ -39,7 +39,7 @@ function DetailHeader({ run }: { run: Run }) {
   const { startReview } = useSage()
   const { label, more } = runIdentity(run.repo, run.changes)
   return (
-    <header className="px-6 pt-5 pb-4 border-b border-border flex-shrink-0">
+    <header className="px-4 md:px-6 pt-5 pb-4 border-b border-border flex-shrink-0">
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
           <h1 className="text-[22px] font-bold leading-tight text-text-strong break-words">
@@ -116,7 +116,7 @@ export default function RunDetail({ run }: { run: Run }) {
   return (
     <article className="h-full flex flex-col min-h-0">
       <DetailHeader run={run} />
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-6 py-5 flex flex-col gap-5">
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-4 md:px-6 py-5 flex flex-col gap-5">
         <RunProgress
           run={run}
           pool={pool}

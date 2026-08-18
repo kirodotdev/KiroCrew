@@ -14,7 +14,7 @@ import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
-import type { StatusData, ChatMessage, ChatSlot, Notification, PullRequestStatusBatch, TodoList } from '../types'
+import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullRequestStatusBatch, TodoList } from '../types'
 import { i18nT } from '../i18n/t'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
@@ -662,6 +662,48 @@ export function useWebSocket() {
             }
             if (msg.channelTrusted !== undefined) {
               dispatch(setChannelTrusted(msg.channelTrusted))
+            }
+            // Seed the ['chat-folders'] query cache from the folder tree carried
+            // on this frame so the sidebar groups sessions correctly on the FIRST
+            // paint. Sessions arrive on this WS frame the instant the socket
+            // connects; the folders otherwise come only from a separate HTTP GET,
+            // so without this the sidebar renders every session ungrouped (Unfiled)
+            // until that GET resolves, then visibly re-shuffles them into folders.
+            //
+            // Seed ONLY when the cache has no folder data yet (first paint). Two
+            // reasons this must not run on later frames, both from the shipped
+            // staleTime: Infinity on this query:
+            //   1. A `slots` frame fires on routine session activity, so a frame
+            //      landing inside an in-flight folder mutation's optimistic window
+            //      (collapse / reorder / rename / move) would overwrite the
+            //      optimistic cache value with backend state via a direct
+            //      setQueryData — which the mutation's cancelQueries cannot cancel
+            //      — snapping the folder back to its pre-action state until
+            //      onSettled refetches.
+            //   2. The WS payload omits per-folder `history_count` (the backend
+            //      computes it via a synchronous session scan that must not run on
+            //      this hot path). Seeding count-less data marks the query fresh,
+            //      so a mount-time query would skip GET /api/chat/folders and the
+            //      counts (the "hide when empty" filter's input) would never load.
+            // So seed the tree once, then invalidate to let the HTTP GET backfill
+            // counts; after the cache is populated, live frames leave it alone and
+            // folder create/rename/move propagate through their own mutation +
+            // invalidate path as before.
+            //
+            // Guard on `existing === undefined` (cache NEVER populated), NOT on
+            // `!existing || length === 0`: a user with genuinely zero folders has
+            // the HTTP GET cache the empty array `[]`, and `[].length === 0` would
+            // then re-match on EVERY subsequent slots frame — re-seeding `[]` and
+            // re-invalidating in a loop, hammering the session-scanning
+            // GET /api/chat/folders. `undefined` fires exactly once, on first paint.
+            if (Array.isArray(msg.folders)) {
+              const existing = queryClient.getQueryData<ChatFolder[]>(['chat-folders'])
+              if (existing === undefined) {
+                queryClient.setQueryData<ChatFolder[]>(['chat-folders'], msg.folders as ChatFolder[])
+                // Backfill history_count (omitted from the WS payload) — the seed
+                // marked the query fresh, so nudge the real GET to run.
+                queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
+              }
             }
             // Refresh the cached GitLab-hosts allowlist when it may have changed.
             // The generation is PROCESS-local, so a gateway restart can hand out a

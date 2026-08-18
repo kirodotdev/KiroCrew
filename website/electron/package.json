@@ -149,7 +149,13 @@
         "nsis"
       ],
       "signtoolOptions": {
-        "sign": "./scripts/sign-windows.js"
+        "sign": "./scripts/sign-windows.js",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "publisherName": [
+          "Amazon Web Services, Inc."
+        ]
       }
     },
     "nsis": {

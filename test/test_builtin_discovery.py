@@ -12,6 +12,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.discovery import discover_builtin_apps
+from kiro_crew.apps.manifest import RESERVED_APP_NAMES, UNPORTABLE_APP_NAMES
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,8 +41,18 @@ def _valid_manifest(name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _app_name() -> st.SearchStrategy[str]:
-    """Generate valid kebab-case app names (no trailing hyphens)."""
-    return st.from_regex(r"[a-z][a-z0-9]+(-[a-z0-9]+)*", fullmatch=True).filter(lambda s: len(s) <= 15)
+    """Generate valid kebab-case app names (no trailing hyphens).
+
+    Excludes ``RESERVED_APP_NAMES`` and ``UNPORTABLE_APP_NAMES`` (imported from
+    the validator itself, so the strategy tracks the source of truth): manifest
+    validation correctly rejects those names, so a draw like ``aux`` would yield
+    zero discovered apps and fail the "exactly K valid manifests" properties.
+    """
+    return (
+        st.from_regex(r"[a-z][a-z0-9]+(-[a-z0-9]+)*", fullmatch=True)
+        .filter(lambda s: len(s) <= 15)
+        .filter(lambda s: s not in UNPORTABLE_APP_NAMES and s not in RESERVED_APP_NAMES)
+    )
 
 
 # ---------------------------------------------------------------------------

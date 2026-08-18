@@ -83,24 +83,31 @@ CRONS_TRUE: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
 
 def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    f = cfg.env_file(name)
+    """Parsed ``KEY='value'`` pairs for pod *name*, ``{}`` on any ``OSError``.
+
+    Fail-OPEN by design, which bounds who may use it: a missing pod, an
+    unreadable pods dir and a comments-only file all yield the same empty
+    mapping, so a caller that must tell "absent" from "exists but cannot be
+    positively read" MUST NOT read the pin through here — see
+    ``dev_fleet._read_pin_strict``, which propagates the failure instead.
+    """
     try:
-        if f.exists():
-            for ln in f.read_text().splitlines():
-                ln = ln.strip()
-                if not ln or ln.startswith("#") or "=" not in ln:
-                    continue
-                key, val = ln.split("=", 1)
-                raw = val.strip()
-                # Strip a single matched surrounding quote pair only (the form
-                # write_env_file emits), so a value that legitimately contains a
-                # quote is not mangled.
-                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-                    raw = raw[1:-1]
-                out[key.strip()] = raw
+        text = cfg.env_file(name).read_text()
     except OSError:
-        pass
+        return {}
+    out: dict[str, str] = {}
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#") or "=" not in ln:
+            continue
+        key, val = ln.split("=", 1)
+        raw = val.strip()
+        # Strip a single matched surrounding quote pair only (the form
+        # write_env_file emits), so a value that legitimately contains a quote is
+        # not mangled.
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+            raw = raw[1:-1]
+        out[key.strip()] = raw
     return out
 
 
@@ -536,8 +543,10 @@ def _write_and_load_unit(cfg: PodConfig) -> subprocess.CompletedProcess | None:
     systemd executes is the definition it loaded — so a writer that renders the
     current hookless template and then fails to reload leaves a file that reads
     "current" in front of a cached definition still carrying the destructive
-    ``ExecStopPost``. Every later caller then skips the refresh and the pod's HOME
-    is deleted from a stop hook. Unlinking on failure keeps the on-disk state
+    ``ExecStopPost``. :func:`start_pod` then skips its refresh and boots the pod
+    under that cached definition, whose hook deletes the pod's HOME on any
+    systemd-initiated stop — including the stop half of a ``Restart=``, which no
+    ``down`` gate is in the path of. Unlinking on failure keeps the on-disk state
     honest, so the next call re-renders and retries.
 
     Returns ``None`` on success, or the failing ``daemon-reload`` result.
@@ -867,11 +876,11 @@ def install_backend(cfg: PodConfig) -> tuple[str, subprocess.CompletedProcess | 
     dispatch layer — two different documented behaviours.
 
     Routed through :func:`_write_and_load_unit` so this path upholds the same
-    invariant the lifecycle paths do: a unit file left on disk has been loaded. A
-    reload that fails here used to leave a hookless file behind, which made
-    ``unit_is_current`` report "current" while systemd still ran the old
-    ``ExecStopPost`` — so a later ``down`` skipped its refresh and deleted the
-    pod's HOME from that hook.
+    invariant the lifecycle paths do: a unit file left on disk has been loaded.
+    A hookless file left behind by a failed reload would make
+    ``unit_is_current`` report "current" while systemd still runs the old
+    ``ExecStopPost`` — so :func:`start_pod` would skip its refresh and boot the
+    pod under a definition that deletes its HOME from a stop hook.
     """
     require_backend()
     if IS_MACOS:
@@ -1313,7 +1322,6 @@ def require_pod_safe_verb(argv: list[str], name: str) -> None:
     verb = argv[0] if argv else ""
     if verb in _POD_SAFE_VERBS:
         return
-    hint = ""
     if verb in _POD_EQUIVALENT:
         hint = f" Use `{_POD_EQUIVALENT[verb].format(name=name)}` instead."
     elif verb.startswith("-"):

@@ -133,7 +133,7 @@ async function main() {
   // Measure the chat pane BEFORE, so "the page does not make room for it" is
   // asserted rather than eyeballed.
   const paneBefore = await page.evaluate(() => {
-    const composer = document.querySelector('textarea[aria-label="Message input"]')
+    const composer = document.querySelector('textarea[data-composer-input]')
     const r = composer?.getBoundingClientRect()
     return r ? { x: Math.round(r.x), w: Math.round(r.width) } : null
   })
@@ -201,7 +201,7 @@ async function main() {
     + `bottom ${bottoms[0]} -> ${bottoms[bottoms.length - 1]} (monotonic, never rises)`)
 
   const paneAfter = await page.evaluate(() => {
-    const composer = document.querySelector('textarea[aria-label="Message input"]')
+    const composer = document.querySelector('textarea[data-composer-input]')
     const r = composer?.getBoundingClientRect()
     return r ? { x: Math.round(r.x), w: Math.round(r.width) } : null
   })
@@ -262,7 +262,7 @@ async function main() {
   // Park focus AND the pointer elsewhere first. Clicking the toggle leaves it
   // focused, and `.focus()` on an already-focused element fires no `focusin`,
   // so probing without this measures nothing (it reported a false pass once).
-  await page.locator('textarea[aria-label="Message input"]').focus()
+  await page.locator('textarea[data-composer-input]').focus()
   await page.mouse.move(900, 700)
   await page.waitForTimeout(500)
   const beforeFocus = await page.locator(FLYOUT).count()

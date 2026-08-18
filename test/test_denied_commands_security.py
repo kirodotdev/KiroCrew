@@ -8,6 +8,7 @@ catalog, the pure ``compute_effective_denied`` resolver, the dual-tier
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -503,11 +504,6 @@ class TestIsDeniedReDoSResistance:
     # all the resolution this needs.
     _BUDGET_SECONDS = 5.0
 
-    #: Growth factor allowed when the input DOUBLES. Linear is ~2.0; the measured spread on an
-    #: idle machine is 1.7–2.2 across n=1000..8000, so 3.0 leaves real headroom while still
-    #: separating linear from quadratic (4.0) and from anything exponential.
-    _MAX_DOUBLING_RATIO = 3.0
-
     @staticmethod
     def _cpu_cost(fn: Callable[[], object]) -> float:
         """CPU consumed by THIS thread while ``fn`` runs — the cost chokepoint.
@@ -545,30 +541,12 @@ class TestIsDeniedReDoSResistance:
         assert self._elapsed("git status") == 0.123
         assert len(calls) == 1
 
-    def _doubling_ratio(self, build: Callable[[int], str], n: int) -> float:
-        """CPU cost at ``2n`` divided by cost at ``n`` — the shape, not the magnitude.
-
-        Absolute budgets cannot express "is this linear?" on instrumented runs. Coverage
-        (`--cov`, which CI enables on 3.12 only) multiplies the cost of every executed line, so
-        the same un-regressed matcher measured ~2s bare and >5s under coverage — which is why
-        3.12 shard 2 failed while 3.10 passed on the identical commit. Raising the budget would
-        have hidden a future real regression behind the instrumentation overhead; a RATIO is the
-        honest expression of the property, because a roughly constant multiplier cancels.
-
-        Best-of-3 per point: this is a floor measurement, and scheduler noise only ever adds.
-        """
-        best = min(self._elapsed(build(n)) for _ in range(3))
-        double = min(self._elapsed(build(2 * n)) for _ in range(3))
-        # Guard a degenerate denominator: if the small case is unmeasurable the ratio is
-        # meaningless, so report a passing value rather than dividing by ~0.
-        return double / best if best > 1e-6 else 1.0
-
     def test_cpu_cost_is_immune_to_other_threads_where_process_time_is_not(self):
         """The measurement clock must not see other threads' CPU.
 
-        The ratio tests in this class compare CPU-cost samples taken at different
-        times, so any clock that can be inflated by a concurrent in-process CPU burst
-        (another worker thread, GC) turns one-sided bursts into false ratio failures.
+        The budget tests in this class bound single CPU-cost samples, so any clock that can
+        be inflated by a concurrent in-process CPU burst (another worker thread, GC) turns
+        one-sided bursts into false budget failures.
         This pins the invariant with a synthetic workload whose true cost is fixed by
         construction: spin until this thread has consumed a set amount of CPU, while
         burst threads saturate the process. ``_cpu_cost`` must report the true cost;
@@ -649,30 +627,113 @@ class TestIsDeniedReDoSResistance:
         assert self._elapsed("aws " + ("-x " * 5000)) < self._BUDGET_SECONDS
         assert self._elapsed("aws " + ("--foo=bar " * 5000)) < self._BUDGET_SECONDS
 
-    def test_mid_dotstar_chain_spam_stays_linear(self):
+    def test_mid_dotstar_chain_spam_stays_linear(self, monkeypatch):
         """``python.*open.*/\\.ssh/`` is polynomial per pattern under a single ``re.search``;
         fragment-splitting on the top-level ``.*`` gaps keeps it linear even when every literal
         (``python``/``open``/``/.ssh/``) is present, which defeats a literal pre-filter.
 
-        Asserted as a SCALING ratio rather than an absolute budget. This is the one input in
-        this class expensive enough that instrumentation changes the answer: the same
-        un-regressed matcher costs ~1.7s of CPU bare and >5s under ``--cov``, which CI enables
-        on 3.12 only — so an absolute 5s ceiling failed 3.12 shard 2 while 3.10 passed on the
-        identical commit. Raising the budget would bank the instrumentation overhead as
-        headroom and hide the next real regression; the ratio states the actual property and is
-        insensitive to a constant multiplier. The absolute bound is still asserted at the
-        smaller size, where there is real margin either way.
+        Asserted DETERMINISTICALLY, not by timing. A timed doubling ratio cannot separate this
+        property from the runner: on a shared CI host, scheduler noise, frequency scaling, and
+        co-tenant cache contention inflate even a thread-CPU ratio past any bound tight enough
+        to catch a quadratic (measured 3.2x against a 3.0 bound with the property intact), so
+        the ratio form false-reds PRs whose diff never touches the matcher. What makes the scan
+        linear is structural, so it is asserted structurally, and a regression has to break one
+        of these to reintroduce super-linear cost:
+
+          1. ROUTING — the chain rules take the full-input fragment path (never the bounded
+             whole-regex fallback, whose truncation cap is pinned separately by
+             ``test_documented_bound_user_only_builtins_full_input``), and every fragment they
+             split into is a plain literal, so each is one forward ``re.search`` scan with no
+             variable-width backtracking;
+          2. INVOCATIONS — doubling the adversarial input leaves the engine-invocation trace
+             IDENTICAL (same searches, same patterns, same order), so the only thing that grows
+             with the input is the length of each single linear scan.
+
+        The small-size absolute CPU budget stays as the catastrophic-blowup backstop for cost
+        added outside the matcher, where this trace cannot see it.
         """
-        for build in (
+        from kiro_crew.security import _DENY_MATCHER_CACHE, _deny_matcher
+
+        builds = (
             lambda n: "/.ssh/ " + ("python open " * n),
             lambda n: "/.ssh/ open " + ("python open " * n),
-        ):
-            assert self._elapsed(build(2000)) < self._BUDGET_SECONDS
-            ratio = self._doubling_ratio(build, 2000)
-            assert ratio < self._MAX_DOUBLING_RATIO, (
-                f"cost grew {ratio:.1f}x when the input doubled — linear is ~2x, so this "
-                "is the super-linear backtracking the fragment split exists to prevent"
+        )
+
+        # (1) Routing: the chain rules stay on the literal-fragment fast path.
+        chain_ids = {"sensitive-file-read-python-aws", "sensitive-file-read-python-ssh"}
+        chain_rules = [r for r in BUILTIN_DENIED_RULES if r.id in chain_ids]
+        assert {r.id for r in chain_rules} == chain_ids, (
+            "the mid-dotstar chain rules under test are gone from the catalog"
+        )
+        for rule in chain_rules:
+            matcher = _deny_matcher(rule.pattern)
+            assert matcher._disabled is False
+            assert matcher._bounded is False, (
+                f"{rule.id} left the full-input fragment path — the bounded fallback "
+                "truncates, so this is both a coverage loss and the polynomial "
+                "whole-regex scan the split exists to avoid"
             )
+            fragments = [p.pattern for p in matcher._frag_res]
+            assert len(fragments) >= 3, fragments
+            for fragment in fragments:
+                assert not re.search(r"[.*+?()\[\]{}|^$]", re.sub(r"\\.", "", fragment)), (
+                    f"fragment {fragment!r} of {rule.id} is not a plain literal — a "
+                    "single forward scan is no longer guaranteed linear"
+                )
+
+        # (2) Invocations, observed through delegating stand-ins for every memoized
+        # matcher's compiled patterns.
+        trace: list[tuple[str, str]] = []
+
+        class _TracingPattern:
+            """Records each ``search`` invocation, then delegates to the real pattern."""
+
+            def __init__(self, inner: re.Pattern[str], kind: str) -> None:
+                self._inner = inner
+                self._kind = kind
+                self.pattern = inner.pattern
+
+            def search(self, text: str, *args: int) -> re.Match[str] | None:
+                trace.append((self._kind, self._inner.pattern))
+                return self._inner.search(text, *args)
+
+        # Prime the memoized cache so every effective rule's matcher exists to wrap.
+        assert is_denied(builds[0](50)) is None
+        for matcher in _DENY_MATCHER_CACHE.values():
+            if matcher._frag_res:
+                monkeypatch.setattr(
+                    matcher,
+                    "_frag_res",
+                    [_TracingPattern(p, "frag") for p in matcher._frag_res],
+                )
+            if matcher._whole_re is not None:
+                monkeypatch.setattr(
+                    matcher, "_whole_re", _TracingPattern(matcher._whole_re, "bounded")
+                )
+
+        def traced(command: str) -> list[tuple[str, str]]:
+            trace.clear()
+            # The spam matches no rule, so evaluation runs the FULL catalog — a deny
+            # would short-circuit the loop and make the traces trivially equal.
+            assert is_denied(command) is None
+            return list(trace)
+
+        for build in builds:
+            base_trace = traced(build(2000))
+            double_trace = traced(build(4000))
+            frag_searches = {p for kind, p in base_trace if kind == "frag"}
+            assert {"python", "open"} <= frag_searches, (
+                "the chain fragments never ran — the instrument is not observing the "
+                "path under test"
+            )
+            assert double_trace == base_trace, (
+                "doubling the input changed WHAT the evaluation layer executes — "
+                "per-position or retry work that scales with the input is the "
+                "super-linear backtracking the fragment split exists to prevent"
+            )
+            # Catastrophic-blowup backstop, at the small size where 5s is generous
+            # margin even under coverage instrumentation.
+            assert self._elapsed(build(2000)) < self._BUDGET_SECONDS
 
     def test_long_leading_junk_then_real_deny_needle_still_caught(self):
         # A legitimate destructive command sits AFTER a long junk prefix in its

@@ -43,7 +43,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 from opentelemetry.sdk.metrics import Counter, Histogram, UpDownCounter
 from opentelemetry.sdk.metrics.export import (
@@ -72,6 +72,20 @@ _SHARD_NAME_RE = re.compile(
     r"metrics-(?P<day>\d{4}-\d{2}-\d{2})-(?P<pid>[1-9]\d*)"
     r"(?:-(?P<rotation>[1-9]\d*))?\.jsonl"
 )
+
+
+class _Shard(NamedTuple):
+    """One exporter-owned shard as retention sees it.
+
+    ``protected`` is resolved once, while stat'ing, and reused by both caps:
+    ``_is_protected_writer`` reads the wall clock, so re-deriving it per cap could
+    answer differently on either side of the recency cutoff within one plan.
+    """
+
+    mtime_ns: int
+    size: int
+    path: Path
+    protected: bool
 
 
 class JsonlMetricExporter(MetricExporter):
@@ -206,7 +220,7 @@ class JsonlMetricExporter(MetricExporter):
             line = metrics_data.to_json(indent=None)
             encoded = (line + "\n").encode("utf-8")
             self._dir.mkdir(parents=True, exist_ok=True)
-            # ~/.kirocrew convention: telemetry stays private (dir 0o700, file
+            # ~/.kiro/crew convention: telemetry stays private (dir 0o700, file
             # 0o600). mkdir/open modes are masked by umask, so chmod explicitly.
             self._chmod(self._dir, 0o700)
             # Per-PID shards have one writer, so append + rotation need no
@@ -291,7 +305,7 @@ class JsonlMetricExporter(MetricExporter):
         """Return exact exporter-owned shards eligible for deletion."""
         if not self._dir.exists():
             return []
-        shards: list[tuple[int, int, Path, bool]] = []
+        shards: list[_Shard] = []
         for path in self._dir.glob("metrics-*.jsonl"):
             if not self._is_exporter_shard(path):
                 continue
@@ -301,37 +315,41 @@ class JsonlMetricExporter(MetricExporter):
                 continue
             if not stat.S_ISREG(shard_stat.st_mode):
                 continue
-            protected = self._is_protected_writer(path, shard_stat.st_mtime_ns)
             shards.append(
-                (shard_stat.st_mtime_ns, shard_stat.st_size, path, protected)
+                _Shard(
+                    mtime_ns=shard_stat.st_mtime_ns,
+                    size=shard_stat.st_size,
+                    path=path,
+                    protected=self._is_protected_writer(path, shard_stat.st_mtime_ns),
+                )
             )
 
         deletions: list[Path] = []
         # Age cap: plan deletion for anything older than the retention window.
         if self._retention_days > 0:
             cutoff = time.time_ns() - self._retention_days * 86400 * 1_000_000_000
-            survivors: list[tuple[int, int, Path, bool]] = []
-            for mtime, size, path, protected in shards:
-                if mtime < cutoff and not protected:
-                    deletions.append(path)
+            survivors: list[_Shard] = []
+            for shard in shards:
+                if shard.mtime_ns < cutoff and not shard.protected:
+                    deletions.append(shard.path)
                 else:
-                    survivors.append((mtime, size, path, protected))
+                    survivors.append(shard)
             shards = survivors
 
         # Size cap: plan closed-shard deletion oldest-first until the surviving
         # footprint is within budget. Protected active writers may temporarily
         # keep the directory over budget.
         if self._max_total_bytes > 0:
-            total = sum(size for _mtime, size, _path, _protected in shards)
+            total = sum(shard.size for shard in shards)
             if total > self._max_total_bytes:
-                shards.sort(key=lambda item: item[0])
-                for _mtime, size, path, protected in shards:
+                shards.sort(key=lambda shard: shard.mtime_ns)
+                for shard in shards:
                     if total <= self._max_total_bytes:
                         break
-                    if protected:
+                    if shard.protected:
                         continue
-                    deletions.append(path)
-                    total -= size
+                    deletions.append(shard.path)
+                    total -= shard.size
         return deletions
 
     @staticmethod

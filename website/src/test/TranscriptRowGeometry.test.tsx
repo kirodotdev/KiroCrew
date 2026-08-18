@@ -1,7 +1,7 @@
 /**
  * Transcript row geometry is the HOST's job, never the row component's.
  *
- * The column gutter (`px-5`), the centring (`mx-auto w-full`) and the width
+ * The column gutter (`px-4`), the centring (`mx-auto w-full`) and the width
  * clamp (`maxWidth: var(--mc-content-width, …)`) are applied once, by the row
  * wrapper that the host puts around every rendered message: ChatPage's own row
  * div and `ChatMessageList`'s `ctx.row` / `ctx.wrapper`.
@@ -32,7 +32,7 @@ import WorkflowCompletionCard from '../pages/chat/WorkflowCompletionCard'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import type { ChatMessage } from '../types'
 
-const GUTTER = 'px-5'
+const GUTTER = 'px-4'
 const CENTRE = 'mx-auto'
 const CLAMP = '--mc-content-width'
 

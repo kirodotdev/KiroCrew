@@ -242,7 +242,7 @@ export default function MeetingsPage() {
           </>
         }
       />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] my-6">
           <StatCard
             label={i18nT('apps.meetings.list.statScheduled')}

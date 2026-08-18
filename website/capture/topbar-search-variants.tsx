@@ -25,7 +25,7 @@
  */
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform } from 'lucide-react'
+import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown, Menu } from 'lucide-react'
 
 import { initI18n } from '../src/i18n'
 import '../src/index.css'
@@ -126,12 +126,39 @@ function TopBar() {
 
 /** Mobile form: the icon-only search is its OWN grid child in the window-centred
  *  centre track, exactly as App.tsx renders it -- not a member of the actions
- *  group, which would put three action controls in one horizontal row. */
+ *  group, which would put three action controls in one horizontal row.
+ *
+ *  The identity group carries the nav button AND the crew switcher, which is what
+ *  its own collapse ladder acts on (`tb-drop-crew-name`, `tb-crew-active-chip` in
+ *  index.css): the chip's name goes first, then the chip, so the trailing
+ *  dropdown -- the only route to another crew -- never leaves the clip box. Chip
+ *  and trigger classes are verbatim from InstanceTabBar's SwitcherChip and
+ *  SwitcherMenu, so the rungs trip at the real content widths. */
 function TopBarMobile() {
   return (
     <header className="topbar topbar-glass relative pl-3 pr-3" data-topbar style={{ height: 42 }}>
       <div className="tb-left relative h-full px-2">
-        <button className="p-2 rounded-md bg-transparent border-none text-muted shrink-0">☰</button>
+        <button className="p-2 rounded-md bg-transparent border-none text-muted shrink-0" aria-label="nav"><Menu size={20} /></button>
+        <div className="instance-tab-bar-inline flex items-center h-full gap-1 min-w-0">
+          <div className="flex items-center gap-1 min-w-0">
+            <button
+              type="button"
+              aria-current="true"
+              aria-label="本地"
+              className="tb-crew-active-chip flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap shrink-0 border bg-accent-subtle text-accent font-bold border-transparent"
+            >
+              <Home className="lucide-inline shrink-0" />
+              <span className="tb-drop-crew-name truncate max-w-[140px]">本地</span>
+            </button>
+            <button
+              type="button"
+              aria-label="切换 crew"
+              className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted"
+            >
+              <ChevronDown className="lucide-inline shrink-0" />
+            </button>
+          </div>
+        </div>
       </div>
       <button className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center shrink-0">
         <Search size={14} />

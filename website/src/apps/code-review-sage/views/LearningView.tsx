@@ -153,7 +153,7 @@ export default function LearningView() {
 
   if (!ns) {
     return (
-      <div className="h-full overflow-y-auto scrollbar-none px-6 py-6">
+      <div className="h-full overflow-y-auto scrollbar-none px-4 md:px-6 py-6">
         <h1 className="text-[22px] font-bold leading-tight text-text-strong flex items-center gap-2">
           <Brain size={18} className="text-accent" aria-hidden="true" /> {i18nT('apps.codeReviewSage.views.learningView.learning')}
         </h1>
@@ -165,7 +165,7 @@ export default function LearningView() {
   }
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-none px-6 py-6">
+    <div className="h-full overflow-y-auto scrollbar-none px-4 md:px-6 py-6">
       <div className="max-w-[820px]">
         <h1 className="text-[22px] font-bold leading-tight text-text-strong flex items-center gap-2">
           <Brain size={18} className="text-accent" aria-hidden="true" />

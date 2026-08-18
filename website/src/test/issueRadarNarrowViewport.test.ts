@@ -195,7 +195,13 @@ describe('Issue Radar at narrow widths', () => {
       expect(detail, `${pane}: the sidebar must not hold a fixed width while narrow`)
         .toMatch(/className="w-full sm:w-\[236px\]/)
       expect(detail, `${pane}: the body columns must stack while narrow`)
-        .toMatch(/flex flex-col sm:flex-row gap-6 px-6 py-5/)
+        .toMatch(/flex flex-col sm:flex-row gap-6 /)
+      // The gutter that used to be spelled in this same string is asserted by
+      // issueRadarNarrowGutter.test.ts instead. Pinning it here too made one
+      // gutter decision require an edit in two test files, and made this
+      // assertion fail with "the body columns must stack" when what actually
+      // changed was the inset — a failure message that names the wrong cause is
+      // worse than no second assertion.
       // The actions no longer compete with the title for width at all: they live
       // in the sticky bar, and the title is a full-width block above it. What
       // must hold is that the pane renders its header through the SHARED shell,

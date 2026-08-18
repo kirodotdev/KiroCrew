@@ -419,8 +419,12 @@ function TaggingDashboard() {
    * opposed to the single-issue Suggest on one row. */
   const batchPending = generate.isPending && (suggestingFor === undefined || suggestingFor.length > 1)
 
+  // Narrow-first gutter — see OverviewView for why 24px at every width was
+  // wrong here. This page is denser still: the label palette and the untagged
+  // queue are both card-wrapped, so the old gutter cost 32px of the 390px
+  // available before either could start.
   return (
-    <div className="px-6 pt-4 pb-6 flex flex-col gap-4">
+    <div className="px-4 md:px-6 pt-4 pb-6 flex flex-col gap-4">
       {/* KPI strip — this is the page header. Two numbers only: the size of the
         * queue, and the vocabulary available to clear it. "Analysed" and "Ready
         * to apply" are already legible from the rows and the Apply button. */}

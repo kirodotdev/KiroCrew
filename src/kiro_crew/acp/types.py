@@ -486,6 +486,13 @@ class AcpEvent:
     # provider-specific tool_kind literals (which silently re-break on every
     # engine migration / tool rename).
     is_shell: bool = False
+    #: PROVENANCE flags for the child-fidelity gate (see child_low_fidelity).
+    #: raw_params_trusted: raw_tool_params came from the tool_call cache (a
+    #: frame this client parsed), not the permission payload's agent-authored
+    #: inline fallback. shell_classified: is_shell reflects a resolved
+    #: classification (cache hit), not the miss-default False.
+    raw_params_trusted: bool = False
+    shell_classified: bool = False
     # Canonical, NON-model-authored tool identity from ``_meta.kiro`` (see
     # ``_dispatch._kiro_tool_name``). ``title`` is LLM-authored prose — for shell
     # tools ``select_tool_title`` even prefers the model's ``description`` — so a
@@ -567,15 +574,21 @@ class AcpEvent:
         requests. ``tool_input`` alone is NOT fidelity: an edit refinement can
         cache a rendered diff string without ``raw_tool_params``, leaving the
         path-scope checks blind while a truthy ``tool_input`` suggests
-        otherwise. Fidelity requires the STRUCTURED params the gates actually
-        evaluate — ``raw_tool_params`` for path/arg scopes — and, for a shell
-        tool, a recoverable command string. Non-child events are never
-        low-fidelity (their caches are slot-owned and complete by
-        construction).
+        otherwise. Nor is a bare ``raw_tool_params`` dict: the permission
+        frame's inline ``toolCall.input`` fallback is agent-authored, and a
+        shell-cache MISS defaults ``is_shell`` to False — trusting either
+        would let a benign inline dict on a shell tool masquerade as full
+        context. Fidelity therefore requires PROVENANCE: params resolved from
+        the tool_call cache (``raw_params_trusted``), a resolved shell
+        classification (``shell_classified``), and — for a shell tool — a
+        recoverable command string. Non-child events are never low-fidelity
+        (their caches are slot-owned and complete by construction).
         """
         if not self.sub_session_id:
             return False
-        if not isinstance(self.raw_tool_params, dict):
+        if not self.raw_params_trusted or not isinstance(self.raw_tool_params, dict):
+            return True
+        if not self.shell_classified:
             return True
         if self.is_shell and not self.shell_command:
             return True

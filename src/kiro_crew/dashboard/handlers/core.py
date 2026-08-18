@@ -41,6 +41,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.transcribe import BREW_PATH_DIRS, ensure_ffmpeg_in_path, find_brew, is_available
@@ -1196,14 +1197,31 @@ async def api_sel_events(request: web.Request) -> web.Response:
         limit = min(int(request.query.get("limit", "100")), 1000)
     except (TypeError, ValueError):
         limit = 100
-    events = _sel().recent(limit=limit)
+    # recent() reads the WHOLE audit-log file with blocking IO: it is one JSONL
+    # file pruned by age, so `limit` bounds the rows returned, not the bytes
+    # read. Called inline it stalls the whole event loop, so it must be
+    # offloaded. Use the DISCOVERY pool, not maintenance_executor: this handler
+    # is browser-triggerable, so multiple tabs or pollers could otherwise occupy
+    # the workers the orphan-reaping sweeps need to recover from an event-loop
+    # wedge.
+    # _sel() is called INSIDE the callable, not while building it: the first
+    # call constructs the singleton, which reads/creates the HMAC key and scans
+    # the log tail. Evaluating it here would leave that IO on the loop.
+    events = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), lambda: _sel().recent(limit=limit)
+    )
     return web.json_response({"events": events, "count": len(events)})
 
 
 async def api_sel_verify(request: web.Request) -> web.Response:
     """GET /api/sel/verify — verify HMAC chain integrity."""
 
-    total, valid = _sel().verify_integrity()
+    # Same offload rationale as api_sel_events, including deferring _sel() into
+    # the callable: verify_integrity() reads the whole log file to check the HMAC
+    # chain end to end and must not run on the event loop.
+    total, valid = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), lambda: _sel().verify_integrity()
+    )
     return web.json_response(
         {
             "total": total,

@@ -1734,10 +1734,15 @@ def token_auth_middleware(
                     outcome="denied",
                     source="token_auth",
                     resources=path,
-                    error="wrong secret",
+                    error=f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
                 )
-                _log_auth(request, "internal", "denied", "wrong secret")
-                return _deny(request, "Forbidden")
+                _log_auth(
+                    request,
+                    "internal",
+                    "denied",
+                    f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
+                )
+                return _deny(request, "Forbidden", "internal_auth_mismatch")
             # No secret header (browser request) → verify cookie/query-param auth
             # inline to satisfy deny-by-default: positively confirm auth
             # at the decision point rather than deferring to downstream.
@@ -2196,10 +2201,46 @@ def token_auth_middleware(
     return middleware
 
 
-def _deny(request: web.Request, reason: str) -> web.Response:
+def _credential_fingerprint(value: str) -> str:
+    """Identify a credential without disclosing it: short digest + length.
+
+    ``absent`` for an empty value, which is a distinct and common case (a caller
+    that could not read any credential file at all) and must not be confused with
+    a caller holding the wrong one.
+
+    Eight hex characters of a SHA-256 is an identifier, not the credential: it
+    does not survive inversion for a 128-bit random value, and it goes only to the
+    SEL audit log, which already sits on the keystone floor. Without it a
+    cross-generation mismatch is indistinguishable from a forged header, which is
+    what made a real desync take hours to attribute -- the log said only
+    "wrong secret" and named no side.
+    """
+    if not value:
+        return "absent"
+    return f"{hashlib.sha256(value.encode()).hexdigest()[:8]}/len={len(value)}"
+
+
+def _credential_mismatch_detail(expected: str, provided: str) -> str:
+    """Both fingerprints, for the one log line that has to explain a 403."""
+    return (
+        f"expected={_credential_fingerprint(expected)} "
+        f"received={_credential_fingerprint(provided)}"
+    )
+
+
+def _deny(request: web.Request, reason: str, code: str = "") -> web.Response:
     headers = {"X-Auth-Required": "true"}
     if request.path.startswith("/api/"):
-        return web.json_response({"error": reason}, status=403, headers=headers)
+        # A machine-readable code alongside the prose: a caller cannot distinguish
+        # a credential desync from a genuine permission denial by matching the
+        # body text, and a tool that guesses from prose misdiagnoses the other one.
+        # Written as a dict LITERAL with the key present so the error-code ratchet
+        # can still read this sink statically -- handing it a prebuilt variable
+        # would trade a `missing_code` for an `opaque_body`, which is the bucket
+        # that hides every future regression here.
+        return web.json_response(
+            {"error": reason, "code": code or "forbidden"}, status=403, headers=headers
+        )
     return web.Response(
         text=_403_HTML.format(reason=reason),
         status=403,

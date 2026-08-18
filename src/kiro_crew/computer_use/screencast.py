@@ -60,7 +60,6 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX, OBS_SCREENSHOT, Snapshot
-from kiro_crew.config.paths import config_dir
 from kiro_crew.loopback_http import loopback_urlopen
 
 logger = logging.getLogger(__name__)
@@ -74,7 +73,6 @@ FRAME_INGRESS_PATH = "/api/computer-use/frame"
 
 # Header the ingress authenticates with (the gateway's own per-run local secret).
 FRAME_SECRET_HEADER = "X-Internal-Secret"
-_LOCAL_SECRET_FILE = ".local_secret"
 
 # Seconds to wait on the POST. The mirror is best-effort decoration on a tool
 # call that has already produced its result; a slow or dead gateway must cost the
@@ -291,16 +289,19 @@ def _post_frame(payload: dict[str, Any]) -> None:
 def _ingress_url() -> str:
     """Loopback URL of the frame ingress on the gateway this install serves.
 
-    Resolved through ``parse_dashboard_url`` (which honours ``KIROCREW_PORT`` and
-    then ``dashboard.url``) so a dev instance on 6777 mirrors to itself rather
-    than to a production gateway on 5476. Imported lazily: ``dashboard.origin``
-    pulls in aiohttp, and this module is reachable from the capture path.
-    """
-    from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.dashboard.origin import parse_dashboard_url
+    Resolved through :func:`resolve_serving_port`, which prefers the port this
+    process actually bound over an inherited ``KIROCREW_PORT``, so an auto-port
+    instance mirrors to itself instead of to a sibling.
 
-    _host, port = parse_dashboard_url(KiroCrewConfig.load().dashboard.url)
-    return f"http://127.0.0.1:{port}{FRAME_INGRESS_PATH}"
+    The import is function-local ON PURPOSE, against the advisory ``top-level-imports``
+    guideline: ``port_resolution`` imports ``dashboard.origin`` at module scope, which
+    pulls in aiohttp, and this module sits on the screen-capture path that must not pay
+    that cost at import time. This is the same lazy-import discipline the module used
+    before the shared resolver existed; the resolver did not change the constraint.
+    """
+    from kiro_crew.port_resolution import resolve_serving_port
+
+    return f"http://127.0.0.1:{resolve_serving_port()}{FRAME_INGRESS_PATH}"
 
 
 def _headers() -> dict[str, str]:
@@ -309,11 +310,30 @@ def _headers() -> dict[str, str]:
     An unreadable secret yields no header, the ingress refuses the POST, and the
     frame is dropped — which is the correct outcome: the mirror is not worth
     weakening the ingress for.
+
+    The credential is read for the port this module POSTS to (resolved the same way
+    :func:`_ingress_url` resolves it), not from the home-wide file alone: that file
+    holds one slot per data home, so a second gateway generation replaces it and the
+    ingress would refuse every frame from the instance that is actually serving.
+
+    Pairing the read to that resolution is the whole guard, and it is enough. The
+    hazard was an auto-port instance resolving to a SIBLING's port and credentialing
+    its ingress, which then accepted the frame and broadcast the capture.
+    :func:`resolve_serving_port` prefers the port this process actually bound, so the
+    sibling is never reached -- including when an inherited ``KIROCREW_PORT`` names
+    it, which the generic client resolver would otherwise honour first.
     """
+    # Function-local for the same reason as _ingress_url: keep the capture path off
+    # the import cost.
+    from kiro_crew.config.loader import read_local_secret
+    from kiro_crew.port_resolution import resolve_serving_port
+
     headers = {"Content-Type": "application/json"}
     try:
-        secret = (config_dir() / _LOCAL_SECRET_FILE).read_text(encoding="utf-8").strip()
-    except OSError:
+        # The SAME resolution _ingress_url uses, so the credential is always read
+        # for the port this module actually POSTs to -- the two cannot diverge.
+        secret = read_local_secret(resolve_serving_port())
+    except Exception:
         return headers
     if secret:
         headers[FRAME_SECRET_HEADER] = secret

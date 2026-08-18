@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import { SCHEDULE_PRESETS, PRESET_CATEGORIES } from '../utils/schedulePresets'
@@ -64,16 +64,28 @@ describe('SchedulePage delete button state machine', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete' })
     expect(api.deleteCron).not.toHaveBeenCalled()
 
-    // First click arms the row -- button swaps label, no API call yet.
+    // First click arms the row -- button swaps to a self-explanatory label, no
+    // API call yet. The VISIBLE label must state the action (confirm_delete_job
+    // -> "Delete?"), because the title tooltip is hover-only and does not
+    // exist on touch (#4120). It is also the accessible name -- deliberately no
+    // aria-label, which would override the label a sighted user reads and
+    // break WCAG 2.5.3 (Label in Name). A bare "Confirm" must be gone.
     fireEvent.click(deleteBtn)
-    expect(await screen.findByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+    const armed = await screen.findByRole('button', { name: 'Delete?' })
+    expect(armed).toHaveTextContent('Delete?')
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+    // The hover tooltip stays as a redundant pointer affordance.
+    expect(armed).toHaveAttribute('title', 'Click again to confirm')
+    expect(armed).not.toHaveAttribute('aria-label')
     expect(api.deleteCron).not.toHaveBeenCalled()
 
     // After delete, refresh the list to empty so the row disappears.
     vi.mocked(api).crons.mockResolvedValue({ jobs: [] })
 
-    // Second click (now "Confirm") actually deletes.
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    // Second click (the armed "Delete?") actually deletes -- and only the
+    // second: the machine still requires two clicks (guarded above by the
+    // not.toHaveBeenCalled() after the first).
+    fireEvent.click(armed)
     await waitFor(() => expect(api.deleteCron).toHaveBeenCalledWith('job-1'))
   })
 
@@ -86,12 +98,12 @@ describe('SchedulePage delete button state machine', () => {
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-    const confirmBtn = await screen.findByRole('button', { name: 'Confirm' })
+    const confirmBtn = await screen.findByRole('button', { name: 'Delete?' })
     fireEvent.click(confirmBtn)
 
     await waitFor(() => expect(api.deleteCron).toHaveBeenCalled())
-    // Even on failure, the button must revert out of "Confirm" -- otherwise
-    // the row stays stuck with no way to re-arm.
+    // Even on failure, the button must revert out of the armed state --
+    // otherwise the row stays stuck with no way to re-arm.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument())
     expect(screen.getByText(/boom/)).toBeInTheDocument()
   })
@@ -105,11 +117,13 @@ describe('SchedulePage delete button state machine', () => {
     await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(await screen.findByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Delete?' })).toBeInTheDocument()
 
     await vi.advanceTimersByTimeAsync(3100)
 
+    // Back to the disarmed state: plain "Delete" label, armed label gone.
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete?' })).not.toBeInTheDocument()
     expect(api.deleteCron).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
@@ -125,15 +139,26 @@ describe('SchedulePage delete button state machine', () => {
 
     const deleteButtons = screen.getAllByRole('button', { name: 'Delete' })
     fireEvent.click(deleteButtons[0])
-    expect(await screen.findByRole('button', { name: 'Confirm' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Delete?' })).toBeInTheDocument()
 
     // Arming row 2 must disarm row 1 -- only one row confirmable at a time.
+    // The armed label is identical across rows (the aria-label that once named
+    // the job would break WCAG 2.5.3), so scope by row container to assert
+    // WHICH row is armed -- a bare count of 1 would also pass in the inverted
+    // failure mode where row 1 stayed armed and row 2 never armed.
     const remainingDeleteButtons = screen.getAllByRole('button', { name: 'Delete' })
     fireEvent.click(remainingDeleteButtons[remainingDeleteButtons.length - 1])
 
+    const rowOf = (name: string) => {
+      const tr = screen.getByText(name).closest('tr')
+      if (!tr) throw new Error(`no row for ${name}`)
+      return within(tr)
+    }
     await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: 'Confirm' })).toHaveLength(1)
+      expect(rowOf('Weekly digest').getByRole('button', { name: 'Delete?' })).toBeInTheDocument()
     })
+    expect(rowOf('Nightly report').queryByRole('button', { name: 'Delete?' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Delete?' })).toHaveLength(1)
     expect(api.deleteCron).not.toHaveBeenCalled()
   })
 })

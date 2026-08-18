@@ -32,9 +32,43 @@ describe('Btn', () => {
     render(<Btn onClick={fn} disabled>Click</Btn>)
     expect(screen.getByText('Click')).toBeDisabled()
   })
-  it('applies danger styling class', () => {
-    render(<Btn onClick={() => {}} danger>Del</Btn>)
-    expect(screen.getByText('Del').className).toContain('hover:text-danger')
+  it('colours a danger label without needing hover', () => {
+    // A touch viewport never produces `hover`, so a hover-only danger colour
+    // rendered a destructive button identically to its neighbours on a phone
+    // (#3937). The colour is the affordance, so it cannot be gated on a
+    // pointer.
+    const classes = render(<Btn onClick={() => {}} danger>Del</Btn>)
+      && screen.getByText('Del').className.split(/\s+/)
+    expect(classes).toContain('text-danger')
+    expect(classes).not.toContain('hover:text-danger')
+  })
+
+  it('is distinguishable from a neighbouring non-destructive Btn with no hover', () => {
+    // The defect, stated directly: on a touch viewport no `hover:` rule ever
+    // applies, so the two buttons must already differ in their base classes.
+    // Comparing the hover-stripped class sets is what a phone actually renders.
+    const { container } = render(
+      <>
+        <Btn danger>Close</Btn>
+        <Btn>Clear Context</Btn>
+      </>,
+    )
+    const base = (label: string) =>
+      new Set(
+        (container.querySelector(`button:nth-of-type(${label})`) as HTMLButtonElement)
+          .className.split(/\s+/).filter(c => !c.startsWith('hover:')),
+      )
+    const dangerous = base('1')
+    const ordinary = base('2')
+    expect(dangerous).not.toEqual(ordinary)
+    expect([...dangerous]).toContain('text-danger')
+    expect([...ordinary]).not.toContain('text-danger')
+  })
+
+  it('still gives a pointer device hover feedback', () => {
+    render(<Btn onClick={() => {}} danger>Del2</Btn>)
+    const cls = screen.getByText('Del2').className
+    expect(cls).toContain('hover:border-danger')
   })
 
   // ── Enabled/disabled affordance ────────────────────────────────────────
@@ -43,18 +77,25 @@ describe('Btn', () => {
   // which is visually near-identical to the disabled state (opacity-30 on an
   // already-grey label) — enabled buttons read as greyed out until hovered
   // (reported against the Skills pending-review row, whose Review/Dismiss
-  // buttons were mistaken for disabled). The idle label must use `text-text`;
-  // a bare `text-muted` class on an enabled Btn is the regression. Asserted
-  // on the exact class token so `hover:text-muted` (fine) can never satisfy
-  // or trip the check.
+  // buttons were mistaken for disabled). A bare `text-muted` class on an
+  // enabled Btn is the regression. Asserted on exact class tokens so
+  // `hover:text-muted` (fine) can never satisfy or trip the check.
+  //
+  // The check is "not muted, AND an explicit idle foreground" rather than the
+  // literal `text-text` token it was originally written with: `text-text` was
+  // the only foreground a Btn had at the time, and the danger variant now
+  // idles in `text-danger` so it is recognisable without hover (#3937). A red
+  // label is emphatically not "reads as disabled", which is the invariant this
+  // test states — pinning the old token instead would forbid the fix while
+  // protecting nothing extra.
   it.each([
-    ['default', {}],
-    ['danger', { danger: true }],
-  ] as const)('idle %s Btn label is not muted, so enabled ≠ disabled at a glance', (_name, props) => {
+    ['default', {}, 'text-text'],
+    ['danger', { danger: true }, 'text-danger'],
+  ] as const)('idle %s Btn label is not muted, so enabled ≠ disabled at a glance', (_name, props, expected) => {
     render(<Btn {...props}>Review</Btn>)
     const classes = screen.getByText('Review').className.split(/\s+/)
     expect(classes).not.toContain('text-muted')
-    expect(classes).toContain('text-text')
+    expect(classes).toContain(expected)
   })
 })
 

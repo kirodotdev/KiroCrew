@@ -45,6 +45,7 @@
     "k_search_for_anything": "⌘K — 무엇이든 검색…",
     "kiro_credit_usage_checking": "Kiro 크레딧 사용량 — 확인 중…",
     "kiro_credit_usage_checking_2": "Kiro 크레딧 사용량 — 확인 중",
+    "kiro_credit_usage_unavailable": "Kiro 크레딧 사용량 — 사용 불가",
     "kiro_discord_community": "Kiro Discord 커뮤니티",
     "main_navigation": "기본 내비게이션",
     "manage_account": "계정 관리",
@@ -621,32 +622,24 @@
           "step_why_it_matters": "왜 중요한가"
         },
         "reviewChat": {
-          "closed_notice": "대화가 종료되었고 리뷰어가 더 이상 로드되어 있지 않아 새로운 질문에 답할 수 없습니다. 위의 기록은 보존됩니다.",
-          "empty_hint": "이 리뷰어는 각 지적의 판단 근거를 아직 기억하고 있습니다. 왜 지적했는지, 무엇을 확인했는지 물어보세요.",
-          "end_chat": "대화 종료",
-          "error_busy": "이전 질문에 아직 답하고 있습니다.",
-          "error_empty": "먼저 질문을 입력하세요.",
-          "error_expired": "리뷰어가 로드되어 있지 않아 답할 수 없습니다. 이 풀 리퀘스트를 다시 리뷰하면 더 질문할 수 있습니다.",
-          "error_generic": "질문에 답하지 못했습니다. 다시 시도하세요.",
-          "error_needs_override": "이 대화를 계속하려면 YOLO를 켜세요. 답변에 도구 실행이 필요할 수 있습니다.",
-          "error_override_expiring": "답변이 끝나기 전에 도구 승인이 만료됩니다. 연장한 뒤 다시 질문하세요.",
-          "error_override_lapsed": "검토자가 답변하는 중에 도구 승인이 종료되어 답변을 중단했습니다. 다시 승인한 뒤 질문하세요.",
-          "error_persist_failed": "답변을 저장하지 못해 이 대화에 포함되지 않았습니다. 다시 질문하세요.",
-          "error_tool_denied": "검토자가 보안 정책이 차단한 도구를 사용하려 해서 답변을 중단했습니다. 실행된 것은 없습니다.",
-          "error_transcript_unsafe": "이 대화를 안전하게 저장할 수 없어 기록하지 않았습니다. 검토 폴더를 확인하세요.",
+          "error_generic": "후속 세션을 열지 못했습니다. 다시 시도하세요.",
           "error_run_deleted": "이 리뷰가 삭제되어 대화가 종료되었습니다.",
-          "error_too_long": "질문이 너무 깁니다. 줄여서 다시 보내세요.",
-          "needs_override_notice": "리뷰어는 아직 로드되어 있지만 도구 승인이 불가능해 답할 수 없습니다. 답하려면 코드를 읽어야 할 수 있습니다. 계속하려면 YOLO를 켜세요.",
-          "placeholder": "이 지적을 제기한 이유를 질문…",
           "ran_tools": "확인한 것: {{tools}}",
           "reasoning": "추론 과정",
           "refused_notice": "완전히 답하려면 도구 실행이 필요했지만 허용되지 않아 이 답변은 제한적입니다. YOLO를 켜면 실행할 수 있습니다.",
           "role_reviewer": "리뷰어",
           "role_you": "나",
-          "send": "보내기",
-          "sending": "질문 중…",
           "title": "리뷰어에게 질문하기",
-          "unsent_label": "보내지 않음"
+          "earlier_questions": "이전 질문",
+          "resume_hint": "리붰어를 다시 불러오는 채팅을 엽니다. 지적 사항의 근거가 된 추로가 그대로 남아 있습니다.",
+          "open_session": "후속 세션 열기",
+          "opening": "여는 중…",
+          "not_recorded_notice": "이 리뷰는 리붰어 세션을 보관하지 않았으묀로 다시 여는 것이 없습니다. 이 풀 리퀘스트를 다시 리뷰하면 질문할 수 있습니다.",
+          "transcript_gone_notice": "리붰어의 세션이 디스킬에 다시 여는 것이 없습니다. 이 풀 리퀘스트를 다시 리뷰하면 질문할 수 있습니다.",
+          "continue_hint": "이 리붰어와의 대화는 채팅 탭에서 이어집니다.",
+          "continue_session": "후속 세션 이어가기",
+          "run_live_notice": "이 리뷰는 아직 진행 중입니다. 끝나기 전에는 지적 사항이 바뀔 수 있어 질문할 내용이 아직 없습니다.",
+          "loading": "받아오는 중…"
         },
         "runCard": {
           "cancel": "취소",
@@ -2393,6 +2386,9 @@
         "viewSection": "보기",
         "view_folders": "폴더",
         "view_list": "평면 목록"
+      },
+      "preview": {
+        "mermaidError": "잘못된 Mermaid 다이어그램 — 소스를 표시합니다."
       },
       "row": {
         "delete": "노트 삭제",
@@ -4270,6 +4266,20 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "활성",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "이 크루의 일정을 불러올 수 없어 무엇이 깨우는지 알 수 없습니다.",
+      "no_schedules_run_this_crew_automatically": "이 크루를 자동으로 실행하는 일정이 없습니다.",
+      "open_schedule": "일정 열기",
+      "pause_named": "{{name}} 일시중지",
+      "paused": "일시중지됨",
+      "resume_named": "{{name}} 재개",
+      "run_named_now": "{{name}} 지금 실행",
+      "running": "실행 중",
+      "schedule": "일정",
+      "schedules_that_run_this_crew_without_you_asking": "요청하지 않아도 이 크루를 실행하는 일정입니다. 위의 트리거와는 별개로, 트리거는 오케스트레이터가 이 크루를 선택할 시점만 결정합니다.",
+      "what_wakes_this_crew": "이 크루를 깨우는 것"
+    },
     "agentDropdownList": {
       "active_in_this_session": "이 세션에서 활성",
       "could_not_change_the_default_agent": "기본 에이전트를 변경할 수 없습니다",
@@ -5041,6 +5051,7 @@
       "invalid_json": "잘못된 JSON:",
       "items": "항목",
       "lines": "줄",
+      "media_preview_failed": "재생에 실패했습니다. 브라우저가 이 파일을 디코딩할 수 없습니다.",
       "more": "더 보기",
       "null": "null",
       "office_download_hint": "Office 문서는 인라인으로 미리 볼 수 없습니다. Word, Excel, PowerPoint 또는 호환 뷰어에서 열려면 다운로드하세요.",
@@ -6022,6 +6033,10 @@
       "move_to_folder": "폴더로 이동…",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
+      "reload_blocked_running": "턴 진행 중",
+      "reload_blocked_subagents": "하위 에이전트 작업 중",
+      "reload_session": "세션 다시 로드",
+      "reload_session_tooltip": "에이전트 프로세스를 다시 시작하여 새 MCP/설정 변경을 반영합니다. 대화는 유지됩니다.",
       "rename": "이름 변경",
       "reveal_in_sidebar": "사이드바에서 보기",
       "switch_to_autopilot": "오토파일럿으로 전환",
@@ -6575,6 +6590,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "작업을 취소하지 못했습니다",
+      "failed_to_pause_job": "작업을 일시중지할 수 없습니다",
+      "failed_to_resume_job": "작업을 재개할 수 없습니다",
       "failed_to_open_in_chat": "채팅에서 열지 못했습니다",
       "failed_to_run_job": "작업을 실행하지 못했습니다"
     },
@@ -6621,7 +6638,8 @@
       "subagents": "서브에이전트",
       "summary": "요약",
       "workflows": "워크플로",
-      "git": "Git"
+      "git": "Git",
+      "pins": "핀"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "모든 슬롯이 사용 중입니다",
@@ -6658,6 +6676,8 @@
     },
     "useSessionActions": {
       "close_this_session": "이 세션을 닫으시겠습니까?",
+      "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
+      "reload_failed_subagents": "이 세션의 하위 에이전트가 아직 작업 중입니다. 완료된 후 다시 시도하세요.",
       "switch_to_autopilot_mode_future_messages_will_us": "오토파일럿 모드로 전환할까요? 이후 메시지는 오토파일럿 동작(계획 → 승인 → 실행)을 사용합니다.",
       "switch_to_normal_chat_mode_future_messages_will": "일반 채팅 모드로 전환할까요? 이후 메시지는 표준 채팅 동작을 사용합니다."
     },
@@ -7703,7 +7723,9 @@
         "this_app_render_is_no_longer_available": "이 앱 렌더링은 더 이상 사용할 수 없습니다. 도구를 다시 실행해 확인하세요.",
         "turn_diff": "턴 차이",
         "menu_git": "Git",
-        "menu_git_desc": "브랜치·변경 사항·최근 커밋"
+        "menu_git_desc": "브랜치·변경 사항·최근 커밋",
+        "menu_pins": "핀",
+        "menu_pins_desc": "이 세션에서 핀으로 표시한 메시지"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "중지에 실패하여 세션을 초기화했습니다",
@@ -7823,9 +7845,8 @@
       },
       "pins": {
         "pinned_messages": "Pinned messages",
-        "close_panel": "Close pinned messages panel",
         "loading": "Loading pins…",
-        "no_pinned_messages": "No pinned messages yet. Pin important messages from the chat to find them quickly.",
+        "no_pinned_messages": "고정된 메시지가 없습니다. 채팅에서 메시지에 커서를 올린 뒤 핀 아이콘을 클릭하면 여기에 저장됩니다.",
         "message_unavailable": "This pinned message is no longer available in the loaded history.",
         "pin_failed": "Could not pin the message. Try again.",
         "unpin_failed": "Could not unpin the message. Try again.",
@@ -7838,7 +7859,6 @@
         "copy_preview": "Copy text",
         "copy_link": "Copy link to message",
         "unpin": "Unpin",
-        "open_pinned_messages": "Open pinned messages",
         "jump_to_message": "Jump to message"
       },
       "sessionSummary": {
@@ -8110,6 +8130,7 @@
       "show_collapsed_folders": "접힌 폴더 표시:",
       "show_folder": "폴더 표시",
       "show_in_flat_view": "플랫 보기에 {{name}} 표시",
+      "show_only_sessions_tagged": "{{name}} 태그가 지정된 세션만 표시",
       "show_the_folder_list": "폴더 목록 표시",
       "skip": "건너뛰기",
       "sort_and_filter_sessions": "세션 정렬 및 필터",
@@ -8123,6 +8144,7 @@
       "sort_oldest": "오래된순",
       "started_in_channel": "이 대화는 {{channel}}에서 시작되었습니다.",
       "started_in_direct_message": "이 대화는 다이렉트 메시지에서 시작되었습니다.",
+      "stop_filtering_by_tag": "{{name}} 필터 해제",
       "streaming": "스트리밍 중",
       "switch_all_sessions": "모든 세션 전환",
       "switch_all_to_model": "모두 다른 모델로 전환…",
@@ -8132,6 +8154,7 @@
       "switch_to_folder_view": "폴더 보기로 전환",
       "switch_to_list_view": "목록 보기로 전환",
       "switching": "전환 중…",
+      "tags": "태그",
       "temporary_no_memory_reads_or_writes": "임시 — 메모리 읽기·쓰기 없음",
       "thinking": "생각 중…",
       "today": "오늘",
@@ -8918,6 +8941,36 @@
       "without_gateway_per_session_copies": "게이트웨이 없음 (세션별 사본)"
     },
     "mcpManagement": {
+      "assessment": {
+        "col_assessment": "평가",
+        "col_evidence": "근거",
+        "col_running_as": "실행 형태",
+        "connections_link": "Connections",
+        "how_measured": "server 는 Kiro Crew 가 조사하기 전까지 측정되지 않음으로 표시됩니다. 조사는 {{link}} 의 MCP server 목록을 새로 고칠 때 한 번에 두 개씩 진행됩니다.",
+        "lede": "Kiro Crew가 각 서버에 대해 관찰할 수 있었던 내용과, 그것이 지금 서버가 실행되고 있는 형태와 어떻게 맞물리는지 보여 줍니다. 이 화면에서는 아무것도 바뀌지 않습니다 — 스위치는 Servers 아래에 있습니다.",
+        "legend": "공유 백엔드를 권장하려면 서버가 자신의 호출자를 구분할 수 있다고 밝혀야 하는데, 그렇게 밝히는 서버는 드뭅니다 — 그래서 대부분의 정상 서버는 이의 없음 상태에 머뭅니다. 이는 빠진 답이 아니라 보수적인 답이며, 공유 여부는 여전히 사용자의 판단에 달려 있습니다.",
+        "open_servers": "Servers 열기",
+        "reason_all_tools_read_only": "모든 도구가 스스로 읽기 전용이라고 선언함",
+        "reason_caller_sensitive": "서로 다른 두 호출자에게 핸드셰이크에 다르게 응답함",
+        "reason_declares_caller_identity": "자신의 호출자를 구분할 수 있다고 선언함",
+        "reason_first_party": "설계상 단일 세션에 묶인 Kiro Crew 서버",
+        "reason_no_objection_found": "결격 사유는 발견되지 않았지만, 이는 공유가 안전하다는 증거보다 약함",
+        "reason_no_tool_annotations": "읽기 전용인지 선언한 도구가 없습니다",
+        "reason_no_tools_listed": "검사할 도구를 제공하지 않음",
+        "reason_not_probed": "측정한 적이 없어 어느 쪽도 단정하지 않음",
+        "reason_not_stdio": "stdio 서버가 아니므로 앞에 스텁을 둘 파이프가 없음",
+        "reason_observed_hazard": "공유 중 호출자마다 이미 다르게 동작한 것으로 관찰됨",
+        "reason_per_client_capability": "한 클라이언트에만 속하는 기능을 표시함",
+        "reason_preflight_not_run": "선언은 했지만 아직 측정되지 않음",
+        "reason_preflight_passed": "서로 다른 두 호출자에서 측정했을 때 동일하게 응답함",
+        "reason_rotating_secret_env": "값이 세션마다 다른 자격 증명을 읽음",
+        "shared_without_support": "백엔드 공유가 이미 적용되어 있지만 증거는 공유에 반대합니다. 영향을 받는 server: {{count}}",
+        "strength_declared": "공유 지원",
+        "strength_disqualified": "공유에 적합하지 않음",
+        "strength_no_objection": "이의 없음",
+        "strength_refuted": "공유 시 안전하지 않음",
+        "strength_unknown": "미측정"
+      },
       "cancel": "취소",
       "col_server": "서버",
       "col_state": "상태",
@@ -8929,6 +8982,7 @@
       "confirm_stateful": "세션별 상태를 가진 서버는 스텁만 켠 상태로 두거나, 다른 세션과 함께 쓰일 것을 감안하세요.",
       "confirm_title": "세션 간에 백엔드를 공유할까요?",
       "confirm_turn_on": "공유 켜기",
+      "confirm_unsupported": "그중 {{count}} 개는 증거가 공유에 반대합니다.",
       "learn_more": "자세히 보기",
       "learn_more_docs": "문서에서 자세히 보기",
       "lede": "Kiro Crew는 모든 세션이 MCP 서버를 직접 실행하게 하는 대신, 서버 앞에 자체 스텁을 둘 수 있습니다. 스텁은 서버가 자체 UI를 그리는 것(MCP Apps)의 전제이며, 공유 백엔드가 라우팅될 수 있는 유일한 대상이기도 합니다. 그래서 서버별 옵트인입니다. {{link}}",
@@ -8950,7 +9004,10 @@
       "stub_failed": "변경을 적용할 수 없었습니다. 이미 저장되었지만 아직 적용되지 않았을 수 있습니다. 아래 스위치는 저장된 상태를 보여 줍니다.",
       "stub_not_live": "저장했지만 아직 적용되지 않았습니다. 게이트웨이를 시작할 수 없었습니다. 스위치는 저장된 설정을 보여 주며 실행 상태가 아닙니다.",
       "stubbed_of_total": "{{total}}개 중 {{stubbed}}개 스텁",
-      "unsupported_platform": "백엔드 공유에는 Unix 도메인 소켓이 필요하므로 이 플랫폼에서는 사용할 수 없습니다."
+      "unsupported_platform": "백엔드 공유에는 Unix 도메인 소켓이 필요하므로 이 플랫폼에서는 사용할 수 없습니다.",
+      "view_assessment": "공유 평가",
+      "view_servers": "서버",
+      "views_aria": "MCP 관리 보기"
     },
     "migrationPage": {
       "app_migration": "앱 마이그레이션",
@@ -9743,7 +9800,7 @@
       "click_again_to_confirm": "다시 클릭하여 확인",
       "collapse": "접기",
       "command_shell": "command · shell",
-      "confirm": "확인",
+      "confirm_delete_job": "삭제?",
       "continue_session": "세션 계속하기",
       "create_your_first_job": "첫 작업 만들기",
       "cronFolders": {
@@ -9976,6 +10033,7 @@
         "auto_update_on_restart": "재시작 시 자동 업데이트",
         "automatic_updates_are_unavailable_in_this_build": "이 빌드에서는 자동 업데이트를 사용할 수 없습니다",
         "automatic_updates_unavailable_dev_build": "이 빌드에서는 자동 업데이트를 사용할 수 없습니다 (개발 빌드).",
+        "automatic_updates_unavailable_channel": "이 릴리스 채널에는 아직 사용 중인 플랫폼용 빌드가 없어 자동 업데이트를 사용할 수 없습니다. 위에서 채널을 변경하면 업데이트를 받을 수 있습니다.",
         "automatic_updates_unavailable_platform": "이 플랫폼의 이 빌드에서는 자동 업데이트를 사용할 수 없습니다.",
         "automatic_updates_unavailable_translocated": "macOS가 이 앱을 임시 읽기 전용 사본에서 실행하고 있어 자동 업데이트를 사용할 수 없습니다. Applications 폴더로 옮긴 뒤 다시 여세요.",
         "automatic_updates_unavailable_volume": "이 앱이 읽기 전용 디스크 이미지에서 실행되고 있어 자동 업데이트를 사용할 수 없습니다. Applications 폴더로 옮긴 뒤 다시 여세요.",

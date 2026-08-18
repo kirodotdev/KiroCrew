@@ -185,33 +185,31 @@ export function normalizeRegistryApp(raw: RegistryApp): RegistryApp {
 }
 
 /**
- * Coerce an untrusted value to a list of strings: non-arrays collapse to
- * ``[]`` and non-string members are dropped. Shared by the query-boundary
- * normalizers and by render sites on fetch paths that have no normalizer
- * (e.g. the app detail page's ``/api/apps/{name}`` payload), so a truthy
- * non-array can never reach ``.map``.
- */
-export function stringList(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
-}
-
-/**
- * Normalize an installed-app record for rendering.
+ * Normalize an installed-app record for rendering — the ``InstalledApp``
+ * counterpart of ``normalizeRegistryApp``.
  *
- * ``GET /api/apps`` mirrors app-manager records whose manifests come from
- * user-authored ``app.json`` files, so the optional manifest collections
- * (``agents``, ``skills``, ``crons``, ``ui.pages``, …) can be missing or the
- * wrong type — an entry-only UI has no ``pages`` array at all. Render sites
- * that defend per call site with non-null assertions drift from their guards
- * and crash the whole route, so coerce once at the query boundary instead:
- * after this pass every enumerated collection is a well-typed array and the
- * display strings are strings, and downstream code needs no ``!`` escapes.
+ * ``GET /api/apps`` mirrors on-disk app records, so a manifest field exists only
+ * if the installed ``app.json`` published it: a hand-written or older app can
+ * arrive with no ``manifest`` object at all, and every list-valued field is
+ * independently optional. Defended per render site, that shape produces the
+ * failure mode of #3689 — a ``!`` assertion whose guard lives in another
+ * expression and drifts out of step with it. Coerce once where the payload
+ * enters the client instead, so the manifest object and its lists are always
+ * there to read.
+ *
+ * Generic in the record type because normalization only fills gaps: fields a
+ * caller carries beyond ``InstalledApp`` (``managed``, ``_newVersion``) survive,
+ * and the call site keeps the type it already had.
  */
-export function normalizeInstalledApp(raw: InstalledApp): InstalledApp {
+export function normalizeInstalledApp<T extends InstalledApp>(raw: T): T {
+  // A non-object payload is passed through untouched: filling a manifest into it
+  // would invent a record the server never sent, and every caller already has to
+  // handle the request having failed.
+  if (!raw || typeof raw !== 'object') return raw
   const str = (v: unknown, fallback = '') => (typeof v === 'string' ? v : fallback)
-  // A drifted record can lack the manifest entirely even though the type
-  // declares it required; rebuild it rather than dereference it.
-  const manifest = (raw?.manifest ?? {}) as InstalledApp['manifest']
+  const strings = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []
+  const manifest = (raw.manifest ?? {}) as InstalledApp['manifest']
   const ui = (manifest.ui && typeof manifest.ui === 'object' ? manifest.ui : {}) as
     NonNullable<InstalledApp['manifest']['ui']>
   const name = str(raw?.name)
@@ -229,13 +227,20 @@ export function normalizeInstalledApp(raw: InstalledApp): InstalledApp {
       displayName: str(manifest.displayName, displayName),
       description: str(manifest.description),
       author: str(manifest.author),
-      agents: stringList(manifest.agents),
-      skills: stringList(manifest.skills),
-      sops: stringList(manifest.sops),
-      tags: stringList(manifest.tags),
-      jobFamilies: stringList(manifest.jobFamilies),
+      agents: strings(manifest.agents),
+      skills: strings(manifest.skills),
+      sops: strings(manifest.sops),
+      tags: strings(manifest.tags),
+      jobFamilies: strings(manifest.jobFamilies),
+      screenshots: strings(manifest.screenshots),
+      highlights: strings(manifest.highlights),
+      // A cron entry is only useful for its name, which is also the only field
+      // the dashboard reads, so an entry without one is dropped rather than
+      // rendered as a blank row.
       crons: Array.isArray(manifest.crons)
-        ? manifest.crons.filter(c => !!c && typeof c.name === 'string')
+        ? manifest.crons.filter(
+            (c): c is { name: string } => !!c && typeof (c as { name?: unknown }).name === 'string',
+          )
         : [],
       // Preserve ``ui.entry`` (and any extra keys) untouched: ``hasUI`` and
       // AppHost routing read entry truthiness, so injecting one would change
@@ -244,9 +249,14 @@ export function normalizeInstalledApp(raw: InstalledApp): InstalledApp {
       ui: {
         ...ui,
         pages: Array.isArray(ui.pages)
-          ? ui.pages.filter(p => !!p && typeof p.route === 'string')
+          ? ui.pages.filter((p): p is NonNullable<typeof p> => !!p && typeof (p as { route?: unknown }).route === 'string')
           : [],
       },
     },
-  }
+  } as T
+}
+
+/** ``normalizeInstalledApp`` over a ``GET /api/apps`` list payload. */
+export function normalizeInstalledApps<T extends InstalledApp>(raw: T[]): T[] {
+  return Array.isArray(raw) ? raw.map(normalizeInstalledApp) : raw
 }

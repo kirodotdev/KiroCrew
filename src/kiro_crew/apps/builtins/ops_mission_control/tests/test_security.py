@@ -339,15 +339,23 @@ class TestCrossPlatform(unittest.TestCase):
     def test_preexec_fn_comes_from_the_shim_not_a_raw_callable(self):
         """``preexec_fn`` is unsupported on Windows — passing ANY callable raises.
 
-        ``resource_limit_preexec()`` returns ``None`` off POSIX, so routing through it is
-        what makes these spawns portable. A hand-rolled ``preexec_fn=lambda: ...`` would
-        work locally and raise ValueError on every Windows spawn.
+        Both spawns route through the shim wrappers (``create_subprocess_limited``
+        for the async git spawn, ``run_limited`` for the sync gh spawn), which
+        deliver the resource caps after ``exec`` and pass no ``preexec_fn`` at all
+        off POSIX — that routing is what makes these spawns portable. Matched as a
+        CALL (trailing paren), not a bare name, so a docstring or comment that
+        merely mentions a wrapper cannot satisfy the pin. Any ``preexec_fn=`` that
+        does appear must come from the shim accessor: a hand-rolled
+        ``preexec_fn=lambda: ...`` would work locally and raise ValueError on
+        every Windows spawn.
         """
+        wrapper_calls = ("create_subprocess_limited(", "run_limited(", "popen_limited(")
         for name, src in self._sources().items():
-            if "preexec_fn" not in src:
-                continue
             with self.subTest(file=name):
-                self.assertIn("resource_limit_preexec", src)
+                self.assertTrue(
+                    any(w in src for w in wrapper_calls),
+                    f"{name}: spawns must route resource limits through a shim wrapper",
+                )
                 for line in src.splitlines():
                     if "preexec_fn=" in line:
                         self.assertIn(
@@ -474,25 +482,41 @@ class TestTheScheduleIsWriteProtectedButReadable(unittest.TestCase):
         verb-independent, because a narrow allowlist is bypassable by a quoted redirect, `cp`,
         or any novel write verb.
 
-        Spelled with POSIX separators (`as_posix`), which is what the gate matches and what a
-        bash command carries. A native `WindowsPath` renders all-backslash and matches nothing —
-        a whole-gate limitation on `security`'s home-anchored patterns, not specific to this
+        Spelled with POSIX separators, which is what the gate matches and what a bash command
+        carries. A native `WindowsPath` renders all-backslash and matches nothing — a
+        whole-gate limitation on `security`'s home-anchored patterns, not specific to this
         leaf, so pinning it here would assert a fix this file does not own.
+
+        Iterates the HOME FORMS rather than `self._path()`, the same way the incidents-index
+        equivalent below does, and the difference is load-bearing rather than stylistic. The
+        bash gate is a STRING matcher over `_CREW_HOME_PREFIXES` (`.kiro/crew`, `.kirocrew`),
+        so it recognises a command only by the home spelling the command carries. The tool
+        gate on the two tests above is not: `is_sensitive_write_path` resolves through
+        `config_dir()`, so it DOES follow a non-default `KIROCREW_HOME`.
+
+        That asymmetry means a custom-`KIROCREW_HOME` install (a pod, `dev-backend.sh`) has
+        this file protected against the agent's file tools but not against a bash redirect
+        naming the resolved path. It is a `security` gate limitation, not this app's, so it is
+        recorded here rather than half-fixed at this leaf. Handing `self._path()` to the bash
+        gate does not test it either way: under test isolation that path is a tmp dir, so the
+        assertion passed only while the suite was reading the operator's REAL home, and it
+        reported a guarantee it had not checked.
         """
-        path = Path(self._path()).as_posix()
-        for cmd in (
-            f"echo 'who: attacker' > {path}",
-            f"cp /tmp/evil.yaml {path}",
-            f"tee {path}",
-            f"""python -c "open('{path}','w').write('x')" """,
-            f"sed -i s/alice/attacker/ {path}",
-            f"mv /tmp/evil.yaml {path}",
-        ):
-            with self.subTest(cmd=cmd[:40]):
-                self.assertTrue(
-                    security.is_sensitive_bash_command(cmd),
-                    f"shell write not blocked: {cmd!r}",
-                )
+        for home in ("~", "$HOME", "/home/alice", "/Users/alice"):
+            path = f"{home}/.kiro/crew/apps/ops-mission-control/data/rotation.yaml"
+            for cmd in (
+                f"echo 'who: attacker' > {path}",
+                f"cp /tmp/evil.yaml {path}",
+                f"tee {path}",
+                f"""python -c "open('{path}','w').write('x')" """,
+                f"sed -i s/alice/attacker/ {path}",
+                f"mv /tmp/evil.yaml {path}",
+            ):
+                with self.subTest(cmd=cmd[:40]):
+                    self.assertTrue(
+                        security.is_sensitive_bash_command(cmd),
+                        f"shell write not blocked: {cmd!r}",
+                    )
 
     def test_the_registered_path_is_not_a_bare_filename(self):
         """A bare `rotation.yaml` entry matches NOTHING, which is the trap here.

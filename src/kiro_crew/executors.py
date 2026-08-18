@@ -38,6 +38,14 @@ Three pools, deliberately split:
   worker for the full scan.  This gets its OWN pool so those user-triggerable
   scans can never occupy the :func:`maintenance_executor` workers the orphan
   sweeps need to recover from a wedge.
+* :func:`image_executor` -- Pillow decode/resize/encode for the MCP gateway's
+  tool-result image budget (:mod:`kiro_crew.mcp_gateway.image_budget`).  Paced
+  by whatever a brokered MCP server returns, and a single oversized raster
+  costs a full decode plus up to seven resize+encode passes -- seconds of CPU.
+  Same rationale as :func:`discovery_executor`: externally-paced, seconds-long
+  work gets its OWN small pool so a burst of screenshots queues among ITSELF
+  and can never occupy the :func:`maintenance_executor` workers the orphan
+  sweeps need to recover from a wedge.
 
 Long-term direction: this blocking work should move into a dedicated
 supervised process (the VS Code extension-host model), so a wedge there cannot
@@ -62,6 +70,7 @@ __all__ = [
     "cron_executor",
     "discovery_executor",
     "embed_executor",
+    "image_executor",
     "governance_executor",
     "run_in_embed_pool",
     "shutdown_maintenance_executor",
@@ -121,12 +130,21 @@ _MAX_EMBED_WORKERS = 8
 # queues among ITSELF, never evicting the maintenance sweeps.
 _MAX_GOVERNANCE_WORKERS = 4
 
+# Pillow work for the gateway's tool-result image budget is CPU-bound (a
+# decode plus up to seven LANCZOS resize+encode passes per oversized raster,
+# seconds each) and paced by whatever a brokered MCP server returns.  Two
+# workers bound the CPU it can burn while letting one slow raster overlap one
+# fast one; excess images queue among THEMSELVES here, never evicting the
+# maintenance sweeps or head-of-line blocking any other pool's work.
+_MAX_IMAGE_WORKERS = 2
+
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
+_image_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 
 
@@ -209,6 +227,26 @@ def discovery_executor() -> ThreadPoolExecutor:
     return _discovery_pool
 
 
+def image_executor() -> ThreadPoolExecutor:
+    """Return the process-wide Pillow image-budget pool, creating it on first use.
+
+    Threads are named ``mc-image``.  Separate from :func:`maintenance_executor`
+    so seconds-long, externally-paced Pillow decode/resize work on brokered MCP
+    tool-result images can never occupy the workers the orphan-reaping sweeps
+    need to recover from a wedge.
+    """
+    global _image_pool
+    if _image_pool is None:
+        with _lock:
+            if _image_pool is None:
+                _image_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_IMAGE_WORKERS,
+                    thread_name_prefix="mc-image",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _image_pool
+
+
 def embed_executor() -> ThreadPoolExecutor:
     """Return the process-wide Ollama embed/probe pool, creating it on first use.
 
@@ -266,7 +304,7 @@ async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: An
 def shutdown_maintenance_executor() -> None:
     """Shut down all maintenance pools if they were created.  Idempotent."""
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
-    global _governance_pool
+    global _governance_pool, _image_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
@@ -274,6 +312,7 @@ def shutdown_maintenance_executor() -> None:
         discovery_pool, _discovery_pool = _discovery_pool, None
         embed_pool, _embed_pool = _embed_pool, None
         governance_pool, _governance_pool = _governance_pool, None
+        image_pool, _image_pool = _image_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -286,3 +325,5 @@ def shutdown_maintenance_executor() -> None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
     if governance_pool is not None:
         governance_pool.shutdown(wait=False, cancel_futures=True)
+    if image_pool is not None:
+        image_pool.shutdown(wait=False, cancel_futures=True)

@@ -135,7 +135,7 @@ export default function WorkflowsPage() {
   return (
     <div>
       <PageHeader title={i18nT('apps.workflows.workflowsPage.workflows')} subtitle={i18nT('apps.workflows.workflowsPage.author_run_and_watch_dynamic_workflows')} />
-      <div className="px-6 pb-4">
+      <div className="px-4 md:px-6 pb-4">
         <SegmentedControl<WorkflowsView>
           segments={[
             { key: 'author', label: 'Author', icon: <FileCode size={14} /> },
@@ -150,7 +150,7 @@ export default function WorkflowsPage() {
       {view === 'runs' && <WorkflowsRuns />}
 
       {view === 'author' && (
-      <div className="px-6 pb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="px-4 md:px-6 pb-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ----- Author ----- */}
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2 text-[13px] text-muted">

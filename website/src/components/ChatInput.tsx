@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, mem
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
 import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
 import type { AudioSample } from '../hooks/mic'
@@ -459,17 +460,31 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
   )
 }
 
-function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void }) {
+/** Stable default so an omitted `dirs` prop does not re-run the remeasure
+ *  effect on every render (a fresh [] literal changes deps each time). */
+const NO_DIRS: string[] = []
+
+function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemoveDir }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void }) {
+  const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
+  // Chips are added and removed while the strip stays mounted (a paste, a
+  // remove), and the scroller keeps its own box through those changes, so the
+  // ResizeObserver never fires and no scroll event lands. Without this the cue
+  // goes stale: dark over a row that now fits, or absent over one that clips.
+  useEffect(() => { remeasure() }, [files, dirs, remeasure])
   const imgs = files.filter(p => IMG_EXT.test(p))
   const nonImgs = files.filter(p => !IMG_EXT.test(p))
   if (!imgs.length && !nonImgs.length && !dirs.length) return null
   return (
-    // NOTE: rendered height must match FILE_PREVIEW_H / FILE_PREVIEW_H_RESIZED,
-    // update them together.
-    // items-start, not items-end: a chip carrying a resize pill is taller than a
-    // plain one, and bottom-alignment would spend that difference staggering the
-    // THUMBNAILS (the thing being compared) instead of letting the pills hang.
-    <div className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
+    // The wrapper exists for the edge cues: absolutely-positioned children of
+    // the scroller itself would travel with the scrolled content, so the fades
+    // anchor to a non-scrolling parent, same shape as the sibling strips.
+    <div className="relative">
+      {/* NOTE: rendered height must match FILE_PREVIEW_H / FILE_PREVIEW_H_RESIZED,
+          update them together.
+          items-start, not items-end: a chip carrying a resize pill is taller than a
+          plain one, and bottom-alignment would spend that difference staggering the
+          THUMBNAILS (the thing being compared) instead of letting the pills hang. */}
+      <div ref={attachScroller} data-testid="preview-strip" className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
       {imgs.map((path, i) => {
         const src = `/api/file-raw?path=${encodeURIComponent(path)}`
         const resize = resizedInfo?.[path]
@@ -499,7 +514,12 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
                   panorama makes a wide chip and scrolls its siblings out of view
                   in this overflow-x-auto strip, but nobody has reported that. */}
               <img src={src} alt={path} className="h-16 min-w-12 rounded border border-border object-contain bg-bg-hover hover:opacity-80 transition-opacity"
-                data-lightbox-image="" />
+                data-lightbox-image=""
+                // A thumbnail widens when its bytes arrive (h-16 + intrinsic
+                // ratio), which grows scrollWidth without resizing the
+                // scroller's own box — no ResizeObserver fires and no scroll
+                // lands, so only this load signal can refresh the cue.
+                onLoad={remeasure} />
             </button>
             {onRemove && (
               <button
@@ -546,6 +566,19 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
         </div>
         ))
       })()}
+      </div>
+      {/* Edge cues, same treatment as the sibling strips (SidePanelLayout's
+          tab strip, FollowUpBar's scroll row): a gradient says content
+          continues past the clipped edge, because the overlay scrollbar on
+          macOS/iOS leaves no visible sign while idle. from-bg-elevated matches
+          the composer surface the strip sits on. z-10 keeps the fade above the
+          chips' own z-10 badges; pointer-events-none keeps those interactive. */}
+      {edges.left && (
+        <div aria-hidden="true" data-testid="preview-strip-cue-left" className="pointer-events-none absolute left-0 top-px bottom-0 w-6 z-10 bg-gradient-to-r from-bg-elevated to-transparent" />
+      )}
+      {edges.right && (
+        <div aria-hidden="true" data-testid="preview-strip-cue-right" className="pointer-events-none absolute right-0 top-px bottom-0 w-6 z-10 bg-gradient-to-l from-bg-elevated to-transparent" />
+      )}
     </div>
   )
 }
@@ -879,6 +912,10 @@ function ChatInput({
   // Hover detection layer that shows paste previews on mouseover; scroll-synced
   // identically to the backdrop mirror.
   const hoverRef = useRef<PasteHoverHandle>(null)
+  // Id of the open paste-preview tooltip (or null). Wired to the textarea's
+  // aria-describedby so keyboard/screen-reader users get the preview announced
+  // when the caret enters a token — the AT half of the paste-preview a11y fix.
+  const [pastePreviewPanelId, setPastePreviewPanelId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // "+" drop-up menu (upload file / image + browse toggle).
   const [plusOpen, setPlusOpen] = useState(false)
@@ -1029,6 +1066,15 @@ function ChatInput({
   }, [disabled, onFollowUpSend])
   const { botName } = useBranding()
   const isMobile = useIsMobile()
+  const [attachControlRow, controlRowEdges, remeasureControlRow] = useScrollEdges<HTMLDivElement>()
+  // The control row's chips are prop-driven (the auto-nudge loop chip, the
+  // approval-mode picker) and appear or change label while the row keeps its
+  // own box, so neither the ResizeObserver nor a scroll event reports the new
+  // content width — only this remeasure can refresh the cue. Boolean presence,
+  // not the callback itself: the handler's identity may change every render
+  // and would re-run the effect for nothing.
+  const hasAutoNudge = !!onAutoNudgeClick
+  useEffect(() => { remeasureControlRow() }, [hasAutoNudge, autoNudgeLoop, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
   // An icon swap alone announces nothing, so the empty-state placeholder carries
@@ -1998,6 +2044,9 @@ function ChatInput({
     if (!ta) return
     const ss = ta.selectionStart ?? 0
     const se = ta.selectionEnd ?? 0
+    // Keyboard/AT peek: a collapsed caret landing inside a token opens the
+    // preview (the handle no-ops for a non-collapsed selection).
+    hoverRef.current?.handleCaret(ss, se)
     // Collapsed caret inside a token is handled by the click expander — skip.
     if (ss === se) return
     const ranges = findTokenRanges(ta.value, pasteBlocks)
@@ -2113,7 +2162,7 @@ function ChatInput({
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
-    <div className={`input-area px-5 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
+    <div className={`input-area px-4 pb-1 ${hasApproval ? 'pt-0' : 'pt-1'} mx-auto w-full flex flex-col`}
       style={{ maxWidth: 'var(--mc-input-width, 900px)', ...(manualHeight !== null ? { minHeight: (INPUT_DRAG_MIN_H + stripH) + 'px' } : {}) }}>
 
       {/* Knowledge context chip */}
@@ -2438,6 +2487,8 @@ function ChatInput({
         <textarea
           ref={inputRef}
           aria-label={i18nT('components.chatInput.message_input')}
+          data-composer-input=""
+          aria-describedby={pastePreviewPanelId ?? undefined}
           data-composer-typo
           className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
@@ -2473,6 +2524,7 @@ function ChatInput({
           onCut={handleCut}
           onClick={handleTextareaClick}
           onFocus={prefetchSkills}
+          onBlur={() => { if (hoverRef.current) hoverRef.current.handleMouseLeave() }}
           onMouseUp={handleSelectSnap}
           onSelect={handleSelectSnap}
           onInput={handleInput}
@@ -2480,7 +2532,7 @@ function ChatInput({
           onMouseMove={e => { if (pasteBlocks.length && hoverRef.current) hoverRef.current.handleMouseMove(e) }}
           onMouseLeave={() => { if (hoverRef.current) hoverRef.current.handleMouseLeave() }}
         />
-        {pasteBlocks.length > 0 && <PasteHoverLayer ref={hoverRef} value={value} blocks={pasteBlocks} mirrorRef={mirrorRef} />}
+        {pasteBlocks.length > 0 && <PasteHoverLayer ref={hoverRef} value={value} blocks={pasteBlocks} mirrorRef={mirrorRef} onActivePanelChange={setPastePreviewPanelId} />}
         </div>
 
         {/* Bottom icon row */}
@@ -2573,7 +2625,13 @@ function ChatInput({
                 )}
               </div>
             )}
-            <div className="flex items-center gap-0.5 min-w-0 overflow-x-auto flex-1">
+            {/* The wrapper exists for the edge cues: absolutely-positioned
+                children of the scroller itself would travel with the scrolled
+                content, so the fades anchor to this non-scrolling parent. It
+                also owns the flex sizing so the scroller keeps filling the
+                row. */}
+            <div className="relative min-w-0 flex-1">
+              <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto">
 
               {onAutoNudgeClick && (
                 <AutoNudgePopover
@@ -2590,6 +2648,23 @@ function ChatInput({
               )}
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+              )}
+              </div>
+              {/* Edge cues, same treatment as the sibling strips that already
+                  ship it (FollowUpBar's scroll row, SidePanelLayout's tab
+                  strip): at narrow widths the loop chip and approval picker
+                  clip silently, and the overlay scrollbar on macOS/iOS leaves
+                  no idle trace. from-bg-elevated matches the composer surface.
+                  Deliberately NO z-index: positioned elements already paint
+                  above the row's in-flow buttons, and an explicit z-10 would
+                  win the tree-order tiebreak against the optimizing dim
+                  overlay (also z-10, earlier in the tree), punching an
+                  undimmed wedge through it. */}
+              {controlRowEdges.left && (
+                <div aria-hidden="true" data-testid="control-row-cue-left" className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 bg-gradient-to-r from-bg-elevated to-transparent" />
+              )}
+              {controlRowEdges.right && (
+                <div aria-hidden="true" data-testid="control-row-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-bg-elevated to-transparent" />
               )}
             </div>
             {isMobile && approvalMode && (

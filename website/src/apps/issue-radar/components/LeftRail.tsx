@@ -285,7 +285,7 @@ function CollapsedRail({
   const full = `${owner}/${repo}`
   if (horizontal) {
     return (
-      <aside className="w-full flex-shrink-0 px-2 pt-2">
+      <aside className="w-full flex-shrink-0 px-4 pt-2">
         <div className="flex items-center overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">
           <button
             type="button"

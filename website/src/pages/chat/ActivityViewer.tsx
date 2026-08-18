@@ -16,6 +16,8 @@ import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import PullRequestPanel from '../../components/PullRequestPanel'
 import IssuePanel from '../../components/IssuePanel'
+import { PinnedMessagesPanel } from './PinnedMessagesPanel'
+import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
@@ -1175,7 +1177,7 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFolderOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, openDocPaths, previewPath, onPreviewPathChange, projectDir }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFolderOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, openDocPaths, previewPath, onPreviewPathChange, projectDir }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
   files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFolderOpen?: (p: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
@@ -1187,6 +1189,16 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
    *  it in the Files tab instead of spawning a document tab). */
   onFileSave?: (filePath: string, content: string) => Promise<void>
   onSubmitComments?: (message: string) => void
+  /** Pinned messages for this session (Pins tab). Passed down rather than
+   *  queried here so the jump stays with ChatPage, which owns the transcript
+   *  and can page older history in when the target is out of the loaded window.
+   *  `slotTitle` / `chatMode` only shape the copyable deep link. */
+  pins?: ChatPin[]
+  pinsLoading?: boolean
+  onJumpToPin?: (messageTs: string, mid?: string) => void
+  onUnpin?: (id: string) => void
+  slotTitle?: string
+  chatMode?: string
   /** Absolute paths already open as `file:` document tabs. Enforces one editor
    *  per path: opening such a path from the Files list routes to its existing
    *  document tab instead of spawning a second (inline) editor for it. */
@@ -1198,7 +1210,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary' | 'pins'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
@@ -1364,7 +1376,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="px-3 py-2 shrink-0 flex justify-center">
           <SegmentedControl
             segments={TABS}
-            value={effectiveTab === 'context' || effectiveTab === 'git' || effectiveTab === 'summary' ? tab : effectiveTab}
+            value={effectiveTab === 'context' || effectiveTab === 'git' || effectiveTab === 'summary' || effectiveTab === 'pins' ? tab : effectiveTab}
             onChange={t => { setTab(t); explicitTab.current = true; dispatch(openActivityToTab(t)) }}
             layoutId="activity-tab"
           />
@@ -1556,6 +1568,24 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}
       {effectiveTab === 'summary' && <SessionSummaryTab key={slot} slot={slot} />}
+
+      {/* Pinned messages — the user's own bookmarks in this transcript. Grouped
+          with Summary rather than given its own dock: both are ways back into
+          the conversation, and a second right-hand column competing with this
+          one is what made the standalone panel hard to place. */}
+      {effectiveTab === 'pins' && (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <PinnedMessagesPanel
+            pins={pins ?? []}
+            loading={!!pinsLoading}
+            slotKey={slot}
+            slotTitle={slotTitle}
+            mode={chatMode}
+            onJumpToMessage={onJumpToPin ?? (() => {})}
+            onUnpin={onUnpin ?? (() => {})}
+          />
+        </div>
+      )}
 
       {effectiveTab === 'side' && <SideChat slot={slot} />}
 

@@ -16,8 +16,8 @@ quietly reintroducing the fork.
 
 A synchronous spawn wedges the calling worker thread rather than the event loop,
 so it is the milder half of the hazard -- but it is the same ``fork()`` of the same
-process, and it is now checked. The synchronous check carries a shrink-only
-``_SYNC_UNMIGRATED`` ratchet for the call sites that have not moved yet, keyed on
+process, and it is checked the same way. The synchronous check carries a shrink-only
+``_SYNC_UNMIGRATED`` ratchet (empty: every synchronous spawn is migrated), keyed on
 each spawn's ``argv`` expression rather than a bare count so that migrating one
 spawn and adding a different one in the same function cannot cancel out. A NEW
 synchronous site anywhere under ``src/kiro_crew`` fails immediately, and removing
@@ -129,10 +129,10 @@ _SYNC_ALLOWED = frozenset(
 )
 
 # Shrink-only ratchet: ``<relpath>::<func>`` -> the ``argv`` expression of each
-# synchronous spawn in that function still on the ``preexec_fn`` path. These are
-# pre-existing and live outside the core gateway -- builtin app backends and two
-# standalone deploy scripts -- so they wedge an app's own worker rather than the
-# gateway's. Every entry here may go away; none may be added.
+# synchronous spawn in that function still on the ``preexec_fn`` path. Empty: every
+# synchronous spawn goes through ``run_limited`` / ``popen_limited``. The ratchet
+# stays so a NEW synchronous ``preexec_fn`` spawn anywhere under ``src/kiro_crew``
+# fails immediately; nothing may be added here.
 #
 # Keyed on the argv EXPRESSION rather than a bare count so that migrating one
 # spawn and adding a different one in the same function cannot cancel out: a count
@@ -140,20 +140,7 @@ _SYNC_ALLOWED = frozenset(
 # already-listed function pass unnoticed. Line numbers would also distinguish it,
 # but they drift on any edit above the call and would fail on unrelated changes;
 # the argv expression only changes when the call site itself does.
-_SYNC_UNMIGRATED: dict[str, tuple[str, ...]] = {
-    "apps/builtins/auto_improvement/profiles/github_repo/profile.py::_run": ("sandboxed",),
-    "apps/builtins/auto_improvement/spine/agent_runner.py::_spawn_sandboxed_agent": (
-        "sandboxed",
-    ),
-    "apps/builtins/file_explorer/server.py::_git_status": ("cmd_branch", "cmd_status"),
-    "apps/builtins/file_explorer/server.py::_search_rg": ("wrapped_cmd",),
-    "apps/builtins/ops_mission_control/backend/providers/schedule_file.py::"
-    "_resolve_login_sync": ("argv",),
-    "apps/builtins/pptx_maker/backend/engine.py::_spawn": ("wrapped",),
-    "apps/builtins/pptx_maker/backend/provision.py::_run": ("wrapped",),
-    "deploy/skills/artifact-deploy/scripts/attach_backend.py::aws": ("wrapped_argv",),
-    "deploy/skills/artifact-deploy/scripts/detach_backend.py::aws": ("wrapped_argv",),
-}
+_SYNC_UNMIGRATED: dict[str, tuple[str, ...]] = {}
 
 
 def _subprocess_names(tree: ast.AST) -> tuple[set[str], set[str]]:

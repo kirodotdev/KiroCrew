@@ -45,6 +45,7 @@
     "k_search_for_anything": "⌘K — 搜索任何内容…",
     "kiro_credit_usage_checking": "Kiro 额度用量 — 检查中…",
     "kiro_credit_usage_checking_2": "Kiro 额度用量 — 检查中",
+    "kiro_credit_usage_unavailable": "Kiro 额度用量 — 不可用",
     "kiro_discord_community": "Kiro Discord 社区",
     "main_navigation": "主导航",
     "manage_account": "管理账户",
@@ -621,32 +622,24 @@
           "step_why_it_matters": "为什么重要"
         },
         "reviewChat": {
-          "closed_notice": "对话已结束，审查者不在内存里了，无法再回答新问题。上面的记录会保留。",
-          "empty_hint": "这位审查者还记得每条问题背后的判断依据。可以问它为什么提出某条，或者它检查了什么。",
-          "end_chat": "结束对话",
-          "error_busy": "它还在回答上一个问题。",
-          "error_empty": "请先输入问题。",
-          "error_expired": "审查者不在内存里了，无法回答。重新审查这个 PR 后可以继续问。",
-          "error_generic": "这个问题没能得到回答，请重试。",
-          "error_needs_override": "开启 YOLO 才能继续这段对话 —— 回答可能需要调用工具。",
-          "error_override_expiring": "工具授权会在回答完成前到期。请延长授权后再提问。",
-          "error_override_lapsed": "审阅者回答期间工具授权结束，回答已中止。请重新授权后再提问。",
-          "error_persist_failed": "这条回答没能保存，所以不算进这段对话。请重新问一次。",
-          "error_tool_denied": "审阅者尝试使用被你的安全策略阻止的工具，回答已中止。没有任何工具被执行。",
-          "error_transcript_unsafe": "这段对话无法安全保存，因此没有写入。请检查该次审阅的目录。",
+          "error_generic": "无法打开追问会话。请重试。",
           "error_run_deleted": "这次审查已被删除，对话随之结束。",
-          "error_too_long": "这个问题太长了，请缩短后重新发送。",
-          "needs_override_notice": "审查者还在内存里，但现在无法回答 —— 它可能需要读代码才能作答，而当前没法授权。开启 YOLO 即可继续这段对话。",
-          "placeholder": "问它为什么提出这条问题…",
           "ran_tools": "查看了：{{tools}}",
           "reasoning": "推理过程",
           "refused_notice": "它需要调用工具才能完整回答，但没有获得授权，所以这个回答有局限。开启 YOLO 即可放行。",
           "role_reviewer": "审查者",
           "role_you": "你",
-          "send": "发送",
-          "sending": "正在询问…",
           "title": "追问审查者",
-          "unsent_label": "未发送"
+          "earlier_questions": "早前的提问",
+          "resume_hint": "打开一个会话并恢复审查者，因此它仍保留得出这些发现的推理过程。",
+          "open_session": "打开追问会话",
+          "opening": "正在打开…",
+          "not_recorded_notice": "这次审查没有保留审查者会话，因此没有可恢复的内容。重新审查这个拉取请求即可提问。",
+          "transcript_gone_notice": "审查者的会话已不在磁盘上，因此没有可恢复的内容。重新审查这个拉取请求即可提问。",
+          "continue_hint": "与这个审查者的对话在“对话”标签页中继续。",
+          "continue_session": "继续追问会话",
+          "run_live_notice": "这次审查还在运行。完成前发现可能仍会变化，因此现在还没有可提问的内容。",
+          "loading": "加载中…"
         },
         "runCard": {
           "cancel": "取消",
@@ -2393,6 +2386,9 @@
         "viewSection": "视图",
         "view_folders": "文件夹",
         "view_list": "平铺列表"
+      },
+      "preview": {
+        "mermaidError": "无效的 Mermaid 图表——显示其源代码。"
       },
       "row": {
         "delete": "删除笔记",
@@ -4270,6 +4266,20 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "运行中",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "无法加载这个 Crew 的定时任务，因此不知道什么会唤醒它。",
+      "no_schedules_run_this_crew_automatically": "没有定时任务会自动运行这个 Crew。",
+      "open_schedule": "打开定时任务",
+      "pause_named": "暂停 {{name}}",
+      "paused": "已暂停",
+      "resume_named": "恢复 {{name}}",
+      "run_named_now": "立即运行 {{name}}",
+      "running": "执行中",
+      "schedule": "定时",
+      "schedules_that_run_this_crew_without_you_asking": "会在你不开口的情况下运行这个 Crew 的定时任务。与上面的 Triggers 不同，后者只决定编排器何时选中这个 Crew。",
+      "what_wakes_this_crew": "什么会唤醒这个 Crew"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "账户详情暂不可用",
       "checking_account": "正在检查账户…",
@@ -5041,6 +5051,7 @@
       "invalid_json": "无效的 JSON：",
       "items": "项",
       "lines": "行",
+      "media_preview_failed": "播放失败：浏览器无法解码此文件。",
       "more": "更多",
       "null": "null",
       "office_download_hint": "无法在线预览 Office 文档。请下载后使用 Word、Excel、PowerPoint 或兼容的查看器打开。",
@@ -6022,6 +6033,10 @@
       "move_to_folder": "移动到文件夹…",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
+      "reload_blocked_running": "轮次进行中",
+      "reload_blocked_subagents": "子代理工作中",
+      "reload_session": "重新加载会话",
+      "reload_session_tooltip": "重启代理进程以加载新的 MCP/配置更改。对话会保留。",
       "rename": "重命名",
       "reveal_in_sidebar": "在侧边栏中显示",
       "switch_to_autopilot": "切换到自动驾驶",
@@ -6575,6 +6590,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "取消任务失败",
+      "failed_to_pause_job": "暂停任务失败",
+      "failed_to_resume_job": "恢复任务失败",
       "failed_to_open_in_chat": "在聊天中打开失败",
       "failed_to_run_job": "运行任务失败"
     },
@@ -6621,7 +6638,8 @@
       "subagents": "子代理",
       "summary": "摘要",
       "workflows": "工作流",
-      "git": "Git"
+      "git": "Git",
+      "pins": "置顶"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "所有槽位都已占用",
@@ -6658,6 +6676,8 @@
     },
     "useSessionActions": {
       "close_this_session": "关闭此会话？",
+      "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
+      "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
       "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
     },
@@ -7703,7 +7723,9 @@
         "this_app_render_is_no_longer_available": "此应用渲染已不可用。请重新运行工具以查看。",
         "turn_diff": "本轮差异",
         "menu_git": "Git",
-        "menu_git_desc": "分支、更改和最近的提交"
+        "menu_git_desc": "分支、更改和最近的提交",
+        "menu_pins": "置顶",
+        "menu_pins_desc": "你在这个会话里标记的消息"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止失败，会话已重置",
@@ -7823,9 +7845,8 @@
       },
       "pins": {
         "pinned_messages": "已置顶消息",
-        "close_panel": "关闭置顶消息面板",
         "loading": "加载中…",
-        "no_pinned_messages": "暂无置顶消息。置顶重要消息以便快速查找。",
+        "no_pinned_messages": "还没有置顶消息。把鼠标移到聊天中的某条消息上，点击图钉图标即可保存到这里。",
         "message_unavailable": "此置顶消息在已加载的历史记录中不再可用。",
         "pin_failed": "无法置顶消息，请重试。",
         "unpin_failed": "无法取消置顶消息，请重试。",
@@ -7838,7 +7859,6 @@
         "copy_preview": "复制文本",
         "copy_link": "复制消息链接",
         "unpin": "取消置顶",
-        "open_pinned_messages": "打开置顶消息",
         "jump_to_message": "跳转到消息"
       },
       "sessionSummary": {
@@ -8110,6 +8130,7 @@
       "show_collapsed_folders": "显示折叠的文件夹：",
       "show_folder": "显示文件夹",
       "show_in_flat_view": "在平铺视图中显示 {{name}}",
+      "show_only_sessions_tagged": "仅显示带有 {{name}} 标签的会话",
       "show_the_folder_list": "展开文件夹列表",
       "skip": "跳过",
       "sort_and_filter_sessions": "排序和筛选会话",
@@ -8123,6 +8144,7 @@
       "sort_oldest": "最早",
       "started_in_channel": "此对话开始于 {{channel}}。",
       "started_in_direct_message": "此对话开始于私信。",
+      "stop_filtering_by_tag": "取消按 {{name}} 筛选",
       "streaming": "流式输出中",
       "switch_all_sessions": "切换所有会话",
       "switch_all_to_model": "全部切换到模型…",
@@ -8132,6 +8154,7 @@
       "switch_to_folder_view": "切换到文件夹视图",
       "switch_to_list_view": "切换到列表视图",
       "switching": "正在切换…",
+      "tags": "标签",
       "temporary_no_memory_reads_or_writes": "临时 — 不读取也不写入记忆",
       "thinking": "正在思考…",
       "today": "今天",
@@ -8918,6 +8941,36 @@
       "without_gateway_per_session_copies": "不使用网关（每会话独立副本）"
     },
     "mcpManagement": {
+      "assessment": {
+        "col_assessment": "评估",
+        "col_evidence": "证据",
+        "col_running_as": "运行方式",
+        "connections_link": "Connections",
+        "how_measured": "一个 server 在 Kiro Crew 探测它之前都显示为未测量；在 {{link}} 下刷新 MCP server 列表时，每次会测两个。",
+        "lede": "Kiro Crew 对每台服务器观察到的信息，以及这些信息与它此刻运行方式的吻合程度。此视图不会更改任何内容 — 开关都在 Servers 里。",
+        "legend": "要推荐共享后端，服务器得声明自己能区分不同调用方，而很少有服务器这么声明 — 所以大多数健康的服务器都停在“未发现异议”。这是保守的答案，而非缺失的答案，是否共享仍由你决定。",
+        "open_servers": "打开 Servers",
+        "reason_all_tools_read_only": "每个工具都声明自己只读",
+        "reason_caller_sensitive": "对两个不同调用方给出了不同的握手应答",
+        "reason_declares_caller_identity": "声明自己能区分不同调用方",
+        "reason_first_party": "一台 Kiro Crew 服务器，设计上绑定到单个会话",
+        "reason_no_objection_found": "未发现足以否决的因素，这比能证明共享安全的证据要弱",
+        "reason_no_tool_annotations": "没有工具声明自己是否只读",
+        "reason_no_tools_listed": "没有提供可供检查的工具",
+        "reason_not_probed": "从未测量过，因此无法对任何一方下结论",
+        "reason_not_stdio": "不是 stdio 服务器，因此没有可在前面加桩的管道",
+        "reason_observed_hazard": "共享时已观察到它对不同调用方表现不同",
+        "reason_per_client_capability": "声明了只属于单个客户端的能力",
+        "reason_preflight_not_run": "已声明，但尚未测量",
+        "reason_preflight_passed": "在两个不同调用方下测量，两次应答一致",
+        "reason_rotating_secret_env": "读取一个取值随会话而变的凭据",
+        "shared_without_support": "后端共享已经生效，但证据反对共享。受影响的 server：{{count}}",
+        "strength_declared": "为共享而建",
+        "strength_disqualified": "不适合共享",
+        "strength_no_objection": "未发现异议",
+        "strength_refuted": "共享时不安全",
+        "strength_unknown": "未测量"
+      },
       "cancel": "取消",
       "col_server": "服务器",
       "col_state": "状态",
@@ -8929,6 +8982,7 @@
       "confirm_stateful": "持有会话级状态的服务器应该只开桩，或者做好与其他会话共处一个后端的准备。",
       "confirm_title": "要在会话之间共享后端吗？",
       "confirm_turn_on": "开启共享",
+      "confirm_unsupported": "其中 {{count}} 个的证据反对共享。",
       "learn_more": "了解更多",
       "learn_more_docs": "查看文档了解更多",
       "lede": "Kiro Crew 可以在 MCP 服务器前面放一个自己的桩，而不是让每个会话各自去启动那台服务器。桩是服务器自绘界面（MCP Apps）的前提，也是共享后端唯一能路由到的东西 —— 所以它按服务器逐台开启。 {{link}}",
@@ -8950,7 +9004,10 @@
       "stub_failed": "改动没能生效。它可能已经保存但尚未生效 —— 下面的开关现在显示已存状态。",
       "stub_not_live": "已保存，但尚未生效 —— 网关没能启动。开关显示的是存下来的设置，并非当前运行状态。",
       "stubbed_of_total": "{{total}} 台中有 {{stubbed}} 台已插桩",
-      "unsupported_platform": "共享后端需要 Unix 域套接字，因此在当前平台不可用。"
+      "unsupported_platform": "共享后端需要 Unix 域套接字，因此在当前平台不可用。",
+      "view_assessment": "共享评估",
+      "view_servers": "服务器",
+      "views_aria": "MCP 管理视图"
     },
     "migrationPage": {
       "app_migration": "应用迁移",
@@ -9746,7 +9803,7 @@
       "click_again_to_confirm": "再次点击以确认",
       "collapse": "折叠",
       "command_shell": "命令 · shell",
-      "confirm": "确认",
+      "confirm_delete_job": "删除？",
       "continue_session": "继续会话",
       "create_your_first_job": "创建你的第一个任务",
       "cronFolders": {
@@ -9976,6 +10033,7 @@
         "auto_update_on_restart": "重启时自动更新",
         "automatic_updates_are_unavailable_in_this_build": "此构建版本不支持自动更新",
         "automatic_updates_unavailable_dev_build": "此构建版本不支持自动更新（开发版本）。",
+        "automatic_updates_unavailable_channel": "自动更新不可用，因为该发布通道尚未提供适用于你所在平台的构建。在上方切换通道即可恢复更新。",
         "automatic_updates_unavailable_platform": "此构建版本在此平台上不支持自动更新。",
         "automatic_updates_unavailable_translocated": "自动更新不可用：macOS 正在从临时只读副本运行此应用。请将其移动到“应用程序”文件夹后重新打开。",
         "automatic_updates_unavailable_volume": "自动更新不可用：此应用正在从只读磁盘映像运行。请将其移动到“应用程序”文件夹后重新打开。",

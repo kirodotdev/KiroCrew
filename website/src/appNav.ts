@@ -13,6 +13,14 @@ import { appPageLabel } from './components/appstore/appManifest'
  * its glyph for a 16px row while the palette does not.
  */
 
+/** A UI page an app publishes in `manifest.ui.pages`. */
+export interface AppNavPage {
+  route: string
+  icon?: string
+  iconUrl?: string
+  label?: string
+}
+
 /**
  * The subset of `GET /api/apps` this module reads. Pinned locally (rather than
  * imported from a consumer) so a field this derivation depends on cannot quietly
@@ -29,7 +37,7 @@ export interface AppNavRecord {
     iconUrlDark?: string
     ui?: {
       entry?: string
-      pages?: Array<{ route: string; icon?: string; iconUrl?: string; label?: string }>
+      pages?: AppNavPage[]
     }
   }
 }
@@ -65,13 +73,27 @@ export interface AppNavTarget {
 }
 
 /**
+ * The UI page a navigable app opens at, or `null` when it has none.
+ *
+ * The guard and the read are ONE expression on purpose. Asking
+ * `manifest?.ui?.pages?.length` in one place and then asserting
+ * `manifest!.ui!.pages![0]` in another is the shape that produced #3689: the
+ * assertion outlives the guard it was written against. Returning the page makes
+ * "navigable" and "here is the page" the same answer, so they cannot disagree.
+ */
+function firstUiPage(app: AppNavRecord): AppNavPage | null {
+  const pages = app.manifest?.ui?.pages
+  return pages && pages.length > 0 ? pages[0] : null
+}
+
+/**
  * Whether *app* contributes a dashboard destination at all.
  *
  * Disabled apps and apps with no UI page have nowhere to go, so no surface should
  * offer to open them.
  */
 export function isAppNavigable(app: AppNavRecord): boolean {
-  return !!app.enabled && (app.manifest?.ui?.pages?.length ?? 0) > 0
+  return !!app.enabled && !!firstUiPage(app)
 }
 
 /**
@@ -87,10 +109,8 @@ export function isAppNavigable(app: AppNavRecord): boolean {
  *     registered at the page's own route.
  */
 export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
-  // `!page` re-narrows what `isAppNavigable` already guarantees, so the
-  // destination read can never drift from the eligibility check.
-  const page = app.manifest?.ui?.pages?.[0]
-  if (!isAppNavigable(app) || !page) return null
+  const page = app.enabled ? firstUiPage(app) : null
+  if (!page) return null
   const isBuiltin = app.origin === 'builtin'
   const orphaned = !!app.orphaned
   const appHostRouted = !isBuiltin || !!app.manifest?.ui?.entry

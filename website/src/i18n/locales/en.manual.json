@@ -22,6 +22,7 @@
     "hide_full_changelog": "▾ Hide Full Changelog",
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
+    "kiro_credit_usage_unavailable": "Kiro credit usage — unavailable",
     "memory_unavailable": "Memory: unavailable",
     "metrics_are_stale_latest_fetch_failed": "Metrics are stale, latest fetch failed",
     "resource_critical": "Critical",
@@ -1126,6 +1127,14 @@
     }
   },
   "components": {
+    "crewWakeSection": {
+      "active": "active",
+      "pause_named": "Pause {{name}}",
+      "paused": "paused",
+      "resume_named": "Resume {{name}}",
+      "run_named_now": "Run {{name}} now",
+      "running": "running"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
       "checking_account": "Checking account…",
@@ -1457,6 +1466,7 @@
       "video": "Video: {{name}}"
     },
     "fileRenderers": {
+      "media_preview_failed": "Playback failed — the browser cannot decode this file.",
       "scroll_for_more_count": "Scroll for more… ({{count}} remaining)",
       "showing_raw_content_count": "Showing raw content ({{count}} chars)",
       "showing_raw_content_truncated_count": "Showing raw content ({{count}} chars, first {{shown}} shown)"
@@ -1932,6 +1942,10 @@
       "mark_as_read": "Mark as read",
       "mark_as_unread": "Mark as unread",
       "pin": "Pin",
+      "reload_blocked_running": "turn running",
+      "reload_blocked_subagents": "sub-agents working",
+      "reload_session": "Reload session",
+      "reload_session_tooltip": "Restarts the agent process to pick up MCP/config changes. The conversation is kept.",
       "switch_to_autopilot": "Switch to Autopilot",
       "switch_to_chat": "Switch to Chat",
       "unpin": "Unpin"
@@ -2250,6 +2264,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Failed to cancel job",
+      "failed_to_pause_job": "Failed to pause job",
+      "failed_to_resume_job": "Failed to resume job",
       "failed_to_open_in_chat": "Failed to open in chat",
       "failed_to_run_job": "Failed to run job"
     },
@@ -2306,6 +2322,8 @@
     },
     "useSessionActions": {
       "close_this_session": "Close this session?",
+      "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
+      "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
       "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
     },
@@ -2337,6 +2355,7 @@
       "files": "Files",
       "issues": "Issues",
       "logs": "Logs",
+      "pins": "Pins",
       "side": "Side",
       "subagents": "Subagents",
       "summary": "Summary",
@@ -2711,6 +2730,8 @@
         "menu_issues_desc": "Issues mentioned in this session",
         "menu_logs": "Logs",
         "menu_logs_desc": "Gateway log stream",
+        "menu_pins": "Pins",
+        "menu_pins_desc": "Messages you bookmarked in this session",
         "menu_side": "Side",
         "menu_side_desc": "Parallel chat, shared context",
         "menu_subagents": "Subagents",
@@ -3331,6 +3352,36 @@
       "wrap_on": "Wrap: on"
     },
     "mcpManagement": {
+      "assessment": {
+        "col_assessment": "Assessment",
+        "col_evidence": "Evidence",
+        "col_running_as": "Running as",
+        "connections_link": "Connections",
+        "how_measured": "A server reads as not measured until Kiro Crew probes it, which happens two at a time when the MCP server list under {{link}} is refreshed.",
+        "lede": "What Kiro Crew managed to observe about each server, and how that lines up with what the server is running as right now. Nothing on this view changes anything — the switches live under Servers.",
+        "legend": "Recommending a shared backend needs the server to say that it can tell its callers apart, and few servers say it — so most healthy servers rest at no objection found. That is the conservative answer, not a missing one, and sharing remains your call.",
+        "open_servers": "Open Servers",
+        "reason_all_tools_read_only": "Every tool declares itself read-only",
+        "reason_caller_sensitive": "Answered the handshake differently for two different callers",
+        "reason_declares_caller_identity": "Declares that it can tell its callers apart",
+        "reason_first_party": "A Kiro Crew server, bound to a single session by design",
+        "reason_no_objection_found": "Nothing disqualifying was found, which is weaker than evidence that sharing is safe",
+        "reason_no_tool_annotations": "No tool declared whether it only reads",
+        "reason_no_tools_listed": "Offered no tools to inspect",
+        "reason_not_probed": "Never measured, so nothing is claimed either way",
+        "reason_not_stdio": "Not a stdio server, so there is no pipe to put a stub in front of",
+        "reason_observed_hazard": "Already seen behaving differently per caller while shared",
+        "reason_per_client_capability": "Advertises a capability that belongs to one client",
+        "reason_preflight_not_run": "Declares it, but has not been measured yet",
+        "reason_preflight_passed": "Measured under two different callers and answered the same way",
+        "reason_rotating_secret_env": "Reads a credential whose value differs per session",
+        "shared_without_support": "Backend sharing is already in effect for servers whose evidence argues against it. Servers affected: {{count}}",
+        "strength_declared": "built for sharing",
+        "strength_disqualified": "unsuitable for sharing",
+        "strength_no_objection": "no objection found",
+        "strength_refuted": "unsafe when shared",
+        "strength_unknown": "not measured"
+      },
       "cancel": "Cancel",
       "col_server": "Server",
       "col_state": "State",
@@ -3342,6 +3393,7 @@
       "confirm_stateful": "A server that holds per-session state should stay stub-only, or expect co-tenants.",
       "confirm_title": "Share backends across sessions?",
       "confirm_turn_on": "Turn on sharing",
+      "confirm_unsupported": "Of those, {{count}} have evidence that argues against sharing.",
       "learn_more": "Learn more",
       "learn_more_docs": "Learn more in the docs",
       "lede": "Kiro Crew can put its own stub in front of an MCP server instead of letting every session launch that server itself. The stub is what makes server-authored UI (MCP Apps) possible, and it is the only thing a shared backend can be routed through — so it is opt-in, per server. {{link}}",
@@ -3363,7 +3415,10 @@
       "stub_failed": "Could not apply the change. It may already be saved without being live — the switches below now show the stored state.",
       "stub_not_live": "Saved, but the change is not live yet — the gateway could not start. The switch shows what is stored, not what is running.",
       "stubbed_of_total": "{{stubbed}} of {{total}} stubbed",
-      "unsupported_platform": "Backend sharing needs Unix-domain sockets, so it is unavailable on this platform."
+      "unsupported_platform": "Backend sharing needs Unix-domain sockets, so it is unavailable on this platform.",
+      "view_assessment": "Sharing assessment",
+      "view_servers": "Servers",
+      "views_aria": "MCP management views"
     },
     "migrationPage": {
       "clean_up_old_entry": "Clean up old entry",
@@ -3649,7 +3704,7 @@
       "changes_only_how_the_calendar_grid_is_displayed": "Changes only how the calendar grid is displayed — does not change when any job actually fires.",
       "click_again_to_confirm": "Click again to confirm",
       "collapse": "Collapse",
-      "confirm": "Confirm",
+      "confirm_delete_job": "Delete?",
       "continue_session": "Continue session",
       "d_ago": "{{n}}d ago",
       "delete_2": "Delete {{n}}",
@@ -3714,6 +3769,7 @@
     "settings": {
       "aboutPanel": {
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
+        "automatic_updates_unavailable_channel": "Automatic updates are unavailable because this release channel has no builds for your platform yet. Switch channels above to receive updates.",
         "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",
         "automatic_updates_unavailable_translocated": "Automatic updates are unavailable because macOS is running this app from a temporary read-only copy. Move it to your Applications folder and reopen it.",
         "automatic_updates_unavailable_volume": "Automatic updates are unavailable because this app is running from a read-only disk image. Move it to your Applications folder and reopen it.",

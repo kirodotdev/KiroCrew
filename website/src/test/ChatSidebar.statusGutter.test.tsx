@@ -286,6 +286,62 @@ describe('chat sidebar — status gutter', () => {
     expect(getByText('Needs approval')).toBeTruthy()
   })
 
+  // ── Glyph and subtitle are derived from ONE resolver (#3830) ──────────
+  //
+  // The two used to be independent ternary chains a few hundred lines apart,
+  // with comments asserting they "can never disagree" and nothing enforcing
+  // it. These drive every branch of the shared precedence and check that the
+  // gutter and the secondary line name the SAME state — the property the
+  // comments only claimed.
+
+  const subtitleOf = (container: HTMLElement): string => {
+    const col = gutterOf(container).nextElementSibling as HTMLElement
+    // children: [meta line, headline, secondary line]
+    return (col.children[2] as HTMLElement | undefined)?.textContent ?? ''
+  }
+
+  it.each([
+    // [name, slot overrides, expected subtitle fragment, gutter must be a spinner?]
+    ['pending approval', { pending_approval: true, running: true }, 'Needs approval', false],
+    ['needs input', { needs_input: true, running: true }, 'Needs your answer', false],
+    ['running', { running: true }, 'Thinking', true],
+  ] as const)(
+    'gutter and subtitle name the same state: %s',
+    (_name, over, fragment, spinner) => {
+      const { container } = renderSidebar([slot(over)])
+      const g = gutterOf(container)
+      expect(subtitleOf(container)).toContain(fragment)
+      // The gutter drew exactly one glyph, and it is the one this state owns.
+      expect(g.querySelectorAll('svg, .rounded-full')).toHaveLength(1)
+      expect(!!g.querySelector('.animate-spin')).toBe(spinner)
+      // The gutter's accessible name is the state's own label, not a
+      // lower-precedence one.
+      expect(g.getAttribute('aria-label')).toBeTruthy()
+    },
+  )
+
+  it('an owed approval outranks running in BOTH representations at once', () => {
+    // The desync this guards: a branch reordered in one chain but not the
+    // other would show a spinner beside "Needs approval", or vice versa.
+    const { container } = renderSidebar([slot({ running: true, pending_approval: true })], ['k1'])
+    expect(subtitleOf(container)).toContain('Needs approval')
+    expect(gutterOf(container).querySelector('.animate-spin')).toBeNull()
+  })
+
+  it('the gutter tail is unread while the subtitle tail is last_message', () => {
+    // The one place the two legitimately differ, so collapsing them onto a
+    // single chain would have been wrong: an idle row with a last message
+    // shows that message and NO gutter glyph; an idle unread row shows the
+    // dot. Both tails are consumer-owned and must stay reachable.
+    const { container: idle } = renderSidebar([slot({ last_message: 'done' })])
+    expect(subtitleOf(idle)).toContain('done')
+    expect(gutterOf(idle).querySelectorAll('svg, .rounded-full')).toHaveLength(0)
+
+    const { container: unread } = renderSidebar([slot({ last_message: 'done' })], ['k1'])
+    expect(gutterOf(unread).querySelector('.rounded-full')).toBeTruthy()
+    expect(subtitleOf(unread)).toContain('done')
+  })
+
   it('leaves no inline glyph beside the secondary line', () => {
     const { container } = renderSidebar([slot({ running: true })])
     const col = gutterOf(container).nextElementSibling as HTMLElement

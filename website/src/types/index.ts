@@ -191,6 +191,9 @@ export interface CronJob {
   cron_expr?: string | null; every?: number | null; every_secs?: number | null
   at?: number | null; created_ts?: number | null
   agent?: string; model?: string; channel?: string; approval_mode?: string; silent?: boolean
+  /** Crews a sequence job runs, in order. Takes PRECEDENCE over `agent` at run
+   *  time, so any consumer attributing a job to a crew must read this first. */
+  agent_sequence?: string[]
   strict_schedule?: boolean
   /** When true, this cron's runs do not appear as a chat session in the active
    * session list (results still go to Slack/notifications + History). Default false. */
@@ -753,6 +756,7 @@ export interface ToolActivity {
   input?: string        // tool input (commands, file content, etc.)
   output?: string       // tool output (stdout, results, etc.)
   ts: number
+  execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
   approval_id?: string  // pending approval ID
   approval_type?: string // 'chat' or 'spawn'

@@ -45,6 +45,7 @@
     "k_search_for_anything": "⌘K — Pesquisar qualquer coisa…",
     "kiro_credit_usage_checking": "Uso de créditos Kiro — verificando…",
     "kiro_credit_usage_checking_2": "Uso de créditos Kiro — verificando",
+    "kiro_credit_usage_unavailable": "Uso de créditos Kiro — indisponível",
     "kiro_discord_community": "Comunidade do Kiro no Discord",
     "main_navigation": "Navegação principal",
     "manage_account": "Gerenciar conta",
@@ -649,32 +650,24 @@
           "step_why_it_matters": "Por que isso importa"
         },
         "reviewChat": {
-          "closed_notice": "Esta conversa foi encerrada e o revisor não está mais carregado, então não pode responder nada novo. As perguntas acima são mantidas.",
-          "empty_hint": "Este revisor mantém o raciocínio por trás dos seus apontamentos. Pergunte por que um foi levantado ou o que ele verificou.",
-          "end_chat": "Encerrar conversa",
-          "error_busy": "Ele ainda está respondendo à pergunta anterior.",
-          "error_empty": "Escreva uma pergunta primeiro.",
-          "error_expired": "O revisor não está mais carregado e não pode responder. Revise este pull request novamente para perguntar mais.",
-          "error_generic": "Não foi possível responder à pergunta. Tente novamente.",
-          "error_needs_override": "Ative o YOLO para continuar esta conversa — responder pode exigir executar uma ferramenta.",
-          "error_override_expiring": "A autorização de ferramentas expira antes de uma resposta terminar. Amplie-a e pergunte novamente.",
-          "error_override_lapsed": "A autorização de ferramentas terminou enquanto o revisor respondia, então a resposta foi interrompida. Autorize novamente e pergunte de novo.",
-          "error_persist_failed": "A resposta não pôde ser salva, então não faz parte desta conversa. Pergunte de novo.",
-          "error_tool_denied": "O revisor tentou usar uma ferramenta bloqueada pela sua política de segurança, então a resposta foi interrompida. Nada foi executado.",
-          "error_transcript_unsafe": "Esta conversa não pode ser salva com segurança, por isso não foi gravada. Verifique a pasta da revisão.",
+          "error_generic": "Não foi possível abrir a sessão de acompanhamento. Tente novamente.",
           "error_run_deleted": "Esta revisão foi excluída, então a conversa terminou.",
-          "error_too_long": "Essa pergunta é longa demais. Encurte e envie de novo.",
-          "needs_override_notice": "O revisor ainda está carregado, mas não pode responder sem autorização de ferramentas — responder pode exigir ler código. Ative o YOLO para continuar.",
-          "placeholder": "Pergunte por que um apontamento foi levantado…",
           "ran_tools": "Consultou: {{tools}}",
           "reasoning": "Raciocínio",
           "refused_notice": "Ele precisava executar uma ferramenta para responder por completo e não teve permissão, então esta resposta é limitada. Ative o YOLO para permitir.",
           "role_reviewer": "Revisor",
           "role_you": "Você",
-          "send": "Enviar",
-          "sending": "Perguntando…",
           "title": "Perguntar ao revisor",
-          "unsent_label": "Não enviada"
+          "earlier_questions": "Perguntas anteriores",
+          "resume_hint": "Abre um chat que retoma o revisor, mantendo o raciocínio por trás das constatações.",
+          "open_session": "Abrir uma sessão de acompanhamento",
+          "opening": "Abrindo…",
+          "not_recorded_notice": "Esta revisão não guardou uma sessão do revisor, portanto não há nada para reabrir. Revise este pull request novamente para perguntar.",
+          "transcript_gone_notice": "A sessão do revisor não está mais no disco, portanto não há nada para reabrir. Revise este pull request novamente para perguntar.",
+          "continue_hint": "A conversa com este revisor continua na aba de chat.",
+          "continue_session": "Continuar a sessão de acompanhamento",
+          "run_live_notice": "Esta revisão ainda está em andamento. As constatações podem mudar até ela terminar, portanto ainda não há o que perguntar.",
+          "loading": "Carregando…"
         },
         "runCard": {
           "cancel": "Cancelar",
@@ -2477,6 +2470,9 @@
         "viewSection": "Visualização",
         "view_folders": "Pastas",
         "view_list": "Lista simples"
+      },
+      "preview": {
+        "mermaidError": "Diagrama Mermaid inválido — mostrando o código-fonte."
       },
       "row": {
         "delete": "Excluir nota",
@@ -4398,6 +4394,20 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "ativo",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Não foi possível carregar os agendamentos deste crew, então não se sabe o que o aciona.",
+      "no_schedules_run_this_crew_automatically": "Nenhum agendamento executa este crew automaticamente.",
+      "open_schedule": "Abrir Agendamentos",
+      "pause_named": "Pausar {{name}}",
+      "paused": "pausado",
+      "resume_named": "Retomar {{name}}",
+      "run_named_now": "Executar {{name}} agora",
+      "running": "em execução",
+      "schedule": "agendamento",
+      "schedules_that_run_this_crew_without_you_asking": "Agendamentos que executam este crew sem você pedir. Diferente de Triggers acima, que só decide quando o orquestrador seleciona este crew.",
+      "what_wakes_this_crew": "O que aciona este crew"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Os detalhes da conta não estão disponíveis",
       "checking_account": "Verificando a conta…",
@@ -5197,6 +5207,7 @@
       "invalid_json": "JSON inválido:",
       "items": "itens",
       "lines": "linhas",
+      "media_preview_failed": "Falha na reprodução: o navegador não consegue decodificar este arquivo.",
       "more": "mais",
       "null": "null",
       "office_download_hint": "Documentos do Office não podem ser visualizados diretamente. Baixe para abrir no Word, Excel, PowerPoint ou um visualizador compatível.",
@@ -6196,6 +6207,10 @@
       "move_to_folder": "Mover para pasta…",
       "pin": "Fixar",
       "pop_out_to_window": "Destacar em uma janela",
+      "reload_blocked_running": "turno em andamento",
+      "reload_blocked_subagents": "subagentes trabalhando",
+      "reload_session": "Recarregar sessão",
+      "reload_session_tooltip": "Reinicia o processo do agente para aplicar mudanças de MCP/configuração. A conversa é preservada.",
       "rename": "Renomear",
       "reveal_in_sidebar": "Mostrar na barra lateral",
       "switch_to_autopilot": "Alternar para Autopilot",
@@ -6751,6 +6766,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "Falha ao cancelar o job",
+      "failed_to_pause_job": "Falha ao pausar o trabalho",
+      "failed_to_resume_job": "Falha ao retomar o trabalho",
       "failed_to_open_in_chat": "Falha ao abrir no chat",
       "failed_to_run_job": "Falha ao executar o job"
     },
@@ -6797,7 +6814,8 @@
       "subagents": "Subagentes",
       "summary": "Resumo",
       "workflows": "Workflows",
-      "git": "Git"
+      "git": "Git",
+      "pins": "Fixados"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos os slots estão ocupados",
@@ -6834,6 +6852,8 @@
     },
     "useSessionActions": {
       "close_this_session": "Fechar esta sessão?",
+      "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
+      "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
       "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
     },
@@ -7907,7 +7927,9 @@
         "this_app_render_is_no_longer_available": "Esta renderização do app não está mais disponível. Execute a ferramenta novamente para vê-la.",
         "turn_diff": "Diff do turno",
         "menu_git": "Git",
-        "menu_git_desc": "Branch, alterações e commits recentes"
+        "menu_git_desc": "Branch, alterações e commits recentes",
+        "menu_pins": "Fixados",
+        "menu_pins_desc": "Mensagens que você fixou nesta sessão"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Falha ao parar, sessão redefinida",
@@ -8027,9 +8049,8 @@
       },
       "pins": {
         "pinned_messages": "Mensagens fixadas",
-        "close_panel": "Fechar painel de mensagens fixadas",
         "loading": "Carregando…",
-        "no_pinned_messages": "Nenhuma mensagem fixada ainda. Fixe mensagens importantes do chat para encontrá-las rapidamente.",
+        "no_pinned_messages": "Ainda não há mensagens fixadas. Passe o cursor sobre uma mensagem no chat e clique no ícone de alfinete para salvá-la aqui.",
         "message_unavailable": "Esta mensagem fixada não está mais disponível no histórico carregado.",
         "pin_failed": "Não foi possível fixar a mensagem. Tente novamente.",
         "unpin_failed": "Não foi possível desafixar a mensagem. Tente novamente.",
@@ -8042,7 +8063,6 @@
         "copy_preview": "Copiar texto",
         "copy_link": "Copiar link da mensagem",
         "unpin": "Desafixar",
-        "open_pinned_messages": "Abrir mensagens fixadas",
         "jump_to_message": "Ir para a mensagem"
       },
       "sessionSummary": {
@@ -8328,6 +8348,7 @@
       "show_collapsed_folders": "Mostrar pastas recolhidas:",
       "show_folder": "Mostrar pasta",
       "show_in_flat_view": "Mostrar {{name}} na visualização plana",
+      "show_only_sessions_tagged": "Mostrar apenas as sessões com a etiqueta {{name}}",
       "show_the_folder_list": "Mostrar a lista de pastas",
       "skip": "Ignorar",
       "sort_and_filter_sessions": "Ordenar e filtrar sessões",
@@ -8341,6 +8362,7 @@
       "sort_oldest": "Mais antigas",
       "started_in_channel": "Esta conversa começou em {{channel}}.",
       "started_in_direct_message": "Esta conversa começou em uma mensagem direta.",
+      "stop_filtering_by_tag": "Parar de filtrar por {{name}}",
       "streaming": "Transmitindo",
       "switch_all_sessions": "Trocar todas as sessões",
       "switch_all_to_model": "Trocar todas para o modelo…",
@@ -8350,6 +8372,7 @@
       "switch_to_folder_view": "Alternar para a visualização por pastas",
       "switch_to_list_view": "Alternar para a visualização em lista",
       "switching": "Alternando…",
+      "tags": "Etiquetas",
       "temporary_no_memory_reads_or_writes": "Temporário — sem leitura ou gravação de memória",
       "thinking": "Pensando…",
       "today": "Hoje",
@@ -9142,6 +9165,36 @@
       "without_gateway_per_session_copies": "Sem gateway (cópias por sessão)"
     },
     "mcpManagement": {
+      "assessment": {
+        "col_assessment": "Avaliação",
+        "col_evidence": "Evidência",
+        "col_running_as": "Executando como",
+        "connections_link": "Connections",
+        "how_measured": "Um servidor aparece como não medido até que o Kiro Crew o sonde, o que acontece dois por vez quando a lista de servidores MCP em {{link}} é atualizada.",
+        "lede": "O que o Kiro Crew conseguiu observar sobre cada servidor e como isso se alinha com o que o servidor está executando agora. Nada nesta tela altera coisa alguma — os controles ficam em Servidores.",
+        "legend": "Recomendar um backend compartilhado exige que o servidor declare que consegue distinguir quem o chama, e poucos servidores declaram isso — então a maioria dos servidores saudáveis fica em nenhuma objeção encontrada. Essa é a resposta conservadora, não uma resposta ausente, e a decisão de compartilhar continua sendo sua.",
+        "open_servers": "Abrir Servers",
+        "reason_all_tools_read_only": "Toda ferramenta se declara somente leitura",
+        "reason_caller_sensitive": "Respondeu ao handshake de forma diferente para dois chamadores diferentes",
+        "reason_declares_caller_identity": "Declara que consegue distinguir quem o chama",
+        "reason_first_party": "Um servidor do Kiro Crew, vinculado a uma única sessão por design",
+        "reason_no_objection_found": "Nada desqualificante foi encontrado, o que é mais fraco do que evidência de que compartilhar é seguro",
+        "reason_no_tool_annotations": "Nenhuma ferramenta declarou se apenas lê",
+        "reason_no_tools_listed": "Não ofereceu ferramentas para inspecionar",
+        "reason_not_probed": "Nunca foi medido, então nada é afirmado em nenhum sentido",
+        "reason_not_stdio": "Não é um servidor stdio, então não há pipe diante do qual colocar um stub",
+        "reason_observed_hazard": "Já observado comportando-se de forma diferente por chamador enquanto compartilhado",
+        "reason_per_client_capability": "Anuncia uma capacidade que pertence a um único cliente",
+        "reason_preflight_not_run": "Declara isso, mas ainda não foi medido",
+        "reason_preflight_passed": "Medido sob dois chamadores diferentes e respondeu da mesma forma",
+        "reason_rotating_secret_env": "Lê uma credencial cujo valor difere por sessão",
+        "shared_without_support": "O compartilhamento de backend já está em vigor para servidores cujas evidências o contraindicam. Servidores afetados: {{count}}",
+        "strength_declared": "feito para compartilhar",
+        "strength_disqualified": "inadequado para compartilhar",
+        "strength_no_objection": "nenhuma objeção encontrada",
+        "strength_refuted": "não é seguro compartilhar",
+        "strength_unknown": "não medido"
+      },
       "cancel": "Cancelar",
       "col_server": "Servidor",
       "col_state": "Estado",
@@ -9153,6 +9206,7 @@
       "confirm_stateful": "Um servidor que guarda estado por sessão deveria ficar apenas com o stub, ou contar com vizinhos.",
       "confirm_title": "Compartilhar backends entre sessões?",
       "confirm_turn_on": "Ativar compartilhamento",
+      "confirm_unsupported": "Destes, {{count}} têm evidências que contraindicam o compartilhamento.",
       "learn_more": "Saiba mais",
       "learn_more_docs": "Saiba mais na documentação",
       "lede": "O Kiro Crew pode colocar o seu próprio stub à frente de um servidor MCP em vez de deixar cada sessão iniciar esse servidor por conta própria. O stub é o que permite que o servidor desenhe a sua própria interface (MCP Apps) e a única coisa para a qual um backend compartilhado pode ser roteado, por isso é ativado servidor por servidor. {{link}}",
@@ -9174,7 +9228,10 @@
       "stub_failed": "Não foi possível aplicar a alteração. Ela pode já estar salva sem estar ativa — os botões abaixo mostram agora o estado salvo.",
       "stub_not_live": "Salvo, mas ainda não está ativo — o gateway não conseguiu iniciar. O botão mostra o que está salvo, não o que está em execução.",
       "stubbed_of_total": "{{stubbed}} de {{total}} com stub",
-      "unsupported_platform": "Compartilhar backends exige sockets de domínio Unix, então não está disponível nesta plataforma."
+      "unsupported_platform": "Compartilhar backends exige sockets de domínio Unix, então não está disponível nesta plataforma.",
+      "view_assessment": "Avaliação de compartilhamento",
+      "view_servers": "Servidores",
+      "views_aria": "Visualizações de gerenciamento do MCP"
     },
     "migrationPage": {
       "app_migration": "Migração de app",
@@ -9976,7 +10033,7 @@
       "click_again_to_confirm": "Clique novamente para confirmar",
       "collapse": "Recolher",
       "command_shell": "comando · shell",
-      "confirm": "Confirmar",
+      "confirm_delete_job": "Excluir?",
       "continue_session": "Continuar a sessão",
       "create_your_first_job": "Crie seu primeiro job",
       "cronFolders": {
@@ -10218,6 +10275,7 @@
         "auto_update_on_restart": "Atualizar automaticamente ao reiniciar",
         "automatic_updates_are_unavailable_in_this_build": "As atualizações automáticas não estão disponíveis nesta compilação",
         "automatic_updates_unavailable_dev_build": "As atualizações automáticas não estão disponíveis nesta compilação (compilação de desenvolvimento).",
+        "automatic_updates_unavailable_channel": "As atualizações automáticas não estão disponíveis porque este canal de lançamento ainda não tem builds para a sua plataforma. Troque de canal acima para receber atualizações.",
         "automatic_updates_unavailable_platform": "As atualizações automáticas não estão disponíveis nesta compilação nesta plataforma.",
         "automatic_updates_unavailable_translocated": "As atualizações automáticas não estão disponíveis porque o macOS está executando este app a partir de uma cópia temporária somente leitura. Mova-o para a pasta Aplicativos e abra-o novamente.",
         "automatic_updates_unavailable_volume": "As atualizações automáticas não estão disponíveis porque este app está sendo executado a partir de uma imagem de disco somente leitura. Mova-o para a pasta Aplicativos e abra-o novamente.",

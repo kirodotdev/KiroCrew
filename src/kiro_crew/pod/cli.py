@@ -179,9 +179,9 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             # This failure cleanup runs INSIDE the same mutex hold as our start:
             # released between the two, a down + replacement up could interleave
             # during the health wait, and this stop_pod would then unload and
-            # erase the REPLACEMENT pod (verifier-found High). Holding the lock
-            # across the whole boot transaction means the pod we stop here can
-            # only be the one we started.
+            # erase the REPLACEMENT pod. Holding the lock across the whole boot
+            # transaction means the pod we stop here can only be the one we
+            # started.
             tail = rt.recent_journal(cfg, name, 30)
             print(tail, file=sys.stderr)
             rt.stop_pod(cfg, name)
@@ -284,23 +284,24 @@ def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
     # `ls`/`down` make them visible — but keep the JSON array shape unchanged
     # (three callers parse it); orphans are human-output only.
     if args.json:
-        rows = [
-            {"name": n, "port": rt.derive_port(cfg, n), "health": rt.health(rt.derive_port(cfg, n))}
-            for n in names
-        ]
+        # An unpinned port shells `cksum`, so deriving it twice per row would
+        # double the subprocess count for the same answer.
+        rows: list[dict[str, object]] = []
+        for n in names:
+            p = rt.derive_port(cfg, n)
+            rows.append({"name": n, "port": p, "health": rt.health(p)})
         print(json.dumps(rows))
         return
     # Any fail-closed probe underneath surfaces as PodError, which the dispatch
     # layer renders as the documented one-line `pod: <msg>` refusal.
     orphans = rt.orphan_homes(cfg)
-    if not names:
+    if names:
+        print(f"{'POD':<28} {'PORT':<7} HEALTH")
+        for n in names:
+            p = rt.derive_port(cfg, n)
+            print(f"{n:<28} {p:<7} {rt.health(p)}")
+    else:
         print("no pods running")
-        _print_orphans(cfg, orphans)
-        return
-    print(f"{'POD':<28} {'PORT':<7} HEALTH")
-    for n in names:
-        p = rt.derive_port(cfg, n)
-        print(f"{n:<28} {p:<7} {rt.health(p)}")
     _print_orphans(cfg, orphans)
 
 
@@ -463,11 +464,11 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             results.append(row)
         else:
             results.append(_prune_one(cfg, name))
-    failed = sum(1 for r in results if r["status"] == "failed")
     counts = {
         s: sum(1 for r in results if r["status"] == s)
         for s in ("reclaimed", "would-reclaim", "kept", "skipped", "failed")
     }
+    failed = counts["failed"]
     # Invocation-level audit: the per-name events say what each delete decided,
     # but a bulk destructive verb must be visible in the trail even when it
     # touched nothing (empty set, all kept, dry run).
@@ -676,7 +677,7 @@ def _provision(cfg: PodConfig, args: argparse.Namespace) -> None:
         _die(f"provisioning {name!r} failed (see output above)")
     # Pin so a subsequent `up` (and the systemd boot) resolves the same checkout.
     # Under the per-name mutex: unlocked, a concurrent `down` finishing its
-    # teardown could unlink this fresh pin (verifier finding).
+    # teardown could unlink this fresh pin.
     with rt.pod_name_mutex(cfg, name):
         rt.pin_checkout(cfg, name, checkout)
 

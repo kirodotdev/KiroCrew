@@ -21,7 +21,8 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
+import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
+import { confirmedDelivered } from '../utils/sendDelivery'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
@@ -275,8 +276,15 @@ export default function ChatPane({
     }
     api.sendChat(llm, slotKey, undefined, undefined, meta)
       .then(async (r) => {
-        if (!cardAtSend && !askAtSend) return
         const body = await r.json().catch(() => ({}))
+        // The response is the delivery receipt for this pane's optimistic bubble
+        // (#4131) — see the same dispatch in ChatPage.send for why no `chat_message`
+        // echo is coming. Parsed unconditionally now: the previous early return on
+        // "no card and no ask" skipped the body entirely, which would have skipped
+        // this confirmation too. `confirmedDelivered` accepts only an IMMEDIATE
+        // dispatch: a queued acceptance is not a receipt for this bubble.
+        if (confirmedDelivered(body)) dispatch(confirmOptimisticSend({ slot: slotKey, sendId }))
+        if (!cardAtSend && !askAtSend) return
         // `ok` only: a QUEUED acceptance is still cancellable — the queued
         // path retires at its queue_pop instead (removeQueuedMessage).
         if (body.ok && !body.queued && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
@@ -349,6 +357,22 @@ export default function ChatPane({
     <SlotProvider slotId={slotKey}>
       <div
         onMouseDownCapture={onFocus}
+        /* Focus capture keeps the grid's focused-pane state true under
+           KEYBOARD navigation: tabbing into a pane (or into its portaled
+           pickers, whose React events propagate through this component tree
+           even though their DOM lives under document.body) claims grid focus
+           exactly like a click. Without it only mousedown moved the marker,
+           and a keyboard user could type into one pane while another stayed
+           marked focused. */
+        onFocusCapture={onFocus}
+        /* Stable pane boundary for focus scoping: `queryComposer()` resolves
+           the composer inside the pane that owns `document.activeElement` via
+           this attribute, and falls back to the value "focused" — the grid's
+           focused pane — when the active element has no pane ancestor (the
+           pane's pickers portal to document.body). A data hook, not a class
+           name: classes here are styling and can churn without anyone
+           auditing focus behaviour. */
+        data-chat-pane={focused ? 'focused' : ''}
         className={`flex flex-col h-full min-h-0 rounded-lg overflow-hidden bg-bg border transition-colors ${focused ? 'border-accent' : 'border-border'}`}
         style={{ '--mc-content-width': '100%' } as React.CSSProperties}
       >

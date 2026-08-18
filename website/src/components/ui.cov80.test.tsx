@@ -52,7 +52,8 @@ describe('ui buttons and inputs', () => {
     expect(screen.getByRole('button').className).toContain('bg-accent')
 
     rerender(<Btn danger>zzq</Btn>)
-    expect(screen.getByRole('button').className).toContain('hover:text-danger')
+    // Idle, not hover-gated: a touch viewport never produces hover (#3937).
+    expect(screen.getByRole('button').className).toContain('text-danger')
 
     rerender(<Btn>zzq</Btn>)
     expect(screen.getByRole('button').className).toContain('hover:bg-bg-hover')

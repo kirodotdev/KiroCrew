@@ -5,7 +5,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { secureRandomId } from '../utils/secureId'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'browser' | 'git' | 'summary'
+export type ViewKind = 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -20,7 +20,15 @@ export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'fo
  *  `issues` is deliberately NOT pinned: most sessions never mention an issue,
  *  so a permanent Issues tab would be an always-empty tab for the majority.
  *  It is opened on demand (from the + menu, or automatically by ChatPage when
- *  an issue url is first seen). */
+ *  an issue url is first seen).
+ *
+ *  `pins` is NOT pinned either, and for a stronger reason than emptiness: this
+ *  block is prime real estate — always visible, non-closable, ahead of every
+ *  dynamic tab — and pins are not important enough to hold a slot in it. Pins
+ *  follows the Issues shape exactly: the + menu, or opened automatically by
+ *  ChatPage on a session's FIRST pin. A session pinned before the tab existed
+ *  reaches it through the + menu, the same zero option Issues gives pre-existing
+ *  issue links; that is what keeps this free of any reveal-claim mechanism. */
 export const PINNED_VIEWS: ViewKind[] = ['changes', 'files', 'artifacts']
 
 export interface PanelTab {
@@ -99,6 +107,7 @@ const VIEW_TITLE_KEY: Record<ViewKind, string> = {
   browser: 'hooks.usePanelTabs.browser',
   git: 'hooks.usePanelTabs.git',
   summary: 'hooks.usePanelTabs.summary',
+  pins: 'hooks.usePanelTabs.pins',
 }
 
 /** Localised strip label for a singleton view. */
@@ -232,6 +241,7 @@ export function claimAppAutoOpen(slot: string, toolCallId: string): boolean {
 
 /** Test seam: forget every auto-open claim. */
 export function __resetAppAutoOpen(): void { autoOpenedApps.clear() }
+
 // The store OWNS the draft key format (slot + path). Callers pass slot and path
 // separately and never build the key themselves — a single owner prevents the
 // four coordination sites (open / open-inline / save / slot-reset) from drifting

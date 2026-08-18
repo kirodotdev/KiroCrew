@@ -243,7 +243,7 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
 def stop(cfg: PodConfig, name: str, *, timeout: float = 15.0) -> subprocess.CompletedProcess:
     """``bootout`` the agent, wait for it to actually go, and drop its plist.
 
-    Two things here are not obvious and were both found by a real bring-up:
+    Three things here are not obvious:
 
     **``bootout`` is asynchronous.** It returns before launchd has finished
     unloading, so immediately afterwards ``launchctl print`` still resolves the
@@ -273,9 +273,9 @@ def stop(cfg: PodConfig, name: str, *, timeout: float = 15.0) -> subprocess.Comp
     while time.monotonic() < deadline:
         probe = _print(cfg, name)
         # Only the EXPLICIT not-loaded result confirms the unload. Any other
-        # nonzero print (permissions, transient daemon error) proves nothing —
-        # treating it as gone was itself a review-blocking bug: teardown would
-        # delete a possibly-live pod's state on a flaky probe.
+        # nonzero print (permissions, transient daemon error) proves nothing;
+        # treating one as gone would let teardown delete a possibly-live pod's
+        # state on a flaky probe.
         if _service_absent(probe):
             unloaded = True
             break
@@ -293,10 +293,6 @@ def stop(cfg: PodConfig, name: str, *, timeout: float = 15.0) -> subprocess.Comp
         )
     plist_path(cfg, name).unlink(missing_ok=True)
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
-
-
-def restart(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
-    return launchctl("kickstart", "-k", service_target(cfg, name))
 
 
 def _print(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:

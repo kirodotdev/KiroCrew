@@ -1913,9 +1913,11 @@ this is the one output a human is expected to forward by hand.
 
 ### Subprocess spawn
 
-`github_issues._run_gh` is the app's only subprocess spawn and is routed through
+`github_issues._run_gh` is the provider layer's GitHub spawn (the app also spawns
+`git` for ledger sync and `gh` for the rotation login — see "Windows
+compatibility" below) and is routed through
 **`sandboxed_spawn_argv`** (OS filesystem isolation + credential-scrubbed env) with
-a kernel resource ceiling from `resource_limit_preexec`. The repo, label set, and
+a kernel resource ceiling from `create_subprocess_limited`. The repo, label set, and
 comment body all come from agent-influenceable config, and `gh` reads the target
 repo's own config on the way — so this is an agent-influenced spawn in the sense
 `test/test_spawn_audit.py` polices, and it is routed rather than allowlisted.
@@ -2858,13 +2860,14 @@ looking through.
 This app is portable, and the three places that could break it are pinned by tests rather
 than left to review:
 
-- **`preexec_fn` must come from `resource_limit_preexec()`.** Both external-binary spawns
-  (`git` for ledger sync, `gh` for the rotation login) pass it. The shim returns `None`
-  off POSIX, which is what makes them portable — `preexec_fn` is unsupported on Windows
-  and passing *any* callable, even a no-op, raises `ValueError`. A hand-rolled
-  `preexec_fn=lambda: ...` would work locally and fail on every Windows spawn; the test
-  asserts the shim appears on each `preexec_fn=` line (verified by temporarily swapping in
-  a raw lambda and watching it fail).
+- **Resource limits come from the shim wrappers, not a raw `preexec_fn`.** Both
+  external-binary spawns (`git` for ledger sync, `gh` for the rotation login) route
+  through `create_subprocess_limited` / `run_limited`, which deliver the resource caps
+  after `exec` via the spawn shim and fall back to `resource_limit_preexec()` only on a
+  host with no usable shim. That fallback returns `None` off POSIX, which is what makes
+  the spawns portable — `preexec_fn` is unsupported on Windows and passing *any*
+  callable, even a no-op, raises `ValueError`. A hand-rolled `preexec_fn=lambda: ...`
+  would work locally and fail on every Windows spawn.
 - **No raw POSIX process calls** (`os.killpg`, `os.getpgid`, `os.getuid`, `fcntl.`,
   `signal.SIGKILL`), no `/bin/sh`, no `shell=True`, no hardcoded `/tmp`.
 - **Timezone lookup degrades to UTC.** `rotation.yaml` may name an IANA zone, and Windows

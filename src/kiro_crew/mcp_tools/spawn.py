@@ -30,7 +30,7 @@ from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent import resolve_max_subagents
-from kiro_crew.subagent_persistence import _agent_dir
+from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
@@ -865,7 +865,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             # context window and causing attention degradation.
             if len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
                 try:
-                    result_path = str(_agent_dir(aid) / "result.txt")
+                    result_path = str(agent_dir_for_display(aid) / "result.txt")
                 except (ValueError, OSError):
                     result_path = ""
                 if result_path:

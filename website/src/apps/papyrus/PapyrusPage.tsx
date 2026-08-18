@@ -4,7 +4,7 @@
  * Two views behind one route:
  *
  * - **No paper open** → `ProjectList`, which follows the standard page layout
- *   (`PageHeader` + `px-6 pb-8` container + `StatCard` row + `Card` sections).
+ *   (`PageHeader` + `px-4 md:px-6 pb-8` container + `StatCard` row + `Card` sections).
  * - **A paper open** → a split-pane workspace: file tree, Monaco source pane and
  *   diagnostics on the left; the rendered PDF on the right; an optional co-author
  *   chat panel beyond that. A paper and its PDF need the full viewport, so the

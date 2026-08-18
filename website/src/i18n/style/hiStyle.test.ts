@@ -51,8 +51,13 @@ describe('hi tone (style/hi.md §4)', () => {
     // word meaning "automatically" and merely contains those two letters, so a
     // substring check conflates them: of the 127 values matching the substring,
     // 8 are `अपने-आप` and have nothing to do with formality, leaving 119 genuine.
+    //
+    // `आपत्ति` ("objection") is the same class of false positive — a distinct
+    // noun that happens to begin with those letters, and the natural Hindi word
+    // §4 asks for over a loanword. It is stripped for the same reason, so a value
+    // is judged on the pronoun rather than on any word starting आप.
     const bad = Object.entries(hi)
-      .filter(([, v]) => v.replace(/अपने[-\s]?आप/g, '').includes('आप'))
+      .filter(([, v]) => v.replace(/अपने[-\s]?आप/g, '').replace(/आपत्ति/g, '').includes('आप'))
       .map(([k]) => k)
     // Baselined: the existing catalog uses आप extensively.
     expect(bad.length, report(bad)).toBeLessThanOrEqual(119)

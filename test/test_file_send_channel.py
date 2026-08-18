@@ -177,6 +177,43 @@ class TestFileUploadChannel:
         assert "invalid channel value" in body.get("error", "")
         slack.upload_file.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_path_outside_allowed_roots_denied_with_code(self, tmp_path):
+        """A file_path outside both the outbox and the workspace root returns 403
+        with a machine-readable code and a message naming the allowed roots."""
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        app = _make_app(slack, tmp_path)
+
+        outside = tmp_path / "elsewhere" / "secret.txt"
+        outside.parent.mkdir()
+        outside.write_text("data", encoding="utf-8")
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir",
+            return_value=tmp_path / "outbox",
+        ), patch(
+            "kiro_crew.config.loader.workspace_root",
+            return_value=tmp_path / "workspace",
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/slack/upload-file",
+                    json={
+                        "file_path": str(outside),
+                        "filename": "secret.txt",
+                        "thread_ts": "",
+                    },
+                )
+                body = await resp.json()
+
+        assert resp.status == 403
+        assert body.get("code") == "path_not_allowed"
+        assert "outbox directory or the workspace root" in body.get("error", "")
+        # The caller-supplied path must not be reflected back in the body.
+        assert str(outside) not in body.get("error", "")
+        slack.upload_file.assert_not_called()
+
 
 class TestFileUploadBinary:
     """Behaviour: binary files in BINARY_MIME_ALLOWLIST upload to Slack without UTF-8 decode."""

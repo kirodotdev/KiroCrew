@@ -10,8 +10,8 @@ rather than a pool of per-worker ``AcpClient`` processes. Design:
   * **One session per task** — each dispatch (gate / deep / follow-up / post)
     gets its own ``AcpSessionHandle`` (distinct ``sessionId``), ``destroy()``ed on
     completion, so one review never leaks context into another. No process respawn.
-    The one exception is a session adopted for post-review chat, which outlives its
-    task on purpose and is torn down by the chat registry instead.
+    A review asked to stay resumable keeps only its TRANSCRIPT (see
+    ``sage_lib/followup.py``); the session itself is terminated like any other.
   * **Bounded concurrency** — a semaphore of width ``review.max_concurrent``
     (default 5, ceiling ``MAX_CONCURRENT_CEIL`` = 30) caps in-flight sessions.
     Because it is a single process, raising concurrency (e.g. to review all open
@@ -77,7 +77,7 @@ try:  # SEL audit — the runtime layer has no audit_source, so the pool emits i
 except Exception:  # pragma: no cover - standalone / test fallback
     _sel = None  # type: ignore[assignment]
 
-from sage_lib import chat_session, store  # noqa: E402
+from sage_lib import followup, store  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -294,14 +294,6 @@ class _BatchRuntimeHolder:
 
     Concurrent/overlapping runs share the runtime and keep it alive until the last
     ``end_batch()``. All state is guarded by ``_lock``.
-
-    **Post-review chat holds a lease here too.** An adopted chat session (see
-    ``sage_lib/chat_session.py``) counts as a batch for exactly this reason: its
-    handle is useless once the subprocess dies, so it must be able to postpone the
-    teardown above. That is a deliberate trade of RSS for the reviewer's memory of
-    its own reasoning, and it is why the chat registry bounds itself on four sides
-    (idle TTL, absolute age, session cap, shutdown) — every bound releases the
-    lease, so the count always drains back to 0 and the subprocess is reclaimed.
     """
 
     def __init__(self, agent: str, work_dir: Optional[str]) -> None:
@@ -428,28 +420,6 @@ class ReviewPool:
         self._sema = asyncio.Semaphore(self._max)
         self._holder = _BatchRuntimeHolder(self._agent, self._work_dir)
         self._closed = False
-        # Set by the backend when post-review chat is wired (see
-        # ``sage_lib/chat_session.py``). Absent -> ``keep_session_key`` is inert
-        # and every session is destroyed as before, so the review path has no
-        # new failure mode when chat is not in play.
-        self._chat_registry: object | None = None
-
-    def attach_chat_registry(self, registry: object | None) -> None:
-        """Wire the post-review chat registry that adopts kept sessions."""
-        self._chat_registry = registry
-
-    async def audit_tool_event(self, handle: object, ev: object, *,
-                               request_id: object = None,
-                               outcome: str = "auto_approved") -> None:
-        """Public SEL audit for callers outside this class.
-
-        The chat registry drives its own event loop on an adopted session and
-        must audit every permission decision, but the audit needs this class's
-        agent/session identity. Exposed as a real method rather than letting a
-        sibling module reach into ``_audit_tool``.
-        """
-        await self._audit_tool(handle, ev, request_id=request_id,
-                              outcome=outcome)
 
     async def begin_batch(self) -> None:
         """Open a review batch — lazily spawns the shared runtime (0->1 runs)."""
@@ -477,20 +447,20 @@ class ReviewPool:
         the final assistant text. Auto-approves every tool permission (the reviewer
         runs the `gh` CLI + shell) and emits a per-tool SEL audit.
 
-        The session is ``destroy()``ed on completion so its context never leaks —
-        UNLESS ``keep_session_key`` is given AND a chat registry is attached AND
-        the turn ended normally. In that case the live handle is adopted under
-        that key so the reviewer can be asked about its own findings, and the
-        registry (not this method) owns the teardown from then on. A failed
-        adoption is not a review failure: the handle falls through to the normal
-        destroy and the review result is returned unchanged.
+        The session is always ``destroy()``ed on completion, so its context never
+        stays resident. ``keep_session_key`` additionally makes the review
+        RESUMABLE: on a healthy turn the handle is marked ``keep_transcript`` — so
+        the session is still terminated on kiro-cli and its RSS reclaimed, but its
+        transcript survives on disk — and a descriptor naming that transcript is
+        recorded under the run (see ``sage_lib/followup.py``). A failed record is
+        not a review failure: the review result is returned unchanged and the only
+        loss is the ability to ask about it later.
         """
         if self._closed:
             raise RuntimeError("ReviewPool is shut down")
         async with self._sema:
             runtime = await self._holder.acquire()
             handle = None
-            adopted = False
             try:
                 # agent=None -> inherit the runtime's agent (spawned with --agent);
                 # cwd=app root so relative prompt paths + the effort overlay resolve.
@@ -547,23 +517,41 @@ class ReviewPool:
                 if _is_abnormal_stop(stop_reason):
                     raise RuntimeError(
                         f"review turn ended abnormally (stop_reason={stop_reason!r})")
-                # Hand the live session to the chat registry AFTER the health
-                # gate above: adopting a session whose turn died would leave a
-                # chat that cannot answer, holding a runtime lease to do it.
-                if keep_session_key and self._chat_registry is not None:
-                    try:
-                        await self._chat_registry.adopt(  # type: ignore[attr-defined]
-                            keep_session_key, handle, self._agent)
-                        adopted = True
-                    except Exception:
-                        logger.debug("chat session adopt failed", exc_info=True)
+                # Keep the transcript AFTER the health gate above: a session whose
+                # turn died has no findings to be asked about, and recording it
+                # would leave a file nothing will ever load.
+                if keep_session_key:
+                    self._keep_resumable(handle, keep_session_key)
                 return "".join(parts)
             finally:
-                if handle is not None and not adopted:
+                if handle is not None:
                     try:
                         await handle.destroy()
                     except Exception:
                         logger.debug("session destroy error", exc_info=True)
+
+    def _keep_resumable(self, handle: object, key: str) -> None:
+        """Mark this session's transcript to survive teardown and record it.
+
+        ``keep_transcript`` is set BEFORE the descriptor is written: if the write
+        fails the file is merely orphaned (and aged out by the follow-up pruner),
+        whereas the reverse order can point a descriptor at a transcript that
+        ``destroy()`` has already unlinked.
+        """
+        sid = str(getattr(handle, "session_id", "") or "")
+        if not sid:
+            return
+        run_id, _, change_id = key.partition(":")
+        if not run_id or not change_id:
+            return
+        try:
+            handle.keep_transcript = True  # type: ignore[attr-defined]
+            followup.write_descriptor(
+                run_id, change_id, sid=sid, agent=self._agent,
+                cwd=self._work_dir or "")
+        except Exception:
+            logger.debug("could not keep the review session resumable",
+                         exc_info=True)
 
     async def _audit_tool(self, handle: object, ev: object, *,
                           request_id: object = None,
@@ -632,20 +620,12 @@ def get_pool() -> ReviewPool:
     global _POOL
     if _POOL is None or _POOL._closed:
         _POOL = ReviewPool()
-    # Attach on every call, not just on creation: the registry is what adopts a
-    # kept session, and an unattached pool silently degrades ``keep_session_key``
-    # to a no-op (chat would never start, with no error to explain why).
-    _POOL.attach_chat_registry(chat_session.get_registry(_POOL))
     return _POOL
 
 
 async def shutdown_pool() -> None:
     """Tear down the singleton pool (called on app disable / gateway shutdown)."""
     global _POOL
-    # Chats first: each holds a batch lease on this pool, and closing them here
-    # destroys their handles while the runtime is still alive. Killing the pool
-    # first would leave every adopted handle pointing at a dead subprocess.
-    await chat_session.shutdown_registry()
     if _POOL is not None:
         await _POOL.shutdown()
         _POOL = None

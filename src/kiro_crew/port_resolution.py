@@ -269,12 +269,34 @@ def resolve_client_port_ex(cli_port: int | None) -> tuple[int, bool]:
     not be written yet — so pinning it would freeze the weakest outcome
     forever, while every positive source is stable for the process lifetime.
     """
+    port, source = _patchable("resolve_client_port_src")(cli_port)
+    return port, source != "default"
+
+
+def resolve_client_port_src(cli_port: int | None) -> tuple[int, str]:
+    """Like :func:`resolve_client_port`, also reporting WHERE the port came from.
+
+    The second element names the chain step that produced the port: ``"cli"``,
+    ``"env"`` (``KIROCREW_PORT``), ``"bound"`` (``KIROCREW_BOUND_PORT``),
+    ``"config"`` (a port explicitly written in ``dashboard.url``), ``"marker"``
+    (the sole gateway-owned run-marker), or ``"default"`` (the fall-through).
+
+    The distinction :func:`resolve_client_port_ex` cannot make — and the reason
+    this exists — is ``"marker"`` versus the other positive sources. A flag, an
+    env var, or a configured port is a *user decision*, stable for the process
+    lifetime and safe to cache. A marker-discovered port is only *verified at
+    that instant*: the ownership proof says this user's gateway holds the port
+    NOW, not that it always will. A gateway that exits or moves frees the port
+    for any local process to rebind, so a caller about to attach a credential
+    to a request must re-run this chain (re-verifying ownership) rather than
+    trust a cached marker resolution.
+    """
     if cli_port is not None:
-        return cli_port, True
+        return cli_port, "cli"
     env_port = os.environ.get("KIROCREW_PORT")
     if env_port:
         try:
-            return int(env_port), True
+            return int(env_port), "env"
         except ValueError:
             # Fall through to bound/config/marker/default — main() validates
             # this early, but guard here too in case the helper is reached via
@@ -283,16 +305,52 @@ def resolve_client_port_ex(cli_port: int | None) -> tuple[int, bool]:
     bound_port = os.environ.get("KIROCREW_BOUND_PORT")
     if bound_port:
         try:
-            return int(bound_port), True
+            return int(bound_port), "bound"
         except ValueError:
             pass
     cfg_port = _patchable("_config_url_port")()
     if cfg_port:
-        return cfg_port, True
+        return cfg_port, "config"
     discovered = _patchable("_marker_port")()
     if discovered:
-        return discovered, True
-    return _DEFAULT_PORT, False
+        return discovered, "marker"
+    return _DEFAULT_PORT, "default"
+
+
+def resolve_serving_port() -> int:
+    """The port THIS gateway process is serving, for its own in-process callers.
+
+    Distinct from :func:`resolve_client_port_ex` in ONE way that matters:
+    ``KIROCREW_BOUND_PORT`` is consulted BEFORE ``KIROCREW_PORT``. The client
+    resolver reads ``KIROCREW_PORT`` first, which is correct for a CLI client --
+    there the variable means "talk to that instance". This resolver is for code
+    running INSIDE the gateway (the frame relay, cron dial-port minting, the cron
+    trigger endpoint): there the port the process actually bound is ground truth,
+    and ``KIROCREW_PORT`` is a request that may be stale or merely inherited. A
+    shell that exported ``KIROCREW_PORT=5476`` and then started a second gateway
+    with ``--port auto`` leaves both set; the client order would pick 5476, a
+    SIBLING, and an in-gateway caller pairing a credential with that port
+    authenticates against the wrong instance.
+
+    Reordering the client resolver instead would fix these callers by breaking
+    every CLI client's ability to aim at a chosen instance, so the two resolvers
+    stay separate. After the bound port, the remaining precedence (``KIROCREW_PORT``
+    -> configured -> marker -> default) is shared with the client resolver, so a
+    gateway with no bound port exported still honours a dev instance's
+    ``KIROCREW_PORT``.
+
+    Returns the port only. Every in-gateway caller reads a per-port credential for
+    the returned value, and an unresolved credential reads empty and is refused by
+    the strict ingress (fail-closed), so no separate evidence flag is needed.
+    """
+    bound_port = os.environ.get("KIROCREW_BOUND_PORT")
+    if bound_port:
+        try:
+            return int(bound_port)
+        except ValueError:
+            pass  # malformed value is no evidence; fall through to the client order
+    port, _evidence_backed = resolve_client_port_ex(None)
+    return port
 
 
 # Subcommands that launch a long-running Kiro Crew *server* process which

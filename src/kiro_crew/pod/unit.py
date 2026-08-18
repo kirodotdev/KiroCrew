@@ -135,10 +135,11 @@ def unit_exec_ok(cfg: PodConfig) -> bool:
 
 
 # Directives an older installed unit may still carry that this build has removed.
-# ``ExecStopPost`` ran teardown before systemd's final kill of the pod's cgroup,
-# so it raced the pod's own subprocesses and also wiped the HOME on the stop half
-# of a ``Restart=``; reclamation now belongs to the ``down`` path.
-_REMOVED_DIRECTIVES = ("ExecStopPost=",)
+# ``ExecStopPost`` runs teardown before systemd's final kill of the pod's cgroup,
+# so it races the pod's own subprocesses and also wipes the HOME on the stop half
+# of a ``Restart=``; reclamation belongs to the ``down`` path instead. Must stay a
+# tuple: ``unit_is_current`` hands it straight to ``str.startswith``.
+_REMOVED_DIRECTIVES: tuple[str, ...] = ("ExecStopPost=",)
 
 
 def unit_is_current(cfg: PodConfig) -> bool:
@@ -157,8 +158,6 @@ def unit_is_current(cfg: PodConfig) -> bool:
         text = unit_path(cfg).read_text()
     except OSError:
         return False
-    return not any(
-        line.startswith(directive)
-        for line in text.splitlines()
-        for directive in _REMOVED_DIRECTIVES
-    )
+    # str.startswith takes the whole tuple, so one pass answers for every removed
+    # directive.
+    return not any(line.startswith(_REMOVED_DIRECTIVES) for line in text.splitlines())

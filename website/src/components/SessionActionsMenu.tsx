@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2 } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -9,6 +9,7 @@ import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { useAppSelector } from '../store'
+import { selectSlotSubagents } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
@@ -85,7 +86,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMode, copyLink, move, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMode, copyLink, move, reload, close } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -103,6 +104,16 @@ export default function SessionActionsMenu({
   const isUnread = useAppSelector(s => s.dashboard.unreadSlots.includes(slotKey))
   const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
   const isPinned = !!slot?.pinned
+  const isRunning = !!slot?.running
+  // Reload is also refused while sub-agent children are attached (the reset
+  // would tear down their shared runtime) — mirror that in the disable so a
+  // slot whose turn ended but whose children still run doesn't offer a click
+  // the backend will 409.
+  const slotSubagents = useAppSelector(s => selectSlotSubagents(s, slotKey))
+  const hasActiveSubagents = Object.values(slotSubagents).some(
+    a => a.status === 'pending' || a.status === 'running' || a.status === 'tool',
+  )
+  const reloadBlocked = isRunning || hasActiveSubagents
   const currentFolderId = slot?.folder_id
   const colorIndex = slot?.color_index
 
@@ -189,6 +200,31 @@ export default function SessionActionsMenu({
     // Colour — its own section
     [
       <SessionColorSwatches key="color" slotKey={slotKey} colorIndex={colorIndex} onPicked={onColorPicked} />,
+    ],
+    // Session runtime — relaunch the agent process in place so it picks up
+    // MCP servers / agent-spec / env changes made after the session started.
+    // Conversation preserved (resume via session/load). Disabled while a turn
+    // runs OR sub-agent children are attached: the backend answers 409 for
+    // both, so the disable makes the refusal visible instead of a dead click.
+    // The reason renders INLINE when blocked — a disabled Radix item carries
+    // data-[disabled]:pointer-events-none, so a hover `title` can never fire
+    // there and the grey row would otherwise explain nothing.
+    [
+      <Item
+        key="reload"
+        disabled={reloadBlocked}
+        title={i18nT('components.sessionActionsMenu.reload_session_tooltip')}
+        onSelect={() => reload(slotKey)}
+      >
+        <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
+        {reloadBlocked && (
+          <span className="ml-auto text-[10px] text-muted">
+            {isRunning
+              ? i18nT('components.sessionActionsMenu.reload_blocked_running')
+              : i18nT('components.sessionActionsMenu.reload_blocked_subagents')}
+          </span>
+        )}
+      </Item>,
     ],
     // Close session — terminal, destructive
     [

@@ -26,6 +26,7 @@ from typing import Any, NamedTuple
 from urllib.parse import quote
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.urls import dashboard_origin
 
 logger = logging.getLogger(__name__)
@@ -55,13 +56,9 @@ def backfill_content(row: dict[str, Any]) -> str:
 def _is_conversational(row: object) -> bool:
     """True when *row* is a human-readable message worth replaying.
 
-    Excludes compaction notices, which are ``role == "assistant"`` rows carrying
-    ``meta["kind"] == "compaction"``. Replaying one would read as a real answer
-    and, worse, would count as a turn.
-
-    ``meta`` is checked with ``isinstance`` rather than the ``or {}`` idiom used
-    at ``state.py`` -- ``append``'s ``meta: dict | None`` is not enforced at
-    runtime, so a truthy non-dict would raise ``AttributeError`` on ``.get``.
+    Excludes system notices (``is_system_notice``): assistant-role status rows
+    such as compaction notices and session-reload confirmations. Replaying one
+    would read as a real answer and, worse, would count as a turn.
     """
     if not isinstance(row, dict):
         return False
@@ -71,7 +68,7 @@ def _is_conversational(row: object) -> bool:
     if not backfill_content(row):
         return False
     meta = row.get("meta")
-    if role == "assistant" and isinstance(meta, dict) and meta.get("kind") == "compaction":
+    if is_system_notice(role, meta):
         return False
     return True
 

@@ -87,7 +87,7 @@ _SPAWN_BASES = {"subprocess", "asyncio"}
 # Spawn helpers called as a BARE NAME rather than ``module.attr`` -- they are
 # imported directly, so the receiver check above cannot see them. Without this
 # the audit goes blind the moment a call site moves to the wrapper.
-_SPAWN_NAMES = {"create_subprocess_limited"}
+_SPAWN_NAMES = {"create_subprocess_limited", "run_limited", "popen_limited"}
 
 # Tokens whose presence anywhere in the enclosing function marks the spawn as
 # routed through the sandbox chokepoint. ``_prepare_sandboxed_spawn`` is the
@@ -110,14 +110,20 @@ _ROUTED_TOKENS = (
 # ``create_subprocess_limited`` (async) and ``run_limited`` / ``popen_limited``
 # (sync) are the preferred forms: they deliver the same limits AFTER exec via the
 # spawn shim instead of in a fork child of this threaded gateway. The two
-# ``*_preexec`` names remain valid only for the spawns that have not moved yet --
-# the builtin app backends and the standalone deploy scripts.
+# ``*_preexec`` names remain valid for the wrappers' own no-shim fallbacks and
+# the terminal's pre-resolved ioctl callback.
+#
+# Every token is matched as a CALL (trailing paren) rather than a bare name: the
+# check scans the enclosing function's raw source, docstrings and comments
+# included, so a bare-name match lets prose like "routed through run_limited"
+# satisfy the gate while the actual spawn silently reverts to a bare
+# ``subprocess.run`` (verified by mutation before the parens were added).
 _PREEXEC_TOKENS = (
-    "create_subprocess_limited",
-    "run_limited",
-    "popen_limited",
-    "resource_limit_preexec",
-    "session_host_preexec",
+    "create_subprocess_limited(",
+    "run_limited(",
+    "popen_limited(",
+    "resource_limit_preexec()",
+    "session_host_preexec(",
 )
 
 # Routed functions exempt from the resource-limit requirement: the enclosing

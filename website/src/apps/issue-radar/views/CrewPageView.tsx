@@ -289,14 +289,14 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
 
   if (detail.isPending) {
     return (
-      <div className="px-6 pt-4 pb-6 text-[13px] text-muted" data-testid="crew-page-loading">
+      <div className="px-4 md:px-6 pt-4 pb-6 text-[13px] text-muted" data-testid="crew-page-loading">
         {t('apps.issueRadar.views.crews.page.loading')}
       </div>
     )
   }
   if (detail.isError || !crew) {
     return (
-      <div className="px-6 pt-4 pb-6" data-testid="crew-page-error">
+      <div className="px-4 md:px-6 pt-4 pb-6" data-testid="crew-page-error">
         <EmptyState
           icon={<Inbox className="lucide-inline" />}
           title={t('apps.issueRadar.views.crews.page.load_failed')}
@@ -330,8 +330,11 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
     }
   }
 
+  // Narrow-first gutter, same value as this page's own loading and error
+  // states above — a gutter that changed as the read landed would shift the
+  // content sideways on arrival.
   return (
-    <div className="px-6 pt-4 pb-6 flex flex-col gap-4" data-testid="crew-page">
+    <div className="px-4 md:px-6 pt-4 pb-6 flex flex-col gap-4" data-testid="crew-page">
       {/* ── 1. header ── */}
       <div className="flex items-start gap-4">
         <CrewGhost seed={crew.avatar_seed} variant={crew.avatar_variant} size={78} blush />

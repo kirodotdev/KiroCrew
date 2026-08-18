@@ -105,7 +105,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, hasEntry, isShell, toolName, fromLog } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolName, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -167,6 +167,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           output: e.output || '',
           auto: !!e.auto,
           ts: e.ts || 0,
+          executionStartedAt: e.execution_started_at || 0,
           hasEntry: true,
           // Older ACP update frames may omit is_shell; execute is the stable
           // tool-kind value used by the transport and keeps those frames live.
@@ -198,6 +199,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       // parse it for the meta-row time renderer. Falls to 0 if unparseable —
       // fmtTime hides the row when ts is 0.
       ts: typeof message.ts === 'number' ? message.ts : (message.ts ? Date.parse(String(message.ts)) || 0 : 0),
+      executionStartedAt: 0,
       // Treat the message as having an entry when persisted I/O is available,
       // so the empty-state copy only shows for truly bare historical messages.
       hasEntry: !!(metaInput || metaOutput),
@@ -294,11 +296,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   }, shallowEqual)
   const showWaitCountdown = !!waitState && waitState.deadline_ts > 0
   const [activityNow, setActivityNow] = useState(() => Date.now())
-  // Seed from the tool log's start timestamp so the elapsed clock survives
-  // unmount/remount (e.g. navigating away and back). Falls back to Date.now()
-  // only when no persisted timestamp is available (first mount of a brand-new
-  // tool call before the log entry arrives).
-  const activityStartRef = useRef(ts || Date.now())
+  // Seed from execution_started_at (persisted in Redux, survives remount) when
+  // available — it records when execution actually began after approval. Falls
+  // back to ts (tool issuance time) then Date.now() for brand-new calls.
+  const activityStartRef = useRef(executionStartedAt || ts || Date.now())
   const wasPendingRef = useRef(hasPendingPerm)
   // Tracks whether approval resolved during this mount — once set, the ts
   // re-anchor effect is suppressed so the post-approval Date.now() anchor
@@ -334,10 +335,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       return
     }
     if (wasPendingRef.current) {
-      activityStartRef.current = Date.now()
+      const now = Date.now()
+      activityStartRef.current = now
       wasPendingRef.current = false
       approvalResolvedRef.current = true
-      setActivityNow(Date.now())
+      setActivityNow(now)
+      // The durable anchor is stamped server-side: the approval_resolved
+      // frame sets execution_started_at on the tool entry in Redux (see
+      // sseActivityEvent), which the re-anchor effect below reads on remount.
     }
   }, [hasPendingPerm])
 
@@ -346,12 +351,15 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // started — not time since the component mounted. Skip if approval just
   // resolved in this mount — the post-approval Date.now() is the correct anchor
   // for approved commands (the pre-approval ts would inflate the timer by the
-  // entire approval wait).
+  // entire approval wait). Also skip if executionStartedAt is set — it persists
+  // in Redux and is the authoritative anchor that survives remount.
   useEffect(() => {
-    if (ts && !hasPendingPerm && !approvalResolvedRef.current) {
+    if (executionStartedAt) {
+      activityStartRef.current = executionStartedAt
+    } else if (ts && !hasPendingPerm && !approvalResolvedRef.current) {
       activityStartRef.current = ts
     }
-  }, [ts, hasPendingPerm])
+  }, [ts, hasPendingPerm, executionStartedAt])
 
   useEffect(() => {
     if (!showShellActivity && !showWaitCountdown) return
@@ -639,7 +647,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         ? (e) => { if (e.target === e.currentTarget) setRevealPlayed(true) }
         : undefined}
     >
-      <div className="inline-flex items-start gap-1 group/toolpill max-w-full min-w-0">
+      <div className="inline-flex items-start gap-1 group/toolpill max-w-full min-w-0 -ml-2">
       {/* No `font-mono`: the pill's label is prose with the odd argument spliced
           in ("Searching for 'YOLO' in src"), not code, and Tailwind's
           `font-mono` pins `var(--mono)` — which the Font Family setting never
@@ -748,7 +756,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? i18nT('pages.chat.toolCallLine.blocked_by_security_policy') : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? i18nT('pages.chat.toolCallLine.blocked_by_security_policy') : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>

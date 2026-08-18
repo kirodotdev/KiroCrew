@@ -524,10 +524,13 @@ function SwitcherChip({
   entry,
   active,
   onSelect,
+  className = '',
 }: {
   entry: SwitcherEntry
   active: boolean
   onSelect: () => void
+  /** Extra classes for the caller's own layout hooks (see `tb-crew-active-chip`). */
+  className?: string
 }) {
   const isLocal = entry.id === null
   return (
@@ -538,6 +541,8 @@ function SwitcherChip({
       aria-label={entry.title}
       title={entry.title}
       className={
+        className +
+        ' ' +
         'flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap transition-colors shrink-0 border focus-ring ' +
         (active
           ? 'bg-accent-subtle text-accent font-bold border-transparent'
@@ -554,7 +559,12 @@ function SwitcherChip({
           aria-hidden
         />
       )}
-      <span className="truncate max-w-[140px]">{entry.name}</span>
+      {/* `tb-drop-crew-name` is the topbar identity group's collapse hook: inside
+          `.tb-left` a container rung hides the name so the chip goes icon-only
+          rather than pushing the trailing dropdown out of the clip box on a phone.
+          The name stays in `aria-label`/`title`, so the chip keeps its accessible
+          name either way. */}
+      <span className="tb-drop-crew-name truncate max-w-[140px]">{entry.name}</span>
       {entry.unread > 0 ? (
         <UnreadBadge
           count={entry.unread}
@@ -745,7 +755,14 @@ function Switcher({
   )
   return (
     <div className="flex items-center gap-1 min-w-0">
-      {active ? <SwitcherChip entry={active} active onSelect={() => onSelect(active.id)} /> : null}
+      {active ? (
+        <SwitcherChip
+          entry={active}
+          active
+          onSelect={() => onSelect(active.id)}
+          className="tb-crew-active-chip"
+        />
+      ) : null}
       {chips.length > 0 ? (
         <CrewChipRow
           chips={chips}

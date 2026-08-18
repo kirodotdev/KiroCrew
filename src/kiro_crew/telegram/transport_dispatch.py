@@ -58,9 +58,11 @@ from kiro_crew.telegram.attachments import process_telegram_attachments
 from kiro_crew.telegram.commands import (
     ConversationState,
     build_help_text,
+    format_ttl,
     is_bare_mid_turn_override,
     parse_command,
     parse_command_argument,
+    parse_dashboard_ttl,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
@@ -317,6 +319,9 @@ class TelegramDispatcher:
             await self._handle_yolo(
                 chat_id, parse_command_argument(text), user_id, thread=reply_thread
             )
+            return
+        if cmd == "dashboard":
+            await self._handle_dashboard(route, chat_id, text, user_id)
             return
         # A lone "/queue" / "/steer" is a directive missing its message body.
         # Answering with the usage beats forwarding the token to the model, which
@@ -839,6 +844,81 @@ class TelegramDispatcher:
         await self._queue.finish_cancelled_locked(
             session_key, self._receipt_surface(chat_id, None)
         )
+
+    async def _handle_dashboard(
+        self, route: tuple[str, str], chat_id: int, text: str, user_id: int
+    ) -> None:
+        """Generate and send a presigned dashboard login link.
+
+        Mirrors the Slack ``/kirocrew dashboard`` implementation: calls
+        ``generate_token`` directly (never via shell) and builds the URL from
+        the ``dashboard.url`` config (``KIROCREW_PORT`` overrides the port,
+        matching every other link producer).
+
+        DM-only: a presigned link posted into a forum Topic would hand a
+        dashboard login to every member of the supergroup, so group requests
+        are refused with a pointer to DM — the same token-leak policy as
+        Slack's always-DM delivery.
+        """
+        assert self.client is not None
+        from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
+        from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
+
+        thread = self._route_thread(route)
+        if route[0] != CHAT_TYPE_DIRECT:
+            await self._reply(
+                chat_id,
+                "🔒 Dashboard links are only sent in a direct message — "
+                "DM me `/kirocrew dashboard`.",
+                thread=thread,
+            )
+            return
+        ttl_secs = min(parse_dashboard_ttl(text), MAX_SESSION_TTL_SECS)
+        try:
+            token = generate_token(str(user_id), ttl_seconds=ttl_secs)
+            origin = dashboard_origin(self.cfg.dashboard.url)
+            if not origin:
+                # No configured dashboard.url: fall back to the local port
+                # (parse_dashboard_url applies the KIROCREW_PORT override).
+                _, port = parse_dashboard_url(self.cfg.dashboard.url)
+                origin = f"http://localhost:{port}"
+            url = f"{origin}/?token={token}"
+            ttl_display = format_ttl(ttl_secs)
+            # Credential issuance MUST be audited (backend-security-controls):
+            # mirrors slack.dashboard_token and telegram.yolo_mode above.
+            sel().log_api_access(
+                caller=str(user_id),
+                operation="telegram.dashboard_token",
+                outcome="ok",
+                source="telegram",
+                resources=f"ttl={ttl_secs}",
+            )
+            await self._reply(
+                chat_id,
+                f"🔗 Dashboard link (valid {ttl_display}):\n{url}",
+                thread=thread,
+            )
+        except Exception as exc:
+            logger.warning(
+                "telegram /kirocrew dashboard: token generation failed", exc_info=True
+            )
+            try:
+                sel().log_api_access(
+                    caller=str(user_id),
+                    operation="telegram.dashboard_token",
+                    outcome="error",
+                    source="telegram",
+                    resources=f"ttl={ttl_secs}",
+                )
+            except Exception:
+                # The audit trail must never turn a user-facing failure reply
+                # into a crash; the warning above already captured the error.
+                pass
+            await self._reply(
+                chat_id,
+                f"⚠️ Could not generate dashboard link: {exc}",
+                thread=thread,
+            )
 
     async def _handle_stop(self, route: tuple[str, str], chat_id: int) -> None:
         """Hard cancel: abort the in-flight turn and clear everything.

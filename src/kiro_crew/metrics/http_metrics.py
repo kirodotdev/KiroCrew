@@ -223,11 +223,13 @@ def make_route_latency_middleware(
                 response is None
                 and request.writer.output_size > output_size_before
             )
-            stream_lifetime = response_committed or isinstance(
-                response, web.WebSocketResponse
-            ) or (
-                isinstance(response, web.StreamResponse)
-                and response.content_type == "text/event-stream"
+            stream_lifetime = (
+                response_committed
+                or isinstance(response, web.WebSocketResponse)
+                or (
+                    isinstance(response, web.StreamResponse)
+                    and response.content_type == "text/event-stream"
+                )
             )
             if not stream_lifetime:
                 try:

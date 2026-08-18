@@ -7,8 +7,31 @@ import { i18nT } from '../i18n/t'
 /* ── Shared UI primitives ── */
 
 export function Card({ children, className = '', ...rest }: Omit<React.ComponentPropsWithoutRef<'div'>, 'dangerouslySetInnerHTML'>) {
+  // Written narrow-first, like the rest of the layout: the unprefixed inset is
+  // the phone one (10px horizontal, 20px vertical) and `md:` widens it. Only the
+  // HORIZONTAL value changes, because horizontal is the axis a phone cannot
+  // spare and a vertical change would move every card's height. This inset
+  // stacks on the page gutter — the budget both serve is in
+  // website/docs/page-layout.md.
+  //
+  // A caller that sets padding OWNS that axis, and the base inset for it is
+  // dropped rather than merged. This is not a convenience: the base inset is
+  // breakpoint-scoped (`md:px-5`) and twMerge only collapses classes colliding
+  // at the SAME breakpoint, so a caller's bare `p-3` would sit BESIDE `md:px-5`
+  // and the card would silently widen back to 20px from `md` up. Dropping the
+  // base is what makes `p-3` mean 12px at every width, the way a reader of that
+  // call site would assume.
+  //
+  // Deciding it from the final string, at render time, is deliberate: a lexical
+  // test cannot see a computed `className={cond ? 'p-3' : ''}`, and two such
+  // `Card` call sites already exist. `md:`-prefixed overrides need no help —
+  // they collide with the base at their own breakpoint, so twMerge resolves them.
+  const owned = className.split(/\s+/)
+  const ownsX = owned.some((c) => /^(?:p|px)-/.test(c))
+  const ownsY = owned.some((c) => /^(?:p|py)-/.test(c))
+  const inset = [ownsX ? '' : 'px-2 md:px-5', ownsY ? '' : 'py-5'].filter(Boolean).join(' ')
   return (
-    <div className={twMerge('card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all', className)} {...rest}>
+    <div className={twMerge(`card-glow border border-border bg-card rounded-lg ${inset} mb-4 animate-rise shadow-sm transition-all`, className)} {...rest}>
       {children}
     </div>
   )
@@ -18,6 +41,27 @@ export function CardTitle({ children, className, ...rest }: Omit<React.Component
   return <h3 className={twMerge("text-sm font-semibold tracking-tight text-text-strong mb-3.5 flex items-center gap-2", className)} {...rest}>{children}</h3>
 }
 
+/**
+ * `danger` colours the LABEL unconditionally, not on `:hover`.
+ *
+ * A touch viewport never produces `hover`, so the previous
+ * `text-text hover:text-danger` rendered a destructive button identically to
+ * the non-destructive buttons beside it on a phone — the same class of defect
+ * as a hover-revealed control: the affordance existed only under a pointer
+ * (#3937). Found on the Channels page at 390px, where `Close` (which dismisses
+ * every agent in the channel) sat in a wrapped header row beside the frequent
+ * `3 agents` and `Clear Context` buttons at identical visual weight.
+ *
+ * Hover still does something on a pointer device — it brings up the border and
+ * a subtle fill — so the desktop affordance is not lost, only made
+ * unnecessary for recognising the control.
+ *
+ * This satisfies the enabled≠disabled invariant `ui.test.tsx` pins: that
+ * assertion exists because an idle label in `text-muted` reads as greyed out,
+ * and `text-danger` is emphatically not that. The assertion was written against
+ * the `text-text` token because that was the only foreground a Btn then had;
+ * it now checks the invariant it states.
+ */
 export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean; primary?: boolean }>(
   ({ children, danger, primary, className, ...rest }, ref) => (
     <button
@@ -26,7 +70,7 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
         primary
           ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)]'
           : danger
-            ? 'border-border bg-transparent text-text hover:text-danger hover:border-danger'
+            ? 'border-border bg-transparent text-danger hover:border-danger hover:bg-danger-subtle'
             : 'border-border bg-transparent text-text hover:border-border-strong hover:bg-bg-hover'
       }`, className)}
       {...rest}
@@ -345,7 +389,20 @@ export function PanelSectionHeader({ label, count, trailing, className }: {
 
 export function PageHeader({ title, subtitle, actions }: { title: React.ReactNode; subtitle?: string; actions?: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-6 pt-2 pb-3" data-testid="page-header">
+    // 16px below `md`, the SAME gutter as the page content container, so the title
+    // shares its left edge with the cards and rows it labels. That shared edge is
+    // the page's content column, and the title belongs to the content -- not to the
+    // chrome above it.
+    //
+    // The top bar is now held to the same line rather than exempted from it: its
+    // hamburger's box is `pl-2` + `p-2` = 16px, plus a 2.5px transform that pulls
+    // the glyph's artwork onto the line too (`Menu` does not fill its own box).
+    // An earlier round instead moved THIS header out to meet a 20px top bar, which
+    // read worse -- the title then sat inside the cards directly beneath it. The
+    // defect was always in the chrome, not in the content column.
+    //
+    // Measured budget and the full rationale: website/docs/page-layout.md.
+    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-4 md:px-6 pt-2 pb-3" data-testid="page-header">
       <div className="min-w-0">
         <div className="text-2xl font-bold tracking-tight text-text-strong" data-testid="page-title">{title}</div>
         {subtitle && <div className="text-muted text-sm mt-1" data-testid="page-subtitle">{subtitle}</div>}

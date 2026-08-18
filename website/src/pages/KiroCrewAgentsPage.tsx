@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, Star, LayoutGrid, Rows3 } from 'lucide-react'
 import Clickable from '../components/Clickable'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, keepPreviousData } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api } from '../api/client'
@@ -18,6 +18,7 @@ import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar from '../components/CrewAvatar'
+import CrewWakeSection from '../components/CrewWakeSection'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 
@@ -492,6 +493,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const { data: agentsData, refetch: refetchAgents } = useQuery({
     queryKey: ['kirocrew-agents', refreshTrigger],
     queryFn: () => api.kirocrewAgents(),
+    // `refreshTrigger` is part of the key, so every WS-driven bump (a `refresh`,
+    // `sessions_restarting`, or `refine` frame from ANY session, not this page)
+    // mints a fresh query whose `data` starts `undefined`. Without this the
+    // roster would collapse to `[]` for the refetch window and the
+    // `agents.length === 0` branch below would flash the "No crews yet" empty
+    // state on a populated install. Retaining the prior roster keeps the page
+    // stable across those unrelated refreshes.
+    placeholderData: keepPreviousData,
   })
   const agents: KiroCrewAgent[] = agentsData?.agents || []
   const defaultAgent = agentsData?.default_agent || ''
@@ -733,7 +742,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   return (
     <>
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
-      <div className={`${embedded ? '' : 'px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
+      <div className={`${embedded ? '' : 'px-4 md:px-6'} pb-8 overflow-y-auto flex-1 min-h-0`}>
         {/* Says out loud what the bindings below cannot: a crew's workspace and
             memory store are shown and editable, but the isolation they imply is
             only partly built — every crew still reads one shared semantic
@@ -978,6 +987,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             </div>
           )}
         </section>
+
+        {!creating && <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} />}
 
         {!creating && editing !== defaultAgent && (
           <section className="flex flex-col gap-3">

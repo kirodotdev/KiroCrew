@@ -4,7 +4,7 @@ import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, PanelBottom, Layers, ListTree } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -34,12 +34,14 @@ import McpAppFrame from '../../components/McpAppFrame'
 import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
+import type { ChatPin } from '../../api/pins'
 
 import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,
+  pins: <Pin size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
   app: <PanelRight size={16} />, git: <GitBranch size={16} />,
 }
@@ -73,6 +75,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind, string> = {
   browser: 'pages.chat.sidePanel.menu_browser',
   git: 'pages.chat.sidePanel.menu_git',
   summary: 'pages.chat.sidePanel.menu_summary',
+  pins: 'pages.chat.sidePanel.menu_pins',
 }
 
 export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
@@ -88,6 +91,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
   browser: 'pages.chat.sidePanel.menu_browser_desc',
   git: 'pages.chat.sidePanel.menu_git_desc',
   summary: 'pages.chat.sidePanel.menu_summary_desc',
+  pins: 'pages.chat.sidePanel.menu_pins_desc',
 }
 
 /** Views offered by the + menu, in the three semantic groups the menu renders
@@ -119,6 +123,7 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[
     id: 'session-output',
     items: [
       { kind: 'summary', icon: <ListTree size={15} /> },
+      { kind: 'pins', icon: <Pin size={15} /> },
       { kind: 'changes', icon: <GitPullRequest size={15} /> },
       { kind: 'issues', icon: <CircleDot size={15} /> },
       { kind: 'files', icon: <FileText size={15} /> },
@@ -146,7 +151,7 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[
   },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git', 'summary'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git', 'summary', 'pins'])
 
 /** Views behind the Developer Mode consent gate (Settings > Developer) — the
  *  same gate the standalone Developer page uses. Both are raw instrumentation
@@ -215,6 +220,17 @@ interface SidePanelProps {
   onReconcileIssue?: (url: string) => void
   onAddSourceToChat?: (text: string) => void
   onSubmitComments?: (message: string) => void
+  /** Pinned messages for this session, plus the two actions the Pins tab needs.
+   *  Prop-drilled rather than re-queried here because the JUMP is ChatPage's:
+   *  landing on a pin that is not in the loaded window has to page older
+   *  history in, which only ChatPage's transcript state can drive. */
+  pins?: ChatPin[]
+  pinsLoading?: boolean
+  onJumpToPin?: (messageTs: string, mid?: string) => void
+  onUnpin?: (id: string) => void
+  /** Only shape the copyable deep link a pin row offers. */
+  slotTitle?: string
+  chatMode?: string
   onFileSave: (filePath: string, content: string) => Promise<void>
   /** Close the whole panel (hides the side column). */
   onClose: () => void
@@ -346,6 +362,8 @@ export default function SidePanel({
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
+  pins, pinsLoading, onJumpToPin, onUnpin,
+  slotTitle, chatMode,
   inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth, canDockBottom = true,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned, openFolder } = tabsCtl
@@ -693,7 +711,7 @@ export default function SidePanel({
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git' | 'summary'}
+                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}
@@ -716,6 +734,8 @@ export default function SidePanel({
                   onArtifactOpen={onArtifactOpen}
                   onFileRemove={onFileRemove} onFilesClear={onFilesClear}
                   onFileSave={onFileSave} onSubmitComments={onSubmitComments}
+                  pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
+                  slotTitle={slotTitle} chatMode={chatMode}
                   openDocPaths={openDocPaths}
                   previewPath={inlinePreviewPath ?? null} onPreviewPathChange={onInlinePreviewChange}
                   projectDir={projectDir} navLinks={navLinks} navResolving={navResolving}

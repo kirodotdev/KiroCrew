@@ -4,6 +4,157 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **Subagent rows in System → Sessions now report their process and MCP-stub
+  counts.** Both columns rendered an em dash on every task row, which read as
+  "a subagent carries no MCP stubs" — the opposite of the truth: a subagent
+  session spawns its own poolable stub set and reaches the shared backends
+  through the same gateway daemon a top-level session does (measured on a live
+  host: 18 `--poolable` stubs under one shared runtime, none of them falling
+  back to a private spawn). The reason was structural, not cosmetic: nothing
+  ever counted them. `task_memory_rows()` carried no `procs`/`mcp` fields at
+  all, and the reaper sweep that samples a task's RSS and CPU took no such
+  reading, so the frontend hardcoded both to null. The sweep now counts the
+  run's subtree in the same pass (one walk, no extra syscalls per column) and
+  attributes the counts the way RSS and CPU are already attributed — split
+  across the co-tenants of a shared runtime — with two rules a count needs and
+  a byte figure does not: the quotient rounds to a whole process, and a nonzero
+  total never rounds down to zero. Unmeasured stays null rather than becoming
+  "0", so an unsampled task still reads as an em dash instead of claiming to be
+  empty. The stub cmdline fingerprint is now one constant shared by the
+  rewriter that emits the launch line and both counters that match it, pinned
+  by a test: a private copy that drifted would not fail loudly, it would report
+  zero stubs.
+
+- **The subagent cost sweep no longer runs on the gateway event loop.**
+  ``_sample_live_costs`` walks ``/proc`` several times per live agent, and the
+  reaper called it inline, so every chat turn and heartbeat waited behind those
+  walks. It now runs on the maintenance executor. The body was made
+  thread-safe to go with it: the agent registry is snapshotted once and the
+  sharer count is derived from that snapshot, because iterating the live
+  registry from a worker thread raises ``RuntimeError`` the moment a spawn or
+  eviction lands mid-sweep.
+
+- **A delivered message no longer warns that it may not have been delivered.**
+  Every message typed in the dashboard composer grew a "Message not confirmed —
+  may not have been delivered" warning 30 seconds after it was sent, for the rest
+  of the turn, while the agent was visibly answering it. The indicator's
+  "delivered" signal was a `chat_message` echo of the user row — but that echo is
+  suppressed for dashboard sends by design (`DashboardState.append` defaults
+  `broadcast_user=False` precisely BECAUSE the composer already rendered the
+  bubble; only a row replayed from a channel transcript opts in). So the
+  pending-confirmation flag survived every composer send, the 30s sweep flagged
+  all of them, and the flag cleared only as a side effect of the end-of-turn
+  transcript refresh. Both composer surfaces now confirm from the send's own HTTP
+  response, which is the actual delivery receipt: an accepted immediate dispatch
+  retires the pending state and keeps the correlation id so a later echo still
+  reconciles in place instead of pushing a duplicate bubble. A `queued`
+  acceptance is deliberately NOT a receipt for that bubble -- the busy branch
+  queues only a non-empty message yet answers `{ok, queued}` either way, and when
+  it does queue, its own `queue_push` card owns the message, so cancelling it
+  leaves the bubble behind. The genuine failure paths are untouched -- a rejected
+  response, a transport error and the 10s client-side abort all leave the bubble
+  unconfirmed, which is what the indicator exists to say.
+
+- **Video and audio files now play inline in the file viewer.** Opening
+  `.mp4`, `.webm`, `.mp3`, `.wav` and friends previously fell through to the
+  code renderer, which displayed the binary as mojibake. A new
+  `GET /api/file-stream` endpoint serves media with HTTP Range support
+  (seeking needs 206 Partial Content) through the same security envelope as
+  the other file endpoints -- path validation, sensitive-path block,
+  symlink-refusing open, content sniffing so the served bytes decide the
+  type, and bounded chunked reads so memory stays constant regardless of
+  file size. The viewer routes video to an inline `<video>` player and audio
+  to an `<audio>` bar; any playback failure degrades to the download card.
+  (#4021)
+
+- **A succeeded publish no longer renders as a blank error, and a failed
+  re-publish no longer renders as a success.** The Publish panel recognized only
+  the deploy-shaped `{url}` response, so a provider that hands its confirmed
+  publish to `POST /api/artifacts/{slug}/publish` — the supported way to reuse the
+  core's single publish authorization and audit trail rather than growing a second
+  one — got its serialized-artifact response read as "no url", fell through to
+  `{url: ''}` and rendered the ERROR branch with an undefined message: a bare red
+  icon, no text, on a publish that had in fact succeeded (the bytes were pushed
+  and `publication` was persisted). `readPublishOutcome` now reads both shapes and
+  returns an outcome rather than a url: success is signalled by the return shape
+  instead of inferred from a non-empty url (a destination can publish and expose
+  no browsable link), an `error` field wins over anything else in the same body,
+  `publication: null` is not success, and an unrecognized shape is reported as a
+  NAMED error instead of an empty one. The mirror-image lie is fixed too — a 200
+  whose `publication.last_error` is non-empty is now reported as that error rather
+  than as "Published!", because `publish_sync.publish()` treats the version push
+  as best-effort on a re-publish: it persists the failure and returns normally, so
+  the remote content is stale behind a 200. The public-exposure warning and its
+  blocking acknowledgment are unchanged and still unconditional.
+
+- **Every builtin app now starts its content 8px from a phone screen edge, not 24px.**
+  The narrow-first page gutter (`px-2 md:px-6`) reached the core pages and Issue
+  Radar, while the remaining builtin apps kept an unconditional `px-6`, so their
+  content was inset 24px before any card inset stacked on top. Meetings, Code
+  Review Sage, Auto Research, Workflows, Mochi, Papyrus, PPTX Maker and Ops
+  Mission Control now carry the same gutter, converted a whole file at a time so
+  a header and the rows beneath it cannot render on two different left edges.
+  Centered empty states keep their `px-6`, where it is the element's only inset
+  and flushing it would push centered copy toward the edge for no width gain; a
+  guard test states that exclusion so a later pass does not read it as a miss.
+
+- **Destructive buttons look destructive on a phone.** `Btn`'s `danger`
+  variant coloured its label only on `:hover`, and a touch viewport never
+  produces `hover` — so a destructive button rendered identically to the
+  non-destructive buttons beside it. Same class of defect as a hover-revealed
+  control: the affordance existed only under a pointer. Found on the Channels
+  page at 390px, where `Close` (which dismisses every agent in the channel) sat
+  in a wrapped header row beside the frequent `3 agents` and `Clear Context`
+  buttons at identical visual weight. The label is now `text-danger`
+  unconditionally; hover still raises the border and adds a subtle fill, so the
+  pointer affordance is not lost, only made unnecessary for recognising the
+  control. (#3937)
+
+- **A parent agent can read its own sub-agent's result file again on a host
+  whose home is a symlink.** The result path handed back in a completion event
+  was built through `Path.resolve()`, which is correct for the traversal check
+  it exists to serve and wrong for a path somebody is told to go read: on an
+  Amazon cloud desktop, where `/home/<user>` is a symlink to
+  `/local/home/<user>`, that resolved spelling carries a `/local/home/...`
+  prefix the reader's own path allowlist -- keyed on the `$HOME` it was given --
+  does not match. The file was always readable; only the spelling was
+  unrecognized. So the read was refused, and refused as an approval prompt that
+  times out rather than as an error, which made a whole wave of sub-agent
+  results look unreadable while the parent concluded it lacked permission.
+  Paths emitted as TEXT (the completion event, the batch digest, `spawn_status`,
+  the prior-result hint on an unresumable conversation, and `info.result_path`
+  wherever it surfaces) now carry the declared home spelling, while every path
+  used to open a file stays symlink-resolved so the traversal check is unchanged.
+  Validation is delegated to the resolving helper rather than duplicated, so the
+  two cannot drift apart.
+- **Code Review Sage's "Ask the reviewer" no longer dies with the review's
+  session.** The reviewer's reasoning lives in the session that produced the
+  findings, and that session was kept resident only briefly — a 1800s idle TTL,
+  a 6h cap, a 4-session LRU cap, and gateway restart. Worse than "unloaded":
+  retiring it called `handle.destroy()`, which unlinks the kiro-cli transcript
+  unless `keep_transcript` is set, so the reasoning was DELETED and no amount of
+  waiting or re-opening could bring it back. Sage now keeps the transcript and
+  a follow-up RESUMES it as an ordinary chat session (`session/load`), filed in
+  a `Sage Review` folder and titled `followup-pr#<n>-<title>`. Nothing is held
+  resident between the review and the question: asking is the rare case, so a
+  follow-up pays a cold load from disk instead of pinning the shared reviewer
+  subprocess on the chance that someone asks. Because the follow-up is a normal
+  session, its tool use now runs through the dashboard's approval pipeline,
+  which sees real permission requests and can reject BEFORE execution — closing
+  the documented limitation that Sage's own gate was post-hoc for
+  spec-pre-approved tools. A resume that would not restore the review is refused
+  rather than attempted: the dashboard's fallback for a failed resume is to
+  replay Kiro Crew's conversation log, and a follow-up session has none, so a
+  session opened anyway would answer confidently about a review it knows nothing
+  about; the same reason a run that is still going is not offerable, since a
+  second coverage pass can replace the findings a mid-run conversation was
+  opened on. Follow-up offers are retired after two weeks with no activity,
+  measured from the transcript's own mtime so a conversation still in use keeps
+  its offer. Retiring an offer removes only Sage's own descriptor: the one
+  session id available there comes from a file the reviewer can write, so
+  deleting on that authority would let a prompt-injected review name any session
+  on the machine and have this app remove it.
+
 - **A long-running cron job's next tick is no longer dispatched up to 30s
   late.** A job is invisible to the scheduler's wake computation while it's
   executing (`_next_wake_secs` skips anything in `self._executing`), so for
@@ -23,6 +174,24 @@ All notable changes to KiroCrew are documented in this file.
   point the completed job is no longer `_executing`, so the corrected delay
   still gets picked up, just moments later rather than being computed
   twice.
+
+- **Reload session: relaunch a session's agent process in place.** A live
+  agent process mounts its MCP servers and builds its tool table once, at
+  session-init time, so config that changes afterwards — a newly added MCP
+  server, an env or agent-spec fix — never reaches an already-open session;
+  the only remedies were restarting the whole gateway or abandoning the
+  conversation for a new chat. The session actions menu now carries a
+  "Reload session" item (disabled while a turn runs) backed by
+  `POST /api/chat/slots/{slot}/reload`: it targets the slot's linked session
+  key, applies the cancel-route app-isolation policy, refuses with 409 while
+  a turn is in flight or sub-agent children are attached, tears the process
+  down through the same chokepoint the agent/workspace switches use, appends
+  a feed notice, and eagerly re-arms the resume spawn, so the relaunched
+  process re-reads its agent spec and environment and re-initializes MCP
+  servers via session/load with the conversation preserved. The busy check
+  is evaluated atomically with the session pop, closing the check-then-reset
+  race, and the notice kind is skipped by the last-real-message scans on
+  both backend and frontend.
 
 - **Removing a worktree in Dev Fleet no longer strands its pod's isolated
   HOME.** Reclamation was gated on the pod's unit still being ACTIVE, which the

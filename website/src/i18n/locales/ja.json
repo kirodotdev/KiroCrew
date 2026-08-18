@@ -45,6 +45,7 @@
     "k_search_for_anything": "⌘K — 何かを検索…",
     "kiro_credit_usage_checking": "Kiro クレジット使用状況 — 確認中…",
     "kiro_credit_usage_checking_2": "Kiro クレジット使用状況 — 確認中",
+    "kiro_credit_usage_unavailable": "Kiro クレジット使用状況 — 利用不可",
     "kiro_discord_community": "Kiro Discord コミュニティ",
     "main_navigation": "メインナビゲーション",
     "manage_account": "アカウントを管理",
@@ -621,32 +622,24 @@
           "finding_dimension_in_file": "{{file}} の {{dimension}}"
         },
         "reviewChat": {
-          "closed_notice": "この会話は終了し、レビュー担当は読み込まれていないため、新しい質問には答えられません。上の履歴は保持されます。",
-          "empty_hint": "このレビュー担当は各指摘の判断根拠をまだ保持しています。なぜ指摘したのか、何を確認したのかを質問できます。",
-          "end_chat": "会話を終了",
-          "error_busy": "前の質問にまだ回答中です。",
-          "error_empty": "先に質問を入力してください。",
-          "error_expired": "レビュー担当が読み込まれていないため回答できません。このプルリクエストを再レビューすると再度質問できます。",
-          "error_generic": "質問に回答できませんでした。もう一度お試しください。",
-          "error_needs_override": "この会話を続けるには YOLO を有効にしてください。回答にツールの実行が必要になる場合があります。",
-          "error_override_expiring": "回答が終わる前にツールの承認が期限切れになります。延長してからもう一度質問してください。",
-          "error_override_lapsed": "レビュアーの回答中にツールの承認が終了したため、回答を中止しました。再承認してからもう一度質問してください。",
-          "error_persist_failed": "回答を保存できなかったため、この会話には含まれていません。もう一度質問してください。",
-          "error_tool_denied": "レビュアーがセキュリティポリシーで禁止されたツールを使おうとしたため、回答を中止しました。何も実行されていません。",
-          "error_transcript_unsafe": "この会話を安全に保存できないため、書き込みませんでした。レビューのフォルダーを確認してください。",
+          "error_generic": "フォローアップのセッションを開けませんでした。もう一度お試しください。",
           "error_run_deleted": "このレビューは削除されたため、会話は終了しました。",
-          "error_too_long": "質問が長すぎます。短くして送信してください。",
-          "needs_override_notice": "レビュー担当はまだ読み込まれていますが、ツールの承認ができないため回答できません。回答にはコードを読む必要がある場合があります。続けるには YOLO を有効にしてください。",
-          "placeholder": "この指摘を挙げた理由を質問…",
           "ran_tools": "参照: {{tools}}",
           "reasoning": "推論",
           "refused_notice": "完全に回答するにはツールの実行が必要でしたが許可されなかったため、この回答は限定的です。YOLO を有効にすると実行できます。",
           "role_reviewer": "レビュー担当",
           "role_you": "あなた",
-          "send": "送信",
-          "sending": "質問中…",
           "title": "レビュー担当に質問する",
-          "unsent_label": "未送信"
+          "earlier_questions": "以前の質問",
+          "resume_hint": "レビュー担当者を再開するチャットを開きます。指摘の根拠となった推論がそのまま残っています。",
+          "open_session": "フォローアップのセッションを開く",
+          "opening": "開いています…",
+          "not_recorded_notice": "このレビューはレビュー担当者のセッションを保持していないため、再開できるものがありません。このプルリクエストをもう一度レビューすると質問できます。",
+          "transcript_gone_notice": "レビュー担当者のセッションはディスク上に残っていないため、再開できるものがありません。このプルリクエストをもう一度レビューすると質問できます。",
+          "continue_hint": "このレビュー担当者との会話はチャットタブで続けられます。",
+          "continue_session": "フォローアップのセッションを続ける",
+          "run_live_notice": "このレビューは実行中です。完了まで指摘は変わる可能性があるため、まだ質問できることはありません。",
+          "loading": "読み込み中…"
         },
         "runCard": {
           "cancel": "キャンセル",
@@ -2393,6 +2386,9 @@
         "viewSection": "表示",
         "view_folders": "フォルダー",
         "view_list": "フラットリスト"
+      },
+      "preview": {
+        "mermaidError": "無効な Mermaid 図 — ソースを表示しています。"
       },
       "row": {
         "delete": "ノートを削除",
@@ -4270,6 +4266,20 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "crewWakeSection": {
+      "active": "実行中",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "このクルーのスケジュールを読み込めなかったため、何が起動するかは不明です。",
+      "no_schedules_run_this_crew_automatically": "このクルーを自動で実行するスケジュールはありません。",
+      "open_schedule": "スケジュールを開く",
+      "pause_named": "{{name}} を一時停止",
+      "paused": "一時停止中",
+      "resume_named": "{{name}} を再開",
+      "run_named_now": "{{name}} を今すぐ実行",
+      "running": "実行しています",
+      "schedule": "スケジュール",
+      "schedules_that_run_this_crew_without_you_asking": "あなたが頼まなくてもこのクルーを実行するスケジュール。上のトリガーとは別で、あちらはオーケストレーターがこのクルーを選ぶ条件だけを決めます。",
+      "what_wakes_this_crew": "このクルーを起動するもの"
+    },
     "agentDropdownList": {
       "active_in_this_session": "このセッションでアクティブ",
       "could_not_change_the_default_agent": "デフォルトエージェントを変更できませんでした",
@@ -5041,6 +5051,7 @@
       "invalid_json": "無効な JSON：",
       "items": "項目",
       "lines": "行",
+      "media_preview_failed": "再生に失敗しました。ブラウザーはこのファイルをデコードできません。",
       "more": "その他",
       "null": "null",
       "office_download_hint": "Office ドキュメントはインラインでプレビューできません。Word、Excel、PowerPoint、または互換ビューアーで開くには、ダウンロードしてください。",
@@ -6022,6 +6033,10 @@
       "move_to_folder": "フォルダーに移動…",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
+      "reload_blocked_running": "ターン実行中",
+      "reload_blocked_subagents": "サブエージェント動作中",
+      "reload_session": "セッションを再読み込み",
+      "reload_session_tooltip": "エージェントプロセスを再起動して新しい MCP/設定の変更を反映します。会話は保持されます。",
       "rename": "名前変更",
       "reveal_in_sidebar": "サイドバーに表示",
       "switch_to_autopilot": "オートパイロットに切り替え",
@@ -6575,6 +6590,8 @@
     },
     "useCronActions": {
       "failed_to_cancel_job": "ジョブのキャンセルに失敗しました",
+      "failed_to_pause_job": "ジョブを一時停止できませんでした",
+      "failed_to_resume_job": "ジョブを再開できませんでした",
       "failed_to_open_in_chat": "チャットで開くのに失敗しました",
       "failed_to_run_job": "ジョブの実行に失敗しました"
     },
@@ -6621,7 +6638,8 @@
       "subagents": "サブエージェント",
       "summary": "サマリー",
       "workflows": "ワークフロー",
-      "git": "Git"
+      "git": "Git",
+      "pins": "ピン"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "すべてのスロットが使用中です",
@@ -6658,6 +6676,8 @@
     },
     "useSessionActions": {
       "close_this_session": "このセッションを閉じますか？",
+      "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
+      "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
       "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
     },
@@ -7703,7 +7723,9 @@
         "this_app_render_is_no_longer_available": "このアプリの表示は利用できなくなりました。もう一度ツールを実行して表示してください。",
         "turn_diff": "ターンの差分",
         "menu_git": "Git",
-        "menu_git_desc": "ブランチ、変更、最近のコミット"
+        "menu_git_desc": "ブランチ、変更、最近のコミット",
+        "menu_pins": "ピン",
+        "menu_pins_desc": "このセッションでピン留めしたメッセージ"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止に失敗したため、セッションをリセットしました",
@@ -7823,9 +7845,8 @@
       },
       "pins": {
         "pinned_messages": "ピン留めされたメッセージ",
-        "close_panel": "ピン留めメッセージパネルを閉じる",
         "loading": "読み込み中…",
-        "no_pinned_messages": "ピン留めされたメッセージはまだありません。重要なメッセージをピン留めしてすぐに見つけられるようにしましょう。",
+        "no_pinned_messages": "ピン留めされたメッセージはまだありません。チャットのメッセージにカーソルを合わせ、ピンのアイコンをクリックするとここに保存されます。",
         "message_unavailable": "このピン留めメッセージは読み込まれた履歴では利用できなくなりました。",
         "pin_failed": "メッセージをピン留めできませんでした。もう一度お試しください。",
         "unpin_failed": "メッセージのピン留めを解除できませんでした。もう一度お試しください。",
@@ -7838,7 +7859,6 @@
         "copy_preview": "テキストをコピー",
         "copy_link": "メッセージへのリンクをコピー",
         "unpin": "ピン留めを解除",
-        "open_pinned_messages": "ピン留めされたメッセージを開く",
         "jump_to_message": "メッセージに移動"
       },
       "sessionSummary": {
@@ -8110,6 +8130,7 @@
       "show_collapsed_folders": "折りたたんだフォルダーを表示:",
       "show_folder": "フォルダーを表示",
       "show_in_flat_view": "フラット表示に {{name}} を表示",
+      "show_only_sessions_tagged": "{{name}} タグが付いたセッションのみ表示",
       "show_the_folder_list": "フォルダー一覧を表示",
       "skip": "スキップ",
       "sort_and_filter_sessions": "セッションの並べ替えと絞り込み",
@@ -8123,6 +8144,7 @@
       "sort_oldest": "古い順",
       "started_in_channel": "この会話は {{channel}} で始まりました。",
       "started_in_direct_message": "この会話はダイレクトメッセージで始まりました。",
+      "stop_filtering_by_tag": "{{name}} でのフィルターを解除",
       "streaming": "ストリーミング中",
       "switch_all_sessions": "すべてのセッションを切り替え",
       "switch_all_to_model": "すべてのモデルを切り替え…",
@@ -8132,6 +8154,7 @@
       "switch_to_folder_view": "フォルダー表示に切り替え",
       "switch_to_list_view": "一覧表示に切り替え",
       "switching": "切り替え中…",
+      "tags": "タグ",
       "temporary_no_memory_reads_or_writes": "一時セッション — メモリの読み書きなし",
       "thinking": "考え中…",
       "today": "今日",
@@ -8918,6 +8941,36 @@
       "without_gateway_per_session_copies": "ゲートウェイなし (セッションごとのコピー)"
     },
     "mcpManagement": {
+      "assessment": {
+        "col_assessment": "評価",
+        "col_evidence": "根拠",
+        "col_running_as": "現在の実行形態",
+        "connections_link": "Connections",
+        "how_measured": "server は Kiro Crew が調べるまで未測定と表示されます。調査は {{link}} の MCP server 一覧を更新したときに 2 件ずつ行われます。",
+        "lede": "Kiro Crew が各サーバーについて観測できた内容と、それが現在の実行形態とどう一致しているかを示します。この画面では何も変更されません — 切り替えは「サーバー」にあります。",
+        "legend": "共有バックエンドを推奨するには、サーバーが呼び出し元を区別できると表明している必要がありますが、そう表明するサーバーはほとんどありません — そのため、正常なサーバーの多くは「異議なし」に留まります。これは保守的な回答であって、欠落ではありません。共有するかどうかは引き続きご自身の判断です。",
+        "open_servers": "Servers を開く",
+        "reason_all_tools_read_only": "すべてのツールが読み取り専用と宣言しています",
+        "reason_caller_sensitive": "2 つの異なる呼び出し元に対してハンドシェイクの応答が異なりました",
+        "reason_declares_caller_identity": "呼び出し元を区別できると宣言しています",
+        "reason_first_party": "設計上、単一のセッションに紐付く Kiro Crew サーバーです",
+        "reason_no_objection_found": "不適格となる要素は見つかりませんでしたが、これは共有が安全である根拠より弱いものです",
+        "reason_no_tool_annotations": "読み取り専用かを宣言したツールはありません",
+        "reason_no_tools_listed": "検査できるツールが提供されていません",
+        "reason_not_probed": "計測されたことがないため、どちらとも判断できません",
+        "reason_not_stdio": "stdio サーバーではないため、スタブを前段に置くパイプがありません",
+        "reason_observed_hazard": "共有中に呼び出し元ごとに異なる挙動がすでに確認されています。ハザードコード",
+        "reason_per_client_capability": "1 つのクライアントに固有のケイパビリティを提示しています。名称",
+        "reason_preflight_not_run": "宣言していますが、まだ計測されていません",
+        "reason_preflight_passed": "2 つの異なる呼び出し元で計測し、同じ応答を返しました",
+        "reason_rotating_secret_env": "セッションごとに値が異なる資格情報を読み取ります。環境変数",
+        "shared_without_support": "バックエンド共有はすでに有効ですが、証拠は共有に反しています。影響を受ける server: {{count}}",
+        "strength_declared": "共有向け設計",
+        "strength_disqualified": "共有に適さない",
+        "strength_no_objection": "異議なし",
+        "strength_refuted": "共有すると危険",
+        "strength_unknown": "未計測"
+      },
       "cancel": "キャンセル",
       "col_server": "サーバー",
       "col_state": "状態",
@@ -8929,6 +8982,7 @@
       "confirm_stateful": "セッションごとの状態を持つサーバーは、スタブのみに留めるか、同居を前提にしてください。",
       "confirm_title": "セッション間でバックエンドを共有しますか？",
       "confirm_turn_on": "共有を有効にする",
+      "confirm_unsupported": "そのうち {{count}} 件は、証拠が共有に反しています。",
       "learn_more": "詳細",
       "learn_more_docs": "ドキュメントで詳細を見る",
       "lede": "Kiro Crew は、各セッションに MCP サーバーを起動させる代わりに、サーバーの前に独自のスタブを置くことができます。スタブはサーバー自身が UI を描画する (MCP Apps) ための前提であり、共有バックエンドがルーティングされる先もスタブだけです。そのため、サーバー単位のオプトインになっています。 {{link}}",
@@ -8950,7 +9004,10 @@
       "stub_failed": "変更を適用できませんでした。保存済みでまだ有効になっていない可能性があります。下のスイッチは保存された状態を示しています。",
       "stub_not_live": "保存しましたが、まだ有効ではありません。ゲートウェイを起動できませんでした。スイッチは保存内容を示しており、稼働状態ではありません。",
       "stubbed_of_total": "{{total}} 台中 {{stubbed}} 台にスタブ",
-      "unsupported_platform": "バックエンド共有には Unix ドメインソケットが必要なため、このプラットフォームでは利用できません。"
+      "unsupported_platform": "バックエンド共有には Unix ドメインソケットが必要なため、このプラットフォームでは利用できません。",
+      "view_assessment": "共有の評価",
+      "view_servers": "サーバー",
+      "views_aria": "MCP 管理ビュー"
     },
     "migrationPage": {
       "app_migration": "アプリ移行",
@@ -9746,7 +9803,7 @@
       "click_again_to_confirm": "もう一度クリックして確認",
       "collapse": "折りたたむ",
       "command_shell": "コマンド · シェル",
-      "confirm": "確認",
+      "confirm_delete_job": "削除？",
       "continue_session": "セッションを続行",
       "create_your_first_job": "最初のジョブを作成",
       "cronFolders": {
@@ -9976,6 +10033,7 @@
         "auto_update_on_restart": "再起動時に自動更新",
         "automatic_updates_are_unavailable_in_this_build": "このビルドでは自動更新を利用できません",
         "automatic_updates_unavailable_dev_build": "このビルドでは自動更新を利用できません（開発ビルド）。",
+        "automatic_updates_unavailable_channel": "このリリースチャネルにはお使いのプラットフォーム向けのビルドがまだないため、自動更新は利用できません。上でチャネルを切り替えると更新を受け取れます。",
         "automatic_updates_unavailable_platform": "このビルドはこのプラットフォーム上で自動更新を利用できません。",
         "automatic_updates_unavailable_translocated": "macOS がこのアプリを一時的な読み取り専用コピーから実行しているため、自動更新を利用できません。Applications フォルダーに移動して再度開いてください。",
         "automatic_updates_unavailable_volume": "このアプリが読み取り専用ディスクイメージから実行しているため、自動更新を利用できません。Applications フォルダーに移動して再度開いてください。",

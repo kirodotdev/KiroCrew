@@ -36,6 +36,7 @@ from kiro_crew.acp._dispatch import (
     parse_text_chunk,
     parse_usage_update,
     redact_text,
+    reject_option_id,
     set_mode_params,
     set_model_params,
 )
@@ -80,6 +81,7 @@ from kiro_crew.acp.types import (
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
     METHOD_PROMPT,
+    METHOD_REQUEST_PERMISSION,
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
@@ -384,6 +386,9 @@ class AcpRuntimeProtocol(Protocol):
     async def send_error(self, request_id: str | int, code: int, message: str) -> None:
         ...
 
+    def mark_turn_active(self, session_id: str, active: bool) -> None:
+        ...
+
     def unregister_session(self, session_id: str) -> None:
         ...
 
@@ -478,6 +483,22 @@ class AcpSessionHandle:
         # a yield in prompt().
         self._parked_total: float = 0.0
         self._parked_since: float | None = None
+        # Consumers that implement the low-fidelity child downgrade (dashboard
+        # card / interactive approver) opt IN; for everyone else the handle
+        # itself fail-closes low-fidelity child permission requests below, so
+        # a consumer that predates the fidelity contract can never auto-approve
+        # a child on agent-authored context. Full-fidelity child events flow to
+        # every consumer unchanged (mode parity everywhere).
+        self.child_fidelity_aware: bool = False
+        # User-visible notices for permission requests this handle answered
+        # itself (fail-close gate below, pre-turn drain): flushed as
+        # EVENT_SUBAGENT_ACTIVITY at the next dispatch so the rejection shows
+        # on the child's crew card instead of vanishing into the log.
+        self._pending_reject_notices: list[tuple[str, str]] = []
+        # In-flight SEL audit tasks for handle-owned permission rejections
+        # (fail-close gate, pre-turn drain) — retained so they cannot be
+        # garbage-collected mid-flight. Mirrors AcpRuntime._audit_tasks.
+        self._audit_tasks: set[asyncio.Task[None]] = set()
         # Set when a permission event is yielded, cleared when it is answered.
         # Distinguishes "waiting for a human" (legitimate, bounded elsewhere)
         # from "the consumer stopped pulling for some other reason".
@@ -648,11 +669,87 @@ class AcpSessionHandle:
         # the queue grows without bound. The abandoned turn's prompt response is
         # already skipped via is_response_for; its notifications are not, so drop
         # them here before the new turn begins.
+        #
+        # EXCEPTION — permission REQUESTS are answered, never dropped: a
+        # server→client request discarded here strands the backend's response
+        # oneshot and wedges the requesting (sub)agent's whole tool batch until
+        # process teardown — the 2026-08-15 2h crew stall. A request stranded
+        # from an abandoned turn (or routed here for a backend child between
+        # turns) gets the fail-closed reject; the live turn's requests are
+        # handled by the dispatch loop as before.
         while True:
             try:
-                self._queue.get_nowait()
+                stale = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if (
+                stale is not None
+                and stale.id is not None
+                and stale.method is not None
+                and stale.is_method(METHOD_REQUEST_PERMISSION)
+            ):
+                # Answer with the request's OWN advertised reject option: the
+                # per-turn _permission_options map was just cleared, so a bare
+                # reject_tool would always take its `cancelled` fallback —
+                # which claude-agent-acp renders as "Tool use aborted" (reads
+                # as a failure) instead of a clean policy denial. Repopulate
+                # the map from the stranded frame's own options first.
+                _stale_params = stale.params if isinstance(stale.params, dict) else {}
+                _reject_id = reject_option_id(_stale_params)
+                if _reject_id is not None:
+                    self._permission_options[stale.id] = {"reject": _reject_id}
+                _stale_sid = str(_stale_params.get("sessionId") or "")
+                _stale_tc = _stale_params.get("toolCall")
+                _stale_title = (
+                    _stale_tc.get("title") if isinstance(_stale_tc, dict) else ""
+                ) or "<unknown tool>"
+                try:
+                    await self.reject_tool(stale.id)
+                except asyncio.CancelledError:
+                    # The prompt was cancelled mid-drain: put the request back
+                    # for the NEXT drain instead of dropping it un-answered
+                    # (a dropped server→client request strands the backend's
+                    # oneshot — the exact hang this drain exists to prevent).
+                    self._queue.put_nowait(stale)
+                    # _turn_done was already cleared for THIS turn, and the
+                    # BaseException guard that would restore it wraps only
+                    # the send_request below — re-raising from here without
+                    # setting it would leave the handle permanently
+                    # turn-active and every later prompt() rejected.
+                    self._turn_done.set()
+                    raise
+                except Exception:
+                    # A reject that failed to SEND left the child waiting on
+                    # a stranded oneshot with no proof any answer reached the
+                    # backend. The pipe cannot be trusted — escalate to the
+                    # runtime's dead-marking so the child's wait dies with
+                    # the process instead of hanging invisibly.
+                    logger.exception("failed to answer stranded permission request")
+                    _md = getattr(self._runtime, "_mark_dead", None)
+                    if _md is not None:
+                        _md("pre-turn drain reject failed")
+                    continue
+                logger.warning(
+                    "rejected permission request id=%s stranded in the "
+                    "pre-turn drain (abandoned turn or between-turns child "
+                    "frame) — answering so the backend cannot hang",
+                    stale.id,
+                )
+                # Crew-card notice ONLY for a child-origin strand: the card
+                # keys on sub_session_id, so the parent's own session id (an
+                # abandoned parent-turn request) can never match a card —
+                # emitting it would name the wrong actor. The parent case is
+                # covered by the WARNING + SEL record.
+                if _stale_sid and _stale_sid != self._session_id:
+                    self._pending_reject_notices.append((_stale_sid, str(_stale_title)))
+                self._audit_handle_reject(
+                    stale.id,
+                    str(_stale_title),
+                    "stranded_request_pre_turn_drain",
+                    sub_session_id=(
+                        _stale_sid if _stale_sid != self._session_id else ""
+                    ),
+                )
 
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
@@ -671,6 +768,23 @@ class AcpSessionHandle:
         # exception hierarchy. Re-raised unchanged, so cancellation still
         # propagates.
         try:
+            # Build the prompt blocks FIRST (the slow, cancellable part), then
+            # mark the turn active immediately before the write: a child
+            # permission frame read by the runtime between the write and the
+            # mark would otherwise be auto-answered as "between turns" even
+            # though this owner's turn had begun. Marking pre-build instead
+            # would claim an active turn during a long image-encoding stint
+            # in which nothing consumes the queue. The BaseException guard
+            # unmarks on any failure so a dead write cannot leave the session
+            # permanently routed-to.
+            _prompt_blocks = await asyncio.to_thread(
+                build_prompt_blocks,
+                message,
+                allow_image=self._runtime.supports_image_prompt,
+            )
+            _mark = getattr(self._runtime, "mark_turn_active", None)
+            if _mark is not None:
+                _mark(self._session_id, True)
             req_id = await self._runtime.send_request(
                 METHOD_PROMPT,
                 {
@@ -681,22 +795,42 @@ class AcpSessionHandle:
                     # would never see the picture. Gated on the agent's advertised
                     # capability; when it is absent the path stays in the text as a
                     # tool-openable reference rather than being dropped.
-                    # Offloaded: the builder stats and reads image files (up to
-                    # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
-                    # blocking I/O runs on the gateway loop and pauses every other
-                    # session's streaming for the duration.
-                    "prompt": await asyncio.to_thread(
-                        build_prompt_blocks,
-                        message,
-                        allow_image=self._runtime.supports_image_prompt,
-                    ),
+                    # Offloaded (above): the builder stats and reads image files
+                    # (up to MAX_IMAGE_BYTES each) and base64-encodes them.
+                    # Inline, that blocking I/O runs on the gateway loop and
+                    # pauses every other session's streaming for the duration.
+                    "prompt": _prompt_blocks,
                 },
             )
         except BaseException:
             self._turn_done.set()
+            _mark = getattr(self._runtime, "mark_turn_active", None)
+            if _mark is not None:
+                _mark(self._session_id, False)
             raise
 
         try:
+            # Surface any drain-time rejections (see the pre-turn drain above)
+            # as crew-card activity before the turn's own events — the user
+            # sees WHY a child's tool failed instead of an unexplained error.
+            # INSIDE the try/finally: these are yields, i.e. abandonment
+            # points. A consumer that closes the stream at a notice yield
+            # would otherwise skip mark_turn_active(False)/_turn_done and
+            # wedge the handle as permanently turn-active.
+            # Snapshot-and-clear BEFORE yielding: the rejects were already
+            # sent, so a consumer that abandons the stream mid-notice must
+            # not see the same notices replayed at the next turn's start.
+            _notices = list(self._pending_reject_notices)
+            self._pending_reject_notices.clear()
+            for _n_sid, _n_title in _notices:
+                yield AcpEvent(
+                    kind=EVENT_SUBAGENT_ACTIVITY,
+                    sub_session_id=_n_sid,
+                    text=(
+                        "⛔ permission auto-rejected (stranded between turns): "
+                        f"{redact_text(str(_n_title)[:4096])[:120]}"
+                    ),
+                )
             async for event in self._dispatch_events(req_id, timeout):
                 # Park accounting. The consumer holds this event from here until
                 # it comes back for the next one, and that interval is CONSUMER
@@ -719,6 +853,8 @@ class AcpSessionHandle:
                         self._parked_total += time.monotonic() - self._parked_since
                         self._parked_since = None
         finally:
+            if _mark is not None:
+                _mark(self._session_id, False)
             if not self._turn_done.is_set():
                 self._turn_done.set()
 
@@ -869,6 +1005,54 @@ class AcpSessionHandle:
                 request_id,
                 {"outcome": {"outcome": OUTCOME_CANCELLED}},
             )
+
+    def _audit_handle_reject(
+        self,
+        request_id: str | int | None,
+        title: str,
+        error: str,
+        sub_session_id: str = "",
+    ) -> None:
+        """SEL-audit a permission request this handle rejected ITSELF.
+
+        The fail-close fidelity gate and the pre-turn drain answer requests
+        that never reach a consumer, so no consumer-side audit fires — every
+        permission decision must still leave a SEL record (repo convention;
+        the runtime's unregistered-session auto-reject does the same).
+        Off-loop (``asyncio.to_thread``) and AFTER the reject was sent: sel()
+        may do blocking filesystem work on first use, and an audit failure
+        must not undo or delay the already-made decision. Title is
+        backend/LLM-authored: bounded then redacted before it is stored.
+        """
+        safe_title = redact_text(str(title)[:4096])[:120] if title else "<unknown>"
+        rid = request_id if isinstance(request_id, (str, int)) else ""
+
+        def _audit() -> None:
+            try:
+                from kiro_crew.sel import sel
+
+                sel().log_tool_invocation(
+                    # Child rejections carry the CHILD's id in the key —
+                    # attributing them only to the parent would erase the
+                    # traceability the audit exists to provide.
+                    session_key=(
+                        f"acp:{self._session_id}:{sub_session_id}"
+                        if sub_session_id
+                        else f"acp:{self._session_id}"
+                    ),
+                    agent="kirocrew",
+                    source="acp_session_handle",
+                    tool_name=safe_title,
+                    outcome="denied",
+                    request_id=rid,
+                    error=error,
+                )
+            except Exception:
+                logger.exception("SEL audit for handle-rejected permission failed")
+
+        audit_task = asyncio.ensure_future(asyncio.to_thread(_audit))
+        self._audit_tasks.add(audit_task)
+        audit_task.add_done_callback(self._audit_tasks.discard)
 
     # ── Session Configuration ──
 
@@ -1787,11 +1971,46 @@ class AcpSessionHandle:
                 action = self._classify(msg)
 
                 if action == "permission":
+                    _perm_event = self._build_permission_event(msg)
+                    if _perm_event.child_low_fidelity and not self.child_fidelity_aware:
+                        # This consumer never opted into the child-fidelity
+                        # contract: it would run its ordinary hook/trust
+                        # auto-approve on agent-authored context. Answer
+                        # fail-closed here instead of yielding — the request
+                        # is REJECTED (never dropped), the child gets a tool
+                        # error, nothing can hang, and no title-only approve
+                        # can occur on any consumer surface.
+                        logger.warning(
+                            "rejecting low-fidelity child permission request "
+                            "id=%s for fidelity-unaware consumer (child=%s)",
+                            _perm_event.request_id,
+                            _perm_event.sub_session_id,
+                        )
+                        await self.reject_tool(_perm_event.request_id)
+                        self._audit_handle_reject(
+                            _perm_event.request_id,
+                            _perm_event.title or "",
+                            "child_low_fidelity_unaware_consumer",
+                            sub_session_id=_perm_event.sub_session_id or "",
+                        )
+                        yield AcpEvent(
+                            kind=EVENT_SUBAGENT_ACTIVITY,
+                            sub_session_id=_perm_event.sub_session_id,
+                            # Backend-controlled title: bound before redaction
+                            # and cap the display, consistent with the drain
+                            # notice and the [:4096] pre-redaction bounds.
+                            text=(
+                                "⛔ permission auto-rejected (missing security "
+                                "context): "
+                                f"{redact_text(str(_perm_event.title or '<unknown tool>')[:4096])[:120]}"
+                            ),
+                        )
+                        continue
                     # Mark BEFORE the yield: the consumer parks on this event, and
                     # an observer reading the park mid-flight must be able to tell
                     # "waiting for a human" from "the consumer stopped pulling".
                     self._awaiting_permission = True
-                    yield self._build_permission_event(msg)
+                    yield _perm_event
                 elif action == "server_request_unknown":
                     await self._runtime.send_error(msg.id, -32601, "Method not found")
                 elif action == "update":
@@ -2364,6 +2583,7 @@ class AcpSessionHandle:
         normalization, is_shell from the trusted tool_call cache) identically to
         AcpClient. Records the advertised optionIds so approve/reject echo them.
         """
+        _perm_params = msg.params if isinstance(msg.params, dict) else {}
         event, recorded = build_permission_event(
             msg,
             tool_input_cache=self._tool_call_inputs,
@@ -2371,16 +2591,21 @@ class AcpSessionHandle:
             raw_params_cache=self._tool_call_raw_params,
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
+            # ORIGIN-BOUND provenance: cache entries are keyed by the
+            # emitting frame's sessionId, so a child cannot replay a consumed
+            # parent toolCallId to inherit trusted params for a different
+            # operation, while same-origin repeat frames still resolve.
+            cache_scope=str(_perm_params.get("sessionId") or self._session_id),
         )
         if recorded is not None and event.request_id != "":
             self._permission_options[event.request_id] = recorded
         # A frame the runtime routed here for a backend-internal subagent
         # carries the CHILD's sessionId, not this handle's. Mark the origin so
-        # the policy consumer can tell reduced-fidelity requests apart: the
-        # per-toolCallId caches above only see slot-owned tool_call frames, so
-        # for a child the command/shell context is absent and an auto-approve
-        # decision would rest on the title alone (chat_runner downgrades those
-        # to the interactive card; hard denies still apply).
+        # the policy consumer can tell reduced-fidelity requests apart. Child
+        # tool_call/refinement frames ARE routed into the caches above (same
+        # parser as slot-owned frames), so a well-behaved child carries full
+        # structured context; the low-fidelity downgrade applies only when the
+        # provenance flags say the context never arrived (frame race, drop).
         frame_sid = str((msg.params or {}).get("sessionId") or "")
         if frame_sid and frame_sid != self._session_id:
             event.sub_session_id = frame_sid
@@ -2653,6 +2878,7 @@ class AcpSessionHandle:
                 raw_params_cache=self._tool_call_raw_params,
                 mcp_server_name_cache=self._tool_call_mcp_server,
                 tool_name_cache=self._tool_call_tool_name,
+                cache_scope=frame_sid,
             )
             out: list[AcpEvent] = []
             for ev in child_events:
@@ -2747,6 +2973,7 @@ class AcpSessionHandle:
                         raw_params_cache=self._tool_call_raw_params,
                         mcp_server_name_cache=self._tool_call_mcp_server,
                         tool_name_cache=self._tool_call_tool_name,
+                        cache_scope=self._session_id,
                     )
                     return _child_prefix
             if session_update == "agent_message_chunk":
@@ -2767,6 +2994,7 @@ class AcpSessionHandle:
             raw_params_cache=self._tool_call_raw_params,
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
+            cache_scope=self._session_id,
         )
         for ev in events:
             if ev.kind == EVENT_TEXT_CHUNK:

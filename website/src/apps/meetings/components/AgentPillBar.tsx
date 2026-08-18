@@ -50,7 +50,7 @@ export default function AgentPillBar({
   const presetNames = Object.keys(presets)
 
   return (
-    <div className="px-6 py-2 border-b border-border flex flex-wrap items-center gap-2">
+    <div className="px-4 md:px-6 py-2 border-b border-border flex flex-wrap items-center gap-2">
       {presetNames.length > 0 ? (
         <SimpleSelect
           options={presetNames}

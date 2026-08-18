@@ -755,13 +755,20 @@ class TestDependencyInstall:
         _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("deps-argv", _manifest("server.py"))
-        venv_run = " ".join(next(argv for argv in runs if "venv" in argv))
-        assert sys.executable in venv_run, venv_run
-        assert "python3 -m venv" not in venv_run, venv_run
-        pip_run = " ".join(next(argv for argv in runs if "install" in argv))
-        assert str(venv_python_path(spawn_root)) in pip_run, pip_run
-        assert "-m pip" in pip_run, pip_run
-        assert "/bin/pip" not in pip_run.replace("\\", "/"), pip_run
+        venv_argv = next(argv for argv in runs if "venv" in argv)
+        # Assert on the argv TOKEN, never on a substring of the joined command.
+        # sys.executable's own basename is frequently `python3` (any mise- or
+        # pyenv-managed interpreter, and /usr/bin/python3 itself), so a
+        # substring check for "python3 -m venv" matches the correct absolute
+        # form and fails on exactly the hosts it is meant to pass on.
+        assert venv_argv[0] == sys.executable, venv_argv
+        assert venv_argv[0] != "python3", venv_argv
+        assert venv_argv[1:3] == ["-m", "venv"], venv_argv
+        pip_argv = next(argv for argv in runs if "install" in argv)
+        assert pip_argv[0] == str(venv_python_path(spawn_root)), pip_argv
+        assert pip_argv[1:3] == ["-m", "pip"], pip_argv
+        # `.venv/bin/pip` is POSIX-only; the interpreter must run pip as a module.
+        assert not pip_argv[0].replace("\\", "/").endswith("/bin/pip"), pip_argv
 
     def test_a_failed_dependency_install_does_not_block_the_spawn(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

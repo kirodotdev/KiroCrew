@@ -227,6 +227,14 @@ export default function AppsPage() {
   const [keepData, setKeepData] = useState(true)
   const [uninstallPreview, setUninstallPreview] = useState<UninstallPreview | null>(null)
   const [keepSpecific, setKeepSpecific] = useState<Set<string>>(new Set())
+  // Resource lists the uninstall dialog itemises, derived once so the count it
+  // prints and the check that decides to print it read the same value. Reading
+  // the list twice — a `?.` gate here, a `!` assertion there — is the shape that
+  // produced #3689; `normalizeInstalledApp` means the fallback is now only for a
+  // record that never reached the fetch boundary.
+  const uninstallAgents = uninstallTarget?.manifest?.agents || []
+  const uninstallSkills = uninstallTarget?.manifest?.skills || []
+  const uninstallCrons = uninstallTarget?.manifest?.crons || []
 
   const { data: apps = [], isLoading: appsLoading, error: appsError } = useQuery<InstalledApp[]>({
     queryKey: ['apps'],
@@ -675,7 +683,7 @@ export default function AppsPage() {
         </>}
       />
 
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Notifications */}
         {displayError && (
           <ErrorNotice
@@ -749,14 +757,14 @@ export default function AppsPage() {
                     {i18nT('pages.appsPage.not_installed_from_apps_your_local_source_code_w')}
                   </div>
                 )}
-                {(uninstallTarget.manifest?.agents?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallTarget.manifest?.agents?.length || 0 })}</div>
+                {uninstallAgents.length > 0 && (
+                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallAgents.length })}</div>
                 )}
-                {(uninstallTarget.manifest?.skills?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallTarget.manifest?.skills?.length || 0 })}</div>
+                {uninstallSkills.length > 0 && (
+                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallSkills.length })}</div>
                 )}
-                {(uninstallTarget.manifest?.crons?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallTarget.manifest?.crons?.length || 0 })}</div>
+                {uninstallCrons.length > 0 && (
+                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallCrons.length })}</div>
                 )}
               </div>
 

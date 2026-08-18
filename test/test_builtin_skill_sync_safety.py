@@ -429,10 +429,14 @@ class TestFingerprint:
         (a / "hidden.txt").write_text("secret", encoding="utf-8")
         real_open = os.open
 
-        def _deny(path: object, flags: int, *args: object) -> int:
+        # ``**kwargs`` because this replaces the os module attribute, so it is live for
+        # the whole test INCLUDING teardown, where pytest's own tmp_path cleanup calls
+        # os.open with dir_fd=. A stub narrower than the API it stands in for turns that
+        # cleanup into a TypeError reported as an error at teardown.
+        def _deny(path: object, flags: int, *args: object, **kwargs: object) -> int:
             if "hidden.txt" in str(path):
                 raise PermissionError("denied")
-            return real_open(path, flags, *args)  # type: ignore[arg-type]
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(skills_mod.os, "open", _deny)
         assert _skill_tree_fingerprint(a) is None

@@ -1932,6 +1932,49 @@ class TestPidStartTokenIdentityGuard:
         assert entry in session_pid_file.read_text(encoding="utf-8")
 
     @_POSIX_ONLY
+    def test_session_roots_subreaper_reparent_still_killed(
+        self, session_pid_file: Path
+    ) -> None:
+        """A recorded start token that MATCHES proves identity on its own.
+
+        Orphans do not always reparent to init: a process placed in its own
+        cgroup scope by the service manager reparents to that *user manager*,
+        which is a subreaper. Treating any other PPid as "the PID was recycled"
+        both spares the real orphan AND drops its tracking entry, so nothing
+        ever reaps it again. The token is strictly stronger evidence of identity
+        than the parent, so it must not be vetoed by the PPid heuristic.
+        """
+        from kiro_crew.session_pid import cleanup_orphaned_session_roots
+
+        entry = "999999:99998:sametoken"
+        session_pid_file.write_text(entry + "\n")
+        kills: list[tuple[int, int]] = []
+
+        def fake_liveness(pid: int) -> str:
+            return platform_compat.PID_DEAD if pid == 999999 else platform_compat.PID_ALIVE
+
+        with (
+            patch("kiro_crew.session_pid._is_managed_agent_process", return_value=True),
+            patch("kiro_crew.session_pid._pid_start_token", return_value="sametoken"),
+            patch("kiro_crew.session_pid.platform_compat.pid_liveness", side_effect=fake_liveness),
+            # The subreaper that adopted the orphan -- neither init(1), nor the
+            # dead gateway PID, nor the -1 probe-failure sentinel.
+            patch("kiro_crew.session_pid.platform_compat.get_ppid", return_value=7447),
+            patch("kiro_crew.session_pid.platform_compat.pid_exists", return_value=True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=lambda p, s: kills.append((p, s)),
+            ),
+        ):
+            cleanup_orphaned_session_roots()
+
+        assert (99998, platform_compat.SIGKILL) in kills, (
+            "a token-verified orphan adopted by a subreaper was not reaped"
+        )
+        # And it must not be silently untracked, which is what leaks it forever.
+        assert entry not in session_pid_file.read_text(encoding="utf-8")
+
+    @_POSIX_ONLY
     def test_matching_token_still_killed(self, session_pid_file: Path) -> None:
         """A genuine orphan (token matches) is still reaped — no regression."""
         from kiro_crew.session_pid import cleanup_orphaned_sessions

@@ -31,8 +31,8 @@ def _mute_shared_runner_audit(monkeypatch):
 
     ``discovery.run_gh_json`` / ``current_login`` / ``pipeline.list_open_prs``
     now route through ``github_runner.run_gh``, which emits a real SEL event
-    per spawn. ``KIROCREW_HOME`` is isolated below, but ``config_dir()`` caches
-    the resolved home at its FIRST call in the process, so a suite that
+    per spawn. ``KIROCREW_HOME`` is pinned by the rootdir ``conftest.py``, but
+    ``config_dir()`` caches the resolved home at its FIRST call in the process, so a suite that
     imported something touching it before the isolation fixture ran would
     write through the cached REAL data dir. The audit is not under test here
     (``test/test_github_runner.py`` covers it against a mocked SEL), so mute
@@ -47,16 +47,5 @@ def _mute_shared_runner_audit(monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
-def _isolate_app_home(monkeypatch, tmp_path):
-    """Point ``$KIROCREW_HOME`` at a tmp dir so the suite never touches the real one.
-
-    ``store.app_root()`` derives from ``crew_home()``, so without this every test
-    that reaches ``load_config()`` reads the DEVELOPER'S live app config -- and
-    seeds one into their real data directory when it is absent, because
-    ``load_config`` calls ``ensure_layout`` on a miss. Both are wrong: a machine
-    with ``review.max_concurrent`` configured fails assertions that CI passes
-    (CI has no config, so it sees the seeded default), and a machine without one
-    gets files written outside the test's tmp dir.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-home"))
+#: The rootdir ``conftest.py`` pins ``$KIROCREW_HOME`` for every testpath, which is what
+#: keeps this suite off the real data home: ``store.app_root()`` derives from ``crew_home()``.

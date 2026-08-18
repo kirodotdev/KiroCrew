@@ -144,9 +144,24 @@ def test_child_nested_tool_call_emits_activity() -> None:
     assert activity_events[0].tool_call_id == "child-tc-1"
     assert activity_events[0].title == "read_file src/main.py"
     assert tool_events == []
-    # But the security cache IS populated (side-effect parse), so a later
-    # permission/result for this child tool has the trusted shell signal.
-    assert "child-tc-1" in handle._tool_call_is_shell
+    # The shell cache is deliberately NOT populated: this update carried no
+    # `kind`, so the classification is UNRESOLVED. Caching the miss-default
+    # False here would let the later permission frame read it as a RESOLVED
+    # non-shell (shell_classified=True) and skip the low-fidelity downgrade
+    # without any classification having happened.
+    # (Cache keys are origin-scoped: "<frame sessionId>|<toolCallId>".)
+    assert "sB|child-tc-1" not in handle._tool_call_is_shell
+    assert "child-tc-1" not in handle._tool_call_is_shell
+    # With a usable `kind`, the side-effect parse DOES populate the cache.
+    _update(handle, {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "child-tc-2",
+        "title": "run tests",
+        "kind": "execute",
+        "status": "in_progress",
+        "_meta": {"kiro": {"agentSubtaskId": "sa-1"}},
+    })
+    assert handle._tool_call_is_shell.get("sB|child-tc-2") is True
 
 
 # ── Child agent_message_chunk → EVENT_SUBAGENT_ACTIVITY w/ redacted text ─────

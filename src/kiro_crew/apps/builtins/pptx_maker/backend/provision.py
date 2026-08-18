@@ -44,7 +44,7 @@ from pathlib import Path
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -246,7 +246,7 @@ def _run(argv: list[str], *, cwd: str, timeout: int) -> tuple[int, str]:
     wrapped, env, cleanup = sandboxed_spawn_argv(argv, mode="strict", strip_python_env=True)
     wrapped = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no request-derived values
+        proc = run_limited(  # noqa: S603 - fixed argv, no request-derived values
             wrapped,
             cwd=cwd,
             env=env,
@@ -254,7 +254,6 @@ def _run(argv: list[str], *, cwd: str, timeout: int) -> tuple[int, str]:
             text=True,
             timeout=timeout,
             check=False,
-            preexec_fn=resource_limit_preexec(),
         )
     except subprocess.TimeoutExpired:
         return 1, f"{argv[0]} timed out after {timeout}s"

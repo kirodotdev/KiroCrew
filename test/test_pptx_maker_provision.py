@@ -360,7 +360,7 @@ class TestRunSandboxing:
             mock.patch.object(
                 provision, "sandboxed_spawn_argv", return_value=(["/opt/uv", "x"], scrubbed, None)
             ) as chokepoint,
-            mock.patch.object(provision.subprocess, "run") as run,
+            mock.patch.object(provision, "run_limited") as run,
         ):
             run.return_value = mock.Mock(returncode=0, stdout="out", stderr="")
             provision._run(["/opt/uv", "x"], cwd=str(tmp_path), timeout=5)
@@ -419,8 +419,8 @@ class TestRunSandboxing:
         with (
             mock.patch.object(provision, "sandboxed_spawn_argv", return_value=(["uv"], {}, None)),
             mock.patch.object(
-                provision.subprocess,
-                "run",
+                provision,
+                "run_limited",
                 side_effect=subprocess.TimeoutExpired(cmd="uv", timeout=7),
             ),
         ):
@@ -431,7 +431,7 @@ class TestRunSandboxing:
     def test_a_missing_binary_is_reported_not_raised(self, tmp_path: Path):
         with (
             mock.patch.object(provision, "sandboxed_spawn_argv", return_value=(["uv"], {}, None)),
-            mock.patch.object(provision.subprocess, "run", side_effect=OSError("No such file")),
+            mock.patch.object(provision, "run_limited", side_effect=OSError("No such file")),
         ):
             code, out = provision._run(["uv", "sync"], cwd=str(tmp_path), timeout=7)
         assert code == 1
@@ -446,7 +446,7 @@ class TestRunSandboxing:
             mock.patch.object(
                 provision, "sandboxed_spawn_argv", return_value=(["/opt/uv"], {}, str(profile))
             ),
-            mock.patch.object(provision.subprocess, "run", side_effect=OSError("boom")),
+            mock.patch.object(provision, "run_limited", side_effect=OSError("boom")),
         ):
             provision._run(["/opt/uv"], cwd=str(tmp_path), timeout=5)
         assert not profile.exists()
@@ -458,7 +458,7 @@ class TestRunSandboxing:
             mock.patch.object(
                 provision, "sandboxed_spawn_argv", return_value=(["/opt/uv"], {}, None)
             ),
-            mock.patch.object(provision.subprocess, "run") as run,
+            mock.patch.object(provision, "run_limited") as run,
         ):
             run.return_value = mock.Mock(returncode=2, stdout="on-out\n", stderr="on-err")
             code, out = provision._run(["/opt/uv"], cwd=str(tmp_path), timeout=5)

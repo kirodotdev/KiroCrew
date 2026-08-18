@@ -33,6 +33,47 @@ function iconFor(name: string): typeof Globe {
   return ICONS[name] ?? Upload
 }
 
+/**
+ * Read the OUTCOME of a publish response, across the two shapes an endpoint returns.
+ *
+ * * The deploy-style shape — `{url}` / `{public_url}` — used by `/api/deploy/deploy`.
+ * * The artifact shape — the serialized artifact carrying a `publication` block —
+ *   returned by `POST /api/artifacts/{slug}/publish`, which is where an app
+ *   provider lands when it hands the confirmed publish to the core route (the
+ *   supported way to reuse the core's single publish authorization + audit).
+ *
+ * Returns `null` for anything unrecognized so the caller reports an explicit
+ * error instead of rendering a blank one.
+ *
+ * **HTTP 200 is not success on the artifact shape.** `publish_sync.publish()`
+ * treats the version push as best-effort: on a RE-publish it captures the push
+ * error, persists it as `publication.last_error` and returns normally, so the
+ * route answers 200 with a publication whose remote content is stale. Reading
+ * that as "Published!" would be the same class of lie as the blank error this
+ * function replaces, in the opposite direction — so a non-empty `last_error` is
+ * an error outcome, carrying the provider's own (already redacted) message.
+ *
+ * A success whose destination exposes no browsable URL yields `{url: ''}` —
+ * success WITHOUT a link, which is why a caller must not infer success from a
+ * non-empty url.
+ */
+export function readPublishOutcome(
+  data: Record<string, unknown> | null | undefined,
+): { url: string } | { error: string } | null {
+  if (!data || typeof data !== 'object') return null
+  const direct = data.url ?? data.public_url
+  if (typeof direct === 'string' && direct) return { url: direct }
+  const pub = data.publication
+  // `publication: null` (an UNpublished artifact) is deliberately not success.
+  if (pub && typeof pub === 'object') {
+    const lastError = (pub as { last_error?: unknown }).last_error
+    if (typeof lastError === 'string' && lastError.trim()) return { error: lastError }
+    const viewUrl = (pub as { view_url?: unknown }).view_url
+    return { url: typeof viewUrl === 'string' ? viewUrl : '' }
+  }
+  return null
+}
+
 export function buildProviderList(
   appProviders: AppPublishProvider[],
   kind: string,
@@ -73,6 +114,10 @@ export function PublishHub({
   const [contentDigest, setContentDigest] = useState<string>('')
   const [previewIdentity, setPreviewIdentity] = useState<{ profile: string; region: string }>({ profile: '', region: '' })
   const [scanBlocked, setScanBlocked] = useState<{ findings: string; count: number; credential?: boolean } | null>(null)
+  // `error` is the discriminator the render keys off, so a success is the ABSENCE
+  // of an error rather than a non-empty `url`: a destination can publish
+  // successfully and expose no browsable link, and conflating the two is what
+  // rendered a succeeded publish as a blank error.
   const [result, setResult] = useState<{ url?: string; error?: string } | null>(null)
   const [busy, setBusy] = useState(false)
   // Non-null while the blocking public-exposure acknowledgment is on screen.
@@ -97,6 +142,7 @@ export function PublishHub({
     setPreview(null)
     try {
       const resp = await api.publishToProvider(artifact.slug, selected.id, selected.app, selectedTtlHours())
+      const outcome = readPublishOutcome(resp)
       if (resp?.requires_confirm) {
         setPreview(resp)
         setContentDigest(typeof resp.content_digest === 'string' ? resp.content_digest : '')
@@ -114,11 +160,14 @@ export function PublishHub({
           region: typeof resp.region === 'string' ? resp.region : '',
         })
         setScanBlocked({ findings: resp.findings as string, count: resp.count as number, credential: !!resp.credential })
-      } else if (resp?.url || resp?.public_url) {
-        // Immediate success (already deployed / no confirm needed)
-        setResult({ url: (resp.url || resp.public_url) as string })
+      } else if (resp?.error) {
+        setResult({ error: String(resp.error) })
+      } else if (outcome) {
+        // Immediate success (already deployed / no confirm needed), or a
+        // persisted push failure the route reported with a 200.
+        setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url })
       } else {
-        setResult({ error: resp?.error || i18nT('components.publishHub.unexpected_response') })
+        setResult({ error: i18nT('components.publishHub.unexpected_response') })
       }
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
@@ -163,6 +212,7 @@ export function PublishHub({
         body: JSON.stringify(payload),
       })
       const data = await r.json()
+      const outcome = readPublishOutcome(data)
       if (data?.code === 'stale_preview') {
         // Content changed since preview — force re-preview
         setPreview(null)
@@ -171,12 +221,18 @@ export function PublishHub({
       } else if (data?.blocked && data?.reason === 'scan') {
         setScanBlocked({ findings: data.findings, count: data.count, credential: !!data.credential })
         setPreview(null)
-      } else if (data?.url || data?.public_url) {
-        setResult({ url: data.url || data.public_url })
       } else if (data?.error) {
+        // Checked BEFORE the outcome: an error response is authoritative even if
+        // it happens to carry other fields.
         setResult({ error: data.error })
+      } else if (outcome) {
+        setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url })
       } else {
-        setResult({ url: data?.url || '' })
+        // An unrecognized shape is a failure we cannot describe — say so.
+        // Reporting it as `{url: ''}` (the previous shape) rendered the error
+        // branch with an UNDEFINED message: a bare red icon and no text, on a
+        // publish that had in fact succeeded.
+        setResult({ error: i18nT('components.publishHub.unexpected_response') })
       }
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
@@ -329,18 +385,18 @@ export function PublishHub({
       {/* Result */}
       {result && (
         <div className="space-y-2">
-          {result.url ? (
+          {result.error ? (
+            <div className="flex items-center gap-2 text-sm text-danger">
+              <AlertCircle size={14} /> {result.error}
+            </div>
+          ) : (
             <div className="flex items-center gap-2 text-sm text-ok">
               <Check size={14} /> {i18nT('components.publishHub.published')}
-              {safeHttpUrl(result.url) && (
+              {result.url && safeHttpUrl(result.url) && (
                 <a href={safeHttpUrl(result.url)!} target="_blank" rel="noreferrer" className="text-accent hover:underline inline-flex items-center gap-1">
                   <ExternalLink size={12} /> {result.url}
                 </a>
               )}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-sm text-danger">
-              <AlertCircle size={14} /> {result.error}
             </div>
           )}
           <Btn onClick={() => { setResult(null); setPreview(null); setScanBlocked(null); setSelectedId(''); onClose?.() }}>{i18nT('components.publishHub.done')}</Btn>

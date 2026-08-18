@@ -20,17 +20,43 @@ import {
 } from './constants'
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
-import { FM_RE, LIST_MARKER_RE, indentPx, parseTable } from './utils'
+import { CodeFenceBlock } from './CodeFenceBlock'
+import { MermaidBlock } from './MermaidBlock'
+import { NoteImage } from './NoteImage'
+import {
+  FM_RE,
+  LIST_MARKER_RE,
+  fenceLang,
+  indentPx,
+  parseMermaidBlock,
+  parseTable,
+  resolveNoteImageSrc,
+} from './utils'
 import type { ParsedTable, TableAlign } from './utils'
 import type { EditRange } from './types'
 import { urlTransform } from '../../utils/urlTransform'
 
-/** Inline spans: code, bold, italic, wikilinks and links. */
+/**
+ * Inline spans: code, bold, italic, wikilinks, links and images.
+ *
+ * The image alternative sits last but still wins over the link one for
+ * `![alt](src)`: its match starts at the `!`, one character earlier than the
+ * link's `[`, and the engine takes the leftmost match before it ever considers
+ * alternative order. Appending it therefore leaves every existing group number
+ * untouched, which is why it is not spliced in beside the link branch.
+ */
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))/g
+  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))/g
 
-/** Render one line's inline markup to React nodes. */
-export function inline(text: string, key: number | string): ReactNode[] {
+/**
+ * Render one line's inline markup to React nodes.
+ *
+ * `noteDir` is the directory of the note being read; it is what turns a
+ * relative image source into a file the dashboard can serve. Optional because
+ * every other span renders without it, so a caller that has no note context
+ * (a test, a preview of loose text) still gets everything but relative images.
+ */
+export function inline(text: string, key: number | string, noteDir?: string): ReactNode[] {
   const nodes: ReactNode[] = []
   const re = new RegExp(INLINE_RE.source, 'g')
   let last = 0
@@ -89,6 +115,15 @@ export function inline(text: string, key: number | string): ReactNode[] {
           <span key={k}>{m[8]}</span>
         ),
       )
+    } else if (m[10]) {
+      // An image whose source is refused (or relative with no note directory to
+      // resolve it against) degrades to its alt text rather than to a broken
+      // frame, matching what a refused link does just above. NoteImage owns
+      // that presentation for both failures, so a refused source and a file
+      // that vanished later cannot look different to the reader.
+      nodes.push(
+        <NoteImage key={k} src={resolveNoteImageSrc(m[12], noteDir)} alt={m[11]} rawSrc={m[12]} />,
+      )
     }
     last = m.index + m[0].length
     i++
@@ -110,7 +145,7 @@ const CELL_BORDER = '1px solid var(--border)'
  * into horizontal scrolling. The wrapper still scrolls, so a genuinely wide
  * table stays reachable instead of overflowing the column.
  */
-function tableNode(t: ParsedTable, key: number): ReactNode {
+function tableNode(t: ParsedTable, key: number, noteDir?: string): ReactNode {
   const cell = (align: TableAlign, first: boolean): CSSProperties => ({
     padding: CELL_PAD,
     textAlign: align ?? 'left',
@@ -139,7 +174,7 @@ function tableNode(t: ParsedTable, key: number): ReactNode {
                   borderBottom: CELL_BORDER,
                 }}
               >
-                {inline(text, `${key}-h${c}`)}
+                {inline(text, `${key}-h${c}`, noteDir)}
               </th>
             ))}
           </tr>
@@ -155,7 +190,7 @@ function tableNode(t: ParsedTable, key: number): ReactNode {
                     ...(r === 0 ? null : { borderTop: CELL_BORDER }),
                   }}
                 >
-                  {inline(text, `${key}-${r}-${c}`)}
+                  {inline(text, `${key}-${r}-${c}`, noteDir)}
                 </td>
               ))}
             </tr>
@@ -176,6 +211,11 @@ export interface PreviewProps {
   onSplitEdit: (before: string, after: string, caret: number) => void
   /** Mark the note dirty on the first edit keystroke, before commit. */
   onDirtyEdit?: () => void
+  /**
+   * Directory of the note being read, absolute. Resolves its relative image
+   * sources; without it those images fall back to their alt text.
+   */
+  noteDir?: string
 }
 
 export function Preview({
@@ -187,6 +227,7 @@ export function Preview({
   onCancelEdit,
   onSplitEdit,
   onDirtyEdit,
+  noteDir,
 }: PreviewProps) {
   const body = content.replace(FM_RE, '')
   // `split('\n')` yields a trailing EMPTY segment whenever the body ends with a
@@ -288,8 +329,9 @@ export function Preview({
   }
 
   lines.forEach((line, idx) => {
-    // Lines already consumed by a multi-line block (a table's delimiter row and
-    // body) render as part of that block, not again on their own.
+    // Lines already consumed by a multi-line block (a table's delimiter row
+    // and body, a mermaid fence) render as part of that block, not again on
+    // their own.
     if (idx <= skipTo) return
 
     // Any line that is not a list item ends the list, so the rails stop there.
@@ -297,24 +339,31 @@ export function Preview({
     if (!LIST_MARKER_RE.test(line)) stack = []
 
     if (line.startsWith('```')) {
+      if (!inCode) {
+        // A closed ```mermaid fence renders as a diagram; clicking it opens
+        // the fenced SOURCE, and an unclosed one falls through to the generic
+        // code path below like any other run-away fence.
+        const mermaid = parseMermaidBlock(lines, idx)
+        if (mermaid) {
+          skipTo = mermaid.end
+          out.push(
+            blk(
+              idx,
+              mermaid.end,
+              <MermaidBlock code={mermaid.code} />,
+              { fontSize: '12px', fontFamily: FONT_MONO },
+              { split: false },
+            ),
+          )
+          return
+        }
+      }
       if (inCode) {
         out.push(
           blk(
             codeStart,
             idx,
-            <pre
-              style={{
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                padding: '10px',
-                fontSize: '12px',
-                overflowX: 'auto',
-                fontFamily: FONT_MONO,
-              }}
-            >
-              {codeBuf.join('\n')}
-            </pre>,
+            <CodeFenceBlock code={codeBuf.join('\n')} lang={fenceLang(lines[codeStart])} />,
             { fontSize: '12px', fontFamily: FONT_MONO },
             { split: false },
           ),
@@ -340,7 +389,13 @@ export function Preview({
     if (table) {
       skipTo = table.end
       out.push(
-        blk(idx, table.end, tableNode(table, idx), { fontFamily: FONT_MONO }, { split: false }),
+        blk(
+          idx,
+          table.end,
+          tableNode(table, idx, noteDir),
+          { fontFamily: FONT_MONO },
+          { split: false },
+        ),
       )
       return
     }
@@ -372,7 +427,7 @@ export function Preview({
                     : undefined
                 }
               >
-                {inline(task[3], idx)}
+                {inline(task[3], idx, noteDir)}
               </span>
             </div>,
           ),
@@ -417,7 +472,7 @@ export function Preview({
         // The editor inherits the heading's typography AND colour so the text
         // does not shift shade on click; the chrome is rendered-only, which is
         // what distinguishes the two states.
-        blk(idx, idx, <Tag style={style}>{inline(head[2], idx)}</Tag>, {
+        blk(idx, idx, <Tag style={style}>{inline(head[2], idx, noteDir)}</Tag>, {
           fontSize: style.fontSize,
           fontWeight: style.fontWeight,
           lineHeight: style.lineHeight,
@@ -434,7 +489,7 @@ export function Preview({
         withRails(
           enter(ind),
           idx,
-          blk(idx, idx, <div style={{ marginLeft: ind + 4 }}>{['• ', ...inline(li[2], idx)]}</div>),
+          blk(idx, idx, <div style={{ marginLeft: ind + 4 }}>{['• ', ...inline(li[2], idx, noteDir)]}</div>),
         ),
       )
       return
@@ -450,7 +505,7 @@ export function Preview({
           blk(
             idx,
             idx,
-            <div style={{ marginLeft: ind + 4 }}>{[`${ol[2]}. `, ...inline(ol[3], idx)]}</div>,
+            <div style={{ marginLeft: ind + 4 }}>{[`${ol[2]}. `, ...inline(ol[3], idx, noteDir)]}</div>,
           ),
         ),
       )
@@ -480,7 +535,7 @@ export function Preview({
               color: 'var(--muted)',
             }}
           >
-            {inline(line.slice(2), idx)}
+            {inline(line.slice(2), idx, noteDir)}
           </div>,
         ),
       )
@@ -491,7 +546,7 @@ export function Preview({
       blk(
         idx,
         idx,
-        line.trim() === '' ? <div style={{ height: '8px' }} /> : <div>{inline(line, idx)}</div>,
+        line.trim() === '' ? <div style={{ height: '8px' }} /> : <div>{inline(line, idx, noteDir)}</div>,
       ),
     )
   })

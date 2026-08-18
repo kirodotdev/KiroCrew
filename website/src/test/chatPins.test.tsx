@@ -353,7 +353,6 @@ describe('PinnedMessagesPanel', () => {
     slotKey: 'slot-abc',
     slotTitle: 'Test Chat',
     mode: 'dashboard',
-    onClose: vi.fn(),
     onJumpToMessage: vi.fn(),
     onUnpin: vi.fn(),
   }
@@ -392,16 +391,25 @@ describe('PinnedMessagesPanel', () => {
     expect(defaultProps.onJumpToMessage).not.toHaveBeenCalled() // stopPropagation
   })
 
-  it('calls onClose when close button clicked', () => {
+  it('renders no title row and no close button — the tab strip owns both', () => {
+    // The panel is a side-panel TAB body. A header here would duplicate the tab
+    // chip's label and add a second close affordance next to the chip's own, so
+    // the body must stay chrome-less. Ratchet: reintroducing either fails here.
     render(<PinnedMessagesPanel {...defaultProps} />)
-    fireEvent.click(screen.getByLabelText('close_panel'))
-    expect(defaultProps.onClose).toHaveBeenCalled()
+    expect(screen.queryByLabelText('close_panel')).toBeNull()
+    expect(screen.queryByText('pinned_messages')).toBeNull()
   })
 
-  it('closes on Escape', () => {
+  it('does not take focus on mount', () => {
+    // The standalone panel this replaced focused itself so its OWN Escape
+    // listener could fire. As a tab body it must not: no other view in the
+    // panel grabs focus, and taking it here would pull focus off the tab-strip
+    // control that just opened the tab, against the menu's return-focus
+    // contract. Escape still closes the panel once focus is inside it, which is
+    // ActivityViewer's container handler and identical for every sibling view.
+    const before = document.activeElement
     render(<PinnedMessagesPanel {...defaultProps} />)
-    fireEvent.keyDown(screen.getByTestId('pinned-messages-panel'), { key: 'Escape' })
-    expect(defaultProps.onClose).toHaveBeenCalled()
+    expect(document.activeElement).toBe(before)
   })
 
   it('refreshes relative timestamps while open', () => {
@@ -604,7 +612,6 @@ describe('PinnedMessagesPanel — same-timestamp jump collision', () => {
       pins: [pin1, pin2],
       loading: false,
       slotKey: 'slot-abc',
-      onClose: vi.fn(),
       onJumpToMessage: onJump,
       onUnpin: vi.fn(),
     }

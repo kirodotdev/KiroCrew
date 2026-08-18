@@ -27,7 +27,7 @@ from kiro_crew.tips import (
     _select_tip,
     _validate_tip_fields,
 )
-from kiro_crew.tips_text import truncate_summary
+from kiro_crew.tips_text import SUMMARY_MAX_CHARS, truncate_summary
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -1426,6 +1426,29 @@ class TestTruncateSummary:
     def test_bang_and_question_boundaries(self) -> None:
         assert truncate_summary("Stop! Then more words follow here.", limit=10) == "Stop!"
         assert truncate_summary("Why? Then more words follow here.", limit=10) == "Why?"
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert truncate_summary("") == ""
+
+    def test_default_limit_matches_summary_max_chars(self) -> None:
+        text = "word " * 80  # 400 chars, over the 300-char default cap
+        assert truncate_summary(text) == truncate_summary(text, SUMMARY_MAX_CHARS)
+        assert len(truncate_summary(text)) <= SUMMARY_MAX_CHARS
+
+    def test_result_never_exceeds_limit(self) -> None:
+        # Tightest guarantee across every branch, including sub-word limits where
+        # only the ellipsis (or a hard-cut prefix) fits — the existing cases only
+        # bound a single limit each.
+        samples = [
+            "",
+            "short",
+            "a sentence. another sentence. and more words trailing off here",
+            "nospacessingleverylongtokenwithoutanybreaks" * 3,
+            "word " * 200,
+        ]
+        for text in samples:
+            for limit in (1, 2, 5, 20, 100, 300):
+                assert len(truncate_summary(text, limit)) <= limit
 
 
 class TestCuratedTips:

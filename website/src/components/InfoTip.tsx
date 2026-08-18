@@ -35,6 +35,10 @@ export default function InfoTip({ text, placement = 'auto' }: { text: string; pl
     let top = r.top
     let left = r.right + 6
     if (left + tipW > window.innerWidth) left = r.left - tipW - 6
+    // The left-flip can land past the left edge when the button sits within
+    // tipW of it (any narrow viewport); clamp to the same 8px margins the
+    // 'top' branch uses so the tip always stays readable on-screen.
+    left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8))
     if (top + tipH > window.innerHeight) top = window.innerHeight - tipH - 8
     return { top, left }
   }

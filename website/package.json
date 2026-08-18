@@ -37,6 +37,7 @@
     "verify:path-chips": "node scripts/capture-path-chips.mjs",
     "verify:reveal-fade": "node scripts/probe-reveal-fade.mjs",
     "verify:topbar-badge-overhang": "node scripts/capture-topbar-badge-overhang.mjs",
+    "verify:user-bubble-mobile-overflow": "node scripts/capture-user-bubble-mobile-overflow.mjs",
     "pretest": "npm run jscpd"
   },
   "files": [

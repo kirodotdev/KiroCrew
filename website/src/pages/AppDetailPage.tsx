@@ -24,7 +24,6 @@ import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription, appHighlights } from '../components/appstore/appManifest'
-import { stringList } from '../components/appstore/types'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -546,16 +545,13 @@ export default function AppDetailPage() {
   const desktopOnly = needsDesktopApp(app)
   const canUpdate = app.lifecycle === 'gateway'
   const canUninstall = app.lifecycle !== 'locked'
-  // stringList (not `|| []`): a mistyped truthy non-array from a user-authored
-  // manifest would pass `||` and then throw on `.map`. This fetch path
-  // (/api/apps/{name}) has no query-boundary normalizer, so coerce here.
-  const manifestAgents = stringList(app.manifest?.agents)
-  const manifestSkills = stringList(app.manifest?.skills)
-  const rawCrons = app.manifest?.crons
-  const manifestCrons = Array.isArray(rawCrons) ? rawCrons.filter(c => !!c && typeof c.name === 'string') : []
-  const agentCount = manifestAgents.length
-  const skillCount = manifestSkills.length
-  const cronCount = manifestCrons.length
+  // Resource lists, derived once. `manifest` is absent for a registry-only app,
+  // and `normalizeInstalledApp` fills the lists for an installed one — so the
+  // fallback here is the registry case, not a defence against a partial
+  // manifest, and nothing below re-asserts past it (#3689).
+  const agents = app.manifest?.agents || []
+  const skills = app.manifest?.skills || []
+  const crons = app.manifest?.crons || []
   // Theme-aware hero banner source (mirrors the Browse card resolution).
   // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
   // Browse hero, then the opposite theme.
@@ -574,7 +570,7 @@ export default function AppDetailPage() {
   return (
     <>
       <PageHeader title={i18nT('pages.appDetailPage.apps')} subtitle={appDisplayName(app)} />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {/* Back link */}
         <button className="flex items-center gap-1.5 text-[13px] text-muted hover:text-text mb-5 bg-transparent border-none cursor-pointer p-0 font-body transition-colors" onClick={() => navigate('/apps')}>
           <ArrowLeft size={14} /> {i18nT('pages.appDetailPage.back_to_apps')}
@@ -968,26 +964,26 @@ export default function AppDetailPage() {
           )}
 
           {/* Resources (installed only) */}
-          {app.installed && (agentCount > 0 || skillCount > 0 || cronCount > 0) && (
+          {app.installed && (agents.length > 0 || skills.length > 0 || crons.length > 0) && (
             <Card>
               <CardTitle>{i18nT('pages.appDetailPage.resources')}</CardTitle>
               <div className="grid gap-1.5 mt-2 text-[13px]">
-                {agentCount > 0 && (
+                {agents.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Bot size={13} className="mt-0.5 shrink-0" />
-                    <div>{manifestAgents.map((a: string) => a.split('/').pop()?.replace('.json', '')).join(', ')}</div>
+                    <div>{agents.map((a: string) => a.split('/').pop()?.replace('.json', '')).join(', ')}</div>
                   </div>
                 )}
-                {skillCount > 0 && (
+                {skills.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Zap size={13} className="mt-0.5 shrink-0" />
-                    <div>{manifestSkills.map((s: string) => s.split('/').pop()).join(', ')}</div>
+                    <div>{skills.map((s: string) => s.split('/').pop()).join(', ')}</div>
                   </div>
                 )}
-                {cronCount > 0 && (
+                {crons.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Clock size={13} className="mt-0.5 shrink-0" />
-                    <div>{manifestCrons.map((c) => c.name).join(', ')}</div>
+                    <div>{crons.map((c) => c.name).join(', ')}</div>
                   </div>
                 )}
               </div>

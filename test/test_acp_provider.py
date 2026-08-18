@@ -1109,3 +1109,48 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_auto_sentinel_never_reaches_the_check(self):
         handle = await self._run("auto", ["claude-sonnet-4.6"])
         handle.set_model.assert_not_awaited()
+
+
+def test_child_fidelity_aware_survives_client_replacement():
+    """The dashboard sets the fidelity opt-in on the OUTER AcpProvider before
+    startup; for the kiro backend the inner client is later REPLACED with an
+    AcpSessionProvider (_start_kiro_runtime_impl). The flag must be a real
+    forwarding property — a plain setattr would be inert and the handle
+    would fail-close the dashboard's child permission requests instead of
+    showing the interactive card."""
+    provider = _build_provider("")  # "" = kiro, the runtime-backed default
+
+    provider.child_fidelity_aware = True
+    assert provider.child_fidelity_aware is True
+    # Forwarded to the current inner client.
+    assert provider._client.child_fidelity_aware is True
+    # Stored on the provider itself, independent of the (soon-discarded)
+    # placeholder client — this is what _start_kiro_runtime_impl re-applies
+    # to the real AcpSessionProvider at replacement time.
+    provider._client = MagicMock()
+    assert provider.child_fidelity_aware is True
+
+
+def test_to_llm_event_preserves_provenance_flags():
+    """`AcpProvider._to_llm_event` reconstructs the event — dropping the two
+    provenance fields would zero them to False and flip child_low_fidelity to
+    True for EVERY child permission event on this surface, making the
+    full-fidelity half of the feature (mode-parity auto-approval) inert."""
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+    from kiro_crew.providers.acp import AcpProvider
+
+    src = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=9,
+        title="Running: sha256sum x",
+        sub_session_id="child-a",
+        raw_tool_params={"command": "sha256sum x"},
+        raw_params_trusted=True,
+        is_shell=True,
+        shell_classified=True,
+    )
+    assert src.child_low_fidelity is False
+    out = AcpProvider._to_llm_event(src)
+    assert out.raw_params_trusted is True
+    assert out.shell_classified is True
+    assert out.child_low_fidelity is False

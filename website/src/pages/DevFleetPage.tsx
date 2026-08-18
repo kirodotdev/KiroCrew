@@ -82,6 +82,54 @@ export function gatewayRecovered(
   return String(currentId) !== String(capturedId)
 }
 
+/* ─── Route-independent restart watcher ─── */
+// The restart alive-poll is decoupled from the DevFleetPage React lifecycle so
+// navigating away during the ~6-min build+restart phase does not silently kill
+// the poll. An AbortController scoped to the active restart (not to the
+// component mount) controls cancellation; the only way to abort is an explicit
+// user cancel or a new restart superseding the current one.
+let _restartAc: AbortController | null = null
+
+// Run IDs with a sync-poll loop currently in flight, tracked at MODULE scope so
+// it survives component unmount/remount. The build poll deliberately outlives
+// the DevFleet page (a ~6-min build must still auto-restart if the user leaves),
+// so a naive remount would start a SECOND poll for the same run — two loops that
+// both see `done` and both fire the restart POST. This registry lets a remount
+// detect the in-flight poll and skip re-starting one. Cleared when the loop ends.
+const _activeSyncPolls = new Set<string>()
+
+
+/**
+ * Poll the gateway's health endpoint until it comes back with a different
+ * start_id, then reload the page. Route-independent: survives React unmount.
+ */
+async function awaitGatewayBackGlobal(capturedId: string | null): Promise<'reloaded' | 'timeout' | 'aborted'> {
+  _restartAc?.abort()
+  const ac = new AbortController()
+  _restartAc = ac
+
+  const deadline = Date.now() + RESTART_TIMEOUT_MS
+  await sleep(3000)
+  while (Date.now() < deadline) {
+    if (ac.signal.aborted) return 'aborted'
+    try {
+      if (capturedId == null) {
+        await fetch('/', { signal: AbortSignal.timeout(3000) })
+        window.location.reload()
+        return 'reloaded'
+      }
+      const res = await fetch('/apps/dev-fleet/api/health', { credentials: 'same-origin', signal: AbortSignal.timeout(3000) })
+      if (res.status === 404) { window.location.reload(); return 'reloaded' }
+      if (res.ok) {
+        const j = (await res.json().catch(() => null)) as { start_id?: string | null } | null
+        if (gatewayRecovered(capturedId, j?.start_id)) { window.location.reload(); return 'reloaded' }
+      }
+    } catch { /* gateway down mid-bounce */ }
+    await sleep(2000)
+  }
+  return 'timeout'
+}
+
 /* ─── Provision progress model ─── */
 // The last non-blank output line — the "current activity" shown inline.
 function lastLine(lines: string[] | undefined): string {
@@ -779,9 +827,30 @@ export default function DevFleetPage() {
   }, [syncRun?.status, provTicking]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function pollSyncRun(rid: string, startedAt: number) {
+    // A poll for this run is already in flight (it outlived a previous mount of
+    // this page, which is intended — the build's auto-restart must not be lost
+    // to navigation). Starting a second loop here would race it: both would see
+    // `done` and both would fire the restart POST. Skip and let the existing
+    // loop own the run.
+    if (_activeSyncPolls.has(rid)) return
+    _activeSyncPolls.add(rid)
+    try {
+      await _pollSyncRunLoop(rid, startedAt)
+    } finally {
+      _activeSyncPolls.delete(rid)
+    }
+  }
+
+  async function _pollSyncRunLoop(rid: string, startedAt: number) {
     for (let i = 0; i < 900; i++) {
       await sleep(2000)
-      if (!pollAliveRef.current || cancelledRunsRef.current.has(rid)) return
+      // Explicit dismissal aborts the poll entirely. Component unmount
+      // (navigate-away) does NOT: the build can take ~6 min, and the whole
+      // point of this loop is to auto-restart the gateway when the build
+      // finishes — a restart the user must not lose by leaving the page. So we
+      // keep polling and still issue the restart after unmount; the React state
+      // setters below are safe no-ops once the component is gone.
+      if (cancelledRunsRef.current.has(rid)) return
       let run: { status?: string; output?: string[]; exit_code?: number; started?: number; step_label?: string } | null = null
       let gone = false
       try { run = await api.get('/run?id=' + rid) } catch (e) {
@@ -811,6 +880,9 @@ export default function DevFleetPage() {
           // just updated static/dist on the live checkout, so applying it only
           // needs a bounce. Skip the confirm dialog since the user already
           // explicitly started Pull+Build knowing it updates their live code.
+          // The restart POST fires even after unmount (navigate-away during the
+          // build): losing it would strand the user on a stale gateway. The
+          // route-independent awaitGatewayBackGlobal handles the reload.
           if (fleet?.gateway_service_active) {
             notify(i18nT('pages.devFleetPage.build_finished_restarting_gateway'), { type: 'success' })
             setRestarting(true)
@@ -1097,45 +1169,15 @@ export default function DevFleetPage() {
 
   // Poll until the gateway reports a start identity DIFFERENT from the one
   // captured before the restart, then hard-reload into the fresh process.
-  // `capturedId == null` means the platform can't report identity (non-Linux /
-  // no systemctl) — degrade to the legacy "reload on first response" so those
-  // hosts don't hang in the overlay forever. Returns only on the timeout path;
-  // the success path reloads the page, and the caller clears its own state.
+  // Delegates to the route-independent global watcher so navigating away during
+  // the build phase does not kill the restart poll. The component still manages
+  // the overlay state; the global promise resolves even if the component unmounts.
   async function awaitGatewayBack(capturedId: string | null): Promise<void> {
-    const deadline = Date.now() + RESTART_TIMEOUT_MS
-    await sleep(3000)  // let the detached systemd-run tear the old listener down
-    while (Date.now() < deadline) {
-      if (!pollAliveRef.current) return  // component unmounted — stop the loop
-      try {
-        if (capturedId == null) {
-          // Legacy degrade: no identity to compare, so any answer means "back".
-          await fetch('/', { signal: AbortSignal.timeout(3000) })
-          window.location.reload()
-          return
-        }
-        const res = await fetch('/apps/dev-fleet/api/health', { credentials: 'same-origin', signal: AbortSignal.timeout(3000) })
-        if (res.status === 404) {
-          // The route answered 404, which means a gateway IS serving us — just
-          // one whose dev-fleet backend predates /api/health. That is the normal
-          // outcome of a cutover to an older worktree, and its identity can never
-          // appear, so waiting for one would burn the full timeout. A reachable
-          // 404 during the handshake is therefore recovery: reload into it.
-          window.location.reload()
-          return
-        }
-        if (res.ok) {
-          const j = (await res.json().catch(() => null)) as { start_id?: string | null } | null
-          if (gatewayRecovered(capturedId, j?.start_id)) { window.location.reload(); return }
-          // A reachable health with the SAME id is the OLD process still winding
-          // down (or identity unavailable) — keep waiting, never reload here.
-        }
-      } catch { /* gateway is down mid-bounce — keep polling */ }
-      await sleep(2000)
-    }
+    const result = await awaitGatewayBackGlobal(capturedId)
+    if (result === 'reloaded') return
+    if (result === 'aborted') return
+    // timeout
     setRestarting(false)
-    // Same treatment as a failed restart: the user may have walked away during
-    // the 60s overlay, and a self-dismissing toast leaves a stale page with no
-    // explanation for why it never came back.
     const timedOut = i18nT('pages.devFleetPage.gateway_did_not_come_back_within_60s_reload_the')
     notify(timedOut, { type: 'error' })
     setGatewayError(timedOut)
@@ -1764,7 +1806,7 @@ export default function DevFleetPage() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
-          <div className="flex-1 overflow-y-auto px-6 pb-8 min-h-0">
+          <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-8 min-h-0">
             {/* The how-to describes row actions; with no readable fleet there are
                 no rows, and instructions for absent controls read as a broken page. */}
             {!noFleet && (

@@ -135,6 +135,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_file_raw,
     api_file_read,
     api_file_search,
+    api_file_stream,
     api_file_watch,
     api_file_write,
     api_outbox_download,

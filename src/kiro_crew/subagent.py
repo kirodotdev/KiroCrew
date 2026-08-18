@@ -59,6 +59,7 @@ from kiro_crew.llm_helpers import (
     acp_error_is_transient,
     transient_retry_delay,
 )
+from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -89,6 +90,7 @@ from kiro_crew.subagent_persistence import (
     _agent_dir,
     _cleanup_session_files_sync,
     _subagents_dir,
+    agent_dir_for_display,
     clear_tombstone,
     create_agent_folder,
     list_orphans,
@@ -539,6 +541,83 @@ def _proc_rss_kb(pid: Optional[int]) -> int:
                 nxt.append(child)
         frontier = nxt
     return total
+
+
+def _proc_subtree_counts(pid: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+    """``(processes, mcp_stubs)`` in ``pid``'s subtree, or ``(None, None)``.
+
+    The companion to :func:`_proc_rss_kb` for the two count columns of the
+    Sessions surface: how many processes a runtime carries, and how many of them
+    are MCP stubs — matched on ``STUB_MODULE``, the module path the rewriter
+    itself puts on the stub launch line.
+
+    ``None`` means UNMEASURABLE, never zero. A host without ``/proc`` cannot walk
+    a subtree at all, and rendering that as "0 processes" for a live runtime
+    would be a lie — the surface renders ``None`` as an em dash instead.
+
+    Walk order, depth and the ``_RSS_SUBTREE_MAX_PROCS`` ceiling mirror
+    ``_proc_rss_kb`` so both readings describe the same set of processes.
+
+    Blocking: reads one ``/proc`` entry per process in the subtree, so it belongs
+    on an executor thread, never on the event loop (see ``_reaper_loop``).
+    """
+    if not pid or not platform_compat.IS_LINUX:
+        return (None, None)
+    if _single_proc_rss_kb(pid) < 0:
+        return (None, None)  # pid gone or /proc unreadable: nothing to attribute
+    needles = (STUB_MODULE,)
+    procs = 1
+    stubs = 1 if platform_compat.process_matches(pid, needles) else 0
+    seen = {pid}
+    frontier = [pid]
+    while frontier and len(seen) < _RSS_SUBTREE_MAX_PROCS:
+        nxt: list[int] = []
+        for parent in frontier:
+            for child in _proc_children(parent):
+                if child in seen:
+                    continue
+                seen.add(child)
+                procs += 1
+                if platform_compat.process_matches(child, needles):
+                    stubs += 1
+                nxt.append(child)
+        frontier = nxt
+    return (procs, stubs)
+
+
+def _attributed_count(
+    total: Optional[int], sharers: int, previous: Optional[int]
+) -> Optional[int]:
+    """One co-tenant's share of a subtree *total*, or *previous* if unmeasured.
+
+    Counts follow the same per-sharer split as the RSS/CPU attribution (see
+    ``SubagentManager._live_shared_count``) so every attributed column on a row
+    describes the same fraction of the runtime. Two differences follow from a
+    count being a whole number:
+
+    * The quotient is rounded to the nearest whole process.
+    * A nonzero total never rounds down to zero. "This runtime carries stubs,
+      your share is 0" is the reading that would reproduce the original bug in a
+      new form, so the floor is 1 whenever anything was counted.
+
+    Passing *previous* through on an unmeasured sweep (``total is None`` — the
+    pid died, or the platform has no ``/proc``) keeps the last good reading
+    rather than blanking a column mid-run, matching how RSS only writes when its
+    own read succeeded.
+
+    NOTE on the divisor: ``_live_shared_count`` counts SUBAGENT tenants. A
+    subagent shares its parent session's runtime whenever one is available
+    (``_create_shared_session``), and the parent session is not a subagent, so
+    with a parent co-tenant the divisor is a lower bound and a task's share is an
+    upper bound. That is the divisor RSS and CPU have always used; unifying it is
+    a separate change to numbers users already read, not a side effect of adding
+    two columns.
+    """
+    if total is None:
+        return previous
+    if sharers <= 1 or total <= 0:
+        return total
+    return max(1, round(total / sharers))
 
 
 # Legacy hard-coded concurrent cap; also the lower clamp bound for auto-sizing
@@ -1082,6 +1161,13 @@ class SubagentInfo:
     # sample costs no extra syscalls.
     last_rss_gb: float = 0.0
     last_cpu_cores: float = 0.0
+    # Live process/MCP-stub counts of this run's subtree, from the same sweep.
+    # ``None`` = not measured yet (or unmeasurable on this platform), which the
+    # surface must render as an em dash: a live runtime with "0 processes" is a
+    # lie, and it is exactly the reading that made subagent rows look like they
+    # carried no MCP stubs at all.
+    last_procs: int | None = None
+    last_stubs: int | None = None
     _cpu_jiffies_prev: int = 0  # last subtree utime+stime sample (clock ticks)
     _cpu_sample_ts: float = 0.0  # monotonic time of the last CPU sample
     # Session sharing — when True, this subagent runs as a session on the
@@ -1339,8 +1425,17 @@ class SubagentManager:
         event: LLMEvent,
         *,
         metadata: dict | None = None,
+        info: "SubagentInfo | None" = None,
     ) -> None:
         await client.approve_tool(request_id)
+        # An APPROVED child-origin escalation is side-effect activity: count
+        # it in tool_count so the transient-retry / cancel-respawn replay
+        # gates see it (an approved child mutation must never be replayed by
+        # a bare original prompt). Counted here — on the approval outcome —
+        # not at receipt: a purely rejected escalation executed nothing and
+        # must not permanently disable the run's replay budget.
+        if info is not None and event.sub_session_id:
+            info.tool_count += 1
         sel().log_tool_invocation(
             session_key=session_key,
             source="subagent",
@@ -1540,7 +1635,7 @@ class SubagentManager:
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-        result_path = str(_agent_dir(agent_id) / "result.txt")
+        result_path = str(agent_dir_for_display(agent_id) / "result.txt")
 
         if has_result:
             msg = (
@@ -1650,18 +1745,24 @@ class SubagentManager:
                 logger.debug("on_orphan_dm raised", exc_info=True)
         logger.warning("Orphan notification (no delivery channel wired): %s", msg[:200])
 
-    def _live_shared_count(self, pid: int | None) -> int:
+    def _live_shared_count(
+        self, pid: int | None, agents: "list[SubagentInfo] | None" = None
+    ) -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).
 
         Used to average the shared AcpRuntime's measured RSS/CPU across the
         sessions currently running inside it, so each shared subagent is charged
         an empirical per-session share rather than the whole process.
+
+        *agents* lets an off-loop caller pass the snapshot it already took, so the
+        count never iterates the live registry from a worker thread (see
+        ``_sample_live_costs``). Omitted, it reads the registry directly, which is
+        correct on the event loop.
         """
         if not pid:
             return 1
-        n = sum(
-            1 for a in self._agents.values() if not a.done and a._session_sharing and a._pid == pid
-        )
+        pool = agents if agents is not None else list(self._agents.values())
+        n = sum(1 for a in pool if not a.done and a._session_sharing and a._pid == pid)
         return n if n > 0 else 1
 
     def _sample_live_costs(self) -> None:
@@ -1672,9 +1773,20 @@ class SubagentManager:
         sample = Δ(utime+stime jiffies) / (CLK_TCK × Δt). The first sample only
         seeds the CPU baseline (no delta yet). Best-effort: a dead/unreadable
         pid is simply skipped.
+
+        BLOCKING, and therefore off-loop: every live agent costs several ``/proc``
+        walks (RSS subtree, CPU jiffies, process+stub counts), so the caller
+        hands this to :func:`maintenance_executor` and the body must stay
+        thread-safe. Concretely that means it takes ONE snapshot of the agent
+        registry up front and derives everything, sharer counts included, from
+        that list: iterating the live dict from a worker thread would raise
+        ``RuntimeError`` the moment the event loop registered or evicted an
+        agent mid-sweep. Writes are plain float/int field assignments on
+        ``SubagentInfo``, which the surface only ever reads.
         """
         now = time.monotonic()
-        for info in list(self._agents.values()):
+        agents = list(self._agents.values())
+        for info in agents:
             if info.done or not info._pid:
                 continue
             # Session-shared subagents run inside the parent's AcpRuntime process;
@@ -1685,13 +1797,16 @@ class SubagentManager:
             # empirical per-session average, not a guessed constant
             # (dynamic-subagent-sizing.md §session-sharing cost model).
             if info._session_sharing:
-                shared_n = self._live_shared_count(pid_owner := info._pid)
+                shared_n = self._live_shared_count(pid_owner := info._pid, agents=agents)
                 rss_kb = _proc_rss_kb(pid_owner)
                 if rss_kb > 0 and shared_n > 0:
                     gb = (rss_kb / (1024 * 1024)) / shared_n
                     info.last_rss_gb = gb
                     if gb > info.peak_rss_gb:
                         info.peak_rss_gb = gb
+                procs, stubs = _proc_subtree_counts(pid_owner)
+                info.last_procs = _attributed_count(procs, shared_n, info.last_procs)
+                info.last_stubs = _attributed_count(stubs, shared_n, info.last_stubs)
                 jiffies = _subtree_cpu_jiffies(pid_owner)
                 if info._cpu_sample_ts > 0.0 and jiffies >= info._cpu_jiffies_prev and shared_n > 0:
                     dt = now - info._cpu_sample_ts
@@ -1710,6 +1825,10 @@ class SubagentManager:
                 info.last_rss_gb = gb
                 if gb > info.peak_rss_gb:
                     info.peak_rss_gb = gb
+            procs, stubs = _proc_subtree_counts(pid)
+            # Sole tenant of its own process: the subtree reading IS this run's.
+            info.last_procs = _attributed_count(procs, 1, info.last_procs)
+            info.last_stubs = _attributed_count(stubs, 1, info.last_stubs)
             jiffies = _subtree_cpu_jiffies(pid)
             if info._cpu_sample_ts > 0.0 and jiffies >= info._cpu_jiffies_prev:
                 dt = now - info._cpu_sample_ts
@@ -1759,7 +1878,14 @@ class SubagentManager:
                         "Reaper: conversation registry rebuild failed — retrying next sweep",
                         exc_info=True,
                     )
-            self._sample_live_costs()
+            # Off the event loop: the sweep is several /proc walks per live agent,
+            # and the reaper shares the loop with every chat turn and heartbeat.
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    maintenance_executor(), self._sample_live_costs
+                )
+            except Exception:
+                logger.debug("Reaper: live-cost sample failed", exc_info=True)
             # Wave liveness backstop: reconcile waves wedged by submissions
             # lost before the process boundary (see _sweep_stuck_waves).
             try:
@@ -2578,7 +2704,11 @@ class SubagentManager:
 
         ``shared`` mirrors ``_session_sharing``: the value is that runtime's
         measurement divided by the number of concurrently-live sharing sessions
-        on the same pid, i.e. an average share, not an exclusive figure.
+        on the same pid, i.e. an average share, not an exclusive figure. The same
+        split applies to ``procs``/``mcp`` (see ``_attributed_count``), which are
+        null until a sweep has counted them — a task row that reported no MCP
+        stubs because the field was simply absent read as "subagents do not use
+        the MCP pool", which is the opposite of what they do.
         """
         return [
             {
@@ -2589,6 +2719,8 @@ class SubagentManager:
                 "rss_mb": round(a.last_rss_gb * 1024, 1),
                 "peak_rss_mb": round(a.peak_rss_gb * 1024, 1),
                 "cpu_cores": round(a.last_cpu_cores, 2),
+                "procs": a.last_procs,
+                "mcp": a.last_stubs,
                 "started_at": a.started,
                 "shared": a._session_sharing,
                 "pid": a._pid,
@@ -3372,7 +3504,7 @@ class SubagentManager:
             # (result.txt outlives the session under the tombstone TTL).
             result_hint = ""
             try:
-                _rp = _agent_dir(conv_id) / "result.txt"
+                _rp = agent_dir_for_display(conv_id) / "result.txt"
                 if _rp.exists():
                     result_hint = f" Prior result still readable at: {_rp}"
             except Exception:
@@ -4975,6 +5107,11 @@ class SubagentManager:
         result_text = ""
         turns = 0
         turn_limit = self._effective_turn_limit(info)
+        # Separate volume bound for child-origin permission escalations —
+        # they are exempt from the parent's turn budget (see the
+        # EVENT_PERMISSION_REQUEST branch) but must not be unbounded.
+        child_escalations = 0
+        child_escalation_limit = max(turn_limit * 3, 60)
         # Reports inherited agent (not just info.agent) so telemetry shows
         # the actual agent used for this subagent session.
         await self._fire_event(
@@ -5025,7 +5162,7 @@ class SubagentManager:
         except Exception:
             logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
 
-        _rp = _agent_dir(info.id) / "result.txt"
+        _rp = agent_dir_for_display(info.id) / "result.txt"
         info.result_path = str(_rp)
         # Cache tool names by tool_call_id so PostToolUse can recover the tool name
         # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
@@ -5137,8 +5274,63 @@ class SubagentManager:
                 # session/request_permission. Run them through the same hook
                 # → parent_policy → interactive callback pipeline so the
                 # approve / reads / trust / yolo protocol applies uniformly.
-                turns += 1
-                info.turns = turns
+                #
+                # Child-origin escalations (runtime-routed backend subagents)
+                # do NOT consume the parent's turn budget: a child asking for
+                # enough permissions would otherwise trip the parent's
+                # turn_limit and kill the whole subagent run on activity that
+                # is not the parent's own turns. They get their OWN bound
+                # instead — without one, a chatty or adversarial backend
+                # child could generate unbounded approval prompts until the
+                # wall-clock reaper fires (the turn budget used to bound
+                # exactly this traffic). Generous multiple of the parent's
+                # limit: legitimate crews fan many small child tool calls.
+                if not event.sub_session_id:
+                    turns += 1
+                    info.turns = turns
+                else:
+                    # Child escalation: counted toward its own volume bound
+                    # here; side-effect activity (tool_count) is counted at
+                    # APPROVAL in _approve_and_log — a purely rejected
+                    # escalation executed nothing and must not consume the
+                    # run's replay budget (tool_count gates prompt replay
+                    # and cancel-respawn).
+                    child_escalations += 1
+                    if child_escalations > child_escalation_limit:
+                        # Answer the triggering request BEFORE bailing: this
+                        # event is already dequeued, so returning without a
+                        # response would strand the child's oneshot — under
+                        # session sharing the runtime outlives this subagent
+                        # and nothing else tears the connection down. The
+                        # "requests are answered on every queue path"
+                        # contract this PR establishes applies to limit
+                        # bails too.
+                        try:
+                            await self._reject_and_log(
+                                client,
+                                event.request_id,
+                                session_key,
+                                event,
+                                error="child_escalation_limit",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "failed to reject escalation-limit trigger request"
+                            )
+                        info.result = result_text or "_Partial output._"
+                        info.error = f"child_escalation_limit:{child_escalation_limit}"
+                        info.done = True
+                        Stats().inc_subagent_failed()
+                        logger.warning(
+                            "Subagent %s hit child escalation limit (%d)",
+                            info.id,
+                            child_escalation_limit,
+                        )
+                        self._write_tombstone(info, "child_escalation_limit")
+                        return
+                # Diagnostic pointer is written for BOTH origins — orphan
+                # recovery must see child activity too; only the turn
+                # increment is parent-scoped.
                 info.last_tool = event.title or ""
                 # Persist turn state for orphan recovery diagnostics
                 try:
@@ -5156,6 +5348,15 @@ class SubagentManager:
                     },
                 )
                 if turns > turn_limit:
+                    # Same contract as the child_escalation_limit bail: the
+                    # triggering request is already dequeued and must be
+                    # answered before this loop exits, or its oneshot strands.
+                    try:
+                        await self._reject_and_log(
+                            client, event.request_id, session_key, event, error="turn_limit"
+                        )
+                    except Exception:
+                        logger.exception("failed to reject turn-limit trigger request")
                     info.result = result_text or "_Partial output._"
                     info.error = f"turn_limit:{turn_limit}"
                     info.done = True
@@ -5182,14 +5383,71 @@ class SubagentManager:
                     continue
                 if event.child_low_fidelity:
                     # Backend-internal child origin whose SECURITY context is
-                    # absent (structured params missing, or shell without a
-                    # recoverable command — AcpEvent.child_low_fidelity): any
-                    # APPROVE would rest on the LLM-authored title alone. This
-                    # consumer is headless — there is no card to downgrade to
-                    # — so fail closed before any approve branch (hook
-                    # auto-approve or parent_policy auto) can fire. A child
-                    # WITH cached bytes flows through the same pipeline as any
-                    # other tool (mode parity).
+                    # absent (structured params missing, unresolved shell
+                    # classification, or shell without a recoverable command —
+                    # AcpEvent.child_low_fidelity): any AUTO-approve would
+                    # rest on the LLM-authored title alone, so skip the hook
+                    # auto-approve and parent_policy=auto branches. When an
+                    # interactive approver IS configured — the per-subagent
+                    # factory, or the gateway-level _on_tool_approval
+                    # fallback the non-child path below also uses — hand the
+                    # decision to it: that is a human/host judgment, the same
+                    # downgrade the dashboard's card provides. Only a truly
+                    # headless consumer fails closed.
+                    _child_fallback = self._on_tool_approval
+                    if self._on_tool_approval_factory or _child_fallback is not None:
+                        # The human must know the title is ALL there is: the
+                        # structured params the policy gates would verify are
+                        # absent, so the displayed text is agent-authored and
+                        # unverifiable. Annotate the prompt so the approval
+                        # is an informed judgment, not a title-only rubber
+                        # stamp.
+                        event.title = (
+                            "⚠️ UNVERIFIED child request (security context "
+                            f"missing — title is agent-authored): {event.title or '<unknown tool>'}"
+                        )
+                        approved = False
+                        # Same human-wait lifecycle as the ordinary callback
+                        # branches below: without _awaiting_approval the
+                        # reaper reads a healthy approval wait as a stalled
+                        # subagent after the idle threshold.
+                        info._awaiting_approval = True
+                        try:
+                            if self._on_tool_approval_factory:
+                                approve_cb = self._on_tool_approval_factory(info)
+                                approved = bool(await approve_cb(event))
+                            elif _child_fallback is not None:
+                                approved = bool(
+                                    await _child_fallback(
+                                        event, info.parent_session_key
+                                    )
+                                )
+                        except Exception:
+                            logger.exception("child approval callback failed")
+                        finally:
+                            info._awaiting_approval = False
+                            info.last_activity = time.time()
+                        if approved:
+                            await self._approve_and_log(
+                                client,
+                                event.request_id,
+                                session_key,
+                                event,
+                                metadata={
+                                    "subagent_id": info.id,
+                                    "reason": "child_interactive_approved",
+                                },
+                                info=info,
+                            )
+                        else:
+                            await self._reject_and_log(
+                                client,
+                                event.request_id,
+                                session_key,
+                                event,
+                                error="child_interactive_rejected",
+                            )
+                        continue
                     await self._reject_and_log(
                         client,
                         event.request_id,
@@ -5205,6 +5463,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id, "reason": "hook_auto_approve"},
+                        info=info,
                     )
                     continue
                 if parent_policy == "auto":
@@ -5214,6 +5473,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id, "reason": "parent_policy_auto"},
+                        info=info,
                     )
                     continue
                 if self._on_tool_approval_factory:
@@ -5239,6 +5499,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id},
+                        info=info,
                     )
                 elif self._on_tool_approval:
                     info._awaiting_approval = True
@@ -5256,6 +5517,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id},
+                        info=info,
                     )
                 else:
                     # No callback, no auto policy — deny by default
@@ -5451,6 +5713,10 @@ class SubagentManager:
             agent=agent or None,
         )
         provider = AcpSessionProvider(handle, runtime)
+        # This consumer implements the low-fidelity child downgrade (interactive
+        # approver when configured, reject when headless) — opt in so the
+        # handle-level fail-close gate yields those events instead of rejecting.
+        provider.child_fidelity_aware = True
         info._session_sharing = True
         info._shared_provider = provider
         if runtime.pid:

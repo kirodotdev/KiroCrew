@@ -44,6 +44,16 @@ from typing import TYPE_CHECKING
 #:   compare SIDs.
 GATEWAY_SUPPORTED_PLATFORMS = ("linux", "darwin", "win32")
 
+#: Import path of the stub entrypoint, and therefore the substring that
+#: identifies a stub process by its cmdline (the rewriter emits
+#: ``<python> -m kiro_crew.mcp_gateway.stub …``).
+#:
+#: It lives here, above every submodule, because the producer (``rewriter``) and
+#: the cmdline-matching consumers (the Sessions surface's per-session and
+#: per-task stub counts) must agree on ONE string: a copy that drifts from the
+#: launch line does not fail loudly, it silently reports zero stubs.
+STUB_MODULE = "kiro_crew.mcp_gateway.stub"
+
 
 def is_gateway_supported() -> bool:
     """Return ``True`` if the shared MCP gateway broker can run on this OS.

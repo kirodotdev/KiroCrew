@@ -12,10 +12,23 @@ import Modal from './Modal'
 // is normalized from, so this panel and the credits pill cannot drift apart.
 export type { KiroBonusCreditGrant, KiroCreditUsage }
 
+/**
+ * What the modal can be handed: a reading, `null` while the gateway's usage
+ * cache warms, `'none'` when the account has no credit plan, or `'failed'` when
+ * the fetch itself failed with nothing cached. `null` is the ONLY value that
+ * means "still loading" — the other two have nothing more to wait for, so
+ * spinning on them would repeat the defect this distinction exists to remove.
+ */
+export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed'
+
+/** True only for an actual reading, so the sentinels cannot reach a field access. */
+const isUsageReading = (usage: KiroAccountUsage): usage is KiroCreditUsage =>
+  typeof usage === 'object' && usage !== null
+
 interface KiroAccountModalProps {
   open: boolean
   onClose: () => void
-  usage: KiroCreditUsage | null | 'none'
+  usage: KiroAccountUsage
 }
 
 const KIRO_ACCOUNT_URL = 'https://app.kiro.dev/settings/account'
@@ -129,7 +142,7 @@ function BonusCredits({ grants }: { grants: KiroBonusCreditGrant[] }) {
   )
 }
 
-function AccountIdentity({ usage }: { usage: KiroCreditUsage | null | 'none' }) {
+function AccountIdentity({ usage }: { usage: KiroAccountUsage }) {
   const [emailHidden, setEmailHidden] = useState(
     () => safeGetItem(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY) !== '0',
   )
@@ -142,10 +155,10 @@ function AccountIdentity({ usage }: { usage: KiroCreditUsage | null | 'none' }) 
     })
   }
 
-  const email = usage && usage !== 'none' ? usage.email : undefined
-  const account = usage && usage !== 'none' ? usage.account : undefined
+  const email = isUsageReading(usage) ? usage.email : undefined
+  const account = isUsageReading(usage) ? usage.account : undefined
   const identity = email || account
-  const provider = usage && usage !== 'none'
+  const provider = isUsageReading(usage)
     ? accountProviderLabel(usage.accountType, usage.startUrl)
     : ''
 
@@ -161,11 +174,11 @@ function AccountIdentity({ usage }: { usage: KiroCreditUsage | null | 'none' }) 
         )}
       </div>
       <div className="mt-3 min-w-0 max-w-full">
-        {!usage ? (
+        {usage === null ? (
           <div className="flex items-center justify-center gap-2 text-[13px] text-muted">
             <Loader2 className="lucide-inline animate-spin" /> {i18nT('components.kiroAccountModal.checking_account')}
           </div>
-        ) : usage === 'none' || !identity ? (
+        ) : !isUsageReading(usage) || !identity ? (
           <div className="flex items-center justify-center gap-2 text-[13px] text-muted">
             <AlertCircle className="lucide-inline" /> {i18nT('components.kiroAccountModal.account_details_unavailable')}
           </div>
@@ -211,9 +224,12 @@ function UsageSkeleton() {
   )
 }
 
-function CreditUsage({ usage }: { usage: KiroCreditUsage | null | 'none' }) {
-  if (!usage) return <UsageSkeleton />
-  if (usage === 'none') {
+function CreditUsage({ usage }: { usage: KiroAccountUsage }) {
+  // Only a cache that has not warmed yet is still loading. A failed fetch and an
+  // account with no plan both have nothing pending, so they get the static
+  // notice rather than a skeleton that never resolves.
+  if (usage === null) return <UsageSkeleton />
+  if (!isUsageReading(usage)) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
         <AlertCircle className="lucide-inline shrink-0" /> {i18nT('components.kiroAccountModal.credit_usage_unavailable')}

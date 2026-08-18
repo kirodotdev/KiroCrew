@@ -32,6 +32,22 @@ export function useCronActions(load: () => void) {
     } finally { setCancelling(prev => { const s = new Set(prev); s.delete(id); return s }) }
   }, [load])
 
+  const toggleEnabled = useCallback(async (id: string, enabled: boolean) => {
+    setActionError(null)
+    try {
+      const res = await api.toggleCron(id, enabled)
+      if (res?.error) { setActionError({ id, msg: res.error }); return }
+      load()
+    } catch (e: unknown) {
+      // Name the action the user actually took: a pause that failed must not
+      // report that a RUN failed, which is the opposite of their intent.
+      const fallback = enabled
+        ? i18nT('hooks.useCronActions.failed_to_resume_job')
+        : i18nT('hooks.useCronActions.failed_to_pause_job')
+      setActionError({ id, msg: e instanceof Error ? e.message : fallback })
+    }
+  }, [load])
+
   const openInChat = useCallback(async (id: string) => {
     setActionError(null)
     try {
@@ -41,5 +57,5 @@ export function useCronActions(load: () => void) {
     } catch { setActionError({ id, msg: i18nT('hooks.useCronActions.failed_to_open_in_chat') }) }
   }, [navigate])
 
-  return { running, setRunning, actionError, setActionError, runNow, openInChat, cancelling, cancelRun }
+  return { running, setRunning, actionError, setActionError, runNow, toggleEnabled, openInChat, cancelling, cancelRun }
 }

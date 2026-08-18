@@ -184,7 +184,7 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
           className="relative w-[680px] max-w-full h-[620px] max-h-full border border-border rounded-[14px] bg-card flex flex-col shadow-2xl outline-none overflow-hidden"
           onKeyDown={(e) => e.stopPropagation()}
         >
-          <header className="px-6 pt-5 pb-4 border-b border-border flex-shrink-0">
+          <header className="px-4 md:px-6 pt-5 pb-4 border-b border-border flex-shrink-0">
             <h1 className="text-[19px] font-bold leading-tight text-text-strong pr-8">
               {i18nT('apps.codeReviewSage.components.addReposModal.add_repos')}
             </h1>
@@ -202,7 +202,7 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
 
           {/* Inputs stay pinned; only the lists scroll, so the manual field and
               the filter are always reachable however long the lists get. */}
-          <div className="px-6 pt-4 pb-3 flex flex-col gap-2.5 flex-shrink-0">
+          <div className="px-4 md:px-6 pt-4 pb-3 flex flex-col gap-2.5 flex-shrink-0">
             {/* Manual entry FIRST: it always works, even with no gh, and it is
                 the answer when a repo is missing from both capped lists. */}
             <div className="flex items-center gap-2">
@@ -254,7 +254,7 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-6 pb-5 flex flex-col gap-2.5">
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-4 md:px-6 pb-5 flex flex-col gap-2.5">
             {setupRequired && <GhNotice message={recent?.error ?? mine?.error} />}
             {err && !setupRequired && (
               <div className="text-[12.5px] text-danger">{err.message}</div>

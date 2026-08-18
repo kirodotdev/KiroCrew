@@ -793,7 +793,7 @@ class TestGateRunsInStrictSandboxMode:
         # asserts nothing while still passing. (It did exactly that when the import was
         # function-local and was later hoisted.)
         monkeypatch.setattr(gp, "sandboxed_spawn_argv", _fake)
-        monkeypatch.setattr(prof.subprocess, "run", lambda *a, **k: None)
+        monkeypatch.setattr(prof, "run_limited", lambda *a, **k: None)
         prof._run(["/bin/true"], cwd=tmp_path, timeout=5)
 
         assert seen["mode"] == "strict", "agent-authored tests must not see credential dirs"

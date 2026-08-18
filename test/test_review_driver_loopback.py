@@ -109,7 +109,7 @@ class TestReviewDriverLoopbackCallsIgnoreTheProxy:
 
     def test_api_request_does_not_proxy_the_secret(self, monkeypatch, listeners):
         monkeypatch.setattr(review_driver, "_gateway_base", lambda: listeners["gateway_base"])
-        monkeypatch.setattr(review_driver, "_local_secret", lambda: CANARY)
+        monkeypatch.setattr(review_driver, "_local_secret", lambda *_a: CANARY)
 
         # A real parse of the gateway's body proves the request landed there and
         # was not merely swallowed by _api_request's blanket except.

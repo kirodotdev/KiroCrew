@@ -1416,7 +1416,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         <div className="sticky top-0 z-10 bg-bg border-b border-border">
           <PageHeader title={i18nT('pages.artifactDetailPage.artifact')} subtitle={slug} />
         </div>
-        <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+        <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
           <Card>
             <div className="flex items-start gap-3">
               <AlertTriangle className="lucide-inline text-danger" />
@@ -1485,7 +1485,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           )}
           subtitle={i18nT('pages.artifactDetailPage.artifact_slug', { slug: artifact.slug })}
         />
-        <div className="px-6 py-2 flex flex-wrap items-center gap-2">
+        <div className="px-4 md:px-6 py-2 flex flex-wrap items-center gap-2">
           {!popout && (
             <Btn onClick={() => {
               if (dirty && !window.confirm(i18nT('pages.artifactDetailPage.discard_unsaved_changes'))) return
@@ -1776,7 +1776,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         </div>
       </div>
 
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {artifact.description && (
           <div className="mb-3 text-sm text-muted italic">{artifact.description}</div>
         )}

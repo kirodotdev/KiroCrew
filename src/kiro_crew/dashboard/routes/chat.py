@@ -79,6 +79,7 @@ def register(app: web.Application) -> None:
         "/api/chat/slots/{slot}/reasoning-effort", chat.api_chat_slot_reasoning_effort
     )
     app.router.add_post("/api/chat/slots/{slot}/workspace", chat.api_chat_slot_workspace)
+    app.router.add_post("/api/chat/slots/{slot}/reload", chat.api_chat_slot_reload)
     app.router.add_post("/api/chat/slots/{slot}/project", chat.api_chat_slot_project)
     # Follow-up suggestion card (suggest_followup MCP tool -> card below composer)
     app.router.add_post("/api/chat/slots/{slot}/followup", chat.api_chat_slot_followup)

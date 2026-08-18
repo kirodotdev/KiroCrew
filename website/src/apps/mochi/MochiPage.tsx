@@ -149,7 +149,7 @@ export default function MochiPage() {
     return (
       <>
         <PageHeader title={PRODUCT_NAME} subtitle={i18nT('apps.mochi.instances.connecting')} />
-        <div className="px-6 pb-8">
+        <div className="px-4 md:px-6 pb-8">
           <div className="space-y-4 animate-pulse">
             {[1, 2, 3].map((i) => (
               <div key={i} className="h-16 rounded bg-bg-elevated" />
@@ -289,7 +289,7 @@ function LiveView() {
   return (
     <>
       <PageHeader title={PRODUCT_NAME} subtitle={i18nT('apps.mochi.mochiPage.desktop_pet_companion')} />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         {!isElectron && (
           <div role="note" className="mb-4 text-[13px] text-muted">
             {i18nT('apps.mochi.mochiPage.this_is_the_browser_view_everything_here_is_live')}

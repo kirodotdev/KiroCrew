@@ -27,7 +27,7 @@ export default function BroadcastBar({ onSend, caption, disabled }: Props) {
   }
 
   return (
-    <div className="flex-none px-6 py-3 border-t border-border bg-bg">
+    <div className="flex-none px-4 md:px-6 py-3 border-t border-border bg-bg">
       {caption && (
         <div
           // Wraps rather than clipping to one line: `truncate` set

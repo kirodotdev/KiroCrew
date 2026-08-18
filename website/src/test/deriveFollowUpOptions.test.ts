@@ -40,6 +40,17 @@ describe('deriveFollowUpOptions', () => {
     expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
   })
 
+  it('keeps options when a session-reload notice follows the options turn', () => {
+    // Same contract as the compaction notice: any system notice kind is
+    // scaffolding, never the assistant's last word (isSystemNoticeKind).
+    const notice: ChatMessage = {
+      role: 'assistant', content: 'Session reloaded: …', cls: 'msg msg-a',
+      kind: 'session_reload', meta: { kind: 'session_reload' },
+    }
+    const msgs = [user('go'), assistant(OPTIONS_MSG), notice]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
   it('skips multiple stacked compaction notices', () => {
     const msgs = [user('go'), assistant(OPTIONS_MSG), compactionLive(), compactionReload()]
     expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])

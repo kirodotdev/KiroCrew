@@ -74,7 +74,7 @@ const WorkflowProgressBar = memo(function WorkflowProgressBar({ slot }: { slot: 
   if (visible.length === 0) return null
 
   return (
-    <div className="px-5 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
         {visible.map(r => (
           <ExpandableRunRow

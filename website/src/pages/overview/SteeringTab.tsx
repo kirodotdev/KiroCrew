@@ -67,7 +67,7 @@ const EDITOR_CLASS =
  * dynamic chrome. The `vh` declaration stays as the fallback for browsers
  * without `svh`, matching the shell's own `supports-[height:100dvh]` pattern.
  */
-const PANE_SHELL_CLASS = 'flex gap-3 max-md:-mx-2.5 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
+const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 export default function SteeringTab() {
   const queryClient = useQueryClient()
@@ -258,14 +258,15 @@ export default function SteeringTab() {
       </div>
     </Modal>
 
-    <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
+    {/* No top margin — see the same note in SkillsTab: the hosting pane owns the
+      * gap under the tab strip, and a margin here would stack on it. */}    <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
       {i18nT('pages.overview.steeringTab.steering_count', { count: files.length })}
       <InfoTip text={i18nT('pages.overview.steeringTab.always_on_markdown_conventions_injected_into_eve')} />
       <span className="ml-auto">
         <Btn primary onClick={() => setCreating(true)}>{i18nT('pages.overview.steeringTab.new_steering_file_2')}</Btn>
       </span>
     </h4>
-    <Card className="max-md:px-2.5">
+    <Card>
       <div className="flex items-center gap-2 mb-3">
         <div className="relative max-w-[480px] flex-1">
           <SearchInput placeholder={i18nT('pages.overview.steeringTab.filter_steering_files')} value={filter} onChange={e => setFilter(e.target.value)} />

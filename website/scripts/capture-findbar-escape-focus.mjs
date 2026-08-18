@@ -62,7 +62,7 @@ async function main() {
   }
 
   // 1. Dark theme: open the bar, Escape, prove the composer holds focus.
-  await h.load('dark', { selector: 'textarea[aria-label="Message input"]', settle: 800 })
+  await h.load('dark', { selector: 'textarea[data-composer-input]', settle: 800 })
   await h.page.keyboard.press('Control+f')
   await h.page.waitForTimeout(300)
   await shot('01-findbar-open-dark')
@@ -75,13 +75,13 @@ async function main() {
   const escFocus = await activeLabel(h.page)
   assert(`Escape hands focus to the composer (active: ${escFocus})`, escFocus === 'Message input')
   await h.page.keyboard.type('typing lands here immediately')
-  const typed = await h.page.inputValue('textarea[aria-label="Message input"]')
+  const typed = await h.page.inputValue('textarea[data-composer-input]')
   assert('keystrokes after Escape land in the composer', typed.includes('typing lands here'))
 
   // 2. The pane's own close control routes through the same close path
   //    (the docked find bar renders inside a DetailPanel with
   //    onClose={search.close}).
-  await h.load('dark', { selector: 'textarea[aria-label="Message input"]', settle: 800 })
+  await h.load('dark', { selector: 'textarea[data-composer-input]', settle: 800 })
   await h.page.keyboard.press('Control+f')
   await h.page.waitForTimeout(300)
   await h.page.getByRole('button', { name: 'Close panel' }).click()
@@ -91,7 +91,7 @@ async function main() {
   await shot('03-close-button-composer-focused-dark')
 
   // 3. Light theme evidence.
-  await h.load('light', { selector: 'textarea[aria-label="Message input"]', settle: 800 })
+  await h.load('light', { selector: 'textarea[data-composer-input]', settle: 800 })
   await h.page.keyboard.press('Control+f')
   await h.page.waitForTimeout(300)
   await shot('04-findbar-open-light')

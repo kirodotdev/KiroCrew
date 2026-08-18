@@ -8,6 +8,7 @@
 import { INDENT_COL_PX, LIST_INDENT, TAB_STOP } from './constants'
 import type { Note, Shortcut, TreeNode } from './types'
 import { fmtDateFields } from '../../i18n/format'
+import { WINDOWS_ABS_PATH_RE, urlTransform } from '../../utils/urlTransform'
 
 /**
  * Leading indent + marker of a list item: bullet, task or ordered.
@@ -135,6 +136,62 @@ export function parseTable(lines: readonly string[], start: number): ParsedTable
  * is not on a list item — callers then leave the keystroke alone so Tab can
  * still move focus out of the editor.
  */
+/**
+ * Resolve a markdown image source to a URL the browser can load, or null when
+ * the source must degrade to plain text.
+ *
+ * A note is ordinary text out of a git-backed vault, so its image sources are
+ * untrusted input and the two cases are kept apart deliberately:
+ *
+ * - a remote source is handed to `urlTransform()`, which returns '' for a
+ *   scheme it refuses. `javascript:` and `data:` land there, so a crafted note
+ *   cannot smuggle script or an inline payload past this point;
+ * - a local source is served through the dashboard's `/api/file-raw`, the same
+ *   endpoint the chat renderer uses for local images. Nothing about the path is
+ *   trusted here on purpose: that endpoint validates it, refuses sensitive
+ *   paths and symlinks, and answers only for bytes whose magic number really is
+ *   an image, so path traversal in a note is the endpoint's answer to give.
+ *
+ * A relative source resolves against `noteDir`, the directory of the note being
+ * read, which is how `assets/diagram.png` sitting beside the note is found. It
+ * stays unresolved without that directory rather than guessing a root.
+ */
+export function resolveNoteImageSrc(src: string, noteDir?: string): string | null {
+  const raw = src.trim()
+  if (!raw) return null
+  // A Windows drive letter is a local path, not a URL scheme. The predicate is
+  // imported rather than spelled again here: urlTransform.ts owns the single
+  // copy so this decision and the chat renderer's cannot drift apart, and its
+  // deliberate exclusion of backslash UNC (an outbound SMB probe) holds for a
+  // note's images too.
+  const winAbs = WINDOWS_ABS_PATH_RE.test(raw)
+  const isLocal =
+    raw.startsWith('/') ||
+    raw.startsWith('~') ||
+    raw.startsWith('.') ||
+    winAbs ||
+    !/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(raw)
+  if (!isLocal) {
+    const remote = urlTransform(raw)
+    return remote || null
+  }
+  const rooted = raw.startsWith('/') || raw.startsWith('~') || winAbs
+  if (!rooted && !noteDir) return null
+  const path = rooted ? raw : `${noteDir}/${raw.replace(/^\.\//, '')}`
+  return `/api/file-raw?path=${encodeURIComponent(path)}`
+}
+
+/** Directory of a note inside its vault, absolute, for resolving its images. */
+export function noteDirPath(
+  vault: { localPath: string; subfolder?: string } | null | undefined,
+  notePath: string | null | undefined,
+): string | undefined {
+  if (!vault || !notePath) return undefined
+  const root = vaultContentPath(vault)
+  const slash = notePath.lastIndexOf('/')
+  return slash === -1 ? root : `${root}/${notePath.slice(0, slash)}`
+}
+
 export function shiftListItem(
   text: string,
   pos: number,
@@ -339,4 +396,41 @@ export function savePref(key: string, value: unknown): void {
   } catch {
     /* storage unavailable — preferences simply do not persist */
   }
+}
+
+/**
+ * A closed ` ```mermaid ` fence starting at `start`, or null.
+ *
+ * Strict on the opening line (` ```mermaid ` alone) so other info-strings keep
+ * their generic code-block rendering, but the closing scan accepts any line
+ * starting with ` ``` ` — the same rule the generic fence toggle applies — so
+ * both parsers always agree on where a block ends. An UNCLOSED mermaid fence
+ * returns null on purpose: the generic path already renders run-away fences as
+ * code until EOF, and a half-typed diagram flashing through the renderer on
+ * every keystroke would be noise.
+ */
+export function parseMermaidBlock(
+  lines: string[],
+  start: number,
+): { code: string; end: number } | null {
+  if (!/^```mermaid\s*$/.test(lines[start])) return null
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('```')) {
+      return { code: lines.slice(start + 1, i).join('\n'), end: i }
+    }
+  }
+  return null
+}
+
+/**
+ * Language named on a fence's opening line (` ```python ` -> `python`), or
+ * undefined for a bare fence. Only the first whitespace-delimited token after
+ * the backticks counts, matching how highlight.js and every other markdown
+ * renderer read a fence info string; anything after it (e.g. a title) is not
+ * this app's concern yet. Undefined — not '' — is the signal a caller checks
+ * to keep an unlabelled fence out of highlightAuto().
+ */
+export function fenceLang(openLine: string): string | undefined {
+  const info = openLine.slice(3).trim().split(/\s+/)[0]
+  return info || undefined
 }

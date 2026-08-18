@@ -1104,6 +1104,69 @@ class TestRunStdoutPump:
         assert (await _drain(inbox))["result"] == "raw"
 
     @pytest.mark.asyncio
+    async def test_image_bearing_line_goes_through_the_budget_hook(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A line matching the image probe is parse-confirmed, then the
+        REWRITTEN line from the image stage is what gets routed."""
+        monkeypatch.setattr(
+            backend_mod, "parse_image_bearing_frame", lambda line: {"parsed": True},
+        )
+        monkeypatch.setattr(
+            backend_mod, "rewrite_image_frame",
+            lambda msg, line, server: _line({"id": "gw-1", "result": "budgeted"}),
+        )
+        backend = _make_backend()
+        backend.stdout = cast(Any, _reader(_line(
+            {"id": "gw-1", "result": {"content": [{"type": "image", "data": "AA=="}]}},
+        )))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 1, "tools/call")
+        await backend.run_stdout_pump()
+        assert (await _drain(inbox))["result"] == "budgeted"
+
+    @pytest.mark.asyncio
+    async def test_non_image_frame_matching_probe_skips_the_image_stage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A probe false positive (escaped text, no image blocks) must not
+        occupy the image pool: the parse stage returns None and the original
+        line is routed with no rewrite call."""
+        rewrite_calls = []
+        monkeypatch.setattr(backend_mod, "parse_image_bearing_frame", lambda line: None)
+        monkeypatch.setattr(
+            backend_mod, "rewrite_image_frame",
+            lambda msg, line, server: rewrite_calls.append(1) or line,
+        )
+        backend = _make_backend()
+        backend.stdout = cast(Any, _reader(_line({"id": "gw-1", "result": 'has "image" text'})))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 1, "tools/call")
+        await backend.run_stdout_pump()
+        assert (await _drain(inbox))["result"] == 'has "image" text'
+        assert rewrite_calls == []
+
+    @pytest.mark.asyncio
+    async def test_image_budget_failure_routes_the_raw_line(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unexpected hook failure must not take the relay down: the raw
+        line is routed (per-block fail-closed lives INSIDE the hook)."""
+        def _boom(line: bytes) -> dict:
+            raise RuntimeError("pillow exploded")
+
+        monkeypatch.setattr(backend_mod, "parse_image_bearing_frame", _boom)
+        backend = _make_backend()
+        backend.stdout = cast(Any, _reader(_line(
+            {"id": "gw-1", "result": {"content": [{"type": "image", "data": "AA=="}]}},
+        )))
+        inbox = await backend.attach_stub("s1")
+        backend._pending_requests["gw-1"] = _PendingRequest("s1", 1, "tools/call")
+        await backend.run_stdout_pump()
+        routed = await _drain(inbox)
+        assert routed["result"]["content"][0]["type"] == "image"
+
+    @pytest.mark.asyncio
     async def test_cancellation_propagates(self) -> None:
         backend = _make_backend()
         backend.stdout = cast(Any, _reader(eof=False))

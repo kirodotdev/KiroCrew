@@ -333,8 +333,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
   // the untagged issues they get applied to; this page keeps only the LOCAL
   // definitions above. See views/tagging/LabelsPanel.tsx.
 
+  // Narrow-first gutter, same value and same reason as GeneralSettings — the
+  // rail routes between the two, so a differing gutter would shift the page
+  // sideways as you moved between them.
   return (
-    <div className="w-full max-w-6xl px-8 py-8">
+    <div className="w-full max-w-6xl px-4 py-8 md:px-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-1 flex-wrap">
         <ProviderLogo repoRef={repoRef} size={20} />

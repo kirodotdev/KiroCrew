@@ -129,6 +129,40 @@ describe('ChatPane send — folder token serialization', () => {
   })
 })
 
+/* #4131: the pane's optimistic bubble is confirmed by the send's OWN response.
+ * No `chat_message` user echo is coming — `DashboardState.append` suppresses it
+ * for dashboard sends because the composer already rendered the bubble — so an
+ * accepted response is the only thing that can retire the pending state before
+ * the 30s sweep renders "may not have been delivered" on a delivered message. */
+describe('ChatPane send — the response confirms the optimistic bubble', () => {
+  const userRow = (store: ReturnType<typeof makeStore>, slot: string) =>
+    store.getState().chat.slotMessages[slot]?.find(m => m.role === 'user')
+
+  it('retires the pending-confirmation flags when the server accepts', async () => {
+    const { store } = renderPane('pane-confirm')
+    const box = (await screen.findAllByRole('textbox'))[0]
+    fireEvent.change(box, { target: { value: 'confirm me' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(userRow(store, 'pane-confirm')?.meta?.optimistic).toBeUndefined())
+    // The correlation id stays so a late echo updates this row in place.
+    expect(userRow(store, 'pane-confirm')?.meta?.sendId).toMatch(/^s-/)
+  })
+
+  it('leaves the bubble pending when the server rejects the send', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) })
+    const { store } = renderPane('pane-reject')
+    const box = (await screen.findAllByRole('textbox'))[0]
+    fireEvent.change(box, { target: { value: 'refuse me' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    // A rejected send is exactly what the indicator exists for — the flags must
+    // survive so the sweep can flag it.
+    expect(userRow(store, 'pane-reject')?.meta?.optimistic).toBe(true)
+  })
+})
+
 /* The split-view pane is the third dashboard caller of `chatSlotAgent`. It used
  * to swallow failures with `console.error`, so a switch that never happened
  * looked identical to one that did. It now feeds the same shared notice the
@@ -164,5 +198,65 @@ describe('ChatPane agent switch — failures reach the shared notice', () => {
 
     await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalledWith('pane-agent', 'reviewer'))
     expect(store.getState().chat.agentSwitchNotice).toBeNull()
+  })
+})
+
+/* Producer side of the split-view focus contract: `queryComposer()` scopes its
+ * lookup to the `[data-chat-pane]` ancestor of the focused element, falling
+ * back to the pane marked `data-chat-pane="focused"` when focus sits in a
+ * portal (the pane's own pickers render under document.body). The REAL pane
+ * wrapper must carry the attribute — with value "focused" exactly when the
+ * grid marks the pane focused — and contain the pane's composer. Losing
+ * either would not fail any focus test that mounts fake panes; it would only
+ * silently degrade split-view shortcuts back to first-pane-wins in
+ * production. */
+describe('ChatPane pane boundary — data-chat-pane contract', () => {
+  it('the pane wrapper carries data-chat-pane and contains the pane composer', async () => {
+    const { container } = renderPane('pane-focus')
+    const pane = container.querySelector('[data-chat-pane]')
+    expect(pane).not.toBeNull()
+    const composer = await screen.findAllByRole('textbox')
+    expect(pane!.contains(composer[0])).toBe(true)
+    expect(pane!.querySelector('textarea[data-composer-input]')).not.toBeNull()
+  })
+
+  it('the wrapper marks the grid-focused pane with the "focused" value', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = makeStore('pane-marked')
+    const { container } = render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey="pane-marked" focused />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    expect(container.querySelector('[data-chat-pane="focused"]')).not.toBeNull()
+  })
+
+  it('keyboard focus into the pane claims grid focus, not just mousedown', async () => {
+    // Tab into a pane (no mousedown) must move the grid's focused marker,
+    // or the "focused" fallback would name a pane the user already left and
+    // route Alt+Enter from a portaled picker to the wrong session.
+    const onFocus = vi.fn()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = makeStore('pane-kbd')
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey="pane-kbd" onFocus={onFocus} />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const box = (await screen.findAllByRole('textbox'))[0]
+    box.focus()
+    expect(onFocus).toHaveBeenCalled()
   })
 })

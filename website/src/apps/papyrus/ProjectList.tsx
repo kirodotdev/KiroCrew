@@ -2,7 +2,7 @@
  * ProjectList — the Papyrus landing view: create a paper, clone one, or open one.
  *
  * This is the view that carries the page-layout pattern (`PageHeader` +
- * `px-6 pb-8 overflow-y-auto flex-1 min-h-0` container + a `StatCard` row +
+ * `px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0` container + a `StatCard` row +
  * `Card`/`CardTitle` sections), because it is the page-shaped half of the app. The
  * editor is a full-bleed split pane by necessity — a paper and its PDF need the
  * whole viewport — and it carries its own toolbar instead.
@@ -148,7 +148,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
         title={i18nT('apps.papyrus.page.papyrus')}
         subtitle={i18nT('apps.papyrus.page.latex_papers_with_a_live_pdf_preview')}
       />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
         <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
           <StatCard
             label={i18nT('apps.papyrus.page.papers')}

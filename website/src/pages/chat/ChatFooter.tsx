@@ -229,7 +229,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   if (!regenerating && streamingText && !streamQuiet && stopState !== 'soft_pending' && stopState !== 'killing') return null
   // width from CSS var --mc-content-width
   return (
-    <div data-testid="chat-footer" className={`px-5 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    <div data-testid="chat-footer" className={`px-4 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div className="px-3.5 py-2.5">
         {stopState === 'soft_pending' ? (
           <motion.span

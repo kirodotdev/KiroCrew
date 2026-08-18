@@ -42,7 +42,7 @@ from typing import Any
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.hooks import TOOL_DENY, HookManager, hooks_config_from_config_dict
 from kiro_crew.platform_compat import SIGKILL, kill_process_tree
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 
 from .git_safety import GIT_SAFE_CONFIG, require_pinned
 
@@ -718,8 +718,11 @@ class AgentRunner:
         # (`profiles/github_repo/profile.py:strip_credential_env`) and the agent spawn is
         # the other place untrusted content executes, so it gets the same treatment.
         scrubbed_env = strip_credential_env(scrubbed_env)
-        popen = subprocess.Popen(
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args -- argv LIST, no shell=True, so there is no shell to inject into and shlex.quote() does not apply. Every element is either a literal or a value the app itself computed (prompt text, model name, worktree paths); an argv element can only ever be one argument to CLAUDE_BIN. The marker sits on the tainted ARGUMENT line because that is where semgrep anchors this rule.  # noqa: E501
+        popen = popen_limited(
+            # argv LIST, no shell=True, so there is no shell to inject into and
+            # shlex.quote() does not apply. Every element is either a literal or a value
+            # the app itself computed (prompt text, model name, worktree paths); an argv
+            # element can only ever be one argument to CLAUDE_BIN.
             sandboxed,
             cwd=root,
             stdout=subprocess.PIPE,
@@ -727,7 +730,6 @@ class AgentRunner:
             text=True,
             bufsize=1,  # line-buffered so streamed lines arrive promptly
             env=scrubbed_env,
-            preexec_fn=resource_limit_preexec(),
             # Make the child its own process group so we can kill it (and any children it
             # spawned) cleanly on stop without taking the parent down.
             start_new_session=True,

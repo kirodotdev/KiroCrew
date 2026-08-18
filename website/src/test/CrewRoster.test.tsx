@@ -14,7 +14,7 @@
  * reordering a column does not break them.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -305,6 +305,49 @@ describe('crew roster — filtering', () => {
     // Distinct copy from the filter case — a first run is not a failed search.
     expect(screen.getByTestId('empty-state-title')).not.toHaveTextContent('match your filter')
     expect(screen.queryAllByTestId('crew-card')).toHaveLength(0)
+  })
+
+  it('does not flash the empty state while a refreshTrigger-driven refetch is in flight', async () => {
+    // `refreshTrigger` is part of the roster query key, so any WS-driven bump
+    // (a `refresh` / `sessions_restarting` / `refine` frame from ANOTHER
+    // session, a cron, or a restart) mints a fresh query whose `data` starts
+    // `undefined`. Without `placeholderData: keepPreviousData` that collapses
+    // `agents` to `[]` for the refetch window and the roster flashes the
+    // "No crews yet" empty state on a populated install — the reported bug.
+    let resolveSecond: (v: unknown) => void = () => {}
+    mockApi.kirocrewAgents
+      .mockResolvedValueOnce(AGENTS_RESPONSE)
+      .mockImplementationOnce(() => new Promise(res => { resolveSecond = res }))
+
+    const store = createTestStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <MemoryRouter>
+            <KiroCrewAgentsPage />
+          </MemoryRouter>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(2))
+
+    // Bump refreshTrigger → the roster query key changes and refetches. The
+    // second fetch is deliberately left pending so the "no data yet" window is
+    // observable rather than a sub-millisecond flicker.
+    act(() => { store.dispatch({ type: 'dashboard/triggerRefresh' }) })
+
+    // The prior roster must remain on screen throughout the pending refetch —
+    // no empty state, cards intact.
+    await waitFor(() => expect(mockApi.kirocrewAgents).toHaveBeenCalledTimes(2))
+    expect(screen.queryByTestId('empty-state-title')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('crew-card')).toHaveLength(2)
+
+    // And once the refetch resolves the roster is still there (now from fresh
+    // data), never having blanked in between.
+    resolveSecond(AGENTS_RESPONSE)
+    await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(2))
+    expect(screen.queryByTestId('empty-state-title')).not.toBeInTheDocument()
   })
 })
 

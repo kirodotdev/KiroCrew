@@ -581,7 +581,7 @@ describe('DevFleetPage', () => {
     const btn = screen.getByText('Prune merged').closest('button') as HTMLButtonElement
     expect(btn.querySelector('.animate-spin')).toBeNull()
     // Idle: destructive affordance is on.
-    expect(btn.className).toContain('hover:text-danger')
+    expect(btn.className).toContain('text-danger')
     fireEvent.click(btn)
     await waitFor(() => expect(btn.getAttribute('aria-busy')).toBe('true'))
     expect(btn.querySelector('.animate-spin')).not.toBeNull()
@@ -590,13 +590,13 @@ describe('DevFleetPage', () => {
     expect(btn.textContent).toContain('Scanning for merged…')
     expect(screen.queryByText('Prune merged')).toBeNull()
     // …and the danger variant is suppressed for the scan's whole window.
-    expect(btn.className).not.toContain('hover:text-danger')
+    expect(btn.className).not.toContain('text-danger')
     release!()
     await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument(), { timeout: 3000 })
     expect(btn.querySelector('.animate-spin')).toBeNull()
     // Scan over: label and destructive affordance are restored.
     expect(btn.textContent).toContain('Prune merged')
-    expect(btn.className).toContain('hover:text-danger')
+    expect(btn.className).toContain('text-danger')
   })
 
   it('prune dialog renders with candidates and kept rows', async () => {

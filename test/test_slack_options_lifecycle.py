@@ -744,6 +744,25 @@ def _slack_app(state):
     return app
 
 
+async def _drain_backfill(state) -> None:
+    """Await the backfill the slack-link handler spawns.
+
+    The handler deliberately backgrounds the drain (`_spawn_slack_backfill`) and
+    returns before it posts, so the response arriving proves only that the task
+    was CREATED. Reading the Slack mock straight after the request races that
+    task: it usually wins on an idle machine and loses under load, which is a
+    flake that reads as a plain count mismatch (`assert 0 == 2`) and names
+    neither the task nor the race.
+
+    The task is tracked in `state._background_tasks`, so awaiting the
+    not-yet-done members is an exact wait on the real completion condition
+    rather than a sleep. An empty set means it already finished; a done-callback
+    discards each task, so snapshot before awaiting.
+    """
+    for task in [t for t in state._background_tasks if not t.done()]:
+        await task
+
+
 class TestLinkTimeBackfill:
     """Replaying context into a freshly-linked thread."""
 
@@ -779,6 +798,7 @@ class TestLinkTimeBackfill:
         async with TestClient(TestServer(_slack_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/slack-link", json={})
             assert resp.status == 200
+            await _drain_backfill(state)
 
         texts = [c.args[1] for c in state.slack_client.post_message.await_args_list]
         assert all("[OPTIONS:" not in t for t in texts)
@@ -796,6 +816,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _drain_backfill(state)
 
         assert _is_live_control(state.slack_client.post_blocks.await_args.args[1])
         assert _recs(state, slot)
@@ -814,6 +835,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _drain_backfill(state)
 
         blocks = state.slack_client.post_blocks.await_args.args[1]
         assert not _is_live_control(blocks)
@@ -838,6 +860,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _drain_backfill(state)
 
         blocks = state.slack_client.post_blocks.await_args.args[1]
         assert _is_live_control(blocks)
@@ -862,6 +885,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _drain_backfill(state)
 
         texts = [c.args[1] for c in state.slack_client.post_message.await_args_list]
         assert any("[OPTIONS: A | B]" in t for t in texts)
@@ -878,6 +902,7 @@ class TestLinkTimeBackfill:
 
         async with TestClient(TestServer(_slack_app(state))) as client:
             await client.post("/api/chat/slots/s1/slack-link", json={})
+            await _drain_backfill(state)
 
         posts = state.slack_client.post_blocks.await_args_list
         assert len(posts) == 2

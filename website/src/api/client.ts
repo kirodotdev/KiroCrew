@@ -22,6 +22,7 @@ import { queryClient } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
 import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
+import { normalizeInstalledApp, normalizeInstalledApps } from '../components/appstore/types'
 import { TAB_ID } from './tabId'
 
 /**
@@ -47,6 +48,34 @@ function themeConsentSha(colorTheme?: string): string | null {
   return stored
 }
 
+/** One machine-readable ground for a sharing verdict.
+ *
+ *  `code` is stable and is what the UI translates. `detail` is verbatim data
+ *  from the server or the config (an env name, a capability path, a protocol
+ *  version) and is deliberately NOT translated.
+ */
+export type McpShareReason = {
+  code: string
+  detail: string
+}
+
+/** The gateway's advisory reading of whether a server's backend can be shared.
+ *
+ *  `strength` is the evidence tier, weakest first: `unknown`, `no_objection`,
+ *  `declared`, `disqualified`, `refuted`. Only `declared` sets `recommendShare`,
+ *  because finding nothing disqualifying is an absence of evidence rather than
+ *  evidence of absence.
+ *
+ *  The wire object also carries a separate stub recommendation, which is not
+ *  declared here: a TS type is structural, so the field costs a reader something
+ *  and buys nothing until a component actually renders it.
+ */
+export type McpShareRecommendation = {
+  strength: string
+  recommendShare: boolean
+  reasons: McpShareReason[]
+}
+
 export type McpManagedServer = {
   name: string
   stub: boolean            // effective: can_stub AND in_allowlist
@@ -56,6 +85,11 @@ export type McpManagedServer = {
   agents: string[]         // agent configs that declare this server
   transport: string        // "stdio" (stubbable) or "http" (no stdio pipe to interpose on)
   denylisted: boolean      // in UNPOOLABLE_SERVERS — can never be pooled
+  // Optional because the field is only as old as the shareability detector: a
+  // dashboard served from this build can be pointed at an older gateway (Make
+  // Live to an earlier worktree), and a row with no verdict must read as "not
+  // measured" rather than crash the table.
+  recommendation?: McpShareRecommendation
 }
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
@@ -1628,6 +1662,7 @@ export const api = {
     tasks: {
       id: string; task: string; agent: string; parent: string
       rss_mb: number; peak_rss_mb: number; cpu_cores: number
+      procs: number | null; mcp: number | null
       started_at: number; shared: boolean; pid: number | null; sampled: boolean
     }[]
     totals: {
@@ -1680,6 +1715,10 @@ export const api = {
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j),
   chatSlotWorkspace: (slot: string, workspace: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/workspace', { workspace }).then(j),
+  // Relaunch the slot's agent process in place (fresh agent spec, env, and MCP
+  // servers; conversation preserved). 409 while a turn is in flight.
+  chatSlotReload: (slot: string) =>
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/reload', {}).then(j) as Promise<{ ok?: boolean; error?: string }>,
   chatSlotProject: (slot: string, project: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j),
   // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
@@ -1930,11 +1969,11 @@ export const api = {
    *  the auto-nudge feature flag is off, so callers need no flag check. */
   autonudgeList: (): Promise<{ enabled: boolean; loops: { slot_key: string; active?: boolean; cycle_count?: number; max_cycles?: number }[] }> =>
     fetch('/api/autonudge').then(j),
-  chatSlotDetail: (slot: string, limit?: number, before?: number) => {
+  chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
     if (before !== undefined) p.set('before', String(before))
-    return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p).then(j)
+    return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p, { signal }).then(j)
   },
   createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}) }).then(j),
   /** Inject silent background context into a slot — consumed on the next user
@@ -2261,8 +2300,13 @@ export const api = {
   channelClearContext: (id: string, scope: 'all' | 'agent', agentId?: string) => post('/api/channels/' + encodeURIComponent(id) + '/clear-context', scope === 'agent' ? { scope, agent_id: agentId } : { scope }).then(j),
 
   // --- Apps ---
-  listApps: () => fetch('/api/apps').then(j),
-  getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j),
+  // Installed-app payloads are normalized HERE rather than in a queryFn. The
+  // registry feed has one consumer, so `AppsPage` can narrow it at its own
+  // `useQuery`; `/api/apps` has four (the Apps page, the left rail, the command
+  // palette, the migration check), and normalizing per consumer is how the
+  // fourth one gets forgotten. This is the boundary all four share.
+  listApps: () => fetch('/api/apps').then(j).then(normalizeInstalledApps),
+  getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
   getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
   installApp: (source: string) => post('/api/apps/install', { source }).then(j),
   enableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/enable').then(j),

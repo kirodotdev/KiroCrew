@@ -103,7 +103,7 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
           subtitle={i18nT('pages.systemPage.live_system_metrics')}
         />
       )}
-      <div className={`${embedded ? '' : 'px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
+      <div className={`${embedded ? '' : 'px-4 md:px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
         <div className="mb-4">
           <UnderlineTabs<SystemPlane>
             tabs={buildPlanes()}

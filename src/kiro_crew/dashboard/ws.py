@@ -14,7 +14,7 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, _safe_folder_tree
 from kiro_crew.dashboard.ws_event_scope import (
     _audit_allow,
     _audit_deny,
@@ -367,6 +367,18 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             if ws.get("_is_dashboard_user", False)
             else dict(slots_envelope_extras(allowed_events, yolo=state._yolo))
         )
+        # Seed the folder tree on the CONNECT-TIME push (dashboard users only) —
+        # this is the frame that populates the sidebar on a cold page load, so it
+        # is where the client must receive `folders` to group sessions on the
+        # first paint (issue #4127). The broadcast path (_do_slots_broadcast) also
+        # carries it for live folder create/rename/move, but on an idle-gateway
+        # load no broadcast fires before GET /api/chat/folders resolves, so
+        # without this the ungrouped→regrouped flicker survives. App tokens are
+        # excluded (they do not render the chat folder tree), matching the
+        # broadcast decision. `_safe_folder_tree` drops history_count and any
+        # malformed entry (see its docstring).
+        if ws.get("_is_dashboard_user", False):
+            envelope_extras["folders"] = _safe_folder_tree(getattr(state, "_folders", None))
         if not ws.get("_is_dashboard_user", False) and "yolo" in envelope_extras:
             # Handing an app token the live blanket-approval override is a
             # grant of operator security posture, not slot data, and this

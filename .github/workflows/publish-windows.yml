@@ -1,0 +1,348 @@
+name: Publish Windows Desktop (reusable)
+
+# Reusable workflow: publish the Authenticode-signed NSIS installer built by
+# build-windows.yml to the distribution bucket, then advertise it through an
+# electron-updater feed so the desktop app can update itself.
+#
+# WHY THIS IS A SEPARATE LANE FROM publish-linux.yml
+#
+# The two differ in the three places that matter: the artifact is a PE rather
+# than an ELF AppImage, the channel file electron-updater's NsisUpdater reads is
+# `latest.yml` rather than `latest-linux.yml`, and Windows ships a `.blockmap`
+# that has to land beside the installer for differential download to work. The
+# S3 contract -- immutable versioned key, feed, then the mutable `latest/` alias
+# -- is deliberately identical, so read publish-linux.yml alongside this file.
+#
+# THE SIGNATURE GUARD IS LOAD-BEARING, NOT DEFENSIVE
+#
+# NsisUpdater verifies Authenticode fail-closed. Publishing an unsigned or
+# wrongly-signed installer would therefore not degrade updates, it would break
+# EVERY update for every client that reads this feed, and the mutable alias
+# means it breaks them all at once. build-windows.yml already skips signing
+# cleanly when its secret is absent, which is exactly the state that would
+# produce a working-but-unsigned installer -- so this lane refuses to publish
+# bytes whose certificate table is empty or whose leaf does not carry the
+# expected publisher.
+#
+# NIGHTLY AND INSIDER ONLY, BY DESIGN
+#
+# The stable lane republishes the immutable promotion bundle that
+# scripts/release_promotion.py verifies, and that bundle has no Windows role.
+# Adding one would couple stable releases to Windows build success and undo the
+# per-platform release independence that build-windows.yml's soft_fail exists to
+# protect, so it is a separate decision rather than a side effect of this lane.
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Release channel: nightly | insider"
+        required: true
+        type: string
+      version:
+        description: "Version label used in S3 keys"
+        required: true
+        type: string
+      publish:
+        required: false
+        type: boolean
+        default: true
+      installer_artifact:
+        description: "Name of the uploaded artifact holding the NSIS installer"
+        required: true
+        type: string
+    secrets:
+      # Declared explicitly so callers pass this ONE secret instead of
+      # `secrets: inherit`, which would hand this lane every secret in the
+      # repository. The lane assumes a role and writes to the distribution
+      # bucket, so the blast radius of a compromise here is worth bounding to
+      # the credential it actually uses.
+      #
+      # Not required: HAS_SIGNING_SECRETS treats an empty value as "no signing
+      # secrets" and skips every step, which is what keeps forks green. Making
+      # it required would turn that clean skip into a workflow-call failure.
+      AWS_SIGNING_ROLE_ARN:
+        description: "Role assumed to write the installer, blockmap and feed to the distribution bucket"
+        required: false
+
+permissions:
+  contents: read
+  # The artifact probe asks the Actions API what this run uploaded, which
+  # GITHUB_TOKEN cannot do without actions:read -- the call 403s, and because the
+  # probe fails closed on an API error the whole lane then aborts. So this is not
+  # merely least privilege: without it nothing is ever published. release.yml's
+  # resolve-promotion and stable-gate jobs carry it for the same reason.
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  publish-windows:
+    name: Publish Windows installer (${{ inputs.channel }} · x64)
+    if: ${{ inputs.publish && vars.CLI_DIST_BUCKET != '' && vars.CLI_CDN_BASE != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: prod
+    env:
+      # Mirrors publish-linux.yml: the signing role gates the whole lane, so a
+      # fork without the secret skips every step instead of failing.
+      HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      INSTALLER_ARTIFACT: ${{ inputs.installer_artifact }}
+      # The published basename is a PUBLIC CONTRACT: the `latest/` alias URL is
+      # what manualDownloadUrl() hands a user whose in-app update failed, so it
+      # can carry neither the version nor electron-builder's spaces.
+      PUBLISHED_BASENAME: KiroCrew-Setup
+      # The leaf certificate the signing profile issues. Pinned as the expected
+      # publisher so a misconfigured signing profile is caught here rather than
+      # by every client's fail-closed update check.
+      EXPECT_SUBJECT_CN: "Amazon Web Services, Inc."
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Windows publishes x64 only, so these are constants rather than inputs.
+      # There is deliberately no `arch` parameter: with none, nothing can request
+      # an architecture this lane does not build, which is a stronger guarantee
+      # than validating a value at runtime. publish-linux.yml takes an `arch`
+      # because its callers genuinely pass two; both of this lane's callers pass
+      # one.
+      #
+      # Windows has exactly ONE channel file whatever the architecture.
+      # electron-updater's Provider.getChannelFilePrefix() appends an arch suffix
+      # only for linux and returns "" for win32, so NsisUpdater always requests
+      # `latest.yml`; a `latest-<arch>.yml` would be written and never read. A
+      # second Windows arch therefore adds an entry to THIS file rather than a
+      # feed of its own, and must also deal with Provider.findFile()
+      # disambiguating entries by matching process.arch against the url path --
+      # which `KiroCrew-Setup.exe` does not contain. That is a change to this
+      # workflow either way, which is why no input anticipates it.
+      - name: Resolve published names
+        run: |
+          set -euo pipefail
+          echo "WINDOWS_BASENAME=${PUBLISHED_BASENAME}" >> "$GITHUB_ENV"
+          echo "FEED_FILE=latest.yml" >> "$GITHUB_ENV"
+
+      # build-windows.yml runs with soft_fail, so its job result is `success`
+      # even when the build failed and uploaded nothing. Probing for the
+      # artifact is what keeps a Windows-only failure from turning this lane
+      # into a hard error, without making the caller's `needs` result lie.
+      #
+      # The listing's exit status is captured SEPARATELY from the match. Folding
+      # them together (`if gh api … | grep -q …`) makes a transient API error
+      # indistinguishable from a genuinely absent artifact: both make the
+      # pipeline non-zero and land in the same branch, so an API blip would
+      # silently skip publishing an installer that was in fact built and signed,
+      # while the notice claims the build produced nothing. An API failure is an
+      # unknown, and an unknown is not an absence.
+      - name: Probe for the installer artifact
+        if: env.HAS_SIGNING_SECRETS
+        id: probe
+        run: |
+          set -euo pipefail
+          # Retried before failing. The listing is a network call to the Actions
+          # API, and this step fails CLOSED on error -- correct, because an
+          # unknown is not an absence -- but a hard failure here makes the whole
+          # insider run unsuccessful, which blocks stable promotion of the mac,
+          # Linux and CLI artifacts too (see the NOTE on the release caller). A
+          # single blip should not cost that, while a persistent failure still
+          # must, so transient errors are absorbed and only a sustained one is
+          # reported.
+          NAMES=""
+          for attempt in 1 2 3; do
+            if NAMES=$(gh api \
+                "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+                --paginate --jq '.artifacts[].name'); then
+              break
+            fi
+            if [ "${attempt}" = "3" ]; then
+              echo "::error::could not list this run's artifacts after 3 attempts, so whether the installer exists is unknown. Refusing to treat an API failure as nothing to publish."
+              exit 1
+            fi
+            echo "::warning::listing this run's artifacts failed (attempt ${attempt}/3); retrying."
+            sleep $((attempt * 5))
+          done
+          if grep -qxF "${INSTALLER_ARTIFACT}" <<<"${NAMES}"; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no ${INSTALLER_ARTIFACT} artifact in this run; the Windows build did not produce one, so there is nothing to publish."
+            echo "present=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Download Windows build artifact
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.installer_artifact }}
+          path: artifacts
+
+      # electron-builder names the installer after the product and version
+      # ("KiroCrew Nightly Setup <version>.exe"), which differs per channel, so
+      # it is located by glob and copied to the pinned public basename. The
+      # blockmap must travel with it: without a blockmap beside the installer,
+      # electron-updater falls back to a full download for every update.
+      - name: Locate the installer and its blockmap
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        run: |
+          set -euo pipefail
+          mapfile -t FOUND < <(find artifacts -type f -name '*.exe' | sort)
+          if [ "${#FOUND[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one .exe in the artifact, found ${#FOUND[@]}"
+            printf '%s\n' "${FOUND[@]:-<none>}"
+            exit 1
+          fi
+          SRC="${FOUND[0]}"
+          if [ ! -f "${SRC}.blockmap" ]; then
+            echo "::error::${SRC} has no .blockmap beside it; differential download would silently degrade to a full download for every client."
+            exit 1
+          fi
+          mkdir -p staged
+          cp "${SRC}" "staged/${WINDOWS_BASENAME}.exe"
+          cp "${SRC}.blockmap" "staged/${WINDOWS_BASENAME}.exe.blockmap"
+          echo "INSTALLER_PATH=staged/${WINDOWS_BASENAME}.exe" >> "$GITHUB_ENV"
+          echo "BLOCKMAP_PATH=staged/${WINDOWS_BASENAME}.exe.blockmap" >> "$GITHUB_ENV"
+
+      # Two independent guards on the bytes about to become immutable.
+      #
+      # No architecture check, and the analogy to publish-linux.yml's
+      # ELF-machine check does not hold: an AppImage IS its payload, while an
+      # NSIS installer is a 32-bit stub whatever it installs (the signed x64
+      # nightly reports COFF machine 0x014c), so the header says nothing about
+      # the packaged architecture. Architecture is bound by artifact identity
+      # instead -- this lane accepts x64 alone and consumes the artifact the x64
+      # build job uploaded, by name.
+      #
+      # The signature check is the one this lane cannot omit, per the header note
+      # on fail-closed verification.
+      - name: Verify the Authenticode signature
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_windows_installer.py \
+            --installer "${INSTALLER_PATH}" \
+            --expect-subject-cn "${EXPECT_SUBJECT_CN}"
+
+      # Attested BEFORE the immutable write, so un-attested bytes can never
+      # become the version clients resolve.
+      - name: Attest installer provenance
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: ${{ env.INSTALLER_PATH }}
+
+      # --if-none-match '*' makes the versioned key write-once. A 412 on a
+      # re-run is tolerated only when the published bytes are byte-identical;
+      # otherwise the version string is burned and repointing the alias would
+      # hand clients a binary whose feed digest no longer matches.
+      - name: Publish installer to distribution bucket
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        run: |
+          set -euo pipefail
+          INSTALLER_KEY="desktop/${CHANNEL}/${VERSION}/${WINDOWS_BASENAME}.exe"
+          set +e
+          PUT_OUT=$(aws s3api put-object \
+            --bucket "${{ vars.CLI_DIST_BUCKET }}" \
+            --key "${INSTALLER_KEY}" \
+            --body "${INSTALLER_PATH}" \
+            --if-none-match '*' \
+            --content-type application/octet-stream \
+            --cache-control "public, max-age=31536000, immutable" 2>&1)
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            if printf '%s' "$PUT_OUT" | grep -q 'PreconditionFailed'; then
+              curl -fsSL --retry 3 --retry-delay 2 \
+                "${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}" -o /tmp/published.exe
+              LOCAL_SHA=$(sha256sum "${INSTALLER_PATH}" | cut -d' ' -f1)
+              PUBLISHED_SHA=$(sha256sum /tmp/published.exe | cut -d' ' -f1)
+              if [ "$LOCAL_SHA" != "$PUBLISHED_SHA" ]; then
+                echo "::error::${INSTALLER_KEY} already exists with different bytes; the version string is burned, cut a new version."
+                exit 1
+              fi
+              echo "::notice::${INSTALLER_KEY} already published with identical bytes; keeping it."
+            else
+              printf '%s\n' "$PUT_OUT"
+              exit $RC
+            fi
+          fi
+          echo "INSTALLER_KEY=${INSTALLER_KEY}" >> "$GITHUB_ENV"
+
+          # The blockmap is derived from the installer, so it shares the
+          # installer's immutability but not its write-once guard: a re-run that
+          # kept identical installer bytes necessarily produces an identical
+          # blockmap, and a plain overwrite avoids a second 412 branch.
+          aws s3api put-object \
+            --bucket "${{ vars.CLI_DIST_BUCKET }}" \
+            --key "${INSTALLER_KEY}.blockmap" \
+            --body "${BLOCKMAP_PATH}" \
+            --content-type application/octet-stream \
+            --cache-control "public, max-age=31536000, immutable" > /dev/null
+
+      # sha512 is base64 of the RAW digest, never hex: electron-updater
+      # string-compares the base64 form. The url is absolute so
+      # newUrlFromBase leaves it alone, which is what preserves the
+      # pointer-host / byte-host split.
+      - name: Write update feed
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        run: |
+          set -euo pipefail
+          INSTALLER_SHA512=$(openssl dgst -sha512 -binary "${INSTALLER_PATH}" | base64 -w 0)
+          INSTALLER_SIZE=$(stat -c%s "${INSTALLER_PATH}")
+
+          # Read the bytes back through the CDN before advertising their digest.
+          # A feed that names a digest the served object does not have fails
+          # every client's verification, and the alias would spread it.
+          SERVED_SHA512=$(curl -fsS --retry 3 --retry-delay 2 \
+            "${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}" | openssl dgst -sha512 -binary | base64 -w 0)
+          if [ "$SERVED_SHA512" != "$INSTALLER_SHA512" ]; then
+            echo "::error::published installer does not match the artifact this feed would advertise."
+            exit 1
+          fi
+
+          cat > /tmp/"${FEED_FILE}" <<EOF
+          version: ${VERSION}
+          files:
+            - url: ${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}
+              sha512: '${INSTALLER_SHA512}'
+              size: ${INSTALLER_SIZE}
+          path: ${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}
+          sha512: '${INSTALLER_SHA512}'
+          releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          EOF
+          aws s3 cp /tmp/"${FEED_FILE}" \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/feed/${CHANNEL}/${FEED_FILE}" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+
+      # Written LAST: the alias is what a human downloads, so it only ever
+      # points at a version whose immutable key and feed are already live.
+      - name: Update latest installer alias
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        run: |
+          set -euo pipefail
+          aws s3api put-object \
+            --bucket "${{ vars.CLI_DIST_BUCKET }}" \
+            --key "desktop/${CHANNEL}/latest/${WINDOWS_BASENAME}.exe" \
+            --body "${INSTALLER_PATH}" \
+            --content-type application/octet-stream \
+            --cache-control "public, max-age=300" > /dev/null
+
+      - name: Summary
+        if: env.HAS_SIGNING_SECRETS && steps.probe.outputs.present
+        run: |
+          {
+            echo "### Windows installer published"
+            echo ""
+            echo "- channel: \`${CHANNEL}\` · arch: \`x64\` · version: \`${VERSION}\`"
+            echo "- installer: ${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}"
+            echo "- latest alias: ${{ vars.CLI_CDN_BASE }}/desktop/${CHANNEL}/latest/${WINDOWS_BASENAME}.exe"
+            echo "- feed: ${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/${FEED_FILE}"
+          } >> "$GITHUB_STEP_SUMMARY"

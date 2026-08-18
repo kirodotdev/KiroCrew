@@ -78,19 +78,28 @@ class _GitScript:
         return next(c for c in self.calls if c[0] == verb)
 
 
+#: Every transport the URL gate accepts. Shared by the accept test and the
+#: trailing-newline regression test so a new transport is automatically covered
+#: by both.
+_ACCEPTED_URLS = (
+    "https://example.com/group/paper.git",
+    "http://example.com/paper",
+    "ssh://git@example.com/paper.git",
+    "git://example.com/paper.git",
+    "git@example.com:group/paper.git",
+)
+
+
 class TestUrlValidation:
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://example.com/group/paper.git",
-            "http://example.com/paper",
-            "ssh://git@example.com/paper.git",
-            "git://example.com/paper.git",
-            "git@example.com:group/paper.git",
-        ],
-    )
+    @pytest.mark.parametrize("url", _ACCEPTED_URLS)
     def test_accepts_known_transports(self, url: str) -> None:
         assert gitops.GIT_URL_RE.match(url)
+
+    @pytest.mark.parametrize("url", _ACCEPTED_URLS)
+    def test_rejects_trailing_newline_on_accepted_url(self, url: str) -> None:
+        """Python's ``$`` matches before a trailing newline; the ``\\Z`` anchor
+        must not, or ``.match`` on a client URL hands the newline to git argv."""
+        assert gitops.GIT_URL_RE.match(url + "\n") is None
 
     @pytest.mark.parametrize(
         "url",

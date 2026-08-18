@@ -770,19 +770,20 @@ async def _stream_task(
         return
 
     full_text = "".join(chunks).strip()
-    if full_text:
-        # Sanitize LLM output before posting
-        full_text, _ = redact_exfiltration_urls(full_text)
-        full_text, _ = redact_credentials(full_text)
-        # Extract @mentions from agent's response
-        mention_ids = [
-            m.id for m in channel.members.values() if m.id != agent.id and f"@{m.role}" in full_text
-        ]
-        await channel.post(
-            agent.id,
-            full_text,
-            from_role=agent.role,
-            msg_type="progress",
-            thread_id=thread_id,
-            mention=mention_ids or None,
-        )
+    if not full_text:
+        return
+    # Sanitize LLM output before posting
+    full_text, _ = redact_exfiltration_urls(full_text)
+    full_text, _ = redact_credentials(full_text)
+    # Extract @mentions from agent's response
+    mention_ids = [
+        m.id for m in channel.members.values() if m.id != agent.id and f"@{m.role}" in full_text
+    ]
+    await channel.post(
+        agent.id,
+        full_text,
+        from_role=agent.role,
+        msg_type="progress",
+        thread_id=thread_id,
+        mention=mention_ids or None,
+    )

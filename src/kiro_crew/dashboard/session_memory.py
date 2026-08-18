@@ -36,6 +36,7 @@ from kiro_crew.acp.runtime import _get_rss_tree_mb, _iter_descendant_pids
 from kiro_crew.dashboard.handlers_system import _get_static_system_info
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session import BACKGROUND_KEY
@@ -55,8 +56,9 @@ _HISTORY_LEN = 60
 
 # Marker identifying an MCP stub process inside a session's tree. Stubs are the
 # per-server shims a session spawns, so their count is the useful "how many MCP
-# servers is this session carrying" signal.
-_STUB_MARKER = "mcp_gateway.stub"
+# servers is this session carrying" signal. Imported rather than spelled out so
+# it cannot drift from the launch line the rewriter emits.
+_STUB_MARKER = STUB_MODULE
 
 
 def _read_cmdline(pid: int) -> str:

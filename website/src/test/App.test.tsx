@@ -13,10 +13,10 @@ import { safeSetItem } from '../utils/safeStorage'
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
 const REAL_FAILURE = 'invalid agent name'
 
-/** Chrome the side tracks never get: the header's own `pl-3 pr-3` (24px) plus the
+/** Chrome the side tracks never get: the header's own `pl-2 pr-3` (20px) plus the
  *  two 12px track gaps. Subtracted before reasoning about a group's width —
  *  leaving the padding out is what first put the width factor 2vw too high. */
-const TOPBAR_GAPS = 48
+const TOPBAR_GAPS = 44
 
 /** `clamp(240px, 22vw, 480px)` evaluated in JS. One definition, because three
  *  assertions below reason about it and three copies would drift apart. The

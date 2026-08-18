@@ -4206,6 +4206,15 @@ async def _run_chat(
         # (the dashboard steer handler) can reach the running session's client
         # to inject a mid-turn steer. Cleared in the finally below.
         slot._acp_client = getattr(client, "client", None)
+        # This consumer implements the low-fidelity child downgrade (the
+        # interactive card) — opt in so the handle-level fail-close gate
+        # yields those events here instead of rejecting them itself.
+        # setattr: the LLMProvider interface doesn't declare the attribute;
+        # AcpSessionProvider forwards it to the handle, other providers ignore.
+        try:
+            setattr(client, "child_fidelity_aware", True)
+        except Exception:  # pragma: no cover - providers without the attr
+            pass
         # Companion steer handle: lets the steer handler cut the current text
         # segment at the steer boundary (see _steer_segment_cut). Same
         # lifecycle as _acp_client.
@@ -5389,6 +5398,22 @@ async def _run_chat(
                 # to the interactive card. A child WITH full context takes the
                 # same branches as the main agent (mode parity).
                 _child_low_fidelity = event.child_low_fidelity
+                # DISPLAY-ONLY warning for the interactive card: the human
+                # must know the title is ALL there is (the params the gates
+                # would verify are absent, so the displayed text is
+                # agent-authored and unverifiable). Computed HERE — outside
+                # the context-builder block — so the card is labeled whenever
+                # the fidelity guards are active, including hosts with no
+                # context builder. Never written into event.title: the
+                # TrustDropdown derives its learned patterns from the title,
+                # and a mutated title would store junk pattern entries for
+                # exactly the requests that need the clearest presentation.
+                _child_lf_warning = (
+                    "⚠️ UNVERIFIED child request (security context "
+                    "missing — title is agent-authored): "
+                    if _child_low_fidelity
+                    else ""
+                )
                 if state.context_builder:
                     # Pass the raw shell command (not just the display title)
                     # so the security gate evaluates what actually executes.
@@ -5460,7 +5485,8 @@ async def _run_chat(
                         # reached us (cache miss): command bytes are absent, so
                         # every gate below would judge the LLM-authored title
                         # alone. Fail closed past all auto-approve paths — the
-                        # request falls through to the interactive card. When
+                        # request falls through to the interactive card (which
+                        # carries the _child_lf_warning display prefix). When
                         # the child's session/update frames WERE routed (the
                         # normal case), tool_input carries the real command
                         # bytes and the child takes the exact same mode
@@ -5713,7 +5739,7 @@ async def _run_chat(
                 # "creating a durable scheduled job is allowed".
                 _bc_cmd = (
                     _extract_bash_command(event.tool_input)
-                    if (event.is_shell and event.tool_input)
+                    if (event.is_shell and event.tool_input and not _child_low_fidelity)
                     else ""
                 )
                 _bc_ok = False
@@ -5772,7 +5798,13 @@ async def _run_chat(
                 # a scope check is not a pure read — it retires a lapsed grant and
                 # logs that, which must happen once per event, not twice.
                 slot_trusted = _slot_is_trusted(slot)
-                if slot._trust_reads and not slot_trusted and not yolo_active and cmd:
+                if (
+                    slot._trust_reads
+                    and not slot_trusted
+                    and not yolo_active
+                    and cmd
+                    and not _child_low_fidelity
+                ):
                     if is_read_only_bash(cmd):
                         try:
                             validated_tool = _validate_tool_name(
@@ -5909,7 +5941,10 @@ async def _run_chat(
                 cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
                 if cmd:
                     perm_meta["is_read_only"] = "1" if is_read_only_bash(cmd) else ""
-                # Pre-compute pattern fields for the TrustDropdown
+                # Pre-compute pattern fields for the TrustDropdown.
+                # NOTE: derived from the UN-annotated event.title — the
+                # _child_lf_warning prefix is applied to the DISPLAY text
+                # only, so learned trust patterns keep meaning tool identity.
                 _safe_title, _ = redact_exfiltration_urls(event.title)
                 _safe_title, _ = redact_credentials(_safe_title)
                 perm_meta["tool_title"] = _safe_title
@@ -5923,7 +5958,7 @@ async def _run_chat(
                 perm_meta["base_command"] = _base
                 slot.append(
                     "permission",
-                    _safe_title,
+                    f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,
                     json.dumps(perm_meta),
                 )
                 loop = asyncio.get_running_loop()
@@ -5960,7 +5995,7 @@ async def _run_chat(
                             slot._slack_thread_ts,
                             event.request_id,
                             session_key,
-                            event.title,
+                            f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title,
                             event.tool_input or "",
                         )
                         if _slack_approval_ts is None:
@@ -6312,6 +6347,20 @@ async def _run_chat(
                 _sid = event.sub_session_id
                 if _sid in _native_tracker and event.tool_call_id:
                     _native_tc_card[event.tool_call_id] = f"native:{_redact_tool_field(_sid)}"
+                # Permission-rejection notices (the handle's own "⛔ …" lines,
+                # e.g. drain-time rejects yielded at turn start) arrive BEFORE
+                # any subagent_list populates the per-turn tracker — dropping
+                # them here would leave the user watching a child tool fail
+                # with no explanation. When the card cannot exist yet, persist
+                # the explanation as a slot notice instead.
+                if (
+                    _sid not in _native_tracker
+                    and event.text
+                    and event.text.startswith("⛔")
+                ):
+                    _txt, _ = redact_exfiltration_urls(event.text)
+                    _txt, _ = redact_credentials(_txt)
+                    slot.append("notice", _txt, "msg msg-info")
                 # Some kiro-cli builds also stream the sub-agent's own text via
                 # agent_message_chunk on this channel — surface it on the card.
                 if _sid in _native_tracker and event.text:
@@ -7653,6 +7702,15 @@ async def _run_chat(
         # Same lifecycle for the segment-cut handle: a late steer must not
         # flush into a finished turn's (already-flushed) locals.
         slot._steer_segment_cut = None
+        # Same lifecycle for the child-fidelity opt-in latched at turn start:
+        # it is THIS consumer's promise to render the low-fidelity downgrade
+        # card. Leaving it set would let a later, fidelity-UNAWARE consumer of
+        # the same provider/handle inherit the opt-in and silently disable the
+        # handle-level fail-close choke point.
+        try:
+            setattr(client, "child_fidelity_aware", False)
+        except Exception:
+            pass
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
         # bug this fix prevents.

@@ -155,7 +155,10 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
                 "from this session automatically."
             )
         # ``err_val`` is already redacted at the trust boundary by
-        # ``_http_error_body`` (HTTP bodies are untrusted external content).
+        # ``_http_error_body`` (HTTP bodies are untrusted external content), and
+        # an internal-auth mismatch has already been rewritten there into a
+        # sentence naming the instance mix-up -- so every tool gets that copy,
+        # not just this one.
         return f"Error: {err_val}"
     return f"Saved lesson ({scope}): {rule}"
 

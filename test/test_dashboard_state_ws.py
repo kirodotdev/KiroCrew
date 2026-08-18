@@ -100,6 +100,90 @@ class TestSubagentSubscribers:
         assert ws_alive in state._ws_clients
 
 
+class TestSlotsBroadcastCarriesFolders:
+    """The slots broadcast frame piggybacks the folder tree so the sidebar can
+    group sessions on first paint without waiting for GET /api/chat/folders.
+
+    A dashboard-user client receives the ``default_msg`` verbatim (the scope
+    chokepoint only rebuilds the frame for app tokens), so ``folders`` on the
+    broadcast note reaches it in the sent JSON. The frame must carry the cheap
+    in-memory tree WITHOUT ``history_count`` (that field costs a synchronous
+    session scan the broadcast hot path must never run)."""
+
+    class _DashboardWS:
+        """Minimal fake WS that reads as a dashboard user and captures sends.
+
+        ``send_str`` is an ``AsyncMock`` so the fire-and-forget
+        ``asyncio.ensure_future(ws.send_str(msg))`` in ``_spawn_ws_send`` records
+        the call synchronously — the same pattern the other broadcast tests use
+        to inspect a frame without draining the loop."""
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.send_str = AsyncMock()
+            self._flags = {"_is_dashboard_user": True}
+
+        def get(self, key, default=None):
+            return self._flags.get(key, default)
+
+    def test_frame_carries_folder_tree_without_counts(
+        self, state: DashboardState
+    ) -> None:
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-1", "folder_id": "f1"}])  # type: ignore[method-assign]
+        # In-memory folder tree as loaded from folders.json — no history_count.
+        state._folders = [
+            {"id": "f1", "name": "Work", "order": 0},
+            {"id": "f2", "name": "Personal", "order": 1, "parent_id": "f1"},
+        ]
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+
+        ws.send_str.assert_called_once()
+        frame = json.loads(ws.send_str.call_args[0][0])
+        assert frame["type"] == "slots"
+        assert frame["folders"] == state._folders
+        # The expensive per-folder count must NOT ride this hot-path frame.
+        assert all("history_count" not in f for f in frame["folders"])
+
+    def test_malformed_folder_store_degrades_instead_of_crashing(
+        self, state: DashboardState
+    ) -> None:
+        # A corrupt folders.json can leave _folders as a non-list, or a list with
+        # non-dict / id-less entries. The broadcast must not crash; well-formed
+        # entries survive and the rest are dropped.
+        state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
+        state._folders = [
+            {"id": "ok", "name": "Keep", "order": 0},
+            {"name": "no id", "order": 1},   # missing id -> dropped
+            "not a dict",                     # non-dict -> dropped
+            {"id": 42, "name": "int id"},     # non-string id -> dropped
+        ]
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()  # must not raise
+
+        frame = json.loads(ws.send_str.call_args[0][0])
+        assert frame["folders"] == [{"id": "ok", "name": "Keep", "order": 0}]
+
+    def test_non_list_folder_store_yields_empty_tree(
+        self, state: DashboardState
+    ) -> None:
+        # A scalar/dict where a list is expected would make list() raise; the
+        # coercion must yield [] instead of crashing the slot push.
+        state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
+        state._folders = {"corrupt": "mapping"}  # type: ignore[assignment]
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()  # must not raise
+
+        frame = json.loads(ws.send_str.call_args[0][0])
+        assert frame["folders"] == []
+
+
 class TestOwnerScopedBroadcast:
     """Owner-only typed broadcast + its delivery count (PR #461)."""
 
@@ -500,6 +584,11 @@ class TestOwnerSourceStatusTransport:
         state.owner_id = "U_OWNER"
         state.serialize_slots.side_effect = serialize_slots
         state._yolo = False
+        # Real folder list (a MagicMock attr would coerce to [] via
+        # _safe_folder_tree); lets the dashboard-user branch below assert the
+        # connect-time frame carries the folder tree — the frame that fixes the
+        # first-paint flicker (#4127).
+        state._folders = [{"id": "f1", "name": "Work", "order": 0}]
 
         class Request(dict):
             def __init__(self) -> None:
@@ -549,7 +638,8 @@ class TestOwnerSourceStatusTransport:
 
         assert result is fake_ws
         state.register_ws.assert_called_once_with(fake_ws, owner=owner_request)
-        initial_slots = fake_ws.sent[0]["data"]
+        initial_frame = fake_ws.sent[0]
+        initial_slots = initial_frame["data"]
         if owner_request:
             assert initial_slots[0]["source_links"][0]["ci"] == "passed"
             refresh.assert_called_once_with([source_url], state.push_slots_update)
@@ -559,10 +649,16 @@ class TestOwnerSourceStatusTransport:
             # stronger guarantee than merely withholding check status.
             assert initial_slots == []
             refresh.assert_not_called()
+            # Folders never ride an app-token frame (apps don't render the tree).
+            assert "folders" not in initial_frame
         else:
             assert "ci" not in str(initial_slots)
             assert "state" not in initial_slots[0]["source_links"][0]
             refresh.assert_not_called()
+            # The connect-time frame is what populates the sidebar on a cold
+            # load, so a dashboard user MUST receive the folder tree here — this
+            # is the frame that fixes the #4127 flicker.
+            assert initial_frame["folders"] == [{"id": "f1", "name": "Work", "order": 0}]
         state.unregister_ws.assert_called_once_with(fake_ws)
 
 

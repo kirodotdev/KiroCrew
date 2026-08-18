@@ -1674,9 +1674,12 @@ def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
                 m = {**m, "content": text}
             msg_out = dict(m)
             if msg_out.get("variants"):
+                # Snapshot for the same reason as _redact_meta — this runs in a
+                # worker thread (slot-detail render offload) while the event
+                # loop may still be appending variants to the live list.
                 msg_out["variants"] = [
                     {**v, "content": redact_credentials(redact_exfiltration_urls(v.get("content", ""))[0])[0]}
-                    for v in msg_out["variants"] if isinstance(v, dict)
+                    for v in list(msg_out["variants"]) if isinstance(v, dict)
                 ]
             meta = parse_cls_meta(m.get("cls", ""))
             if meta is not None:

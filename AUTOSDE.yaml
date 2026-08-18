@@ -195,16 +195,75 @@ custom-rules:
         and a security test whose payload escapes its own assertion is worse
         than no test, because it reports the guarantee it failed to check.
 
+      THE PROCESS WORKING DIRECTORY IS SHARED STATE. It is per-PROCESS, so under
+      xdist one test's `os.chdir` becomes every later test's starting directory on
+      that worker. FLAG a bare `os.chdir` in a test; `monkeypatch.chdir` reverts on
+      its own. This is not untidiness: a passing test's `tmp_path` is removed at that
+      test's teardown, so a test that chdirs into `tmp_path` and does not come back
+      leaves the worker in a DELETED directory, and `Path.cwd()` then raises
+      FileNotFoundError in every later test that reaches it — including from inside
+      production code (`taskrunner.TaskRunner.__init__` does `work_dir or Path.cwd()`).
+      Measured instance and its numbers: testing-conventions.md § Rules. The shape to
+      recognise in review is that it reads as "the suite is flaky" -- many files, each
+      passing in isolation -- rather than as one test missing one line.
+
+      A BACKGROUND WORKER BEATS EVERY FILESYSTEM CLEANUP, and this is the shape
+      neither paragraph above catches. A process singleton whose writer is a daemon
+      thread binds its directory ONCE, from whatever the first caller resolved. The
+      thread then outlives that test and re-creates the directory on its next flush —
+      AFTER the test's own tearDown removed it. `sel.py` is the worked case:
+      `SecurityEventLog._init_locked` captures `_default_dir()` and `_flush_batch`
+      opens with `mkdir(parents=True, exist_ok=True)`, which left one stray directory
+      behind on every run of a suite whose tests all cleaned up correctly. FLAG a test
+      that hands a PER-TEST directory to a subsystem with a background thread, task or
+      timer; the fix is a session-scoped directory that belongs to no individual test,
+      never tidier cleanup. Same family: a bare `MagicMock` config reads TRUTHY, so
+      patching `KiroCrewConfig.load` with one starts whatever subsystem is gated on
+      `cfg.<x>.enabled` and resolves `Path(cfg.local_dir)` to a RELATIVE path in the
+      repo; and a sleeper child (`python -c "import time; time.sleep(30)"`) whose
+      kill/wait sits on the happy path instead of in a `finally` or `addCleanup`.
+
+      A SECURITY ANCHOR IS NOT A DATA PATH. Some module-level values are built FROM
+      the real home precisely so they can refuse access to it — `security`'s
+      extract-into-trust-root pattern, `kiro_usage_api`'s credential-store paths.
+      Redirecting one to a tmp dir so a test can be isolated makes that test assert
+      against a pattern that no longer matches the thing it protects. FLAG it: stub
+      the READER, never move the anchor. The mirror-image defect is equally real —
+      handing a runtime-resolved path to a home-anchored matcher, which passes only
+      while the suite is reading the operator's REAL home and reports a guarantee it
+      never checked.
+
       Know which floor you are standing on — it is NOT the same everywhere:
-      - Tests under `test/` inherit the autouse fixtures in `test/conftest.py`
-        (`_isolate_kirocrew_home` pins KIROCREW_HOME per test,
-        `_isolate_subagents_dir`, `_isolate_sel_default_dir`, and friends).
-      - Tests under `src/kiro_crew/apps/builtins/*/tests/` and `tests/` see only
-        the ROOT `conftest.py`, which isolates $XDG_CONFIG_HOME and blocks host
-        service mutation but does NOT pin KIROCREW_HOME. A test there that
-        reaches `config_dir()` / `apps_dir()` writes the developer's real data
-        dir. Isolate it yourself: `monkeypatch.setenv("KIROCREW_HOME",
-        str(tmp_path))`.
+      - The ROOTDIR `conftest.py` is the HOST-MUTATION FLOOR and applies to all
+        three testpaths. It pins $XDG_CONFIG_HOME and the launchd paths, blocks
+        host service mutation, pins KIROCREW_HOME per test (with
+        `config.paths._resolved_home` reset, since resolving the home CREATES it
+        and can run the legacy migration), pins the import-time `~/.kiro`
+        bindings via `_isolate_shared_kiro_paths`, pins the SEL default dir
+        session-wide, redirects `tempfile`'s base with residue reported, and
+        fails the run on residue at the repository root.
+      - `test/conftest.py` adds ~20 MORE autouse fixtures, and it applies ONLY to
+        `test/`. Tests under `src/kiro_crew/apps/builtins/*/tests/` and
+        `transfer/` see the rootdir conftest plus that app's own
+        `tests/conftest.py` where one exists (`auto_improvement`,
+        `code_review_sage`, `spec_builder` have one; the other five apps do not).
+        So a test there gets the host floor -- which now includes the data home,
+        the import-time `~/.kiro` bindings, the SEL dir, the subagent registry,
+        the model-download block and the agent-state sidecar -- but NOT the
+        suite-specific isolation (the Slack thread-state reset, the model-window
+        cache, the platform-context reset, the reasoning-effort globals, the
+        OPTIONS registries, …). FLAG a test in those trees that relies on one of
+        THOSE without arranging it itself.
+      - `~/.kiro` is a SEPARATE isolation axis from the data home: it is
+        kiro-cli's own machine-wide home, shared with the real installed agent,
+        so `~/.kiro/settings/mcp.json` is the LIVE agent's MCP server list. A new
+        module-level `Path.home()` binding in `src/kiro_crew` must be added to
+        `_SHARED_KIRO_PATHS` or excluded with a reason —
+        `test/test_host_isolation_floor.py` fails otherwise. That ratchet covers the
+        IMPORT-TIME shape only: a lazy resolver such as `config.paths.kiro_home()`
+        still names the operator's real `~/.kiro`, because the floor pins neither
+        `Path.home()` nor `$HOME`, so a test reaching one of those must isolate it
+        itself.
 
       Assert against the tmp dir, not the real one, and clean up anything you
       create. If a test genuinely needs a host-level effect, it must be opt-in
@@ -212,12 +271,18 @@ custom-rules:
       why.
 
       NEVER use bare `tempfile.mkdtemp()` or `tempfile.TemporaryDirectory()`
-      without cleanup. These create directories in /tmp that survive the test
-      run and accumulate across runs, exhausting inodes. Use pytest's `tmp_path`
-      fixture (automatically cleaned) or, in unittest.TestCase setUp, pair
-      every `mkdtemp()` with `self.addCleanup(shutil.rmtree, path,
-      ignore_errors=True)`. The rule is: if you create it, you must register
-      its destruction in the same scope.
+      without cleanup. These create directories that survive the test run and
+      accumulate across runs, exhausting inodes — and inode exhaustion returns
+      ENOSPC to every other process on the machine while 90% of the BYTES are
+      still free, so it does not look like a disk problem. Use pytest's
+      `tmp_path` fixture, or pair every `mkdtemp()` with
+      `self.addCleanup(shutil.rmtree, path, ignore_errors=True)` ON THE LINE
+      AFTER IT. An `rmtree` in `tearDown` is NOT equivalent and is the shape that
+      actually leaks: `unittest` skips `tearDown` entirely when `setUp` raises,
+      so it leaks on every setUp failure — the failing run nobody is watching
+      closely. The rule is: if you create it, you must register its destruction
+      in the same scope. `ignore_errors=True` also SWALLOWS a cleanup that could
+      not finish, so it is not evidence the directory is gone.
 
       NEVER use relative `Path("src/...")` or bare string paths to read source
       files from a test. Under pytest-xdist, workers may change CWD, making

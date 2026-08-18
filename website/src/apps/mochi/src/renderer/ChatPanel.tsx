@@ -36,7 +36,7 @@ import { familyGrantIsDistinct, trustBasePattern, truncateCommandLabel } from '.
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
-import { rehypeSanitize } from '../../../../components/MarkdownRenderer'
+import { rehypeSanitize, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { mdImageDestToPath } from '../../../../utils/fileTokens'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import type { ApprovalRequest, ChatMessage } from '../shared/types'
@@ -1630,7 +1630,7 @@ function fixStreamingFences(s: string): string {
   return s
 }
 
-const MD_REMARK = [remarkGfm]
+const MD_REMARK = [remarkGfm, remarkVerbatimUnknownTags]
 /**
  * Raw HTML must be ADMITTED, then SANITIZED — in that order.
  *

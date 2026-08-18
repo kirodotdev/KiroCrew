@@ -236,7 +236,14 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           {headerRight}
         </div>
         )}
-        <div className={`${isMobile ? 'px-4' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
+        {/* `pt-3` is the narrow branch only, and it is not decoration: the tab
+          * strip above ends in a drawn border, and with no inset every tab's
+          * first card or stat row rendered ON that line. Desktop already gets
+          * the same 12px from the header block's `pb-3`, so this makes the
+          * phone match the rhythm rather than inventing one — which is also why
+          * it is not `md:pt-0`: the desktop pane must keep 0 or the two insets
+          * would stack. */}
+        <div data-testid="side-panel-pane" className={`${isMobile ? 'px-4 pt-3' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
           {children(tab)}
         </div>
       </div>

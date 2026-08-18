@@ -29,8 +29,13 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
     ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [anchor])
 
+  // Narrow-first gutter. This page ran the widest inset in the app — 32px at
+  // every width, on top of the 20px each card below adds, so a form label
+  // started 52px in on a 390px screen. `md:px-8` keeps the desktop value it
+  // already had rather than folding it into the 24px the other pages use;
+  // that difference predates this change and is not what is being fixed.
   return (
-    <div className="w-full max-w-6xl px-8 py-8">
+    <div className="w-full max-w-6xl px-4 py-8 md:px-8">
       <h1 className="text-[22px] font-semibold mb-1">{i18nT('apps.issueRadar.views.settings.generalSettings.settings')}</h1>
       <p className="text-[13px] text-muted mb-8">
         {i18nT('apps.issueRadar.views.settings.generalSettings.your')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.generalSettings.identity_and_the_repositories_issue_radar_watche')}

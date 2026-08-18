@@ -873,14 +873,15 @@ class SessionMap:
         which a whole entry leaves the map.
         """
         entry = self._data.pop(key, None)
-        if entry:
-            inbound = self._inbound_binding(entry)
-            ts = entry.get("slack_thread_ts")
-            if ts and self._thread_to_session.get(ts) == key:
-                del self._thread_to_session[ts]
-            self._save()
-            if inbound is not None:
-                self._note_inbound_unbind(key, inbound, reason)
+        if not entry:
+            return
+        inbound = self._inbound_binding(entry)
+        ts = entry.get("slack_thread_ts")
+        if ts and self._thread_to_session.get(ts) == key:
+            del self._thread_to_session[ts]
+        self._save()
+        if inbound is not None:
+            self._note_inbound_unbind(key, inbound, reason)
 
     @_guarded
     def set(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:

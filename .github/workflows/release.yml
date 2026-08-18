@@ -448,6 +448,60 @@ jobs:
       promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets: inherit
 
+  # ── Windows installer publish ─────────────────────────────────────────
+  # INSIDER ONLY, and that is a deliberate boundary rather than an omission.
+  #
+  # The stable lane republishes the immutable promotion bundle that
+  # scripts/release_promotion.py verifies byte for byte, and that bundle's
+  # ARTIFACT_NAMES table has no Windows role. Adding one would make a stable
+  # release depend on a successful Windows build, which is exactly the coupling
+  # build-windows's soft_fail exists to prevent. Giving Windows a promotion role
+  # is therefore its own change, with its own decision about whether the role is
+  # required or optional.
+  #
+  # Until then a stable Windows installer is not published, so Windows users
+  # track the nightly or insider channel. The mechanism below is unchanged for
+  # stable once the bundle learns about Windows.
+  #
+  # Like nightly, this does not trust build-windows's job result (soft_fail
+  # makes it `success` even on failure); publish-windows.yml probes for the
+  # artifact and skips cleanly when the build produced none.
+  publish-windows-x64:
+    name: Publish Windows Desktop (${{ needs.version.outputs.channel }} channel · x64)
+    needs: [version, stable-gate, build-windows]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          needs.version.outputs.channel == 'insider' }}
+    permissions:
+      contents: read
+      # A called workflow cannot exceed the caller job's grants, so the probe's
+      # actions:read has to be granted here too or the lane 403s.
+      actions: read
+      id-token: write
+      attestations: write
+    # NOTE a hard failure here makes this insider run unsuccessful, and
+    # release_promotion.py resolves a promotable bundle by requiring
+    # `conclusion == "success"` on a release.yml run -- so a Windows publish
+    # failure temporarily blocks stable promotion of THIS commit, including the
+    # mac, Linux and CLI artifacts it already published.
+    #
+    # `continue-on-error` is NOT the fix: GitHub's supported-keyword list for a
+    # job that calls a reusable workflow is exhaustive (name, uses, with,
+    # secrets, strategy, needs, if, concurrency, permissions), so adding it fails
+    # workflow validation and the release run starts NO jobs at all -- far worse
+    # than the coupling. Recovery is instead operational and one click: re-run
+    # the failed job, which flips the run's conclusion to success and makes the
+    # commit promotable again. Removing the coupling properly means giving
+    # Windows a role in the promotion bundle, which is tracked as its own change.
+    uses: ./.github/workflows/publish-windows.yml
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.version }}
+      publish: true
+      installer_artifact: build-windows-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
   # ── Docker image publish ──────────────────────────────────────────────
   # Multi-arch gateway image from the SAME wheel publish-cli ships, pushed
   # to ghcr.io with the workflow's own GITHUB_TOKEN (no AWS credentials).

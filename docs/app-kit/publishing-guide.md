@@ -349,8 +349,27 @@ MyAppRepo/
 
 ## 10. Add a registry entry
 
-The core registry is `src/kiro_crew/apps/app-registry.json` in the Kiro Crew repo.
-Listing an app there means opening a pull request.
+There are two listing surfaces, and they take different paths:
+
+**The official App Store catalog** lives in its own repository,
+[KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps) — not in the Kiro Crew
+repo. Since the catalog became the store's inventory, publishing an entry there
+is what makes your app appear in the store *and installable*, with **no Kiro
+Crew release involved**. You author a `git` source (URL + a branch or tag; the
+publish pipeline resolves and pins the exact commit) plus a category, and open a
+pull request on that repository. Its README documents the authored schema, the
+validators, and the two-schema (authored vs published) contract. Clients install
+the pinned commit exactly and read update availability from the published
+entry's `version` field, so publishing a new revision of the catalog is also how
+an update reaches users.
+
+**The bundled seed** (`src/kiro_crew/apps/app-registry.json` in the Kiro Crew
+repo) is the catalog's offline snapshot, not the listing surface: it is what a
+client falls back to when the catalog host is unreachable. Entries here ride the
+Kiro Crew release train. A catalog row for the same repository supersedes the
+seed row, so the seed needs touching only when offline availability matters.
+
+The seed (and any federated registry index) uses this row shape:
 
 ```json
 [
@@ -374,14 +393,10 @@ Listing an app there means opening a pull request.
 | `detectInstalled` | | Shell command that exits 0 when the app is already present on the machine (for self-managed apps). It runs sandboxed with a 5s timeout. |
 | `featured` | | Curator flag for the Discover editorial layer. `true` marks the app featured; a number both marks it and orders the slots (lower first). It lives on the registry entry, not in `app.json`, and is honored only for core-registry entries: a `featured` flag from an external registry is ignored, so adding a registry cannot seize the spotlight. With nothing flagged, the store falls back to a deterministic pick (apps with hero art first, then verified publishers, then name). |
 
-Open the pull request:
-
-```bash
-git checkout -b add-my-app
-# edit src/kiro_crew/apps/app-registry.json
-git commit -am "feat(apps): add my-app to registry"
-git push origin add-my-app
-```
+To reach the official store, open the pull request on **KiroCrewApps** (add your
+entry to `catalog/official-registry.json` there; run its `tools/validate.py`
+first). A seed change in the Kiro Crew repo follows the normal contribution flow
+and ships with the next release.
 
 ## 11. Federated external registries
 
@@ -447,7 +462,11 @@ The store's Install button (`POST /api/apps/registry/install`, or the SSE varian
    app; 60s timeout) and run a detected build: `npm install` plus `npm run build`
    when `package.json` declares a build script, or `pip install .` /
    `pip install -r requirements.txt` for a Python source tree. A missing
-   toolchain is a logged skip, not a failure.
+   toolchain is a logged skip, not a failure. **An official-catalog entry does
+   not clone a branch**: it fetches exactly the commit the published catalog
+   pins and hard-fails on any mismatch, never reuses a pre-existing checkout
+   (the old one is set aside and restored if the install fails), and clones
+   credential-free.
 5. Run `setup.onInstall` (300s).
 6. Resolve declared dependencies.
 7. For a gateway-managed app: copy into `~/.kiro/crew/apps/{name}/`, register
@@ -487,8 +506,13 @@ for what each classification value changes.
 
 ## 13. Updates and versioning
 
-Bump `version` in `app.json` and push. The registry entry carries no version, so
-there is nothing to update there.
+Bump `version` in `app.json` and push. A seed or federated-registry entry
+carries no version, so there is nothing to update there. **An official-catalog
+entry is different**: the published document pins a commit and bakes `version`
+from your `app.json` at publish time, so pushing to your branch changes nothing
+for users — an update ships when the catalog republishes your entry with a new
+pin, and clients detect it by comparing the published `version` against the
+installed one.
 
 - Patch for fixes, minor for features, major for breaking changes (agent config
   schema, MCP tool interface).

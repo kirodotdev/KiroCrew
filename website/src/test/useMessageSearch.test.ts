@@ -335,7 +335,9 @@ describe('close() hands focus back to the composer', () => {
 
   beforeEach(() => {
     composer = document.createElement('textarea')
-    composer.setAttribute('aria-label', 'Message input')
+    // The stable probe focusComposer resolves through; the aria-label is
+    // translated at runtime and deliberately not part of the lookup.
+    composer.setAttribute('data-composer-input', '')
     document.body.appendChild(composer)
   })
   afterEach(() => { composer.remove() })

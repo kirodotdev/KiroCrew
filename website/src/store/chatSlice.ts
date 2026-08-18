@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, createSelector, type PayloadAction } fro
 import { api } from '../api/client'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
+import { isSystemNoticeKind } from '../lib/systemNotice'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity } from '../types'
@@ -92,6 +93,11 @@ function isRedeliveredMessage(
   return false
 }
 
+/** Tail window (rows) for a backward `sendId` scan. Shared by the echo
+ *  reconcile and the response-confirm path so the two cannot drift into
+ *  disagreeing about which bubbles are still addressable by their send id. */
+const RECONCILE_WINDOW = 50
+
 /** Reconcile a server echo (carrying both `sendId` and `mid`) against the
  *  optimistic user bubble that was appended client-side at send time.
  *
@@ -112,7 +118,7 @@ function reconcileOptimisticEcho(
   meta: Record<string, unknown>,
   ts?: string,
 ): boolean {
-  const reconcileFloor = Math.max(0, msgs.length - 50)
+  const reconcileFloor = Math.max(0, msgs.length - RECONCILE_WINDOW)
   for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
     const m = msgs[i]
     if (m.role !== 'user') continue
@@ -534,6 +540,15 @@ interface ChatState {
   slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
+  /** Slot the cursor above describes. A switch moves activeSlot first, so
+   *  without this the cursor silently reads as the new chat's. */
+  slotCursorKey: string | null
+  /** requestId of the switchSlot fetch in flight, else null. While set, that
+   *  switch owns the cursor: a background settle must not re-key it, and
+   *  clearing the transcript must not install a cursor over it. */
+  slotSwitchRequestId: string | null
+  /** Slot the in-flight switch targets; it only installs a cursor for that one. */
+  slotSwitchTarget: string | null
   loadingOlder: boolean
   lastChunkSeq: number | undefined
   _wsChunkedDuringFetch: boolean
@@ -687,6 +702,9 @@ const initialState: ChatState = {
   slotStatusDetail: {},
   slotHasMore: false,
   slotOldestIndex: 0,
+  slotCursorKey: null,
+  slotSwitchRequestId: null,
+  slotSwitchTarget: null,
   loadingOlder: false,
   lastChunkSeq: undefined,
   _wsChunkedDuringFetch: false,
@@ -941,6 +959,46 @@ export const fetchHistory = createAsyncThunk(
 /** Rows to request per older-history page. */
 const OLDER_PAGE_LIMIT = 100
 
+// Aborts the in-flight older-history fetch, or null when none is running.
+// Module-level because switchSlot must reach a fetch it did not start.
+let _abortLoadOlder: (() => void) | null = null
+
+/**
+ * True for a rejection that means "this paging attempt was cancelled or refused",
+ * as opposed to "this request failed". A caller must not read either as evidence
+ * that the history it wanted is unreachable.
+ *
+ * `AbortError` is a superseded fetch (the user switched chat). `ConditionError`
+ * is Redux Toolkit refusing the dispatch outright — a page is already loading,
+ * or the cursor belongs to a chat the user has left.
+ *
+ * Keys on `name` and deliberately does NOT use `instanceof`: `unwrap()`
+ * rethrows Redux Toolkit's serialized error, a plain `{name, message, stack}`
+ * object. The `instanceof DOMException` / `instanceof Error` form used
+ * elsewhere in this codebase is always false here, so it would silently never
+ * match.
+ */
+/**
+ * Replaces the paging cursor as ONE unit: how far back history goes, the offset
+ * to ask for next, and the slot both describe. These three must move together --
+ * writing the offset without re-keying leaves paging refusing forever, and
+ * re-keying without the offset pages the wrong chat at the wrong place.
+ */
+function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number): void {
+  // A switch installs a cursor only for the slot it targets, so a writer that
+  // activated a different slot must write: nothing else will.
+  if (state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot) return
+  state.slotHasMore = hasMore
+  state.slotOldestIndex = hasMore ? nextBefore : 0
+  state.slotCursorKey = state.activeSlot
+}
+
+export function isSupersededPagingRejection(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const name = (err as { name?: unknown }).name
+  return name === 'AbortError' || name === 'ConditionError'
+}
+
 async function fetchSlotDetail(key: string) {
   // No limit → backend returns all chained history (across gateway restarts).
   const d = await api.chatSlotDetail(key)
@@ -987,6 +1045,9 @@ function seedContextUsage(
 export const switchSlot = createAsyncThunk(
   'chat/switchSlot',
   async (key: string, { dispatch }) => {
+    // Safe unconditionally: this fetch resets the pane's messages and cursor, so
+    // any older page still in flight is superseded even when the key is unchanged.
+    _abortLoadOlder?.()
     dispatch(markSlotRead(key))
     return fetchSlotDetail(key)
   },
@@ -1012,6 +1073,20 @@ export const switchSlot = createAsyncThunk(
  */
 const isTurnBoundaryUser = (m: { role: string; meta?: Record<string, unknown> }): boolean =>
   m.role === 'user' && !(m.meta?.steer && !m.meta?.optimistic)
+
+/** Rows a frame appends BELOW the turn's body rather than as part of it: an
+ *  approval request, a queued bubble, an error card, an OAuth banner, a stop
+ *  event. They are not turn progress, so they must not close a reasoning burst
+ *  the model is still emitting.
+ *
+ *  The list is deliberately a DENY list, not an allow list of progress roles:
+ *  anything unlisted counts as progress, so a role added later splits one burst
+ *  into two (cosmetic) instead of merging two bursts into one — the defect the
+ *  per-burst accumulation exists to prevent. It gates only the extend-vs-open
+ *  decision, never a row's position. */
+const OUT_OF_BAND_ROLES = new Set(['permission', 'queued', 'error', 'mcp_oauth'])
+const isOutOfBandRow = (m: { role: string; kind?: string }): boolean =>
+  OUT_OF_BAND_ROLES.has(m.role) || m.kind === 'stop_event'
 
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
@@ -1358,14 +1433,25 @@ export const loadOlderMessages = createAsyncThunk(
     if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
     const slot = state.activeSlot
-    const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex)
-    return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    _abortLoadOlder = abort
+    try {
+      const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex, controller.signal)
+      return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    } finally {
+      // Only clear our own handle: a newer fetch may already have replaced it.
+      if (_abortLoadOlder === abort) _abortLoadOlder = null
+    }
   },
   {
-    // Concurrency guard belongs HERE, not in the payload creator: `pending`
-    // sets loadingOlder BEFORE the creator runs, so a creator that reads the
-    // same flag always sees true and returns null -- paging never fetched.
-    condition: (_, { getState }) => !(getState() as { chat: ChatState }).chat.loadingOlder,
+    // `loadingOlder` must be read HERE: `pending` sets it before the creator runs.
+    // The cursor check blocks paging mid-switch, when it still describes the old chat.
+    condition: (_, { getState }) => {
+      const state = (getState() as { chat: ChatState }).chat
+      if (state.loadingOlder) return false
+      return state.slotCursorKey === state.activeSlot
+    },
   },
 )
 
@@ -1605,8 +1691,9 @@ export const selectContinuable = (state: RootState): boolean => {
     if (m.role === 'queued') return false
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
-      // Compaction notices are assistant-role system messages, not the floor.
-      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      // System notices (compaction, session reload) are assistant-role status
+      // messages, not the floor.
+      if (m.role === 'assistant' && isSystemNoticeKind((m.meta as { kind?: string } | undefined)?.kind)) continue
       return true
     }
   }
@@ -1659,7 +1746,7 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
     if (m.role === 'error') { sawTrailingError = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
-      if (m.role === 'assistant' && (m.meta as { kind?: string } | undefined)?.kind === 'compaction') continue
+      if (m.role === 'assistant' && isSystemNoticeKind((m.meta as { kind?: string } | undefined)?.kind)) continue
       return m.role === 'user' ? true : sawTrailingError
     }
   }
@@ -1693,7 +1780,7 @@ const chatSlice = createSlice({
   initialState,
   reducers: {
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
-    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
+    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
     setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
       // Always create a fresh value so repeating the same refusal restarts the
@@ -2025,6 +2112,47 @@ const chatSlice = createSlice({
       sweep(state.messages)
       for (const msgs of Object.values(state.slotMessages)) sweep(msgs)
     },
+    /** Retire a bubble's "pending confirmation" state once the send's own HTTP
+     *  response accepted it (`ok` or `queued`).
+     *
+     *  This is the PRIMARY confirmation path, not a fallback. The `chat_message`
+     *  echo that `reconcileOptimisticEcho` waits for is only broadcast for rows
+     *  the composer did NOT render — a message typed in a channel and replayed
+     *  into the slot (`channel_slots`, the sole `broadcast_user=True` caller).
+     *  `DashboardState.append` suppresses it for every dashboard send by design,
+     *  precisely BECAUSE the composer already rendered the bubble, so waiting on
+     *  it left every composer bubble optimistic forever and the 30s sweep flagged
+     *  all of them (#4131).
+     *
+     *  Clears only the pending-confirmation flags and deliberately KEEPS
+     *  `sendId`: a channel-linked slot can still deliver a later echo, and
+     *  `reconcileOptimisticEcho` needs that id to update this row in place
+     *  instead of pushing a duplicate bubble.
+     *
+     *  Scans BOTH arrays rather than resolving the slot's own: `appendMessage`
+     *  pushes into the active `messages` while `appendSlotMessage` may have used
+     *  `slotMessages[slot]`, and the user can switch sessions while the POST is
+     *  in flight. `sendId` is unique per send, so scanning both cannot mis-hit. */
+    confirmOptimisticSend(state, action: PayloadAction<{ slot: string; sendId: string }>) {
+      const { slot, sendId } = action.payload
+      if (isUnsafeKey(slot)) return
+      const confirm = (msgs: ChatMessage[] | undefined): boolean => {
+        if (!msgs) return false
+        const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
+        for (let i = msgs.length - 1; i >= floor; i--) {
+          const m = msgs[i]
+          if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
+          const meta = { ...(m.meta || {}) }
+          delete meta.optimistic
+          delete meta.optimisticTs
+          delete meta.stale
+          m.meta = meta
+          return true
+        }
+        return false
+      }
+      if (!confirm(state.messages)) confirm(state.slotMessages[safeKey(slot)])
+    },
     removeByApprovalId(state, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
     resolveByApprovalId(state, action: PayloadAction<{ id: string; decision?: string }>) {
       const decision = action.payload.decision || 'approved'
@@ -2106,7 +2234,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; state.slotHasMore = false; state.slotOldestIndex = 0; state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
+    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
     replaceMessages(state, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
     /** Path B: seed a non-active slot's message history into the per-slot store
@@ -2756,6 +2884,8 @@ const chatSlice = createSlice({
           if (action.payload.input_preview) existing.input = action.payload.input_preview
           if (action.payload.kind) existing.kind = action.payload.kind
           if (action.payload.is_shell !== undefined) existing.is_shell = action.payload.is_shell
+          // Update ts for recency sorting but NEVER overwrite executionStartedAt
+          // — the elapsed timer must reflect real wall time since the tool began.
           existing.ts = Date.now()
           return
         }
@@ -2772,9 +2902,25 @@ const chatSlice = createSlice({
         const id = action.payload.approval_id
         const entry = log.find(e => e.type === 'approval' && e.approval_id === id)
         if (entry) entry.type = 'approval_resolved'
-        // Also mark the permission message as resolved so ApprovalBar hides it
-        const msg = state.messages.findLast(m => m.role === 'permission' && (m.meta as Record<string,unknown>)?.approval_id === id)
+        // Resolve against the OWNING slot's message array — active slot uses
+        // state.messages, a background slot its slotMessages entry. Reading only
+        // state.messages would miss a background-slot approval, so its tool
+        // timer would never get the post-approval anchor and would inflate by
+        // the whole approval wait after switching back to that slot.
+        const msgs = action.payload.slot !== state.activeSlot
+          ? (state.slotMessages[safeKey(action.payload.slot)] ?? [])
+          : state.messages
+        const msg = msgs.findLast(m => m.role === 'permission' && (m.meta as Record<string,unknown>)?.approval_id === id)
         if (msg && !(msg.meta as Record<string,unknown>).resolved) (msg.meta as Record<string,unknown>).resolved = 'approved'
+        // Stamp execution_started_at on the EXACT tool entry linked to this
+        // approval via the permission message's tool_call_id. This persists in
+        // Redux and survives component remounts, preventing the elapsed timer
+        // from inflating by the approval wait time.
+        const tcid = (msg?.meta as Record<string, unknown>)?.tool_call_id as string | undefined
+        if (tcid) {
+          const toolEntry = log.findLast(e => e.type === 'tool' && e.tool_call_id === tcid)
+          if (toolEntry && !toolEntry.execution_started_at) toolEntry.execution_started_at = Date.now()
+        }
         return
       }
       const entry: ToolActivity = { type: action.payload.kind, text: action.payload.text, ts: Date.now() }
@@ -2853,22 +2999,56 @@ const chatSlice = createSlice({
     },
     /** Handle chat messages pushed via global SSE/WS (works after refresh). */
     /** Accumulate streamed model reasoning (`chat_thinking` WS event) into a
-     *  single content-bearing `thinking`-role message for the current turn.
-     *  Reasoning normally arrives before the visible answer, so the block sits
-     *  above the streamed assistant text. Scans back to the turn boundary (the
-     *  last non-steer user message) to keep one reasoning block per turn. */
+     *  content-bearing `thinking`-role message — ONE BLOCK PER REASONING BURST.
+     *  A turn that reasons, calls a tool, then reasons again therefore renders
+     *  two blocks, each above the step it explains. Scanning back to the turn
+     *  boundary instead appends every later burst into the FIRST burst's block,
+     *  so a multi-tool turn collapsed all of its reasoning under the opening one.
+     *
+     *  Placement is anchored on the turn's open `streaming` row, located
+     *  directly rather than inferred from the array tail: a turn's visible text
+     *  accumulates into ONE row that stays open across tool calls (the backend
+     *  flushes each segment without broadcasting), and reasoning belongs ABOVE
+     *  it, exactly as the `tool` branch inserts ahead of it. The tail is NOT the
+     *  end of the turn — an approval row, a queued bubble, a stop event, an
+     *  error card and a `file` card are all appended BELOW that open row, so
+     *  measuring from `length` would drop the block beneath the answer it
+     *  explains. With no open row (reasoning before any text) the block appends,
+     *  which is also correct: it lands after whatever opened the turn.
+     *
+     *  A CONFIRMED steer is injected into the running turn, so reasoning after
+     *  it continues the burst it interrupted; an unconfirmed (optimistic) steer
+     *  is a raced real turn and does close the burst — see isTurnBoundaryUser.
+     *
+     *  A `tool` row BELOW that open text row means the rows are already out of
+     *  emission order: the `tool` branch steps back over a trailing `streaming`
+     *  row but not over an approval row, so an approval-gated call lands beneath
+     *  the text. The tool is then the turn's latest step, so the burst that
+     *  preceded it is closed and the new one belongs after it — appending is the
+     *  only placement that satisfies both, and it is what stops a post-tool
+     *  burst being concatenated into the pre-tool block. */
     sseThinkingChunk(state, action: PayloadAction<{ slot: string; content: string }>) {
       const { slot, content } = action.payload
       if (slot !== state.activeSlot || !content) return
+      let at = state.messages.length
       for (let i = state.messages.length - 1; i >= 0; i--) {
-        if (state.messages[i].role === 'thinking') { state.messages[i].content += content; return }
-        // A confirmed steer does not start a new turn, so reasoning after it
-        // belongs to this turn's existing block. Treating it as a boundary mints
-        // a second block for one answer, and that block lands at the end of the
-        // array, below the answer.
-        if (isTurnBoundaryUser(state.messages[i])) break
+        if (state.messages[i].role === 'streaming') { at = i; break }
       }
-      state.messages.push({ role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
+      for (let i = at; i < state.messages.length; i++) {
+        if (state.messages[i].role === 'tool') { at = state.messages.length; break }
+      }
+      // Extend the burst the model is still emitting: an out-of-band row (an
+      // approval, a queued bubble) and a confirmed steer both interrupt it
+      // without ending it, so look through them for the open block.
+      let prev = at
+      while (prev > 0) {
+        const m = state.messages[prev - 1]
+        if (isOutOfBandRow(m) || (m.role === 'user' && !isTurnBoundaryUser(m))) { prev--; continue }
+        break
+      }
+      const open = prev > 0 ? state.messages[prev - 1] : undefined
+      if (open?.role === 'thinking') { open.content += content; return }
+      state.messages.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
     sseChatMessage(state, action: PayloadAction<{ slot: string; role: string; content: string; ts?: string; seq?: number; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean }>) {
       const { slot, role, content, ts, seq, cls, meta, kind, batched } = action.payload
@@ -3186,6 +3366,11 @@ const chatSlice = createSlice({
         state.historyOffset = offset + sessions.length
       })
       .addCase(switchSlot.pending, (state, action) => {
+        // This fetch replaces the cursor, so it is stale from here until it lands
+        // -- including a same-key switch, where the key alone still looks valid.
+        state.slotCursorKey = null
+        state.slotSwitchRequestId = action.meta?.requestId ?? null
+        state.slotSwitchTarget = action.meta?.arg ?? null
         // Save current slot's activity
         if (state.activeSlot) {
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
@@ -3222,6 +3407,9 @@ const chatSlice = createSlice({
         state._wsChunkedDuringFetch = false
       })
       .addCase(switchSlot.fulfilled, (state, action) => {
+        // Before the guards below, so an early return still ends this claim. Keyed
+        // on requestId, which a hand-rolled dispatch may omit, so read it safely.
+        if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null }
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
@@ -3297,8 +3485,7 @@ const chatSlice = createSlice({
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
-        state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? nextBefore : 0
+        setPagingCursor(state, hasMore, nextBefore)
         // Hydrate queued messages from the backend queue field through the
         // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
@@ -3314,12 +3501,12 @@ const chatSlice = createSlice({
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(switchSlot.rejected, (state, action) => {
+        if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null }
         if (state.activeSlot !== action.meta.arg) return
         state.messages = []
         state.slotRunning = false
         state.slotStopping = false
-        state.slotHasMore = false
-        state.slotOldestIndex = 0
+        setPagingCursor(state, false, 0)
         state.slotLoading = false
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
@@ -3366,8 +3553,7 @@ const chatSlice = createSlice({
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
-        state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? nextBefore : 0
+        setPagingCursor(state, hasMore, nextBefore)
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -3453,8 +3639,7 @@ const chatSlice = createSlice({
         state.slotRunning = false
         state.slotStopping = false
         state.slotState = 'idle'
-        state.slotHasMore = false
-        state.slotOldestIndex = 0
+        setPagingCursor(state, false, 0)
       })
       .addCase(deleteSlot.fulfilled, (state, action) => {
         delete state.slotActivity[action.payload]
@@ -3493,8 +3678,7 @@ const chatSlice = createSlice({
           state.messages = mergePreservedPastes(state.messages, action.payload.messages)
           state.slotState = 'idle'
           state.pendingTurnSlot = null
-          state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
+          setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
         }
       })
       .addCase(deleteHistorySession.fulfilled, (state, action) => {
@@ -3516,8 +3700,7 @@ const chatSlice = createSlice({
           // ts tuple cannot express this without dropping legitimate rows.
           const fresh = merged.filter(m => !isRedeliveredMessage(state.messages, m.meta))
           state.messages = [...fresh, ...state.messages]
-          state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
+          setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
         }
       })
       .addCase(loadOlderMessages.rejected, (state) => {
@@ -3528,7 +3711,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, sweepStaleOptimistic, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, sweepStaleOptimistic, confirmOptimisticSend, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,

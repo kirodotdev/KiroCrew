@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { MessagesSquare, X } from 'lucide-react'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { i18nT } from '../i18n/t'
 import { fmtNumber } from '../i18n/format'
 import type { SessionRef } from '../utils/sessionRefs'
@@ -22,13 +24,24 @@ export default function SessionRefStrip({ refs, onRemove }: {
   refs: SessionRef[]
   onRemove?: (key: string) => void
 }) {
+  const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
+  // Chips are staged and removed while the strip stays mounted, and the
+  // scroller keeps its own box through those changes, so the ResizeObserver
+  // never fires and no scroll event lands. Without this the cue goes stale:
+  // dark over a row that now fits, or absent over one that clips.
+  useEffect(() => { remeasure() }, [refs, remeasure])
   if (!refs.length) return null
   return (
-    // NOTE: rendered height must match SESSION_REF_STRIP_H, update both together
-    <div
-      className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-center"
-      data-testid="session-ref-strip"
-    >
+    // The wrapper exists for the edge cues: absolutely-positioned children of
+    // the scroller itself would travel with the scrolled content, so the fades
+    // anchor to a non-scrolling parent, same shape as the sibling strips.
+    <div className="relative">
+      {/* NOTE: rendered height must match SESSION_REF_STRIP_H, update both together */}
+      <div
+        ref={attachScroller}
+        className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-center"
+        data-testid="session-ref-strip"
+      >
       {refs.map(ref => (
         <div
           key={ref.key}
@@ -60,6 +73,20 @@ export default function SessionRefStrip({ refs, onRemove }: {
           )}
         </div>
       ))}
+      </div>
+      {/* Edge cues, same treatment as the sibling strips that already ship it
+          (FollowUpBar's scroll row, SidePanelLayout's tab strip): a gradient
+          says content continues past the clipped edge, because the overlay
+          scrollbar on macOS/iOS leaves no visible sign while idle.
+          from-bg-elevated matches the composer surface the strip sits on.
+          top-px keeps the strip's own border-t visible; pointer-events-none
+          keeps the edge chips interactive. */}
+      {edges.left && (
+        <div aria-hidden="true" data-testid="session-ref-strip-cue-left" className="pointer-events-none absolute left-0 top-px bottom-0 w-6 z-10 bg-gradient-to-r from-bg-elevated to-transparent" />
+      )}
+      {edges.right && (
+        <div aria-hidden="true" data-testid="session-ref-strip-cue-right" className="pointer-events-none absolute right-0 top-px bottom-0 w-6 z-10 bg-gradient-to-l from-bg-elevated to-transparent" />
+      )}
     </div>
   )
 }

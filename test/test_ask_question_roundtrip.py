@@ -859,8 +859,8 @@ async def test_reset_chokepoint_cancels_pending_questions() -> None:
     st = _state()
     st.sessions = MagicMock()
 
-    async def _reset(_key: str) -> None:
-        return None
+    async def _reset(_key: str, *, skip_if_busy: bool = False) -> bool:
+        return True
 
     st.sessions.reset = _reset
     task = asyncio.ensure_future(

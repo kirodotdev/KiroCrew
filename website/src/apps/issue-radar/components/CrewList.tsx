@@ -151,7 +151,7 @@ export default function CrewList({ onCreate }: CrewListProps) {
           accordion, exactly as the issue and PR columns take theirs from theirs —
           this column is the roster and nothing else. */}
       <div
-        className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-2 pt-2 pb-2 flex flex-col gap-2"
+        className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-4 pt-2 pb-2 flex flex-col gap-2"
         style={{ scrollbarWidth: 'none' }}
       >
         {/* Group label — the roster's size AS SHOWN, so a filter that hides rows

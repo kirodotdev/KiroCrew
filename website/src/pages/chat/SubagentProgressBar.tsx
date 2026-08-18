@@ -136,7 +136,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     // consent modal (z=120), and under modal backdrops (z-[46], later in DOM).
     // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
     // an activate-time transition wipe) covers it for the overlay's lifetime.
-    <div className="px-5 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    <div className="px-4 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
         {/* Chrome type, so no `font-mono`: the wave chip is prose and labels,
             and Tailwind's `font-mono` pins `var(--mono)` — a token the Font

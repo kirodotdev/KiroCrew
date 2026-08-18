@@ -19,7 +19,7 @@ import { ToolInputText } from '../../components/ToolInputText'
 import { HighlightedCode } from '../../components/CodeBlock'
 
 import { i18nT } from '../../i18n/t'
-export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact }: {
+export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact, flush }: {
   purpose: string
   /** What the pill itself displays. The meta row hides the `→ purpose` line
    *  when it would just duplicate the pill text — happens when
@@ -46,6 +46,13 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
    *  screen — users can hit "Show in chat" to see the inline pill's full
    *  view if details get cut off. */
   compact?: boolean
+  /** Put the status rail ON the container's left edge instead of indenting it.
+   *  The transcript row wants this: its pill icon already sits on the message
+   *  column's text edge, and a rail indented from that edge reads as a second,
+   *  contradictory left margin in the same row. The approval bar's ghost mirror
+   *  does NOT set it — that surface lives inside the composer's own box, where
+   *  the indent separates the rail from the box edge. */
+  flush?: boolean
 }) {
   const hasInput = !!input
   const hasOutput = !!output
@@ -94,7 +101,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
   const reallyEmpty = (empty && !showToolName) || (!showPurpose && !showToolName && !hasInput && !hasOutput && !auto && !pending && ts === 0)
 
   return (
-    <div className="ml-3 mt-1 mb-2 border-l-2 pl-3 flex flex-col gap-2" style={{ borderLeftColor: barColor }}>
+    <div className={`${flush ? '' : 'ml-3'} mt-1 mb-2 border-l-2 pl-3 flex flex-col gap-2`} style={{ borderLeftColor: barColor }}>
       {(auto || pending || ts > 0 || showToolName || showPurpose || hasInput || hasOutput) && (
         <div className="flex items-end gap-2 flex-wrap">
           {showToolName && (
