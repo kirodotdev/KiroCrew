@@ -4,6 +4,15 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **The Steer/Queue button's tooltip and description no longer promise
+  "inject into the running turn" in 11 non-English locales.** The English
+  copy was broadened (the split button is now offered while only sub-agents
+  are running, where no turn exists to inject into), but the translation
+  keys were deliberately left unchanged to keep catalog parity intact —
+  which meant de/ja/fr/zh-CN/es/it/pt/ru/hi/bn/ko kept their old, now
+  misleading translations. Renamed the four keys (new meaning → new key →
+  retranslation) and retranslated all four in every locale. (#2334)
+
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
   `kiro-cli` child holds its credential for the life of the session, so an
