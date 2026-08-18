@@ -14,7 +14,7 @@
  * is precisely what the 30s indicator is there to question.
  */
 import { describe, it, expect } from 'vitest'
-import { confirmedDelivered } from '../utils/sendDelivery'
+import { confirmedDelivered, sendChatReceipt } from '../utils/sendDelivery'
 
 describe('confirmedDelivered', () => {
   it('accepts an immediate dispatch', () => {
@@ -31,5 +31,28 @@ describe('confirmedDelivered', () => {
   it('refuses a rejection', () => {
     expect(confirmedDelivered({ ok: false })).toBe(false)
     expect(confirmedDelivered({})).toBe(false)
+  })
+})
+
+describe('sendChatReceipt', () => {
+  it('normalizes immediate and queued acceptances', async () => {
+    await expect(sendChatReceipt(new Response(JSON.stringify({ ok: true })))).resolves.toMatchObject({
+      accepted: true, ok: true, queued: false, refused: false, readable: true,
+    })
+    await expect(sendChatReceipt(new Response(JSON.stringify({ ok: true, queued: true })))).resolves.toMatchObject({
+      accepted: true, ok: true, queued: true, refused: false, readable: true,
+    })
+  })
+
+  it('normalizes an explicit refusal and its error', async () => {
+    await expect(sendChatReceipt(new Response(JSON.stringify({ ok: false, error: 'expired' })))).resolves.toMatchObject({
+      accepted: false, refused: true, readable: true, error: 'expired',
+    })
+  })
+
+  it('does not turn an unreadable receipt into an explicit refusal', async () => {
+    await expect(sendChatReceipt(new Response('{'))).resolves.toMatchObject({
+      accepted: false, refused: false, readable: false,
+    })
   })
 })

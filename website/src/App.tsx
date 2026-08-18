@@ -31,6 +31,7 @@ import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
+import { sendChatReceipt } from './utils/sendDelivery'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
@@ -1693,7 +1694,8 @@ export default function App() {
     dispatch(appendMessage({ role: 'user', content: i18nT('app.i_d_like_to_request_a_feature'), cls: '', ts: new Date().toISOString() }))
     dispatch(setSlotRunning(true))
     try {
-      await api.sendChat(msg, slot, colorTheme)
+      const receipt = await sendChatReceipt(await api.sendChat(msg, slot, colorTheme))
+      if (receipt.refused) throw new Error(receipt.error || 'Send refused')
     } catch { /* WS will handle response */ }
   }, [dispatch, navigate, colorTheme])
 
