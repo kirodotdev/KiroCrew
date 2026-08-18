@@ -706,7 +706,20 @@ def run_script_sandboxed(
             return {"status": "cancelled", "error": "Cancelled by user"}
 
         if proc.returncode != 0 and not stdout.strip():
-            error_text = stderr[:500] or f"exit {proc.returncode}"
+            # Report the TERMINAL stderr context, not the head. A process that
+            # dies hard leaves its diagnosis LAST -- the traceback is the final
+            # thing written -- while whatever a startup path logged first (a
+            # data-home migration warning, a deprecation notice, an import
+            # banner) sits in front of it. Bounding from the head therefore
+            # reports the noise and truncates the cause, and the operator reads
+            # a cron failure whose message describes something that did not kill
+            # the job.
+            #
+            # ``rstrip`` first so a trailing newline does not spend part of the
+            # budget, and so an all-whitespace stderr still falls through to the
+            # exit-code fallback rather than reporting blank text.
+            tail = stderr.rstrip()
+            error_text = tail[-500:] if tail else f"exit {proc.returncode}"
             error_text = redact(error_text)
             return {"status": "error", "error": error_text}
 
