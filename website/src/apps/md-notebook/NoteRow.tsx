@@ -11,7 +11,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
-import { ACCENT, ACCENT_BG, FONT_BODY, RAIL_X } from './constants'
+import { ACCENT, ACCENT_BG, FONT_BODY, RAIL_TYPE, RAIL_X } from './constants'
 import Clickable from '../../components/Clickable'
 import { relTime, rowBadge } from './utils'
 import type { Note, NoteActions, TreeNode } from './types'
@@ -36,9 +36,8 @@ function badgeStyle(status: string): CSSProperties {
     ...(map[status] ?? map.synced),
     padding: '1px 6px',
     borderRadius: '4px',
-    fontSize: '10px',
+    ...RAIL_TYPE.micro,
     fontWeight: 500,
-    lineHeight: 1,
     border: '1px solid',
     display: 'inline-flex',
     alignItems: 'center',
@@ -188,9 +187,8 @@ export function NoteRow({
             border: `1px solid ${ACCENT}`,
             borderRadius: '6px',
             padding: '1px 6px',
-            fontSize: '13px',
+            ...RAIL_TYPE.row,
             fontWeight: 600,
-            lineHeight: 1.375,
             color: 'var(--text)',
             fontFamily: FONT_BODY,
             outline: 'none',
@@ -216,9 +214,8 @@ export function NoteRow({
           )}
           <div
             style={{
-              fontSize: '13px',
+              ...RAIL_TYPE.row,
               fontWeight: 600,
-              lineHeight: 1.375,
               color: 'var(--text)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -243,7 +240,7 @@ export function NoteRow({
             <span
               title={note.path}
               style={{
-                fontSize: '11px',
+                ...RAIL_TYPE.meta,
                 fontWeight: 400,
                 color: 'var(--muted)',
                 maxWidth: '96px',
@@ -255,11 +252,11 @@ export function NoteRow({
             >
               {folder}
             </span>
-            <span style={{ fontSize: '11px', color: 'var(--muted)', flexShrink: 0 }}>·</span>
+            <span style={{ ...RAIL_TYPE.meta, color: 'var(--muted)', flexShrink: 0 }}>·</span>
           </>
         )}
         <span
-          style={{ fontSize: '11px', fontWeight: 400, color: 'var(--muted)', flexShrink: 0 }}
+          style={{ ...RAIL_TYPE.meta, fontWeight: 400, color: 'var(--muted)', flexShrink: 0 }}
         >
           {relTime(note.modifiedAt)}
         </span>
@@ -404,8 +401,8 @@ function FolderRow({
           padding: '4px 8px',
           borderRadius: '8px',
           cursor: 'pointer',
-          fontSize: '12px',
-          fontWeight: 400,
+          ...RAIL_TYPE.row,
+          fontWeight: 500,
           color: dropping ? ACCENT : 'var(--muted)',
           marginLeft: depth * 10,
           ...(dropping ? { background: ACCENT_BG, outline: `1px solid ${ACCENT}` } : null),
@@ -419,7 +416,7 @@ function FolderRow({
           <Glyph size={14} />
         </span>
         {name.split('/').pop()}
-        <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'inherit' }}>
+        <span style={{ marginLeft: 'auto', ...RAIL_TYPE.secondary, color: 'inherit' }}>
           {countNotes(node)}
         </span>
       </Clickable>
