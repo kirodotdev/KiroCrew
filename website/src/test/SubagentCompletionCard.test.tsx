@@ -457,3 +457,43 @@ describe('structured meta path (the #1792 fix)', () => {
     expect(p.ok).toBe(8) // from the regex, proving the bad meta was not used
   })
 })
+
+describe('card containment', () => {
+  // jsdom computes no layout, so these are class-list contracts, the same
+  // convention TranscriptRowGeometry.test.tsx pins: what must hold is that the
+  // classes carrying the containment survive on the exact elements they guard.
+  const store = () => createTestStore({ chat: {} as unknown as ChatState })
+
+  it('clips its own box so content cannot paint outside the card', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg()} />, { store: store() })
+    const root = screen.getByTestId('subagent-completion-card')
+    expect(root.classList.contains('overflow-hidden')).toBe(true)
+  })
+
+  it('bounds the expanded body so a long wave digest scrolls inside the card', () => {
+    // WAVE carries a failure, so the body opens expanded without a click.
+    renderWithProviders(<SubagentCompletionCard message={msg(WAVE)} />, { store: store() })
+    const body = screen.getByTestId('subagent-completion-body')
+    // The literal bound, not a prefix match: a looser assertion would accept
+    // max-h-0, which hides the digest entirely. 24rem = the 384px the capture
+    // runner asserts (BODY_MAX_PX in capture-subagent-completion-overflow.mjs).
+    expect(body.classList.contains('max-h-[24rem]')).toBe(true)
+    expect(body.classList.contains('overflow-y-auto')).toBe(true)
+    // Explicit, because a non-visible y-axis computes x's `visible` to `auto`:
+    // without this the body is a two-axis scroller nothing needs (long inline
+    // code and body text both wrap).
+    expect(body.classList.contains('overflow-x-hidden')).toBe(true)
+  })
+
+  it('makes the scroll region keyboard-reachable and named', () => {
+    // A failure digest opens expanded, so a keyboard user meets this scroller
+    // without asking for it; unfocusable, it cannot be scrolled at all.
+    renderWithProviders(<SubagentCompletionCard message={msg(WAVE)} />, { store: store() })
+    const body = screen.getByTestId('subagent-completion-body')
+    expect(body.getAttribute('tabindex')).toBe('0')
+    expect(body.getAttribute('role')).toBe('region')
+    const labelId = body.getAttribute('aria-labelledby')
+    expect(labelId).toBeTruthy()
+    expect(document.getElementById(labelId!)?.textContent).toContain('9 of 9 subagents finished')
+  })
+})

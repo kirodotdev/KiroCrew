@@ -11,7 +11,7 @@
  * Render-only: the underlying message content is untouched, so the parent agent
  * still receives the complete result as context.
  */
-import { memo } from 'react'
+import { memo, useId } from 'react'
 import { Bot, CheckCircle2, AlertCircle, Square, ChevronDown, CircleDashed } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -110,6 +110,9 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   // failures first for the same reason. Successes stay folded: their payload is a
   // result path, not something to read.
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, failed || interrupted)
+  // Names the expanded body's scroll region after the headline. useId keeps it
+  // unique when a transcript renders many cards.
+  const headlineId = useId()
   if (!parsed) return null
 
   const stopped = parsed.kind === 'single' && parsed.outcome === 'stopped'
@@ -149,7 +152,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           )}
         </span>
         <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
-        <span className="truncate text-[13px] font-medium text-text-strong">{headline(parsed)}</span>
+        <span id={headlineId} className="truncate text-[13px] font-medium text-text-strong">{headline(parsed)}</span>
         {parsed.kind === 'single' ? (
           <span
             className={`${CHIP} ${
@@ -229,7 +232,23 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
         </div>
       </div>
       {expanded && parsed.body && (
-        <div className="px-3 pb-2 pt-1 border-t border-accent/10">
+        // max-h + overflow-y-auto: a wave digest grows one block per agent, so a
+        // 7+-agent batch renders taller than the viewport. The body scrolls
+        // internally past 24rem, so its height cannot displace the rows below.
+        // overflow-x-hidden is explicit because a non-visible y-axis computes
+        // x's `visible` to `auto`: without it this becomes a two-axis scroller.
+        // Nothing legitimately overflows x — inline code breaks (index.css
+        // word-break:break-all) and body text wraps (break-words).
+        // tabIndex + region role: a scroll region with no focusable descendant
+        // is unreachable to a keyboard, and a failure digest opens expanded, so
+        // this is a scroller a keyboard user meets without asking for it.
+        <div
+          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden"
+          data-testid="subagent-completion-body"
+          role="region"
+          aria-labelledby={headlineId}
+          tabIndex={0}
+        >
           {/* softBreaks: the payload is machine-composed plain text whose line
               structure carries meaning (one line per agent, an indented result
               path under it). Without hard breaks CommonMark collapses the
