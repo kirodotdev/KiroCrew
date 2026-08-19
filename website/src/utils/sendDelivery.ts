@@ -23,3 +23,40 @@
 export function confirmedDelivered(body: { ok?: boolean; queued?: boolean }): boolean {
   return !!body.ok && !body.queued
 }
+
+export interface SendChatReceipt {
+  ok: boolean
+  queued: boolean
+  steered: boolean
+  accepted: boolean
+  refused: boolean
+  readable: boolean
+  error?: string
+}
+
+/** Parse the wire receipt once and keep an unreadable response distinct from an
+ * explicit `{ok: false, queued: false}` refusal. */
+export async function sendChatReceipt(response: Response): Promise<SendChatReceipt> {
+  let value: unknown
+  try {
+    value = await response.json()
+  } catch {
+    value = undefined
+  }
+
+  const readable = typeof value === 'object' && value !== null && !Array.isArray(value)
+  const body = readable ? value as Record<string, unknown> : {}
+  const ok = body.ok === true
+  const queued = body.queued === true
+  const accepted = ok || queued
+
+  return {
+    ok,
+    queued,
+    steered: body.steered === true,
+    accepted,
+    refused: readable && !accepted,
+    readable,
+    ...(typeof body.error === 'string' ? { error: body.error } : {}),
+  }
+}

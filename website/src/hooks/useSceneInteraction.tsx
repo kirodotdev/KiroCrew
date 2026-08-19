@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
+import { sendChatReceipt } from '../utils/sendDelivery'
 import type { AgentSource } from './useAgentSync'
 import { useImeGuard } from './useImeGuard'
 import { KIRO_GHOST_PIXELS } from './sceneText'
@@ -289,7 +290,9 @@ export function useSceneInteraction(
         // Idle or waiting for input: start/continue the turn.
         // sendChat streams SSE — fire it and swallow the stream; the scene's
         // live slot state reflects the turn via the normal WS updates.
-        await api.sendChat(msg, slotKey).then(r => { r.body?.cancel().catch(() => {}) })
+        const response = await api.sendChat(msg, slotKey)
+        const receipt = await sendChatReceipt(response)
+        if (receipt.refused) throw new Error(receipt.error || 'Send refused')
       }
       setDraft('')
       setSendState('sent')
