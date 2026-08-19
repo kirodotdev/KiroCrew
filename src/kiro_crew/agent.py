@@ -49,6 +49,7 @@ from kiro_crew.agent_files import (
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -87,6 +88,16 @@ def _atomic_json_write(path: Path, data: dict) -> None:
     ACP process with exit code 1.  rename() is atomic on Linux when source
     and destination are on the same filesystem.
 
+    The rename goes through ``replace_with_retry`` because atomicity is not the
+    only way that step fails. On Windows ``os.replace`` raises
+    ``PermissionError`` while ANY other handle is open on either path, and a
+    just-written temp file is exactly what an indexer or AV scanner opens —
+    so a correct atomic write can still lose its payload for reasons unrelated
+    to this caller. Here that surfaces as a failed spawn, since these are the
+    configs kiro-cli reads. The helper is Windows-only and never sleeps on the
+    event loop; ``ensure_agent_materialized`` reaches this from
+    ``asyncio.to_thread``, so the retry applies on the path that matters.
+
     Uses mkstemp for a unique temp file per call so concurrent writers
     to the same path don't clobber each other's temp files.
     """
@@ -100,7 +111,7 @@ def _atomic_json_write(path: Path, data: dict) -> None:
             platform_compat.fchmod_safe(f.fileno(), mode)
             json.dump(data, f, indent=2)
             f.write("\n")
-        os.replace(tmp_name, path)
+        replace_with_retry(tmp_name, path)
     except BaseException:
         try:
             os.unlink(tmp_name)

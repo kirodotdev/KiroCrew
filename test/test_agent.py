@@ -11,8 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from windows_sim import replace_sharing_violation
 
 from kiro_crew import agent_state
+from kiro_crew import atomic_write as aw
 from kiro_crew.agent import install_agent, migrate_agent_specs
 
 
@@ -475,6 +477,52 @@ class TestAtomicJsonWrite:
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o644
         assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
+
+    def test_a_contended_rename_is_retried_on_windows(self, tmp_path: Path, monkeypatch):
+        """The rename this writer ends on is the one Windows can refuse.
+
+        The docstring reasons about Linux, where `rename()` is atomic and a
+        reader holding the destination cannot block it. On Windows `os.replace`
+        raises `PermissionError` (`WinError 32`) while ANY other handle is open
+        on either path, and a freshly written temp file is exactly what an
+        indexer or AV scanner touches. `replace_with_retry` exists for that
+        window and every other tmp-plus-rename writer in the tree goes through
+        it; this one hand-rolled the rename and did not.
+
+        It matters here more than most: these are the agent configs kiro-cli
+        reads at spawn, so a refused rename surfaces as a failed spawn.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew.agent import _atomic_json_write
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        target = tmp_path / "agent.json"
+        target.write_text("{}", encoding="utf-8")
+
+        with replace_sharing_violation(match="agent.json", times=1) as state:
+            _atomic_json_write(target, {"key": "value"})
+
+        assert state["n"] == 2, "one refused rename, then one that succeeded"
+        assert json.loads(target.read_text(encoding="utf-8")) == {"key": "value"}
+
+    def test_a_posix_permission_error_still_propagates(self, tmp_path: Path, monkeypatch):
+        """POSIX permits replacing an open file, so a PermissionError there is a
+        real access fault — retrying would only delay an honest failure, and
+        the temp file must still be cleaned up."""
+        from kiro_crew import platform_compat
+        from kiro_crew.agent import _atomic_json_write
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        target = tmp_path / "agent.json"
+        target.write_text("{}", encoding="utf-8")
+
+        with replace_sharing_violation(match="agent.json", times=1):
+            with pytest.raises(PermissionError):
+                _atomic_json_write(target, {"key": "value"})
+
+        assert list(tmp_path.glob("*.tmp")) == [], "the temp file must not be left behind"
+        assert target.read_text(encoding="utf-8") == "{}", "the target is unchanged"
 
     def test_no_temp_file_left_on_success(self, tmp_path: Path):
         from kiro_crew.agent import _atomic_json_write
