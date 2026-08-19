@@ -261,8 +261,10 @@ class TestFolderWatcherScan:
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
         # Mock ingest to create items
-        async def fake_ingest(path, **kwargs):
-            store.add_item("title", "content", "doc", source_id=source_id)
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
             return "job1"
         pipeline.ingest_file = fake_ingest
 
@@ -320,6 +322,15 @@ class TestFolderWatcherScan:
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
+        # Honor the pipeline contract: on_committed fires on the committing
+        # branch. A mock that ingests without reporting reads as a rollback.
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
+            return "job1"
+        pipeline.ingest_file = fake_ingest
+
         await fw.scan_source(source)
 
         # Modify a file with explicit future mtime (avoids 1s granularity flakiness)
@@ -345,8 +356,10 @@ class TestFolderWatcherScan:
         source_id = store.add_source("test", "local_folder", str(vault))
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder", "properties": "{}"}
 
-        async def fake_ingest(path, **kwargs):
-            store.add_item("title", "content", "doc", source_id=source_id)
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
             return "job1"
         pipeline.ingest_file = fake_ingest
 
@@ -709,8 +722,10 @@ class TestAsyncToThread:
         source = {"id": source_id, "uri": str(vault),
                   "source_type": "local_folder", "properties": "{}"}
 
-        async def fake_ingest(path, **kwargs):
-            store.add_item("title", "content", "doc", source_id=source_id)
+        async def fake_ingest(path, *, on_committed=None, **kwargs):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
             return "job1"
         pipeline.ingest_file = fake_ingest
 
@@ -1036,8 +1051,10 @@ class TestInterruptedScanRetryCap:
         source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
                   "properties": "{}"}
 
-        async def fake_ingest(path, **kw):
-            store.add_item("title", "content", "doc", source_id=source_id)
+        async def fake_ingest(path, *, on_committed=None, **kw):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
             return "job1"
         pipeline.ingest_file = fake_ingest
 
@@ -1087,8 +1104,10 @@ class TestInterruptedScanRetryCap:
         doc.write_text("# Rewritten after the cap was spent")
         os.utime(doc, (9999999999, 9999999999))
 
-        async def fake_ingest(path, **kw):
-            store.add_item("title", "content", "doc", source_id=source_id)
+        async def fake_ingest(path, *, on_committed=None, **kw):
+            item_id = store.add_item("title", "content", "doc", source_id=source_id)
+            if on_committed is not None:
+                on_committed([item_id])
             return "job1"
         pipeline.ingest_file = fake_ingest
 
