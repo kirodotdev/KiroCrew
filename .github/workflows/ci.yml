@@ -232,6 +232,33 @@ jobs:
           python3 scripts/check_brand_name.py --test
           python3 scripts/check_brand_name.py
 
+  focus-cue-lint:
+    name: Focus Cue Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the focus cues on the elements this change touches
+        # Diff-scoped on purpose, same reasoning as the brand gate above: the tree
+        # still carries elements that opted out of the focus outline before the
+        # global ring existed, so a whole-tree gate would charge that backlog to
+        # whoever pushed next. Elements a change touched are complete for
+        # regression — a hole only reaches main through a diff that wrote its
+        # className — and the whole-tree number is still printed as a non-failing
+        # report.
+        env:
+          FOCUS_CUE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          FOCUS_CUE_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$FOCUS_CUE_BASE_REF" 'the focus-cue gate')" || exit 1
+          export FOCUS_CUE_BASE_REF
+          # Self-test first: it plants one probe per rule family, so a change that
+          # silently promotes a suppressor to a cue — or disables an exemption —
+          # fails here instead of shipping a gate that passes everything.
+          python3 scripts/check_focus_cue.py --test
+          python3 scripts/check_focus_cue.py
+
   changelog-history:
     name: Changelog History Gate
     runs-on: ubuntu-latest

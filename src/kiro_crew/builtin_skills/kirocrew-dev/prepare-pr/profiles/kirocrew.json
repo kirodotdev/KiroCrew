@@ -14,6 +14,8 @@
     "BASE=\"$(git merge-base HEAD origin/main)\" && HARNESS_BASE_REF=\"$BASE\" python3 scripts/check_harness_parity.py",
     "python3 scripts/check_changelog_history.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && CHANGELOG_BASE_REF=\"$BASE\" python3 scripts/check_changelog_history.py",
+    "python3 scripts/check_focus_cue.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && FOCUS_CUE_BASE_REF=\"$BASE\" python3 scripts/check_focus_cue.py",
     "python3 scripts/docs_lint.py --test",
     "./scripts/docs-lint.sh",
     "python3 scripts/check_per_file_coverage.py --test",
