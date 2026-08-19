@@ -1,4 +1,5 @@
 import type { DisplayItem } from '../pages/chat/types'
+import { TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
 import { mdImageDestToPath } from './fileTokens'
 
 /**
@@ -57,9 +58,19 @@ export function pinHandoffY(foldY: number, collapsedCardH: number): number {
   return foldY + ROW_PAD_Y * 2 + collapsedCardH
 }
 
-/** Only user-typed prompts pin. `nudge` opens a turn too but is machine-injected. */
+/**
+ * Rows that can take the pin: the ones that OPEN a turn.
+ *
+ * Derived from `TURN_OPENER_ROLES` rather than restated, because the two lists
+ * disagreeing is the defect this exists to prevent. A nudge and a subagent
+ * completion are machine-injected, but each IS the thing that started the turn
+ * being read, and a session made almost entirely of them (a babysit loop, a
+ * workflow fan-out) otherwise offers no pinnable row cycle after cycle — the walk
+ * upward skips every one and lands on the human's last typed message, dozens of
+ * turns and tens of thousands of pixels away.
+ */
 function isPrompt(item: DisplayItem | undefined): boolean {
-  return !!item && item.kind === 'single' && item.msg.role === 'user'
+  return !!item && item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)
 }
 
 /**
@@ -90,6 +101,27 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
     if (isPrompt(items[i])) return i
   }
   return -1
+}
+
+/**
+ * Display index of the row the pinned-prompt jump should scroll to when the
+ * user asks for `target`.
+ *
+ * Normally that is `target` itself. But when the rows immediately BEFORE the
+ * target are also prompts (consecutive user rows — a steer message follows its
+ * prompt with no assistant row between), landing the target at the jump chrome
+ * leaves the previous prompt straddling the hand-off line: it cannot pin (its
+ * bottom is still below the line) while its own top edge has already pushed the
+ * fallback banner fully out — so the banner unmounts and the jump chain dies on
+ * a landing the scan treats as a transient. Anchoring the jump at the FIRST
+ * prompt of the consecutive run puts a non-prompt row (or nothing) on the line
+ * instead, so the previous turn's banner survives and the chain continues. For
+ * a target with a non-prompt row above it this returns `target` unchanged.
+ */
+export function jumpAnchorIdx(items: DisplayItem[], target: number): number {
+  let anchor = target
+  while (anchor > 0 && isPrompt(items[anchor - 1])) anchor -= 1
+  return anchor
 }
 
 /**

@@ -8,6 +8,18 @@ import { isSubagentCompletionMessage } from './subagentCompletion'
  *  collapsible would bury and mislabel it. */
 export const GROUPABLE = new Set(['permission'])
 
+/**
+ * Roles that OPEN a turn, and are therefore the rows a reader can be anchored to.
+ *
+ * `nudge` and `subagent` are machine-injected but they ARE the thing that started
+ * the turn below them, so a reader looking for "what am I inside" needs them. This
+ * set is exported because the pinned-prompt scan has to agree with the grouping
+ * exactly: when the two lists were maintained by hand they drifted, and a role
+ * that opened a turn without being pinnable made the pin scan walk past every one
+ * of them — measured at a 61-display-row gap in a loop-driven session.
+ */
+export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
+
 export interface GroupedTurns {
   turns: DisplayItem[]
   /** Index into `turns` of the turn object produced by the TRAILING flush, or
@@ -82,7 +94,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // collapsed step group and the cycle chip disappears. A sub-agent
     // completion is the same case: the gateway injects it as the next turn's
     // input, so the agent's reply belongs BELOW the card, not beside it.
-    if (item.kind === 'single' && (item.msg.role === 'user' || item.msg.role === 'nudge' || item.msg.role === 'subagent')) {
+    if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
       if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
       // Track whether this subagent completion has synthesis pending
       _lastSubagentHadSynthesis = item.msg.role === 'subagent' &&
