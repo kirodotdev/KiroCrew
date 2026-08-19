@@ -348,12 +348,55 @@ def _has_table(text: str) -> bool:
     )
 
 
+def _table_blocks(text: str) -> list[tuple[bool, list[str]]]:
+    """Partition *text* into alternating ``(is_table, lines)`` blocks.
+
+    A table run starts on a pipe-bearing line whose successor is a separator row
+    and extends while lines carry a pipe. This is the single run detector behind
+    both the degraded seal (``_seal_table_fallback``) and table-aware splitting,
+    so the two can never disagree about where a table begins or ends.
+
+    It is deliberately looser than ``_has_table``, which additionally requires
+    the separator's cell count to match its header. The two are not
+    interchangeable and must not be unified: this one decides how a run is
+    FRAMED, so over-matching costs nothing (``<pre>`` reproduces its input
+    verbatim), while ``_has_table`` decides which TRANSPORT a segment takes and
+    so must agree with the server's own GFM rule.
+
+    Callers must screen out fenced text first (see
+    ``_split_markdown_table_aware``).
+    """
+    lines = text.split("\n")
+    blocks: list[tuple[bool, list[str]]] = []
+    prose: list[str] = []
+    i = 0
+    while i < len(lines):
+        if "|" in lines[i] and i + 1 < len(lines) and _is_table_separator(lines[i + 1]):
+            if prose:
+                blocks.append((False, prose))
+                prose = []
+            block = [lines[i], lines[i + 1]]
+            i += 2
+            # Body rows run until the first line that is not part of the table.
+            while i < len(lines) and "|" in lines[i]:
+                block.append(lines[i])
+                i += 1
+            blocks.append((True, block))
+            continue
+        prose.append(lines[i])
+        i += 1
+    if prose:
+        blocks.append((False, prose))
+    return blocks
+
+
 def _seal_table_fallback(text: str) -> str:
     """Render *text* for the no-Rich-Messages path: tables monospace, prose rich.
 
-    Run detection here is deliberately LOOSER than ``_has_table``: a pipe-bearing
-    line above a separator row is monospaced whatever the two rows' cell counts
-    are. The two predicates answer different questions and must not be unified.
+    Run detection is ``_table_blocks``, shared with table-aware splitting, and is
+    deliberately LOOSER than ``_has_table``: a pipe-bearing line above a
+    separator row is monospaced whatever the two rows' cell counts are. The two
+    predicates answer different questions and must not be unified.
     ``_has_table`` decides a TRANSPORT and so must agree with the server's own
     GFM cell-count rule -- claiming a table the server will not parse is what
     ships a flattened paragraph. This one only decides a RENDERING, and ``<pre>``
@@ -383,39 +426,13 @@ def _seal_table_fallback(text: str) -> str:
     """
     if _FENCE_LINE_RE.search(text):
         return _md_to_telegram_html(text)
-    lines = text.split("\n")
+    # No fence can appear below -- a fenced segment returned above.
     parts: list[str] = []
-    prose: list[str] = []
-    i = 0
-
-    def _flush_prose() -> None:
-        if prose:
-            rendered = _md_to_telegram_html("\n".join(prose))
-            if rendered:
-                parts.append(rendered)
-            prose.clear()
-
-    while i < len(lines):
-        # A table starts on a pipe-bearing line whose successor is a separator.
-        # No fence can appear here -- a fenced segment returned above.
-        if (
-            "|" in lines[i]
-            and i + 1 < len(lines)
-            and _is_table_separator(lines[i + 1])
-        ):
-            _flush_prose()
-            block = [lines[i], lines[i + 1]]
-            i += 2
-            # Body rows run until the first line that is not part of the table.
-            while i < len(lines) and "|" in lines[i]:
-                block.append(lines[i])
-                i += 1
-            parts.append(f"<pre>{html.escape(chr(10).join(block))}</pre>")
-            continue
-        prose.append(lines[i])
-        i += 1
-
-    _flush_prose()
+    for is_table, lines in _table_blocks(text):
+        if is_table:
+            parts.append(f"<pre>{html.escape(chr(10).join(lines))}</pre>")
+        else:
+            parts.append(_md_to_telegram_html("\n".join(lines)))
     return "\n".join(p for p in parts if p)
 
 
@@ -458,6 +475,33 @@ def _md_to_telegram_html(text: str) -> str:
 #: this, shrinking stops making progress; the caller's tag-safe truncation and
 #: plaintext fallback are the backstop for genuinely indivisible content.
 _MIN_SPLIT_LIMIT = 400
+
+#: How much one shrink round cuts at minimum, BEFORE the ``_MIN_SPLIT_LIMIT``
+#: clamp. The proportional step alone cuts 5% of the current budget, which for a
+#: small budget is a few tens of characters, so this is what bounds the number of
+#: re-split rounds; above roughly 20x it the 5% cut is the larger of the two and
+#: this never binds. Near the floor the clamp wins and the real cut is smaller.
+_SHRINK_STEP = 128
+
+
+def _shrunk_limit(current: int, rendered_cap: int, worst: int) -> int:
+    """The next source budget to try after a chunk rendered past ``rendered_cap``.
+
+    Shrinks in proportion to the observed inflation (``rendered_cap / worst``)
+    with a 5% margin, taking at least ``_SHRINK_STEP`` unless the floor is
+    nearer than that, and drops straight to ``_MIN_SPLIT_LIMIT`` when the
+    proportional answer would not shrink at all.
+
+    **Callers must hold ``current > _MIN_SPLIT_LIMIT`` and
+    ``worst > rendered_cap > 0``.** Under those the result is strictly below
+    *current* and never below the floor, which is what makes a shrink loop
+    terminate; at or below the floor there is nowhere left to shrink to and the
+    answer is the floor itself, so a caller that skips the guard would spin.
+    Both call sites guard it before they get here.
+    """
+    scaled = int(current * (rendered_cap / worst) * 0.95)
+    nxt = max(_MIN_SPLIT_LIMIT, min(scaled, current - _SHRINK_STEP))
+    return nxt if nxt < current else _MIN_SPLIT_LIMIT
 
 
 def _rendered_len(source: str) -> int:
@@ -519,45 +563,8 @@ def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
         worst = max((_rendered_len(c) for c in chunks), default=0)
         if worst <= rendered_limit or src_limit <= _MIN_SPLIT_LIMIT:
             return chunks
-        # Shrink proportionally to the observed inflation, capped so a
-        # barely-over chunk still makes real progress.
-        scaled = int(src_limit * (rendered_limit / worst) * 0.95)
-        new_limit = max(_MIN_SPLIT_LIMIT, min(scaled, src_limit - 128))
-        if new_limit >= src_limit:
-            new_limit = _MIN_SPLIT_LIMIT  # guarantee progress to the floor
-        src_limit = new_limit
+        src_limit = _shrunk_limit(src_limit, rendered_limit, worst)
         chunks = _split_markdown(text, src_limit)
-
-
-def _table_blocks(text: str) -> list[tuple[bool, list[str]]]:
-    """Partition *text* into alternating ``(is_table, lines)`` blocks.
-
-    Uses the same run detection as ``_seal_table_fallback``: a table starts on
-    a pipe-bearing line whose successor is a separator row and extends while
-    lines carry a pipe. Callers must screen out fenced text first (see
-    ``_split_markdown_table_aware``).
-    """
-    lines = text.split("\n")
-    blocks: list[tuple[bool, list[str]]] = []
-    prose: list[str] = []
-    i = 0
-    while i < len(lines):
-        if "|" in lines[i] and i + 1 < len(lines) and _is_table_separator(lines[i + 1]):
-            if prose:
-                blocks.append((False, prose))
-                prose = []
-            block = [lines[i], lines[i + 1]]
-            i += 2
-            while i < len(lines) and "|" in lines[i]:
-                block.append(lines[i])
-                i += 1
-            blocks.append((True, block))
-            continue
-        prose.append(lines[i])
-        i += 1
-    if prose:
-        blocks.append((False, prose))
-    return blocks
 
 
 def _split_table_rows(rows: list[str], limit: int) -> list[str]:
@@ -1237,11 +1244,7 @@ class TelegramRenderer(Renderer):
                 return chunks
             if src_cap <= _MIN_SPLIT_LIMIT:
                 break
-            scaled = int(src_cap * (rendered_cap / worst) * 0.95)
-            new_cap = max(_MIN_SPLIT_LIMIT, min(scaled, src_cap - 128))
-            if new_cap >= src_cap:
-                new_cap = _MIN_SPLIT_LIMIT  # guarantee progress to the floor
-            src_cap = new_cap
+            src_cap = _shrunk_limit(src_cap, rendered_cap, worst)
         # Floor reached with an oversize chunk: a single row exceeds the cap,
         # and no row-boundary cut can help. Hand each offender to the bounded
         # splitter, which cuts inside the line. Those pieces lose their table
@@ -1312,9 +1315,3 @@ class TelegramRenderer(Renderer):
             if failure_reason:
                 self._failure_reason = failure_reason
             await self.on_done(stop_reason="error")
-
-    # -- helpers ------------------------------------------------------------
-    def _options(self) -> list[str]:
-        raw = "".join(self._buf).strip()
-        _, opts = _extract_options(raw)
-        return opts

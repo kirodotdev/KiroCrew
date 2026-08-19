@@ -484,7 +484,6 @@ src/kiro_crew/teams/client.py
 src/kiro_crew/teams/renderer.py
 src/kiro_crew/teams/transport_dispatch.py
 src/kiro_crew/telegram/client.py
-src/kiro_crew/telegram/renderer.py
 src/kiro_crew/telegram/transport_dispatch.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py

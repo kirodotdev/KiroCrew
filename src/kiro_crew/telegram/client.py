@@ -64,6 +64,9 @@ _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 #: Consecutive polling failures before the status callback reports unhealthy.
 _STATUS_FAILURE_THRESHOLD = 3
 
+#: Ceiling on the polling loop's exponential retry delay, in seconds.
+_POLL_BACKOFF_MAX_S = 30.0
+
 #: Consecutive sendRichMessage 400s before we treat the method as unavailable.
 #: 400 is ambiguous -- a wrong payload shape fails every call, one oversized or
 #: 20+-column table fails only itself -- so latch on a streak, not one answer.
@@ -725,6 +728,19 @@ class TelegramClient:
         except Exception:
             logger.debug("Telegram on_status callback failed", exc_info=True)
 
+    def _poll_backoff(self, attempt: int, reason: str) -> float:
+        """The retry delay for consecutive-failure *attempt*, reporting unhealthy
+        once the streak reaches ``_STATUS_FAILURE_THRESHOLD``.
+
+        Called on EVERY failure with the ALREADY-incremented count, so the first
+        one waits a second. *reason* reaches the status callback only on the
+        attempt that crosses the threshold, which is what keeps a single blip
+        from flipping the settings badge.
+        """
+        if attempt == _STATUS_FAILURE_THRESHOLD:
+            self._notify_status(False, reason)
+        return min(1.0 * (2 ** (attempt - 1)), _POLL_BACKOFF_MAX_S)
+
     async def _polling_loop(self) -> None:
         """Long-polling loop with exponential backoff on failure."""
         attempt = 0
@@ -736,12 +752,11 @@ class TelegramClient:
                     # etc). _api already logged it; back off like a transport
                     # error instead of hot-looping getUpdates with zero delay.
                     attempt += 1
-                    if attempt == _STATUS_FAILURE_THRESHOLD:
-                        self._notify_status(
-                            False, "getUpdates rejected by Telegram (check the bot token)"
+                    await asyncio.sleep(
+                        self._poll_backoff(
+                            attempt, "getUpdates rejected by Telegram (check the bot token)"
                         )
-                    delay = min(1.0 * (2 ** (attempt - 1)), 30.0)
-                    await asyncio.sleep(delay)
+                    )
                     continue
                 # Deduped in _notify_status: only an actual unhealthy→healthy
                 # transition (incl. recovery from an offline boot) fires.
@@ -755,9 +770,9 @@ class TelegramClient:
                 if self._closed:
                     break
                 attempt += 1
-                if attempt == _STATUS_FAILURE_THRESHOLD:
-                    self._notify_status(False, f"getUpdates transport error ({type(exc).__name__})")
-                delay = min(1.0 * (2 ** (attempt - 1)), 30.0)
+                delay = self._poll_backoff(
+                    attempt, f"getUpdates transport error ({type(exc).__name__})"
+                )
                 # Log only the exception type — an aiohttp exc's str() can embed
                 # the request URL, which contains the bot token (a registered
                 # credential). Mirrors _api's transport-error logging.
@@ -849,8 +864,7 @@ class TelegramClient:
         self._album_timers[group_id] = task
         # Tracked alongside handler tasks so a pending flush is not garbage
         # collected mid-flight.
-        self._handler_tasks.add(task)
-        task.add_done_callback(self._handler_tasks.discard)
+        self._track(task)
 
     async def _album_flush_after(self, group_id: str, delay: float) -> None:
         try:
@@ -960,11 +974,22 @@ class TelegramClient:
             attachments=attachments,
         )
 
-    def _spawn_handler(self, inbound: TelegramInbound) -> None:
-        """Run the message handler as a tracked background task."""
-        task = asyncio.create_task(self._invoke_message(inbound))
+    def _track(self, task: asyncio.Task[None]) -> None:
+        """Hold a strong reference to *task* until it finishes.
+
+        asyncio keeps only a weak reference to a running task, so an untracked
+        one can be garbage collected mid-flight and silently drop what it was
+        carrying: an inbound turn, a pending album flush, or an inline-button
+        callback. The last is the costliest to lose -- a button press is an
+        approval or an option choice, so dropping it leaves the turn waiting on
+        a decision that never arrives.
+        """
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)
+
+    def _spawn_handler(self, inbound: TelegramInbound) -> None:
+        """Run the message handler as a tracked background task."""
+        self._track(asyncio.create_task(self._invoke_message(inbound)))
 
     def _dispatch(self, update: dict) -> None:
         """Route a single Update to the appropriate handler as a background task."""
@@ -1011,11 +1036,9 @@ class TelegramClient:
                 label=label,
                 username=user.get("username", ""),
                 chat_type=chat.get("type", ""),
-                message_thread_id=(msg or {}).get("message_thread_id"),
+                message_thread_id=msg.get("message_thread_id"),
             )
-            task = asyncio.create_task(self._invoke_callback(callback))
-            self._handler_tasks.add(task)
-            task.add_done_callback(self._handler_tasks.discard)
+            self._track(asyncio.create_task(self._invoke_callback(callback)))
 
     async def _invoke_message(self, inbound: TelegramInbound) -> None:
         if self._on_message is None:
