@@ -3,6 +3,23 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **App backends are actually reaped on Windows now.** The app-backend
+  stale-reap identifies a recorded pid through `_proc_start_time`, which read
+  `/proc/<pid>/stat` on Linux and otherwise shelled out to `ps -o lstart=` — a
+  branch its docstring called "macOS", but `else` covers every non-Linux
+  platform and Windows has no standard `ps`. There the call raised, was
+  swallowed, and returned `None` for every pid, so a null identity was
+  persisted and the reap — which correctly refuses to kill a pid it cannot
+  confirm — could never confirm one. No app backend was ever reaped on that
+  platform, and because unconfirmed entries are deliberately KEPT rather than
+  dropped, the pidfile accumulated an entry per gateway generation. The probe
+  now routes through `platform_compat.get_process_start_id`, the same shared
+  primitive this module already uses for every other process operation, which
+  gains a Windows branch reading the `GetProcessTimes` creation FILETIME. macOS
+  improves as a side effect: `libproc` at microsecond resolution replaces the
+  1-second, locale-formatted `ps` output, so same-second PID reuse can no
+  longer alias — and the probe no longer spawns a subprocess on the gateway's
+  startup path. (#3930)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

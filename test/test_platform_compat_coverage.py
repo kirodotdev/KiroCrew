@@ -462,6 +462,60 @@ def _bsdinfo(ppid: int = 0, sec: int = 0, usec: int = 0) -> bytes:
     return bytes(buf)
 
 
+def _boom_windll(*_a: Any, **_k: Any) -> Any:
+    raise OSError("kernel32 unavailable")
+
+
+def _fake_kernel32(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    handle: int,
+    high: int,
+    low: int,
+    times_ok: bool = True,
+) -> list[int]:
+    """Pretend to be Windows and stub the three kernel32 calls the probe makes.
+
+    Returns the list CloseHandle is called with, so a test can assert the
+    handle was released. ``wintypes`` supplies type aliases only and imports
+    cleanly here, so the FILETIME out-params are the real structures.
+    """
+    closed: list[int] = []
+
+    class _FakeKernel32:
+        def __init__(self) -> None:
+            self.OpenProcess = self._open
+            self.GetProcessTimes = self._times
+            self.CloseHandle = self._close
+
+        # ctypes lets callers assign .argtypes/.restype on a bound proc; these
+        # are plain functions, so accept and ignore those assignments.
+        def __setattr__(self, name: str, value: Any) -> None:
+            object.__setattr__(self, name, value)
+
+        @staticmethod
+        def _open(_access: Any, _inherit: Any, _pid: Any) -> int:
+            return handle
+
+        @staticmethod
+        def _times(_h: Any, created: Any, _e: Any, _k: Any, _u: Any) -> int:
+            if not times_ok:
+                return 0
+            created._obj.dwHighDateTime = high
+            created._obj.dwLowDateTime = low
+            return 1
+
+        @staticmethod
+        def _close(h: Any) -> int:
+            closed.append(int(h))
+            return 1
+
+    fake = _FakeKernel32()
+    monkeypatch.setattr(pc.sys, "platform", "win32")
+    monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: fake, raising=False)
+    return closed
+
+
 def _fake_libproc(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -578,8 +632,45 @@ class TestGetProcessStartId:
         _fake_libproc(monkeypatch, payload=None, ret=-1)
         assert pc.get_process_start_id(5) is None
 
-    def test_windows_is_unknown_rather_than_a_mismatch(self, monkeypatch):
+    def test_windows_reports_the_creation_filetime(self, monkeypatch):
+        """Windows used to fall through to `return None`, so every caller saw
+        "identity unknown" for every pid. In apps/backend that permanently
+        disabled the app-backend stale-reap: an entry whose identity can never
+        be confirmed is never killed AND never dropped, so the pidfile grew
+        across every gateway generation (#3930)."""
+        _fake_kernel32(monkeypatch, handle=99, high=0x01DA, low=0x1234ABCD)
+        # 100-ns FILETIME ticks, as a decimal string: stable across restarts,
+        # locale-independent, and finer than any plausible spawn cadence.
+        assert pc.get_process_start_id(5) == str((0x01DA << 32) | 0x1234ABCD)
+
+    def test_windows_closes_the_handle_it_opened(self, monkeypatch):
+        """The probe runs once per recorded pid on the gateway's startup path;
+        leaking a handle per call would accumulate for the process lifetime."""
+        closed = _fake_kernel32(monkeypatch, handle=99, high=1, low=2)
+        pc.get_process_start_id(5)
+        assert closed == [99]
+
+    def test_windows_closes_the_handle_even_when_the_query_fails(self, monkeypatch):
+        closed = _fake_kernel32(monkeypatch, handle=99, high=1, low=2, times_ok=False)
+        assert pc.get_process_start_id(5) is None
+        assert closed == [99]
+
+    def test_windows_unopenable_process_is_unknown(self, monkeypatch):
+        """A pid we may not introspect must read as unknown, not as a mismatch —
+        the reap's fail-safe direction is decline-to-kill."""
+        _fake_kernel32(monkeypatch, handle=0, high=1, low=2)
+        assert pc.get_process_start_id(5) is None
+
+    def test_windows_zero_creation_time_is_unknown(self, monkeypatch):
+        _fake_kernel32(monkeypatch, handle=99, high=0, low=0)
+        assert pc.get_process_start_id(5) is None
+
+    def test_windows_probe_failure_is_unknown_not_a_raise(self, monkeypatch):
+        """It runs on the startup path; a raise here would abort the reap."""
         monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(
+            pc.ctypes, "WinDLL", _boom_windll, raising=False
+        )
         assert pc.get_process_start_id(5) is None
 
     def test_identity_never_contains_a_colon(self, monkeypatch):

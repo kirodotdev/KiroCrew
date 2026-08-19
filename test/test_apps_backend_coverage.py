@@ -20,6 +20,7 @@ and ``urllib.request.urlopen`` are stubbed, and the spawn body is frozen at the
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import subprocess
@@ -1287,62 +1288,43 @@ class TestPidfileHelpers:
 
 
 class TestProcStartTime:
-    def test_linux_reads_the_starttime_field_past_a_parenthesised_comm(
+    def test_delegates_to_the_shared_platform_primitive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Splitting on the FIRST ')' would mis-index any comm containing one."""
+        """The per-platform parsing moved to platform_compat.get_process_start_id,
+        which answers on Windows too. The local Linux-/proc-or-`ps` pair it
+        replaced returned None for every pid there, silently disabling the
+        stale-reap entirely (#3930). Its per-platform behaviour is covered at its
+        new home in test_platform_compat_coverage.py."""
+        seen: list[int] = []
 
-        tail = " ".join(str(i) for i in range(4, 24))
-        stat = f"4242 (my (odd) proc) S 1 {tail}"
+        def _fake(pid: int) -> str | None:
+            seen.append(pid)
+            return "1700000000.123456"
 
-        class _FakeStatPath:
-            def __init__(self, _p: str) -> None:
-                pass
+        monkeypatch.setattr(bmod.platform_compat, "get_process_start_id", _fake)
+        assert bmod._proc_start_time(4242) == "1700000000.123456"
+        assert seen == [4242]
 
-            def read_text(self) -> str:
-                return stat
-
-        monkeypatch.setattr(bmod.sys, "platform", "linux")
-        monkeypatch.setattr(bmod, "Path", _FakeStatPath)
-        assert bmod._proc_start_time(4242) == "21"
-
-    def test_a_malformed_stat_line_yields_no_identity(
+    def test_an_unknown_identity_is_passed_through_as_none(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        class _FakeStatPath:
-            def __init__(self, _p: str) -> None:
-                pass
-
-            def read_text(self) -> str:
-                return "no closing paren here"
-
-        monkeypatch.setattr(bmod.sys, "platform", "linux")
-        monkeypatch.setattr(bmod, "Path", _FakeStatPath)
-        assert bmod._proc_start_time(4242) is None
-
-    def test_non_linux_shells_out_to_ps(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bmod.sys, "platform", "darwin")
+        """None means "identity unknown", which the reap treats as
+        do-not-kill-and-keep — it must not be coerced into a value."""
         monkeypatch.setattr(
-            bmod.subprocess, "check_output", lambda *_a, **_k: b" Mon Jan  1 00:00:00 2024\n"
+            bmod.platform_compat, "get_process_start_id", lambda _pid: None
         )
-        assert bmod._proc_start_time(4242) == "Mon Jan  1 00:00:00 2024"
-
-    def test_empty_ps_output_yields_no_identity(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(bmod.sys, "platform", "darwin")
-        monkeypatch.setattr(bmod.subprocess, "check_output", lambda *_a, **_k: b"\n")
         assert bmod._proc_start_time(4242) is None
 
-    def test_a_failed_ps_probe_yields_no_identity(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def _boom(*_a: Any, **_k: Any) -> bytes:
-            raise OSError("no ps")
+    def test_the_probe_no_longer_shells_out(self) -> None:
+        """A subprocess here ran on the gateway's startup path and, on Windows,
+        raised on every call. The replacement is in-process on all platforms.
 
-        monkeypatch.setattr(bmod.sys, "platform", "darwin")
-        monkeypatch.setattr(bmod.subprocess, "check_output", _boom)
-        assert bmod._proc_start_time(4242) is None
+        Asserted on the executable body only — the docstring above it discusses
+        the subprocess it replaced."""
+        body = inspect.getsource(bmod._proc_start_time).split('"""')[-1]
+        assert "subprocess" not in body
+        assert "get_process_start_id" in body
 
     def test_pid_alive_delegates_to_the_platform_shim(
         self, monkeypatch: pytest.MonkeyPatch

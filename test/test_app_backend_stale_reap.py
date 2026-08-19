@@ -298,3 +298,99 @@ def test_reap_skips_sigkill_when_pid_recycled_during_grace(pidfile):
         n = backend_mod._reap_stale_app_backends()
     assert n == 1  # the SIGTERM was sent, so it counts as reaped
     assert sigkilled == []  # but the recycled pid must NOT be SIGKILLed
+
+
+# ---------------------------------------------------------------------------
+# The reap is reachable on Windows (#3930)
+# ---------------------------------------------------------------------------
+#
+# _proc_start_time was Linux-/proc with a bare `ps -o lstart=` fallback whose
+# docstring called the second branch "macOS". `else` covers every non-Linux
+# platform, and Windows has no standard `ps`, so the call raised, was swallowed,
+# and returned None for every pid. _record_app_pid then persisted a null
+# identity and the reap refused to act on an unconfirmed one -- so no app
+# backend was EVER reaped there, and because unconfirmed entries are
+# deliberately KEPT, the pidfile accumulated an entry per gateway generation.
+#
+# These drive the whole record -> reap cycle through a simulated Windows probe.
+
+
+def _windows_start_id(monkeypatch, value):
+    """Make the shared probe answer the way Windows now does (a FILETIME tick
+    count as a decimal string), for every pid."""
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "get_process_start_id", lambda _pid: value
+    )
+
+
+def test_windows_records_a_real_identity_instead_of_null(pidfile, monkeypatch):
+    _windows_start_id(monkeypatch, "133700000000000000")
+    backend_mod._record_app_pid("code_reviewer", 4321, 9100)
+    entry = backend_mod._read_pidfile()["code_reviewer"]
+    # A null here is what made every later reap a no-op.
+    assert entry["start_time"] == "133700000000000000"
+
+
+def test_windows_orphan_is_reaped_instead_of_accumulating(pidfile, monkeypatch):
+    _windows_start_id(monkeypatch, "133700000000000000")
+    backend_mod._record_app_pid("code_reviewer", 4321, 9100)
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "pid_liveness",
+        lambda _pid: backend_mod.platform_compat.PID_ALIVE,
+    )
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "kill_process_tree",
+        lambda pid, _sig: killed.append(pid),
+    )
+    monkeypatch.setattr(backend_mod.platform_compat, "pid_exists", lambda _pid: False)
+
+    assert backend_mod._reap_stale_app_backends() == 1
+    assert killed == [4321]
+    # Handled entries are dropped -- this is the accumulation the null identity
+    # made permanent.
+    assert backend_mod._read_pidfile() == {}
+
+
+def test_a_recycled_windows_pid_is_still_never_killed(pidfile, monkeypatch):
+    """The PID-reuse guard must survive the platform fix: a DIFFERENT creation
+    time for the same pid means the pid was recycled onto an unrelated process."""
+    _windows_start_id(monkeypatch, "133700000000000000")
+    backend_mod._record_app_pid("code_reviewer", 4321, 9100)
+    _windows_start_id(monkeypatch, "133799999999999999")  # recycled
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "pid_liveness",
+        lambda _pid: backend_mod.platform_compat.PID_ALIVE,
+    )
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "kill_process_tree",
+        lambda pid, _sig: killed.append(pid),
+    )
+
+    assert backend_mod._reap_stale_app_backends() == 0
+    assert killed == []
+    # Unconfirmed but alive -> KEPT for a later attempt, unchanged behaviour.
+    assert "code_reviewer" in backend_mod._read_pidfile()
+
+
+def test_an_unknown_identity_still_declines_to_reap(pidfile, monkeypatch):
+    """None means "identity unknown" on every platform (a process we may not
+    introspect). It must keep failing safe, not become a licence to kill."""
+    _windows_start_id(monkeypatch, None)
+    backend_mod._record_app_pid("code_reviewer", 4321, 9100)
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "pid_liveness",
+        lambda _pid: backend_mod.platform_compat.PID_ALIVE,
+    )
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "kill_process_tree",
+        lambda pid, _sig: killed.append(pid),
+    )
+
+    assert backend_mod._reap_stale_app_backends() == 0
+    assert killed == []

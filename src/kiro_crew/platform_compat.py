@@ -936,8 +936,11 @@ def get_process_start_id(pid: int) -> str | None:
     - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
       (microsecond resolution, so processes spawned in the same second do not
       alias — unlike ``ps -o lstart=``, which is 1-second granularity).
-    - Windows / any failure (including a process we may not introspect): ``None``,
-      meaning "identity unknown" — callers must not treat that as a mismatch.
+    - Windows: ``GetProcessTimes`` creation time, a 100-ns-resolution FILETIME
+      opened with PROCESS_QUERY_LIMITED_INFORMATION (the least privilege that
+      answers, and the only one that works against an elevated process).
+    - Any failure (including a process we may not introspect): ``None``, meaning
+      "identity unknown" — callers must not treat that as a mismatch.
     """
     if sys.platform == "linux":
         try:
@@ -972,6 +975,52 @@ def get_process_start_id(pid: int) -> str | None:
             if sec == 0:
                 return None  # implausible — treat as unknown rather than a value
             return f"{sec}.{usec:06d}"
+        except Exception:
+            return None
+    if sys.platform == "win32":
+        # Branches on ``sys.platform`` rather than the ``IS_WINDOWS`` constant to
+        # match the two above it — one seam for the whole function, and the one
+        # this module's tests already patch.
+        try:
+            process_query_limited_information = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetProcessTimes.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+            ]
+            kernel32.GetProcessTimes.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.OpenProcess(
+                process_query_limited_information, False, pid
+            )
+            if not handle:
+                return None
+            try:
+                created = wintypes.FILETIME()
+                exited = wintypes.FILETIME()
+                kernel = wintypes.FILETIME()
+                user = wintypes.FILETIME()
+                ok = kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(created),
+                    ctypes.byref(exited),
+                    ctypes.byref(kernel),
+                    ctypes.byref(user),
+                )
+                if not ok:
+                    return None
+                ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+                if ticks == 0:
+                    return None  # implausible — treat as unknown, not as a value
+                return str(ticks)
+            finally:
+                kernel32.CloseHandle(handle)
         except Exception:
             return None
     return None

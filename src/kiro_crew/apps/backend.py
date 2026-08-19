@@ -76,7 +76,6 @@ _BOOT_SPAWN_MAX_WORKERS = 8
 # applied PER orphan, not shared across the batch.
 _REAP_SIGTERM_GRACE = 3.0  # seconds to wait for an orphan to exit after SIGTERM
 _REAP_POLL_INTERVAL = 0.1  # liveness re-poll cadence during the grace window
-_PS_TIMEOUT = 2  # seconds before a `ps` start-time probe is abandoned
 
 
 # ---------------------------------------------------------------------------
@@ -1385,25 +1384,33 @@ def _proc_start_time(pid: int) -> str | None:
     prior generation against one read now), so it cannot use ``hash()`` — that
     is salted per interpreter by ``PYTHONHASHSEED``.
 
-    Linux reads ``/proc/<pid>/stat`` field 22 (start time in clock ticks since
-    boot): monotonic, locale-independent, and far finer than 1s, so same-second
-    PID reuse cannot alias. macOS falls back to ``ps -o lstart=`` (1s resolution,
-    locale/TZ-formatted); a format/resolution drift there can only make the guard
-    FAIL SAFE (decline to reap → orphan leaks), never kill the wrong process.
+    Routed through ``platform_compat.get_process_start_id`` — the same shared
+    primitive this module already uses for every other process operation
+    (``pid_exists``, ``pid_liveness``, ``kill_pid``, ``kill_process_tree``,
+    ``get_ppid``). The local implementation this replaces was Linux ``/proc``
+    with a bare ``ps -o lstart=`` fallback, whose docstring described the second
+    branch as "macOS" — but ``else`` covers every non-Linux platform, and
+    Windows has no standard ``ps``. There the call raised, was swallowed, and
+    returned ``None`` for every pid, so ``_record_app_pid`` persisted a null
+    identity and ``_reap_stale_app_backends`` could never confirm one: no app
+    backend was EVER reaped on Windows, and because unconfirmed entries are
+    deliberately kept rather than dropped, the pidfile accumulated them across
+    every gateway generation (#3930).
+
+    The shared helper answers on all three platforms, in-process and without a
+    subprocess: ``/proc/<pid>/stat`` field 22 on Linux, ``libproc`` at
+    microsecond resolution on macOS (finer than the 1-second, locale/TZ-formatted
+    ``ps -o lstart=`` it replaces, so same-second PID reuse can no longer alias),
+    and the ``GetProcessTimes`` creation FILETIME on Windows.
+
+    A recorded value written by a PRIOR gateway generation in the old macOS
+    ``ps`` format will not match the new one. That is the guard's fail-safe
+    direction — identity unconfirmed means decline to reap, never kill the wrong
+    process — and it self-clears: the reap drops any entry whose pid is already
+    dead, and ``_record_app_pid`` rewrites the entry in the new format the next
+    time that backend spawns.
     """
-    try:
-        if sys.platform == "linux":
-            stat = Path(f"/proc/{pid}/stat").read_text()
-            # The comm field can contain spaces/parens; split after the last ')'.
-            fields = stat.rsplit(")", 1)[1].split()
-            return fields[19]  # field 22 (1-based) = starttime in clock ticks
-        out = subprocess.check_output(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            stderr=subprocess.DEVNULL, timeout=_PS_TIMEOUT,
-        )
-        return out.decode().strip() or None
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        return None
+    return platform_compat.get_process_start_id(pid)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1452,11 +1459,12 @@ def _record_app_pid(app_name: str, pid: int, port: int) -> None:
     if pid <= 0:
         return
     try:
-        # Compute start_time BEFORE taking the lock: on macOS _proc_start_time
-        # shells out to `ps` (up to _PS_TIMEOUT), and holding _pidfile_lock
-        # across that slow IO would serialize concurrent enable/stop/uninstall
-        # ops behind it. Mirrors the reap path's validate-lock-free /
-        # store-under-lock discipline.
+        # Compute start_time BEFORE taking the lock. _proc_start_time is now an
+        # in-process read on every platform (no `ps` subprocess), so this is far
+        # cheaper than it was — but the ordering is kept deliberately: it still
+        # mirrors the reap path's validate-lock-free / store-under-lock
+        # discipline, and holding _pidfile_lock across any probe would serialize
+        # concurrent enable/stop/uninstall ops behind it.
         start_time = _proc_start_time(pid)
         with _pidfile_lock:
             data = _read_pidfile()
