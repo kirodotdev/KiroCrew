@@ -2858,8 +2858,18 @@ class TestGitCoord:
         await git_coord.init_workspace(run)
 
         import shutil
+
+        from kiro_crew.platform_compat import rmtree_force
+
         shutil.rmtree(run.worktree_path, ignore_errors=True)
-        shutil.rmtree(run.repo_root)  # the ORIGINAL repo is gone too
+        # Plain shutil.rmtree(..., ignore_errors=False) fails closed on Windows:
+        # git writes loose objects under .git/objects read-only, and Windows
+        # (unlike POSIX) checks the file's own read-only attribute rather than
+        # the parent directory's write bit, so os.unlink raises WinError 5
+        # before the repo is actually gone. rmtree_force clears the attribute
+        # and retries, and its return value confirms the ORIGINAL repo really
+        # is gone -- which this test's premise depends on.
+        assert rmtree_force(run.repo_root) is True
 
         recovered = await git_coord.reinit_workspace_for_retry(run)
 
