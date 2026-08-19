@@ -396,7 +396,6 @@ src/kiro_crew/mcp_gateway/gatewayd.py
 src/kiro_crew/mcp_gateway/hazards.py
 src/kiro_crew/mcp_gateway/image_budget.py
 src/kiro_crew/mcp_gateway/manager.py
-src/kiro_crew/mcp_gateway/preflight.py
 src/kiro_crew/mcp_gateway/prewarm.py
 src/kiro_crew/mcp_gateway/rewriter.py
 src/kiro_crew/mcp_gateway/seed.py

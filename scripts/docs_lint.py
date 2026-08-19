@@ -190,6 +190,9 @@ _HTML_LINK_RE = re.compile(r"""<(?:a|img)\s[^>]*?(?:href|src)\s*=\s*["']([^"']+)
 # redaction example rendered as `k[REDACTED: credential](raw)`.
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _INLINE_CODE_RE = re.compile(r"`+[^`\n]*`+")
+# Git conflict markers, as git itself writes them at column 0: the ``<``, ``|``
+# and ``>`` forms carry a trailing label, the ``=`` separator stands alone.
+_CONFLICT_MARKER_RE = re.compile(r"^(?:[<>|]{7}(?:\s|$)|={7}$)")
 # A documentation path cited from source code, e.g. ``docs/system-specs/x.md``.
 _CODE_DOC_REF_RE = re.compile(r"(?:website/)?docs/[A-Za-z0-9][A-Za-z0-9/_.-]*\.md")
 
@@ -242,6 +245,7 @@ class Findings:
     coupling: list[str] = field(default_factory=list)
     missing_index: list[str] = field(default_factory=list)
     changelog_preamble: list[str] = field(default_factory=list)
+    conflict_markers: list[str] = field(default_factory=list)
 
     def total(self) -> int:
         return (
@@ -251,6 +255,7 @@ class Findings:
             + len(self.coupling)
             + len(self.missing_index)
             + len(self.changelog_preamble)
+            + len(self.conflict_markers)
         )
 
 
@@ -476,6 +481,31 @@ def check_changelog_preambles(root: Path, docs: list[Path], findings: Findings) 
                 break
 
 
+def check_conflict_markers(root: Path, docs: list[Path], findings: Findings) -> None:
+    """No doc may ship a git conflict marker.
+
+    A half-resolved merge is invisible to every other check here, which reads
+    documents as a link graph rather than as text, and it survives review for a
+    second reason: a bare ``=======`` under a line of prose is a valid setext H1,
+    so it renders as a heading instead of erroring. Anchoring at column 0 keeps
+    prose that *discusses* markers (they appear mid-line, inside backticks)
+    clean, and fenced blocks are exempt so a doc can show a real conflict.
+
+    The ``=`` form is matched only as a bare 7-character line. That is the width
+    git writes, and the repo's docs head with ATX ``#`` throughout, so a setext
+    underline of exactly that width would be the one false positive; a heading
+    wanting an underline should use ``#`` instead.
+    """
+    # Unlike the style checks, this one does not skip uncurated trees or spare the
+    # entry points: a marker is corruption, not a curation question, and the entry
+    # points are the files most people edit and therefore the likeliest to conflict.
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        for lineno, line in enumerate(_strip_fences(_read(doc)).splitlines(), start=1):
+            if _CONFLICT_MARKER_RE.match(line):
+                findings.conflict_markers.append(f"{rel_doc}:{lineno}  {line.strip()[:40]}")
+
+
 def check_code_citations(root: Path, findings: Findings) -> None:
     """A documentation path cited from source code must exist ("phantom spec").
 
@@ -585,6 +615,7 @@ def run(root: Path) -> Findings:
     check_reachability(root, docs, findings)
     check_directory_indexes(root, docs, findings)
     check_changelog_preambles(root, docs, findings)
+    check_conflict_markers(root, docs + entry_points, findings)
     check_code_citations(root, findings)
     check_code_coupled_docs(root, findings)
     return findings
@@ -592,6 +623,11 @@ def run(root: Path) -> Findings:
 
 def _report(findings: Findings, doc_count: int) -> int:
     print(f"docs-lint: scanned {doc_count} markdown files under {', '.join(DOC_ROOTS)}")
+    _emit(
+        "git conflict markers left in docs",
+        findings.conflict_markers,
+        "finish the merge: keep one side and delete the markers",
+    )
     _emit(
         "broken internal links",
         findings.broken_links,
@@ -702,6 +738,27 @@ def _self_test() -> int:
         )
         return "changelog_preamble"
 
+    def plant_conflict_marker(root: Path) -> str:
+        # The separator alone, which is what a half-finished resolution leaves
+        # behind once the labelled <<< and >>> lines have been deleted.
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n- kept bullet\n=======\n- other side\n", encoding="utf-8"
+        )
+        return "conflict_markers"
+
+    def plant_conflict_marker_head(root: Path) -> str:
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n", encoding="utf-8"
+        )
+        return "conflict_markers"
+
+    def plant_conflict_marker_uncurated(root: Path) -> str:
+        # Archival trees are exempt from the style checks but not from corruption.
+        archive = root / "docs" / "archive"
+        archive.mkdir()
+        (archive / "old.md").write_text("# Old\n\nkept\n=======\nother\n", encoding="utf-8")
+        return "conflict_markers"
+
     def plant_phantom_ref(root: Path) -> str:
         pkg = root / "src" / "kiro_crew"
         pkg.mkdir(parents=True)
@@ -718,15 +775,19 @@ def _self_test() -> int:
         )
         return "coupling"
 
-    def code_immunity_probe(label: str, body: str) -> None:
-        """Assert a link written inside code markup is NOT reported."""
+    def code_immunity_probe(label: str, body: str, field: str = "broken_links") -> None:
+        """Assert markup written inside code is NOT reported by ``field``.
+
+        The field is explicit because a probe that watches the wrong one cannot
+        fail: it would pass while the check it claims to guard regressed.
+        """
         nonlocal failures
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "docs").mkdir(parents=True)
             (root / "docs" / "README.md").write_text("# Docs\n\n- [Ok](ok.md)\n", encoding="utf-8")
             (root / "docs" / "ok.md").write_text(body, encoding="utf-8")
-            if run(root).broken_links:
+            if getattr(run(root), field):
                 print(f"  FAIL {label} was flagged")
                 failures += 1
             else:
@@ -739,12 +800,25 @@ def _self_test() -> int:
     probe("unreachable doc", plant_unreachable)
     probe("missing directory index", plant_missing_index)
     probe("changelog preamble", plant_changelog_preamble)
+    probe("conflict marker (bare separator)", plant_conflict_marker)
+    probe("conflict marker (full three-way)", plant_conflict_marker_head)
+    probe("conflict marker (uncurated tree)", plant_conflict_marker_uncurated)
     probe("phantom spec citation", plant_phantom_ref)
     probe("code-coupled doc missing", plant_coupling)
 
     # Code-markup immunity is an inverse assertion (nothing should fire).
     code_immunity_probe("fenced example link", "# Ok\n\n```md\n[example](does-not-exist.md)\n```\n")
     code_immunity_probe("inline-code example link", "# Ok\n\nSpoken as `[label](url)` aloud.\n")
+    code_immunity_probe(
+        "prose discussing conflict markers",
+        "# Ok\n\ngit emits `<<<<<<< HEAD` / `=======` /\n`>>>>>>>` around the region.\n",
+        "conflict_markers",
+    )
+    code_immunity_probe(
+        "fenced conflict demonstration",
+        "# Ok\n\n```diff\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n```\n",
+        "conflict_markers",
+    )
 
     if failures:
         print(f"\nSELF-TEST FAILED: {failures} check(s) do not fire")
