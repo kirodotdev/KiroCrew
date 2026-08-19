@@ -23,7 +23,7 @@ async function responseFor(path: string) {
 }
 
 describe('shared dashboard screenshot config fixtures', () => {
-  it('serves the complete KiroCrew config shape before the catch-all', async () => {
+  it('serves the complete Kiro Crew config shape before the catch-all', async () => {
     const body = await responseFor('/api/config/kirocrew')
     expect(body).toEqual(KIROCREW_CONFIG_FIXTURE)
     expect(Object.keys(body.agents)).toContain('kirocrew')
