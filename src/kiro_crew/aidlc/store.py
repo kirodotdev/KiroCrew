@@ -125,7 +125,12 @@ class AidlcStore:
             items = [a for a in items if a.get("target_type") == target_type]
         if target_id:
             items = [a for a in items if a.get("target_id") == target_id]
-        return sorted(items, key=lambda a: a.get("timestamp", 0), reverse=True)[:limit]
+        # Newest first. timestamp alone under-determines the order: clocks are
+        # coarse enough (~15.6ms on Windows) that a burst of activities ties.
+        # Iterating in reverse insertion order lets the stable sort resolve a
+        # tied group most-recently-logged first, so the [:limit] slice keeps
+        # the most recent activities instead of dropping them.
+        return sorted(reversed(items), key=lambda a: a.get("timestamp", 0), reverse=True)[:limit]
 
     # ── Comments ──
 

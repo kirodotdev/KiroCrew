@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from kiro_crew.aidlc.store import AidlcStore
@@ -60,6 +62,35 @@ class TestProjectCRUD:
         task_acts = store.list_activities(project_id=p["id"], target_type="task")
         assert len(task_acts) == 1
         assert task_acts[0]["action"] == "completed"
+
+    def test_list_activities_equal_timestamps(self, store, monkeypatch):
+        # Coarse clocks (~15.6ms granularity on Windows) hand a burst of
+        # activities identical timestamps; the feed must stay deterministic:
+        # distinct timestamps strictly newest-first, and a tied group most
+        # recently logged first. Activity.timestamp's default_factory
+        # captured _now at class definition, so patch the time module that
+        # _now reads at call time (scoped to aidlc.models only).
+        clock = {"t": 500.0}
+        monkeypatch.setattr(
+            "kiro_crew.aidlc.models.time", types.SimpleNamespace(time=lambda: clock["t"])
+        )
+        earlier = store.log_activity("p1", "task", "t-early", action="updated")
+        clock["t"] = 1000.0
+        acts = [store.log_activity("p1", "task", f"t{i}", action="updated") for i in range(3)]
+        assert all(a["timestamp"] == 1000.0 for a in acts)
+        listed = store.list_activities()
+        assert [a["id"] for a in listed] == [a["id"] for a in reversed(acts)] + [earlier["id"]]
+
+    def test_list_activities_limit_keeps_most_recent_of_tied_group(self, store, monkeypatch):
+        # When a tied group is larger than limit, the slice must keep the
+        # MOST RECENT activities, not the oldest members of the group.
+        monkeypatch.setattr(
+            "kiro_crew.aidlc.models.time", types.SimpleNamespace(time=lambda: 1000.0)
+        )
+        acts = [store.log_activity("p1", "task", f"t{i}", action="updated") for i in range(5)]
+        assert all(a["timestamp"] == 1000.0 for a in acts)
+        listed = store.list_activities(limit=2)
+        assert [a["id"] for a in listed] == [acts[4]["id"], acts[3]["id"]]
 
     def test_comments(self, store):
         c = store.add_comment("project", "p1", "hello")
