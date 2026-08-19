@@ -6187,7 +6187,9 @@
       "search_everywhere": "Überall suchen",
       "show_or_focus_the_kiro_crew_window": "Kiro Crew-Fenster anzeigen oder fokussieren",
       "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
-      "use_ctrl_not_option_for_chat_1_to_9": "Strg (nicht Option) für Chat 1 bis 9 verwenden"
+      "use_ctrl_not_option_for_chat_1_to_9": "Strg (nicht Option) für Chat 1 bis 9 verwenden",
+      "panel_toggles": "Panels umschalten",
+      "unset": "Nicht festgelegt"
     },
     "sidePanelLayout": {
       "update_available": "Aktualisierung verfügbar"
@@ -6725,7 +6727,10 @@
       "schedule_panel": "Zeitplan-Panel",
       "switch_to_local": "Zu Lokal wechseln",
       "switch_to_remote_crew": "Zu Remote-Crew {{n}} wechseln",
-      "walk_back_mru_history": "MRU-Verlauf zurückgehen"
+      "walk_back_mru_history": "MRU-Verlauf zurückgehen",
+      "toggle_left_sidebar": "Linke Seitenleiste umschalten",
+      "toggle_session_panel": "Sitzungsbereich umschalten",
+      "toggle_side_panel": "Seitenpanel umschalten"
     },
     "usePanelTabs": {
       "artifacts": "Artefakte",
@@ -11052,7 +11057,9 @@
         "record_prompt": "Tasten drücken…",
         "search": "Suchen",
         "turn_keyboard_shortcuts_on_or_off_globally": "Tastenkürzel global ein- oder ausschalten — {{mod}} + K (diese Übersicht) funktioniert immer",
-        "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden"
+        "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
+        "clear_shortcut": "Leeren",
+        "panel_toggles": "Panels umschalten"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn ein nicht triviales mehrstufiges Verfahren erkannt wird. Standardmäßig aus. Entwürfe werden in der Warteschlange auf dem Tab „Skills“ zur Überprüfung bereitgestellt — nichts geht ohne Ihre Genehmigung live (siehe unten).",

@@ -6275,7 +6275,9 @@
       "search_everywhere": "Cerca in tutto",
       "show_or_focus_the_kiro_crew_window": "Mostra o metti in primo piano la finestra di Kiro Crew",
       "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
-      "use_ctrl_not_option_for_chat_1_to_9": "Usa Ctrl (non Option) per le chat da 1 a 9"
+      "use_ctrl_not_option_for_chat_1_to_9": "Usa Ctrl (non Option) per le chat da 1 a 9",
+      "panel_toggles": "Attiva/disattiva pannelli",
+      "unset": "Non impostato"
     },
     "sidePanelLayout": {
       "update_available": "aggiornamento disponibile"
@@ -6814,7 +6816,10 @@
       "schedule_panel": "Pannello della pianificazione",
       "switch_to_local": "Passa a Locale",
       "switch_to_remote_crew": "Passa alla crew remota {{n}}",
-      "walk_back_mru_history": "Torna indietro nella cronologia MRU"
+      "walk_back_mru_history": "Torna indietro nella cronologia MRU",
+      "toggle_left_sidebar": "Attiva/disattiva la barra laterale sinistra",
+      "toggle_session_panel": "Attiva/disattiva il pannello delle sessioni",
+      "toggle_side_panel": "Attiva/disattiva il pannello laterale"
     },
     "usePanelTabs": {
       "artifacts": "Artefatti",
@@ -11176,7 +11181,9 @@
         "record_prompt": "Premi i tasti…",
         "search": "Cerca",
         "turn_keyboard_shortcuts_on_or_off_globally": "Attiva o disattiva le scorciatoie da tastiera a livello globale — {{mod}} + K (questo riferimento) funziona sempre",
-        "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
+        "clear_shortcut": "Cancella",
+        "panel_toggles": "Attiva/disattiva pannelli"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando viene rilevata una procedura non banale in più passaggi. Disattivato per impostazione predefinita. Le bozze vengono messe in coda nella scheda Skill per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",

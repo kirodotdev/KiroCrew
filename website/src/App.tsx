@@ -1422,6 +1422,12 @@ export default function App() {
       const prevIdx = idx <= 0 ? models.length - 1 : idx - 1
       api.chatSlotModel(activeSlot, models[prevIdx].name)
     },
+    // Panel toggles. The sidebar lives here in App; the session list and the
+    // activity panel live on the chat page and already listen for these window
+    // events (their in-header buttons dispatch the same ones).
+    onToggleLeftSidebar: () => toggleNav(),
+    onToggleSessionPanel: () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')),
+    onToggleSidePanel: () => window.dispatchEvent(new Event('toggle-activity-panel')),
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,
   // 2=first remote, … — matching the InstanceTabBar left-to-right tab order.

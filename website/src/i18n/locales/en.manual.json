@@ -2258,6 +2258,10 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "shortcutsModal": {
+      "panel_toggles": "Panel toggles",
+      "unset": "Not set"
     }
   },
   "hooks": {
@@ -2302,7 +2306,10 @@
       "schedule_panel": "Schedule panel",
       "switch_to_local": "Switch to Local",
       "switch_to_remote_crew": "Switch to remote crew {{n}}",
-      "walk_back_mru_history": "Walk back MRU history"
+      "walk_back_mru_history": "Walk back MRU history",
+      "toggle_left_sidebar": "Toggle left sidebar",
+      "toggle_session_panel": "Toggle session panel",
+      "toggle_side_panel": "Toggle side panel"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",
@@ -4373,7 +4380,9 @@
         "preset_custom": "Custom",
         "record_prompt": "Press keys…",
         "custom_hint": "Use at least one modifier key.",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works"
+        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works",
+        "clear_shortcut": "Clear",
+        "panel_toggles": "Panel toggles"
       },
       "reportProblemCard": {
         "support": "Support",
