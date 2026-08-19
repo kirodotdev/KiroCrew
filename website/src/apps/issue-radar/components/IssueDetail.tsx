@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
-  Copy, Check, RefreshCw, CircleDot, CircleCheck, CircleSlash, MessageSquare,
+  Copy, Check, AlertCircle, RefreshCw, CircleDot, CircleCheck, CircleSlash, MessageSquare,
   Tag, UserPlus, UserMinus, Pencil, Milestone as MilestoneIcon, GitPullRequest,
   GitCommitHorizontal, Link2, Users, CalendarDays, Lock, Sparkles,
   Plus, Loader2,
@@ -32,6 +32,7 @@ import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
 import { parseRepoRef } from '../lib/refLinks'
 import { safeHttpUrl } from '../../../lib/safeUrl'
+import { copyToClipboard } from '../../../utils/clipboard'
 import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
 import AiSummaryCard from './AiSummaryCard'
 import LabelChip from './LabelChip'
@@ -466,20 +467,53 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   useEffect(() => { setEditingLabels(false) }, [issue.number])
 
   // Copy-link affordance (the #number links out to GitHub; this copies the URL
-  // to the clipboard). Brief check-mark feedback, then reverts. Reads the URL off
-  // the live detail when it has arrived: a pane opened from a cross-reference
-  // starts from a PLACEHOLDER row whose url is synthesized, and GitHub's own url
-  // is the one worth putting on the clipboard.
-  const [copied, setCopied] = useState(false)
+  // to the clipboard). The row swaps to a tick or a warning for a moment as the
+  // result confirmation. Reads the URL off the live detail when it has arrived: a
+  // pane opened from a cross-reference starts from a PLACEHOLDER row whose url is
+  // synthesized, and GitHub's own url is the one worth putting on the clipboard.
+  //
+  // Goes through `copyToClipboard` rather than `navigator.clipboard` directly.
+  // The async Clipboard API exists only in a SECURE CONTEXT, so on a plain-http
+  // origin `navigator.clipboard` is undefined and the bare call throws before
+  // anything reaches the clipboard; the helper falls back to a textarea +
+  // `execCommand`, which works there.
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Bumped by anything that makes an IN-FLIGHT copy's result no longer this
+  // row's answer: a second press, the pane moving to another issue, unmount. The
+  // clipboard write is awaited, so without this a copy that settles late would
+  // report a tick for the URL the pane has already left behind.
+  const copyAttemptRef = useRef(0)
+  useEffect(() => () => {
+    copyAttemptRef.current += 1
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+  }, [])
+  useEffect(() => {
+    copyAttemptRef.current += 1
+    setCopyStatus('idle')
+  }, [issue.number])
   const copyLink = async () => {
+    const attempt = ++copyAttemptRef.current
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    let next: 'copied' | 'failed'
     try {
-      await navigator.clipboard.writeText(detail?.url ?? issue.url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      await copyToClipboard(detail?.url ?? issue.url)
+      next = 'copied'
     } catch {
-      /* clipboard unavailable (blocked / insecure context) — no-op */
+      // Reported, never swallowed: a row that does nothing on press is
+      // indistinguishable from a copy that worked, so the URL is silently
+      // missing from the clipboard at the moment it is about to be pasted.
+      next = 'failed'
     }
+    if (attempt !== copyAttemptRef.current) return
+    setCopyStatus(next)
+    copyTimerRef.current = setTimeout(() => setCopyStatus('idle'), 1500)
   }
+  const copyLabel = copyStatus === 'copied'
+    ? i18nT('apps.issueRadar.components.issueDetail.link_copied')
+    : copyStatus === 'failed'
+      ? i18nT('apps.issueRadar.components.issueDetail.copy_failed')
+      : i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')
 
   // refreshRef lets the header refresh button force a server re-fetch
   // (?refresh=1) through react-query's normal refetch(), without a second
@@ -780,9 +814,15 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                     that closes the menu on select would take that confirmation
                     off screen the instant it was earned. */}
                 <DropdownMenuItem onSelect={(e) => { e.preventDefault(); copyLink() }}>
-                  {copied
-                    ? <><Check size={13} className="shrink-0 text-ok" /><span>{i18nT('apps.issueRadar.components.issueDetail.link_copied')}</span></>
-                    : <><Copy size={13} className="shrink-0 text-muted" /><span>{i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}</span></>}
+                  {copyStatus === 'copied'
+                    ? <Check size={13} className="shrink-0 text-ok" aria-hidden="true" />
+                    : copyStatus === 'failed'
+                      ? <AlertCircle size={13} className="shrink-0 text-danger" aria-hidden="true" />
+                      : <Copy size={13} className="shrink-0 text-muted" aria-hidden="true" />}
+                  {/* One span across all three states so the swap lands as an
+                      UPDATE to a live region a screen reader is already on,
+                      rather than three alternating nodes. */}
+                  <span aria-live="polite">{copyLabel}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem disabled={detailQuery.isFetching} onSelect={refreshDetail}>
                   <RefreshCw size={13} className={`shrink-0 text-muted ${detailQuery.isFetching ? 'animate-spin' : ''}`} />

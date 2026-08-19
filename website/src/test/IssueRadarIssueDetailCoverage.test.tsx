@@ -231,7 +231,13 @@ beforeEach(() => {
   api.issueAi.mockResolvedValue(ai())
 })
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  // The fallback test installs this; the DOM under test has no native
+  // execCommand, and a leaked stub would let a later copy succeed for the wrong
+  // reason.
+  delete (document as unknown as { execCommand?: unknown }).execCommand
+})
 
 /** Opens the detail toolbar's overflow menu.
  *
@@ -331,18 +337,69 @@ describe('IssueDetail — header and first paint', () => {
     )
   })
 
-  it('survives a clipboard that refuses the write', async () => {
+  it('drops a copy that settles after the pane moved to another issue', async () => {
+    let settle: () => void = () => {}
+    writeText.mockImplementation(() => new Promise<void>((res) => { settle = () => res() }))
+    const view = renderPane()
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
+
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Copy link to this issue' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+
+    // The pane instance is REUSED across issues, so a write still in flight when
+    // the subject changes carries a URL this row no longer points at.
+    view.rerender(
+      <QueryClientProvider client={view.qc}>
+        <IssueDetail issue={{ ...ROW, number: 12, url: 'https://github.com/kirodotdev/Kiro/issues/12' }} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(api.issueDetail).toHaveBeenCalledTimes(2))
+
+    settle()
+    // Drain the resolved write's continuation and the state flush it would cause.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    // No tick: it would vouch for the issue the pane has already left.
+    expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: 'Copy link to this issue' })).toBeTruthy()
+  })
+
+  it('copies through the textarea fallback when the async clipboard write fails', async () => {
+    // What a plain-http origin costs: the async Clipboard API is gated on a
+    // SECURE CONTEXT, so reaching for it directly yields nothing on the
+    // clipboard. Going through the shared helper buys the textarea +
+    // execCommand path, which does work there.
+    writeText.mockRejectedValue(new Error('blocked'))
+    const execCommand = vi.fn(() => true)
+    ;(document as unknown as { execCommand: unknown }).execCommand = execCommand
+    renderPane()
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
+
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Copy link to this issue' }))
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+    // The URL did reach the clipboard, so the row is entitled to confirm it.
+    expect(await screen.findByRole('menuitem', { name: 'Link copied' })).toBeTruthy()
+  })
+
+  it('reports a copy it could not make instead of going quiet', async () => {
+    // Both paths dead: the API refuses and there is no execCommand behind it.
     writeText.mockRejectedValue(new Error('blocked'))
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
     await openOverflow()
-    const copy = screen.getByRole('menuitem', { name: 'Copy link to this issue' })
-    await userEvent.click(copy)
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Copy link to this issue' }))
     await waitFor(() => expect(writeText).toHaveBeenCalled())
-    // No tick — the copy did not happen, so nothing claims it did.
+
+    // A row that changed nothing on press is indistinguishable from a copy that
+    // worked, so the URL would be silently missing at paste time.
+    const failed = await screen.findByRole('menuitem', { name: 'Copy failed' })
+    expect(failed.querySelector('.text-danger')).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()
-    expect(screen.getByRole('menuitem', { name: 'Copy link to this issue' })).toBeTruthy()
   })
 
   it('forces a server re-read from the refresh button and the AI regenerate', async () => {

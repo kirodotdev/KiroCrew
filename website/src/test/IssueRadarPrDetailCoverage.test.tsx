@@ -205,7 +205,13 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  // The fallback test installs this; the DOM under test has no native
+  // execCommand, and a leaked stub would let a later copy succeed for the wrong
+  // reason.
+  delete (document as unknown as { execCommand?: unknown }).execCommand
+})
 
 /** Opens the detail toolbar's overflow menu.
  *
@@ -542,7 +548,53 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
     )
   })
 
-  it('stays quiet when the clipboard is unavailable', async () => {
+  it('drops a copy that settles after the pane moved to another subject', async () => {
+    let settle: () => void = () => {}
+    writeText.mockImplementation(() => new Promise<void>((res) => { settle = () => res() }))
+    const view = renderPane()
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy())
+
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+
+    // The pane instance is REUSED, so a write still in flight when the subject
+    // changes carries a URL this row no longer points at.
+    view.rerender(
+      <QueryClientProvider client={view.qc}>
+        <PrDetail pull={{ ...ROW, number: 8, url: 'https://github.com/kirodotdev/Kiro/pull/8' }} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(api.pullDetail).toHaveBeenCalledTimes(2))
+
+    settle()
+    // Drain the resolved write's continuation and the state flush it would cause.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /copy link/i })).toBeTruthy()
+  })
+
+  it('copies through the textarea fallback when the async clipboard write fails', async () => {
+    // A plain-http origin has no usable async Clipboard API (it is gated on a
+    // secure context), so the shared helper's textarea + execCommand path is
+    // what actually puts the URL on the clipboard there.
+    writeText.mockRejectedValue(new Error('blocked'))
+    const execCommand = vi.fn(() => true)
+    ;(document as unknown as { execCommand: unknown }).execCommand = execCommand
+    renderPane()
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy())
+
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
+
+    await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+    expect(await screen.findByRole('menuitem', { name: 'Link copied' })).toBeTruthy()
+  })
+
+  it('reports a copy it could not make instead of going quiet', async () => {
+    // Both paths dead: the API refuses and there is no execCommand behind it.
     writeText.mockRejectedValue(new Error('no clipboard permission'))
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy())
@@ -550,7 +602,9 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
     await openOverflow()
     await userEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
     await waitFor(() => expect(writeText).toHaveBeenCalled())
-    // No tick — the copy did not happen, so nothing claims it did.
+
+    const failed = await screen.findByRole('menuitem', { name: 'Copy failed' })
+    expect(failed.querySelector('.text-danger')).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()
   })
 

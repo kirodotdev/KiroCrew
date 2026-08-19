@@ -317,6 +317,7 @@
           "as_completed": "as completed",
           "as_not_planned": "as not planned",
           "commented": "commented",
+          "copy_failed": "Copy failed",
           "issue": "Issue",
           "link_copied": "Link copied",
           "opened_this_issue": "opened this issue",
@@ -343,6 +344,7 @@
         "prDetail": {
           "check_status_unavailable": "Check status unavailable",
           "commented": "commented",
+          "copy_failed": "Copy failed",
           "copy_link_to_this": "Copy link to this {{subject}}",
           "couldnt_load_activity": "Couldn't load activity: {{error}}",
           "link_copied": "Link copied",
