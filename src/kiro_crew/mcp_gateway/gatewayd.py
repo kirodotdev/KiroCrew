@@ -1191,11 +1191,16 @@ def _declared_env_for_private_backend(pool_key: PoolKey) -> dict[str, str]:
     another session's backend. Here the declaring session and the only consuming
     session are the same one.
 
-    Nor is this gated on ``forward_declared_env``: that switch exists to let an
-    operator accept the co-tenancy hazard for POOLED backends. Withholding the
-    env here would instead be a regression — the same server spawned without a
-    gateway gets its declared env from the agent runtime, so a private backend
-    that silently dropped it would break servers that work today.
+    Nor is this gated on ``forward_declared_env``: post-flip that switch is an
+    escape hatch for disabling forwarding fleet-wide, not a gate on accepting a
+    co-tenancy hazard — the hazard it once gated is closed by construction for
+    pooled backends (only keys inside ``effective_env_hash`` are forwarded, and
+    the coherence gate re-checks the sidecar against that hash at spawn). Note
+    the per-server opt-out is membership in ``mcp_gateway.stub_servers``, which is
+    the only stub trigger; this flag is the coarser fleet-wide spelling.
+    Withholding the env here would instead be a regression — the same server
+    spawned without a gateway gets its declared env from the agent runtime, so a
+    private backend that silently dropped it would break servers that work today.
 
     The coherence gate still applies: a sidecar edited after this session
     started yields ``{}`` rather than values the running stub never hashed.

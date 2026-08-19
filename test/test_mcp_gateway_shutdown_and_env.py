@@ -287,6 +287,64 @@ class TestDeclaredEnvForwarding:
             ),
         )
 
+    def test_the_eligibility_count_matches_the_forwarder_key_for_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Drift guard for the two-places-must-agree contract.
+
+        ``_withheld_env_count`` claims to mirror
+        ``gatewayd._declared_non_secret_env``. Pin it against the REAL forwarder
+        rather than a reproduction of its filter chain: a filter added to the
+        forwarder and not to the classifier has to fail this test, which it
+        cannot do if the test re-implements the chain it is meant to police.
+
+        Load-bearing because of the default flip: with forwarding off the
+        classifier short-circuits on ``len(entry_env)`` and never consults the
+        forwarder's rules, so only the ON path can drift.
+        """
+        from kiro_crew.mcp_gateway import gatewayd
+        from kiro_crew.mcp_gateway.hashing import is_secret_env_key
+        from kiro_crew.mcp_gateway.rewriter import _withheld_env_count
+
+        declared = {
+            "LOG_LEVEL": "debug",
+            "REGION": "ap-southeast-2",
+            # A declared PATH forwards: the rewriter already RESOLVED the command
+            # through it (``spec_env_path``), so stripping it at spawn would run
+            # the resolved binary under a different search path than resolution
+            # assumed. The MCP probe path makes the same exemption explicitly.
+            "PATH": "/opt/toolbox/bin:/usr/bin",
+            # Loader/interpreter keys DO forward today. Asserted rather than
+            # omitted so the policy is visible and any future change to it is a
+            # deliberate edit to this test, not a silent behaviour change.
+            "PYTHONPATH": "/opt/x",
+            "LD_PRELOAD": "/usr/lib/legit.so",
+            # Excluded from effective_env_hash -> the hash is non-injective over
+            # these, so co-tenants may disagree and no single correct value
+            # exists in a shared backend. Never forwarded.
+            "OAUTH_TOKEN": "rotating",
+            # In the hash, but the daemon scrubs credentials from its own env, so
+            # forwarding must not re-introduce them.
+            "AWS_ACCESS_KEY_ID": "cred",
+            "SSH_AUTH_SOCK": "/tmp/sock",
+        }
+        forwarded = gatewayd._declared_non_secret_env(
+            self._write_sidecar(
+                tmp_path, monkeypatch, declared, _pool_key(env_hash="unused")
+            )
+        )
+
+        withheld = _withheld_env_count(declared, True)
+        assert len(forwarded) + withheld == len(declared), (
+            f"forwarded={sorted(forwarded)} withheld={withheld} "
+            f"declared={sorted(declared)} -- the classifier and the forwarder "
+            "disagree about at least one key"
+        )
+        assert sorted(forwarded) == [
+            "LD_PRELOAD", "LOG_LEVEL", "PATH", "PYTHONPATH", "REGION",
+        ]
+        assert not any(is_secret_env_key(k) for k in forwarded)
+
     def test_forwards_non_secret_declared_env(self, tmp_path, monkeypatch):
         key = _pool_key(server="builder-mcp", agent="gpu-dev")
         key = self._write_sidecar(
@@ -509,24 +567,49 @@ class TestMalformedDeclaredEnv:
 
 
 class TestForwardDeclaredEnvFlag:
-    def test_defaults_to_off(self):
+    def test_defaults_to_on(self):
+        """Absence means forward.
+
+        The forwarded set is a strict subset of the hashed set and gatewayd
+        re-hashes the sidecar at spawn, forwarding nothing on mismatch -- so a
+        forwarded key is one every co-tenant of that backend declared
+        identically. With the flag off, declaring a single ordinary key costs the
+        whole server its pooling, on the strength of a disagreement that check
+        has already ruled out.
+        """
         from kiro_crew.config.loader import McpGatewayConfig
 
-        assert McpGatewayConfig().forward_declared_env is False
+        assert McpGatewayConfig().forward_declared_env is True
 
-    def test_string_false_does_not_enable_forwarding(self):
-        """``bool("false")`` is True, so a hand-edited string value would
-        silently ENABLE credential-adjacent forwarding. The parse must
-        type-check, not coerce."""
+    def test_an_absent_key_takes_the_on_default(self):
+        cfg = _load_config_from_dict({"mcp_gateway": {}})
+        assert cfg.mcp_gateway.forward_declared_env is True
+
+    def test_string_false_is_not_read_as_a_boolean(self):
+        """``bool("false")`` is True, so a hand-edited string must not decide this.
+
+        The schema type-checks before the parse and strips a non-boolean, so the
+        dataclass default applies. With the default ON that means a typo now
+        resolves to forwarding rather than to not-forwarding -- a deliberate
+        consequence of the flip, and a safe one: the forwarded set is a strict
+        subset of the hashed set and the spawn-time hash check refuses anything
+        the co-tenants did not agree on. What a typo can no longer do is silently
+        cost a server its pooling.
+        """
         cfg = _load_config_from_dict({"mcp_gateway": {"forward_declared_env": "false"}})
-        assert cfg.mcp_gateway.forward_declared_env is False
+        assert cfg.mcp_gateway.forward_declared_env is True
 
-    def test_non_bool_values_fail_closed(self):
-        for bad in ("true", 1, "yes", [], {}, None):
+    def test_non_bool_values_resolve_to_the_default(self):
+        for bad in ("true", "false", 1, 0, "yes", [], {}, None):
             cfg = _load_config_from_dict(
                 {"mcp_gateway": {"forward_declared_env": bad}}
             )
-            assert cfg.mcp_gateway.forward_declared_env is False, bad
+            assert cfg.mcp_gateway.forward_declared_env is True, bad
+
+    def test_a_real_false_still_turns_it_off(self):
+        """The escape hatch for a server that must not share a backend."""
+        cfg = _load_config_from_dict({"mcp_gateway": {"forward_declared_env": False}})
+        assert cfg.mcp_gateway.forward_declared_env is False
 
     def test_real_true_still_enables(self):
         cfg = _load_config_from_dict({"mcp_gateway": {"forward_declared_env": True}})

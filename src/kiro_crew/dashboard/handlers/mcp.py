@@ -18,7 +18,11 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.agent import _atomic_json_write, kiro_agents_dir_path, rebuild_agent_config
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_servers
+from kiro_crew.config.loader import (
+    FORWARD_DECLARED_ENV_DEFAULT,
+    KiroCrewConfig,
+    _resolve_stub_servers,
+)
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import emit_env
@@ -2894,11 +2898,17 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                     # the overlay wins, because that is what the rewriter will see.
                     # Taking the base value alone would let a base ``true`` plus an
                     # overlay ``false`` report a stub whose backend the rewriter
-                    # then leaves direct.
+                    # then leaves direct. The absent-key fallback comes from the
+                    # config field's own default (FORWARD_DECLARED_ENV_DEFAULT),
+                    # not a literal: this reader and the rewriter must agree, or
+                    # the batch skips servers the rewrite pools perfectly well.
                     forward_declared_env=bool(
                         overlay["forward_declared_env"]
                         if "forward_declared_env" in overlay
-                        else section.get("forward_declared_env", False)
+                        else section.get(
+                            "forward_declared_env",
+                            FORWARD_DECLARED_ENV_DEFAULT,
+                        )
                     ),
                 )
                 resolved["skipped"] = skipped

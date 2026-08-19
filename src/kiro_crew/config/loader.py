@@ -4363,13 +4363,16 @@ class McpGatewayConfig:
         ),
     )
     forward_declared_env: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Forward Declared Env",
             "Apply a pooled server's declared env (mcpServers.<name>.env) to the "
             "shared backend. Only non-secret keys are forwarded — rotating-secret "
-            "and credential-prefixed keys are never applied to a shared backend. "
-            "Default False — opt-in.",
+            "and credential-prefixed keys are never applied to a shared backend, "
+            "and gatewayd re-hashes the sidecar at spawn and forwards nothing on "
+            "mismatch, so every forwarded key is one all co-tenants of that "
+            "backend declared identically. Turn it OFF to make an env-declaring "
+            "server run unwrapped (no stub, no pooling) instead.",
         ),
     )
     socket_path: str = field(
@@ -4467,6 +4470,19 @@ class McpGatewayConfig:
             "Env override: KIROCREW_MCP_SPILL_THRESHOLD.",
         ),
     )
+
+
+# The forwarding default assumed when config omits
+# ``mcp_gateway.forward_declared_env``. Read from the dataclass default so the
+# field and every parse-site fallback cannot drift apart: this default is read
+# in three places (the field, the loader's ``_safe_bool`` fallback, and the
+# dashboard stub-batch reader), and a reader disagreeing with the field makes the
+# batch skip servers the rewrite pools perfectly well.
+FORWARD_DECLARED_ENV_DEFAULT = bool(
+    McpGatewayConfig.__dataclass_fields__[  # type: ignore[arg-type]
+        "forward_declared_env"
+    ].default
+)
 
 
 @dataclass
@@ -6657,12 +6673,24 @@ class KiroCrewConfig:
                 # ``bool("false")`` is True. The write path is where an opt-out is
                 # actually enforced: the endpoint rejects any non-boolean body.
                 apps_enabled=_safe_bool(mcp_gateway_data.get("apps_enabled", True), True),
-                # Default False AND type-checked: ``bool("false")`` is True, so a
-                # hand-edited string would silently ENABLE forwarding. A
-                # malformed value must mean "do not apply declared env to a
-                # shared backend", never the reverse.
+                # ON by default. The forwarded set is a strict subset of the
+                # hashed set and gatewayd re-hashes the sidecar at spawn,
+                # forwarding nothing on mismatch, so a forwarded key is one every
+                # co-tenant of that backend declared identically. With it off, one
+                # ordinary declared key costs the whole server its pooling.
+                #
+                # Both arguments are True on purpose. A malformed value never
+                # reaches this call: ``config.validation`` type-checks first and
+                # ``_apply_field_default`` strips a non-boolean so the dataclass
+                # default applies, which is why the log says "using default". The
+                # fallback here is defence in depth for a bypassed validator, and
+                # giving it a different answer than the schema would only put two
+                # disagreeing defaults in the file.
                 forward_declared_env=_safe_bool(
-                    mcp_gateway_data.get("forward_declared_env", False), False
+                    mcp_gateway_data.get(
+                        "forward_declared_env", FORWARD_DECLARED_ENV_DEFAULT
+                    ),
+                    FORWARD_DECLARED_ENV_DEFAULT,
                 ),
                 socket_path=str(mcp_gateway_data.get("socket_path", "")),
                 overlay_dir=str(mcp_gateway_data.get("overlay_dir", "")),
