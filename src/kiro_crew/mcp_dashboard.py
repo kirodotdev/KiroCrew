@@ -542,6 +542,22 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     for r in rows:
         if str(r.get("key") or "") == slot:
             return str(r.get("app") or "")
+    # A slot bound to a channel or cron session runs its turns under
+    # ``linked_session_key`` ("when set, _run_chat uses this as session key" --
+    # ``DashboardState``), so the caller presents THAT key and the match above
+    # cannot find it. The rows serialize the field, so an app-owned linked slot
+    # would otherwise read as unscoped here even though its owner is on record.
+    #
+    # POSITIVE matches only: a channel- or cron-born row is created with no
+    # ``app``, so returning on an ownerless match would answer "" (the person)
+    # for a delegated caller that the refusal below would otherwise fail closed
+    # on -- weakening this layer instead of extending it.
+    for r in rows:
+        if str(r.get("linked_session_key") or "") == caller_key:
+            linked_app = str(r.get("app") or "")
+            if linked_app:
+                return linked_app
+            break
     if caller_key.startswith(_DELEGATED_CALLER_PREFIXES):
         return None
     if caller_key.startswith("dashboard:"):

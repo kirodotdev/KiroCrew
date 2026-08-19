@@ -15,6 +15,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.token_auth import derive_caller_app
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -547,22 +548,16 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
 def _effective_request_app(state: DashboardState, request: web.Request) -> str:
     """App identity to enforce ownership against, or "" for the dashboard user.
 
-    Two transports reach these routes with app identity carried differently:
+    Reads the claim ``token_auth_middleware`` publishes, and re-derives through
+    the SAME shared rule (``token_auth.derive_caller_app``) when it is absent.
 
-    * An **app token** — the middleware validates it and publishes the name as
-      ``request["app"]``.
-    * The **managed MCP set** — it authenticates with the internal secret,
-      which carries no app claim at all, so ``request["app"]`` is empty. An app
-      agent granted ``@kirocrew-dashboard`` would therefore arrive here
-      indistinguishable from the dashboard user and be allowed to mutate a
-      session it does not own.
-
-    The secret proves the call came from inside, not who made it, so the
-    identity is taken from the authenticated CALLING SESSION instead: the
-    ``X-Session-Key`` header names the caller's slot, and a slot created by an
-    app carries that app in ``_app`` (App Kit §5.2). Falling back to the caller
-    rather than trusting the transport keeps app isolation intact on a path the
-    app-token check cannot see.
+    This route used to carry its own copy of the derivation, because the
+    internal-secret transport (the managed MCP set) carries no app claim of its
+    own and this was the only route compensating. The middleware now derives it
+    once for every route on that transport (issue #3690); the re-derivation here
+    is defense-in-depth for a caller that reaches the handler without having
+    passed that branch, and it calls the shared function rather than restating
+    the rule so the two can never disagree.
 
     Never read from request BODY or tool arguments — a caller that could name
     its own scope could name someone else's.
@@ -570,11 +565,11 @@ def _effective_request_app(state: DashboardState, request: web.Request) -> str:
     declared = request.get("app", "")
     if declared:
         return str(declared)
-    sk = request.headers.get("X-Session-Key", "").strip()
-    if not sk or sk == "dashboard:ui":
-        return ""
-    caller = state._slots.get(sk.split(":", 1)[-1] if ":" in sk else sk)
-    return str(getattr(caller, "_app", "") or "") if caller else ""
+    app_name = derive_caller_app(
+        getattr(state, "_slots", None),
+        request.headers.get("X-Session-Key", ""),
+    )
+    return app_name
 
 
 async def api_chat_slot_folder(request: web.Request) -> web.Response:

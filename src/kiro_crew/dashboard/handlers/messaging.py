@@ -46,6 +46,7 @@ from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     DashboardState,
 )
+from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
@@ -920,9 +921,11 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # reaching it could impersonate system notifications and bypass its app
     # rate limits / declared-channel checks. Apps publish through
     # POST /api/notifications where their
-    # token-verified ``app:<name>`` source is enforced. The middleware sets
-    # ``request["app"]`` only on app-token auth; the internal-secret path
-    # (the MCP tool) never does.
+    # token-verified ``app:<name>`` source is enforced. The middleware publishes
+    # ``request["app"]`` on app-token auth and, since issue #3690, also on the
+    # internal-secret path whenever the calling session resolves to an app — so
+    # this check now bites for an app agent arriving over MCP too, which it
+    # could not before.
     if request.get("app"):
         # Permission denial on a security boundary — audited before the
         # response (backend-security-controls: every denial emits SEL).
@@ -950,6 +953,32 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
             error="internal-secret authentication required (cookie callers forbidden)",
         )
         return web.json_response({"error": "internal-secret authentication required"}, status=403)
+    # A caller whose own slot is GONE cannot be attributed (issue #3690). The
+    # app-token check above refuses an app by name, but a tab closed while this
+    # call was in flight takes the ``_app`` that check reads with it, so an
+    # app-owned session going through that race would publish source="system"
+    # here as though it were the person. Absence of an app claim is only
+    # trustworthy for a caller that never had a slot (a Slack thread, a cron the
+    # person owns); a ``dashboard:`` key names one, so a missing slot is a
+    # failure to attribute rather than proof of the dashboard user. Refused HERE
+    # rather than in the middleware: a popped slot no longer says whose tab it
+    # was, so refusing centrally would also refuse the person's own in-flight
+    # calls on every internal route. This route refuses because of what it
+    # publishes -- ``source="system"`` on the system.agent channel.
+    if caller_names_a_missing_slot(
+        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
+    ):
+        _sel().log_api_access(
+            caller=str(request.headers.get("X-Session-Key") or ""),
+            operation="notification_agent_push",
+            outcome="denied",
+            source="notifications_api",
+            error="calling session's slot is gone; cannot attribute a system publish",
+        )
+        return web.json_response(
+            {"error": "calling session not found", "code": "caller_session_missing"},
+            status=403,
+        )
     # Bound the body BEFORE decoding, mirroring the app push endpoint: without
     # this the strict-internal route inherits the server-wide client_max_size,
     # and a large JSON object would be buffered and decoded on the event-loop
