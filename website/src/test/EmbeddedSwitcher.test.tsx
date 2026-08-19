@@ -147,4 +147,41 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     })
     expect(store.getState().instances.host).toBeNull()
   })
+
+  it('keeps the pane\'s own focus mode when an older host sends a model without the field', async () => {
+    // Version skew, host side: an older host omits `focusMode` from its model
+    // AND ignores the pane's echoed `mc-set-focus-mode`. Coercing that absence
+    // to `false` would snap a user-toggled pane back off on every host
+    // re-broadcast. Absence must read as "no opinion"; a host that DOES send
+    // the field is still adopted.
+    const { focusModeEnabled, setFocusModeEnabled, __resetFocusMode } = await import('../hooks/useFocusMode')
+    __resetFocusMode()
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    renderWithProviders(<EmbeddedHostBridge />, { store })
+    try {
+      setFocusModeEnabled(true, { echo: false })
+
+      // Old host: model carries no focusMode — the pane's toggle survives.
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: window.parent,
+          data: { type: 'mc-host-model', ...model() },
+        }))
+      })
+      await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
+      expect(focusModeEnabled()).toBe(true)
+
+      // New host: an explicit false IS an opinion and is adopted.
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: window.parent,
+          data: { type: 'mc-host-model', ...model({ focusMode: false }) },
+        }))
+      })
+      await waitFor(() => expect(focusModeEnabled()).toBe(false))
+    } finally {
+      __resetFocusMode()
+    }
+  })
 })

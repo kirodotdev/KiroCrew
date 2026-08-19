@@ -164,6 +164,11 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'cycle-prev-approval', key: 'v', alt: true, shift: true, group: 'actions' },
   { id: 'cycle-model', key: 's', alt: true, shift: true, group: 'actions' },
   { id: 'cycle-prev-model', key: 'x', alt: true, shift: true, group: 'actions' },
+  // Deliberately not a macOS dead key. Option+E/I/U/N compose an accent, and
+  // keydown.preventDefault() cannot cancel a composed character (see
+  // suppressNextInputRef) — this chord fires from inside the composer, so it
+  // must not be able to leave one behind.
+  { id: 'toggle-focus-mode', key: 'm', alt: true, shift: true, group: 'actions' },
   { id: 'optimize-prompt', key: 'Enter', meta: true, shift: true, group: 'actions' },
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention.
@@ -240,6 +245,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'cycle-prev-approval': 'hooks.useKeyboardShortcuts.previous_approval_mode',
   'cycle-model': 'hooks.useKeyboardShortcuts.cycle_model',
   'cycle-prev-model': 'hooks.useKeyboardShortcuts.previous_model',
+  'toggle-focus-mode': 'hooks.useKeyboardShortcuts.toggle_focus_mode',
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
@@ -514,10 +520,11 @@ interface UseKeyboardShortcutsOpts {
   onCyclePrevApprovalMode?: () => void
   onCycleModel?: () => void
   onCyclePrevModel?: () => void
+  onToggleFocusMode?: () => void
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const appStore = useAppStore()
@@ -683,6 +690,12 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Alt+Shift+X: Previous model
     if (e.shiftKey && code === 'KeyX') { e.preventDefault(); onCyclePrevModel?.(); return }
 
+    // Alt+Shift+M: Toggle focus mode. Sits with the other Alt+Shift chords, i.e.
+    // BEFORE the isInput gate, on purpose — hiding the chrome is something you
+    // reach for mid-sentence in the composer, so a bail-out there would make the
+    // chord dead exactly where it is wanted.
+    if (e.shiftKey && code === 'KeyM') { e.preventDefault(); onToggleFocusMode?.(); return }
+
     // Alt+Enter: Focus text input — works even from other inputs
     if (code === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -765,7 +778,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, disabled, enabled, ctrlDigits])
+  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, disabled, enabled, ctrlDigits])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while

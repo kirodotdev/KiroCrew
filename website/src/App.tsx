@@ -26,6 +26,10 @@ import { useIsMobile } from './hooks/useIsMobile'
 import { useSidePanelDock } from './hooks/useSidePanelDock'
 import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
+import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET } from './hooks/useFocusMode'
+import { computeHeaderDragGaps, type DragGap } from './lib/dragGaps'
+import { isEmbeddedPane } from './lib/embedded'
+import { useHoverIntent } from './hooks/useHoverIntent'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
 import { recordSessionStart, recordEvent } from './rum'
@@ -35,7 +39,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Fullscreen, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -99,7 +103,7 @@ import { getThemeBranding } from './themeBranding'
 import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useKeyboardShortcuts, IS_MAC } from './hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useCommandPalette } from './hooks/useCommandPalette'
 import { useProvider } from './providers/context'
@@ -788,6 +792,7 @@ function NotificationsBellButton() {
         onClick={() => { if (open) closePanel(); else openPanel() }}
         title={unacked.length > 0 ? `${unacked.length} notification${unacked.length === 1 ? '' : 's'}` : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
+        aria-haspopup="dialog"
         aria-expanded={open}
       >
         <Bell size={15} />
@@ -1175,6 +1180,168 @@ export default function App() {
     return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
+  // Focus mode: the top bar and nav rail leave the shell grid and become
+  // edge-triggered hover overlays, so the active surface fills the window.
+  // Desktop only — on mobile the top bar carries the ONLY route back to
+  // navigation (the hamburger), so hiding it there strands the user.
+  const { enabled: focusMode, toggle: toggleFocusMode } = useFocusMode()
+  const focusActive = focusMode && !isMobile
+  // Peek overlays. Edge strips are deliberate targets (the pointer has to reach
+  // the very edge), so the open delay is much shorter than the hover-card
+  // default — a 320ms wait on an intentional gesture reads as lag.
+  const topPeekTrigger = useRef<HTMLDivElement | null>(null)
+  const topPeekSurface = useRef<HTMLElement | null>(null)
+  const railPeekTrigger = useRef<HTMLDivElement | null>(null)
+  const railPeekSurface = useRef<HTMLElement | null>(null)
+  const topPeek = useHoverIntent({
+    enabled: focusActive, openMs: 120, closeMs: 260,
+    triggerRef: topPeekTrigger, surfaceRef: topPeekSurface,
+    // The revealed header doubles as the window-drag surface, and a drag region
+    // eats pointer events before hit-testing — so closing must be POSITIONAL:
+    // only a mousemove observed below the header band closes the bar, and event
+    // silence (pointer resting on the draggable empty region, dragging the
+    // window, or off-window) can never hide it. 42 is the header's height (its
+    // inline style below); +6 slack so grazing the band's bottom edge does not
+    // count as departure.
+    departWhen: e => e.clientY > 48,
+  })
+  const railPeek = useHoverIntent({
+    enabled: focusActive, openMs: 120, closeMs: 260,
+    triggerRef: railPeekTrigger, surfaceRef: railPeekSurface,
+    // Positional close, same contract as the top peek: only a mousemove observed
+    // to the RIGHT of the rail band closes it. Needed once edge-slam opening
+    // exists — an overlay opened with the pointer OFF-window has no
+    // enter/leave history for the event-based close to work from. 236 is the
+    // rail track width; +12 slack.
+    departWhen: e => e.clientX > 248,
+  })
+  // Edge-slam reveal: overshooting a trigger straight OUT of the window must
+  // OPEN the overlay, not cancel it (the overshoot fires mouseleave on its way
+  // out, which reads as departure — yet it is the strongest possible statement
+  // of intent, the same gesture that reveals the macOS Dock). `mouseout` with
+  // relatedTarget null is "the pointer left the document"; the event's
+  // coordinates are the last in-window sample, so a small clientY says it left
+  // through the top and a small clientX through the left. 20px is wider than the
+  // 10px trigger strips on purpose: a slam is coarse. Corner exits prefer the
+  // top bar (clientY checked first).
+  //
+  // Applies on every surface, including embedded instance panes (iframes with
+  // no Electron bridge) and browser tabs. In a browser a trip to the tab strip
+  // or URL bar also exits through the top and pops the header; that false
+  // positive is transient (the header closes as soon as the pointer re-enters
+  // below the band) and is accepted in exchange for the slam working uniformly.
+  useEffect(() => {
+    if (!focusActive) return
+    const onOut = (e: MouseEvent) => {
+      if (e.relatedTarget !== null) return
+      if (e.clientY <= 20) topPeek.openNow()
+      else if (e.clientX <= 20) railPeek.openNow()
+    }
+    document.addEventListener('mouseout', onOut)
+    return () => document.removeEventListener('mouseout', onOut)
+  }, [focusActive, topPeek.openNow, railPeek.openNow])
+  // A header-owned popover keeps the header on screen.
+  //
+  // The instance switcher's menu is portaled to document.body (Radix), so moving
+  // the pointer into it reads as leaving BOTH the trigger strip and the header:
+  // the close grace elapses, the header slides away, and the menu's anchor moves
+  // out from under it while the user is still using it.
+  //
+  // The signal is `aria-haspopup` AND `aria-expanded="true"`, not aria-expanded
+  // alone: the readout capsule's connection dot is an inline expand/collapse that
+  // ships `aria-expanded="true"` by default with nothing popped open, so an
+  // aria-expanded-only query would pin the header permanently from first paint.
+  //
+  // CONTRACT for header controls: any popover anchored in the header MUST render
+  // `aria-haspopup` on its trigger (Radix primitives do; hand-rolled ones must
+  // add it) — without it the header slides away under the open popover in focus
+  // mode. That is also the accessible-markup the control owes a screen reader,
+  // so the heuristic deliberately rides on it rather than on a bespoke attribute.
+  const [headerPopoverOpen, setHeaderPopoverOpen] = useState(false)
+  useEffect(() => {
+    if (!focusActive) { setHeaderPopoverOpen(false); return }
+    const header = topPeekSurface.current
+    if (!header) return
+    const read = () => setHeaderPopoverOpen(!!header.querySelector('[aria-haspopup][aria-expanded="true"]'))
+    read()
+    // childList as well as the attribute: a trigger can be mounted already-open
+    // (or unmounted while open), which an attribute-only filter never sees.
+    const mo = new MutationObserver(read)
+    mo.observe(header, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded'] })
+    return () => mo.disconnect()
+  }, [focusActive])
+  // Is the dashboard header on screen right now? ONE fact, because the two
+  // pieces of Electron chrome that cannot be reached from the DOM both follow it
+  // and must not disagree: the native macOS traffic lights (AppKit views painted
+  // at a window coordinate) and the injected 42px window-drag bar.
+  const topChromeShown = topPeek.open || headerPopoverOpen
+  // An embedded pane cannot reach the host window's chrome itself: it is a
+  // cross-origin iframe with no preload, so the native traffic lights and the
+  // injected drag bar are unreachable from here. Relay the state up and let the
+  // host apply it — which is what makes the lights appear over a PANE's peeked
+  // header, not just the local one.
+  useEffect(() => {
+    if (!isEmbeddedPane()) return
+    try {
+      // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+      window.parent?.postMessage({ type: 'mc-focus-chrome', v: 1, on: !focusActive || topChromeShown }, '*')
+    } catch {
+      /* no parent / cross-origin restriction — the next change re-posts */
+    }
+  }, [focusActive, topChromeShown])
+  const focusChromeVisible = useFocusChromeVisible()
+  // Control-free spans of the LOCAL header's band, for the macOS drag strips
+  // below — the same geometry a remote pane relays via mc-drag-gaps, computed
+  // directly since the local header lives in this document. Measured when the
+  // header is revealed (its controls are laid out by then; the slide is a
+  // transform, which does not move layout rects).
+  const [localHeaderDragGaps, setLocalHeaderDragGaps] = useState<DragGap[]>([])
+  useEffect(() => {
+    if (!(focusActive && isMacElectron && topChromeShown)) { setLocalHeaderDragGaps([]); return }
+    const header = topPeekSurface.current
+    if (!header) return
+    const measure = () => setLocalHeaderDragGaps(computeHeaderDragGaps(header, window.innerWidth))
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [focusActive, topChromeShown])
+  useEffect(() => {
+    // The drag bar reads these classes (see the #electron-drag-bar rules in
+    // electron/main.js). Left at 42px while the header is hidden it is a drag
+    // region over the content focus mode just reclaimed: a drag region is
+    // resolved by the compositor before hit-testing, so the top band stops
+    // answering hover — including the hover that summons the header back. At
+    // 42px while the header IS shown it is what makes the revealed bar draggable
+    // by its empty regions, since the injected rules exempt every control on it.
+    document.body.classList.toggle('mc-focus-mode', focusActive)
+    document.body.classList.toggle('mc-focus-chrome', focusChromeVisible)
+    // The rail's own drop shadow is gated the same way, for the same reason the
+    // header's is: both stay MOUNTED and slide, so a shadow that is always on
+    // paints its tail into the content while the surface itself is off screen.
+    document.body.classList.toggle('mc-focus-rail', railPeek.open)
+    const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+    api?.setFocusModeChrome?.(focusChromeVisible)
+  }, [focusActive, focusChromeVisible, railPeek.open])
+  // Same re-assert on window focus. Button visibility is window state this
+  // renderer does not own, so a fullscreen round-trip or the OS re-showing the
+  // buttons leaves the effect above with nothing to react to. Idempotent.
+  useEffect(() => {
+    if (!focusActive) return
+    const reassert = () => {
+      const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+      api?.setFocusModeChrome?.(focusChromeVisible)
+    }
+    window.addEventListener('focus', reassert)
+    return () => window.removeEventListener('focus', reassert)
+  }, [focusActive, focusChromeVisible])
+  // Unmount-only restore, deliberately separate from the effect above: folding it
+  // into that cleanup would fire on every peek and flicker the buttons back on
+  // between the two commits.
+  useEffect(() => () => {
+    document.body.classList.remove('mc-focus-mode', 'mc-focus-chrome', 'mc-focus-rail')
+    const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+    api?.setFocusModeChrome?.(true)
+  }, [])
   const [sidePanelDock] = useSidePanelDock()
   // Side panel docked to the bottom (desktop only) swaps the shell from a
   // 3-column grid with a full-height right rail to a 2-column grid with an
@@ -1184,6 +1351,25 @@ export default function App() {
   // (the native dashboard); a non-null id means a remote instance's embedded
   // dashboard is shown instead, so the Local pane is hidden (not unmounted).
   const activeInstanceId = useAppSelector(s => s.instances.activeId)
+  // Publish "is the chrome on screen" for the window, but only while no remote
+  // pane is filling it. When one is, the PANE owns the answer and relays it up
+  // (see the mc-focus-chrome handler in InstancesViewport): the peek the user is
+  // driving is the pane's, and this shell is display:none behind it. Two writers,
+  // one active at a time, so they cannot fight over the value.
+  useEffect(() => {
+    if (activeInstanceId !== null) return
+    setFocusChromeVisible(!focusActive || topChromeShown)
+  }, [activeInstanceId, focusActive, topChromeShown])
+  // Re-assert the Electron chrome state when the visible PANE changes. Not because
+  // the answer depends on which pane is showing — it does not — but because
+  // switching hides the local shell without necessarily changing the value above,
+  // so nothing re-sent it and the last send was simply trusted to have stuck. It
+  // had not: the traffic lights came back.
+  useEffect(() => {
+    if (!focusActive) return
+    const api = (window as Window & { electronAPI?: { setFocusModeChrome?: (v: boolean) => void } }).electronAPI
+    api?.setFocusModeChrome?.(focusChromeVisible)
+  }, [activeInstanceId, focusActive, focusChromeVisible])
   // Whether the shell's one-shot entrance animation has already played.
   //
   // The local pane is HIDDEN, not unmounted, while a remote instance tab is
@@ -1430,6 +1616,7 @@ export default function App() {
       .catch(error => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error))))
   }, [dispatch])
   useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
+    onToggleFocusMode: toggleFocusMode,
     onCycleAgent: () => {
       const slots = store.getState().dashboard.slots
       const activeSlot = store.getState().chat.activeSlot
@@ -1830,7 +2017,13 @@ export default function App() {
 
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }
-    else {
+    else if (focusActive) {
+      // The rail is a hover-held overlay in focus mode and always full width, so
+      // there is no collapsed state to toggle into. The same control puts it away
+      // instead — which is what its left-pointing chevron already reads as, and it
+      // leaves the user's collapse preference untouched for when focus mode is off.
+      railPeek.close()
+    } else {
       // The user has taken ownership of the rail: leaving preview expand mode
       // must not overwrite this with the pre-expand state.
       navAutoCollapsed.current = null
@@ -1841,14 +2034,19 @@ export default function App() {
   useEffect(() => { if (isMobile) setMobileNavOpen(false) }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
   // Reset mobile nav state when leaving mobile viewport
   useEffect(() => { if (!isMobile) setMobileNavOpen(false) }, [isMobile])
-  const effectiveCollapsed = navCollapsed && !isMobile
+  // Focus mode forces the rail EXPANDED regardless of the user's collapse
+  // preference. A collapsed rail is 74px, and as a hover-held overlay that is a
+  // hard target to keep the pointer inside — it puts itself away the moment you
+  // drift off it. `navCollapsed` still holds the preference, so leaving focus mode
+  // restores whatever the user had.
+  const effectiveCollapsed = navCollapsed && !isMobile && !focusActive
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
   // below; railWidthFor is the single source for both.
   useEffect(() => {
-    setRailWidth(railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
-  }, [isMobile, effectiveCollapsed])
+    setRailWidth(focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
+  }, [isMobile, effectiveCollapsed, focusActive])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
   // the search width is a function of the window, the two side groups split the
   // remainder, and each group re-lays-out its own contents with a container
@@ -1941,13 +2139,21 @@ export default function App() {
         gridTemplateAreas: isMobile ? '"topbar" "content"' : bottomDock ? '"topbar topbar" "nav content" "nav actbar"' : '"topbar topbar topbar" "nav content actbar"',
         ...(!isMobile && {
           gridTemplateColumns: bottomDock
-            ? `${railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr)`
-            : `${railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr) auto`,
+            ? `${focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr)`
+            : `${focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed })}px minmax(0,1fr) auto`,
           // Transition fires only when the template string itself changes (the
           // collapse toggle) — content-driven resizes of the auto track (e.g.
           // the Activity panel opening) don't alter the value, so keeping this
           // unconditional is safe and avoids the gated-pulse snap regression.
           transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
+        }),
+        // Focus mode collapses the chrome tracks. Inline so it beats the Tailwind
+        // `grid-rows-[42px_...]` class rather than having to fight it there, and
+        // so the one platform that needs a gutter (see FOCUS_INSET) can keep it.
+        ...(focusActive && {
+          gridTemplateRows: bottomDock
+            ? `${FOCUS_INSET}px minmax(0,1fr) auto`
+            : `${FOCUS_INSET}px minmax(0,1fr)`,
         }),
       }}
     >
@@ -1961,9 +2167,64 @@ export default function App() {
       {/* Skip to content — visible only on focus for keyboard users */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:px-4 focus:py-2 focus:rounded-lg focus:bg-accent focus:text-accent-fg focus:text-sm focus:font-medium">{i18nT('app.skip_to_content')}</a>
 
+      {/* Focus mode: edge strips that summon the hidden chrome. Rendered before
+          the chrome itself, but BELOW it in z-order (61 vs 62): the chrome covers
+          the strip it was summoned by, so hover and clicks land on the chrome's own
+          surface handlers and the strip never has to resize or opt out of
+          hit-testing — a hit target that changes under a resting pointer is what
+          made this flicker open/closed indefinitely. `focus-peek-strip` carries `-webkit-app-region:no-drag`, which
+          is load-bearing on the TOP one: Electron injects a 42px drag bar on
+          document.body, and an ordinary div inside it becomes a window-drag
+          region whose hover never reaches React. */}
+      {focusActive && (
+        <>
+          <div
+            ref={topPeekTrigger}
+            data-testid="focus-peek-top"
+            aria-hidden="true"
+            className="focus-peek-strip focus-peek-top absolute left-0 right-0 top-0 z-[61]"
+            {...topPeek.triggerProps}
+          />
+          <div
+            ref={railPeekTrigger}
+            data-testid="focus-peek-rail"
+            aria-hidden="true"
+            className="focus-peek-strip focus-peek-rail absolute left-0 bottom-0 z-[61]"
+            // Starts below the top strip so the two tile the corner rather than
+            // overlapping, where whichever won would be arbitrary.
+            style={{ top: FOCUS_INSET }}
+            {...railPeek.triggerProps}
+          />
+        </>
+      )}
+
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
-      <header className="topbar topbar-glass relative pl-2 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
+      <header
+        ref={topPeekSurface}
+        className="topbar topbar-glass relative pl-2 pr-3 z-[45]"
+        // In focus mode the header leaves the grid and becomes an overlay
+        // positioned against the shell (which is already `relative`), NOT the
+        // viewport: `position: fixed` would be measured against whichever
+        // ancestor happens to establish a containing block, and the shell is the
+        // app area either way. It stays MOUNTED and slides — unmounting it would
+        // tear down the notification/metrics popovers it owns and lose their
+        // state on every peek. z-[62] clears the whole chat-pane stack (max 61)
+        // and the rail (50) while staying under the update banner (70), side
+        // sheets (89/90) and every modal (100+).
+        style={focusActive
+          ? {
+            position: 'absolute',
+            top: 0, left: 0, right: 0, height: 42,
+            zIndex: 62,
+            transform: topChromeShown ? 'translateY(0)' : 'translateY(-100%)',
+            transition: 'transform 200ms cubic-bezier(0.2, 0, 0, 1)',
+            // Hidden chrome must not eat clicks aimed at the content beneath it.
+            pointerEvents: topChromeShown ? 'auto' : 'none',
+          }
+          : { gridArea: 'topbar' }}
+        {...(focusActive ? topPeek.surfaceProps : {})}
+      >
         {/* Left: mobile menu toggle + inline instance selector. The brand now
             lives in the sidebar (item 1.1). The selector reuses InstanceTabBar's
             visibility rule — it renders nothing unless >=1 remote instance
@@ -2010,13 +2271,19 @@ export default function App() {
         {/* Centre track: the ⌘K trigger. A flow item, not an overlay — its width
             is the track's width, so it can never sit under a sibling cluster and
             never has to be dropped to stay clear of one. On mobile the same
-            track holds the icon-only form below. */}
+            track holds the icon-only form below.
+
+            Wrapped with the focus-mode toggle in ONE flex cell rather than added
+            as a fourth grid child: `.topbar` declares exactly three tracks, so a
+            bare sibling would be auto-placed into `.tb-right` and land inside the
+            readout capsule's cluster. Two controls, which is the ceiling
+            website/AUTOSDE.yaml's max-two-buttons-per-row sets. */}
         {!isMobile && (
+          <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
           <button
             type="button"
-            data-topbar-overlay
             onClick={commandPalette.openPalette}
-            className="h-7 w-full px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            className="h-7 flex-1 min-w-0 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
             /* The trigger has to describe the surface it actually opens. While an app
                owns the quick-search slot the gesture opens a launcher -- typing runs
                commands and does not search the corpora this label promises -- so
@@ -2044,6 +2311,21 @@ export default function App() {
                 : i18nT('app.k_search_for_anything')}
             </span>
           </button>
+          {/* Focus mode. `aria-pressed` rather than a second label, so a screen
+              reader gets the state from the control instead of from copy that
+              would have to be kept in step with the icon. */}
+          <button
+            type="button"
+            data-testid="focus-mode-toggle"
+            onClick={toggleFocusMode}
+            className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 ${focusMode ? 'text-accent' : 'text-muted hover:text-text'}`}
+            aria-label={i18nT('app.focus_mode')}
+            aria-pressed={focusMode}
+            title={i18nT(IS_MAC ? 'app.focus_mode_title_mac' : 'app.focus_mode_title')}
+          >
+            <Fullscreen size={15} />
+          </button>
+          </div>
         )}
         {/* Mobile centre track: the same trigger in its icon-only form, in the
             same window-centred track the desktop one uses, so the control does
@@ -2863,10 +3145,31 @@ export default function App() {
           </AnimatePresence>
         ) : (
           <nav
-            className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden"
-            style={{ gridArea: 'nav', width: 'auto' }}
+            ref={railPeekSurface}
+            className="focus-chrome-rail bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden"
+            // Focus mode: same overlay treatment as the header. The rail's own
+            // `mx-2` means translateX(-100%) would leave its 8px left margin
+            // showing as a sliver, hence the extra 12px of travel. Width has to
+            // become explicit — out of the grid there is no track to fill — and
+            // it is the rail TRACK minus the 16px of horizontal margin, so the
+            // overlay is exactly as wide as the docked rail would have been at
+            // the user's current collapse state.
+            style={focusActive
+              ? {
+                position: 'absolute',
+                left: 0,
+                top: FOCUS_INSET,
+                bottom: 0,
+                width: railWidthFor({ isMobile: false, collapsed: effectiveCollapsed }) - 16,
+                zIndex: 62,
+                transform: railPeek.open ? 'translateX(0)' : 'translateX(calc(-100% - 12px))',
+                transition: 'transform 200ms cubic-bezier(0.2, 0, 0, 1)',
+                pointerEvents: railPeek.open ? 'auto' : 'none',
+              }
+              : { gridArea: 'nav', width: 'auto' }}
             role="navigation"
             aria-label={i18nT('app.main_navigation')}
+            {...(focusActive ? railPeek.surfaceProps : {})}
           >
             {navBody}
           </nav>
@@ -2874,7 +3177,26 @@ export default function App() {
       })()}
 
       {/* Content */}
-      <div className="flex flex-col min-h-0 min-w-0" style={{ gridArea: 'content' }}>
+      <div
+        className="flex flex-col min-h-0 min-w-0"
+        // Focus mode reclaims the 236px rail column, which leaves everything in
+        // this column — the chat sessions drawer first — flush against the
+        // window's left edge, while the same surfaces stay inset 8px at the
+        // bottom by their own `mb-2`/`pb-2`. The inset goes on the COLUMN rather
+        // than on the drawer: the drawer's collapse animates a clip-path whose
+        // insets are computed in its own container space against its `width`
+        // prop, so padding it would desync the morph from the toggle it converges
+        // on. Padding the column shifts the drawer and that toggle together.
+        // Transition matched to the shell's own column animation so the 8px
+        // arrives with the track change instead of snapping ahead of it.
+        style={focusActive
+          ? {
+            gridArea: 'content',
+            paddingLeft: FOCUS_INSET,
+            transition: 'padding-left 150ms cubic-bezier(0.2, 0, 0, 1)',
+          }
+          : { gridArea: 'content' }}
+      >
         <div className={`flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         <main id="main-content" tabIndex={-1} className={`flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
@@ -2932,6 +3254,15 @@ export default function App() {
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
       <InstancesViewport macInset={macInset} />
+      {/* macOS focus mode: window-drag strips for the LOCAL header, placed to be
+          structurally identical to the pane strips that provably work — the
+          .host-drag-strip mechanism, in the same top-level container, OUTSIDE
+          the shell's grid/overflow/stacking context, painted after everything
+          drag-related. Every in-shell variant failed on the desktop app. */}
+      {activeInstanceId === null && focusActive && macInset && topChromeShown &&
+        localHeaderDragGaps.map((g, i) => (
+          <div key={`fm-drag-${i}`} aria-hidden data-testid="focus-mac-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
+        ))}
       </div>{/* /pane stack */}
     </div>
     )}

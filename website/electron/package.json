@@ -165,6 +165,7 @@
       "token-acquire.js",
       "token-retry.js",
       "display-media.js",
+      "focus-chrome.js",
       "permission-handler.js",
       "browser-view.js",
       "browser-control.js",

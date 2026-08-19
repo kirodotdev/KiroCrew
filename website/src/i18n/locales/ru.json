@@ -103,7 +103,10 @@
     "what_s_new": "Что нового",
     "you_re_on_the_latest_version": "У вас последняя версия",
     "k_run_a_command": "Выполнить команду",
-    "open_command_bar": "Открыть Command Bar"
+    "open_command_bar": "Открыть Command Bar",
+    "focus_mode": "Режим фокусировки",
+    "focus_mode_title": "Режим фокусировки · Alt+Shift+M",
+    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6984,7 +6987,8 @@
       "switch_to_local": "Переключиться на локальную команду",
       "switch_to_remote_crew": "Переключиться на удалённую команду {{n}}",
       "walk_back_mru_history": "Назад по истории MRU",
-      "stop_speaking": "Остановить речь"
+      "stop_speaking": "Остановить речь",
+      "toggle_focus_mode": "Переключить режим фокусировки"
     },
     "usePanelTabs": {
       "artifacts": "Артефакты",

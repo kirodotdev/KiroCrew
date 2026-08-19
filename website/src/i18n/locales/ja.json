@@ -103,7 +103,10 @@
     "what_s_new": "新機能",
     "you_re_on_the_latest_version": "最新バージョンをご使用です",
     "k_run_a_command": "コマンドを実行",
-    "open_command_bar": "Command Bar を開く"
+    "open_command_bar": "Command Bar を開く",
+    "focus_mode": "フォーカスモード",
+    "focus_mode_title": "フォーカスモード · Alt+Shift+M",
+    "focus_mode_title_mac": "フォーカスモード · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6717,7 +6720,8 @@
       "switch_to_local": "ローカルに切り替え",
       "switch_to_remote_crew": "リモートクルー {{n}} に切り替え",
       "walk_back_mru_history": "MRU履歴を戻る",
-      "stop_speaking": "読み上げを停止"
+      "stop_speaking": "読み上げを停止",
+      "toggle_focus_mode": "フォーカスモードを切り替え"
     },
     "usePanelTabs": {
       "artifacts": "アーティファクト",

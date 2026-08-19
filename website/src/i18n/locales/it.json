@@ -103,7 +103,10 @@
     "what_s_new": "Novità",
     "you_re_on_the_latest_version": "Stai usando la versione più recente",
     "k_run_a_command": "Esegui un comando",
-    "open_command_bar": "Apri Command Bar"
+    "open_command_bar": "Apri Command Bar",
+    "focus_mode": "Modalità concentrazione",
+    "focus_mode_title": "Modalità concentrazione · Alt+Maiusc+M",
+    "focus_mode_title_mac": "Modalità concentrazione · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6895,7 +6898,8 @@
       "switch_to_local": "Passa a Locale",
       "switch_to_remote_crew": "Passa alla crew remota {{n}}",
       "walk_back_mru_history": "Torna indietro nella cronologia MRU",
-      "stop_speaking": "Interrompi lettura"
+      "stop_speaking": "Interrompi lettura",
+      "toggle_focus_mode": "Attiva/disattiva la modalità concentrazione"
     },
     "usePanelTabs": {
       "artifacts": "Artefatti",

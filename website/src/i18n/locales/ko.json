@@ -103,7 +103,10 @@
     "what_s_new": "새로운 기능",
     "you_re_on_the_latest_version": "최신 버전을 사용 중입니다",
     "k_run_a_command": "명령 실행",
-    "open_command_bar": "Command Bar 열기"
+    "open_command_bar": "Command Bar 열기",
+    "focus_mode": "집중 모드",
+    "focus_mode_title": "집중 모드 · Alt+Shift+M",
+    "focus_mode_title_mac": "집중 모드 · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6717,7 +6720,8 @@
       "switch_to_local": "로컬로 전환",
       "switch_to_remote_crew": "원격 크루 {{n}}(으)로 전환",
       "walk_back_mru_history": "MRU 기록 되돌아가기",
-      "stop_speaking": "말하기 중지"
+      "stop_speaking": "말하기 중지",
+      "toggle_focus_mode": "집중 모드 전환"
     },
     "usePanelTabs": {
       "artifacts": "아티팩트",

@@ -59,6 +59,24 @@ describe('measureSidePanelReservedW', () => {
     expect(measureSidePanelReservedW()).toBe(756)
   })
 
+  it('excludes a direct child marked data-topbar-overlay (the centre search cell)', () => {
+    // The centre track — the ⌘K trigger paired with the focus-mode toggle in one
+    // wrapper — floats over the grid and must not count toward the reserve. The
+    // marker sits on the WRAPPER (the header's direct child): the filter walks
+    // only direct children, so a marker on a nested button is invisible and the
+    // whole clamp(240px, 22vw, 480px) track would inflate the reserve, clamping
+    // the panel to ~25% of the window.
+    const header = mountHeader([300, 400])
+    const centre = document.createElement('div')
+    centre.setAttribute('data-topbar-overlay', '')
+    centre.getBoundingClientRect = () => rect(0, 480)
+    const inner = document.createElement('button')
+    inner.getBoundingClientRect = () => rect(0, 480)
+    centre.appendChild(inner)
+    header.insertBefore(centre, header.children[1])
+    expect(measureSidePanelReservedW()).toBe(756) // unchanged — centre cell ignored
+  })
+
   it('measures cluster content, not the stretched grid track it sits in', () => {
     // Both groups are 900px boxes holding 150px and 200px of content. Summing
     // boxes would give 1832; the content need is 406, below the static reserve.

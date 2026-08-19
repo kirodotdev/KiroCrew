@@ -73,7 +73,12 @@ export function ShortcutRow({ label, keys }: { label: string; keys: string[] }) 
   return (
     <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
       <span className="text-[13px] text-text">{label}</span>
-      <span className="flex items-center gap-1">{keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}</span>
+      {/* Keycaps are Latin on every keyboard, like code and file paths, so the
+          cap container is opaque data to the i18n render scan. A div rather
+          than a span: the scan merges inline children into the row's text run
+          before the opaque check, so the container must be block-level for the
+          label's own coverage to survive intact. */}
+      <div data-i18n-opaque className="flex items-center gap-1">{keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}</div>
     </div>
   )
 }

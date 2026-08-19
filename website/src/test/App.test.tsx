@@ -766,22 +766,33 @@ describe('App routing', () => {
   it('renders the search trigger in the header centre track, not as a positioned overlay', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
-    // The trigger is a flow item now: it fills its grid track (`w-full`) and
-    // carries no positioning of its own. The previous implementation centred it
-    // on `50vw` with a JS-measured inline width, which is what forced it to
-    // reserve `max(left, right)` on BOTH sides and drop itself once that
-    // mirrored gutter fell under a floor.
-    expect(trigger).toHaveClass('w-full')
+    // The trigger is a flow item now: it fills its grid track and carries no
+    // positioning of its own. The previous implementation centred it on `50vw`
+    // with a JS-measured inline width, which is what forced it to reserve
+    // `max(left, right)` on BOTH sides and drop itself once that mirrored gutter
+    // fell under a floor.
+    //
+    // It shares the centre CELL with the focus-mode toggle, so it fills that
+    // cell (`flex-1`) rather than the track directly — the cell is what fills
+    // the track. Both halves of the original assertion still hold: nothing here
+    // is positioned, and the header keeps exactly three in-flow children.
+    expect(trigger).toHaveClass('flex-1')
     expect(trigger).not.toHaveClass('absolute')
     expect(trigger.style.left).toBe('')
     expect(trigger.style.width).toBe('')
-    // Header children, in order: left group · trigger · actions group. The
+    // Header children, in order: left group · centre cell · actions group. The
     // three-track grid depends on that being exactly three in-flow children.
-    const header = trigger.parentElement!
+    const centre = trigger.parentElement!
+    const header = centre.parentElement!
     const flow = [...header.children].filter(el => !el.className.includes('absolute'))
     expect(flow[0]).toHaveClass('tb-left')
-    expect(flow[1]).toBe(trigger)
+    expect(flow[1]).toBe(centre)
     expect(flow[2]).toHaveClass('tb-right')
+    // The centre cell holds the trigger and the focus-mode toggle, and nothing
+    // else: a third control there is what website/AUTOSDE.yaml's
+    // max-two-buttons-per-row rule forbids.
+    expect([...centre.children]).toHaveLength(2)
+    expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle'))
   })
 
   it('sizes the top-bar search from the window alone, with equal side tracks', () => {

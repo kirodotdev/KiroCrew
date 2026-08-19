@@ -53,7 +53,10 @@
     "syncing_workspace": "Syncing workspace",
     "report_a_problem_with_diagnostics": "Report a problem — collects logs and crash reports, secrets removed",
     "k_run_a_command": "Run a command",
-    "open_command_bar": "Open Command Bar"
+    "open_command_bar": "Open Command Bar",
+    "focus_mode": "Focus mode",
+    "focus_mode_title": "Focus mode · Alt+Shift+M",
+    "focus_mode_title_mac": "Focus mode · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -2344,7 +2347,8 @@
       "switch_to_local": "Switch to Local",
       "switch_to_remote_crew": "Switch to remote crew {{n}}",
       "walk_back_mru_history": "Walk back MRU history",
-      "stop_speaking": "Stop speaking"
+      "stop_speaking": "Stop speaking",
+      "toggle_focus_mode": "Toggle focus mode"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",

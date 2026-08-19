@@ -1805,6 +1805,63 @@ file-tree-container{
    chips are clickable, hoverable, and drag-reorderable. Ignored in browsers. */
 .side-panel-strip,.side-panel-strip *{-webkit-app-region:no-drag}
 
+/* Focus-mode edge triggers. 10px is deliberately tight: a wider strip opened the
+   chrome on pointer travel that was merely passing near the edge, and overshooting
+   a 10px target is cheap because the edge-slam path (App.tsx mouseout handler)
+   opens the overlay anyway when the pointer exits the window through that edge.
+
+   The size is CONSTANT. An earlier version shrank the strip to 8px on reveal so it
+   would stop covering the top of the revealed header's controls, and that produced
+   a hover feedback loop: the strip resized out from under a stationary pointer,
+   which fired mouseleave, which started the close grace, which closed the chrome,
+   which grew the strip back under the pointer, which re-opened it — flickering
+   indefinitely without the user moving the mouse. Anything that changes the hit
+   target under a resting pointer can oscillate like that, so the strip is instead
+   COVERED by the chrome it summons (z-61 against the chrome's z-62): while the
+   chrome is up, hover and clicks land on the header or rail, which keeps them open
+   through their own surface handlers, and nothing resizes. */
+.focus-peek-top{height:10px}
+.focus-peek-rail{width:10px}
+
+/* no-drag only while the chrome is HIDDEN. While it is shown the drag surface is
+   the header (Windows/Linux, below) or the .host-drag-strip gap strips (macOS,
+   App.tsx), and a no-drag strip laid over the band's top 10px could only subtract
+   from it. Hidden, the injected drag bar is collapsed to 0 anyway, so this is a
+   backstop rather than load-bearing. */
+body.mc-focus-mode:not(.mc-focus-chrome) .focus-peek-top{-webkit-app-region:no-drag}
+body.mc-focus-mode:not(.mc-focus-rail) .focus-peek-rail{-webkit-app-region:no-drag}
+
+/* The revealed header is a window-drag surface in its empty regions on Windows
+   and frameless Linux, where the class-driven region resolves reliably. macOS is
+   deliberately EXCLUDED (:not below): every drag mechanism attached to the shell
+   — this class-toggled rule on the transformed header, a full-width mount strip,
+   in-shell gap strips — failed to register with the native window on the desktop
+   app, so macOS drag is carried entirely by .host-drag-strip elements rendered
+   OUTSIDE the shell (see the pane-stack strips in App.tsx), and a transformed
+   drag-marked header must not exist in the document to interfere. */
+body.mc-focus-mode.mc-focus-chrome .win-electron header.topbar-glass,
+body.mc-focus-mode.mc-focus-chrome .linux-electron header.topbar-glass{-webkit-app-region:drag}
+
+/* Focus mode: the peeked chrome FLOATS over content instead of sitting above a
+   flat background, which is a different rendering problem from the docked case.
+   .topbar-glass is `color-mix(in srgb, var(--chrome) 74%, transparent)` — 26%
+   see-through. Docked there is nothing behind it but --bg, so that reads as a
+   tint; as an overlay the transcript shows straight through the blur and the
+   header's own text becomes hard to read. Opaque while floating.
+   The reduced-transparency / high-contrast fallbacks further down force an opaque
+   background with !important, so they still win — which is the same answer. */
+body.mc-focus-mode header.topbar-glass{background:var(--chrome)}
+
+/* The drop shadows are gated on the surface actually being ON SCREEN. Both the
+   header and the rail stay MOUNTED and slide out of view, so an always-on shadow
+   keeps painting its tail into the content: this shadow reaches 28px past the
+   box, and a header translated up by its own 42px leaves that tail sitting over
+   the top of the transcript as a permanent smudge. */
+body.mc-focus-mode.mc-focus-chrome header.topbar-glass{
+  box-shadow:0 10px 28px -10px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10)}
+body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
+  box-shadow:0 10px 28px -10px rgba(0,0,0,.5)}
+
 /* Draggable title-bar strips laid over a remote-instance pane. The pane is a
    cross-origin iframe, so the host's injected #electron-drag-bar can't reach
    into it and the blanket marks the whole iframe no-drag — the pane's header

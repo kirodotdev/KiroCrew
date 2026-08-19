@@ -103,7 +103,10 @@
     "what_s_new": "新增内容",
     "you_re_on_the_latest_version": "已是最新版本",
     "k_run_a_command": "运行命令",
-    "open_command_bar": "打开 Command Bar"
+    "open_command_bar": "打开 Command Bar",
+    "focus_mode": "专注模式",
+    "focus_mode_title": "专注模式 · Alt+Shift+M",
+    "focus_mode_title_mac": "专注模式 · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6717,7 +6720,8 @@
       "switch_to_local": "切换到本地",
       "switch_to_remote_crew": "切换到远程 Crew {{n}}",
       "walk_back_mru_history": "回溯 MRU 历史",
-      "stop_speaking": "停止朗读"
+      "stop_speaking": "停止朗读",
+      "toggle_focus_mode": "切换专注模式"
     },
     "usePanelTabs": {
       "artifacts": "工件",

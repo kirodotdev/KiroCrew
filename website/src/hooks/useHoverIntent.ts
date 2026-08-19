@@ -22,6 +22,24 @@ interface Options {
    triggerRef?: RefObject<HTMLElement | null>
   /** Surface element — outside-pointerdown treats it as inside. */
   surfaceRef?: RefObject<HTMLElement | null>
+  /** Positional close: while OPEN, closing is decided EXCLUSIVELY by observed
+   *  pointer position — a document-level mousemove for which this returns true
+   *  starts the close grace, one for which it returns false cancels it, and
+   *  anchor mouseleave is ignored for closing entirely.
+   *
+   *  For a surface that doubles as a window-drag area, event-based closing is
+   *  structurally unreliable: a `-webkit-app-region: drag` rect is resolved by
+   *  the compositor BEFORE hit-testing, so a pointer resting on (or dragging
+   *  from) the surface's own empty region produces silence that is
+   *  indistinguishable from departure. Closing on that silence oscillates —
+   *  close → the drag region unmounts with the surface → events revive → the
+   *  peek trigger reopens it → repeat, pointer never moving. Requiring positive
+   *  evidence of departure (a mousemove genuinely outside the surface's band)
+   *  is what makes "the bar stays visible while the cursor is in its area" a
+   *  guarantee instead of a heuristic. The pointer leaving the WINDOW keeps the
+   *  surface open (no events off-window, deliberately): the first mousemove
+   *  back inside decides, and until then there is nobody looking. */
+  departWhen?: (e: MouseEvent) => boolean
 }
 
 type PointerHandlers = {
@@ -44,9 +62,15 @@ export interface HoverIntent {
   }
   /** Bind to the surface, so the pointer entering it cancels the close, and
    *  focus leaving it for good closes it. */
-  surfaceProps: PointerHandlers & { onBlur: (e: React.FocusEvent) => void }
+  surfaceProps: PointerHandlers & { onFocus: () => void; onBlur: (e: React.FocusEvent) => void }
   /** Close now, skipping the grace period. */
   close: () => void
+  /** Open now, skipping the intent delay — for a caller-detected gesture that is
+   *  already unambiguous (e.g. the pointer slamming through the window edge the
+   *  trigger sits on: the overshoot fires mouseleave on its way OUT, which the
+   *  ordinary handlers read as a cancel). Reports hover intent, so focus is not
+   *  moved into the surface. */
+  openNow: () => void
 }
 
 /**
@@ -66,12 +90,16 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     closeMs = HOVER_CLOSE_MS,
     triggerRef,
     surfaceRef,
+    departWhen,
   } = options
 
   const [open, setOpen] = useState(false)
   const [openedBy, setOpenedBy] = useState<'hover' | 'keyboard' | null>(null)
   const openTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
+  // Latest predicate without re-subscribing the mousemove listener per render.
+  const departWhenRef = useRef(departWhen)
+  departWhenRef.current = departWhen
 
   const clearTimers = useCallback(() => {
     if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
@@ -83,6 +111,13 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     setOpen(false)
     setOpenedBy(null)
   }, [clearTimers])
+
+  const openNow = useCallback(() => {
+    if (!enabled) return
+    clearTimers()
+    setOpen(true)
+    setOpenedBy('hover')
+  }, [enabled, clearTimers])
 
   // Timers outlive a fast unmount (navigating away mid-delay) unless cleared.
   useEffect(() => clearTimers, [clearTimers])
@@ -123,6 +158,36 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     if (!node) return false
     return !!triggerRef?.current?.contains(node) || !!surfaceRef?.current?.contains(node)
   }, [triggerRef, surfaceRef])
+
+  // Positional close (see `departWhen`): while open, every observed pointer
+  // position votes. Outside the surface's territory → start the close grace
+  // (idempotent: an armed timer is left running so the grace measures time
+  // since the FIRST outside sighting); back inside → cancel it. Capture phase
+  // so a stopPropagation in whatever the pointer crosses cannot eat the signal.
+  const positional = !!departWhen
+  useEffect(() => {
+    if (!open || !positional) return
+    const onMove = (e: MouseEvent) => {
+      const fn = departWhenRef.current
+      if (!fn) return
+      if (fn(e)) {
+        if (closeTimer.current === null) scheduleClose()
+      } else {
+        cancelClose()
+      }
+    }
+    document.addEventListener('mousemove', onMove, true)
+    return () => document.removeEventListener('mousemove', onMove, true)
+  }, [open, positional, scheduleClose, cancelClose])
+
+  const onAnchorLeave = useCallback(() => {
+    // Positional mode owns closing while open: a mouseleave can be silence from
+    // a drag region or off-window travel, neither of which is departure. While
+    // still CLOSED it keeps its usual job — cancelling a pending open when the
+    // pointer sweeps off the trigger.
+    if (positional && open) return
+    scheduleClose()
+  }, [positional, open, scheduleClose])
 
   useEffect(() => {
     if (!open) return
@@ -175,12 +240,26 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     scheduleClose()
   }, [enabled, insideAnchors, scheduleClose])
 
+  // The mirror of onFocusOut: a surface that hides off-screen keeps its controls
+  // in the tab order, so Tab can land INSIDE it while it is closed — an invisible
+  // focus ring, and an invisible control on Enter. Focused chrome must be visible
+  // chrome, so focus entering the surface opens it the way hover does. This is
+  // not the WCAG 3.2.1 trigger-focus trap documented on triggerProps: focus is
+  // already inside the surface, so revealing it discloses the focused control's
+  // own container rather than moving the user anywhere.
+  const onFocusIn = useCallback(() => {
+    if (!enabled || open) return
+    clearTimers()
+    setOpen(true)
+    setOpenedBy('keyboard')
+  }, [enabled, open, clearTimers])
+
   return {
     open,
     openedBy,
     triggerProps: {
       onMouseEnter: () => scheduleOpen('hover'),
-      onMouseLeave: scheduleClose,
+      onMouseLeave: onAnchorLeave,
       // Focus deliberately does NOT open. Opening on focus and then moving
       // focus into the surface is a WCAG 3.2.1 (On Focus) change of context,
       // and it makes the trigger impossible to Tab PAST — a keyboard user
@@ -197,9 +276,11 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
     },
     surfaceProps: {
       onMouseEnter: cancelClose,
-      onMouseLeave: scheduleClose,
+      onMouseLeave: onAnchorLeave,
+      onFocus: onFocusIn,
       onBlur: onFocusOut,
     },
     close,
+    openNow,
   }
 }

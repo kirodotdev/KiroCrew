@@ -103,7 +103,10 @@
     "what_s_new": "नया क्या है",
     "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं",
     "k_run_a_command": "कमांड चलाएं",
-    "open_command_bar": "Command Bar खोलें"
+    "open_command_bar": "Command Bar खोलें",
+    "focus_mode": "फ़ोकस मोड",
+    "focus_mode_title": "फ़ोकस मोड · Alt+Shift+M",
+    "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6806,7 +6809,8 @@
       "switch_to_local": "स्थानीय पर जाएँ",
       "switch_to_remote_crew": "रिमोट क्रू {{n}} पर जाएँ",
       "walk_back_mru_history": "MRU इतिहास में पीछे जाएँ",
-      "stop_speaking": "बोलना बंद करें"
+      "stop_speaking": "बोलना बंद करें",
+      "toggle_focus_mode": "फ़ोकस मोड टॉगल करें"
     },
     "usePanelTabs": {
       "artifacts": "आर्टिफ़ैक्ट",

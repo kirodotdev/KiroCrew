@@ -52,6 +52,15 @@ export interface HostModel {
   /** True when the parent is a macOS Electron window not in fullscreen, so the
    *  embedded header must inset its content clear of the native traffic lights. */
   macInset: boolean
+  /** The parent window's focus mode, relayed so the pane hides its own chrome to
+   *  match instead of landing fully-framed inside a focused window. `null` means
+   *  the host SENT NO OPINION — an older host whose model predates the field —
+   *  and the pane must keep its own state: coercing absence to `false` would
+   *  snap a user-toggled pane back off on every host re-broadcast, since an old
+   *  host also ignores the pane's echoed `mc-set-focus-mode`. The pane's OWN
+   *  `mc-focus-mode` setting is left untouched either way — this is the host's
+   *  view preference, and the pane has its own localStorage (cross-origin iframe). */
+  focusMode: boolean | null
   /** True when the parent shell is Electron. Gates the embedded ⌘/Ctrl+digit
    *  instance-switch chord: in a plain browser those chords are reserved for
    *  browser tab switching, so the pane must not bind (or advertise) them. */

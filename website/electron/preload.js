@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // the Windows titleBarOverlay colors. Separate from setThemeMode because that
   // carries the preference (system/dark/light) while this carries the outcome.
   setTitleBarOverlayTheme: (mode) => ipcRenderer.send("titlebar-overlay-theme", String(mode || "")),
+  // Focus mode: report whether the dashboard header is on screen so the native
+  // macOS traffic lights can follow it. They are AppKit views painted at a window
+  // coordinate, so the renderer cannot hide or move them itself — with the header
+  // collapsed they would sit over the reclaimed content.
+  setFocusModeChrome: (visible) => ipcRenderer.send("focus-mode-chrome", !!visible),
   // Dev mode IPC: renderer signals main process to show/hide DevTools menu item.
   setDevMode: (enabled) => ipcRenderer.send("dev-mode-changed", !!enabled),
   // Windows custom titlebar: menu surfaces render in the dashboard so hover

@@ -20,6 +20,7 @@ const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { shouldRetryLocalTokenMint, tokenMintRetryDelayMs, TOKEN_MINT_MAX_RETRIES } = require("./token-acquire");
 const { createDisplayMediaHandler } = require("./display-media");
+const { applyFocusModeChrome } = require("./focus-chrome");
 const {
   createPermissionRequestHandler,
   createPermissionCheckHandler,
@@ -1707,6 +1708,25 @@ function setupWindowContents(win, backendUrl) {
         [role="button"], [tabindex], iframe {
           -webkit-app-region: no-drag;
         }
+        /* Focus mode (see website/src/hooks/useFocusMode.ts) hides the dashboard
+           header, so this bar would be a 42px drag region sitting on top of the
+           content focus mode just reclaimed -- the session title, the sidebar
+           toggles, the transcript. pointer-events:none does NOT save that: a
+           drag region is resolved by the compositor before hit-testing, so the
+           band stops answering hover and swallows the press.
+           An app-region:no-drag child DOES subtract (this bar is prepended to
+           body, so it comes FIRST in tree order and every later no-drag element
+           wins), which is what keeps buttons clickable -- but there is nothing to
+           hang that on for the transcript itself.
+           So the region collapses with the header, and comes back with it: the
+           renderer sets mc-focus-chrome while the header is on screen, which is
+           when the bar is the drag surface the user expects. */
+        body.mc-focus-mode #electron-drag-bar {
+          height: 0;
+        }
+        body.mc-focus-mode.mc-focus-chrome #electron-drag-bar {
+          height: 42px;
+        }
       `);
       view.webContents.executeJavaScript(`
         if (!document.getElementById('electron-drag-bar')) {
@@ -3347,6 +3367,33 @@ app.whenReady().then(async () => {
     if (typeof hex === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) {
       store.set("themeAccent", hex);
     }
+  });
+
+  // Focus mode: the renderer reports whether the dashboard header is currently
+  // on screen, and the native macOS traffic lights follow it.
+  //
+  // Driven from here because AppKit paints them at a WINDOW coordinate, not in
+  // the DOM — nothing the renderer hides moves them, so with the header gone they
+  // were left floating over the sessions sidebar and the chat title row, clipping
+  // both. Hiding them is what lets focus mode reclaim the whole top row on macOS
+  // instead of reserving 42px for controls the user did not ask to keep.
+  //
+  // Resolved from the SENDER's own window, never a broadcast: a connection window
+  // running the same SPA must not hide the main window's buttons. Skipped in
+  // fullscreen, where macOS owns the buttons itself (they live in the auto-hiding
+  // menu-bar overlay) and there is no title bar to hide them from.
+  // `positionTrafficLights` is re-asserted on the way back because a visibility
+  // round-trip can drop the custom inset.
+  ipcMain.on("focus-mode-chrome", (event, visible) => {
+    if (!IS_MAC) return;
+    const win = windowForWebContents(event.sender);
+    if (!win) return;
+    // applyFocusModeChrome (focus-chrome.js) also re-declares the renderer's
+    // draggable regions after the native change: setWindowButtonVisibility
+    // mutates the titlebar styleMask and DROPS the declared regions, which is
+    // why every renderer-side drag surface for the peeked header went dead on
+    // macOS while the CSS was provably correct.
+    applyFocusModeChrome(win, visible, { positionTrafficLights });
   });
 
   // Caption controls for the frameless Linux window (see the injected

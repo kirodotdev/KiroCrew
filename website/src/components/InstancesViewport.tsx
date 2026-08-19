@@ -42,6 +42,7 @@ import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERL
 import { isEmbeddedPane } from '../lib/embedded'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
 import type { DragGap } from '../lib/dragGaps'
+import { useFocusMode, useFocusChromeVisible, setFocusModeEnabled, setFocusChromeVisible } from '../hooks/useFocusMode'
 
 import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -86,6 +87,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Stable array identity per pin change, so the model memo below does not
   // re-broadcast on every render.
   const pinnedCrews = useMemo(() => [...pinnedCrewSet], [pinnedCrewSet])
+  // Focus mode is a property of the WINDOW, not of one pane: a remote crew shown
+  // inside a focused window must hide its chrome too. Relayed down the host model
+  // below, and it also gates the host drag strips (see their render site).
+  const { enabled: focusMode } = useFocusMode()
+  const focusChromeVisible = useFocusChromeVisible()
 
   // Per-instance header drag gaps relayed up by each embedded pane
   // (mc-drag-gaps). Only the ACTIVE pane's gaps are rendered, but they are
@@ -110,6 +116,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // postMessage listener) always sees the latest ports without re-subscribing.
   const warmRef = useRef(warm)
   warmRef.current = warm
+  // Read inside the message listener rather than closed over: the listener is
+  // registered once, and only the ACTIVE pane may speak for the window's chrome.
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+  // Each pane's last-reported chrome visibility (mc-focus-chrome), so a pane
+  // SWITCH can apply the incoming pane's state immediately. Without this the
+  // window keeps the OUTGOING pane's value — switching necessarily happens from
+  // a peeked header (the tab bar lives on it), so the traffic lights stayed
+  // visible over the new pane until its own next hover cycle re-posted.
+  const paneChromeRef = useRef<Record<string, boolean>>({})
   const refreshingRef = useRef<Set<string>>(new Set())
   const lastRefreshRef = useRef<Map<string, number>>(new Map())
   // Live iframe elements by id, so the parent can postMessage the switcher model
@@ -223,6 +239,29 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // panes) via the module store, keeping the set one shared value.
         const id = (data as { id?: unknown }).id
         if (typeof id === 'string' && id) toggleCrewPin(id)
+      } else if (data.type === 'mc-set-focus-mode') {
+        // Focus mode was toggled inside an embedded pane. It belongs to the WINDOW,
+        // not to one pane, so applying it here is what makes the state one shared
+        // value: the module store re-renders the local header's own toggle, and the
+        // model re-broadcast below carries it to every OTHER pane. The pane that
+        // sent it already adopted it locally, and the setter is idempotent, so the
+        // return trip is a no-op rather than a loop.
+        const on = (data as { on?: unknown }).on
+        if (typeof on === 'boolean') setFocusModeEnabled(on)
+      } else if (data.type === 'mc-focus-chrome') {
+        // The pane reports whether ITS chrome is on screen. Only the pane the user
+        // is actually looking at may speak for the window: a background pane's peek
+        // must not summon the host's traffic lights over a different pane. The host
+        // is the only side that can act on this at all — the lights are AppKit
+        // views on this window and the drag bar lives in this document.
+        // Every pane's report is REMEMBERED (not just the active one's): the
+        // switch-time effect below needs the incoming pane's last-known state,
+        // because a pane whose chrome state did not change re-posts nothing.
+        const on = (data as { on?: unknown }).on
+        if (typeof on === 'boolean') {
+          paneChromeRef.current[id] = on
+          if (id === activeIdRef.current) setFocusChromeVisible(on)
+        }
       } else if (data.type === 'mc-embedded-ready') {
         // The pane just (re)mounted and asked for the current model — send it now
         // rather than waiting for the next input-driven broadcast. Also record
@@ -296,6 +335,25 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const [timedOut, setTimedOut] = useState<Record<string, boolean>>({})
   const [reloadSeq, setReloadSeq] = useState<Record<string, number>>({})
   const activeWarmConn = activeId ? warm[activeId] : undefined
+  // Apply the INCOMING pane's chrome state at switch time. The store otherwise
+  // keeps whatever the outgoing surface last reported — and a switch necessarily
+  // happens from a peeked header (the tab bar lives on it), so it is `true` —
+  // while the incoming pane, whose own state did not change, re-posts nothing.
+  // Symptom fixed: traffic lights stranded visible over the new pane until its
+  // next hover cycle. A pane with NO recorded report defaults to VISIBLE: remote
+  // crews are independently versioned installs, so a pane that has never posted
+  // mc-focus-chrome is most likely a pre-focus-mode version that renders its full
+  // header unconditionally — defaulting it to hidden would strip the traffic
+  // lights and drag strips out from under a header the user can see. A
+  // focus-mode-aware pane's first report corrects the brief lights-flash; a
+  // non-conforming pane keeps working chrome forever. Switching to LOCAL is
+  // covered by App.tsx's own writer (gated on activeInstanceId === null).
+  useEffect(() => {
+    // Only while focus mode is ON: off, chrome is unconditionally visible and
+    // owned by the surfaces themselves (and the local writer in App.tsx).
+    if (activeId === null || !focusMode) return
+    setFocusChromeVisible(paneChromeRef.current[activeId] ?? true)
+  }, [activeId, focusMode])
   // Primitive deps for the watchdog effect (a fresh conn object identity on
   // every setWarm would defeat the dep comparison; the src only depends on these).
   const activeWarmPort = activeWarmConn?.port
@@ -391,14 +449,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           }
         : null
       return {
-        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset,
+        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, focusMode,
         electron: isElectron,
         // Array, not the Set itself: structured clone rejects a Set across this
         // boundary in some engines and the receiver validates element-wise anyway.
         pinnedCrews,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, pinnedCrews],
+    [instancesQuery.data, warm, unread, activeId, macInset, focusMode, pinnedCrews],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -499,7 +557,17 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           loading/error overlays, which carry their own interactive tab strip).
           Each strip sits in a control-free gap the pane measured, so it never
           swallows a header button's clicks. */}
-      {isElectron && activeId && !showPanel && !showLoading && !!warm[activeId] && activeReady &&
+      {/* Host-rendered drag strips over the pane's own header gaps. In focus
+          mode they follow the PANE's chrome: while its header is hidden they are
+          suppressed — the strips are `-webkit-app-region: drag`, which the
+          compositor resolves BEFORE hit-testing, so leaving them up would make
+          the pane's top band answer neither hover nor clicks and its own chrome
+          could never be peeked back. While the pane's header IS peeked they must
+          render: the pane's own app-region CSS is inert (draggable regions are
+          only collected from the host document, never from a cross-origin
+          iframe), so these strips are the ONLY thing that makes the peeked
+          header move the window. */}
+      {isElectron && (!focusMode || focusChromeVisible) && activeId && !showPanel && !showLoading && !!warm[activeId] && activeReady &&
         (dragGaps[activeId] ?? []).map((g, i) => {
           // Stay clear of the caption controls at the right edge: Windows'
           // native titleBarOverlay buttons, or frameless Linux's injected

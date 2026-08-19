@@ -47,6 +47,17 @@ describe('useHoverIntent', () => {
     expect(result.current.open).toBe(false)
   })
 
+  it('focus entering the SURFACE opens it immediately as keyboard intent', () => {
+    // An off-screen surface keeps its controls in the tab order, so Tab can
+    // land inside it while closed — the focus ring would be invisible. Focused
+    // chrome must be visible chrome. Contrast (4): focus on the TRIGGER still
+    // never opens; only focus already inside the surface does.
+    const { result } = renderHook(() => useHoverIntent())
+    act(() => { result.current.surfaceProps.onFocus() })
+    expect(result.current.open).toBe(true)
+    expect(result.current.openedBy).toBe('keyboard')
+  })
+
   it('keeps the surface up for the grace period after the pointer leaves', () => {
     const { result } = renderHook(() => useHoverIntent())
     act(() => { result.current.triggerProps.onMouseEnter() })
@@ -286,6 +297,100 @@ describe('useHoverIntent', () => {
     const { result } = renderHook(() => useHoverIntent())
     act(() => { result.current.triggerProps.onKeyDown(arrowDown()) })
     act(() => { result.current.close() })
+    expect(result.current.open).toBe(false)
+  })
+})
+
+describe('useHoverIntent — departWhen (positional close for window-drag surfaces)', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  const advance = (ms: number) => act(() => { vi.advanceTimersByTime(ms) })
+  // Territory: the top 48px band, mirroring the focus-mode header's predicate.
+  const departWhen = (e: MouseEvent) => e.clientY > 48
+  const moveTo = (y: number) => act(() => {
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: y, bubbles: true }))
+  })
+  const openByHover = (result: { current: ReturnType<typeof useHoverIntent> }) => {
+    act(() => { result.current.triggerProps.onMouseEnter() })
+    advance(HOVER_OPEN_MS)
+    expect(result.current.open).toBe(true)
+  }
+
+  it('ignores anchor mouseleave while open — event silence is not departure', () => {
+    // The surface is a window-drag area: a -webkit-app-region:drag rect is
+    // resolved by the compositor BEFORE hit-testing, so a pointer resting on
+    // the surface's own empty region produces mouseleave-then-silence that is
+    // indistinguishable from departure. Closing on it oscillates (close → drag
+    // region unmounts → events revive → trigger reopens → …). Positional mode
+    // therefore never closes on leave events, only on observed position.
+    const { result } = renderHook(() => useHoverIntent({ departWhen }))
+    openByHover(result)
+
+    act(() => { result.current.surfaceProps.onMouseLeave() })
+    act(() => { result.current.triggerProps.onMouseLeave() })
+    advance(HOVER_CLOSE_MS * 4)
+    expect(result.current.open).toBe(true)
+  })
+
+  it('closes only on a mousemove observed outside the territory', () => {
+    const { result } = renderHook(() => useHoverIntent({ departWhen }))
+    openByHover(result)
+
+    // Movement INSIDE the band never closes, no matter how long.
+    moveTo(10)
+    advance(HOVER_CLOSE_MS * 4)
+    expect(result.current.open).toBe(true)
+
+    // First sighting below the band starts the grace; it is a grace, not a snap.
+    moveTo(300)
+    expect(result.current.open).toBe(true)
+    advance(HOVER_CLOSE_MS)
+    expect(result.current.open).toBe(false)
+  })
+
+  it('returning to the territory during the grace cancels the close', () => {
+    const { result } = renderHook(() => useHoverIntent({ departWhen }))
+    openByHover(result)
+
+    moveTo(300)
+    advance(HOVER_CLOSE_MS - 50)
+    moveTo(10) // back into the band before the grace elapsed
+    advance(HOVER_CLOSE_MS * 4)
+    expect(result.current.open).toBe(true)
+  })
+
+  it('the grace measures time since the FIRST outside sighting', () => {
+    // Continuous movement below the band must not keep restarting the timer —
+    // that would turn the grace into "closes only when the pointer stops".
+    const { result } = renderHook(() => useHoverIntent({ departWhen }))
+    openByHover(result)
+
+    moveTo(300)
+    advance(HOVER_CLOSE_MS - 50)
+    moveTo(400)
+    moveTo(500)
+    advance(50)
+    expect(result.current.open).toBe(false)
+  })
+
+  it('a trigger leave while still CLOSED cancels the pending open', () => {
+    // Positional mode owns closing only while OPEN; sweeping across the trigger
+    // must still not summon the surface.
+    const { result } = renderHook(() => useHoverIntent({ departWhen }))
+    act(() => { result.current.triggerProps.onMouseEnter() })
+    act(() => { result.current.triggerProps.onMouseLeave() })
+    advance(HOVER_OPEN_MS + HOVER_CLOSE_MS)
+    expect(result.current.open).toBe(false)
+  })
+
+  it('without departWhen, anchor leaves close as before', () => {
+    // Positional close is opt-in; the hook's other consumers keep the
+    // event-based contract.
+    const { result } = renderHook(() => useHoverIntent())
+    openByHover(result)
+    act(() => { result.current.surfaceProps.onMouseLeave() })
+    advance(HOVER_CLOSE_MS)
     expect(result.current.open).toBe(false)
   })
 })
