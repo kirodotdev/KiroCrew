@@ -1322,7 +1322,13 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # cronLabel in cls JSON provides structured data for frontend.
                     wrapped = f'{CRON_NOTIFY_PREFIX}"{label}"]\n{text}\n{CRON_NOTIFY_END}'
                     inject_cls = json.dumps({"cronLabel": label})
-                    if slot.running:
+                    # Queue while a turn is live OR a multi-stage plan is mid-flight.
+                    # During stage execution slot.task is None between stages (see
+                    # chat_orchestrator), so slot.running alone reads False in that
+                    # window and would let this injection start a concurrent turn that
+                    # clobbers the plan. _in_stage_execution closes it — same predicate
+                    # the user-typed path uses (chat_handlers._api_chat).
+                    if slot.running or slot._in_stage_execution:
                         if len(slot._queue) >= 50:
                             evicted = slot.queue_pop(0)
                             logger.warning(

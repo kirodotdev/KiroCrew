@@ -4190,11 +4190,13 @@ class GatewayOrchestrator:
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
 
-        if slot.running:
-            # Turn still active — drop this nudge. Next idle-timer tick will
-            # schedule again once the turn ends. Queueing would stack
-            # identical 3KB+ nudges and blow up the context window.
-            # Returning False keeps cycle_count accurate (only delivered
+        if slot.running or slot._in_stage_execution:
+            # Turn still active, OR a multi-stage plan is mid-flight (slot.task is
+            # None between stages, so slot.running alone misses that window and the
+            # nudge would start a concurrent turn that clobbers the plan) — drop this
+            # nudge. Next idle-timer tick will schedule again once the turn/plan ends.
+            # Queueing would stack identical 3KB+ nudges and blow up the context
+            # window. Returning False keeps cycle_count accurate (only delivered
             # nudges count toward max_cycles).
             logger.info(
                 "AutoNudge skip: slot %s is running (loop %s cycle %d)",

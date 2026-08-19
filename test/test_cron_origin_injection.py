@@ -53,6 +53,19 @@ def _state_with_job(*, slot, session_key="dashboard:chat-2-origin"):
 def _live_running_slot():
     slot = MagicMock()
     slot.running = True
+    slot._in_stage_execution = False
+    slot._queue = []
+    slot.queue_append.return_value = "q1"
+    return slot
+
+
+def _mid_plan_slot():
+    """A slot whose plan is executing but is BETWEEN stages: the orchestrator
+    has set slot.task = None (so slot.running is False) while _in_stage_execution
+    stays True. slot.running alone would misread this as idle."""
+    slot = MagicMock()
+    slot.running = False
+    slot._in_stage_execution = True
     slot._queue = []
     slot.queue_append.return_value = "q1"
     return slot
@@ -95,6 +108,35 @@ async def test_caller_session_resolves_and_injects(mock_sel):
         data = await resp.json()
     assert data["session"] is True
     slot.queue_append.assert_called_once()
+    state.notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mid_plan_stage_window_queues_not_concurrent_turn(mock_sel):
+    """Regression: an origin injection landing in a plan's between-stages window
+    must QUEUE, not start a concurrent turn.
+
+    During multi-stage execution the orchestrator nulls slot.task between stages,
+    so slot.running reads False even though the plan is still running. Guarding on
+    slot.running alone let the cron injection start a second turn that scattered
+    the plan's output. The guard now also checks _in_stage_execution.
+    """
+    slot = _mid_plan_slot()
+    state = _state_with_job(slot=slot)
+    with (
+        patch("kiro_crew.dashboard.chat_runner._run_chat") as run_chat,
+        patch("kiro_crew.dashboard.turn_dispatch.spawn_guarded_turn") as spawn,
+    ):
+        async with TestClient(TestServer(_make_app(state))) as c:
+            resp = await c.post(
+                "/api/send-message",
+                json={"text": "comments!", "session": "origin", "caller_session": f"cron:{JOB_ID}"},
+            )
+            data = await resp.json()
+    assert data["session"] is True
+    slot.queue_append.assert_called_once()  # queued, not run
+    spawn.assert_not_called()
+    run_chat.assert_not_called()
     state.notify.assert_not_called()
 
 

@@ -425,6 +425,9 @@ def _bg_slot(key: str) -> MagicMock:
     slot = MagicMock()
     slot.key = key
     slot.running = False
+    # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy Mock
+    # and would trip the nudge busy guard (running or _in_stage_execution).
+    slot._in_stage_execution = False
     return slot
 
 
