@@ -1239,8 +1239,13 @@ scope growth without server-recorded grants is not covered by this decision.
 
 The anonymous daily heartbeat and official-app install receipt (`beacon.py` and
 `apps/install_receipt.py`; full spec in [metrics.md](metrics.md) → "Anonymous
-outbound telemetry") are the repo's **only default-on egress family**. Both use
-fixed anonymous payloads and the same effective-enable ladder. They are governed
+outbound telemetry"), together with the in-app session-pulse survey
+(`dashboard/handlers/feedback.py`), are the repo's **only default-on egress
+family**. All three gate on the same `beacon.telemetry_permitted` effective-enable
+ladder. The heartbeat and install receipt send fixed anonymous payloads; the
+survey egresses the user's own submitted answers plus an anonymous per-install
+id (`beacon.install_id`), and only once that same ladder — including the
+first-run privacy disclosure — permits it. They are governed
 by the `capabilities.telemetry` `SCOPE_CATALOG` capability row
 (`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
 change, mirroring the theme rows above).
