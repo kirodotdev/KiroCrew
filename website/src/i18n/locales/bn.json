@@ -6824,6 +6824,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "একটা কাজের জন্য তোমার সিদ্ধান্ত দরকার",
       "approval_required": "অনুমোদন দরকার",
+      "ready": "প্রস্তুত",
       "tool_approval": "টুল অনুমোদন: {{name}}",
       "unknown": "অজানা"
     }

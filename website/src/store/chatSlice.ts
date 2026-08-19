@@ -603,7 +603,7 @@ interface ChatState {
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
+  slotStatusDetail: Record<string, { kind: string; label: string; purpose?: string; ts: number; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -2328,7 +2328,7 @@ const chatSlice = createSlice({
      *  merged into it (see the `tool_call` case in useWebSocket) without a
      *  refinement of one call inheriting a sibling's purpose when tools run in
      *  parallel. */
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>) {
+    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; label: string; purpose?: string; ts: number; toolCallId?: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail

@@ -353,7 +353,9 @@ export default function CommandPalette({
                   s.pinned ? 1 : 0
                 }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
                   slotStatusDetail[s.key]?.kind ?? ''
-                }:${slotStatusDetail[s.key]?.text ?? ''}:${slotStatusDetail[s.key]?.ts ?? ''}`,
+                }:${slotStatusDetail[s.key]?.label ?? ''}:${
+                  slotStatusDetail[s.key]?.purpose ?? ''
+                }:${slotStatusDetail[s.key]?.ts ?? ''}`,
             )
             .join('|') + `#${unreadSlots.join(',')}#${simplifiedToolNames ? 1 : 0}`
         : '',

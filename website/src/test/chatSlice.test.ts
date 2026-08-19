@@ -204,17 +204,17 @@ describe('chatSlice reducers', () => {
     })
   })
 
-  it('setSlotStatusDetail updates kind, text, and ts', () => {
+  it('setSlotStatusDetail keeps display labels separate from tool purposes', () => {
     const now = Date.now()
-    const state = reducer(initial, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', text: 'Thinking…', ts: now }))
+    const state = reducer(initial, setSlotStatusDetail({ slot: 'test-slot', kind: 'thinking', label: 'Thinking…', ts: now }))
     expect(state.slotStatusDetail['test-slot'].kind).toBe('thinking')
-    expect(state.slotStatusDetail['test-slot'].text).toBe('Thinking…')
+    expect(state.slotStatusDetail['test-slot'].label).toBe('Thinking…')
     expect(state.slotStatusDetail['test-slot'].ts).toBe(now)
-    // Tool name optional
-    const state2 = reducer(state, setSlotStatusDetail({ slot: 'test-slot', kind: 'tool', text: 'Tool: read', toolName: 'read', ts: now }))
-    expect(state2.slotStatusDetail['test-slot'].toolName).toBe('read')
+    const state2 = reducer(state, setSlotStatusDetail({ slot: 'test-slot', kind: 'tool', label: 'read', purpose: 'Read the file', ts: now }))
+    expect(state2.slotStatusDetail['test-slot'].label).toBe('read')
+    expect(state2.slotStatusDetail['test-slot'].purpose).toBe('Read the file')
     // Idle clears
-    const state3 = reducer(state2, setSlotStatusDetail({ slot: 'test-slot', kind: 'idle', text: 'Ready', ts: now }))
+    const state3 = reducer(state2, setSlotStatusDetail({ slot: 'test-slot', kind: 'idle', label: 'Ready', ts: now }))
     expect(state3.slotStatusDetail['test-slot'].kind).toBe('idle')
   })
 
@@ -1787,7 +1787,7 @@ describe('slotHistory — session navigation stack', () => {
       loadingOlder: true,
       lastChunkSeq: 99,
       _wsChunkedDuringFetch: true,
-      slotStatusDetail: { x: { kind: 'tool', text: 'hi', ts: 1 } },
+      slotStatusDetail: { x: { kind: 'tool', label: 'hi', ts: 1 } },
       voicePlaying: true,
       voiceAudio: 'base64data',
     }

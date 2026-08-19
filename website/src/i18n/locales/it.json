@@ -6913,6 +6913,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "Un'attività richiede una tua decisione",
       "approval_required": "Approvazione richiesta",
+      "ready": "Pronto",
       "tool_approval": "Approvazione dello strumento: {{name}}",
       "unknown": "Sconosciuto"
     }
