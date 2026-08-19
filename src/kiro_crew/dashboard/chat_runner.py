@@ -1397,6 +1397,10 @@ _REDIRECT_PLACEHOLDER = "\x00REDIR\x00"
 _REDIRECT_RE = re.compile(r"[0-9]*>&[0-9]*|&>>?")
 # After redirects are masked, split on remaining separators.
 _CMD_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|&|\n|\|)\s*")
+# Grant-safe variant: excludes bare & (background/arithmetic) and \n (display)
+# because this function serves the Trust dropdown (grant direction) where each
+# extra segment becomes one more binary offered for auto-approval.
+_CMD_GRANT_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|\|)\s*")
 # Command substitution forms that split-then-fnmatch cannot safely reach:
 # $(...), backticks, and process substitution <(...)/>(...). Deny-by-default
 # when any are present — the pattern match would operate on the outer shell
@@ -1404,7 +1408,7 @@ _CMD_SPLIT_RE = re.compile(r"\s*(?:\|\||&&|;|&|\n|\|)\s*")
 _CMD_SUBSTITUTION_RE = re.compile(r"\$\(|`|<\(|>\(")
 
 
-def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
+def _mask_quoted_separators(text: str, *, mask_escaped: bool = False) -> tuple[str, dict[str, str]]:
     """Replace command separators that appear INSIDE quotes with placeholders.
 
     The split regex (``_CMD_SPLIT_RE``) is quote-unaware, so a separator inside
@@ -1436,7 +1440,18 @@ def _mask_quoted_separators(text: str) -> tuple[str, dict[str, str]]:
     for ch in text:
         if escaped:
             escaped = False
-            out.append(ch)
+            # When mask_escaped is True (grant path), an escaped separator
+            # (e.g. \|) is treated as a literal — mask it so the split regex
+            # skips it.  When False (deny path), escaped separators still
+            # segment because treating \; as a literal would let an attacker
+            # hide a second command behind an escape.
+            if mask_escaped and ch in "|&;\n":
+                ph = f"\x00SEP{n}\x00"
+                n += 1
+                restore[ph] = ch
+                out.append(ph)
+            else:
+                out.append(ch)
             continue
         if ch == "\\" and quote != "'":
             escaped = True
@@ -1844,25 +1859,44 @@ def _safe_native_crew_debug_title(title: str) -> str:
     return safe
 
 
-def _split_command_segments(tool_title: str) -> tuple[str, list[str]] | None:
+def _split_command_segments(
+    tool_title: str,
+    split_re: "re.Pattern[str] | None" = None,
+    mask_escaped: bool = False,
+) -> tuple[str, list[str]] | None:
     """Split a shell tool title into its unquoted command segments.
 
     Returns ``(normalized_title, segments)``. Returns ``None`` — which every
     caller MUST treat as "deny" — when the command contains substitution
     (``$(...)``, backticks, process substitution), because no amount of
-    per-segment matching can reach inside a sub-command.
+    per-segment matching can reach inside a sub-command, or when it contains a
+    NUL byte, which would forge one of this function's own placeholders.
 
     Extracted so that every command-keyed approval path shares ONE splitter:
     a second, independently written shell splitter is exactly how a bypass
     gets introduced (quoted separators, masked redirects, backgrounding).
+
+    Pass ``split_re=_CMD_GRANT_SPLIT_RE`` for the grant path (Trust dropdown)
+    where bare ``&`` and ``\\n`` must NOT widen the offered set.
     """
     normalized = _normalize_tool_name(tool_title)
     if _CMD_SUBSTITUTION_RE.search(normalized):
         return None
+    # Both masking passes below key on NUL-delimited placeholders
+    # (``\x00REDIR\x00``, ``\x00SEP{n}\x00``), so the scheme is only
+    # unambiguous while the input carries no NUL of its own. A title that
+    # already contains one forges a placeholder: the redirect-restore loop
+    # then draws more placeholders than it masked and raises StopIteration
+    # (aborting the turn), and a forged ``\x00SEP{n}\x00`` restores to a
+    # separator the command never had. NUL is never legitimate here -- execve
+    # cannot carry it in an argument -- so deny by default rather than strip,
+    # which would match patterns against text that is not what would run.
+    if "\x00" in normalized:
+        return None
     # First mask separators that live INSIDE quotes (a quoted "a|b" must not be
     # split on its `|`), so _CMD_SPLIT_RE only ever cuts on real, unquoted
     # command boundaries. The placeholders are restored in each segment below.
-    quote_masked, sep_restore = _mask_quoted_separators(normalized)
+    quote_masked, sep_restore = _mask_quoted_separators(normalized, mask_escaped=mask_escaped)
     # Two-pass split: mask known redirect forms (2>&1, &>, &>>) so their &
     # isn't mistaken for a background operator, then split on remaining &.
     # Track masked positions to reconstruct original text in each segment.
@@ -1873,7 +1907,7 @@ def _split_command_segments(tool_title: str) -> tuple[str, list[str]] | None:
         return _REDIRECT_PLACEHOLDER
 
     masked = _REDIRECT_RE.sub(_mask, quote_masked)
-    split_parts = _CMD_SPLIT_RE.split(masked)
+    split_parts = (split_re or _CMD_SPLIT_RE).split(masked)
     # Restore original redirect syntax in each segment for pattern matching.
     redir_iter = iter(redirects)
     segments = []
@@ -2404,10 +2438,28 @@ def _extract_base_command(tool_title: str) -> str:
     "Running: ls /tmp" -> "ls"
     "Running: cat /etc/hosts | wc -l" -> "cat,wc"
     "Running: grep -r foo . && echo done" -> "grep,echo"
+    "Running: grep -E 'foo|bar' file.txt" -> "grep"
     "SomeMcpTool" -> "SomeMcpTool"
+
+    Delegates to :func:`_split_command_segments` with
+    ``_CMD_GRANT_SPLIT_RE`` — the same shared splitter (quote masking,
+    redirect masking, substitution denial) but a narrower operator set that
+    excludes bare ``&`` and ``\\n``.  Those operators are correct for the
+    deny path (enforcement) where over-splitting fails closed, but wrong
+    for the grant path (Trust dropdown) where each extra segment becomes
+    one more binary offered for auto-approval.
+
+    When the command contains substitution, returns only the first token —
+    the enforcement path independently denies substitution commands.
     """
-    normalized = _normalize_tool_name(tool_title)
-    segments = re.split(r"\s*(?:\|\||&&|;|\|)\s*", normalized)
+    split = _split_command_segments(tool_title, split_re=_CMD_GRANT_SPLIT_RE, mask_escaped=True)
+    if split is None:
+        # Command substitution — can't safely extract bases.  Return only
+        # the first token so the Trust dropdown doesn't offer junk patterns.
+        normalized = _normalize_tool_name(tool_title)
+        parts = normalized.strip().split(None, 1)
+        return parts[0] if parts else normalized
+    normalized, segments = split
     bases = []
     for seg in segments:
         parts = seg.strip().split(None, 1)

@@ -270,14 +270,63 @@ class TestPipedCommandTrust:
         base = _extract_base_command("Running: test -f foo || touch foo")
         assert base == "test,touch"
 
-    def test_pipe_does_not_split_inside_args(self):
-        # A grep with a pipe char in the regex — the split is on | operator.
-        # This is inherently a limitation: we split on |, so "grep 'a|b'" splits.
-        # In practice the shell command title uses the full command.
+    def test_pipe_does_not_split_inside_single_quotes(self):
         base = _extract_base_command("Running: grep -E 'foo|bar' file.txt")
-        # This will incorrectly parse — but that's acceptable as an edge case
-        # since the extracted bases still include "grep" which is correct.
-        assert "grep" in base
+        assert base == "grep"
+
+    def test_pipe_does_not_split_inside_double_quotes(self):
+        base = _extract_base_command('Running: grep -e "Error|Failure|Problem" /var/log/app.log')
+        assert base == "grep"
+
+    def test_multiple_quoted_pipes_single_base(self):
+        base = _extract_base_command("Running: grep -E 'cat|dog|bird|fish' animals.txt")
+        assert base == "grep"
+
+    def test_quoted_pipe_with_real_pipe(self):
+        base = _extract_base_command("Running: grep -E 'foo|bar' file.txt | wc -l")
+        assert base == "grep,wc"
+
+    def test_quoted_semicolon_not_split(self):
+        base = _extract_base_command("Running: echo 'hello; world'")
+        assert base == "echo"
+
+    def test_double_quoted_pipe_with_real_pipe(self):
+        base = _extract_base_command('Running: grep "it is here" file | wc -l')
+        assert base == "grep,wc"
+
+    def test_unquoted_pipe_still_splits(self):
+        base = _extract_base_command("Running: ls /tmp | grep foo | wc -l")
+        assert base == "ls,grep,wc"
+
+    def test_double_quote_inside_single_quotes(self):
+        # Odd number of " on the line — naive parity counting would fail.
+        base = _extract_base_command("""Running: echo "abcdefgh" | tr '"' ' ' | wc""")
+        assert base == "echo,tr,wc"
+
+    def test_single_quote_inside_double_quotes(self):
+        # Odd number of ' on the line — naive parity counting would fail.
+        base = _extract_base_command("""Running: echo "abcdefgh" | tr "'" " " | wc""")
+        assert base == "echo,tr,wc"
+
+    def test_substitution_fallback_returns_first_token_only(self):
+        base = _extract_base_command("Running: echo $(date),touch /tmp/pwned")
+        assert base == "echo"
+        assert "touch" not in base
+
+    def test_backtick_substitution_fallback(self):
+        base = _extract_base_command("Running: cat `which python` | head")
+        assert base == "cat"
+        assert "head" not in base
+
+    def test_background_ampersand_not_split(self):
+        # Bare & (background) must NOT split in the grant path.
+        base = _extract_base_command("Running: sleep 999 & curl evil.com")
+        assert "curl" not in base
+
+    def test_escaped_pipe_not_split(self):
+        # Escaped separator outside quotes must NOT split.
+        base = _extract_base_command(r"Running: echo ok \| Failure")
+        assert "Failure" not in base
 
 
 # ── Handler trust_command / trust_base integration ──
@@ -374,6 +423,20 @@ class TestHandlerTrustBase:
         # Handler would build "cat *,wc *"
         pattern = ",".join(f"{b} *" for b in base.split(",") if b)
         assert pattern == "cat *,wc *"
+
+    def test_trust_base_quoted_pipe_no_privilege_widening(self):
+        """Regression: pipes inside quotes must NOT leak into base_command."""
+        base = _extract_base_command('Running: grep -e "Error|Failure|Problem" /var/log/app.log')
+        assert base == "grep"
+        pattern = ",".join(f"{b} *" for b in base.split(",") if b)
+        assert pattern == "grep *"
+        assert "Failure" not in pattern
+
+    def test_trust_base_quoted_pipe_with_real_pipe_correct(self):
+        """Quoted pipe + real pipe: only real commands are extracted."""
+        base = _extract_base_command('Running: grep -E "Error|Failure" /var/log/app.log | tail -20')
+        assert base == "grep,tail"
+        assert "Failure" not in base
 
 
 # ── Slot serialization ──
@@ -1128,3 +1191,52 @@ class TestMatchesTrustedPatternQuoted:
         # for genuinely unquoted pipes — an unmatched segment still denies.
         patterns = {"cat /etc/*"}
         assert _matches_trusted_pattern("Running: cat /etc/hosts | rm -rf /", patterns) is None
+
+
+class TestSplitterPlaceholderForgery:
+    """A NUL byte in the title forges the splitter's own placeholders.
+
+    ``_split_command_segments`` masks redirects as ``\\x00REDIR\\x00`` and
+    quoted separators as ``\\x00SEP{n}\\x00``. Both schemes assume the input
+    carries no NUL of its own. A model-authored title (or a ``tool_input``
+    command) containing one breaks that assumption two ways: the
+    redirect-restore loop draws more placeholders than it masked and raises
+    ``StopIteration`` — an unhandled exception on the approval path, which
+    aborts the chat turn — and a forged ``\\x00SEP{n}\\x00`` restores to a
+    separator the command never contained. A NUL can reach here because JSON
+    encodes it as ``\\u0000`` and Python decodes that to a real ``\\x00``; it is
+    never legitimate in a command, since ``execve`` cannot carry it in an
+    argument. So every path must deny rather than crash.
+    """
+
+    def test_forged_redirect_placeholder_denies_instead_of_crashing(self):
+        cmd = "Running: echo hi \x00REDIR\x00 there"
+        # Must not raise StopIteration; must not be trusted.
+        assert _matches_trusted_pattern(cmd, {"echo *"}) is None
+        assert _matches_trusted_pattern(cmd, {"*"}) is None
+
+    def test_forged_separator_placeholder_denies(self):
+        cmd = "Running: echo hi \x00SEP0\x00 there"
+        assert _matches_trusted_pattern(cmd, {"echo *"}) is None
+
+    def test_bare_nul_anywhere_denies(self):
+        assert _matches_trusted_pattern("Running: cat /etc/hosts\x00", {"cat *"}) is None
+
+    def test_grant_path_falls_back_to_first_token(self):
+        # The Trust dropdown must still offer something sane rather than
+        # propagating the crash: the substitution fallback (first token only).
+        assert _extract_base_command("Running: echo hi \x00REDIR\x00 there") == "echo"
+        assert _extract_base_command("Running: echo hi \x00SEP0\x00 there") == "echo"
+
+    def test_grant_path_does_not_offer_forged_extra_segments(self):
+        # A forged SEP placeholder must not restore into a separator that
+        # widens the offered trust set beyond the first binary.
+        assert _extract_base_command("Running: echo ok\x00SEP0\x00 rm -rf /") == "echo"
+
+    def test_nul_free_commands_are_unaffected(self):
+        # Guard against the deny becoming over-broad: normal commands, quoted
+        # separators and real redirects all still behave as before.
+        assert _matches_trusted_pattern("Running: cat /etc/hosts", {"cat *"}) is not None
+        assert _matches_trusted_pattern('Running: grep "a|b" f', {'grep "a|b" *'}) is not None
+        assert _matches_trusted_pattern("Running: ls 2>&1", {"ls *"}) is not None
+        assert _extract_base_command("Running: cat f | wc -l") == "cat,wc"
