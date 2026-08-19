@@ -16,10 +16,7 @@ every existing patch site.
 
 from __future__ import annotations
 
-import json
 import unicodedata
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlencode
@@ -762,31 +759,14 @@ def artifact_update(name: str, args: dict[str, Any]) -> str:
     # it from the X-Internal-Secret header presence (MCP=agent,
     # dashboard=user). This is more secure than trusting a body field
     # and saves the agent from having to remember to set it.
-    # _post helper sends POST; we need PATCH. Build the request directly
-    # and send it through loopback_urlopen, which drops any HTTP_PROXY so
-    # X-Internal-Secret cannot leave the host.
-    data = json.dumps(update_body).encode()
-    headers = {
-        "Content-Type": "application/json",
-        "X-Internal-Secret": mcp_core._internal_secret(),
-    }
-    sk = mcp_core._resolve_session_key()
-    if sk:
-        headers["X-Session-Key"] = sk
-    req = urllib.request.Request(
-        f"{mcp_core._api_base()}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
-    )
-    try:
-        with mcp_core._api_urlopen(req, timeout=30) as http_resp:
-            d = json.loads(http_resp.read())
-    except urllib.error.HTTPError as exc:
-        try:
-            err_body = json.loads(exc.read()).get("error", str(exc))
-        except Exception:
-            err_body = str(exc)
-        return f"Error: {err_body}"
-    except Exception as exc:
-        return f"Error: {exc}"
+    # ``_patch`` is the PATCH verb helper (it did not exist when this was
+    # written, which is why the request used to be hand-rolled). Going through
+    # it buys the refusal-invalidate-re-resolve-replay recovery every
+    # other verb has, the ``X-Internal-Caller`` audit attribution, the
+    # latin-1 session-key guard, and redaction of the gateway's error body.
+    d = mcp_core._patch(f"/api/artifacts/{slug}", update_body)
+    if d.get("error"):
+        return f"Error: {d['error']}"
     out = [f"Updated artifact: slug={d.get('slug', slug)} version={d.get('version', '?')}"]
     # Surface source_path so the agent can emit unified-diff headers
     # when summarising the change in chat (powers the dashboard's
@@ -828,28 +808,9 @@ def artifact_revert(name: str, args: dict[str, Any]) -> str:
         "event_type": "reverted",
         "from_version": target_version,
     }
-    data = json.dumps(body).encode()
-    headers = {
-        "Content-Type": "application/json",
-        "X-Internal-Secret": mcp_core._internal_secret(),
-    }
-    sk = mcp_core._resolve_session_key()
-    if sk:
-        headers["X-Session-Key"] = sk
-    req = urllib.request.Request(
-        f"{mcp_core._api_base()}/api/artifacts/{slug}", data=data, headers=headers, method="PATCH"
-    )
-    try:
-        with mcp_core._api_urlopen(req, timeout=30) as http_resp:
-            d = json.loads(http_resp.read())
-    except urllib.error.HTTPError as exc:
-        try:
-            err_body = json.loads(exc.read()).get("error", str(exc))
-        except Exception:
-            err_body = str(exc)
-        return f"Error: {err_body}"
-    except Exception as exc:
-        return f"Error: {exc}"
+    d = mcp_core._patch(f"/api/artifacts/{slug}", body)
+    if d.get("error"):
+        return f"Error: {d['error']}"
     # Surface source_path on the response so the calling agent can build
     # a proper unified-diff header (--- <path>\n+++ <path>) when
     # summarising the revert in chat. The dashboard's diff renderer
