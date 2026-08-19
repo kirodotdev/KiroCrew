@@ -26,16 +26,20 @@ class TestProjectCRUD:
         assert p["created_at"] > 0
         assert p["updated_at"] > 0
 
-    def test_list_projects(self, store):
+    def test_list_projects(self, store, monkeypatch):
+        # Hand the store a MONOTONIC counter instead of the wall clock: `time.time()`
+        # returns the same value for ~60% of adjacent calls on Windows (the ~15.6ms
+        # timer tick) and `sorted` is stable, so two back-to-back creates tie and the
+        # newest-first assertion below sees insertion order instead. The ordering is
+        # the subject, not the clock. Patched on `store` rather than `models`, because
+        # store.py did `from .models import _now` and so reads its OWN binding.
+        from kiro_crew.aidlc import store as store_mod
+
+        stamps = iter(range(1, 100))
+        monkeypatch.setattr(store_mod, "_now", lambda: float(next(stamps)))
+
         p1 = store.create_project("first")
         p2 = store.create_project("second")
-        # Separate the two timestamps EXPLICITLY rather than trusting the clock to
-        # advance between two back-to-back creates. `time.time()` returns the same
-        # value for ~60% of adjacent calls on Windows (the ~15.6ms timer tick), and
-        # `sorted` is stable, so on a tie the newest-first assertion below sees
-        # insertion order and fails — the ordering under test, not the clock, is the
-        # subject, so pin it instead of sleeping.
-        p2["updated_at"] = p1["updated_at"] + 1
 
         listed = store.list_projects()
         assert len(listed) == 2
