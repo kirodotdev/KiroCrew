@@ -102,10 +102,28 @@ let sharingEnabled = true
  * The idle answer is what a page that has never run a pass sees, so the control
  * is captured in the state a first-time reader meets it in.
  */
-let measureProgress = { running: false, done: 0, total: 0 }
+let measureProgress = { running: false, done: 0, measured: 0, total: 0 }
+
+/**
+ * What ``POST /api/mcp/measure`` answers, which is NOT the same value.
+ *
+ * The button is disabled while a pass runs, so a frame that needs the press has
+ * to meet an IDLE progress read and get "running" back from the start call --
+ * exactly the real sequence. One variable for both makes the button unclickable.
+ */
+let measureStartReply = { ok: true, running: true, done: 0, measured: 0, total: 0 }
 
 /** Flipped for the shot where nothing is left to measure. */
 let everythingMeasured = false
+
+/**
+ * Flipped for the shot where a pass measured ONE of the two servers it tried.
+ *
+ * Without this the frame would claim one measurement beside a button still
+ * offering two, which is a state the product cannot reach — a measured row gets a
+ * verdict, and the button counts rows without one.
+ */
+let oneNowMeasured = false
 
 const measured = rec('no_objection', false, [{ code: 'no_objection_found', detail: '' }])
 
@@ -126,10 +144,20 @@ await stubDashboardApi(page, {
       const rows = everythingMeasured
         ? servers.map(s => ({ ...s, recommendation: s.recommendation ?? measured }))
           .map(s => (s.recommendation.strength === 'unknown' ? { ...s, recommendation: measured } : s))
-        : servers
+        : oneNowMeasured
+          // The row that had no verdict at all now carries one, leaving exactly
+          // one row still unmeasured. `preflight_passed` is what a clean
+          // measurement with nothing to object to reads as.
+          ? servers.map(s => (s.name === 'kilo-mcp'
+            ? { ...s, recommendation: rec('no_objection', false, [{ code: 'preflight_passed', detail: '' }]) }
+            : s))
+          : servers
       return json(route, { servers: rows }), true
     }
-    if (path === '/api/mcp/measure') return json(route, measureProgress), true
+    if (path === '/api/mcp/measure') {
+      const starting = route.request().method() === 'POST'
+      return json(route, starting ? measureStartReply : measureProgress), true
+    }
     if (path === '/api/mcp-gateway/status') {
       return json(route, {
         enabled: sharingEnabled,
@@ -184,7 +212,7 @@ await shot('04-measure-button-labelled')
 //    modal, because the operator can keep reading the table while it runs. The
 //    total agrees with the two unmeasured rows above: a frame whose numbers
 //    contradict its own button documents a state the product cannot reach.
-measureProgress = { running: true, done: 1, total: 2 }
+measureProgress = { running: true, done: 1, measured: 1, total: 2 }
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2400)
 await openAssessment()
@@ -198,6 +226,44 @@ await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2400)
 await openAssessment()
 await shot('06-measure-nothing-left')
+
+// 7. A pass that reached NOTHING. Every server was attempted and none produced a
+//    verdict, which is what a host where the probe cannot spawn does to every
+//    pass. The readout says nothing at all rather than closing on the attempt
+//    count: the two rows below still read "not measured" and the button still
+//    offers the same two, so a closing line here could only contradict them.
+//
+//    The press is what makes a closing line eligible, so this frame clicks. The
+//    progress read starts IDLE (the button is disabled while a pass runs) and the
+//    pass is settled underneath afterwards, which is the real sequence.
+measureProgress = { running: false, done: 0, measured: 0, total: 0 }
+measureStartReply = { ok: true, running: true, done: 0, measured: 0, total: 2 }
+everythingMeasured = false
+oneNowMeasured = false
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await openAssessment()
+await page.getByRole('button', { name: /measure 2 unmeasured servers/i }).click()
+measureProgress = { running: false, done: 2, measured: 0, total: 2 }
+await page.waitForTimeout(3400)
+await shot('07-measured-nothing-says-nothing')
+
+// 8. The same pass reaching one of the two. The closing line counts what was
+//    MEASURED, and the row it measured has gained a verdict, so the button below
+//    now offers one rather than two — the three numbers on this frame agree,
+//    which is the property the attempt count could not hold.
+measureProgress = { running: false, done: 0, measured: 0, total: 0 }
+measureStartReply = { ok: true, running: true, done: 0, measured: 0, total: 2 }
+oneNowMeasured = false
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.waitForTimeout(2400)
+await openAssessment()
+await page.getByRole('button', { name: /measure 2 unmeasured servers/i }).click()
+// The verdict lands with the settle, so flip the row before the poll sees it end.
+oneNowMeasured = true
+measureProgress = { running: false, done: 2, measured: 1, total: 2 }
+await page.waitForTimeout(3400)
+await shot('08-measured-one-of-two-attempted')
 
 await context.close()
 await browser.close()

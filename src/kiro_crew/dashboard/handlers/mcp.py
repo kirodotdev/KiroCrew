@@ -727,7 +727,13 @@ async def _evaluate_shareability(servers: list[Any]) -> None:
 #: both would pick the same unmeasured set.
 _measure_progress: dict[str, Any] = {
     "running": False,
+    # ``done`` is servers ATTEMPTED, which is what a progress bar advances on.
+    # ``measured`` is how many of those produced a verdict. They disagree whenever
+    # a pre-flight could not run, and only ``measured`` can carry a claim about
+    # the outcome: a pass that reached nothing must not report that it measured
+    # everything it tried.
     "done": 0,
+    "measured": 0,
     "total": 0,
     "error": "",
 }
@@ -745,8 +751,9 @@ async def _bg_measure_all() -> None:
     from kiro_crew.mcp_discovery import probe_all  # noqa: F811
     from kiro_crew.mcp_gateway.evaluate import evaluate_new_servers
 
-    def report(done: int, total: int) -> None:
-        _measure_progress["done"] = done
+    def report(measured: int, attempted: int, total: int) -> None:
+        _measure_progress["measured"] = measured
+        _measure_progress["done"] = attempted
         _measure_progress["total"] = total
 
     try:
@@ -779,7 +786,7 @@ async def api_mcp_measure_start(request: web.Request) -> web.Response:
     """
     if _measure_progress["running"]:
         return web.json_response({"ok": False, "running": True, **_measure_progress})
-    _measure_progress.update(running=True, done=0, total=0, error="")
+    _measure_progress.update(running=True, done=0, measured=0, total=0, error="")
     state: DashboardState = request.app["state"]
     task = asyncio.create_task(_bg_measure_all())
     state._background_tasks.add(task)

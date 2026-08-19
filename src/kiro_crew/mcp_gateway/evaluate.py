@@ -179,7 +179,7 @@ async def evaluate_new_servers(
     runtime_dir: Path,
     *,
     budget: int | None = MAX_EVALUATIONS_PER_PASS,
-    on_progress: Callable[[int, int], None] | None = None,
+    on_progress: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, CachedPreflight]:
     """Pre-flight the servers with no current measurement; return every known one.
 
@@ -191,9 +191,19 @@ async def evaluate_new_servers(
     cap, which is for an operator who explicitly asked to measure everything and
     is watching progress — never for a request that renders a page, where an
     uncapped pass would spawn two processes per configured server while somebody
-    waits. *on_progress* is called with ``(done, total)`` after each measurement
-    so that caller can report where it is; it runs on the event loop, so it must
-    not block.
+    waits. *on_progress* is called with ``(measured, attempted, total)`` after
+    each measurement so that caller can report where it is; it runs on the event
+    loop, so it must not block.
+
+    ``measured`` and ``attempted`` are separate because they answer different
+    questions and routinely disagree. A server whose pre-flight could not run --
+    a missing credential, an unreachable tunnel, a host where the probe cannot
+    spawn at all -- was attempted and produced no verdict, so it is still
+    unmeasured afterwards. Reporting one number for both is what let a pass that
+    measured nothing close with "Measured 30 servers" beside a table still
+    showing thirty unmeasured rows. ``attempted`` is what a progress bar has to
+    advance on, or it would sit at zero for the whole pass; ``measured`` is what
+    a claim about the outcome has to be built from.
 
     Nothing is deleted here. One server owns one row, so a row is replaced by its
     own server's next measurement and by nothing else — there is no inventory to
@@ -245,7 +255,7 @@ async def _evaluate_pass(
     servers: list[Any],
     runtime_dir: Path,
     budget: int | None,
-    on_progress: Callable[[int, int], None] | None,
+    on_progress: Callable[[int, int, int], None] | None,
 ) -> dict[str, CachedPreflight]:
     """One pass, holding ``_PASS_LOCK``. Split out so the lock has one owner."""
     cache, identities = await asyncio.to_thread(_load_and_identify, servers, runtime_dir)
@@ -305,6 +315,13 @@ async def _evaluate_pass(
 
     total = len(due)
     completed = 0
+    # Counted apart from ``completed`` on purpose. The two branches below differ
+    # in exactly the way an operator cares about: a measured server gets a row and
+    # stops being unmeasured, while one that could not be reached deliberately
+    # gets none and is still offered by the button afterwards. One counter for
+    # both cannot express that, and the readout was built on the assumption that
+    # it could.
+    measured = 0
     # ``as_completed``, not ``gather``: gather resolves only once every pre-flight
     # has finished, so a progress hook driven from its result would report 0 of N
     # for the whole pass and then jump straight to N of N — useless for the one
@@ -323,6 +340,7 @@ async def _evaluate_pass(
         )
         if result.ran:
             cache.put(server.name, identities[server.name], verdict)
+            measured += 1
         else:
             # A pre-flight that could not run says nothing about the server, only
             # about the moment: a missing credential, an unreachable tunnel, a
@@ -337,7 +355,7 @@ async def _evaluate_pass(
             # A reporting hook must never be able to abandon measurements that
             # already cost two spawns each, so its failure is logged and dropped.
             try:
-                on_progress(completed, total)
+                on_progress(measured, completed, total)
             except Exception:
                 logger.debug("shareability: progress hook raised", exc_info=True)
         logger.info(

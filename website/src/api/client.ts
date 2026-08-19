@@ -88,7 +88,11 @@ export type McpShareRecommendation = {
  */
 export type McpMeasureProgress = {
   running: boolean
+  // Servers attempted, which is what the progress line advances on.
   done: number
+  // How many of those produced a verdict. Lower than `done` whenever a pre-flight
+  // could not run, so any claim about the outcome is built from this one.
+  measured: number
   total: number
   error?: string
 }
