@@ -16,7 +16,6 @@ import type { SchemaEntry } from './resolveSettingRef'
 // Mock useConfigSchema to return a populated schema map
 const MOCK_SCHEMA = new Map<string, SchemaEntry>([
   ['instances.enabled', { path: 'instances.enabled', type: 'boolean', label: 'Enabled', help: 'Enable multi-instance management.' }],
-  ['telemetry.beacon_enabled', { path: 'telemetry.beacon_enabled', type: 'boolean', label: 'Anonymous Usage Beacon' }],
   ['instances.warm_set_cap', { path: 'instances.warm_set_cap', type: 'integer', label: 'Warm Set Cap' }],
 ])
 
@@ -60,8 +59,8 @@ describe('SettingRef file-mode with useConfigSchema hook', () => {
     expect(await screen.findByText(/kirocrew config set instances\.enabled true/)).toBeTruthy()
   })
 
-  it('telemetry.beacon_enabled resolves to file mode (not unknown)', () => {
-    const { container } = renderRef('telemetry.beacon_enabled')
+  it('instances.warm_set_cap resolves to file mode (not unknown)', () => {
+    const { container } = renderRef('instances.warm_set_cap')
     // File mode = button, not plain code without interactivity
     const button = container.querySelector('button')
     expect(button).not.toBeNull()

@@ -220,3 +220,24 @@ describe('telemetry.enabled reaches its own control', () => {
     expect(hits).toHaveLength(1)
   })
 })
+
+describe('telemetry.beacon_enabled reaches its own control', () => {
+  it('resolves to a settings link on the privacy tab, not a command to paste', () => {
+    const result = resolveSettingRef(
+      'telemetry.beacon_enabled',
+      buildSchemaIndex(SCHEMA_FIXTURE),
+    )
+    expect(result.mode).toBe('ui')
+    if (result.mode === 'ui') {
+      expect(result.entry.tab).toBe('privacy')
+      expect(result.entry.type).toBe('toggle')
+    }
+  })
+
+  it('is registered exactly once, so the deep link is unambiguous', () => {
+    const hits = SETTINGS_REGISTRY.filter(
+      entry => entry.configKey === 'telemetry.beacon_enabled',
+    )
+    expect(hits).toHaveLength(1)
+  })
+})

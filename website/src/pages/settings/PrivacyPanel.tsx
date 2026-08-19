@@ -165,7 +165,18 @@ export function PrivacyPanel() {
           <SlidersHorizontal className="lucide-inline" aria-hidden="true" />
           {i18nT('privacyDisclosure.controlsTitle')}
         </CardTitle>
-        <TelemetryToggle />
+        <TelemetryToggle
+          renderControl={({ checked, onChange, disabled }) => (
+            <SettingsToggle
+              label={i18nT('privacyDisclosure.toggleLabel')}
+              description={i18nT('privacyDisclosure.toggleDescription')}
+              checked={checked}
+              onChange={onChange}
+              disabled={disabled}
+              configKey="telemetry.beacon_enabled"
+            />
+          )}
+        />
         {/* Recording is a separate decision from the heartbeat: this one never
             leaves the machine, so it sits below the egress control rather than
             being folded into it. */}
