@@ -84,6 +84,13 @@ Sub-agent synthesis:'`. Its visible reply is the consolidated, user-facing summa
 so treat it as the deliverable: restate the goal, synthesize across the agents
 rather than repeating each in turn, and give concrete next actions.
 
+The prompt itself is appended to the slot as an `inject` row carrying
+`meta.injectKind = "synthesis"`, and the turn is dispatched with
+`_synthetic_payload=True`. Both matter: the row is what stops the prompt reaching
+the conversation log unattributed (it previously replayed as though the user had
+typed it), and the flag is what keeps a synthetic turn out of the
+time-to-first-token distribution.
+
 ## Sub-agent delivery failure
 
 The sub-agent completed but injecting its result into the parent session timed out.
@@ -112,6 +119,30 @@ dashboard surface, undelivered notices are batched into a single digest DM rathe
 than N pings.
 
 ## Automatic recovery continuations
+
+## How an `inject` row is rendered
+
+Role `inject` covers several unrelated things, so the render side does not guess
+from the text. Every `inject` row carries `meta.injectKind`, stamped at the append
+site, and `meta` (unlike an `inject` row's `cls`) survives the persistence
+boundary:
+
+| `injectKind` | Row is | Renders as |
+|---|---|---|
+| `synthesis` | The post-fan-out consolidation prompt | Collapsed one-line note |
+| `recovery` | A runner-authored continuation | Its own recovery card, or a generic note if the marker is unrecognised |
+| `cron` | A scheduled job's output — the user's own | Labelled bubble (also carries `cronLabel`) |
+| `user_replay` | The user's original message, replayed because the turn emitted nothing | Ordinary bubble; it is speech |
+
+`resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
+decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
+surfaces cannot disagree. It prefers a recognised content marker (durable, and
+carrying per-kind copy no tag reproduces), then applies a POSITIVE allowlist:
+only `recovery` and `synthesis` become a note. Everything else — including a row
+with no stamp, written by a gateway older than the field — keeps whatever the
+surface drew before, so no history changes rendering underneath the user.
+
+## Turn-recovery continuations
 
 The runner injects a synthetic continuation when a turn ended for a system reason
 rather than because the model was done. Each has its own prefix in

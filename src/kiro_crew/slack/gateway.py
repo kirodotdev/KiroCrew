@@ -2415,7 +2415,15 @@ class GatewayOrchestrator:
                             _cls["queue_id"] = qid
                             slot.append("queued", wrapped, json.dumps(_cls))
                         else:
-                            slot.append("inject", wrapped, inject_cls)
+                            # `cls` is not persisted for role `inject`, so the label
+                            # must also ride in `meta`, which is — otherwise the row
+                            # loses its identity on the next rehydrate.
+                            slot.append(
+                                "inject",
+                                wrapped,
+                                inject_cls,
+                                meta={"injectKind": "cron", "cronLabel": label},
+                            )
                             task = spawn_guarded_turn(
                                 self.dashboard_state,
                                 slot,

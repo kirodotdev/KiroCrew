@@ -457,6 +457,29 @@ export default [
               // missed — the same single-word residue the general class shape
               // already accepts, caught by the en-XA render gate instead.
               String.raw`^(?!.*(?:^|\s)[a-z]+\s+[a-z]+(?:\s|$))(?=[^\[]*\[[^\]\s]*[,_][^\]\s]*\])(?:[\s\-a-z0-9:/().%#]|\[[\-a-z0-9:/().%#,_]*\])+$`,
+              // A GATEWAY WIRE MARKER whose tag is bracketed ALL-CAPS, e.g.
+              // `[SYSTEM] Sub-agent synthesis:`. These are matched byte-for-byte
+              // with `startsWith` against Python constants in
+              // src/kiro_crew/dashboard/state.py and the matched prefix is then
+              // SLICED OFF, so no character reaches the screen — translating one
+              // silently stops its card from rendering in that locale. Real site:
+              // the `PREFIXES` table in pages/chat/RecoveryCard.tsx, an ALL-CAPS
+              // module constant, so `i18n-strict` looks inside it.
+              //
+              // Deliberately narrow: the string must OPEN with `[`, the tag must be
+              // ALL-CAPS (`[A-Z]+`), no second `[` may follow, AND it must END in a
+              // colon — the shape a wire marker whose instruction continues on the
+              // same line takes. The trailing colon is what keeps real copy out:
+              // without it `[BETA] Experimental — expect changes` and `[ERROR] Unable
+              // to load session` would both be exempt, which two reviewers flagged.
+              // Known false negative, stated: copy that opens with a bracketed
+              // all-caps tag AND ends in a colon is exempt. The wholly-bracketed
+              // mixed-case siblings in that same table do not need this pattern —
+              // measured: an existing shape already covers a string that is
+              // entirely one bracketed token. This entry exists for the marker
+              // that carries text AFTER the closing bracket, which that shape
+              // cannot admit.
+              String.raw`^\[[A-Z]+\][^\[\]]*:$`,
               // CSS SELECTOR LISTS, e.g. `[role="dialog"],[data-x]` or
               // `a,button,[tabindex]` — a comma-joined list of type selectors and
               // bracketed attribute selectors, as passed to querySelector. The

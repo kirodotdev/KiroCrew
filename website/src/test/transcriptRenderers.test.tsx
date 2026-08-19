@@ -114,6 +114,31 @@ describe('narrow rows win over the broad row they refine', () => {
     expect(idFor(msg('inject', { content: 'ordinary injection' }))).toBe('inject')
   })
 
+  it('routes a gateway-stamped inject to the card and leaves speech-bearing ones alone', () => {
+    // This registry serves ChatPane / SideChat / ChatEmbed. It previously gated on
+    // a recognised recovery marker alone, so every other injected shape fell
+    // through to the SDK default and painted machine prose as a bubble. The shared
+    // resolver closes that on every surface at once.
+    const synthesis = msg('inject', {
+      content: '[SYSTEM] Sub-agent synthesis: produce the consolidated write-up.',
+      meta: { injectKind: 'synthesis' },
+    })
+    expect(idFor(synthesis)).toBe('recovery_inject')
+
+    // A cron row's scheduled output is the user's own and owns a labelled bubble.
+    expect(idFor(msg('inject', {
+      content: 'nightly report: nothing regressed',
+      meta: { injectKind: 'cron', cronLabel: 'nightly' },
+    }))).toBe('inject')
+
+    // build_recovery_requeue replays the user's ORIGINAL message verbatim when the
+    // turn emitted nothing. That is speech and must never fold into a note.
+    expect(idFor(msg('inject', {
+      content: 'run the backend gates on the changed modules',
+      meta: { injectKind: 'user_replay' },
+    }))).toBe('inject')
+  })
+
   it('routes a workflow completion to its card and leaves a plain reply alone', () => {
     const completion = msg('assistant', {
       content: '[Workflow completion event]\nWorkflow `demo` (wf_abc123) → **finished**\nResult: ok\n',

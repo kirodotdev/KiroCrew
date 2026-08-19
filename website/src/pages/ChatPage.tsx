@@ -198,7 +198,7 @@ import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
-import RecoveryCard, { parseRecoveryMessage } from './chat/RecoveryCard'
+import RecoveryCard, { resolveInjectCard } from './chat/RecoveryCard'
 import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
@@ -5825,8 +5825,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // transcript for auditability, but as a one-line card that names the event
     // and the deny pattern rather than a full-width bubble of prompt prose.
     if (m.role === 'inject') {
-      const recovery = parseRecoveryMessage(m.content)
-      if (recovery) return <RecoveryCard key={key} parsed={recovery} disclosureKey={key} />
+      // One shared decision (resolveInjectCard) so this surface and the
+      // transcript-renderer registry cannot disagree about the same row. It
+      // returns null for a cron row, for a replay of the user's own words, and
+      // for a row with no provenance stamp — each of which keeps the renderer
+      // below. Anything positively marked gateway-authored folds into a note
+      // instead of falling through to a full-width bubble, which is the defect
+      // this replaces.
+      const card = resolveInjectCard(m)
+      if (card) return <RecoveryCard key={key} parsed={card} disclosureKey={key} />
     }
     if (m.role === 'error') return (
       <ErrorCard

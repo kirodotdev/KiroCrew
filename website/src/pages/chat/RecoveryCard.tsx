@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { ChevronRight, RotateCcw, TriangleAlert } from 'lucide-react'
+import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useRowDisclosure } from './rowDisclosure'
@@ -11,7 +11,7 @@ import { useRowDisclosure } from './rowDisclosure'
  * STALE_RECOVERY_PREFIX, TOOL_STALL_RECOVERY_PREFIX, CONN_RECOVERY_PREFIX,
  * BUSY_RECOVERY_PREFIX, POSTTOKEN_RECOVERY_PREFIX,
  * EMPTY_RESPONSE_RECOVERY_PREFIX, HOOK_CONTINUATION_RECOVERY_PREFIX,
- * HOOK_HALTED_RECOVERY_PREFIX).
+ * HOOK_HALTED_RECOVERY_PREFIX, SUBAGENT_SYNTHESIS_PREFIX).
  *
  * Detection is by content prefix rather than a meta flag on purpose: the rows
  * are appended with a plain CSS-class meta ("msg msg-inject"), and matching the
@@ -29,6 +29,15 @@ export type RecoveryKind =
   | 'manual'
   | 'hook'
   | 'hook_halted'
+  | 'synthesis'
+  /**
+   * Catch-all for an `inject` row this build has no dedicated prefix for — a
+   * gateway newer than the frontend, or a shape nobody has written copy for yet.
+   * Never produced by {@link parseRecoveryMessage} (which returns null on an
+   * unknown prefix); it is constructed at the render site so the `inject` branch
+   * can be terminal instead of leaking machine prose into a chat bubble.
+   */
+  | 'generic'
 
 /**
  * WIRE VALUES, never rendered — do not translate. These are matched with
@@ -58,6 +67,16 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   // and was halted with no turn dispatched. Informational, not a continuation —
   // the reached depth rides after the marker as " #N".
   ['hook_halted', '[Stop-hook nudge cap reached]'],
+  // Fired once after every sub-agent in a fan-out has completed and each result
+  // has been processed in its own turn. Not a recovery either: nothing failed.
+  // It is an orchestration prompt asking for the consolidated write-up, so its
+  // copy names the fan-out rather than reporting an interruption.
+  // WIRE VALUE, not copy: matched byte-for-byte against SUBAGENT_SYNTHESIS_PREFIX
+  // in src/kiro_crew/dashboard/state.py and then sliced off, so no character of
+  // it reaches the screen. Translating it would stop the card rendering in that
+  // locale — the failure the block comment above this table describes. Exempted
+  // by shape (leading bracketed ALL-CAPS tag) in eslint.i18n.config.js.
+  ['synthesis', '[SYSTEM] Sub-agent synthesis:'],
 ]
 
 /** `Blocked by security policy: <pattern>` — the deny pattern that fired. */
@@ -185,6 +204,20 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
     }
   }
 
+  if (kind === 'synthesis') {
+    // The marker ends with a colon and the instruction continues on the SAME
+    // line (unlike every sibling, whose marker is a standalone bracketed token).
+    // `body` therefore already holds the instruction with no leading blank line
+    // to strip — the generic slice+trim above is correct as-is.
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.subagents_finished'),
+      detail: i18nT('pages.chat.recoveryCard.consolidated_summary_requested'),
+      chip: '',
+      body,
+    }
+  }
+
   // Refusal: count the blocked-item bullets and collect the distinct deny
   // patterns. A turn can refuse several calls, and they need not share a cause.
   const blocked = body.split('\n').filter(line => BULLET_RE.test(line)).length
@@ -205,6 +238,65 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
           ? i18nT('pages.chat.recoveryCard.n_patterns', { count: distinct.length })
           : '',
     body,
+  }
+}
+
+/**
+ * Structural provenance stamped on an `inject` row's `meta` by the gateway.
+ *
+ * Kept in sync with the `injectKind` values written at the append sites in
+ * `src/kiro_crew/dashboard/chat_runner.py`, `dashboard/handlers/messaging.py`
+ * and `slack/gateway.py`.
+ *
+ * Why this exists rather than more prefix matching: `meta` is persisted and
+ * restored, whereas an `inject` row's `cls` is NOT (chat_persistence keeps `cls`
+ * only for `role === "system"`), so `meta.cronLabel` — synthesized from `cls` at
+ * emit time — vanishes after a flush + rehydrate. Anything keyed on its absence
+ * therefore mis-renders every restored row.
+ */
+export type InjectKind = 'cron' | 'recovery' | 'synthesis' | 'user_replay'
+
+/**
+ * Decide which card, if any, an `inject` row gets. The single decision point
+ * shared by ChatPage and the transcript-renderer registry, so the surfaces
+ * cannot disagree.
+ *
+ * Returns a {@link ParsedRecovery} to render as a folded note, or null to mean
+ * "not mine — let the caller's own renderer draw this row".
+ *
+ * Null is deliberately the answer for three distinct cases, because rendering a
+ * row as machine prose when it is not is strictly worse than the reverse:
+ *
+ *   - a CRON row, whose scheduled output is the user's own and which owns a
+ *     dedicated labelled bubble downstream;
+ *   - a USER_REPLAY row — `build_recovery_requeue` replays the user's original
+ *     message verbatim when the turn emitted nothing, and that is speech;
+ *   - an UNMARKED row, i.e. one persisted by a gateway older than this field.
+ *     Those keep whatever the surface drew before, so no history changes
+ *     rendering underneath the user.
+ */
+export function resolveInjectCard(m: { content: string; meta?: Record<string, unknown> | null }): ParsedRecovery | null {
+  // Content-based first: the recovery markers live in the text, which IS durable,
+  // and they carry per-kind copy no structural tag can reproduce.
+  const recovery = parseRecoveryMessage(m.content ?? '')
+  if (recovery) return recovery
+
+  const meta = m.meta ?? {}
+  const kind = meta.injectKind as InjectKind | undefined
+  // POSITIVE allowlist, deliberately: only a row that declares itself
+  // gateway-authored becomes a note. Everything else returns null, which covers
+  // `cron`, `user_replay` and an unstamped legacy row in one rule — explicit
+  // early returns for those three were measured to be unreachable (the allowlist
+  // already rejects them), so they are omitted rather than kept as dead code.
+  // The behavioural contract for each is pinned in RecoveryCard.test.tsx.
+  if (kind !== 'recovery' && kind !== 'synthesis') return null
+
+  return {
+    kind: 'generic',
+    title: i18nT('pages.chat.recoveryCard.system_notice'),
+    detail: i18nT('pages.chat.recoveryCard.injected_by_the_gateway'),
+    chip: '',
+    body: m.content ?? '',
   }
 }
 
@@ -235,8 +327,15 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'posttoken' ||
     kind === 'empty' ||
     kind === 'manual' ||
-    kind === 'hook'
-  const Icon = routine ? RotateCcw : TriangleAlert
+    kind === 'hook' ||
+    kind === 'synthesis' ||
+    kind === 'generic'
+  // Synthesis is routine, but the retry glyph would misdescribe it — nothing is
+  // being retried, several results are being folded into one. Layers says that.
+  // A generic notice makes no claim at all about what happened, so it gets the
+  // neutral info glyph rather than borrowing another kind's meaning.
+  const Icon =
+    kind === 'synthesis' ? Layers : kind === 'generic' ? Info : routine ? RotateCcw : TriangleAlert
 
   return (
     <div

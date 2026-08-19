@@ -327,3 +327,43 @@ describe('string comparison is a position exemption', () => {
     expect(await lint(`export const LABEL = 'save changes_now'`)).toHaveLength(1)
   })
 })
+
+describe('Gateway wire markers with a bracketed ALL-CAPS tag are exempt', () => {
+  it('stays quiet on the sub-agent synthesis marker', async () => {
+    // Real site: the PREFIXES table in pages/chat/RecoveryCard.tsx, an ALL-CAPS
+    // module constant, so i18n-strict looks inside it. The value is matched
+    // byte-for-byte against SUBAGENT_SYNTHESIS_PREFIX and then sliced off.
+    expect(await lint("export const PROBE = ['[SYSTEM] Sub-agent synthesis:']")).toEqual([])
+  })
+
+  it('stays quiet on a bare bracketed ALL-CAPS tag with a colon', async () => {
+    expect(await lint("export const PROBE = ['[SYSTEM]:']")).toEqual([])
+  })
+
+  it('still reports copy that opens with an ALL-CAPS tag but is not a marker', async () => {
+    // The trailing colon is what separates a wire marker from real copy. Without
+    // it these would all have been exempt, which is why the pattern requires it.
+    expect(await lint("export const PROBE = ['[BETA] Experimental — expect changes']")).toHaveLength(1)
+    expect(await lint("export const PROBE = ['[ERROR] Unable to load session']")).toHaveLength(1)
+  })
+
+  it('leaves the wholly-bracketed mixed-case siblings exempt too', async () => {
+    // NOT via the pattern added here (which requires an ALL-CAPS tag) — measured:
+    // an existing shape already covers a string that is entirely one bracketed
+    // token. Asserted so that if that other exemption is ever narrowed, the
+    // sibling markers in the same PREFIXES table fail loudly here rather than
+    // silently becoming "untranslated copy" on the next line anyone touches.
+    expect(await lint("export const PROBE = ['[Tool refusal — automatic recovery]']")).toEqual([])
+  })
+
+  it('still reports prose that merely contains a bracketed all-caps word', async () => {
+    // The marker must OPEN the string — a tag mid-sentence is prose.
+    expect(await lint("export const PROBE = ['Turn ended [SYSTEM] unexpectedly']")).toHaveLength(1)
+  })
+
+  it('still reports a string carrying a second bracket', async () => {
+    // No second `[` may follow: that shape is a selector or a class cluster,
+    // both of which have their own narrower exemptions.
+    expect(await lint("export const PROBE = ['[SYSTEM] see [details] here']")).toHaveLength(1)
+  })
+})

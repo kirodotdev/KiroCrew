@@ -3612,6 +3612,23 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         row_cls = "msg msg-inject"
     else:
         row_cls = "msg msg-u"
+    # Durable provenance for every `inject` row. `cls` is NOT persisted for this
+    # role (chat_persistence only keeps it for `role == "system"`), and the
+    # frontend's `meta.cronLabel` exists on the wire only because parse_cls_meta
+    # synthesizes it at emit time — so anything keyed on it silently disappears
+    # after a flush + rehydrate. `meta` IS persisted and restored, so the render
+    # side can ask what a row IS instead of guessing from what its text is not.
+    #
+    # The recovery split matters: build_recovery_requeue replays the USER'S OWN
+    # message verbatim when the turn emitted nothing, and that row must keep
+    # rendering as speech. `synthetic_payload` is the existing answer to exactly
+    # that question, so reuse it rather than inventing a second signal.
+    if row_role == "inject":
+        _inject_kind = "cron" if is_cron else "recovery" if synthetic_payload else "user_replay"
+        _inject_meta: dict = {"injectKind": _inject_kind}
+        if is_cron:
+            _inject_meta["cronLabel"] = cron_label
+        _row_meta = {**_row_meta, **_inject_meta} if isinstance(_row_meta, dict) else _inject_meta
     slot.append(
         row_role,
         next_msg,
@@ -3656,8 +3673,28 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
+        # Append the row BEFORE dispatching, matching `_start_next_queued_turn`.
+        # This site bypasses that function (it runs no queue entry), and it was
+        # the only turn-dispatching path that appended nothing — so the prompt
+        # reached the conversation log with no dashboard row, and on replay it
+        # resurfaced attributed to the USER. `inject` is the role every other
+        # runner-authored continuation already uses, which is exactly what
+        # SUBAGENT_SYNTHESIS_PREFIX's own docstring promises.
+        slot.append(
+            "inject",
+            SUBAGENT_SYNTHESIS_PROMPT,
+            "msg msg-inject",
+            meta={"injectKind": "synthesis"},
+        )
+        state.push_slots_update()
         synthesis_task = spawn_guarded_turn(
-            state, slot, _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT)
+            state,
+            slot,
+            # Declare the provenance structurally too. Without it this turn starts
+            # a time-to-first-token clock whose own contract excludes synthetic
+            # prompts, and `_is_synthetic` has to recover the same fact by
+            # re-matching the marker string downstream.
+            _run_chat(state, slot, SUBAGENT_SYNTHESIS_PROMPT, _synthetic_payload=True),
         )
         try:
             await synthesis_task

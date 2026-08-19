@@ -1342,7 +1342,15 @@ async def api_send_message(request: web.Request) -> web.Response:
                         from kiro_crew.dashboard.chat_runner import _run_chat
                         from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 
-                        slot.append("inject", wrapped, inject_cls)
+                        # `cls` is not persisted for role `inject`, so the label
+                        # must also ride in `meta`, which is — otherwise the row
+                        # loses its identity on the next rehydrate.
+                        slot.append(
+                            "inject",
+                            wrapped,
+                            inject_cls,
+                            meta={"injectKind": "cron", "cronLabel": label},
+                        )
                         task = spawn_guarded_turn(state, slot, _run_chat(state, slot, wrapped))
                         slot.task = task
                         state.push_slots_update()

@@ -23,7 +23,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import StopEventCard from './StopEventCard'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
-import RecoveryCard, { parseRecoveryMessage } from './RecoveryCard'
+import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { ErrorCard } from './ErrorCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
@@ -205,13 +205,19 @@ export function createTranscriptRenderers(
         ),
     },
     {
-      // Refines `inject`: a synthetic turn-recovery injection is a one-line
-      // card, not the cron-notification bubble the default draws.
+      // Refines `inject`: a gateway-authored injection is a one-line card, not
+      // the cron-notification bubble the default draws.
+      //
+      // Matched via the SHARED resolver rather than the recovery parser alone, so
+      // this registry (ChatPane, SideChat, ChatEmbed) makes the same decision
+      // ChatPage does. Gating only on a recognised recovery marker left every
+      // other injected shape — the sub-agent synthesis prompt included — falling
+      // through to the SDK default, which paints raw machine prose as a bubble.
       id: 'recovery_inject',
       roles: ['inject'],
-      match: m => parseRecoveryMessage(m.content) !== null,
+      match: m => resolveInjectCard(m) !== null,
       render: (m, ctx) => {
-        const parsed = parseRecoveryMessage(m.content)
+        const parsed = resolveInjectCard(m)
         if (!parsed) return null
         return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
       },

@@ -1448,6 +1448,90 @@ class TestRunPendingSynthesis:
         assert slot._pending_synthesis is False
         assert slot._synthesis_inflight is False
 
+    @pytest.mark.asyncio
+    async def test_synthesis_prompt_is_appended_as_an_inject_row(self, tmp_path):
+        """The prompt must reach the transcript as `inject`, never as user speech.
+
+        This site bypasses `_start_next_queued_turn` (it runs no queue entry),
+        which is the only other place a turn-dispatching path appends a row. It
+        previously appended nothing at all, so the prompt reached the
+        conversation log with no dashboard row and resurfaced attributed to the
+        USER on replay.
+        """
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+
+        async def _ok():
+            return None
+
+        # Observed INSIDE the dispatch, so the test can prove the row was already
+        # appended when the turn started. Asserting only on the final state cannot
+        # tell append-before-dispatch from append-after, and the ordering is the
+        # whole point: a turn that dies immediately must still leave the row.
+        seen: dict = {}
+
+        def _capture(_state, _slot, coro, *a, **kw):
+            seen["rows"] = len(_slot.messages)
+            coro.close()  # never awaited; avoids an un-awaited-coroutine warning
+            return asyncio.ensure_future(_ok())
+
+        with patch.object(chat_runner, "spawn_guarded_turn", side_effect=_capture), patch.object(
+            chat_runner, "_run_chat", return_value=MagicMock()
+        ) as run_chat:
+            await chat_runner._run_pending_synthesis(state, slot)
+
+        assert seen.get("rows") == 1, "the row must exist BEFORE the turn is dispatched"
+        rows = [m for m in slot.messages if m.get("content", "").startswith("[SYSTEM] Sub-agent")]
+        assert len(rows) == 1, "the synthesis prompt must appear exactly once"
+        row = rows[0]
+        assert row["role"] == "inject"
+        # Never the user-bubble class: that is what produced the reported defect.
+        assert row.get("cls") == "msg msg-inject"
+        # Durable provenance. `cls` is NOT persisted for role `inject`, so a render
+        # side keyed on cls-derived data mis-renders every restored row; `meta` is.
+        assert (row.get("meta") or {}).get("injectKind") == "synthesis"
+        # And the turn itself must declare it is runner-authored, rather than
+        # leaving a downstream marker-match to recover the same fact.
+        assert run_chat.call_args.kwargs.get("_synthetic_payload") is True
+
+    def test_inject_provenance_survives_the_persistence_boundary(self):
+        """`injectKind` must round-trip; the older `cls` channel does not.
+
+        This is the property the whole render decision now rests on. An inject
+        row's ``cls`` is persisted only for ``role == "system"``, so the
+        ``cronLabel`` the frontend reads (synthesized from ``cls`` at emit time)
+        silently disappears on the next rehydrate — which is exactly how a
+        carve-out keyed on it swallowed every restored cron notification. Assert
+        the durable channel directly rather than trusting the live shape.
+        """
+        from kiro_crew.dashboard.chat_persistence import _build_message_entry_uncached
+
+        cron_cls = json.dumps({"cronLabel": "nightly-audit"})
+        entry = _build_message_entry_uncached(
+            {
+                "role": "inject",
+                "content": '[Cron notification from "nightly-audit"]\nreport\n',
+                "cls": cron_cls,
+                "meta": {"injectKind": "cron", "cronLabel": "nightly-audit"},
+            }
+        )
+        # The negative half — proves the bug this replaces was real, and fails if
+        # someone "fixes" it by widening the cls gate instead.
+        assert "cls" not in entry, "cls is not persisted for an inject row"
+        assert entry["meta"]["injectKind"] == "cron"
+        assert entry["meta"]["cronLabel"] == "nightly-audit"
+
+        synth = _build_message_entry_uncached(
+            {
+                "role": "inject",
+                "content": "[SYSTEM] Sub-agent synthesis: go",
+                "cls": "msg msg-inject",
+                "meta": {"injectKind": "synthesis"},
+            }
+        )
+        assert synth["meta"]["injectKind"] == "synthesis"
+
 
 class TestFinishQueueCycle:
     @pytest.mark.asyncio

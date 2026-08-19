@@ -12,6 +12,7 @@ from pathlib import Path
 from kiro_crew.dashboard.state import (
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
+    SUBAGENT_SYNTHESIS_PREFIX,
     TOOL_STALL_RECOVERY_PREFIX,
 )
 
@@ -31,6 +32,11 @@ def test_recovery_prefixes_present_in_frontend_card() -> None:
         REFUSAL_RECOVERY_PREFIX,
         STALE_RECOVERY_PREFIX,
         TOOL_STALL_RECOVERY_PREFIX,
+        # Not a recovery, but rendered by the same card from the same literal
+        # signal, so it carries the same drift risk: if this constant changes
+        # without the TSX changing too, the synthesis prompt silently stops
+        # matching and reappears as a full-width bubble.
+        SUBAGENT_SYNTHESIS_PREFIX,
     ):
         assert prefix in source, f"RecoveryCard.tsx is missing the prefix {prefix!r}"
 

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import RecoveryCard, { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
+import RecoveryCard, { parseRecoveryMessage, resolveInjectCard } from '../pages/chat/RecoveryCard'
 
 // Verbatim prefixes from src/kiro_crew/dashboard/state.py. The separator is an
 // em dash, not a hyphen — a mismatch is exactly the drift this suite guards.
@@ -300,25 +300,143 @@ describe('RecoveryCard', () => {
 describe('ChatPage – recovery card wiring', () => {
   const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../pages/ChatPage.tsx'), 'utf8')
 
-  it('imports the card and its parser', () => {
+  it('imports the card and its shared resolver', () => {
     expect(src).toMatch(
-      /import\s+RecoveryCard\s*,\s*\{\s*parseRecoveryMessage\s*\}\s*from\s*['"][^'"]*RecoveryCard['"]/,
+      /import\s+RecoveryCard\s*,\s*\{\s*resolveInjectCard\s*\}\s*from\s*['"][^'"]*RecoveryCard['"]/,
     )
   })
 
-  it('routes recovery inject rows to the card', () => {
-    expect(src).toMatch(/parseRecoveryMessage\s*\(\s*m\.content\s*\)/)
+  it('routes inject rows through the shared resolver to the card', () => {
+    expect(src).toMatch(/resolveInjectCard\s*\(\s*m\s*\)/)
     expect(src).toMatch(/<RecoveryCard\s/)
   })
 
-  it('checks for a recovery row BEFORE the generic inject bubble renders', () => {
+  it('checks for a card BEFORE the generic inject bubble renders', () => {
     // The generic `isInject` branch paints any injected text as a full-width
-    // warning bubble. If the recovery check lands after it, the card is dead
+    // warning bubble. If the resolver check lands after it, the card is dead
     // code and the raw prompt reappears.
-    const card = src.indexOf('parseRecoveryMessage(m.content)')
+    const card = src.indexOf('resolveInjectCard(m)')
     const generic = src.indexOf("const isInject = m.role === 'inject'")
     expect(card).toBeGreaterThanOrEqual(0)
     expect(generic).toBeGreaterThanOrEqual(0)
     expect(card).toBeLessThan(generic)
+  })
+})
+
+/** Verbatim from SUBAGENT_SYNTHESIS_PREFIX in src/kiro_crew/dashboard/state.py. */
+const SYNTHESIS = '[SYSTEM] Sub-agent synthesis:'
+
+describe('parseRecoveryMessage – sub-agent synthesis', () => {
+  // Unlike every sibling marker, this one ends in a colon and the instruction
+  // continues on the SAME line. Shaped as SUBAGENT_SYNTHESIS_PROMPT emits it.
+  const full =
+    `${SYNTHESIS} all sub-agents you spawned have completed and each result was processed above. ` +
+    'Produce a single consolidated synthesis as your reply for the user: (1) restate the original goal.'
+
+  it('recognises the synthesis marker', () => {
+    const p = parseRecoveryMessage(full)
+    expect(p?.kind).toBe('synthesis')
+  })
+
+  it('names the fan-out rather than reporting an interruption', () => {
+    const p = parseRecoveryMessage(full)
+    expect(p?.title).toBe('Sub-agents finished')
+    // Nothing failed, stalled or was blocked — the copy must not imply otherwise.
+    expect(p?.title).not.toMatch(/stall|block|interrupt|error|fail/i)
+    expect(p?.detail).not.toMatch(/recover/i)
+  })
+
+  it('strips the marker from the body and keeps the instruction', () => {
+    const p = parseRecoveryMessage(full)
+    expect(p?.body.startsWith('[SYSTEM]')).toBe(false)
+    expect(p?.body).toMatch(/^all sub-agents you spawned have completed/)
+  })
+
+  it('carries no chip', () => {
+    expect(parseRecoveryMessage(full)?.chip).toBe('')
+  })
+
+  it('renders collapsed as routine, and expands to the verbatim prompt', async () => {
+    const p = parseRecoveryMessage(full)!
+    render(<RecoveryCard parsed={p} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-kind', 'synthesis')
+    // Routine: this is orchestration, not a fault the user must act on.
+    expect(card).toHaveAttribute('data-severity', 'routine')
+    expect(screen.queryByTestId('recovery-card-body')).toBeNull()
+    await userEvent.click(screen.getByTestId('recovery-card-toggle'))
+    expect(screen.getByTestId('recovery-card-body').textContent).toMatch(
+      /^all sub-agents you spawned have completed/,
+    )
+  })
+})
+
+describe('RecoveryCard – generic system notice', () => {
+  // The catch-all the render site constructs for an inject shape this build has
+  // no prefix for. parseRecoveryMessage never produces it.
+  const parsed = {
+    kind: 'generic' as const,
+    title: 'System notice',
+    detail: 'injected by the gateway',
+    chip: '',
+    body: '[Some future marker] machine-facing prose',
+  }
+
+  it('renders as a folded note, not a bubble', async () => {
+    render(<RecoveryCard parsed={parsed} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-kind', 'generic')
+    expect(card).toHaveAttribute('data-severity', 'routine')
+    // Collapsed by default: the prose is folded away, not shown inline.
+    expect(screen.queryByTestId('recovery-card-body')).toBeNull()
+    await userEvent.click(screen.getByTestId('recovery-card-toggle'))
+    expect(screen.getByTestId('recovery-card-body').textContent).toContain('machine-facing prose')
+  })
+})
+
+describe('resolveInjectCard – which inject rows become notes', () => {
+  // Behavioural, not a source scan. The previous guards asserted ChatPage's raw
+  // text contained `if (!m.meta?.cronLabel)`, which pinned the MECHANISM rather
+  // than the behaviour — and that mechanism was wrong, because an inject row's
+  // `cls` (where cronLabel actually lives) is not persisted, so the guard failed
+  // on every restored row while the test still passed. Assert outcomes instead.
+  const row = (content: string, meta?: Record<string, unknown>) => ({ content, meta })
+
+  it('folds a gateway-stamped synthesis prompt into a note', () => {
+    const card = resolveInjectCard(row(`${SYNTHESIS} produce the write-up.`, { injectKind: 'synthesis' }))
+    expect(card?.kind).toBe('synthesis')
+  })
+
+  it('folds a stamped row whose marker this build does not know', () => {
+    const card = resolveInjectCard(row('[Some future marker] machine prose', { injectKind: 'recovery' }))
+    expect(card?.kind).toBe('generic')
+  })
+
+  it('leaves a cron row to its own labelled bubble, stamped OR restored-legacy', () => {
+    // Stamped (durable, survives a flush):
+    expect(resolveInjectCard(row('nightly report', { injectKind: 'cron', cronLabel: 'nightly' }))).toBeNull()
+    // Legacy live row: cls-derived cronLabel with no injectKind yet.
+    expect(resolveInjectCard(row('nightly report', { cronLabel: 'nightly' }))).toBeNull()
+  })
+
+  it('leaves a replay of the user OWN words as speech', () => {
+    // The case a content-sniffing fallback cannot see: build_recovery_requeue
+    // re-queues the user's original message verbatim, with no marker in it.
+    expect(resolveInjectCard(row('run the backend gates', { injectKind: 'user_replay' }))).toBeNull()
+  })
+
+  it('leaves an UNMARKED row exactly as it rendered before', () => {
+    // A row persisted by a gateway older than the field. Folding it away would
+    // change history's rendering under the user, so absent provenance must mean
+    // "not mine" rather than "machine prose".
+    expect(resolveInjectCard(row('ordinary injection'))).toBeNull()
+    expect(resolveInjectCard(row('ordinary injection', {}))).toBeNull()
+  })
+
+  it('still prefers the content marker, which is durable', () => {
+    // Recovery copy is per-kind and no structural tag reproduces it, so a
+    // recognised marker wins even when the stamp says something coarser.
+    const card = resolveInjectCard(row('[Stalled turn — automatic recovery]\ngo on', { injectKind: 'recovery' }))
+    expect(card?.kind).toBe('stalled')
   })
 })
