@@ -760,3 +760,155 @@ class TestPreservedMtimeFillRace:
         before = log._cache_gen("k")
         log._invalidate_cache("k")
         assert observed and all(g == before + 1 for g in observed)
+
+    def test_folded_fill_discarded_after_racing_session_rewrite(self, tmp_path: Path) -> None:
+        """A search fold spanning a preserved-mtime rewrite must not stick.
+
+        A surviving stale fold is worse than a stale preview: the fold decides
+        whether a session MATCHES at all, so text removed by the rewrite would
+        keep matching — and text added by it would never match — for the life
+        of the process.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "the old needle")
+        log._invalidate_cache("k")  # cold cache so the search takes the fold fill
+
+        def rewrite() -> None:
+            # rewrite_session is compaction housekeeping: it rewrites the file
+            # to the given messages and restores the pre-write mtime, so only
+            # the generation re-check can catch the racing fold.
+            log.rewrite_session("k", [{"role": "user", "content": "the new needle"}])
+
+        proxy = _RewriteOnFirstStore(log._folded_cache, rewrite)
+        log._folded_cache = proxy  # type: ignore[assignment]
+
+        log.search_sessions("needle")  # the racing fill
+        assert proxy.fired, "the racing rewrite was never injected"
+        # The next search must be answered from the rewritten file, not the memo.
+        assert log.search_sessions("old needle") == []
+        hits = log.search_sessions("new needle")
+        assert len(hits) == 1
+
+    def test_snippet_fill_discarded_after_racing_session_rewrite(self, tmp_path: Path) -> None:
+        """The snippet memo (filled by the same fold) must not outlive a rewrite.
+
+        A stale surviving entry here shows the user a preview line quoting text
+        the transcript no longer contains. The snippet store happens inside
+        ``_build_folded`` BEFORE the folded store, so the proxy injects the
+        rewrite at the snippet publish — strictly inside the fold's
+        stat → read → publish window.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "preview of the old text")
+        log._invalidate_cache("k")
+
+        def rewrite() -> None:
+            log.rewrite_session("k", [{"role": "user", "content": "preview of the new text"}])
+
+        proxy = _RewriteOnFirstStore(log._snippet_cache, rewrite)
+        log._snippet_cache = proxy  # type: ignore[assignment]
+
+        log.search_sessions("preview")  # the racing fill (fold stores the snippet memo)
+        assert proxy.fired, "the racing rewrite was never injected"
+        # The next snippet must come from the rewritten file, not the memo.
+        assert "new text" in log._content_snippet("k", "preview")
+
+    def test_folded_and_snippet_hits_require_matching_generation(self, tmp_path: Path) -> None:
+        """A warm fold/snippet entry must miss when only the generation moved.
+
+        Models the cross-instance preserved-mtime rewrite: the writer's
+        ``_invalidate_cache`` pops ITS instance's caches, so all this reader
+        ever observes is the generation bump — the entry is still present and
+        its stored mtime still matches the file. An mtime-only hit check
+        serves the stale fold forever; the generation clause must force the
+        re-fold.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("k", "user", "needle in the haystack")
+        log.search_sessions("needle")  # warm both memos
+        assert log._folded_cache.get("k") is not None
+        stored = log._snippet_cache.get("k")
+        assert stored is not None
+        # The bump alone (no pop) is exactly what a cross-instance writer's
+        # invalidation looks like from this instance: the process-wide table
+        # moves but this instance's entries are never popped, surviving with
+        # matching mtimes.
+        log._bump_cache_gen("k", log._cache_key_identities("k"))
+        # Pin the snippet HIT clause in isolation first: poison the memo's
+        # payload keeping its (still matching) mtime and now-stale generation.
+        # The fold's own re-fold would republish this memo and mask a missing
+        # generation clause here, so this must be asserted before the search.
+        log._snippet_cache["k"] = (stored[0], stored[1], ["poisoned"])
+        snippet = log._content_snippet("k", "needle")
+        assert "poisoned" not in snippet, "a stale generation must not be trusted"
+        assert "needle" in snippet
+        folds = 0
+        real_build = log._build_folded
+
+        def counting_build(key: str, mtime: float, gen: int) -> Any:
+            nonlocal folds
+            folds += 1
+            return real_build(key, mtime, gen)
+
+        log._build_folded = counting_build  # type: ignore[method-assign]
+        hits = log.search_sessions("needle")
+        assert len(hits) == 1
+        assert folds == 1, "bumped generation must force a re-fold despite the matching mtime"
+        # And the re-published entries carry the CURRENT generation, so the
+        # next query is a warm hit again.
+        folds = 0
+        log.search_sessions("needle")
+        assert folds == 0
+
+    def test_cross_instance_preserved_mtime_rewrite_unhits_search_memos(
+        self, tmp_path: Path
+    ) -> None:
+        """The end-to-end issue #4414 scenario, no injection required.
+
+        A long-lived reader instance holds warm fold/snippet memos; a
+        short-lived instance over the same directory performs a
+        preserved-mtime rewrite. The writer's ``_invalidate_cache`` pops only
+        its own instance's caches, and ``_restore_mtime`` keeps the file's
+        mtime matching the reader's entries — so before the generation clause
+        the reader served pre-rewrite search results and previews for the life
+        of the process. The process-wide generation table is what carries the
+        writer's bump across instances; the per-entry clause is what acts on
+        it.
+        """
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        reader.append("k", "user", "the old needle")
+        assert [h["key"] for h in reader.search_sessions("old needle")] == ["k"]  # warm memos
+
+        writer.rewrite_session("k", [{"role": "user", "content": "the new needle"}])
+
+        assert (
+            reader.search_sessions("old needle") == []
+        ), "reader must stop matching text the rewrite removed"
+        hits = reader.search_sessions("new needle")
+        assert [h["key"] for h in hits] == ["k"], "reader must match the rewritten text"
+        assert "new needle" in reader._content_snippet(
+            "k", "needle"
+        ), "the preview must quote the rewritten transcript"
+
+    def test_cross_instance_preserved_mtime_metadata_edit_unhits_meta_cache(
+        self, tmp_path: Path
+    ) -> None:
+        """Same two-instance scenario for the metadata memo.
+
+        ``update_metadata`` restores the pre-write mtime, and the writer's
+        pops cannot reach the reader's ``_meta_cache`` — before the generation
+        clause the reader served the stale title (and agent / folder / pin
+        state) for the life of the process.
+        """
+        reader = ConversationLog(base_dir=tmp_path)
+        writer = ConversationLog(base_dir=tmp_path)
+        reader.append("k", "user", "hello")
+        reader.update_metadata("k", {"title": "old"})
+        assert reader.get_metadata("k").get("title") == "old"  # warm the memo
+
+        writer.update_metadata("k", {"title": "new"})
+
+        assert (
+            reader.get_metadata("k").get("title") == "new"
+        ), "reader must observe the other instance's preserved-mtime edit"
