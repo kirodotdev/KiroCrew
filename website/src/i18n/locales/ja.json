@@ -7888,6 +7888,7 @@
         "off_body": "有効にすると以降のターンが要約されます。過去のターンは遡って作成されません。",
         "off_title": "セッションサマリーは無効です",
         "open_items_heading": "未対応の項目",
+        "open_items_less": "表示を減らす",
         "open_items_more": "他 {{n}} 件",
         "open_items_other": "未対応 {{count}} 件",
         "pivoted_from_turn": "ターン {{turn}} のあなたの質問から派生",

@@ -7991,6 +7991,7 @@
         "off_body": "Beim Aktivieren werden neue Züge zusammengefasst; frühere Züge werden nicht nachgetragen.",
         "off_title": "Sitzungszusammenfassungen sind aus",
         "open_items_heading": "Offene Punkte",
+        "open_items_less": "Weniger anzeigen",
         "open_items_more": "+{{n}} weitere",
         "open_items_one": "{{count}} offener Punkt",
         "open_items_other": "{{count}} offene Punkte",

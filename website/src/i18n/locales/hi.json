@@ -7991,6 +7991,7 @@
         "off_body": "चालू करने पर नए टर्न का सारांश बनता है; पुराने टर्न नहीं जोड़े जाते।",
         "off_title": "सत्र सारांश बंद हैं",
         "open_items_heading": "खुले आइटम",
+        "open_items_less": "कम दिखाएँ",
         "open_items_more": "और {{n}}",
         "open_items_one": "{{count}} खुला आइटम",
         "open_items_other": "{{count}} खुले आइटम",

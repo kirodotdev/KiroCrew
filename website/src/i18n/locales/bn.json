@@ -7991,6 +7991,7 @@
         "off_body": "চালু করলে নতুন টার্নের সারসংক্ষেপ তৈরি হয়; আগের টার্ন পূরণ করা হয় না।",
         "off_title": "সেশন সারসংক্ষেপ বন্ধ আছে",
         "open_items_heading": "খোলা আইটেম",
+        "open_items_less": "কম দেখাও",
         "open_items_more": "আরও {{n}}টি",
         "open_items_one": "{{count}}টি খোলা আইটেম",
         "open_items_other": "{{count}}টি খোলা আইটেম",

@@ -8199,6 +8199,7 @@
         "open_items_few": "{{count}} открытых пункта",
         "open_items_heading": "Открытые пункты",
         "open_items_many": "{{count}} открытых пунктов",
+        "open_items_less": "Показать меньше",
         "open_items_more": "+{{n}} ещё",
         "open_items_one": "{{count}} открытый пункт",
         "open_items_other": "{{count}} открытых пункта",

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ChevronRight, ListChecks, ListTree, RefreshCw, Clock, RotateCcw, MoveUpRight, Sparkles, Loader2 } from 'lucide-react'
+import { AlertTriangle, ChevronRight, ChevronUp, ListChecks, ListTree, RefreshCw, Clock, RotateCcw, MoveUpRight, Sparkles, Loader2 } from 'lucide-react'
 
 import { api, ApiError } from '../../api/client'
 import { parseErrorCode } from '../../utils/errorReport'
@@ -41,6 +41,7 @@ import {
 const OPEN_KEY_PREFIX = 'mc-summary-open:'
 const NOTES_KEY_PREFIX = 'mc-summary-notes:'
 const TRIAGE_KEY_PREFIX = 'mc-summary-triage:'
+const TRIAGE_ALL_KEY_PREFIX = 'mc-summary-triage-all:'
 
 /** Per-slot disclosure state. Persisted so re-opening the panel does not undo
  *  the reader's own collapsing, matching how the panel tab strip persists.
@@ -87,6 +88,15 @@ function loadTriageOpen(slot: string): Record<string, boolean> {
   } catch {
     return {}
   }
+}
+
+/** Whether the block renders every open item or only the first `TRIAGE_VISIBLE`.
+ *  Capped by default: the block answers "does this session need me?", and past a
+ *  few rows it pushes the intent list off screen on exactly the sessions with
+ *  the most to show. Persisted like the other disclosures, so a reader who wants
+ *  the whole list does not re-expand it on every visit. */
+function loadTriageAll(slot: string): boolean {
+  return safeGetItem(TRIAGE_ALL_KEY_PREFIX + slot) === '1'
 }
 
 const STATE_LABEL: Record<IntentState, string> = {
@@ -242,6 +252,7 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
   const [openMap, setOpenMap] = useState<Record<string, boolean>>(() => loadOpen(slot))
   const [notesOpen, setNotesOpen] = useState<boolean>(() => loadNotesOpen(slot))
   const [triageOpen, setTriageOpen] = useState<Record<string, boolean>>(() => loadTriageOpen(slot))
+  const [triageAll, setTriageAll] = useState<boolean>(() => loadTriageAll(slot))
   // Generation is the one thing this panel does that spends money, so its
   // in-flight and failure states are local rather than folded into the query's:
   // `isFetching` already means "re-reading the sidecar", which is free, and a
@@ -342,6 +353,13 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
     [slot],
   )
 
+  const toggleTriageAll = useCallback(() => {
+    setTriageAll(prev => {
+      safeSetItem(TRIAGE_ALL_KEY_PREFIX + slot, prev ? '0' : '1')
+      return !prev
+    })
+  }, [slot])
+
   // Memoized so the `??` fallback does not produce a new array identity every
   // render, which would defeat the triage memo below.
   const intents = useMemo(() => data?.intents ?? [], [data])
@@ -354,6 +372,9 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
   )
   const triage = useMemo(() => allOpen.slice(0, TRIAGE_VISIBLE), [allOpen])
   const hiddenOpen = allOpen.length - triage.length
+  // What the block actually renders. `triage` stays the capped set because the
+  // heading chip and the block's own visibility key off it.
+  const shownOpen = triageAll ? allOpen : triage
 
   if (isLoading) {
     return (
@@ -517,7 +538,7 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
               <ListChecks className="lucide-inline" />
               {i18nT('pages.chat.sessionSummary.open_items_heading')}
             </div>
-            {triage.map((item, i) => {
+            {shownOpen.map((item, i) => {
               const key = triageKey(item)
               const open = triageOpen[key] === true
               return (
@@ -551,10 +572,32 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
               )
             })}
             {hiddenOpen > 0 && (
-              // Without this the block silently withholds items on exactly the
-              // sessions that have the most of them.
-              <div className="pt-[7px] mt-[7px] border-t border-border text-[12px] text-muted-strong">
-                {i18nT('pages.chat.sessionSummary.open_items_more', { n: hiddenOpen })}
+              // A real control, not a caption: the row reads as an affordance,
+              // so it has to be one. Without it the block silently withholds
+              // items on exactly the sessions that have the most of them.
+              //
+              // Collapsed it is the count alone — the number IS the invitation,
+              // and a chevron beside it competes with the per-item chevrons this
+              // row is not one of. Expanded the count is spent, so the row needs
+              // its own affordance, and an up-chevron after the label points at
+              // the collapse it performs while keeping both labels on one left
+              // edge.
+              <div className="pt-[7px] mt-[7px] border-t border-border">
+                <button
+                  type="button"
+                  onClick={toggleTriageAll}
+                  aria-expanded={triageAll}
+                  className="w-full text-left flex items-center gap-1 text-[12px] text-muted-strong rounded hover:bg-bg-hover hover:text-text"
+                >
+                  {triageAll ? (
+                    <>
+                      {i18nT('pages.chat.sessionSummary.open_items_less')}
+                      <ChevronUp className="lucide-inline shrink-0" />
+                    </>
+                  ) : (
+                    i18nT('pages.chat.sessionSummary.open_items_more', { n: hiddenOpen })
+                  )}
+                </button>
               </div>
             )}
           </div>

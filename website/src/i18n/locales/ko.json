@@ -7888,6 +7888,7 @@
         "off_body": "켜면 이후 턴이 요약됩니다. 이전 턴은 소급 생성되지 않습니다.",
         "off_title": "세션 요약이 꺼져 있습니다",
         "open_items_heading": "미해결 항목",
+        "open_items_less": "간략히 보기",
         "open_items_more": "외 {{n}}건",
         "open_items_other": "미해결 {{count}}건",
         "pivoted_from_turn": "턴 {{turn}}의 질문에서 시작됨",

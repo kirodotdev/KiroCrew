@@ -7888,6 +7888,7 @@
         "off_body": "启用后将为新的对话轮次生成摘要，之前的轮次不会补全。",
         "off_title": "会话摘要已关闭",
         "open_items_heading": "待处理项",
+        "open_items_less": "收起",
         "open_items_more": "还有 {{n}} 项",
         "open_items_other": "{{count}} 项待处理",
         "pivoted_from_turn": "由你在第 {{turn}} 轮的提问转向而来",

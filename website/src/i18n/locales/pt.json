@@ -8095,6 +8095,7 @@
         "off_title": "Os resumos de sessão estão desativados",
         "open_items_heading": "Itens abertos",
         "open_items_many": "{{count}} itens abertos",
+        "open_items_less": "Mostrar menos",
         "open_items_more": "+{{n}} mais",
         "open_items_one": "{{count}} item aberto",
         "open_items_other": "{{count}} itens abertos",

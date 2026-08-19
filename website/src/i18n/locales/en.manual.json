@@ -2832,6 +2832,7 @@
         "off_body": "Turning them on summarizes new turns; earlier turns are not backfilled.",
         "off_title": "Session summaries are off",
         "open_items_heading": "Open items",
+        "open_items_less": "Show less",
         "open_items_more": "+{{n}} more",
         "open_items_one": "{{count}} open item",
         "open_items_other": "{{count}} open items",

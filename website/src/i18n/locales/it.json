@@ -8095,6 +8095,7 @@
         "off_title": "I riepiloghi di sessione sono disattivati",
         "open_items_heading": "Elementi aperti",
         "open_items_many": "{{count}} elementi aperti",
+        "open_items_less": "Mostra meno",
         "open_items_more": "+{{n}} altri",
         "open_items_one": "{{count}} elemento aperto",
         "open_items_other": "{{count}} elementi aperti",
