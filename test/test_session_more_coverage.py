@@ -513,6 +513,15 @@ class TestEvictStaleSession:
         assert mgr._sessions["task:step1"] is theirs
         ours.provider.shutdown.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_eviction_unlinks_temp_files_from_the_session_queue(self, mgr, tmp_path) -> None:
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        sess = _register(mgr, "task:step1")
+        sess.queue.append(("ts1", "queued", {"image_temp_paths": [str(img)]}))
+        await mgr._evict_stale_session("task:step1", sess)
+        assert not img.exists()
+
 
 # ── Background provider dispatch ─────────────────────────────────────────────
 
