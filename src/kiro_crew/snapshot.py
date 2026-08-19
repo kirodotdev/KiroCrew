@@ -491,9 +491,46 @@ def _merge_memory(src_db: Path, dst_db: Path) -> None:
         conn.close()
 
 
+def _read_cron_jobs(label: str, path: Path) -> dict | None:
+    """Parse one side of a cron merge, or ``None`` if it cannot be trusted.
+
+    Every other rejection on the restore path reports and moves on; an unparsed
+    file here would instead exit the whole restore with a traceback. The read is
+    explicitly UTF-8 because a job name is free text and the platform default
+    would decode it differently on Windows.
+
+    Parsing is not enough: the merge looks ``jobs`` up on the result and calls
+    ``.get`` on every entry, so a file that is valid JSON but the wrong shape
+    would fail one or two lines further down with a ``TypeError`` or
+    ``AttributeError`` -- the same crash this refusal exists to prevent, just
+    moved. Only the structure the merge itself relies on is checked; the fields
+    of a job are the cron loader's business, not this one's. A missing ``jobs``
+    key keeps its existing meaning of "no jobs".
+    """
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        print(f"  ⚠️  {label} crons.json unreadable: {e} — skipping crons merge")
+        return None
+    if not isinstance(parsed, dict):
+        print(f"  ⚠️  {label} crons.json is not a cron file — skipping crons merge")
+        return None
+    jobs = parsed.get("jobs", [])
+    if not isinstance(jobs, list) or not all(
+        isinstance(job, dict)
+        and ("name" not in job or isinstance(job["name"], str))
+        for job in jobs
+    ):
+        print(f"  ⚠️  {label} crons.json has an unusable job list — skipping crons merge")
+        return None
+    return parsed
+
+
 def _merge_crons(src_path: Path, dst_path: Path) -> None:
-    src = json.loads(src_path.read_text())
-    dst = json.loads(dst_path.read_text())
+    src = _read_cron_jobs("incoming", src_path)
+    dst = _read_cron_jobs("existing", dst_path)
+    if src is None or dst is None:
+        return
     existing = {j.get("name") for j in dst.get("jobs", [])}
     imported = 0
     for job in src.get("jobs", []):
