@@ -72,15 +72,21 @@ class TransportCapabilities:
       list in the body. Channels declaring 0 render no widget (trailer
       stripped; text fallback arrives with the approval-ladder work).
 
+    * ``files_outbound`` — gates whether a renderer pulls local image
+      references out of a sealed segment and uploads them. Discord's renderer
+      reads it before running ``messaging.outbound_files`` extraction, so a
+      channel declaring ``False`` keeps printing the markdown path (the honest
+      degradation) instead of silently dropping the picture. Split from
+      ``files_inbound`` because one boolean was undecidable: the two directions
+      land per channel and in different changes — Weixin ingests CDN media
+      today with no upload half written.
+
     ASPIRATIONAL (declared, honest, but nothing reads them yet — the
     capability-gated interface work will consume them; do NOT write code that
     assumes they are enforced):
 
     * ``streaming``, ``edit``, ``reactions``, ``rich_blocks``, ``threads``
-    * ``files_inbound`` / ``files_outbound`` — split because one boolean was
-      undecidable: discord ingests attachments but cannot upload, slack does
-      both. Inbound = the transport ingests user attachments into the turn;
-      outbound = the transport can deliver a file to the user.
+    * ``files_inbound`` — the transport ingests user attachments into the turn.
 
     Defaults are deliberately conservative (the WhatsApp-like floor) so a
     transport that forgets to declare a capability degrades safely rather

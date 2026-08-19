@@ -8,6 +8,8 @@ supported so a transient drop replays missed events instead of re-identifying.
 Outbound (REST v10):
   - send_message: posts a new message (optionally with button components)
   - edit_message: edits an existing message in-place (for streaming)
+  - send_message_with_files / edit_message_with_files: the same two verbs with
+    attachments, over multipart instead of JSON
   - send_typing: triggers the "typing..." indicator (~10s)
   - add_reaction: emoji reaction (steer-ack receipts)
   - ack_component_interaction: DEFERRED_UPDATE_MESSAGE ack for a button press
@@ -24,11 +26,18 @@ import json
 import logging
 import os
 import random
+import re
 import urllib.parse
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import aiohttp
+
+from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +45,23 @@ logger = logging.getLogger(__name__)
 DISCORD_MAX_TEXT = 2000
 # Safe chunk boundary (leave room for chip/footer overhead).
 DISCORD_CHUNK_LIMIT = 1900
+
+# Upload limits also bound extraction memory; refused files retain their markup.
+DISCORD_MAX_FILE_BYTES = 10 * 1024 * 1024
+DISCORD_MAX_FILES_PER_MESSAGE = 10
+DISCORD_MAX_TOTAL_UPLOAD_BYTES = 25 * 1024 * 1024
+
+# Sniffed MIME determines the canonical inline-rendering extension.
+_MIME_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+}
+
+# Multipart filenames are restricted before entering Content-Disposition.
+_UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 _API_BASE = "https://discord.com/api/v10"
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
@@ -270,6 +296,56 @@ class DiscordClient:
         if components is not None:
             payload["components"] = components
         result = await self._api("PATCH", f"/channels/{channel_id}/messages/{message_id}", payload)
+        return result is not None
+
+    async def send_message_with_files(
+        self,
+        channel_id: str,
+        text: str,
+        files: Sequence[OutboundFile],
+        *,
+        components: list[dict] | None = None,
+        reply_to_message_id: str | None = None,
+    ) -> str | None:
+        """Send validated bytes; paths supply only sanitized filenames."""
+        if not files:
+            return await self.send_message(
+                channel_id,
+                text,
+                components=components,
+                reply_to_message_id=reply_to_message_id,
+            )
+        payload: dict[str, Any] = {"content": text[:DISCORD_MAX_TEXT]}
+        if components:
+            payload["components"] = components
+        if reply_to_message_id:
+            payload["message_reference"] = {
+                "message_id": reply_to_message_id,
+                "fail_if_not_exists": False,
+            }
+        result = await self._api_multipart(
+            "POST", f"/channels/{channel_id}/messages", payload, files
+        )
+        return str(result.get("id", "")) if result is not None else None
+
+    async def edit_message_with_files(
+        self,
+        channel_id: str,
+        message_id: str,
+        text: str,
+        files: Sequence[OutboundFile],
+        *,
+        components: list[dict] | None = None,
+    ) -> bool:
+        """Edit a streamed message and replace its attachments with ``files``."""
+        if not files:
+            return await self.edit_message(channel_id, message_id, text, components=components)
+        payload: dict[str, Any] = {"content": text[:DISCORD_MAX_TEXT]}
+        if components is not None:
+            payload["components"] = components
+        result = await self._api_multipart(
+            "PATCH", f"/channels/{channel_id}/messages/{message_id}", payload, files
+        )
         return result is not None
 
     async def send_typing(self, channel_id: str) -> None:
@@ -649,9 +725,39 @@ class DiscordClient:
         return self._session
 
     async def _api(self, method: str, path: str, payload: dict | None, timeout: int = 30) -> Any:
-        """Call a REST endpoint. Returns the parsed JSON body ({} for 204) or
-        None on error. Honors a single 429 ``retry_after`` back-off.
+        """Call a REST endpoint with a JSON body. Returns the parsed JSON body
+        ({} for 204) or None on error. Honors a single 429 ``retry_after``
+        back-off.
         """
+        return await self._api_request(
+            method, path, timeout=timeout, build=lambda: {"json": payload}
+        )
+
+    async def _api_multipart(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any],
+        files: Sequence[OutboundFile],
+        timeout: int = 60,
+    ) -> Any:
+        """Send multipart, rebuilding the single-use form for every attempt."""
+        return await self._api_request(
+            method,
+            path,
+            timeout=timeout,
+            build=lambda: {"data": _build_upload_form(payload, files)},
+        )
+
+    async def _api_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        timeout: int,
+        build: Callable[[], dict[str, Any]],
+    ) -> Any:
+        """Shared REST ladder. ``build`` supplies the per-ATTEMPT body kwargs."""
         session = await self._ensure_session()
         url = _API_BASE + path
         headers = {"Authorization": f"Bot {self._token}"}
@@ -660,10 +766,10 @@ class DiscordClient:
                 async with session.request(
                     method,
                     url,
-                    json=payload,
                     headers=headers,
                     proxy=self._proxy,
                     timeout=aiohttp.ClientTimeout(total=timeout),
+                    **build(),
                 ) as resp:
                     if resp.status == 204:
                         return {}
@@ -705,6 +811,52 @@ class DiscordClient:
                 )
                 return None
         return None
+
+
+def _safe_description(alt: str) -> str:
+    """Redact the unescaped description before truncation can split a secret."""
+    out, _ = redact_for_display(alt, lambda s: redact_credentials(redact_exfiltration_urls(s)[0])[0])
+    return out[:1024]
+
+
+def upload_filename(file: OutboundFile, index: int) -> str:
+    """Derive and re-scan a header-safe filename from an untrusted path."""
+    ext = _MIME_EXT.get(file.mime, "bin")
+    stem = _UNSAFE_FILENAME_RE.sub("_", Path(file.path).name).lstrip(".")
+    stem = stem[: -len(Path(stem).suffix)] if Path(stem).suffix else stem
+    stem = stem.strip("._")[:64]
+    name = f"{stem or f'image_{index}'}.{ext}"
+    redacted, _ = redact_exfiltration_urls(name)
+    redacted, _ = redact_credentials(redacted)
+    return name if redacted == name else f"image_{index}.{ext}"
+
+
+def _build_upload_form(payload: dict[str, Any], files: Sequence[OutboundFile]) -> aiohttp.FormData:
+    """Build matching attachment descriptors and indexed file parts."""
+    form = aiohttp.FormData()
+    descriptors: list[dict[str, Any]] = []
+    names: list[str] = []
+    for index, file in enumerate(files):
+        name = upload_filename(file, index)
+        names.append(name)
+        descriptor: dict[str, Any] = {"id": index, "filename": name}
+        if file.alt:
+            descriptor["description"] = _safe_description(file.alt)
+        descriptors.append(descriptor)
+    # Put descriptors before the file parts they describe.
+    form.add_field(
+        "payload_json",
+        json.dumps({**payload, "attachments": descriptors}),
+        content_type="application/json",
+    )
+    for index, file in enumerate(files):
+        form.add_field(
+            f"files[{index}]",
+            file.data,
+            filename=names[index],
+            content_type=file.mime,
+        )
+    return form
 
 
 def _find_button_label(components: list[dict], custom_id: str) -> str:

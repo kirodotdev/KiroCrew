@@ -140,6 +140,11 @@ def redact_for_display(text: str, redactor: Callable[[str], str]) -> tuple[str, 
     safe = redactor(stripped)
     changed = safe != stripped
 
+    literal = _strip_format_chars(safe)
+    if literal != safe:
+        literal_safe = redactor(literal)
+        if literal_safe != literal:
+            safe, changed = literal_safe, True
     canonical = canonicalize_display(safe)
     if canonical != safe:
         canonical_safe = redactor(canonical)

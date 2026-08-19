@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_discord import MultipartFake
 
 from kiro_crew.config.paths import config_dir
 from kiro_crew.discord import resume_expectation, session_resume
@@ -25,7 +26,7 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
 
 
-class _Client:
+class _Client(MultipartFake):
     def __init__(self) -> None:
         self.sent: list[tuple[str, Any]] = []
         self.edits: list[tuple[str, str, Any]] = []
@@ -80,7 +81,7 @@ class _Client:
 
 
 class _Provider:
-    supports_steer = False
+    supports_steer, cwd = False, str(Path.cwd())
 
     async def stream(self, message: str):
         from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK

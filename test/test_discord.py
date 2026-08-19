@@ -72,7 +72,49 @@ _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
 
-class FakeClient:
+class MultipartFake:
+    """Share multipart verbs across Discord fake clients."""
+
+    async def send_message_with_files(
+        self,
+        channel_id: str,
+        text: str,
+        files: Any,
+        *,
+        components: Any = None,
+        reply_to_message_id: Any = None,
+    ) -> str | None:
+        if files:
+            getattr(self, "uploads", []).append(("send", list(files)))
+            if getattr(self, "raise_uploads", False):
+                raise RuntimeError("multipart send exploded")
+            if getattr(self, "fail_uploads", False):
+                return None
+        return await self.send_message(  # type: ignore[attr-defined]
+            channel_id, text, components=components, reply_to_message_id=reply_to_message_id
+        )
+
+    async def edit_message_with_files(
+        self,
+        channel_id: str,
+        message_id: str,
+        text: str,
+        files: Any,
+        *,
+        components: Any = None,
+    ) -> bool:
+        if files:
+            getattr(self, "uploads", []).append(("edit", list(files)))
+            if getattr(self, "raise_uploads", False):
+                raise RuntimeError("multipart edit exploded")
+            if getattr(self, "fail_uploads", False):
+                return False
+        return await self.edit_message(  # type: ignore[attr-defined]
+            channel_id, message_id, text, components=components
+        )
+
+
+class FakeClient(MultipartFake):
     """Captures outbound Discord REST calls."""
 
     def __init__(self) -> None:
@@ -85,7 +127,16 @@ class FakeClient:
         self.created_threads: list[tuple[str, str, str]] = []
         self.attachment_bodies: dict[str, bytes] = {}
         self.attachment_downloads: list[str] = []
+        self.uploads: list[tuple[str, list[Any]]] = []
+        self.edit_ok = True
+        self.fail_uploads = False
+        self.raise_uploads = False
         self._mid = 100
+
+    @property
+    def uploaded_files(self) -> list[Any]:
+        """Every attachment across all uploads, in order."""
+        return [f for _verb, files in self.uploads for f in files]
 
     async def is_thread_channel(self, channel_id: str) -> bool:
         return channel_id in self.thread_channels
@@ -115,7 +166,7 @@ class FakeClient:
         components: Any = None,
     ) -> bool:
         self.edits.append((message_id, text, components))
-        return True
+        return self.edit_ok
 
     async def edit_message_components(
         self, channel_id: str, message_id: str, components: Any
@@ -167,7 +218,7 @@ class _Ev:
 
 
 class FakeProvider:
-    supports_steer = True
+    supports_steer, cwd = True, os.getcwd()
 
     def __init__(self, reply: str = "Answer") -> None:
         self._reply = reply
@@ -562,7 +613,7 @@ class TestRotationSplitting:
         return [t for t, _ in cli.sent], "".join(r._buf)
 
     @pytest.mark.asyncio
-    async def test_pathological_splitter_work_is_offloaded(
+    async def test_pathological_rotation_work_is_offloaded(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from kiro_crew.discord import renderer as renderer_module
@@ -584,7 +635,10 @@ class TestRotationSplitting:
 
         await r._rotate_on_length()
 
-        assert offloads == [(_capture, (source, 100), {})]
+        assert offloads == [
+            (renderer_module.protected_ref_spans, (source,), {}),
+            (_capture, (source, 100), {}),
+        ]
 
     @pytest.mark.asyncio
     async def test_a_segment_under_the_cap_is_not_rotated(
@@ -1198,7 +1252,7 @@ class TestTransportAuth:
         assert DISCORD_CAPABILITIES.edit is True
         assert DISCORD_CAPABILITIES.reactions is True
         assert DISCORD_CAPABILITIES.files_inbound is True
-        assert DISCORD_CAPABILITIES.files_outbound is False  # no upload path exists
+        assert DISCORD_CAPABILITIES.files_outbound is True  # seal-time upload path
         assert DISCORD_CAPABILITIES.threads is True
 
 

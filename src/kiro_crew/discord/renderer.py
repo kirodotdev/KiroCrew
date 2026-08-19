@@ -38,21 +38,58 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
-from kiro_crew.discord.client import DISCORD_MAX_TEXT
+from kiro_crew.discord.client import (
+    DISCORD_MAX_FILE_BYTES,
+    DISCORD_MAX_FILES_PER_MESSAGE,
+    DISCORD_MAX_TEXT,
+    DISCORD_MAX_TOTAL_UPLOAD_BYTES,
+)
+from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.outbound_files import (
+    ExtractLimits,
+    OutboundFile,
+    Rejection,
+    extract_local_refs_off_loop,
+    hide_local_refs,
+    protected_ref_spans,
+)
 from kiro_crew.messaging.renderer import Renderer, apply_options_cap, chunk_text
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
 
 logger = logging.getLogger(__name__)
+
+_UPLOAD_LIMITS = ExtractLimits(
+    max_files=DISCORD_MAX_FILES_PER_MESSAGE,
+    max_total_bytes=DISCORD_MAX_TOTAL_UPLOAD_BYTES,
+    max_file_bytes=DISCORD_MAX_FILE_BYTES,
+)
+
+_MAX_REJECTION_LINES = 3
+_DISCORD_MENTION_AT_RE = re.compile(r"(?:(?<=<)@(?=[!&]?\d+>)|(?<!\w)@(?=(?i:everyone|here)\b))")
+
+
+def _redact_all(text: str) -> str:
+    text, _ = redact_exfiltration_urls(text)
+    return redact_credentials(text)[0]
+
+
+def _redact_transformed(text: str) -> str:
+    text, _ = redact_for_display(text, _redact_all)
+    return _DISCORD_MENTION_AT_RE.sub("@\u200b", text)
+
 
 # Discord's typing indicator lasts ~10s per trigger; refresh just under that
 # for the duration of a turn.
@@ -107,7 +144,7 @@ def _strip_steering(text: str) -> str:
     cleaned = _STEER_MARKER_RE.sub("", text)
     cleaned = re.sub(r"\[STEERING\b[^\]]*$", "", cleaned)  # unclosed, streaming
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
+    return cleaned
 
 
 def _neutralize_md(raw: str) -> str:
@@ -261,12 +298,17 @@ class DiscordRenderer(Renderer):
         capabilities: TransportCapabilities,
         *,
         session_key: str = "",
+        uploads_allowed: bool = True,
+        upload_root: str = "",
     ) -> None:
         super().__init__(capabilities)
         self._client = client
         self._channel_id = channel_id
         self._session_key = session_key
+        self._upload_root = upload_root if os.path.isabs(upload_root) else ""
+        self._uploads_allowed = uploads_allowed
         self._buf: list[str] = []
+        self._segment_uploads_safe = True
         self._last_tool = ""
         # Transient tool-activity footer ("🔧 {tool}…") shown ONLY on live
         # streaming frames — never stored in _buf, so seals/finals stay clean.
@@ -362,6 +404,7 @@ class DiscordRenderer(Renderer):
         self._seal_count += 1
         self._pending_chip = chip or ""
         self._buf = []
+        self._segment_uploads_safe = True
         if sealed:
             self._open_new_message()
 
@@ -380,30 +423,39 @@ class DiscordRenderer(Renderer):
             self._buf = [raw[marker.end() :]]
 
     async def _rotate_on_length(self) -> None:
-        """Rotate when the segment exceeds one Discord message, keeping fenced
-        code blocks balanced across the cut and never splitting a trailing
-        protocol directive (``[OPTIONS:]`` / streaming ``[STEERING`` fragment)
-        in half."""
+        """Rotate overlong output while retaining local refs for semantic seals."""
         limit = self._limit()
         raw = "".join(self._buf)
         if len(raw) <= limit:
             return
         raw, protocol_suffix = split_trailing_protocol_suffix(raw)
-        # The shared splitter's streaming contract does the whole job: every
-        # chunk but the last is already sealed, and the last is deliberately
-        # left OPEN so a still-arriving fence keeps streaming into it. Mid-stream
-        # the source fence is usually still open (the model has not emitted its
-        # closing ``` yet), which is exactly the case that needs a synthetic
-        # closer on the chunks we seal and none on the tail we keep. Nothing is
-        # appended to the tail here, so there is nothing to strip back off it —
-        # and prefix stability means a later, longer buffer re-derives these same
-        # sealed chunks byte-for-byte, so no message already posted can move.
-        chunks = await asyncio.to_thread(split_markdown_safe, raw, limit)
-        for ch in chunks[:-1]:
+        # Keep the first complete/still-arriving local image and its suffix in
+        # the live tail; splitter-produced chunks are never extraction inputs.
+        spans = await asyncio.to_thread(protected_ref_spans, raw)
+        if spans:
+            hold_at = spans[0][0]
+            if hold_at == 0:
+                self._buf = [raw + protocol_suffix]
+                return
+            split_source, tail = raw[:hold_at], raw[hold_at:]
+            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            sealed = chunks
+        else:
+            split_source = raw
+            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            sealed, tail = chunks[:-1], chunks[-1] if chunks else ""
+            probe_at = len(prefix := raw.removesuffix(tail))
+            probe = prefix + "![x](/tmp/x.png)" + " ".join(re.findall(r"`+", prefix)) + tail
+            spans = await asyncio.to_thread(protected_ref_spans, probe) if sealed else []
+            lost = bool(sealed) and raw.endswith(tail) and probe_at not in dict(spans)
+            dirty_cut = any(len(line) > limit for line in split_source.splitlines(True))
+            if dirty_cut or lost:
+                self._segment_uploads_safe = False
+        for ch in sealed:
             self._buf = [ch]
-            await self._seal_current()
+            await self._seal_current(extract_uploads=False)
             self._open_new_message()
-        self._buf = [(chunks[-1] if chunks else "") + protocol_suffix]
+        self._buf = [tail + protocol_suffix]
 
     def _open_new_message(self) -> None:
         """Next render creates a fresh message instead of editing the old one."""
@@ -411,21 +463,17 @@ class DiscordRenderer(Renderer):
         self._shown = ""
 
     def _segment_text(self) -> str:
-        """Current segment's markdown source (chip already seeded into _buf),
-        with the steer marker stripped. Discord renders markdown natively, so
-        no further translation is needed."""
+        """Current markdown source with any steer marker stripped."""
         return _strip_steering("".join(self._buf))
 
     async def _stream_live(self, *, force: bool = False) -> None:
-        """Throttled in-place edit of the current segment. Sends the message on
-        first render. The transient ``🔧 {tool}…`` footer is appended ONLY here
-        (live frames) — seals and the final render never carry it. ``force``
-        bypasses the throttle so a tool-call event surfaces immediately."""
+        """Throttled live edit; ``force`` bypasses the frame-rate guard."""
         now = time.monotonic()
         if not force and now - self._last_edit < _EDIT_THROTTLE_S:
             return
-        # Hold back trailing [OPTIONS:] markup from live frames.
         body, _ = _extract_options(self._segment_text())
+        if self._uploads_enabled() and self._segment_uploads_safe:
+            body = _redact_transformed(await asyncio.to_thread(hide_local_refs, body))
         footer = f"-# 🔧 {self._tool}…" if self._tool else ""
         if footer:
             room = self._limit() - len(footer) - 2
@@ -443,40 +491,149 @@ class DiscordRenderer(Renderer):
         else:
             await self._client.edit_message(self._channel_id, self._stream_mid, text)
 
-    async def _seal_current(self, *, components: list[dict] | None = None) -> None:
-        """Finalize the current segment: land the full markdown text (and
-        optional button rows). Edits the streamed message in place, or sends
-        one if the segment never streamed (e.g. throttled out). Empty segments
-        are skipped so a bare steer doesn't post a blank bubble.
+    def authorize_upload_root(self, root: str) -> None:
+        """Authorize the provider's resolved cwd; invalid roots disable uploads."""
+        self._upload_root = root if os.path.isabs(root) else ""
 
-        This is the one chokepoint every non-throwaway payload passes, so it is
-        where the splitter's bounded-overlimit chunk is bounded again against the
-        platform cap (see :func:`_fit_platform_cap`). Buttons ride the LAST
-        payload, which is the one the user reads under them."""
-        text = self._segment_text().strip()
-        if not text:
+    def _uploads_enabled(self) -> bool:
+        """Require transport capability, an unrestricted session, and a trusted root."""
+        return (
+            bool(self.capabilities.files_outbound)
+            and self._uploads_allowed
+            and bool(self._upload_root)
+        )
+
+    async def _extract_uploads(self, text: str) -> tuple[str, list[OutboundFile]]:
+        """Extract each sealed segment once, off-loop and fail-soft."""
+        try:
+            result = await extract_local_refs_off_loop(
+                text, within_root=self._upload_root, limits=_UPLOAD_LIMITS
+            )
+        except Exception:
+            logger.warning("discord: outbound file extraction failed", exc_info=True)
+            return text, []
+        if result.rejections:
+            sel().log_api_access(
+                caller=self._session_key or "discord",
+                operation="discord_renderer.upload_files",
+                outcome="denied",
+                source="discord",
+                resources=f"{len(result.rejections)} rejection(s)",
+                error=",".join(sorted({item.reason for item in result.rejections})),
+            )
+        body = result.rewritten_text.strip()
+        if not body and not result.files:
+            body = text
+        if result.rejections:
+            body = self._append_rejections(body, result.rejections)
+        body = _redact_transformed(body)
+        if result.files:
+            sel().log_api_access(
+                caller=self._session_key or "discord",
+                operation="discord_renderer.upload_files",
+                outcome="allowed",
+                source="discord",
+                resources=f"{len(result.files)} file(s)",
+            )
+        return body, result.files
+
+    def _append_rejections(self, body: str, rejections: list[Rejection]) -> str:
+        """Append refusal reasons only when the answer budget permits."""
+        for rejection in rejections:
+            logger.info("discord: local image not uploaded (%s)", rejection.reason)
+        lines = [f"-# ⚠️ {rejection}" for rejection in rejections[:_MAX_REJECTION_LINES]]
+        if len(rejections) > _MAX_REJECTION_LINES:
+            lines.append(f"-# ⚠️ …and {len(rejections) - _MAX_REJECTION_LINES} more")
+        note = "\n".join(lines)
+        if len(body) + len(note) + 2 > self._limit():
+            return body
+        return f"{body}\n\n{note}"
+
+    async def _land_sealed(
+        self,
+        text: str,
+        files: list[OutboundFile],
+        components: list[dict] | None,
+    ) -> bool:
+        """Edit first, then send; fail softly so recovery can restore markup."""
+        try:
+            if self._stream_mid is not None:
+                if await self._client.edit_message_with_files(
+                    self._channel_id, self._stream_mid, text, files, components=components
+                ):
+                    return True
+                # A missing live message falls through to a fresh send.
+                self._stream_mid = None
+            return (
+                await self._client.send_message_with_files(
+                    self._channel_id, text, files, components=components
+                )
+                is not None
+            )
+        except Exception:
+            logger.warning("discord: sealing the segment failed", exc_info=True)
+            return False
+
+    async def _seal_current(
+        self,
+        *,
+        components: list[dict] | None = None,
+        extract_uploads: bool = True,
+    ) -> None:
+        """Land one segment; only semantic seals may extract local images.
+
+        Length rotations pass ``extract_uploads=False`` and seal shared-splitter
+        chunks verbatim. Semantic steer/final seals extract once from complete
+        source context, then split the transformed text. Every payload is bounded
+        again for the shared splitter's documented scaffolding exception.
+        """
+        source = self._segment_text()
+        text = source
+        files: list[OutboundFile] = []
+        if extract_uploads and source and self._uploads_enabled() and self._segment_uploads_safe:
+            text, files = await self._extract_uploads(source)
+        if not text.strip() and not files:
             if components is None:
                 return
             text = "…"
-        head, *overflow = _fit_platform_cap(text)
-        head_components = None if overflow else components
-        if self._stream_mid is not None:
-            ok = await self._client.edit_message(
-                self._channel_id, self._stream_mid, head, components=head_components
-            )
-            if not ok:
-                # Edit failed — the live message is gone (e.g. deleted mid-turn).
-                # SEND the content so the completed answer (and its buttons) is
-                # never silently lost.
-                self._stream_mid = None
-                await self._client.send_message(self._channel_id, head, components=head_components)
+
+        chunks = [text]
+        if len(text) > DISCORD_MAX_TEXT:
+            chunks = await asyncio.to_thread(split_markdown_safe, text, DISCORD_MAX_TEXT)
+        chunks = [part for chunk in chunks for part in _fit_platform_cap(chunk)]
+        for index, chunk in enumerate(chunks):
+            part_files = files if index == 0 else []
+            final = index == len(chunks) - 1
+            if not await self._land_sealed(chunk, part_files, components if final else None):
+                if part_files:
+                    break
+                continue
+            if not final:
+                self._open_new_message()
         else:
-            await self._client.send_message(self._channel_id, head, components=head_components)
-        for i, part in enumerate(overflow):
-            last = i == len(overflow) - 1
-            await self._client.send_message(
-                self._channel_id, part, components=components if last else None
-            )
+            return
+
+        # Multipart is all-or-nothing. Restore the source markup, but redact its
+        # DISPLAY form before any fallback split/send so formatting cannot hide
+        # a credential that Discord reconstructs for the reader.
+        logger.warning(
+            "discord: upload of %d file(s) failed; re-posting the segment with its markup",
+            len(files),
+        )
+        try:
+            source = _redact_transformed(source)
+            recovery = [source]
+            if len(source) > DISCORD_MAX_TEXT:
+                recovery = await asyncio.to_thread(split_markdown_safe, source, DISCORD_MAX_TEXT)
+            recovery = [part for chunk in recovery for part in _fit_platform_cap(chunk)]
+            for index, chunk in enumerate(recovery):
+                await self._client.send_message(
+                    self._channel_id,
+                    chunk,
+                    components=components if index == len(recovery) - 1 else None,
+                )
+        except Exception:
+            logger.warning("discord: markup fallback after a failed upload failed", exc_info=True)
 
     async def on_thinking(self, text: str) -> None:
         # Discord does not surface reasoning inline (parity with Telegram).

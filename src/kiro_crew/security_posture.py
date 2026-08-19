@@ -501,9 +501,28 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "channel inherits redaction from this one egress.",
     ),
     (
+        "Outbound raster payloads",
+        "messaging/outbound_files.py",
+        "Exact raster bytes pass both credential and exfiltration-URL scanners " "before upload.",
+    ),
+    (
         "Discord direct send",
         "discord/transport_dispatch.py",
         "The direct-send path that bypasses TurnDriver, redacted independently.",
+    ),
+    (
+        "Discord transformed image text",
+        "discord/renderer.py",
+        "Image-markup removal can join previously separated text into a credential; "
+        "the transformed body is re-scanned before Discord receives it.",
+    ),
+    (
+        "Discord attachment description",
+        "discord/client.py",
+        "The accessible description on an uploaded image, from its markdown alt "
+        "text. Extraction unescapes that text before the wire, reassembling a "
+        "backslash-escaped credential the TurnDriver's stream scan never saw "
+        "contiguously -- it is re-scanned here, on the form that actually leaves.",
     ),
     (
         "Telegram failure reason",

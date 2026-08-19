@@ -17,16 +17,19 @@ new thread; turns never run directly in a normal guild channel.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+import logging
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.discord.client import (
     DISCORD_CHUNK_LIMIT,
+    DISCORD_MAX_FILES_PER_MESSAGE,
     DiscordClient,
     DiscordInbound,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -34,6 +37,8 @@ from kiro_crew.messaging.transport import (
     TransportCapabilities,
 )
 from kiro_crew.sel import sel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,11 +66,13 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # add_reaction — used for the steer-ack receipt
-    # Inbound only: attachments are ingested (discord/attachments.py), but no
-    # upload path exists — file_send reaches Slack alone. The old single
-    # files=True conflated the two directions and over-promised outbound.
+    # Both directions are wired: attachments are ingested
+    # (discord/attachments.py), and a sealed segment's local images are uploaded
+    # as multipart attachments (renderer -> client.send_message_with_files). The
+    # renderer READS files_outbound before extracting, so this flag is the switch
+    # rather than a description of one.
     files_inbound=True,
-    files_outbound=False,
+    files_outbound=True,
     rich_blocks=False,
     threads=True,
     max_message_chars=DISCORD_CHUNK_LIMIT,
@@ -141,6 +148,38 @@ class DiscordTransport(MessagingTransport):
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
         mid = await self._client.send_message(conversation_id, content)
+        return str(mid or "")
+
+    async def send_message_with_files(
+        self,
+        conversation_id: str,
+        content: str,
+        files: Sequence[OutboundFile],
+        thread_id: str | None = None,
+    ) -> str:
+        """Send ``content`` with ``files`` attached. Returns the message id.
+
+        The transport-level upload verb: :meth:`send_message` plus attachments,
+        same return contract, so a caller holding a transport does not reach past
+        it into the client. ``files`` carry the validated bytes from
+        ``messaging/outbound_files.py``; this path uploads exactly those and never
+        re-opens ``OutboundFile.path``.
+
+        Discord's ceilings are budgets the CALLER feeds to extraction, because a
+        file refused before it is read keeps its markdown in the text -- refusing
+        here would drop it after the reference was already cut out. Anything still
+        over the count cap is a caller bug, dropped with a warning rather than
+        failing the whole send.
+        """
+        if len(files) > DISCORD_MAX_FILES_PER_MESSAGE:
+            logger.warning(
+                "discord: %d attachments exceeds the %d-per-message cap; sending the first %d",
+                len(files),
+                DISCORD_MAX_FILES_PER_MESSAGE,
+                DISCORD_MAX_FILES_PER_MESSAGE,
+            )
+            files = list(files)[:DISCORD_MAX_FILES_PER_MESSAGE]
+        mid = await self._client.send_message_with_files(conversation_id, content, files)
         return str(mid or "")
 
     async def resolve_conversation(self, user_id: str) -> str:

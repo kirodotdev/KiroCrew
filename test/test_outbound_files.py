@@ -91,9 +91,16 @@ class TestExtraction:
         # remains to send.
         assert result.rewritten_text == ""
 
-    @pytest.mark.parametrize("body,mime", [(_PNG, "image/png"), (_JPEG, "image/jpeg"),
-                                           (_GIF, "image/gif"), (_BMP, "image/bmp"),
-                                           (_WEBP, "image/webp")])
+    @pytest.mark.parametrize(
+        "body,mime",
+        [
+            (_PNG, "image/png"),
+            (_JPEG, "image/jpeg"),
+            (_GIF, "image/gif"),
+            (_BMP, "image/bmp"),
+            (_WEBP, "image/webp"),
+        ],
+    )
     def test_every_raster_type_is_accepted(self, tmp_path: Path, body: bytes, mime: str) -> None:
         p = _png(tmp_path, "f.png", body)
         result = extract_local_refs(f"![x]({p})")
@@ -137,6 +144,20 @@ class TestExtraction:
         assert result.files == [] and result.rejections == []
         assert result.rewritten_text == text
 
+    @pytest.mark.parametrize("slashes,escaped", [(1, True), (2, False), (3, True), (4, False)])
+    def test_backslash_parity_controls_image_markers(
+        self, tmp_path: Path, slashes: int, escaped: bool
+    ) -> None:
+        from kiro_crew.messaging.outbound_files import open_ref_start
+
+        path = _png(tmp_path)
+        prefix = "\\" * slashes
+        text = prefix + f"![x]({path})"
+        result = extract_local_refs(text)
+        assert bool(result.files) is not escaped
+        assert result.rewritten_text == (text if escaped else prefix)
+        assert open_ref_start(prefix + "![x](/tmp/open") == (None if escaped else slashes)
+
 
 class TestDestinationForms:
     """Destination shapes markdown allows, each reaching the filesystem intact."""
@@ -172,6 +193,8 @@ class TestDestinationForms:
         assert md_destination("/tmp/screenshot(1).png)") == "/tmp/screenshot(1).png"
         assert md_destination(r"C:\Users\me\shot.png)") == r"C:\Users\me\shot.png"
         assert md_destination("/tmp/a.png") is None
+        for control in "\n\r\0\x1f\x7f":
+            assert md_destination(f"/tmp/a{control}b.png)") is None
         assert unescape_md(r"a \[b\]") == "a [b]"
 
     def test_normalization_is_shared_with_image_artifacts(self) -> None:
@@ -183,15 +206,61 @@ class TestDestinationForms:
         assert local_destination("./rel.png") is None
 
 
+class TestOutboundSecurity:
+    def test_untrusted_windows_unc_is_rejected_before_path_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.messaging import outbound_files as module
+
+        monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
+        monkeypatch.setattr(
+            module, "is_unc_shape", lambda raw: raw.startswith(("//", "\\\\")), raising=False
+        )
+        monkeypatch.setattr(module, "unc_probe_allowed", lambda raw: False, raising=False)
+        monkeypatch.setattr(module, "Path", lambda raw: pytest.fail(f"path constructed: {raw}"))
+
+        assert module.local_destination("file:////attacker/share/a.png") is None
+
+    def test_credential_in_raster_metadata_is_rejected(self, tmp_path: Path) -> None:
+        p = _png(tmp_path, body=_PNG + b"tEXtComment\0AKIAIOSFODNN7EXAMPLE")
+        text = f"![x]({p})"
+
+        result = extract_local_refs(text)
+
+        assert result.files == []
+        assert result.rewritten_text == text
+        assert result.rejections[0].reason == REASON_SENSITIVE
+
+    @pytest.mark.parametrize("scanner", ["redact_credentials", "redact_exfiltration_urls"])
+    def test_a_payload_scanner_failure_rejects_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scanner: str
+    ) -> None:
+        from kiro_crew.messaging import outbound_files as module
+
+        p = _png(tmp_path)
+        text = f"![x]({p})"
+
+        def fail(_text: str) -> tuple[str, list[str]]:
+            raise RuntimeError("scanner unavailable")
+
+        monkeypatch.setattr(module, scanner, fail, raising=False)
+        result = extract_local_refs(text)
+
+        assert result.files == []
+        assert result.rewritten_text == text
+        assert result.rejections[0].reason == REASON_SENSITIVE
+
+
 class TestFences:
     """An image inside a code fence is documentation, not a picture to send."""
 
-    def test_backtick_fenced_image_is_literal(self, tmp_path: Path) -> None:
-        p = _png(tmp_path)
-        text = f"Write it like this:\n\n```md\n![x]({p})\n```\n"
-        result = extract_local_refs(text)
-        assert result.files == [] and result.rejections == []
-        assert result.rewritten_text == text
+    def test_code_images_are_literal(self, tmp_path: Path) -> None:
+        m = f"![x]({_png(tmp_path)})"
+        cases = (f"    {m}", f"\t{m}", f"~~~\n`\n~~~\n`{m}`\n``example\n{m}\n``")
+        for text in cases:
+            result = extract_local_refs(text)
+            assert result.files == [] and result.rejections == []
+            assert result.rewritten_text == text
 
     def test_tilde_fenced_image_is_literal(self, tmp_path: Path) -> None:
         p = _png(tmp_path)
@@ -274,6 +343,24 @@ class TestRejections:
         assert result.files == []
         assert result.rejections[0].reason == REASON_SENSITIVE
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation on Windows")
+    @pytest.mark.parametrize("exists", [True, False])
+    def test_sensitive_parent_alias_is_denied_before_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exists: bool
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        sensitive, root = tmp_path / ".aws", tmp_path / "workspace"
+        sensitive.mkdir()
+        root.mkdir()
+        target = sensitive / "credentials.png"
+        if exists:
+            target.write_bytes(_PNG)
+        (root / "alias").symlink_to(sensitive, target_is_directory=True)
+        result = extract_local_refs(f"![x]({root / 'alias' / target.name})", within_root=root)
+        assert result.files == []
+        assert result.rejections[0].reason == REASON_SENSITIVE
+
     @pytest.mark.skipif(
         sys.platform == "win32", reason="symlink creation needs elevation on Windows"
     )
@@ -353,9 +440,7 @@ class TestCaps:
         assert result.files == []
         assert len(result.rejections) == 3  # two reasons + the aggregate
 
-    def test_the_byte_budget_stops_at_the_file_that_would_exceed_it(
-        self, tmp_path: Path
-    ) -> None:
+    def test_the_byte_budget_stops_at_the_file_that_would_exceed_it(self, tmp_path: Path) -> None:
         first = _png(tmp_path, "a.png")
         second = _png(tmp_path, "b.png")
         budget = first.stat().st_size + second.stat().st_size - 1
@@ -558,9 +643,7 @@ class TestFenceParity:
         for template in self._CASES:
             text = template % p
             offset = text.index("![x](")
-            fenced = any(
-                start <= offset < end for start, end in iter_fence_spans(text)
-            )
+            fenced = any(start <= offset < end for start, end in iter_fence_spans(text))
             result = extract_local_refs(text)
             assert bool(result.files) is (not fenced), template
             if fenced:
@@ -579,12 +662,19 @@ class TestFenceParity:
 
 
 class TestOffLoop:
+    def test_a_file_outside_the_approved_root_is_rejected(self, tmp_path: Path) -> None:
+        approved = tmp_path / "approved"
+        approved.mkdir()
+        outside = _png(tmp_path)
+        result = extract_local_refs(f"![x]({outside})", within_root=str(approved))
+        assert result.files == [] and result.rejections[0].reason == REASON_SENSITIVE
+
     @pytest.mark.asyncio
     async def test_the_async_form_returns_the_same_result(self, tmp_path: Path) -> None:
         """Async send paths must not stat files on the gateway's event loop."""
         p = _png(tmp_path)
         text = f"Here:\n\n![x]({p})\n\nDone."
-        off_loop = await extract_local_refs_off_loop(text)
+        off_loop = await extract_local_refs_off_loop(text, within_root=str(tmp_path))
         assert off_loop == extract_local_refs(text)
         assert [f.path for f in off_loop.files] == [str(p)]
 
@@ -593,7 +683,9 @@ class TestOffLoop:
         first = _png(tmp_path, "a.png")
         second = _png(tmp_path, "b.png")
         result = await extract_local_refs_off_loop(
-            f"![a]({first})\n\n![b]({second})", limits=ExtractLimits(max_files=1)
+            f"![a]({first})\n\n![b]({second})",
+            limits=ExtractLimits(max_files=1),
+            within_root=str(tmp_path),
         )
         assert [f.path for f in result.files] == [str(first)]
         assert len(result.rejections) == 1

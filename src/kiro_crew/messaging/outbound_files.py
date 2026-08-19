@@ -61,8 +61,11 @@ prompt-injected agent chooses what it writes:
   and an optional per-file ceiling narrows that same read for a channel whose own
   limit sits below the aggregate
 
-No caller yet, by design: the per-channel wiring lands separately, so the core
-can be reviewed and tested on its own.
+The per-channel upload half lands separately, so the core is reviewed and tested
+on its own. :mod:`kiro_crew.discord.renderer` is the first consumer: it seals a
+segment through :func:`extract_local_refs_off_loop` and uploads the result, and
+holds the markup out of its live streaming frames with
+:func:`hide_local_refs`.
 
 All filesystem work here is blocking, so async callers MUST use
 :func:`extract_local_refs_off_loop`, never :func:`extract_local_refs` directly.
@@ -72,14 +75,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    is_unc_shape,
+    safe_read_file_bytes_nolink,
+    unc_probe_allowed,
+)
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.messaging.split import iter_fence_spans
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
+from kiro_crew.widget_parse import mask_inline_code
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +296,8 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
 
 def _finish_destination(raw: str) -> str | None:
     """Strip the optional ``<...>`` wrapper or trailing ``"title"`` from *raw*."""
+    if "\r" in raw or "\n" in raw:
+        return None
     dest = raw.strip()
     # `<...>` is markdown's explicit way to write a destination containing spaces
     # (`![c](</tmp/generated images/c.png>)`). Unwrap it and DON'T split on
@@ -291,11 +307,13 @@ def _finish_destination(raw: str) -> str | None:
         end = dest.find(">")
         if end == -1:
             return None  # unterminated -- don't guess at the path
-        return dest[1:end].strip() or None
+        dest = dest[1:end].strip()
     # Bare destination: a `"title"` suffix is separated by whitespace, so the path
     # ends at the first space.
-    if " " in dest or "\t" in dest:
+    elif " " in dest or "\t" in dest:
         dest = re.split(r"[ \t]", dest, maxsplit=1)[0]
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in dest):
+        return None
     return dest or None
 
 
@@ -310,6 +328,23 @@ def md_destination(rest: str) -> str | None:
 
 def _inside(offset: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= offset < end for start, end in spans)
+
+
+def _literal_image_marker(text: str, offset: int, fenced: list[tuple[int, int]]) -> bool:
+    prefix = text[:offset]
+    escaped = (len(prefix) - len(prefix.rstrip("\\"))) % 2 == 1
+    line_start = text.rfind("\n", 0, offset) + 1
+    line = text[line_start:].split("\n", 1)[0]
+    column = offset - line_start
+    boundaries = [*fenced, *(m.span() for m in re.finditer(r"\n[ \t]*\r?\n", text))]
+    block_start = max((end for start, end in boundaries if end <= offset), default=0)
+    block_end = min((start for start, end in boundaries if start > offset), default=len(text))
+    return (
+        escaped
+        or _inside(offset, fenced)
+        or line[:column].expandtabs(4).startswith("    ")
+        or mask_inline_code(text[block_start:block_end])[offset - block_start] == " "
+    )
 
 
 def strip_url_syntax(raw_dest: str) -> str:
@@ -334,7 +369,10 @@ def local_destination(raw_dest: str) -> Path | None:
     normalization is shared.
     """
     try:
-        path = Path(strip_url_syntax(raw_dest)).expanduser()
+        clean = strip_url_syntax(raw_dest)
+        if os.name == "nt" and is_unc_shape(clean) and not unc_probe_allowed(clean):
+            return None
+        path = Path(clean).expanduser()
         if not path.is_absolute():
             return None
     except (OSError, RuntimeError, ValueError):
@@ -343,8 +381,25 @@ def local_destination(raw_dest: str) -> Path | None:
     return path
 
 
+def _payload_passes_redaction(data: bytes) -> bool:
+    """Whether the exact outbound bytes pass both mandatory egress scanners."""
+    try:
+        source = data.decode("latin-1")
+        checked, _ = redact_exfiltration_urls(source)
+        checked, _ = redact_credentials(checked)
+    except Exception:
+        logger.warning("outbound file payload scan failed", exc_info=True)
+        return False
+    return checked == source
+
+
 def _inspect(
-    dest: str, path: Path, alt: str, budget: int, max_file_bytes: int | None
+    dest: str,
+    path: Path,
+    alt: str,
+    budget: int,
+    max_file_bytes: int | None,
+    within_root: str | None,
 ) -> OutboundFile | Rejection:
     """Decide whether *path* can be uploaded; return the file OR a rejection.
 
@@ -366,17 +421,26 @@ def _inspect(
         read_cap = max_file_bytes
         over_reason = REASON_OVER_FILE_BYTES
         over_detail = f"larger than this channel's {max_file_bytes}-byte per-file limit"
+    if within_root is not None:
+        try:
+            root = os.path.abspath(within_root)
+            if not within_root or os.path.commonpath((os.path.abspath(path), root)) != root:
+                return Rejection(dest, REASON_SENSITIVE, "outside the approved workspace")
+        except (OSError, ValueError):
+            return Rejection(dest, REASON_SENSITIVE, "outside the approved workspace")
     try:
+        if is_sensitive_path(str(path)):
+            return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
         if path.is_symlink():
             # Refused rather than resolved: the bytes below must come from the
             # inode this path names, not from wherever a link points now.
             return Rejection(dest, REASON_SYMLINK, "symlinks are not uploaded")
         if not path.is_file():
             return Rejection(dest, REASON_MISSING, "no such file")
-        if is_sensitive_path(str(path)):
-            return Rejection(dest, REASON_SENSITIVE, "reading this location is blocked")
         try:
-            data = safe_read_file_bytes_nolink(str(path), max_bytes=read_cap)
+            data = safe_read_file_bytes_nolink(
+                str(path), within_root=within_root, max_bytes=read_cap
+            )
         except FileTooLargeError:
             return Rejection(dest, over_reason, over_detail)
         if data is None:
@@ -386,6 +450,10 @@ def _inspect(
         mime = sniff_raster_mime(data[:SNIFF_BYTES])
         if mime is None:
             return Rejection(dest, REASON_NOT_RASTER, "not a PNG, JPEG, GIF, WebP or BMP image")
+        if not _payload_passes_redaction(data):
+            return Rejection(
+                dest, REASON_SENSITIVE, "the file failed outbound content security checks"
+            )
         return OutboundFile(path=str(path), data=data, alt=alt, mime=mime)
     except (OSError, ValueError) as exc:
         # ValueError covers a path the OS refuses outright, e.g. an embedded NUL.
@@ -393,7 +461,103 @@ def _inspect(
         return Rejection(dest, REASON_UNREADABLE, "the file could not be read")
 
 
-def extract_local_refs(text: str, *, limits: ExtractLimits | None = None) -> ExtractResult:
+@dataclass(frozen=True)
+class LocalRef:
+    """One candidate local reference found in the text.
+
+    "Candidate" is the point: this is what the SCAN can decide from the text alone
+    -- span, destination, alt -- with nothing read from disk. Whether it can
+    actually be sent needs a filesystem, and that belongs to
+    :func:`extract_local_refs`.
+    """
+
+    #: Character span of the whole ``![alt](dest)`` markup.
+    start: int
+    end: int
+    #: The destination as written, escapes intact.
+    dest: str
+    #: The alt text, unescaped and stripped.
+    alt: str
+
+
+def iter_local_refs(text: str) -> list[LocalRef]:
+    """Complete local image references not escaped or fenced, in order."""
+    if not text:
+        return []
+    matches = list(IMAGE_MD_RE.finditer(text))
+    if not matches:
+        return []
+    fenced = list(iter_fence_spans(text))
+    refs: list[LocalRef] = []
+    for match in matches:
+        if _literal_image_marker(text, match.start(), fenced):
+            continue  # escaped or fenced: literal text, not markup
+        dest, consumed = _walk_destination(text[match.end() :])
+        if not dest:
+            continue  # malformed markup, or a `(` that belongs to prose
+        if dest.lower().startswith(REMOTE_PREFIXES):
+            continue  # remote or data URI: nothing local to upload
+        refs.append(
+            LocalRef(
+                start=match.start(),
+                end=match.end() + consumed,
+                dest=dest,
+                alt=unescape_md(match.group(1) or "").strip(),
+            )
+        )
+    return refs
+
+
+def open_ref_start(text: str) -> int | None:
+    """Earliest unclosed image marker not escaped or fenced, else ``None``."""
+    if not text:
+        return None
+    fenced = list(iter_fence_spans(text))
+    for opener in re.finditer(r"!\[", text):
+        if _literal_image_marker(text, opener.start(), fenced):
+            continue  # escaped or fenced: literal text, not markup
+        closed = IMAGE_MD_RE.match(text, opener.start())
+        if closed is None:
+            return opener.start()  # label still arriving: no "](" landed yet
+        dest, _consumed = _walk_destination(text[closed.end() :])
+        if dest is None:
+            return opener.start()
+    return None
+
+
+def protected_ref_spans(text: str) -> list[tuple[int, int]]:
+    """Complete and partial image spans that message splitting must preserve."""
+    spans = [(ref.start, ref.end) for ref in iter_local_refs(text)]
+    open_start = open_ref_start(text)
+    if open_start is not None:
+        # Unterminated: the construct owns the rest of the text.
+        spans.append((open_start, len(text)))
+    return sorted(spans)
+
+
+def hide_local_refs(text: str) -> str:
+    """*text* with every image reference cut out, reading no files.
+
+    For a channel that streams a reply through in-place edits before sealing it: a
+    live frame must not show ``![chart](/tmp/chart.png)`` markup the seal is about
+    to replace with the picture, and it cannot afford extraction's filesystem work
+    on every frame. Covers a half-arrived reference too, so a path cannot surface
+    for one frame while its closing paren is still streaming.
+
+    Deliberately more permissive than :func:`extract_local_refs`, which is safe in
+    one direction only: a reference this hides but extraction then rejects reappears
+    in the sealed message (rejections keep their markup) -- shown once, in the
+    message that stays. The reverse would flash a path and vanish.
+    """
+    spans = protected_ref_spans(text)
+    if not spans:
+        return text
+    return _apply_cuts(text, spans)
+
+
+def extract_local_refs(
+    text: str, *, limits: ExtractLimits | None = None, within_root: str | None = None
+) -> ExtractResult:
     """Pull local raster references out of *text* for a transport to upload.
 
     Returns the text to send, the files to send with it, and a reason for every
@@ -401,13 +565,10 @@ def extract_local_refs(text: str, *, limits: ExtractLimits | None = None) -> Ext
     every reference in it turns out to be unusable.
     """
     lim = limits or ExtractLimits()
-    if not text:
+    refs = iter_local_refs(text)
+    if not refs:
         return ExtractResult(rewritten_text=text or "")
-    matches = list(IMAGE_MD_RE.finditer(text))
-    if not matches:
-        return ExtractResult(rewritten_text=text)
 
-    fenced = list(iter_fence_spans(text))
     files: list[OutboundFile] = []
     rejections: list[Rejection] = []
     cuts: list[tuple[int, int]] = []
@@ -415,18 +576,12 @@ def extract_local_refs(text: str, *, limits: ExtractLimits | None = None) -> Ext
     over_cap = 0
     total_bytes = 0
 
-    for match in matches:
-        if _inside(match.start(), fenced):
-            continue  # inside a code fence: literal text, not markup
-        dest, consumed = _walk_destination(text[match.end() :])
-        if not dest:
-            continue  # malformed markup, or a `(` that belongs to prose
-        if dest.lower().startswith(REMOTE_PREFIXES):
-            continue  # remote or data URI: nothing local to upload
+    for ref in refs:
         if considered >= lim.max_files:
             over_cap += 1
             continue
         considered += 1
+        dest = ref.dest
         path = local_destination(dest)
         if path is None:
             rejections.append(
@@ -436,9 +591,10 @@ def extract_local_refs(text: str, *, limits: ExtractLimits | None = None) -> Ext
         outcome = _inspect(
             dest,
             path,
-            unescape_md(match.group(1) or "").strip(),
+            ref.alt,
             lim.max_total_bytes - total_bytes,
             lim.max_file_bytes,
+            within_root,
         )
         if isinstance(outcome, Rejection):
             # A rejected reference keeps its markup, so the path stays visible.
@@ -446,7 +602,7 @@ def extract_local_refs(text: str, *, limits: ExtractLimits | None = None) -> Ext
             continue
         files.append(outcome)
         total_bytes += outcome.size_bytes
-        cuts.append((match.start(), match.end() + consumed))
+        cuts.append((ref.start, ref.end))
 
     if over_cap:
         rejections.append(
@@ -511,7 +667,7 @@ def _apply_cuts(text: str, cuts: list[tuple[int, int]]) -> str:
 
 
 async def extract_local_refs_off_loop(
-    text: str, *, limits: ExtractLimits | None = None
+    text: str, *, within_root: str, limits: ExtractLimits | None = None
 ) -> ExtractResult:
     """Async form of :func:`extract_local_refs`, run off the event loop.
 
@@ -526,4 +682,4 @@ async def extract_local_refs_off_loop(
     recover a wedged kernel resource, and this work is short and
     filesystem-bound with no reason to queue behind it.
     """
-    return await asyncio.to_thread(extract_local_refs, text, limits=limits)
+    return await asyncio.to_thread(extract_local_refs, text, limits=limits, within_root=within_root)

@@ -65,7 +65,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-__all__ = ["split_markdown_safe", "iter_fence_spans"]
+__all__ = ["split_markdown_safe", "iter_fence_spans", "open_fence_at_end"]
 
 # An opener is <=3 spaces of indent + a run of >=3 backticks/tildes + an info
 # string. A backtick fence's info string may not contain a backtick (otherwise
@@ -313,6 +313,14 @@ def _advance(fence: _Fence | None, line: str) -> _Fence | None:
     if m:
         return _Fence(char=m.group(1)[0], length=len(m.group(1)), opener=body)
     return None
+
+
+def open_fence_at_end(text: str) -> tuple[str, int, str] | None:
+    """Return ``(character, length, opener)`` for the fence open at text's end."""
+    fence: _Fence | None = None
+    for line, _full, _terminated in _lines(text):
+        fence = _advance(fence, line)
+    return (fence.char, fence.length, fence.opener) if fence else None
 
 
 def iter_fence_spans(text: str) -> Iterator[tuple[int, int]]:
