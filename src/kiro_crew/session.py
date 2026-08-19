@@ -894,6 +894,17 @@ class SessionManager:
         # Per-session channel conversation to send unattended output to (the
         # auto-compact notice). In-memory on purpose: see set_origin_link.
         self._origin_links: dict[str, ChannelLink] = {}
+        # Queued follow-up messages (enqueue()/dequeue()) rescued from a
+        # session torn down mid-turn by reset() -- e.g. record_failure's
+        # circuit breaker, or AcpPromptBusy recovery -- so the next cold
+        # start for the same key resumes them instead of the caller they
+        # were queued behind silently discarding them along with the killed
+        # session. Only reset() populates this; destroy(),
+        # discard_conversation() and clear_queue() drop it (those are
+        # intentional, user-visible wipes where pending follow-ups are
+        # expected to go too — mirrors stop_turn's explicit clear_queue()
+        # before a user-initiated hard kill).
+        self._orphaned_queues: dict[str, deque[tuple[str, str, dict]]] = {}
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._on_compacted: _CompactCallback | None = None
         self._on_recycled: _RecycleCallback | None = None
@@ -2954,6 +2965,9 @@ class SessionManager:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
+                    _rescued_queue = self._orphaned_queues.pop(key, None)
+                    if _rescued_queue:
+                        sess.queue = _rescued_queue
                     _replay_needed = (
                         getattr(provider, "_history_replay_needed", False) is True
                     )
@@ -3113,6 +3127,13 @@ class SessionManager:
             # cooldown so it isn't inherited.
             self._compact_cooldown_until.pop(key, None)
             self._origin_links.pop(key, None)
+            # Rescue any messages queued behind the turn that triggered this
+            # reset (e.g. via AcpPromptBusy recovery) so the next cold start
+            # for this key picks them up instead of losing them with the
+            # session object. Reuses the deque directly — the session being
+            # discarded has no other use for it.
+            if session is not None and session.queue:
+                self._orphaned_queues[key] = session.queue
         if session:
             # Capture PID and child tree before shutdown clears them
             client = getattr(session.provider, "_client", None)
@@ -3644,6 +3665,11 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            # A destroy promises no resume, so a queue a PRIOR reset() rescued
+            # for this key must not survive to be replayed into the next cold
+            # start (reset() itself deliberately leaves live queues alone —
+            # see its docstring — but its leftovers are this method's to drop).
+            self._drop_orphaned_queue(key)
         try:
             if session:
                 await session.provider.shutdown()
@@ -3671,6 +3697,10 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            # Same reasoning as destroy(): the conversation this key's rescued
+            # queue was addressed to is gone, so replaying it into the fresh
+            # one would land follow-ups with no context to follow up on.
+            self._drop_orphaned_queue(key)
         try:
             if session:
                 await session.provider.shutdown()
@@ -4254,6 +4284,16 @@ class SessionManager:
 
         Unlinks each discarded entry's temp files: cleared entries never reach
         ``_dispatch_queued``'s cleanup, so skipping this leaks them on disk.
+
+        Also drops any queue reset() rescued into ``_orphaned_queues`` for
+        this key (see reset()'s docstring) -- without this, a stop/clear
+        issued after a reset already rescued a queue but before the next
+        session opens for the key would leave that rescued queue untouched
+        (no live session exists yet for the early-return in stop_turn to
+        route through), and the messages the caller just asked to clear
+        would resurface once a session next opens for this key. A rescued
+        entry is just as far from ``_dispatch_queued``'s cleanup as a live
+        one, so it needs the same unlink pass.
         """
         key = self._fold_key(key)
         session = self._sessions.get(key)
@@ -4262,6 +4302,18 @@ class SessionManager:
                 unlink_queued_temp_paths(kwargs)
             session.queue.clear()
             session.cancelled.clear()
+        self._drop_orphaned_queue(key)
+
+    def _drop_orphaned_queue(self, key: str) -> None:
+        """Discard a rescued queue for ``key``, unlinking its temp files.
+
+        Every path that discards a queue entry must unlink (see
+        ``unlink_queued_temp_paths``), and a rescued entry is exactly as far
+        from ``_dispatch_queued``'s cleanup as a live one — it has no session
+        left to consume it. Callers already hold ``key`` folded.
+        """
+        for _, _, kwargs in self._orphaned_queues.pop(key, ()):
+            unlink_queued_temp_paths(kwargs)
 
     async def is_provider_alive(self, key: str) -> bool | None:
         """Return True/False for provider liveness, or None if no session exists."""

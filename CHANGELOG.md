@@ -3,6 +3,23 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Follow-up messages sent while a turn is in flight no longer vanish if
+  that turn fails.** A message sent while another is being processed is
+  queued behind it (`enqueue`/`dequeue`); but `reset()` — called directly on
+  `AcpPromptBusy` and by `record_failure`'s circuit breaker — pops and tears
+  down the whole session object mid-turn, including any messages still
+  waiting in its queue, with nothing preserving them. The next turn's
+  `dequeue()` then finds nothing, so those messages were silently and
+  permanently dropped with no notice to their senders. `reset()` now rescues
+  a non-empty queue and the next session opened for that key inherits it, so
+  a mid-turn failure delays queued follow-ups instead of losing them.
+  `destroy()`/`discard_conversation()` — deliberate, user-visible wipes —
+  are unaffected and still drop the queue, matching `stop_turn`'s existing
+  behavior for a user-initiated stop. `clear_queue()` now also drops a
+  queue already rescued this way, so a stop/clear issued after the rescue
+  but before the next session reopens the key still clears it — otherwise
+  those same messages would resurface once a session next opened, exactly
+  what the caller had just asked to prevent. (#3752)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
