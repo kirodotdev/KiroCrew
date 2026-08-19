@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -320,6 +321,7 @@ class TestHostileNameRejection:
             "",                       # empty
             "a" * 200,                # too long (> _MAX_MCP_NAME_LEN = 128)
             "foo/../bar",             # embedded .. even with alphanumerics around
+            ":bad",                   # leading colon (colon is non-leading only)
         ],
     )
     async def test_rejects_hostile_names(self, tmp_path, monkeypatch, bad_name):
@@ -424,6 +426,161 @@ class TestHostileNameRejection:
         # The good tool went through
         assert "tools" in actions
         assert "legit-tool" in actions["tools"]
+
+
+# ---------------------------------------------------------------------------
+# _is_valid_mcp_name — the allowlist contract, tested directly.  App-provided
+# servers are keyed ``<app>:<server>`` (enumerated from ~/.kiro/agents/*.json),
+# so the charset must admit a NON-LEADING colon; the leading-char class and the
+# separate ``..`` traversal check must stay intact.
+# ---------------------------------------------------------------------------
+
+
+class TestMcpNameValidator:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "auto-improvement:auto-improvement",  # app-provided <app>:<server> key
+            "meetings:calendar-sync",             # ditto, differing halves
+            "auto-improvement",                   # plain name unchanged
+            "playwright-mcp",                     # plain name unchanged
+            "@org/server",                        # scoped name unchanged
+        ],
+    )
+    def test_accepts_well_formed_names(self, name):
+        from kiro_crew.dashboard.handlers.mcp import _is_valid_mcp_name
+
+        assert _is_valid_mcp_name(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            ":bad",          # colon may not lead
+            "../evil",       # path traversal
+            "a:../evil",     # colon does not smuggle traversal past the .. check
+            "a;rm -rf /",    # argv-injection chars still rejected
+            "",              # empty
+        ],
+    )
+    def test_rejects_malformed_names(self, name):
+        from kiro_crew.dashboard.handlers.mcp import _is_valid_mcp_name
+
+        assert _is_valid_mcp_name(name) is False
+
+
+class TestApplyAcceptsAppProvidedName:
+    @pytest.mark.asyncio
+    async def test_colon_name_passes_the_gate_and_applies(self, tmp_path, monkeypatch):
+        """``<app>:<server>`` keys clear the name gate and the change applies.
+
+        This is the shape ``GET /api/mcp-gateway/servers`` hands the client, so
+        the sibling write endpoints must accept it back.
+        """
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        mc_path = tmp_path / "mc.json"
+        monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
+        monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
+        monkeypatch.setattr(
+            mcp_mod, "_find_server_spec_anywhere", lambda n: {"command": "x"}
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared._capability_manager",
+            lambda: MagicMock(**{"available.return_value": False}),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
+
+        class _NoLock:
+            async def __aenter__(self):
+                pass
+
+            async def __aexit__(self, *a):
+                pass
+
+        monkeypatch.setattr(mcp_mod, "_get_mcp_lock", lambda: _NoLock())
+
+        request = _make_request(
+            {"changes": [{"name": "auto-improvement:auto-improvement", "kirocrew": True}]}
+        )
+        resp = await mcp_mod.api_mcp_apply(request)
+        body = json.loads(resp.body)
+
+        assert body["ok"] is True
+        result = body["results"][0]
+        assert "error" not in result, f"colon name was rejected: {result}"
+        assert result["name"] == "auto-improvement:auto-improvement"
+        assert "kirocrew" in result["actions"]
+
+
+# ---------------------------------------------------------------------------
+# api_mcp_gateway_set_stub — the endpoint the Pool toggle calls.  App-provided
+# names must clear its gate; a leading colon must still 400.
+# ---------------------------------------------------------------------------
+
+
+def _make_stub_request(body: dict) -> MagicMock:
+    """Fake aiohttp request for api_mcp_gateway_set_stub.
+
+    ``state`` carries no ``_mcp_gateway_apply_stub`` so the handler persists the
+    allowlist without attempting an in-process pool re-apply.
+    """
+    state = SimpleNamespace(_mcp_gateway_apply_stub=None)
+    request = MagicMock(spec=web.Request)
+    request.app = {"state": state}
+    request.get = MagicMock(return_value="dashboard")
+
+    async def _json() -> dict:
+        return body
+
+    request.json = _json
+    return request
+
+
+class TestSetStubNameGate:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_name", [":bad", "../evil"])
+    async def test_rejects_malformed_single_name(self, bad_name):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        request = _make_stub_request({"name": bad_name, "stub": True})
+        resp = await mcp_mod.api_mcp_gateway_set_stub(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["error"] == "invalid server name"
+
+    @pytest.mark.asyncio
+    async def test_rejects_malformed_batch_name(self):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        request = _make_stub_request({"names": ["good-name", ":bad"], "stub": True})
+        resp = await mcp_mod.api_mcp_gateway_set_stub(request)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "invalid_server_name"
+
+    @pytest.mark.asyncio
+    async def test_accepts_app_provided_colon_name(self, tmp_path, monkeypatch):
+        """The stub toggle accepts ``<app>:<server>`` and persists it."""
+        import kiro_crew.config.loader as loader_mod
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        cfg = tmp_path / "config.json"
+        cfg.write_text("{}")
+        monkeypatch.setattr(loader_mod, "config_path", lambda: cfg)
+        monkeypatch.setattr(mcp_mod, "_local_overlay_section", lambda: {})
+
+        request = _make_stub_request(
+            {"name": "auto-improvement:auto-improvement", "stub": True}
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(request)
+        body = json.loads(resp.body)
+
+        assert resp.status == 200, f"colon name was rejected: {body}"
+        assert body["ok"] is True
+        assert body["name"] == "auto-improvement:auto-improvement"
+        written = json.loads(cfg.read_text())
+        assert written["mcp_gateway"]["stub_servers"] == [
+            "auto-improvement:auto-improvement"
+        ]
 
 
 # ---------------------------------------------------------------------------

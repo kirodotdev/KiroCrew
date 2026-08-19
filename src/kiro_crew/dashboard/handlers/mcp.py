@@ -48,14 +48,17 @@ logger = logging.getLogger(__name__)
 
 # Allowlist pattern for MCP server names.  Matches the convention used
 # in AIM / kiro-cli (alphanumerics, dashes, underscores, slashes, dots,
-# and ``@`` for scoped names like ``@org/server``) and defends against
-# command-injection into subprocess calls that pass the name as an argv
-# element (e.g. a capability-manager `uninstall <name>` argv).
+# ``@`` for scoped names like ``@org/server``, and ``:`` for app-provided
+# keys like ``<app>:<server>`` as enumerated from ``~/.kiro/agents/*.json``)
+# and defends against command-injection into subprocess calls that pass the
+# name as an argv element (e.g. a capability-manager `uninstall <name>` argv).
+# A colon is not a shell metacharacter and names only ever travel as
+# list-form argv elements, so admitting it does not widen that surface.
 #
 # The leading char must be alphanumeric or ``@`` so a name can't begin
-# with ``.`` or ``/``.  Path-traversal sequences (``..``) are rejected
-# separately at validation time below.
-_VALID_MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.-]*$")
+# with ``.``, ``/``, or ``:``.  Path-traversal sequences (``..``) are
+# rejected separately at validation time below.
+_VALID_MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.:-]*$")
 _MAX_MCP_NAME_LEN = 128
 
 
