@@ -574,6 +574,24 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # git rev-parse at startup, no agent input, no sandbox needed).
         "apps/builtins/dev_fleet/server.py::_resolve_primary_checkout",
         "apps/builtins/dev_fleet/server.py::worker",
+        # dep_sync stands in for `pip install -e .` on a checkout whose console
+        # script is locked, and it spawns the same shapes that step did:
+        # `<target python> -c <fixed metadata/version probe>` and `<target python>
+        # -m pip install <requirements the merged revision declares>`. It spawns no
+        # git at all -- it runs after the merge, so it reads the declarations
+        # straight from the working tree. The interpreter is the target repo's own
+        # venv python (handed down, never resolved from PATH here); the repo comes
+        # from the operator-configured checkout, and the requirement specs are read
+        # from that checkout's own declarations -- the same ones `pip install -e .`
+        # would have read, so this adds no surface the step it replaces did not
+        # already have. Routing here would also NEST sandboxes: dep_sync runs as a
+        # sync step, which server.py::worker already wrapped through
+        # sandboxed_spawn_argv, and a filesystem-scoped wrapper around pip would
+        # block the venv writes that are the point of the step.
+        "apps/builtins/dev_fleet/dep_sync.py::interpreter_version",
+        "apps/builtins/dev_fleet/dep_sync.py::installed_console_script_target",
+        "apps/builtins/dev_fleet/dep_sync.py::installed_package_origin",
+        "apps/builtins/dev_fleet/dep_sync.py::main",
         # Foreground last-resort restart (Make Live on hosts with no drivable
         # service manager): a detached `kirocrew restart --port <marker port>`,
         # fixed argv whose binary is validated (basenamed kirocrew, absolute,

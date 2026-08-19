@@ -42,6 +42,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -51,7 +52,7 @@ from typing import Any, Callable
 from aiohttp import web
 
 from kiro_crew import frontend, hooks, platform_compat
-from kiro_crew.apps.builtins.dev_fleet import gateway_service
+from kiro_crew.apps.builtins.dev_fleet import dep_sync, gateway_service
 from kiro_crew.apps.proxy_auth import raw_request_target
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
@@ -1366,8 +1367,24 @@ async def _start_run(
                 _RUNS[rid]["output"].append("[error] " + str(exc))
         finally:
             for cp in (cleanup_paths or []):
+                # A caller may register a temp FILE, or a temp directory it
+                # created for one (the dependency-only sync stages a snapshot
+                # that way). unlink refuses a directory, so fall back to rmdir
+                # rather than leaking one temp dir per run.
                 try:
                     os.unlink(cp)
+                except IsADirectoryError:
+                    try:
+                        os.rmdir(cp)
+                    except OSError:
+                        pass
+                except PermissionError:
+                    # Windows raises PermissionError, not IsADirectoryError,
+                    # when unlink is handed a directory.
+                    try:
+                        os.rmdir(cp)
+                    except OSError:
+                        pass
                 except OSError:
                     pass
 
@@ -3595,51 +3612,81 @@ async def _sync_start_locked() -> dict:
             "service environment; that one does need a restart, because a "
             "running process cannot see a new environment variable."
         )}
+    # A locked console script does not have to mean the sync cannot happen.
+    #
+    # pip cannot replace a running executable on Windows, and its uninstall is
+    # not atomic: it renames the dist-info aside and deletes the editable `.pth`
+    # before it reaches the locked script, rolling back neither. So
+    # `pip install -e .` must not run against a venv serving this gateway.
+    #
+    # It does not have to run at all, though. An editable install needs no
+    # reinstall for a source change -- `src` is already on `sys.path`, so merged
+    # code is live the moment the merge lands. The only thing the reinstall was
+    # still buying is a dependency a new revision added, and installing a
+    # dependency never touches the project's own console script.
+    #
+    # The substitute keeps the SAME shape as the reinstall it stands in for:
+    # `fetch -> merge -> install the project's requirements`, in that order, with
+    # the project itself left out. Deviating from that shape -- installing before
+    # the merge so a failure cannot strand a merged checkout -- was tried and
+    # abandoned: it requires proving in advance that the merge cannot fail, which
+    # needs a growing set of preconditions that still cannot be complete. A failed
+    # install after a landed merge is what every other platform already does when
+    # its reinstall step fails.
+    #
+    # The substitute step runs with THIS backend's interpreter for the same
+    # reason the build+stage step does: the logic is revision-independent, so
+    # resolving it from the target would make the step's very EXISTENCE
+    # contingent on the pulled revision carrying dep_sync.
+    #
+    # It runs a pre-merge SNAPSHOT of that module, by path, and neither half of
+    # that is incidental. `-m kiro_crew...dep_sync` would import the module from
+    # the working tree AFTER the merge has landed, dragging in the whole package
+    # __init__ chain with it -- so a revision that raises the `requires-python`
+    # floor and uses newer syntax anywhere in that chain would die with a
+    # SyntaxError while being parsed, and the floor refusal that exists for
+    # exactly that revision could never run. Copying the module first and
+    # executing the copy keeps the only parsed file one this interpreter has
+    # already imported, which makes the refusal reachable in the case it is
+    # written for. Running it by path rather than by module name is what keeps
+    # the package chain out of it; the module imports nothing but the standard
+    # library, so it needs no package context.
+    #
+    # This mirrors pip rather than deviating from it: the INSTALLED pip reads the
+    # merged project's metadata, and an old pip refusing a too-new project is the
+    # behaviour being stood in for here.
+    fetch_step = ([git_bin, "fetch", remote, BASE_BRANCH], "standard",
+                  _build_env(with_credentials=True), "Pull")
+    merge_step = ([git_bin, "merge", "--ff-only", f"{remote}/{BASE_BRANCH}"], "strict",
+                  _build_env(), "Pull")
+    dep_sync_snapshot: Path | None = None
     if locked_scripts:
-        # Refuse the WHOLE sync rather than omitting just the reinstall.
-        #
-        # pip cannot replace a running executable on Windows, and its uninstall
-        # is not atomic: it renames the dist-info aside and deletes the editable
-        # `.pth` before it reaches the locked script, rolling back neither. That
-        # alone argues for not starting pip.
-        #
-        # But merging without installing is not a safe consolation prize. A
-        # revision that adds a dependency would land on disk with that dependency
-        # absent, the run would exit 0, and the UI would offer "restart gateway
-        # to apply" — so the next restart imports the new code, fails on the
-        # missing import, and the gateway does not come back. Any newly spawned
-        # subprocess hits the same gap even without a restart. That is the same
-        # unstartable-gateway outcome this guard exists to prevent, just later
-        # and with a success report in front of it.
-        #
-        # The checkout is therefore left at a revision whose dependencies are
-        # satisfied, and the remedy names itself.
-        return {"ok": False, "error": (
-            "refusing to sync: cannot reinstall into the venv this gateway runs "
-            f"from. {', '.join(locked_scripts)} is locked by a running process, so "
-            "a reinstall cannot replace it — and pip's uninstall is not "
-            "atomic, so attempting it would strip the editable install on the way "
-            "out and leave the venv unable to import the package at all. Pulling "
-            "without installing is refused too: a revision whose new dependencies "
-            "are missing crashes the gateway on its next restart. Stop the gateway "
-            "and sync from a terminal instead: "
-            # Every path is absolute and quoted. `-e .` would resolve against the
-            # terminal's cwd, and this project's normal working state is several
-            # worktrees side by side — so a command copied out of a feature
-            # worktree would install THAT checkout into the primary venv and
-            # repoint its editable install at the wrong tree. `git -C` already
-            # pins the pull, which makes an unpinned `.` actively misleading:
-            # the line reads as if it were cwd-independent. Quoting covers the
-            # spaces that are normal in a Windows home directory.
-            f'git -C "{repo}" pull --ff-only '
-            f'&& "{target_py}" -m pip install -e "{repo}"'
-        )}
-    raw_steps: list[tuple[list[str], str, dict, str]] = [
-        ([git_bin, "fetch", remote, BASE_BRANCH], "standard",
-         _build_env(with_credentials=True), "Pull"),
-        ([git_bin, "merge", "--ff-only", f"{remote}/{BASE_BRANCH}"], "strict", _build_env(), "Pull"),
-        ([str(target_py), "-m", "pip", "install", "-e", "."], "strict", _build_env(), "pip install"),
-    ]
+        logger.info(
+            "dev-fleet: %s locked by a running process; substituting a "
+            "dependency-only sync for the editable reinstall",
+            ", ".join(locked_scripts),
+        )
+        # mkdtemp, not a fixed path under the system temp dir: executing a script
+        # by path puts its DIRECTORY on sys.path, so a shared or predictable
+        # directory would let anything dropped beside the snapshot shadow a
+        # stdlib module the snapshot imports. mkdtemp is unguessable and 0o700.
+        snapshot_dir = Path(tempfile.mkdtemp(prefix="kirocrew-dep-sync-"))
+        dep_sync_snapshot = snapshot_dir / "dep_sync.py"
+        shutil.copyfile(dep_sync.__file__, dep_sync_snapshot)
+        steps = [
+            fetch_step,
+            merge_step,
+            ([sys.executable, str(dep_sync_snapshot), str(repo), str(target_py)],
+             "strict", _build_env(), "pip install"),
+        ]
+    else:
+        steps = [
+            fetch_step,
+            merge_step,
+            ([str(target_py), "-m", "pip", "install", "-e", "."], "strict",
+             _build_env(), "pip install"),
+        ]
+    raw_steps: list[tuple[list[str], str, dict, str]] = steps
     # The whole FRONTEND half of the sync is skipped on an edition checkout.
     #
     # The build runs under _build_env(), whose allowlist (_SAFE_ENV_KEYS) drops
@@ -3690,6 +3737,10 @@ async def _sync_start_locked() -> dict:
              "strict", _build_env(), "npm build + stage"),
         ]
     cleanups: list[str] = []
+    if dep_sync_snapshot is not None:
+        # File first, then its directory: the cleanup loop removes entries in
+        # order, and a directory cannot go until it is empty.
+        cleanups += [str(dep_sync_snapshot), str(dep_sync_snapshot.parent)]
     wrapped_steps: list[dict] = []
     loop = asyncio.get_running_loop()
     for argv, mode, base_env, label in raw_steps:
