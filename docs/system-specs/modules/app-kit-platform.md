@@ -76,6 +76,17 @@ zero-width rendering of our name does not silently lose it. Folding WIDENS the
 match, which is safe only because the `_registry` short-circuit runs first:
 the author is consulted exclusively for rows whose index we ship or sign.
 
+`origin` on a registry row is stamped under the same rule. The install-status
+enrichment matches installed apps by NAME alone, so it withholds the `origin`
+copy from external rows (`_is_external_row`): an external index publishing an
+app named after an installed built-in must not inherit `origin: "builtin"`
+beside the `provenance: "external"` stamped on the same row.
+`_apply_trust_fields` additionally scrubs any `origin` other than the
+server-stamped `"external"` (a `detectInstalled` hit) from `_registry` rows,
+because an index-published `origin` key survives a failed manifest fetch —
+`_resolve_manifest` returns the row unprojected on that path — and would
+otherwise reach the wire.
+
 `"official"` means "an app WE list". The bundled `app-registry.json` is one
 delivery of that list — the offline seed shipped inside the wheel — so it
 carries the same value a signed remote catalog will, not a second one. Two
@@ -695,3 +706,141 @@ Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
 `fetch_inventory_entries`, `inventory_for_install`), `apps/registry.py`
 (`list_catalog_apps`, `_resolve_registry_row`, `_git_fetch_commit`),
 `apps/routes.py` (`handle_registry`).
+
+## 15. A registry's credential posture follows its index's change control
+
+The published catalog serves one deployment's inventory over TLS from a fixed
+URL. An organisation that publishes its OWN catalog uses the external-registry
+path instead: `config.registries` (plus whatever the edition pins via
+`AppsLoader.default_registries()`) names repos whose index this client fetches at
+runtime, so adding an app is a change to that repo rather than a client release.
+
+`_effective_registries()` is the ONE list every consumer reads — index
+fetch/refresh, the trusted-host allowlist, row lookup, install, and the
+blob-proxy allowlist. That is deliberate rather than incidental: a registry
+visible to the listing but not to install would surface apps the install path
+then refuses, which is worse than not listing them.
+
+Whether a registry's apps clone with this machine's git identity is decided by
+`ExternalRegistryConfig.trust`, and the reasoning is about **who controls the
+index**, not which host it lives on:
+
+- **`index` (the default)** — the index is untrusted content. The
+  confused-deputy case is concrete: host trust is host-granular, so an index on
+  a trusted forge can list an app whose `repo` is a *private sibling repo* on
+  that same forge, and the manifest and blob-proxy paths clone automatically on
+  browse. Such clones therefore run credential-free (`anonymous_git_env` +
+  `strict` sandbox), so a private sibling simply fails to clone.
+- **`owner`** — the operator asserts the index itself is under change control
+  they own (a review-gated repo on a protected branch). That retracts the
+  premise the defense rests on, deliberately and per registry, which is what
+  makes an organisation-wide registry usable at all: its apps live in many
+  repos, none equal to the index URL, so the byte-identical same-repo carve-out
+  alone leaves every one of them unclonable on a forge that needs auth.
+
+**The tier is not readable from a cached row, and that is the whole difficulty.**
+By the time a credential decision is made, the row was read from
+`_read_external_registry_cache` — the same agent-writable file
+`_resolve_registry_row` refuses to resolve an install from. Honouring the tier
+there would relocate the confused-deputy read from the index to its cache:
+anything able to write `_registry_<name>.json` could name a private repo on the
+operator's own forge and have it cloned with the gateway's identity. So the
+escalation is split across two predicates with different reach:
+
+- `_is_owner_designated_repo` — the pre-existing byte-identical same-repo
+  ground, and the ONLY escalation the **automatic** browse/refresh paths get. It
+  compares against a URL the operator typed, so a poisoned cache row cannot
+  widen it. `anonymous_git_env`'s contract — automatic clones stay
+  credential-free because no per-repo owner action gates them — therefore still
+  holds unchanged.
+- `_owner_tier_confirmed` — **install only**, and honours the tier only after a
+  FRESH fetch of that registry's index confirms an entry whose clone URL is
+  byte-identical to the row's. Same rule as the official catalog, whose install
+  coordinates likewise never come from a cache.
+
+Four properties keep the tier from becoming a hole, and none is optional:
+
+- **It cannot widen the reachable host set.** Every clone still passes
+  `is_clone_host_trusted` first. The tier only decides whether credentials are
+  offered to a host that gate already allows.
+- **It is never index-supplied.** `_registry_trust_tier` reads the
+  build-pinned registry row. A `trust` key on an index ENTRY
+  is ignored — otherwise a hostile index would grant itself credentials. The
+  freshly fetched index is authority for the URL only, never for the tier.
+- **It fails closed.** An unrecognised value reads as `index`; so does an
+  unknown registry name and any lookup failure. An unreachable or unparseable
+  fresh index refuses the escalation rather than falling back to the cache. Only
+  the exact token, freshly confirmed, grants.
+- **It is audited in both directions, without carrying the credential.** Grants
+  emit `_sel_credential_decision(..., granted=True)` under distinct operation
+  names, so the same-repo ground and the tier are separable in the log. REFUSALS
+  are recorded too, and are the more interesting record: `_owner_tier_confirmed`
+  returns False when a fresh read of the registry's index does not list the
+  coordinates the local row claims, which is what a poisoned cache looks like from
+  here — left to a rotating log alone, the one event an incident responder wants
+  is the one that ages out. Only a decision on an ATTEMPTED escalation is
+  recorded: a default-tier registry or a bundled entry is not a credential
+  decision, and recording it would put a row in SEL per browse and bury the
+  refusals that matter. A clone URL is index-supplied and may
+  embed `user:token@`, and the SEL trail is dashboard-readable and persistent, so
+  `_redact_url_userinfo` strips userinfo from every logged URL. Userinfo is
+  removed rather than the whole URL: a record saying "credentials were offered to
+  clone THIS" is worth little if it cannot name the repository, and a bare host
+  cannot tell two repos on one forge apart.
+
+**A registry name claimed by two different repositories is refused outright.**
+The on-disk index cache is keyed by registry NAME, so if a pinned row and an
+operator row share a name but not a repo, serving either would read the other's
+cached index under the winner's identity — and every reader stamps `_registry`
+from the registry it asked for, so those rows would be attributed to it: apps the
+winning repository does not list, presented as its own and installable under it.
+`_effective_registries` therefore serves NEITHER row for a contested name and
+logs both claimants. Same name AND same repo is not contested: the pinned row
+simply supersedes an operator row that already agreed, and the shared cache is
+correct. `PUT /api/apps/registries` refuses to create such a collision, so the
+case that reaches this rule is a `config.json` that already used the name before
+the build pinned it. (Re-keying the cache on `(name, repo)` would fix the wider
+pre-existing case — an operator repointing a registry's `repo` has the same
+hazard — and is left as separate work.)
+
+**Only the BUILD can grant `owner`.** `_registry_trust_tier` resolves the tier
+solely from `AppsLoader.default_registries()`; a row in `config.json` reads as
+`index` no matter what it declares. The reason is that `config.json` is
+agent-writable — `security.py` says so directly, with the check inline
+(`is_sensitive_bash_command("echo x > …/config.json")` is `None`) — so a tier read
+from there would not be an operator's assertion at all. A prompt-injected shell
+could mint `owner`, and the *same* write also adds its chosen host to
+`_configured_registry_hosts()` and lets it control the index that
+`_owner_tier_confirmed` re-fetches: every layer downstream of that decision would
+already be satisfied by the one write that started it. `default_registries()`
+ships in the wheel, so an `owner` tier is a claim the build makes and the agent
+cannot forge.
+
+Consequences worth stating, because they close off designs that look reasonable:
+
+- The tier is only honoured for a registry that is BOTH build-pinned and in force.
+  A name contested between a pinned row and a config row is served by neither, so
+  reading the tier off the pinned list alone would keep granting `owner` for a
+  registry whose apps are not being listed.
+- `PUT /api/apps/registries` **refuses** `trust: "owner"` rather than storing it,
+  and `GET` reports `index` for every operator row. Persisting or echoing a tier
+  the runtime ignores would report a grant that does not exist, which is worse
+  than declining it. There is correspondingly nothing to preserve across a
+  replace-all PUT: an operator row's tier is always `index`.
+- No dashboard control writes the tier, and adding one would not help — the
+  question is not how the value is typed but whether the file it lands in is
+  agent-writable.
+
+The API reports pinned registries under a separate read-only `pinned` key rather
+than inside `registries`, because `PUT /api/apps/registries` replaces that list
+verbatim: folding them in would let a dashboard round-trip persist an edition
+default into the operator's `config.json`, where a later edition change could no
+longer move it. `PUT` carries `trust` through for the same class of reason —
+dropping it would silently downgrade a registry the operator had marked trusted.
+
+Writers: `apps/registry.py` (`_effective_registries`, `_pinned_registries`,
+`_registry_trust_tier`, `_is_owner_designated_repo`, `_owner_tier_confirmed`,
+`_sel_credential_decision`,
+`anonymous_git_env`), `platform/interfaces.py`
+(`AppsLoader.default_registries`), `config/loader.py`
+(`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).

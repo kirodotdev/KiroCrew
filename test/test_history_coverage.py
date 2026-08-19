@@ -401,6 +401,7 @@ class TestListSessions:
         mtime = (tmp_path / "s1.jsonl").stat().st_mtime
         log._meta_cache["s1"] = (
             mtime,
+            log._cache_gen("s1"),
             {
                 "_type": "metadata",
                 "created_at": "cached-at",

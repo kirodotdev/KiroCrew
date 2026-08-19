@@ -14,6 +14,16 @@ interface PinnedPromptProps {
    * whole content was an image pins as an empty card.
    */
   images: string[]
+  /**
+   * True when `fullText` carries content the preview cannot show at all, so the
+   * expand affordance must mount regardless of clamping.
+   *
+   * A pinned nudge is the case: its preview is a short "cycle N" label that never
+   * clamps and it has no images, so neither of the gates below would fire and the
+   * instruction body would be unreachable — the same dead end images already have
+   * an exemption for.
+   */
+  bodyBeyondPreview?: boolean
   /** px to translate up so the incoming prompt pushes this banner out of view. */
   pushUp: number
   /** Measured card height, used to shrink the backing band as the card is pushed. */
@@ -97,7 +107,7 @@ const MORPH_EASE = 'cubic-bezier(0.2,0,0,1)'
  *     image used to pin as a blank card.
  */
 export default function PinnedPrompt({
-  text, fullText, images, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight,
+  text, fullText, images, bodyBeyondPreview, pushUp, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -201,7 +211,7 @@ export default function PinnedPrompt({
   // exists to preserve. Widening the box is not a concern in that case: parity with
   // the bubble is already unattainable for a prompt whose bubble is a full-size
   // image, and a clamped prompt has by definition already hit its max width.
-  const showChevron = clamped || images.length > 0 || expanded
+  const showChevron = clamped || images.length > 0 || bodyBeyondPreview || expanded
 
   return (
     <div
@@ -241,7 +251,7 @@ export default function PinnedPrompt({
           <button
             type="button"
             onClick={onJump}
-            title={i18nT('pages.chat.pinnedPrompt.jump_to_this_prompt')}
+            title={i18nT('pages.chat.pinnedPrompt.jump_to_this_turn')}
             className="min-w-0 flex-1 bg-transparent border-none p-0 m-0 text-left cursor-pointer"
           >
             {/* Expanded: images get their own strip at readable size, outside the

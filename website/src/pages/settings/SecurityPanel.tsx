@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, ArrowLeft, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { useContainerWidth } from '../../hooks/useContainerWidth'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
@@ -379,6 +380,7 @@ function CustomDenyRow({ rule, onToggle, onDelete }: { rule: DeniedUserRule; onT
  *  `error` stays local: it is derived from the value and costs nothing to
  *  recompute. */
 function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => void; busy: boolean; submitError: string }) {
+  const ime = useImeGuard()
   const [error, setError] = useState('')
 
   const submit = () => {
@@ -403,7 +405,13 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
         <Input
           value={value}
           onChange={e => { onChange(e.target.value); if (error) setError('') }}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
+          {...ime.bindComposition()}
+          onKeyDown={e => {
+            if (e.key !== 'Enter') return
+            // Rule 1: single-line input — decline the IME's committing Enter only.
+            if (ime.isComposing(e)) return
+            e.preventDefault(); submit()
+          }}
           placeholder={i18nT('pages.settings.securityPanel.add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
         />
@@ -420,7 +428,14 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
         <Input
           value={note}
           onChange={e => onNoteChange(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
+          {...ime.bindComposition()}
+          onKeyDown={e => {
+            if (e.key !== 'Enter') return
+            // Rule 1: single-line input — one shared instance covers both fields;
+            // the binding's blur reset makes that safe.
+            if (ime.isComposing(e)) return
+            e.preventDefault(); submit()
+          }}
           placeholder={i18nT('pages.settings.securityPanel.optional_why_shown_to_the_agent_when_this_rule_fir')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_note')}
           maxLength={200}

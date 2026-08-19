@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { createPortal } from 'react-dom'
 import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
 import { api } from '../api/client'
@@ -16,6 +17,7 @@ interface Props {
 export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect }: Props) {
   const [tab, setTab] = useState<'recent' | 'browse'>('recent')
   const [input, setInput] = useState('')
+  const ime = useImeGuard()
   const [browsePath, setBrowsePath] = useState('')
   const [browseParent, setBrowseParent] = useState('')
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
@@ -237,12 +239,17 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               placeholder={i18nT('components.projectPicker.path_to_project')}
               value={input}
               onChange={e => setInput(e.target.value)}
+              {...ime.bindComposition()}
+              onFocus={() => ime.reset()}
               onKeyDown={e => {
                 const n = filteredBrowse.length
                 const commit = () => { const p = input.trim() || browsePath; if (p) select(p) }
                 if (e.key === 'ArrowDown') { e.preventDefault(); setBrowseSel(s => (n ? Math.min(s + 1, n - 1) : 0)) }
                 else if (e.key === 'ArrowUp') { e.preventDefault(); setBrowseSel(s => Math.max(s - 1, 0)) }
                 else if (e.key === 'Enter') {
+                  // Rule 2: the handler also carries the arrow keys, so only the
+                  // Enter path is gated — claiming would break list navigation.
+                  if (ime.isComposing(e)) return
                   e.preventDefault()
                   if (e.metaKey || e.ctrlKey) commit()                               // ⌘/Ctrl+Enter commits the current dir
                   else if (n > 0 && filteredBrowse[browseSel]) browse(filteredBrowse[browseSel].path)  // Enter drills into the highlighted folder

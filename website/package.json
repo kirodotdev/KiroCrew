@@ -35,6 +35,7 @@
     "i18n:check": "node scripts/i18n-check.mjs",
     "verify:flex-input-min-w-0": "node scripts/capture-flex-input-min-w-0.mjs",
     "verify:path-chips": "node scripts/capture-path-chips.mjs",
+    "verify:registry-pinned-row": "node scripts/capture-registry-pinned-row.mjs",
     "verify:reveal-fade": "node scripts/probe-reveal-fade.mjs",
     "verify:topbar-badge-overhang": "node scripts/capture-topbar-badge-overhang.mjs",
     "verify:user-bubble-mobile-overflow": "node scripts/capture-user-bubble-mobile-overflow.mjs",

@@ -27,7 +27,18 @@ const {
   shouldOfferRelocation,
   describeLocation,
 } = require("./bundle-location");
-const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPortOwner } = require("./gateway-stop");
+const {
+  stopGatewayGracefully: _stopGatewayGracefully,
+  forceStopPort,
+  classifyPortOwner,
+  isKirocrewCommand,
+} = require("./gateway-stop");
+const {
+  windowsGatewayExecutablePaths,
+  windowsListenPids,
+  windowsProcessCommand,
+  windowsTaskkill,
+} = require("./windows-port");
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
@@ -40,7 +51,15 @@ const {
   setGlobalHotkeyLogger,
 } = require("./global-hotkey");
 const { createLivenessMonitor } = require("./gateway-liveness");
-const { chooseRecoveryStrategy, classifyAdoptedGateway, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
+const {
+  chooseRecoveryStrategy,
+  classifyAdoptedGateway,
+  waitForServiceRebind,
+  waitForProcessExit,
+  snapshotPortPids,
+  incumbentSnapshotBlocksRespawn,
+  unrecoverableGatewayDialog,
+} = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
@@ -280,10 +299,6 @@ let gatewayProcess = null;
 //                      rebind grace before spawning locally — spawning
 //                      immediately races the manager for the bind and one side
 //                      dies with EADDRINUSE.
-// KNOWN RESIDUAL (Windows): classifyPortOwner cannot positively identify
-// owners there (no lsof/ps), so the reused-* states never set and an adopted
-// draining gateway still falls into the indefinite "reconnect" wait —
-// deliberately conservative until the Windows-native owner probe lands.
 let gatewayOwnership = "none";
 // Post-handoff backend liveness monitor (primary window only). Detects a wedged
 // gateway — alive TCP socket, frozen event loop — that the spawn 'exit' watcher
@@ -401,11 +416,28 @@ function quitOtherApp(appName) {
 // Function declarations are hoisted, so the helpers defined further down this
 // file are available here.
 //
-// On Windows there is no lsof/ps, so classifyPortOwner returns "unknown" and
-// the caller reuses the port rather than force-killing an owner it cannot
-// identify. A Windows-native netstat/taskkill owner probe is a follow-up
-// (tracked separately) — it needs runtime verification on real Windows.
+function isTrustedWindowsGatewayCommand(command) {
+  const gatewayBin = findKirocrewBin(
+    fs,
+    os,
+    path,
+    process.resourcesPath,
+    __dirname
+  );
+  return isKirocrewCommand(command, {
+    trustedExecutablePaths: windowsGatewayExecutablePaths(gatewayBin),
+  });
+}
+
 function probeGatewayPortOwner(port) {
+  if (IS_WIN) {
+    return classifyPortOwner(port, {
+      getListenPids: windowsListenPids,
+      getCommand: windowsProcessCommand,
+      isKirocrew: isTrustedWindowsGatewayCommand,
+      log: glog,
+    });
+  }
   return classifyPortOwner(port, {
     getListenPids: _lsofListenPids,
     getCommand: _psCommand,
@@ -421,12 +453,22 @@ function _pidAlive(pid) {
   catch (e) { return !!(e && e.code === "EPERM"); }
 }
 
-// Best-effort capture of the pids LISTENing on our port, for the incumbent-exit
-// wait below. Must be called while the port is still bound — after it clears,
-// lsof can no longer name the draining process. Empty on probe failure or
-// Windows (no lsof): the exit wait then degrades to a no-op, same as today.
-async function snapshotPortPids(port) {
-  try { return await _lsofListenPids(port); } catch { return []; }
+// Best-effort capture of the PIDs LISTENing on our port, for the incumbent-exit
+// wait below. It must happen while the port is still bound: after it clears,
+// neither lsof nor netstat can name the draining process.
+function snapshotGatewayPortPids(port) {
+  return snapshotPortPids({
+    port,
+    isWindows: IS_WIN,
+    getWindowsPids: windowsListenPids,
+    getPosixPids: _lsofListenPids,
+  });
+}
+
+// A snapshot the probe could not take blocks an automatic respawn only where a
+// working probe is guaranteed (see incumbentSnapshotBlocksRespawn).
+function unverifiedIncumbent(pids) {
+  return incumbentSnapshotBlocksRespawn({ pids, isWindows: IS_WIN });
 }
 
 // A draining gateway releases its LISTEN socket EARLY but holds the exclusive
@@ -506,7 +548,11 @@ async function resolveGatewayConflict(rebindDepth = 0) {
       sendStatus("Waiting for the previous gateway to exit…");
       // Capture the draining process NOW, while it still owns the LISTEN
       // socket — needed below to wait out its gateway.lock after the port clears.
-      const drainingPids = await snapshotPortPids(PORT);
+      const drainingPids = await snapshotGatewayPortPids(PORT);
+      if (unverifiedIncumbent(drainingPids)) {
+        glog(`drain: could not capture the incumbent PID on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
+        return "probe-failed";
+      }
       if (await waitForPortFree()) {
         if (localOwner === "service") {
           // A SERVICE-classified holder that released its port may be mid-restart
@@ -693,6 +739,13 @@ function startGateway() {
         // channel app triggers the takeover prompt.
         const outcome = await resolveGatewayConflict();
         if (outcome === "reuse") { resolve(true); return; }
+        if (outcome === "probe-failed") {
+          gatewayStartFailure = {
+            error: `could not verify the previous gateway process on port ${PORT}`,
+          };
+          resolve(false);
+          return;
+        }
         if (outcome === "abort") {
           isQuitting = true;
           app.quit();
@@ -2142,7 +2195,19 @@ function fadeLoadingScreen(wc, timeoutMs = 8000) {
  * @returns {Promise<'retry'|'force-retry'|'reveal'|'quit'>}
  */
 function showGatewayErrorDialog(parentWin, opts) {
-  const { title, message, logTail, logPath, portConflict, noRetry = false, localGatewayOff = false } = opts;
+  const {
+    title,
+    message,
+    logTail,
+    logPath,
+    portConflict,
+    noRetry = false,
+    localGatewayOff = false,
+    primaryAction: configuredPrimaryAction,
+    primaryLabel: configuredPrimaryLabel,
+    showQuitButton: configuredShowQuitButton,
+  } = opts;
+  const showQuitButton = configuredShowQuitButton ?? !noRetry;
   return new Promise((resolve) => {
     const dark = nativeTheme.shouldUseDarkColors;
     const hasParent = parentWin && !parentWin.isDestroyed();
@@ -2162,8 +2227,10 @@ function showGatewayErrorDialog(parentWin, opts) {
     // can't clear a port conflict, so offer force-stop instead. A TERMINAL
     // caller (one that quits on every action) passes noRetry — showing a
     // "Retry" button it would ignore contradicts the dialog's own message.
-    const primaryAction = noRetry ? "quit" : (portConflict ? "force-retry" : "retry");
-    const primaryLabel = noRetry ? "Quit" : (portConflict ? "Force-stop &amp; Retry" : "Retry");
+    const primaryAction = configuredPrimaryAction
+      || (noRetry ? "quit" : (portConflict ? "force-retry" : "retry"));
+    const primaryLabel = configuredPrimaryLabel
+      || (noRetry ? "Quit" : (portConflict ? "Force-stop & Retry" : "Retry"));
     // A client-only install whose remote is unreachable needs an in-app way to
     // change its mind: Settings lives inside the dashboard, which a gateway has
     // to serve, so the page holding the switch is exactly what it cannot reach.
@@ -2196,10 +2263,10 @@ function showGatewayErrorDialog(parentWin, opts) {
       <div class="pathline">${esc(logPath)}</div>
       <pre class="log">${esc(logTail || "(launch log is empty)")}</pre>
       <div class="row">
-        <button class="ok" onclick="act('${primaryAction}')">${primaryLabel}</button>
+        <button class="ok" onclick="act('${primaryAction}')">${esc(primaryLabel)}</button>
         ${enableButton}
         <button class="cancel" onclick="act('reveal')">Reveal Log</button>
-        ${noRetry ? "" : `<button class="cancel" onclick="act('quit')">Quit</button>`}
+        ${showQuitButton ? '<button class="cancel" onclick="act(\'quit\')">Quit</button>' : ""}
       </div>
       <script>
         function act(a){ document.title = 'mc-action:' + a; window.close(); }
@@ -2278,6 +2345,19 @@ function _psPpid(pid) {
  * @returns {Promise<{killed:number, freed:boolean, survivors:number[]}>}
  */
 function forceStopGatewayPort(port) {
+  if (IS_WIN) {
+    return forceStopPort(port, {
+      getListenPids: windowsListenPids,
+      getCommand: windowsProcessCommand,
+      kill: (pid) => windowsTaskkill(pid, {
+        isTrustedCommand: isTrustedWindowsGatewayCommand,
+      }),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      isKirocrew: isTrustedWindowsGatewayCommand,
+      failClosedOnProbeError: true,
+      log: glog,
+    });
+  }
   return forceStopPort(port, {
     getListenPids: _lsofListenPids,
     getCommand: _psCommand,
@@ -2360,7 +2440,8 @@ async function recoverWedgedGateway(win) {
   gatewayProcess = null;
   let freed = true;
   let foreignHolder = false;
-  try { ({ freed, foreignHolder } = await forceStopGatewayPort(PORT)); }
+  let probeFailed = false;
+  try { ({ freed, foreignHolder, probeFailed = false } = await forceStopGatewayPort(PORT)); }
   catch (e) {
     // We couldn't even probe the port (lsof failed to exec). Don't silently
     // assume freed — let the respawn's bind be the arbiter, but say so loudly.
@@ -2372,8 +2453,10 @@ async function recoverWedgedGateway(win) {
   // recovered — show the honest error path so the user learns a restart (or
   // freeing the other app) is required.
   if (!freed) {
-    glog(`liveness: port still held after force-stop (${foreignHolder ? "foreign holder" : "unkillable wedge"}); surfacing restart-required`);
-    return showUnrecoverableGatewayError(win, PORT);
+    const reason = probeFailed ? "probe failed"
+      : (foreignHolder ? "foreign holder" : "unkillable wedge");
+    glog(`liveness: port not confirmed free after force-stop (${reason}); surfacing restart-required`);
+    return showUnrecoverableGatewayError(win, PORT, { probeFailed });
   }
   gatewayStartFailure = null; // re-arm so waitForGateway doesn't fail-fast on the kill we just did
   await startGateway(); // spawn a fresh child before re-waiting
@@ -2453,7 +2536,11 @@ async function reconnectOrRespawnAdoptedGateway(win) {
   sendStatus("Waiting for the previous gateway to exit…");
   // Capture the incumbent NOW, while it may still own the LISTEN socket —
   // needed below to wait out its gateway.lock after the port clears.
-  const incumbentPids = await snapshotPortPids(PORT);
+  const incumbentPids = await snapshotGatewayPortPids(PORT);
+  if (unverifiedIncumbent(incumbentPids)) {
+    glog(`liveness: could not capture the incumbent PID on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
+    return showUnrecoverableGatewayError(win, PORT, { probeFailed: true });
+  }
   if (!(await waitForPortFree())) {
     glog(`liveness: :${PORT} still held by a process we did not spawn — surfacing port-held instead of waiting forever`);
     // No stop was attempted on this path (the holder is not ours to evict), so
@@ -2505,7 +2592,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
 }
 
 /**
- * Terminal state, two variants:
+ * Terminal state, three variants:
  *  - "wedged" (default): a force-stop was actually attempted and the holder
  *    survived it (uninterruptible kernel sleep). Only a machine restart clears
  *    it, and the copy says so.
@@ -2514,32 +2601,28 @@ async function reconnectOrRespawnAdoptedGateway(win) {
  *    gateway that grabbed the port). No stop was attempted — telling the user
  *    to reboot would be false and needlessly heavy; quitting the holder and
  *    relaunching suffices.
+ *  - probeFailed: ownership could not be verified, so no process was terminated.
+ *    Ask the user to reopen first and restart only if the port remains blocked.
  */
-async function showUnrecoverableGatewayError(win, port, variant = "wedged") {
+async function showUnrecoverableGatewayError(win, port, options = {}) {
+  const { variant = "wedged", probeFailed = false } = typeof options === "string"
+    ? { variant: options }
+    : options;
   if (!win || win.isDestroyed()) return;
   let logTail = "";
   try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); } catch { /* no log yet */ }
-  const wedged = variant === "wedged";
   const action = await showGatewayErrorDialog(win, {
-    title: wedged
-      ? `Kiro Crew — backend stuck on port ${port}`
-      : `Kiro Crew — port ${port} is in use`,
-    message: wedged
-      ? `The Kiro Crew backend is wedged and cannot be stopped — it is in an `
-        + `uninterruptible state and is still holding port ${port}, so it can't be `
-        + `force-stopped or restarted in place. Restart your computer to clear it. `
-        + `(This is a known backend hang; see the launch log below for the cause.)`
-      : `Another process is holding port ${port}, so Kiro Crew can't reconnect to `
-        + `it or start its own backend there. Quit the process using port ${port} `
-        + `(the launch log below names it — look for the "port-owner:" line), `
-        + `then reopen this app.`,
+    ...unrecoverableGatewayDialog({
+      port,
+      variant,
+      probeFailed,
+      isPrimaryWindow: win === mainWindow,
+    }),
     logTail,
     logPath: gatewayLogPath(),
-    portConflict: false,
-    // This caller is TERMINAL — it quits on every action — so never render a
-    // "Retry" primary it would ignore: the truthful primary here is Quit.
-    noRetry: true,
     port,
+    // This caller is terminal and quits on every action.
+    noRetry: true,
   });
   if (win.isDestroyed()) return;
   if (action === "reveal") {
@@ -2711,14 +2794,15 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
       }
       if (action === "force-retry") {
         let freed = true;
-        try { ({ freed } = await forceStopGatewayPort(PORT)); }
+        let probeFailed = false;
+        try { ({ freed, probeFailed = false } = await forceStopGatewayPort(PORT)); }
         catch (e) { glog(`force-stop: port probe failed (${e && e.message}); letting retry's bind confirm`); }
         if (win.isDestroyed()) return;
         if (!freed) {
           // The port is still held — by an unkillable wedge or a foreign app.
           // Either way a retry would just re-hit "address already in use", so
           // tell the user a restart is required rather than looping the failure.
-          return showUnrecoverableGatewayError(win, PORT);
+          return showUnrecoverableGatewayError(win, PORT, { probeFailed });
         }
       }
       if (action === "retry" || action === "force-retry" || action === "enable-retry") {

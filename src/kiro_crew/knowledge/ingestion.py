@@ -631,9 +631,6 @@ class IngestionPipeline:
         self.store.db.commit()
 
         # 5. Extract all chunks in batch via pool
-        # Capture existing items before ingestion (for safe partial-failure rollback)
-        _before_ids = {r["id"] for r in self.store.db.execute(
-            "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()}
         chunk_contents = [chunk['content'] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
 
@@ -714,11 +711,19 @@ class IngestionPipeline:
                 self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
                 self.store.update_source(source_id, last_synced=now)
             elif processed < total:
-                # Partial failure: remove only items created during THIS ingestion call
-                after_ids = {r["id"] for r in self.store.db.execute(
-                    "SELECT id FROM items WHERE source_id = ?", (source_id,),
-                ).fetchall()}
-                self.store.delete_items_batch(list(after_ids - _before_ids))
+                # Partial failure: remove only items created during THIS ingestion
+                # call, taken from the write itself -- a before/after re-read of
+                # the source would also sweep anything a concurrent import_bundle
+                # committed into the same aggregate source while this ingest was
+                # awaiting. Deliberately NOT owner-scoped: these are chunks of an
+                # INCOMPLETE write, and a concurrent identical ingest whose
+                # duplicate gate attached to them mid-flight recorded the whole-
+                # document hash as satisfied -- detaching would leave it holding
+                # a truncated document that no rescan ever repairs (hash reads
+                # unchanged). Destroyed outright, its claim ends up naming an
+                # empty group, which the doc-state recovery paths treat as "re-
+                # attempt", so the next scan restores a complete copy.
+                self.store.delete_items_batch(list(created_item_ids))
                 self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
@@ -804,15 +809,17 @@ class IngestionPipeline:
         chunks = await asyncio.to_thread(self.chunker.chunk, text)
         total = len(chunks)
 
-        # Snapshot items present before this call so a partial failure removes
-        # only what THIS call created -- never another item group that shares
-        # the same source_id (critical for the aggregate Artifacts source).
-        _before_ids = {r["id"] for r in self.store.db.execute(
-            "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()}
-
         chunk_contents = [chunk['content'] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
 
+        # What THIS call wrote, collected at the write itself rather than
+        # inferred from a before/after comparison of the source -- a snapshot
+        # diff would also attribute anything a concurrent writer (e.g.
+        # import_bundle) commits into the same aggregate source while this
+        # ingest is awaiting, handing this call delete authority over
+        # knowledge it never created (critical for the aggregate Artifacts
+        # source, where many item groups share one source_id).
+        created_item_ids: list[str] = []
         processed = 0
         for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
             try:
@@ -829,6 +836,10 @@ class IngestionPipeline:
                     summary=extraction.get('summary'),
                     content_hash=content_hash,
                 )
+                # Appended BEFORE add_source_location/_store_entities/_embed_item
+                # so a chunk that raises partway through is still captured for
+                # the partial-failure rollback (mirrors _ingest_file_body).
+                created_item_ids.append(item_id)
                 self.store.add_source_location(
                     item_id=item_id, source_id=source_id,
                     chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
@@ -867,11 +878,14 @@ class IngestionPipeline:
                 self.store.update_source(source_id, last_synced=now)
             elif processed < total:
                 # Partial failure: remove only items created during THIS call so we
-                # never delete another item group sharing this source_id.
-                after_ids = {r["id"] for r in self.store.db.execute(
-                    "SELECT id FROM items WHERE source_id = ?", (source_id,),
-                ).fetchall()}
-                self.store.delete_items_batch(list(after_ids - _before_ids))
+                # never delete another item group sharing this source_id. Taken
+                # from the write itself, not a before/after re-read of the source
+                # (which would misattribute concurrent writers' items).
+                # Deliberately NOT owner-scoped -- see _ingest_file_body: chunks
+                # of an incomplete write must be destroyed, not detached to a
+                # duplicate-gate attacher, or that attacher keeps a truncated
+                # document its unchanged hash never lets a rescan repair.
+                self.store.delete_items_batch(list(created_item_ids))
                 self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",

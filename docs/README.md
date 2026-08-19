@@ -42,7 +42,8 @@ commit**. Concretely:
    history; the doc states current behavior in present tense.
 5. **Run the gate:** `./scripts/docs-lint.sh`. It fails on a broken internal link, a
    doc no index reaches, a directory with no index, a code comment citing a doc that
-   does not exist, and a renamed doc whose filename is hardcoded in code.
+   does not exist, a renamed doc whose filename is hardcoded in code, and a git
+   conflict marker left at the start of a line.
 
 Two constraints that are easy to miss:
 

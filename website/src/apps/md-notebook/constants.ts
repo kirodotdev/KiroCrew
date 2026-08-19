@@ -1,4 +1,5 @@
 /** Constants for the Notes builtin app. */
+import type { CSSProperties } from 'react'
 import type { Note, Shortcut } from './types'
 import { compareText } from '../../i18n/format'
 
@@ -116,6 +117,44 @@ export const AUTO_COMMIT_MINS = 5
 export const PANEL_MIN_WIDTH = 180
 export const PANEL_MAX_WIDTH = 420
 export const PANEL_DEFAULT_WIDTH = 260
+
+/**
+ * Left-rail type ramp — the Sessions list's scale, not a second one.
+ *
+ * The dashboard declares no global type scale, so the rail borrows the one
+ * surface that does declare one: the session-row ramp in `pages/ChatSidebar.tsx`
+ * (`ROW_TITLE_CLS` / `ROW_STATUS_CLS` / `ROW_META_CLS`), quantized to a 4px
+ * baseline grid, plus that panel's own `text-sm` header. Four sizes carry the
+ * whole rail — 14 panel title, 13 row, 11 secondary, 10 meta.
+ *
+ * 12px is deliberately absent: the sessions list uses no 12px anywhere in a row,
+ * a folder header, or a menu item, and every 12px the rail used to carry was a
+ * per-component optical nudge rather than a step. A new slot MUST reuse one of
+ * these five entries; a literal `fontSize` in the rail is how the ramp drifts.
+ *
+ * Sizes and leading only — no family. Everything in the rail inherits
+ * `FONT_BODY`, so an installed theme pack's sans still wins.
+ */
+export const RAIL_TYPE: Record<
+  'panelTitle' | 'row' | 'secondary' | 'meta' | 'micro',
+  CSSProperties
+> = {
+  /** Panel title — the vault-name trigger. Matches the Sessions panel header,
+   *  which is `text-sm` (14px), the one step in the rail above a row. */
+  panelTitle: { fontSize: '14px', lineHeight: '20px' },
+  /** Any row's headline: a note title, a folder name, the Settings destination,
+   *  a menu item. Matches `ROW_TITLE_CLS` and the dashboard's own menu items. */
+  row: { fontSize: '13px', lineHeight: '20px' },
+  /** Standalone secondary text — a folder's note count, an empty-state line.
+   *  Matches `ROW_STATUS_CLS`. */
+  secondary: { fontSize: '11px', lineHeight: '16px' },
+  /** The line UNDER a headline: folder, relative time. The tightest box in the
+   *  ramp, spent on the least important line. Matches `ROW_META_CLS`. */
+  meta: { fontSize: '10px', lineHeight: '12px' },
+  /** Micro-label inside a chip, where the chip's own padding sets its height, so
+   *  the leading collapses instead of adding to it. Same step as `meta`. */
+  micro: { fontSize: '10px', lineHeight: 1 },
+}
 
 /** Debounce before a note edit is persisted. */
 export const SAVE_DEBOUNCE_MS = 1000

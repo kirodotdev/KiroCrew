@@ -1,5 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
+import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download } from 'lucide-react'
 import { api } from '../api/client'
@@ -270,6 +271,7 @@ export default function SchedulePage() {
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(loadCollapsedFolders)
   const [folderModal, setFolderModal] = useState<{ mode: 'create'; resolve?: (id: string | undefined) => void } | null>(null)
   const [folderModalName, setFolderModalName] = useState('')
+  const folderNameIme = useImeGuard()
   const [folderModalError, setFolderModalError] = useState<string | null>(null)
   const toggleFolderCollapse = useCallback((folderId: string) => {
     setCollapsedFolders(prev => {
@@ -913,7 +915,14 @@ export default function SchedulePage() {
               aria-label={i18nT('pages.schedulePage.cronFolders.new_folder_name')}
               value={folderModalName}
               onChange={e => setFolderModalName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && folderModalName.trim()) handleFolderModalSubmit() }}
+              {...folderNameIme.bindComposition()}
+              onFocus={() => folderNameIme.reset()}
+              onKeyDown={e => {
+                if (e.key !== 'Enter') return
+                // Rule 1: single-line input; emptiness stays outside the guard.
+                if (folderNameIme.isComposing(e)) return
+                if (folderModalName.trim()) handleFolderModalSubmit()
+              }}
               placeholder={i18nT('pages.schedulePage.cronFolders.new_folder_name')}
               className="w-full"
             />

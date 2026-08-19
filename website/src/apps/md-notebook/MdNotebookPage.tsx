@@ -41,6 +41,7 @@ import {
   PANEL_DEFAULT_WIDTH,
   PANEL_MAX_WIDTH,
   PANEL_MIN_WIDTH,
+  RAIL_TYPE,
   SAVE_DEBOUNCE_MS,
   SORTS,
   collapsedKey,
@@ -1362,7 +1363,7 @@ export default function MdNotebookPage() {
             >
               <span
                 style={{
-                  fontSize: '14px',
+                  ...RAIL_TYPE.panelTitle,
                   fontWeight: 500,
                   color: 'var(--muted)',
                   letterSpacing: '.04em',
@@ -1437,7 +1438,7 @@ export default function MdNotebookPage() {
                       padding: '5px 8px',
                       borderRadius: '6px',
                       cursor: 'pointer',
-                      fontSize: '13px',
+                      ...RAIL_TYPE.row,
                       color: v.id === activeVaultId ? 'var(--text)' : 'var(--muted)',
                     }}
                   >
@@ -1467,7 +1468,7 @@ export default function MdNotebookPage() {
                     padding: '5px 8px',
                     borderRadius: '6px',
                     cursor: 'pointer',
-                    fontSize: '13px',
+                    ...RAIL_TYPE.row,
                     color: 'var(--muted)',
                   }}
                 >
@@ -1502,7 +1503,7 @@ export default function MdNotebookPage() {
                 border: '1px solid var(--border)',
                 borderRadius: '8px',
                 padding: '0 10px',
-                fontSize: '12px',
+                ...RAIL_TYPE.row,
                 color: 'var(--text)',
                 fontFamily: FONT_BODY,
               }}
@@ -1538,7 +1539,7 @@ export default function MdNotebookPage() {
                 >
                   <div
                     style={{
-                      fontSize: '10px',
+                      ...RAIL_TYPE.meta,
                       textTransform: 'uppercase',
                       letterSpacing: '.04em',
                       color: 'var(--muted)',
@@ -1564,7 +1565,7 @@ export default function MdNotebookPage() {
                         padding: '5px 8px',
                         borderRadius: '6px',
                         cursor: 'pointer',
-                        fontSize: '12px',
+                        ...RAIL_TYPE.row,
                         color: view === v ? 'var(--text)' : 'var(--muted)',
                       }}
                     >
@@ -1577,7 +1578,7 @@ export default function MdNotebookPage() {
                   <div style={{ height: '1px', background: 'var(--border)', margin: '4px 0' }} />
                   <div
                     style={{
-                      fontSize: '10px',
+                      ...RAIL_TYPE.meta,
                       textTransform: 'uppercase',
                       letterSpacing: '.04em',
                       color: 'var(--muted)',
@@ -1603,7 +1604,7 @@ export default function MdNotebookPage() {
                         padding: '5px 8px',
                         borderRadius: '6px',
                         cursor: 'pointer',
-                        fontSize: '12px',
+                        ...RAIL_TYPE.row,
                         color: sortKey === key ? 'var(--text)' : 'var(--muted)',
                       }}
                     >
@@ -1649,7 +1650,7 @@ export default function MdNotebookPage() {
                     />
                   ))
                 : (
-                    <div style={{ padding: '10px', fontSize: '11px', color: 'var(--muted)' }}>
+                    <div style={{ padding: '10px', ...RAIL_TYPE.secondary, color: 'var(--muted)' }}>
                       {i18nT('apps.mdNotebook.panel.noMatches')}
                     </div>
                   )

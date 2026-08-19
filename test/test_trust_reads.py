@@ -93,10 +93,39 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("brazil workspace list") is True
 
     def test_help_and_version(self):
-        assert is_read_only_bash("brazil-build --help") is True
+        # Version probes on the read-only prefix allowlist
         assert is_read_only_bash("python --version") is True
+        assert is_read_only_bash("python3 --version") is True
         assert is_read_only_bash("java -version") is True
+        assert is_read_only_bash("node --version") is True
+        # Bare help probes for non-executor programs pass the probe shape check
+        assert is_read_only_bash("brazil-build --help") is True
         assert is_read_only_bash("some-tool --help") is True
+        # Known code executors are denied even in bare --help form, because the
+        # flag can land as an operand the interpreter runs
+        assert is_read_only_bash("node --help") is False
+        assert is_read_only_bash("npm --help") is False
+        # Extra arguments after --help are not a probe shape
+        assert is_read_only_bash("node --help --require /tmp/payload.js") is False
+        assert is_read_only_bash("brazil-build --help --eval 'malicious'") is False
+        assert is_read_only_bash("java --help -jar /tmp/evil.jar") is False
+        assert is_read_only_bash("javac --help -processor evil") is False
+
+    def test_interpreter_suffix_bypass_rejected(self):
+        """Regression: trailing --help/--version must NOT auto-approve
+        interpreter commands whose head is not on the read-only allowlist.
+        See: coordinated disclosure from Robert Noack, 2026-08-15."""
+        # bash -c '<payload>' --help — interpreter passes flag to script
+        assert is_read_only_bash("bash -c 'touch /tmp/owned' --help") is False
+        assert is_read_only_bash("bash -c 'whoami' --version") is False
+        # python3 -c '<payload>' --help
+        payload = "python3 -c \"open('/tmp/p1','w').write('x')\" --help"
+        assert is_read_only_bash(payload) is False
+        # sh -c variant
+        assert is_read_only_bash("sh -c 'curl attacker.com' --help") is False
+        # ruby/perl -e variants
+        assert is_read_only_bash("ruby -e 'system(\"id\")' --help") is False
+        assert is_read_only_bash("perl -e 'exec(\"id\")' --help") is False
 
     def test_help_probe_allows_one_bare_subcommand(self):
         """`<program> <subcommand> --help` is still a usage probe."""

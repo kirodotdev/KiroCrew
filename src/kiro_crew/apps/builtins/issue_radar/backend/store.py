@@ -1057,7 +1057,13 @@ def write_issue_ai_cache(
 
     Stamped with ``generated_at`` so the UI can show how old the summary is —
     without it a cached card gives no hint whether it was written minutes or
-    months ago."""
+    months ago.
+
+    ``ui_language`` (the BCP-47 tag the prose was generated under, ``""`` for
+    English-default installs) rides along because a cached result is only
+    servable for the language it was written in — the route compares it on
+    read and treats a mismatch as a miss, so a dashboard-language switch
+    regenerates instead of serving the old language."""
     atomic_write(
         issue_ai_cache_path(owner, repo, number, root),
         json.dumps(
@@ -1065,6 +1071,7 @@ def write_issue_ai_cache(
                 "owner": owner, "repo": repo, "number": int(number),
                 "summary": payload.get("summary", ""),
                 "suggested_labels": payload.get("suggested_labels", []),
+                "ui_language": str(payload.get("ui_language") or ""),
                 "generated_at": _now_iso(),
             },
             indent=2,
@@ -1073,9 +1080,11 @@ def write_issue_ai_cache(
 
 
 def read_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = None) -> dict | None:
-    """Return ``{"summary", "suggested_labels", "generated_at"}`` for a cached
-    issue, or None. Caches written before the stamp existed fall back to the
-    file's mtime (see _cache_generated_at)."""
+    """Return ``{"summary", "suggested_labels", "ui_language", "generated_at"}``
+    for a cached issue, or None. Caches written before the stamp existed fall
+    back to the file's mtime (see _cache_generated_at); ones written before
+    ``ui_language`` existed read as ``""``, which matches the English-default
+    sentinel so legacy entries stay servable on unconfigured installs."""
     path = issue_ai_cache_path(owner, repo, number, root)
     if not path.is_file():
         return None
@@ -1086,6 +1095,7 @@ def read_issue_ai_cache(owner: str, repo: str, number: int, root: Path | None = 
     return {
         "summary": data.get("summary", ""),
         "suggested_labels": data.get("suggested_labels", []),
+        "ui_language": str(data.get("ui_language") or ""),
         "generated_at": _cache_generated_at(data, path),
     }
 

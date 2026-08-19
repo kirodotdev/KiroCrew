@@ -144,7 +144,7 @@ import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } fro
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
 import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
-import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, promptPreview, promptImages, promptBody, pinHandoffY, pinPushTravel, jumpAnchorIdx, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
   commitRevealedSource,
@@ -206,6 +206,9 @@ import { rewindWithRollback } from '../lib/rewindCall'
 
 
 import { i18nT } from '../i18n/t'
+import { parseNudgeMessage, nudgeLabel } from './chat/NudgeCard'
+import { parseSubagentCompletionMessage } from './chat/subagentCompletion'
+import { headline as subagentHeadline } from './chat/SubagentCompletionCard'
 import { fmtDateFields } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
 /**
@@ -3047,7 +3050,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<{ idx: number; ts?: string; text: string; raw: string; full: string; images: string[]; push: number; bannerH: number } | null>(null)
+  const [pinned, setPinned] = useState<{ idx: number; ts?: string; text: string; raw: string; full: string; images: string[]; bodyBeyondPreview: boolean; push: number; bannerH: number } | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -3116,7 +3119,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // and browser zoom — a bubble fragment parked over the prompt being read.
     if (push >= pinPushTravel(bannerH)) { setPinned(null); return }
     const full = pinItem.msg.content
-    const text = promptPreview(full)
+    // A nudge's content is a machine-facing instruction payload behind an
+    // `[auto-nudge cycle N]` tag, and a subagent completion's is a header block
+    // plus digest. Quoting either verbatim would park kilobytes of machine text
+    // over the transcript, so both reuse the compact label their transcript card
+    // already shows and keep the body for the expanded state.
+    const nudge = pinItem.msg.role === 'nudge' ? parseNudgeMessage(pinItem.msg) : null
+    // Detected by PARSING, not by role: the same completion event reaches the
+    // transcript under `subagent`, `assistant` (delivery-timeout variant) and
+    // `user` (older scrollback), and the parser already tolerates all three.
+    // Matching on the role here would both miss those variants and duplicate
+    // dispatch knowledge this file has no business holding.
+    const sub = nudge ? null : parseSubagentCompletionMessage(pinItem.msg)
+    const machineLabel = nudge
+      ? nudgeLabel(nudge.cycle)
+      : sub
+        ? subagentHeadline(sub)
+        : null
+    const text = machineLabel ?? promptPreview(full)
     // Compare the RAW content (`prev.raw`), not `text` or the derived body:
     // `text`, `full` and `images` are all derived from it, and an edit-and-resend
     // that changes ONLY an attached image leaves the flattened preview text
@@ -3127,7 +3147,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
       && prev.raw === full && prev.bannerH === bannerH && prev.ts === pinItem.msg.ts)
       ? prev
-      : { idx: pinIdx, ts: pinItem.msg.ts, text, raw: full, full: promptBody(full), images: promptImages(full), push, bannerH })
+      : { idx: pinIdx, ts: pinItem.msg.ts, text, raw: full, full: nudge ? nudge.body : (sub ? full : promptBody(full)), images: machineLabel ? [] : promptImages(full), bodyBeyondPreview: !!machineLabel, push, bannerH })
   }, [scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
@@ -3179,12 +3199,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const chrome = pinnedJumpChrome()
     cancelAnimationFrame(navScrollRafRef.current)
     navPollCancelRef.current?.()
-    const jumpedFar = mountIndexRef.current(target)
+    // Consecutive user rows (a steer follows its prompt directly): landing the
+    // clicked prompt at the chrome would leave the prompt above it straddling
+    // the hand-off line — unpinnable, while its top edge has already pushed the
+    // fallback banner fully out — so the banner unmounts and the chain dies.
+    // Anchor at the head of the run instead: the clicked prompt stays visible
+    // just below, and a non-prompt row takes the straddle.
+    const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    const jumpedFar = mountIndexRef.current(anchor)
     if (jumpedFar) {
       // Far target: the window was REPLACED, the path between is unmounted
       // spacer — a glide would scrub blank. Teleport via the convergence
       // path, same as every other far jump.
-      navToDisplayIndex(target, { behavior: 'auto', align: 'start', offset: -chrome })
+      navToDisplayIndex(anchor, { behavior: 'auto', align: 'start', offset: -chrome })
       return
     }
     // NEAR jump — the common case: the pinned prompt is the previous turn.
@@ -3198,7 +3225,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // teleport. A user scroll or a newer navigation aborts the wait.
     window.dispatchEvent(new Event('mc-chat-scroll-jump'))
     const rowEl = (): HTMLElement | null =>
-      (scrollerRef.current?.querySelector(`[data-display-index="${target}"]`) as HTMLElement | null)
+      (scrollerRef.current?.querySelector(`[data-display-index="${anchor}"]`) as HTMLElement | null)
     let lastH: number | null = null
     let stable = 0
     let frames = 0
@@ -6480,6 +6507,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   text={pinned.text}
                   fullText={pinned.full}
                   images={pinned.images}
+                  bodyBeyondPreview={pinned.bodyBeyondPreview}
                   pushUp={pinned.push}
                   bannerH={pinned.bannerH}
                   expanded={pinExpanded}

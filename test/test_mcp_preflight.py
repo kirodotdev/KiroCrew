@@ -973,7 +973,7 @@ class TestProgressArrivesDuringThePass:
         import kiro_crew.mcp_gateway.evaluate as ev
 
         gate = asyncio.Event()
-        seen: list[tuple[int, int]] = []
+        seen: list[tuple[int, int, int]] = []
 
         async def preflight(server):
             if server.name == "last-mcp":
@@ -987,7 +987,10 @@ class TestProgressArrivesDuringThePass:
         ]
         task = asyncio.create_task(
             ev.evaluate_new_servers(
-                servers, tmp_path, budget=None, on_progress=lambda d, t: seen.append((d, t))
+                servers,
+                tmp_path,
+                budget=None,
+                on_progress=lambda m, d, t: seen.append((m, d, t)),
             )
         )
         # Give the fast one time to land while the slow one is still blocked.
@@ -995,10 +998,91 @@ class TestProgressArrivesDuringThePass:
             await asyncio.sleep(0.01)
             if seen:
                 break
-        assert seen == [(1, 2)], f"progress did not arrive mid-pass: {seen}"
+        assert seen == [(1, 1, 2)], f"progress did not arrive mid-pass: {seen}"
         gate.set()
         await task
-        assert seen[-1] == (2, 2), seen
+        assert seen[-1] == (2, 2, 2), seen
+
+
+class TestMeasuredIsCountedApartFromAttempted:
+    """A server the pre-flight could not reach was attempted, not measured.
+
+    The two counts are what separates "the pass ran" from "the pass produced
+    something". A pre-flight that could not run leaves no verdict on purpose -- the
+    failure belongs to the moment, not to the server -- so the row stays unmeasured
+    and the operator's button keeps offering it. Reporting one number for both let
+    a pass that measured nothing close by claiming it measured everything it tried,
+    beside a table that still showed every row as unmeasured.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_preflight_that_could_not_run_advances_only_the_attempt_count(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        seen: list[tuple[int, int, int]] = []
+
+        async def preflight(server):
+            # ``ran=False`` is the module's own "could not ask": a missing
+            # credential, a dead tunnel, a host where the probe cannot spawn.
+            if server.name == "unreachable-mcp":
+                return SimpleNamespace(ran=False, caller_sensitive=False, reasons=())
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", preflight)
+        servers = [
+            McpServerInfo(name="good-mcp", command="/bin/true"),
+            McpServerInfo(name="unreachable-mcp", command="/bin/true"),
+        ]
+        await ev.evaluate_new_servers(
+            servers,
+            tmp_path,
+            budget=None,
+            on_progress=lambda m, d, t: seen.append((m, d, t)),
+        )
+
+        measured, attempted, total = seen[-1]
+        assert (attempted, total) == (2, 2), seen
+        # The whole point: both servers were tried, one produced a verdict.
+        assert measured == 1, seen
+
+        # And the count matches what is actually on disk, which is what the table
+        # beside the readout renders. A closure line built on ``attempted`` would
+        # claim two while this set holds one.
+        stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        stored.load()
+        assert stored.server_names() == {"good-mcp"}, stored.server_names()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_reaches_nothing_reports_zero_measured(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The case that produced the contradiction: every server unreachable.
+
+        This is not a corner -- the probe cannot spawn at all on some hosts, so
+        every server in the configuration takes the ``ran=False`` branch and the
+        readout used to say it had measured all of them.
+        """
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        seen: list[tuple[int, int, int]] = []
+
+        async def preflight(server):
+            return SimpleNamespace(ran=False, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", preflight)
+        servers = [
+            McpServerInfo(name=f"srv-{i}-mcp", command="/bin/true") for i in range(3)
+        ]
+        await ev.evaluate_new_servers(
+            servers,
+            tmp_path,
+            budget=None,
+            on_progress=lambda m, d, t: seen.append((m, d, t)),
+        )
+
+        assert seen[-1] == (0, 3, 3), seen
 
 
 class TestMalformedToolNames:

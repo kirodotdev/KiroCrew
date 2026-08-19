@@ -1830,3 +1830,90 @@ class TestSyncFileLock:
 
 
 # ── POST /api/mcp-gateway/apps-enable ───────────────────────────────────
+
+# ── GET/POST /api/mcp/measure ───────────────────────────────────────────
+
+
+class TestMeasureProgressPayload:
+    """The measurement readout's wire contract.
+
+    ``done`` and ``measured`` are separate fields because a pass can attempt a
+    server and produce no verdict: a pre-flight that could not run leaves the row
+    unmeasured on purpose. The dashboard advances its progress line on ``done``
+    and builds its closing claim from ``measured``, so collapsing them is what let
+    a pass that measured nothing report that it measured everything it tried.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_status_payload_carries_both_counts(self) -> None:
+        body = _payload(await mcp_mod.api_mcp_measure_progress(_request(method="GET")))
+        assert body["ok"] is True
+        # Named individually: a reader of this test should see that the two counts
+        # are both on the wire, which is the whole change.
+        assert "done" in body, body
+        assert "measured" in body, body
+        assert "total" in body, body
+
+    @pytest.mark.asyncio
+    async def test_starting_a_pass_clears_the_previous_pass_counts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale ``measured`` would render as this pass's result.
+
+        The progress dict outlives the pass that wrote it, and the closing line is
+        built from ``measured``, so a new pass that has not measured anything yet
+        would inherit the previous pass's number and close on it.
+        """
+        # Stand in for a finished earlier pass. Restored by monkeypatch, so this
+        # cannot leak into another test through the module global.
+        monkeypatch.setitem(mcp_mod._measure_progress, "running", False)
+        monkeypatch.setitem(mcp_mod._measure_progress, "done", 7)
+        monkeypatch.setitem(mcp_mod._measure_progress, "measured", 7)
+        monkeypatch.setitem(mcp_mod._measure_progress, "total", 7)
+        monkeypatch.setitem(mcp_mod._measure_progress, "error", "RuntimeError")
+
+        # The pass itself spawns processes; this test is about the reset, so the
+        # background body is replaced rather than run.
+        started = asyncio.Event()
+
+        async def _noop() -> None:
+            started.set()
+
+        monkeypatch.setattr(mcp_mod, "_bg_measure_all", _noop)
+
+        state = _State()
+        body = _payload(
+            await mcp_mod.api_mcp_measure_start(_request(method="POST", state=state))
+        )
+        assert body["ok"] is True and body["running"] is True
+        assert body["measured"] == 0, body
+        assert body["done"] == 0, body
+        assert body["error"] == "", body
+
+        # Let the stubbed task run so it does not outlive the test.
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.gather(*state._background_tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_a_second_start_while_running_is_reported_not_queued(self) -> None:
+        """Refusing is what keeps a second press from doubling the spawn load."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _running():
+            prior = dict(mcp_mod._measure_progress)
+            mcp_mod._measure_progress.update(running=True, done=1, measured=1, total=4)
+            try:
+                yield
+            finally:
+                mcp_mod._measure_progress.clear()
+                mcp_mod._measure_progress.update(prior)
+
+        with _running():
+            body = _payload(
+                await mcp_mod.api_mcp_measure_start(_request(method="POST"))
+            )
+        assert body["ok"] is False and body["running"] is True
+        # The in-flight pass's own numbers, not a reset: the operator pressing a
+        # second time is still watching the first pass.
+        assert (body["measured"], body["done"], body["total"]) == (1, 1, 4), body

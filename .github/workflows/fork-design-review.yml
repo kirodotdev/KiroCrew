@@ -520,7 +520,7 @@ jobs:
               echo "$MARKER"
               echo "## Design Review (Fable 5, fork) — $badge"
               echo
-              echo "_Advisory design-level review of \`$HEAD\` via the fork AI-review pipeline — updated in place on each push; does **not** block merge._"
+              echo "_Design-level review of \`$HEAD\` via the fork AI-review pipeline — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
               cat "$f"
             } > "$RUNNER_TEMP/design-comment.md"

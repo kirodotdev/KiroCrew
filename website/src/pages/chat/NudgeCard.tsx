@@ -39,6 +39,19 @@ export function parseNudgeMessage(
 }
 
 /**
+ * The chip's one-line label for a nudge turn.
+ *
+ * Exported because the pinned-prompt banner shows the same label for a pinned
+ * nudge: two spellings of this ternary over the same two keys would drift the
+ * moment the chip's wording changes.
+ */
+export function nudgeLabel(cycle: number | null): string {
+  return cycle !== null
+    ? i18nT('pages.chat.nudgeCard.auto_nudge_cycle', { count: cycle })
+    : i18nT('pages.chat.nudgeCard.auto_nudge')
+}
+
+/**
  * True when this nudge row belongs to the loop that is currently active.
  *
  * The Loop button opens the popover for whatever loop is bound to the slot
@@ -73,7 +86,7 @@ export default memo(function NudgeCard({
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const { cycle, body } = parseNudgeMessage(message)
   const firstLine = body.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
-  const label = cycle !== null ? i18nT('pages.chat.nudgeCard.auto_nudge_cycle', { count: cycle }) : i18nT('pages.chat.nudgeCard.auto_nudge')
+  const label = nudgeLabel(cycle)
 
   return (
     <div

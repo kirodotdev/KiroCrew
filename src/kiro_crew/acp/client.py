@@ -42,7 +42,12 @@ from kiro_crew.acp._dispatch import (
     parse_session_modes,
     parse_usage_update,
 )
-from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOracle
+from kiro_crew.acp.liveness import (
+    VERDICT_WORKING,
+    LivenessOracle,
+    _consume_future_exception,
+    consult_offloaded,
+)
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -833,18 +838,6 @@ _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
 # JSON-RPC 2.0 reserved error code for an unrecognized method — used to answer
 # unknown server→client requests so the agent fails fast instead of hanging.
 _JSONRPC_METHOD_NOT_FOUND = -32601
-
-
-def _consume_future_exception(future: asyncio.Future[tuple[str, str]]) -> None:
-    """Retrieve a liveness consult's exception so asyncio does not report it.
-
-    The /proc walk keeps running after its awaiter goes away, so it can finish
-    with an exception nobody reads. ``Future.__del__`` reports that through the
-    loop exception handler, which the gateway records as an unhandled-asyncio
-    crash for what is an ordinary probe failure.
-    """
-    if not future.cancelled():
-        future.exception()
 
 
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
@@ -4068,45 +4061,21 @@ class AcpClient:
           path has it too); tighter per-branch attribution belongs in
           ``liveness.py``, shared by both callers, not here.
 
-        A timed-out await does not stop its executor thread. Keep that future
-        until the /proc walk finishes and return UNKNOWN on intervening polls,
-        bounding this client to one outstanding consult job per turn.
-        ``_prompt_loop`` retires it at turn start under ``_turn_lock``, so a walk
-        abandoned by one turn never gates the next (at the cost of one abandoned
-        worker per turn, versus one per silent read before this guard existed).
+        A timed-out await does not stop its executor thread. The one-outstanding-
+        walk bound, the refused-submission-reads-UNKNOWN contract, and exception
+        retrieval all live in the shared :func:`consult_offloaded` guard.
+        ``_prompt_loop`` retires the tracked future at turn start under
+        ``_turn_lock``, so a walk abandoned by one turn never gates the next (at
+        the cost of one abandoned worker per turn, versus one per silent read
+        before this guard existed).
         """
-        prior = self._consult_future
-        if prior is not None:
-            if not prior.done():
-                return VERDICT_UNKNOWN, "prior consult still in flight"
-            # wait_for cancels shield's outer future, and shield detaches its
-            # inner-done callback in exactly that case. The submission-time
-            # callback below handles that normal path; this consume additionally
-            # covers an already-completed future that never went through it.
-            _consume_future_exception(prior)
-
-        try:
-            # Submission stays inside the guard: the caller is a silent-read poll
-            # in _prompt_loop, so a refused executor job (shut down during
-            # teardown, thread creation refused under load) must read as UNKNOWN
-            # rather than abort the live turn.
-            loop = asyncio.get_running_loop()
-            future = loop.run_in_executor(
-                subprocess_executor(),
-                self._liveness_oracle.check_model_wait,
-                getattr(self, "_pid", None),
-            )
-            # Attach at SUBMISSION, not only where a later poll or _reset_state
-            # observes it: a turn that reaches the stale cutoff returns with this
-            # walk still running, and an idle client may never look again.
-            # Retrieval is not destructive, so the await below still sees the
-            # result.
-            future.add_done_callback(_consume_future_exception)
-            self._consult_future = future
-            return await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
-        except Exception:
-            logger.debug("liveness consult failed/timed out", exc_info=True)
-            return VERDICT_UNKNOWN, "oracle offload error"
+        return await consult_offloaded(
+            self,
+            self._liveness_oracle.check_model_wait,
+            (getattr(self, "_pid", None),),
+            executor_factory=subprocess_executor,
+            log_label="liveness consult",
+        )
 
     # ── Public API ──
 

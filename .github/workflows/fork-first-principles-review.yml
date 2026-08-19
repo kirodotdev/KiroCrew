@@ -559,7 +559,7 @@ jobs:
           case "${VERDICT:-UNKNOWN}" in
             PASS) badge="✅ PASS" ;;
             CONCERNS) badge="🟡 CONCERNS" ;;
-            BLOCK) badge="🔴 BLOCK (advisory)" ;;
+            BLOCK) badge="🔴 BLOCK" ;;
             *) badge="" ;;
           esac
           if [ -n "$badge" ] && [ -s "$f" ]; then
@@ -568,7 +568,7 @@ jobs:
               echo "$MARKER"
               echo "## First Principles Review (Fable 5, fork) — $badge"
               echo
-              echo "_Advisory premise-level review of \`$HEAD\` via the fork AI-review pipeline — why this exists and whether the shipped surface is the smallest honest version. Updated in place on each push; does **not** block merge._"
+              echo "_Premise-level review of \`$HEAD\` via the fork AI-review pipeline — why this exists and whether the shipped surface is the smallest honest version. Updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
               cat "$f"
             } > "$RUNNER_TEMP/fp-comment.md"

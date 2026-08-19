@@ -953,6 +953,36 @@ class TestEnrichWithInstallStatus:
         assert rows[0]["installed"] is False
         assert rows[0]["updateAvailable"] is False
 
+    def test_external_row_never_inherits_origin_from_a_same_named_install(self):
+        """Regression: an external registry row named after an installed
+        built-in must not get that app's ``origin`` cross-stamped by name —
+        the wire value would contradict the ``provenance: "external"`` stamped
+        beside it."""
+        rows = registry._enrich_with_install_status(
+            [{"name": "meetings", "_registry": "third-party", "version": "9.0.0"}],
+            {"meetings": {"version": "1.0.0", "enabled": True, "origin": "builtin"}},
+        )
+        row = rows[0]
+        assert "origin" not in row
+        # Install-state facts about the machine still flow: only the
+        # trust-adjacent field is withheld.
+        assert row["installed"] is True
+        assert row["installedVersion"] == "1.0.0"
+
+    def test_provenance_external_row_is_also_refused_the_origin_copy(self):
+        rows = registry._enrich_with_install_status(
+            [{"name": "demo", "provenance": "external"}],
+            {"demo": {"version": "1.0.0", "origin": "builtin"}},
+        )
+        assert "origin" not in rows[0]
+
+    def test_non_external_row_still_receives_origin(self):
+        rows = registry._enrich_with_install_status(
+            [{"name": "demo"}],
+            {"demo": {"version": "1.0.0", "origin": "builtin"}},
+        )
+        assert rows[0]["origin"] == "builtin"
+
 
 class TestApplyTrustFields:
     def test_external_row_can_never_self_verify_or_self_feature(self):
@@ -988,6 +1018,23 @@ class TestApplyTrustFields:
         )
         assert [r["verified"] for r in rows] == [True, False, False]
         assert all(r["provenance"] == "official" for r in rows)
+
+    def test_external_row_origin_is_scrubbed_at_the_trust_boundary(self):
+        """Regression: an index-published (or name-collision-inherited)
+        ``origin`` on an external row is dropped, so the wire never carries
+        ``origin: "builtin"`` beside ``provenance: "external"``."""
+        rows = registry._apply_trust_fields(
+            [{"name": "demo", "_registry": "third-party", "origin": "builtin"}]
+        )
+        assert rows[0]["provenance"] == "external"
+        assert "origin" not in rows[0]
+
+    def test_external_row_keeps_the_server_stamped_external_origin(self):
+        rows = registry._apply_trust_fields(
+            [{"name": "demo", "_registry": "third-party", "origin": "external"}]
+        )
+        assert rows[0]["origin"] == "external"
+        assert rows[0]["provenance"] == "external"
 
 
 class TestVersionNewer:

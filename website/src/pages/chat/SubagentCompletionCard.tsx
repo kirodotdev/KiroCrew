@@ -34,7 +34,7 @@ function outcomeLabel(outcome: SubagentOutcome): string {
 }
 
 /** Headline for the card: what happened, in the user's language. */
-function headline(parsed: ParsedSubagentCompletion): string {
+export function headline(parsed: ParsedSubagentCompletion): string {
   if (parsed.kind === 'single') {
     // The cap keeps one long task from pushing the chips and controls off the
     // row. CSS `truncate` cannot supply the cue here — it only fires when the

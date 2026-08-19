@@ -2,15 +2,16 @@
 // by BOTH the issue Investigate action (lib/investigate.ts) and the pull-request
 // Review action (lib/review.ts). Only the seed PROMPT and the slot TITLE differ
 // between the two; every other step — resolve the per-repo chat folder, create a
-// slot filed into it, seed + auto-run the first turn, link the local record so a
-// repeat click RESUMES instead of duplicating, navigate to /chat — is identical,
-// so it lives here once.
+// slot filed into it and already titled, seed + auto-run the first turn, link the
+// local record so a repeat click RESUMES instead of duplicating, navigate to
+// /chat — is identical, so it lives here once.
 //
-// This is deliberately SELF-CONTAINED — it touches no KiroCrew-core files. A
-// first-party app runs inside the dashboard bundle, so it can dispatch the same
-// Redux thunks (`createSlot`, `switchSlot`) and call the same `api` chat
-// primitives the dashboard's own "New Chat" uses (verified precedents:
-// file-explorer / auto-research import the store + api client directly).
+// This deliberately FORKS NOTHING — a first-party app runs inside the dashboard
+// bundle, so it dispatches the same Redux thunks (`createSlot`, `switchSlot`) and
+// calls the same `api` chat primitives the dashboard's own "New Chat" uses
+// (verified precedents: file-explorer / auto-research import the store + api
+// client directly). Where a primitive is missing something this flow needs, the
+// fix belongs in that primitive rather than in a private copy here.
 //
 // The per-item record is the SAME store on both sides
 // (via /api/apps/issue-radar/investigation), NAMESPACED by item kind. On GitHub
@@ -118,9 +119,9 @@ export function useAgentSession(): UseAgentSession {
           }
         }
 
-        // ── Fresh session: folder → slot (filed) → seed+run → link.
+        // ── Fresh session: folder → slot (filed + titled) → seed+run → link.
         const folderId = await resolveFolderId(repoRef.repo)
-        const slot = await dispatch(createSlot({ folder_id: folderId })).unwrap()
+        const slot = await dispatch(createSlot({ folder_id: folderId, title })).unwrap()
         // The slot is persisted but not yet linked to an investigation record, so
         // a failure before the seed leaves an EMPTY session behind — and the next
         // attempt, finding no record, would create another one. Rollback covers
@@ -130,8 +131,6 @@ export function useAgentSession(): UseAgentSession {
         // transient metadata write failure. An unlinked-but-working session is
         // strictly better than a destroyed one.
         createdSlotKey = slot.key
-        // Best-effort readable title; the session works regardless.
-        api.renameSlot(slot.key, title).catch(() => {})
         // Seed + auto-run the first turn (background task; persisted + survives
         // the navigation). await ensures the user message is stored before we
         // switch, so it paints immediately on arrival.

@@ -210,6 +210,15 @@ class SlackEnterpriseGate(Protocol):
     Signatures mirror ``slack/enterprise.py``: ``validate_enterprise`` is called
     once at startup with the bot token; ``check_message_origin`` is the per-
     message in-memory check.
+
+    ``extra_ids`` is advisory, and an implementation MAY ignore it. The public
+    default gate DOES ignore it: its callers derive the value from the same
+    ``slack.allowed_enterprise_ids`` key that gate re-reads itself, so the value
+    can only be an older copy of what the gate already has, and honouring it
+    would re-admit ids the operator removed. Do not rely on this parameter to
+    add ids the config does not list -- against the default gate they are
+    dropped. It stays in the signature because an edition whose allowlist comes
+    from somewhere other than that config key can still use it.
     """
 
     def validate_enterprise(
@@ -811,6 +820,35 @@ class AppsLoader(Protocol):
         pointing at internal git hosts — which its ``AppRegistryPolicy`` already
         trusts. Each row is the same dict shape as an ``app-registry.json`` entry.
         v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+    def default_registries(self) -> List[Dict[str, Any]]:
+        """External app registries the edition ships as defaults (ADD-only merge).
+
+        WIRED: ``apps/registry.py::_effective_registries`` merges these with the
+        operator's ``config.registries`` for EVERY consumer of the registry list —
+        index fetch/refresh, the trusted-host allowlist, row lookup, install, and
+        the blob-proxy allowlist. Merging at the consumption sites rather than
+        inside ``KiroCrewConfig`` is deliberate: an edition default must never be
+        written back into the operator's ``config.json`` by a config save, and must
+        never be shadowed by a stale copy that a past save persisted.
+
+        Each row is the field shape of ``config.loader.ExternalRegistryConfig``
+        (``{"name", "repo", "branch", "trust"}``); dicts, not dataclass instances,
+        so a companion need not import the config module. Missing keys take the
+        dataclass default.
+
+        An edition default WINS on a ``name`` collision with an operator entry.
+        That direction is the fail-closed one: a registry the edition pins carries
+        a ``trust`` tier, and letting a same-named operator entry replace it would
+        let a hand-edited ``config.json`` inherit that tier while repointing
+        ``repo`` somewhere else. An operator can still add registries freely — just
+        not silently repoint one the edition pinned.
+
+        The public Default returns ``[]``, so standalone behaviour is byte-identical
+        to reading ``config.registries`` alone. v1 method addition (no
+        ``CONTRACT_VERSION`` bump).
         """
         ...
 

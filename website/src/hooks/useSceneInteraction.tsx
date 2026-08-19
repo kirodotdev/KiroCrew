@@ -5,6 +5,7 @@ import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
 import { api } from '../api/client'
 import type { AgentSource } from './useAgentSync'
+import { useImeGuard } from './useImeGuard'
 import { KIRO_GHOST_PIXELS } from './sceneText'
 
 import { i18nT } from '../i18n/t'
@@ -116,6 +117,7 @@ export function useSceneInteraction(
 ) {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
+  const ime = useImeGuard()
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const [threadView, setThreadView] = useState<ThreadViewState | null>(null)
   const sourcesRef = useRef<AgentSource[] | undefined>(sources)
@@ -445,7 +447,14 @@ export function useSceneInteraction(
         <input
           value={draft}
           onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendToAgent(threadView.agent, draft) } }}
+          {...ime.bindComposition()}
+          onFocus={() => ime.reset()}
+          onKeyDown={e => {
+            if (e.key !== 'Enter' || e.shiftKey) return
+            // Rule 1: single-line input — the guard alone is enough here.
+            if (ime.isComposing(e)) return
+            e.preventDefault(); sendToAgent(threadView.agent, draft)
+          }}
           placeholder={sourceFor(threadView.agent)?.running ? i18nT('hooks.useSceneInteraction.steer_this_agent') : i18nT('hooks.useSceneInteraction.message_this_agent')}
           aria-label={i18nT('hooks.useSceneInteraction.message', { name: threadView.agent.name })}
           style={{ flex: 1, background: '#0d0d15', border: '1px solid #444', borderRadius: 4, color: '#ddd', fontSize: 11, padding: '4px 7px', outline: 'none' }}

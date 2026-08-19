@@ -1,5 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -352,6 +353,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // posts metadata-only (no version bump). Removing a tag works the same way.
   const [addingTag, setAddingTag] = useState(false)
   const [newTag, setNewTag] = useState('')
+  const ime = useImeGuard()
   // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
   const commentsQuery = useQuery<{ comments: ArtifactComment[]; remote_sync_error?: string | null }>({
     queryKey: ['artifact-comments', slug],
@@ -1561,17 +1563,28 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               value={newTag}
               onChange={e => setNewTag(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter') addTag(newTag)
+                if (e.key === 'Enter') {
+                  // Rule 2 shape: this handler carries more than Enter (comma/space
+                  // also commit), so only the Enter path is gated. Rule 1: single-line
+                  // input, so the guard alone is enough.
+                  if (ime.isComposing(e)) return
+                  addTag(newTag)
+                }
                 if (e.key === ',' || e.key === ' ') {
+                  // Space cycles IME candidates mid-composition; committing here
+                  // would post the composing buffer and kill candidate selection.
+                  if (ime.isComposing(e)) return
                   e.preventDefault()
                   if (newTag.trim()) addTag(newTag)
                 }
-                if (e.key === 'Escape') { setNewTag(''); setAddingTag(false) }
+                if (e.key === 'Escape') { ime.reset(); setNewTag(''); setAddingTag(false) }
               }}
-              onBlur={() => {
-                if (newTag.trim()) addTag(newTag)
-                else setAddingTag(false)
-              }}
+              {...ime.bindComposition({
+                onBlur: () => {
+                  if (newTag.trim()) addTag(newTag)
+                  else setAddingTag(false)
+                },
+              })}
               autoFocus
               placeholder={i18nT('pages.artifactDetailPage.tag')}
               className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-accent text-text outline-none"

@@ -1345,7 +1345,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; clean_mode?: boolean; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -1356,6 +1356,11 @@ export const createSlot = createAsyncThunk<
     const memory_mode = typeof opts === 'string' ? undefined : opts?.memory_mode
     const clean_mode = typeof opts === 'string' ? undefined : opts?.clean_mode
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
+    // Title at BIRTH, for the same reason folder membership rides this payload:
+    // the server pins it (locking the background auto-titler out) and the create
+    // broadcast already carries it, where a follow-up rename paints a generated
+    // title first and can fail silently, leaving the caller's name unset.
+    const title = typeof opts === 'string' ? undefined : opts?.title
     const explicitColor = typeof opts === 'string' ? undefined : opts?.color_index
     const explicitHex = typeof opts === 'string' ? undefined : opts?.color_hex
     const project = typeof opts === 'string' ? undefined : opts?.project
@@ -1370,7 +1375,7 @@ export const createSlot = createAsyncThunk<
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
     // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, undefined, clean_mode, undefined, folderId || undefined)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, clean_mode, undefined, folderId || undefined)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.

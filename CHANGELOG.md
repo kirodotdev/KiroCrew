@@ -39,6 +39,20 @@ All notable changes to KiroCrew are documented in this file.
   the existing actionable "run `kiro-cli login`, then start a new chat"
   guidance. (#3393)
 
+- **Issue Radar's AI summaries now follow the dashboard language.** The issue
+  triage summary, the PR summary, and the label-taxonomy recommendation always
+  produced English prose regardless of `dashboard.language`, making the AI card
+  the one unlocalized surface in an otherwise localized UI. When a dashboard
+  language is configured, each one-shot prompt now carries an output-language
+  directive for its prose (summary, per-label `reason`, recommendation
+  `rationale`) while label names — and a recommendation's `name`/`description`,
+  which become repo content on GitHub — stay untranslated. Caches regenerate on
+  a language switch instead of serving the old language: the PR-summary cache
+  folds the tag into its fingerprint, and the issue-AI cache stores the tag
+  beside the payload and treats a mismatch as a miss (recommendations remain
+  regenerate-only via their explicit button). Installs with no configured
+  language send byte-identical prompts and keep their cached digests. (#4290)
+
 - **xlsx files now render inline in the file viewer** instead of a
   download-only card. A new `GET /api/file-sheet` endpoint parses OOXML
   workbooks server-side with openpyxl (read-only, worker thread, ZIP

@@ -460,25 +460,21 @@ jobs:
                     and (.conclusion | IN("success","neutral")))] | length' <<<"$cruns")"
               if [ "$total" -eq 0 ] || [ "$incomplete" -gt 0 ]; then
                 pending+=("$label (not started)")
-              elif [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
-                # UX and First Principles stay advisory: once the real review
-                # posts any decisive result it never blocks; only-skipped means
-                # it has not posted yet. First Principles is advisory because its
-                # BLOCK is a judgment about whether a feature should exist at
-                # all -- a model must not wedge a merge on that until the lane's
-                # calibration is proven; promoting it later is a one-line change.
-                if [ "$fail" -gt 0 ] || [ "$pass" -gt 0 ]; then
-                  passed+=("$label (advisory)")
-                else
-                  pending+=("$label (not started)")
-                fi
-              elif [ "$label" = "Design Review" ]; then
-                # Design Review BLOCKS on a real BLOCK verdict, so a contributor
-                # cannot merge past a design judged wrong. Safe to treat a
-                # failure as a blocker because fork-design-review.yml fails the
-                # check ONLY on BLOCK -- an errored, throttled or verdict-less
-                # run resolves NEUTRAL and exits 0 -- so `failure` here can only
-                # mean a judged-wrong design, never infrastructure noise.
+              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
+                # Design, UX and First Principles all BLOCK on a real BLOCK
+                # verdict, so a contributor cannot merge past a design judged
+                # wrong, an experience judged broken/misleading, or a surface
+                # judged unjustified. Safe to treat a failure as a blocker
+                # because each fork-*-review.yml fails the check ONLY on BLOCK
+                # -- an errored, throttled or verdict-less run resolves NEUTRAL
+                # and exits 0 -- so `failure` here can only mean a judged-wrong
+                # verdict, never infrastructure noise. NOTE: `/ai-review
+                # override` is a SAME-REPO mechanism (the handler re-runs the
+                # same-repo lanes, whose own runs are what the same-repo reader
+                # below consults; it never touches these Stage-2 fork
+                # check-runs), so a fork false BLOCK is cleared by pushing a new
+                # commit, not by override -- identical to the fork Opus / GPT /
+                # Design lanes, which already block a fork PR the same way.
                 if [ "$fail" -gt 0 ]; then
                   failed+=("$label (BLOCK)")
                 elif [ "$pass" -gt 0 ]; then
@@ -545,20 +541,20 @@ jobs:
                   success|skipped) passed+=("$label") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
-              elif [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
-                # Both are advisory: their opinions and infrastructure failures
-                # do not become an independent readiness blocker, but completion
-                # is still required so the verdict is not premature. First
-                # Principles is advisory because its BLOCK is a judgment about
-                # whether a feature should exist at all -- a model must not wedge
-                # a merge on that until the lane's calibration is proven.
-                passed+=("$label (advisory)")
-              elif [ "$label" = "Design Review" ]; then
-                # Design Review BLOCKS on a real BLOCK verdict. design-review.yml
-                # fails the check ONLY on BLOCK (PASS/CONCERNS, the Dependabot
-                # skip, and any errored/overloaded/verdict-less run all exit 0),
-                # so a `failure` conclusion is a judged-wrong design rather than
-                # infrastructure noise and is safe to treat as a blocker.
+              elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
+                # Design, UX and First Principles all BLOCK on a real BLOCK
+                # verdict. The "gates on BLOCK" step exits 0 for PASS/CONCERNS,
+                # the Dependabot skip, and any overloaded/throttled/verdict-less
+                # run, so those never fail the run -- a `failure` conclusion is
+                # therefore almost always a judged-wrong verdict. One residual:
+                # a HARD model-step error (OIDC / action crash) has no
+                # continue-on-error, so it also fails the run and reddens the
+                # lane. That is rare, deliberate (a review that never ran must
+                # not read as green), identical to the Design / Opus / GPT
+                # lanes, and cleared by a one-comment `/ai-review override`
+                # (current-SHA scoped) -- so treating a `failure` as a blocker
+                # is safe. (The fork reader below never sees this: fork
+                # *-review.yml maps a hard error to a NEUTRAL check-run.)
                 case "$conclusion" in
                   success|neutral|skipped) passed+=("$label") ;;
                   *) failed+=("$label (BLOCK)") ;;

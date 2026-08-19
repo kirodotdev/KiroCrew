@@ -329,6 +329,7 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
 
   const running = progress.data?.running === true
   const done = progress.data?.done ?? 0
+  const measured = progress.data?.measured ?? 0
   const total = progress.data?.total ?? 0
 
   // The verdicts the pass just wrote live in a DIFFERENT query, and nothing else
@@ -357,7 +358,15 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
   // attached tells the reader nothing they can use. Excludes a failed pass, and
   // counts what was actually MEASURED rather than what was attempted -- a pass
   // that died at 1 of 5 must not close with "Measured 5 servers".
-  const settled = asked && !running && done > 0 && !failed
+  //
+  // `measured` and `done` are separate fields because a pass can attempt a server
+  // and measure nothing: a missing credential or a host where the probe cannot
+  // spawn leaves no verdict, so the row stays unmeasured and this button keeps
+  // offering it. Gating on `done` closed with "Measured 30 servers" beside a table
+  // still showing thirty unmeasured rows. Gating on `measured` withholds the line
+  // entirely when nothing was measured, which is silent but never false -- the
+  // button's own unchanged count is what tells the reader nothing landed.
+  const settled = asked && !running && measured > 0 && !failed
 
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -382,7 +391,7 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
       )}
       {settled && (
         <span role="status" className="text-[12.5px] text-[var(--muted)]">
-          {i18nT('pages.mcpManagement.assessment.measure_finished', { count: done })}
+          {i18nT('pages.mcpManagement.assessment.measure_finished', { count: measured })}
         </span>
       )}
       {/* A pass that stopped early is reported here rather than only in the log:

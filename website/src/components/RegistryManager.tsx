@@ -8,18 +8,24 @@ import type React from 'react'
 import { useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import {
-  Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X, ShieldCheck,
+  Plus, Trash2, GitBranch, Database, ExternalLink, RefreshCw, X, ShieldCheck, Pin,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { Card, CardTitle, Btn, Input, EmptyState, Badge } from './ui'
 import InfoTip from './InfoTip'
 import Clickable from './Clickable'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
-type Registry = { name: string; repo: string; branch: string }
+// ``trust`` selects the credential posture for cloning a registry's apps, and it
+// is meaningful only on a BUILD-PINNED row: the backend resolves the trusted tier
+// solely from what the build supplies, because ``config.json`` is agent-writable.
+// An operator row therefore always reads ``index``, and the API refuses to store
+// anything else — so nothing here needs to preserve it across a save.
+type Registry = { name: string; repo: string; branch: string; trust?: string }
 
 // Shell metacharacters / whitespace that must never appear in a repo value.
 const SHELL_META = /[\s;&|`$(){}<>'"\\]/
@@ -64,6 +70,7 @@ function repoWebUrl(repo: string): string {
  */
 export default function RegistryManager({ bare = false }: { bare?: boolean } = {}) {
   const queryClient = useQueryClient()
+  const ime = useImeGuard()
   const [adding, setAdding] = useState(false)
   const [editName, setEditName] = useState('')
   const [editRepo, setEditRepo] = useState('')
@@ -81,6 +88,12 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
     staleTime: 30_000,
   })
   const registries: Registry[] = data?.registries || []
+  // Registries this build pins. Deliberately NOT merged into `registries`:
+  // handleAdd/handleRemove send a replace-all PUT built from that list, so a
+  // pinned row folded in would be written into the operator's own config and
+  // could then no longer be moved by a build update. Empty on the public
+  // default, so this renders nothing unless a deployment pins one.
+  const pinned: Registry[] = data?.pinned || []
 
   const mutation = useMutation({
     mutationFn: (regs: Registry[]) => api.updateRegistries(regs),
@@ -129,8 +142,17 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
       setError(i18nT('components.registryManager.repo_must_be_a_git_url_or_an_alphanumeric_name_h'))
       return
     }
-    if (registries.some(r => r.repo === repo)) {
+    if (registries.some(r => r.repo === repo) || pinned.some(r => r.repo === repo)) {
       setError(i18nT('components.registryManager.registry_already_exists', { repo }))
+      return
+    }
+    // A NAME collision with a pinned row is rejected too, not just a repo one:
+    // the backend merge drops a same-named operator row ("a pinned row wins"),
+    // so accepting it would render a row whose apps never appear and whose
+    // per-row refresh 404s, with nothing on screen explaining why.
+    const collidingName = name && pinned.find(r => (r.name || r.repo) === name)
+    if (collidingName) {
+      setError(i18nT('components.registryManager.name_is_taken_by_a_build_pinned_registry', { name }))
       return
     }
     // Keep the form open and populated until the mutation actually succeeds:
@@ -185,7 +207,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
 
       {isLoading ? (
         <div className="text-center py-8 text-muted text-sm">{i18nT('components.registryManager.loading')}</div>
-      ) : registries.length === 0 && !adding ? (
+      ) : registries.length === 0 && pinned.length === 0 && !adding ? (
         <EmptyState
           icon={<Database size={32} />}
           title={i18nT('components.registryManager.no_external_registries')}
@@ -193,14 +215,80 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         />
       ) : (
         <div className="space-y-2 mt-3">
+          {/* Pinned rows carry no remove/edit control: they come from the build,
+              not from config.json, so a delete button here would appear to work
+              and then be undone by the next read. */}
+          {pinned.map(reg => (
+            <div
+              key={`pinned:${reg.repo}`}
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 border border-border rounded-lg bg-accent/5 group"
+            >
+              {/* The shield is reserved for the `owner` tier, which is the only
+                  one that clones with this machine's credentials. A pinned row
+                  defaults to the untrusted `index` tier, so a shield on every
+                  pinned row would read as "verified" and over-claim. */}
+              {reg.trust === 'owner'
+                ? <ShieldCheck size={16} className="text-accent shrink-0" aria-hidden="true" />
+                : <Pin size={16} className="text-accent shrink-0" aria-hidden="true" />}
+              {/* `basis-full` below `sm` gives the text its own line so the
+                  always-visible controls wrap beneath it instead of landing on
+                  top of the wrapped badges. */}
+              <div className="basis-full sm:basis-0 sm:flex-1 min-w-0 order-last sm:order-none">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-text text-[14px] truncate">{reg.name || reg.repo}</span>
+                  <Badge variant="ok">{reg.branch}</Badge>
+                  <Badge variant="muted">{i18nT('components.registryManager.included_with_this_installation')}</Badge>
+                  {/* The owner tier is the state that clones with this machine's
+                      git credentials, so it must not be carried by an icon alone:
+                      a 16px swap is undecodable and silent to a screen reader, and
+                      a shield reads "verified" rather than what it means. The text
+                      badge is the state's counterpart and the tip says what it
+                      asserts. The icons are decorative (aria-hidden) — the badges
+                      beside them already carry both meanings. */}
+                  {reg.trust === 'owner' && (
+                    <span className="inline-flex items-center gap-1">
+                      <Badge variant="aim">{i18nT('components.registryManager.trusted_source')}</Badge>
+                      <InfoTip text={i18nT('components.registryManager.trusted_source_clones_with_your_git_credentials')} />
+                    </span>
+                  )}
+                </div>
+                <div className="text-[12px] text-muted truncate flex items-center gap-1.5 mt-0.5">
+                  <GitBranch size={10} className="shrink-0" />
+                  {reg.repo}
+                </div>
+              </div>
+              {/* Opening the repo is read-only, so a pinned row offers it too —
+                  withholding it would make the pinned source harder to inspect
+                  than a user-added one. Only the MUTATING control is absent.
+                  Controls stay visible without hover below `sm`: a touch
+                  viewport has no hover, so hover-only actions are unreachable. */}
+              <Clickable
+                className="text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
+                aria-label={i18nT('components.registryManager.open_repository', { repo: reg.repo })}
+              >
+                <ExternalLink size={14} />
+              </Clickable>
+              <Clickable
+                className={`text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
+                onClick={() => refreshMutation.mutate(reg.repo)}
+                aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.name || reg.repo })}
+              >
+                <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
+              </Clickable>
+            </div>
+          ))}
           {registries.map(reg => (
             <div
               key={reg.repo}
-              className="flex items-center gap-3 px-3 py-2.5 border border-border rounded-lg hover:border-accent/30 transition-colors group"
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 border border-border rounded-lg hover:border-accent/30 transition-colors group"
             >
               <Database size={16} className="text-accent shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
+              {/* Same stacking as a pinned row: these controls are now visible
+                  without hover below `sm` (a touch viewport has no hover), so the
+                  text needs its own line or they would sit on top of it. */}
+              <div className="basis-full sm:basis-0 sm:flex-1 min-w-0 order-last sm:order-none">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-text text-[14px] truncate">{reg.name}</span>
                   <Badge variant="ok">{reg.branch}</Badge>
                 </div>
@@ -210,21 +298,21 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 </div>
               </div>
               <Clickable
-                className="text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                className="text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                 onClick={() => window.open(repoWebUrl(reg.repo), '_blank')}
                 aria-label={i18nT('components.registryManager.open_repository', { repo: reg.repo })}
               >
                 <ExternalLink size={14} />
               </Clickable>
               <Clickable
-                className={`text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
+                className={`text-muted hover:text-accent transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${refreshMutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => refreshMutation.mutate(reg.repo)}
                 aria-label={i18nT('components.registryManager.refresh_registry', { name: reg.name })}
               >
                 <RefreshCw size={14} className={refreshMutation.isPending && refreshMutation.variables === reg.repo ? 'animate-spin' : ''} />
               </Clickable>
               <Clickable
-                className={`text-muted hover:text-danger transition-colors opacity-0 group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
+                className={`text-muted hover:text-danger transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 ${mutation.isPending ? 'pointer-events-none opacity-30' : ''}`}
                 onClick={() => handleRemove(reg.repo)}
                 aria-label={i18nT('components.registryManager.remove_registry', { name: reg.name })}
               >
@@ -259,7 +347,13 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 placeholder={i18nT('components.registryManager.https_github_com_org_app_registry')}
                 value={editRepo}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditRepo(e.target.value)}
-                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
+                {...ime.bindComposition()}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key !== 'Enter') return
+                  // Rule 1: single-line input — decline the IME's committing Enter only.
+                  if (ime.isComposing(e)) return
+                  handleAdd()
+                }}
               />
             </div>
             <div>
@@ -271,7 +365,13 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 placeholder={i18nT('components.registryManager.main')}
                 value={editBranch}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditBranch(e.target.value)}
-                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleAdd()}
+                {...ime.bindComposition()}
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key !== 'Enter') return
+                  // Rule 1: single-line input — one shared instance covers both fields.
+                  if (ime.isComposing(e)) return
+                  handleAdd()
+                }}
               />
             </div>
           </div>
@@ -287,7 +387,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
           <Btn onClick={() => setAdding(true)}>
             <Plus size={14} /> {i18nT('components.registryManager.add_registry')}
           </Btn>
-          {registries.length > 0 && (
+          {registries.length > 0 || pinned.length > 0 ? (
             <>
               <Btn
                 onClick={() => refreshMutation.mutate(undefined)}
@@ -303,7 +403,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
                 </span>
               )}
             </>
-          )}
+          ) : null}
         </div>
       )}
     </Wrapper>

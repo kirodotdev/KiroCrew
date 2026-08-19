@@ -3,7 +3,7 @@ name: AI Review Human Override
 # Human judgment is authoritative over the three AI review gates. A repository
 # writer can record a SHA-scoped false-positive / not-applicable decision with:
 #
-#   /ai-review override <fable|gpt|all> <current-sha>: <reason>
+#   /ai-review override <fable|gpt|design|ux|first-principles|all> <current-sha>: <reason>
 #
 # issue_comment workflows execute from the trusted default branch, never from
 # the PR head. The handler validates identity + commit freshness, records a
@@ -55,7 +55,7 @@ jobs:
           }
 
           first_line="${COMMENT_BODY%%$'\n'*}"
-          pattern='^/ai-review override (fable|gpt|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
+          pattern='^/ai-review override (fable|gpt|design|ux|first-principles|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
           if [[ ! "$first_line" =~ $pattern ]]; then
             post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|all> <current-sha>: <one-sentence reason>`.'
             exit 1
@@ -109,6 +109,9 @@ jobs:
         if: >-
           steps.context.outputs.target == 'fable'
           || steps.context.outputs.target == 'gpt'
+          || steps.context.outputs.target == 'design'
+          || steps.context.outputs.target == 'ux'
+          || steps.context.outputs.target == 'first-principles'
           || steps.context.outputs.target == 'all'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -162,4 +165,17 @@ jobs:
           fi
           if [ "$TARGET" = "gpt" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "codex-review.yml" "GPT 5.6"
+          fi
+          # The design-family lanes clear a BLOCK the same way: the re-run's
+          # "Resolve human override" step finds this recorded marker, skips the
+          # model review, and the gate passes. Re-running is what lets that
+          # skip take effect (a deterministic BLOCK would otherwise re-BLOCK).
+          if [ "$TARGET" = "design" ] || [ "$TARGET" = "all" ]; then
+            rerun_reviewer "design-review.yml" "Design Review"
+          fi
+          if [ "$TARGET" = "ux" ] || [ "$TARGET" = "all" ]; then
+            rerun_reviewer "ux-review.yml" "UX Review"
+          fi
+          if [ "$TARGET" = "first-principles" ] || [ "$TARGET" = "all" ]; then
+            rerun_reviewer "first-principles-review.yml" "First Principles Review"
           fi

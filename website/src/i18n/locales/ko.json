@@ -5919,7 +5919,11 @@
       "these_hosts": "이 호스트",
       "this_host": "이 호스트",
       "you_are_now_trusting_apps_from": "이제 다음 출처의 앱을 신뢰합니다",
-      "registry_url_install_public_repos_only": "레지스트리 URL 설치는 공개 저장소에서만 작동합니다. 비공개 저장소는 먼저 로컬로 복제한 다음 아래의 Install from Path를 사용하세요."
+      "registry_url_install_public_repos_only": "레지스트리 URL 설치는 공개 저장소에서만 작동합니다. 비공개 저장소는 먼저 로컬로 복제한 다음 아래의 Install from Path를 사용하세요.",
+      "name_is_taken_by_a_build_pinned_registry": "'{{name}}'은(는) 이 빌드에서 제공하는 레지스트리 이름입니다. 다른 이름을 선택하세요",
+      "included_with_this_installation": "이 설치에 포함됨",
+      "trusted_source": "신뢰된 출처",
+      "trusted_source_clones_with_your_git_credentials": "신뢰된 출처 — 이 레지스트리의 앱은 사용자의 Git 자격 증명으로 복제됩니다."
     },
     "remoteArtifactCard": {
       "clone": "클론",
@@ -7644,7 +7648,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "고정한 프롬프트 접기",
         "expand_pinned_prompt": "고정한 프롬프트 펼치기",
-        "jump_to_this_prompt": "이 프롬프트로 이동"
+        "jump_to_this_turn": "이 턴으로 이동"
       },
       "recoveryCard": {
         "backend_error_continuing": "백엔드 오류 · 자동으로 후속 요청 전송됨",

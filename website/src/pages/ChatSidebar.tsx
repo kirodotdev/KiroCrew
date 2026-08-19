@@ -107,6 +107,12 @@ const ROW_META_CLS = 'text-[10px] leading-[12px]'
 const ROW_TITLE_CLS = 'text-[13px] leading-[20px]'
 const ROW_STATUS_CLS = 'text-[11px] leading-[16px]'
 
+/* A SECOND surface now tracks these three sizes: the Notes app's left rail
+ * (`apps/md-notebook/constants.ts`, `RAIL_TYPE`) mirrors them so the two
+ * sidebars read as one scale. The agreement is by copied value, not a shared
+ * token — nothing goes red if these move. Change a size here and update
+ * `RAIL_TYPE` in the same commit, or the rail silently diverges. */
+
 /** The secondary line's three shapes, as whole class strings. The eight status
  *  branches that render this line each used to spell the type classes out, so a
  *  ninth state was one copy-paste away from re-introducing a size the grid does

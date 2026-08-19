@@ -38,9 +38,9 @@ def counting_log(tmp_path, monkeypatch):
     calls: list[str] = []
     original = ConversationLog._build_folded
 
-    def counted(self, key: str, mtime: float):
+    def counted(self, key: str, mtime: float, gen: int):
         calls.append(key)
-        return original(self, key, mtime)
+        return original(self, key, mtime, gen)
 
     monkeypatch.setattr(ConversationLog, "_build_folded", counted)
     return log, calls
@@ -210,9 +210,9 @@ class TestFoldCacheCoversTheScanWindow:
         calls: list[str] = []
         original = ConversationLog._build_folded
 
-        def counted(self, key: str, mtime: float):
+        def counted(self, key: str, mtime: float, gen: int):
             calls.append(key)
-            return original(self, key, mtime)
+            return original(self, key, mtime, gen)
 
         monkeypatch.setattr(ConversationLog, "_build_folded", counted)
 
@@ -281,7 +281,7 @@ class TestFoldDoesNotPinParsedTranscripts:
             [{"role": "user", "content": "phantom text"}],
         )
 
-        built = log._build_folded("s0", mtime)
+        built = log._build_folded("s0", mtime, log._cache_gen("s0"))
         assert built is not None
         assert built[1] == "on disk only", "the fold must come from the file"
         assert "phantom" not in built[1]
@@ -322,9 +322,9 @@ class TestFoldDoesNotPinParsedTranscripts:
         real_build = ConversationLog._build_folded
         observed: list[int] = []
 
-        def observing(self, key: str, mtime: float):
+        def observing(self, key: str, mtime: float, gen: int):
             observed.append(depth[0])
-            return real_build(self, key, mtime)
+            return real_build(self, key, mtime, gen)
 
         log = ConversationLog(base_dir=tmp_path)
         for i in range(3):
@@ -430,7 +430,7 @@ class TestFoldDoesNotPinParsedTranscripts:
 
     def test_unreadable_file_signals_failure_rather_than_empty(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        assert log._build_folded("never-existed", 0.0) is None
+        assert log._build_folded("never-existed", 0.0, 0) is None
 
     def test_both_halves_of_a_query_share_one_definition_of_searchable_text(
         self, tmp_path, monkeypatch
@@ -469,7 +469,7 @@ class TestFoldDoesNotPinParsedTranscripts:
             f"saw {callers}"
         )
         stored = log._snippet_cache.get("s0")
-        assert stored is not None and stored[1] == ["the wombat entry"], (
+        assert stored is not None and stored[2] == ["the wombat entry"], (
             "the snippet memo must hold exactly what the fold read"
         )
 
@@ -764,7 +764,7 @@ class TestSnippetSourceIsMemoized:
         stored = log._snippet_cache.get("s0")
         assert stored is not None, "precondition: the memo holds this session"
         # Poison the memo, keeping its (now wrong) mtime.
-        log._snippet_cache["s0"] = (stored[0], ["poisoned deployment content"])
+        log._snippet_cache["s0"] = (stored[0], stored[1], ["poisoned deployment content"])
         # Make the file's mtime disagree with the memo's.
         path = log._path("s0")
         os.utime(path, (stored[0] + 10, stored[0] + 10))
@@ -805,8 +805,8 @@ class TestBudgetCountsRealBytesNotCharacters:
         log = ConversationLog(base_dir=tmp_path)
         sizer = log._folded_cache._sizer
 
-        narrow = sizer((0.0, 0, "a" * 1000))
-        wide = sizer((0.0, 0, "\U0001f600" * 1000))
+        narrow = sizer((0.0, 0, 0, "a" * 1000))
+        wide = sizer((0.0, 0, 0, "\U0001f600" * 1000))
 
         assert wide > narrow * 3, (
             f"a 4-byte-per-char string must cost ~4x a 1-byte one, "
@@ -835,7 +835,7 @@ class TestBudgetCountsRealBytesNotCharacters:
         sizer = log._snippet_cache._sizer
 
         texts = ["x" * 10 for _ in range(500)]
-        charged = sizer((0.0, texts))
+        charged = sizer((0.0, 0, texts))
         strings_only = sum(t.__sizeof__() for t in texts)
 
         assert charged > strings_only, "the list container must be charged too"

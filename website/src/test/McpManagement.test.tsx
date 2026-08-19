@@ -563,6 +563,70 @@ describe('sharing assessment', () => {
     await openAssessment()
     expect(await screen.findByText(/stopped early/i)).toBeTruthy()
   })
+
+  it('closes with the number MEASURED, not the number attempted', async () => {
+    // A pre-flight that could not run leaves no verdict on purpose, so a pass can
+    // attempt five servers and measure two. Closing on the attempt count told the
+    // operator five rows had been assessed while three still read "not measured"
+    // in the table beside it and the button still offered them.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue(
+      { running: true, done: 0, measured: 0, total: 5 } as never,
+    )
+    vi.spyOn(api, 'mcpMeasureProgress')
+      .mockResolvedValueOnce({ running: true, done: 0, measured: 0, total: 5 } as never)
+      .mockResolvedValue(
+        { running: false, done: 5, measured: 2, total: 5 } as never,
+      )
+    await openAssessment()
+    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+
+    expect(await screen.findByText(/^measured 2 servers$/i, undefined, { timeout: 4000 }))
+      .toBeTruthy()
+    // The number that was on screen before, and the reason this test exists.
+    expect(screen.queryByText(/^measured 5 servers$/i)).toBeNull()
+  })
+
+  it('says nothing rather than claiming a pass that reached nothing measured everything', async () => {
+    // Every server unreachable is not a corner: the probe cannot spawn at all on
+    // some hosts, so the whole configuration takes the "could not ask" branch. The
+    // pass did not fail -- each measurement resolved to "unmeasurable" and no error
+    // was raised -- so the closure line is the ONLY thing that could speak here,
+    // and on the attempt count it said "Measured 3 servers" having measured none.
+    // Withheld entirely: silent, but never false. The button's own unchanged count
+    // is what tells the reader nothing landed.
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [withRec({ name: 'alpha-mcp' }, unknown)],
+    } as never)
+    vi.spyOn(api, 'mcpMeasureStart').mockResolvedValue(
+      { running: true, done: 0, measured: 0, total: 3 } as never,
+    )
+    vi.spyOn(api, 'mcpMeasureProgress')
+      .mockResolvedValueOnce({ running: true, done: 0, measured: 0, total: 3 } as never)
+      .mockResolvedValue(
+        { running: false, done: 3, measured: 0, total: 3 } as never,
+      )
+    await openAssessment()
+    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+
+    // Prove the pass reached the RUNNING state first. Waiting only for the absence
+    // of the running line is satisfied before the pass starts as well as after it
+    // ends, so the assertion below would run against a page that has not polled
+    // yet and would pass against the bug too -- this test was vacuous until this
+    // line was added, verified by a mutation it failed to kill.
+    await screen.findByText(/measuring, 0 of 3 done/i)
+    await waitFor(
+      () => expect(screen.queryByText(/measuring,/i)).toBeNull(),
+      { timeout: 4000 },
+    )
+    expect(screen.queryByText(/^measured \d+ server/i)).toBeNull()
+    // Not a failure either: nothing raised, so the error line must stay away.
+    expect(screen.queryByText(/stopped early/i)).toBeNull()
+  })
 })
 
 describe('sharing assessment evidence cell', () => {

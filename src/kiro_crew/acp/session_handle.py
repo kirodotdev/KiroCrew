@@ -43,7 +43,6 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
-    _consume_future_exception,
     _effective_prompt_timeout_async,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
@@ -59,6 +58,8 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
     LivenessOracle,
     ToolCallState,
+    _consume_future_exception,
+    consult_offloaded,
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
@@ -2215,12 +2216,13 @@ class AcpSessionHandle:
         bounded so a hung /proc read can't wedge the watchdog itself. Any
         failure degrades to UNKNOWN, never to a kill.
 
-        A timed-out await does not stop its executor thread. The submitted future
-        is tracked and intervening ticks answer UNKNOWN without submitting again,
-        bounding this handle to one outstanding walk per liveness generation
-        instead of one per tick — otherwise a permanently wedged /proc read grows
-        a new blocked worker every ``check_after_secs`` and starves the shared
-        pool that teardown's ``_get_child_pids`` also draws from.
+        A timed-out await does not stop its executor thread. The one-outstanding-
+        walk bound (otherwise a permanently wedged /proc read grows a new blocked
+        worker every ``check_after_secs`` and starves the shared pool that
+        teardown's ``_get_child_pids`` also draws from), the refused-submission-
+        reads-UNKNOWN contract, and exception retrieval all live in the shared
+        :func:`consult_offloaded` guard; only which oracle check runs, and
+        against which pid and tool state, is decided here.
         """
         pid = getattr(self._runtime, "pid", None)
         call: Callable[..., tuple[str, str]]
@@ -2237,34 +2239,13 @@ class AcpSessionHandle:
             call = self._oracle.check_tool
             args = (pid, tool)
 
-        prior = self._consult_future
-        if prior is not None:
-            if not prior.done():
-                return VERDICT_UNKNOWN, "prior consult still in flight"
-            # wait_for cancels shield's outer future, and shield detaches its
-            # inner-done callback in exactly that case. The submission-time
-            # callback below covers that normal path; this consume additionally
-            # covers an already-completed future that never went through it.
-            _consume_future_exception(prior)
-
-        try:
-            # Submission stays inside the guard: the caller is a watchdog tick, so
-            # a refused executor job (shut down during teardown, thread creation
-            # refused under load) must read as UNKNOWN rather than abort the turn.
-            loop = asyncio.get_running_loop()
-            future = loop.run_in_executor(subprocess_executor(), call, *args)
-            # Attach at SUBMISSION, not only where a later tick or a boundary
-            # observes it: a turn that ends on this verdict returns with the walk
-            # still running and may never be consulted again, and CancelledError
-            # is a BaseException so an `except Exception` arm would miss a turn
-            # cancelled mid-walk. Retrieval is not destructive, so the await
-            # below still sees the result.
-            future.add_done_callback(_consume_future_exception)
-            self._consult_future = future
-            return await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
-        except Exception:
-            logger.debug("oracle consultation failed/timed out", exc_info=True)
-            return VERDICT_UNKNOWN, "oracle offload error"
+        return await consult_offloaded(
+            self,
+            call,
+            args,
+            executor_factory=subprocess_executor,
+            log_label="oracle consultation",
+        )
 
     def _log_working_deferral(self, idle: float, evidence: str, turn_timeout: float) -> None:
         """Evidence trail for a WORKING deferral, rate-limited to one line per

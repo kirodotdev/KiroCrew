@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
 import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { ChatMessage } from '../types'
+import { useImeGuard } from '../hooks/useImeGuard'
 
 import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
@@ -98,6 +99,7 @@ function EditInput({ initial, onCommit, onCancel }: {
   onCancel: () => void
 }) {
   const ref = useRef<HTMLInputElement>(null)
+  const ime = useImeGuard()
   const [value, setValue] = useState(initial)
   // Guard so blur and an explicit save/Enter don't both fire onCommit.
   const committedRef = useRef(false)
@@ -123,10 +125,14 @@ function EditInput({ initial, onCommit, onCancel }: {
         onClick={e => e.stopPropagation()}
         onKeyDown={e => {
           e.stopPropagation()
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit() }
-          else if (e.key === 'Escape') { e.preventDefault(); cancel() }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            // Rule 1: single-line input — decline the IME's committing Enter,
+            // nothing else. The commit's own emptiness check stays in commit().
+            if (ime.isComposing(e)) return
+            e.preventDefault(); commit()
+          } else if (e.key === 'Escape') { e.preventDefault(); ime.reset(); cancel() }
         }}
-        onBlur={commit}
+        {...ime.bindComposition({ onBlur: commit })}
         className="flex-1 min-w-0 bg-[var(--bg)] text-[var(--text)] placeholder:text-[var(--muted)] rounded px-1.5 py-0.5 text-[13px] outline-none border border-[var(--border)] focus:border-[var(--accent)]"
         aria-label={i18nT('components.queueStack.edit_queued_message')}
       />

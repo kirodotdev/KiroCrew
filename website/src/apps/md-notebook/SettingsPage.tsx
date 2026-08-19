@@ -22,6 +22,7 @@ import {
   FONT_MONO,
   MAX_AUTO_SYNC_MINS,
   MIN_AUTO_SYNC_MINS,
+  RAIL_TYPE,
 } from './constants'
 import Clickable from '../../components/Clickable'
 import { GithubIcon, Switch, TextLink } from './bits'
@@ -870,7 +871,7 @@ export function SettingsBar({
       >
         <span
           style={{
-            fontSize: '13px',
+            ...RAIL_TYPE.row,
             fontWeight: open ? 600 : 400,
             color: open ? 'var(--text)' : 'var(--muted)',
             flex: 1,

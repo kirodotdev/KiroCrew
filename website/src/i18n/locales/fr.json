@@ -6095,7 +6095,11 @@
       "these_hosts": "ces hôtes",
       "this_host": "cet hôte",
       "you_are_now_trusting_apps_from": "Vous faites désormais confiance aux applications de",
-      "registry_url_install_public_repos_only": "L’installation par URL de registre ne fonctionne que pour les dépôts publics. Pour un dépôt privé, clonez-le d’abord en local, puis utilisez « Install from Path » ci-dessous."
+      "registry_url_install_public_repos_only": "L’installation par URL de registre ne fonctionne que pour les dépôts publics. Pour un dépôt privé, clonez-le d’abord en local, puis utilisez « Install from Path » ci-dessous.",
+      "name_is_taken_by_a_build_pinned_registry": "« {{name}} » est le nom d'un registre fourni par cette version — choisissez-en un autre",
+      "included_with_this_installation": "Inclus avec cette installation",
+      "trusted_source": "Source de confiance",
+      "trusted_source_clones_with_your_git_credentials": "Source de confiance — les apps de ce registre sont clonées avec vos identifiants Git."
     },
     "remoteArtifactCard": {
       "clone": "Cloner",
@@ -7848,7 +7852,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Réduire le message épinglé",
         "expand_pinned_prompt": "Développer le message épinglé",
-        "jump_to_this_prompt": "Aller à ce message"
+        "jump_to_this_turn": "Aller à ce tour"
       },
       "recoveryCard": {
         "backend_error_continuing": "erreur de backend · reprise envoyée automatiquement",

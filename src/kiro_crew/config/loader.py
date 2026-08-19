@@ -3127,6 +3127,22 @@ class ExternalRegistryConfig:
         default="main",
         metadata=_meta("Branch", "Git branch to read from."),
     )
+    trust: str = field(
+        default="index",
+        metadata=_meta(
+            "Trust",
+            "How much a registry's INDEX is trusted, which selects the credential "
+            "posture for cloning the apps it lists. 'index' (the default) treats the "
+            "index as untrusted content: every app it lists is cloned credential-free "
+            "so a hostile entry cannot read a private sibling repo with this machine's "
+            "git identity. 'owner' means the index is under change control the build "
+            "owns, so its apps may clone with this machine's credentials. Setting it "
+            "HERE has no effect: the trusted tier is honoured only for registries the "
+            "build supplies, because this file is agent-writable and a tier read from "
+            "it would not be your assertion. A value other than 'index' on a "
+            "configured registry is read as 'index'.",
+        ),
+    )
 
 
 @dataclass
@@ -6617,6 +6633,13 @@ class KiroCrewConfig:
                     # retargeting it to ``main`` on upgrade would break any
                     # registry whose content still lives on ``mainline``.
                     branch=str(r.get("branch", "mainline")),
+                    # A credential-posture decision, so it is read back verbatim
+                    # and validated downstream rather than here: an unrecognised
+                    # value must resolve to the restrictive tier, which
+                    # ``registry._registry_trust_tier`` does. Absent -> "index",
+                    # so a config written before the field existed keeps the
+                    # credential-free posture it had.
+                    trust=str(r.get("trust", "index")),
                 )
                 for r in (data.get("registries") or [])
                 if isinstance(r, dict) and r.get("repo")

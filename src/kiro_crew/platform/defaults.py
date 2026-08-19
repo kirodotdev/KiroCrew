@@ -123,7 +123,13 @@ class DefaultCredentialPolicy:
 
 
 class DefaultSlackEnterpriseGate:
-    """Default-open gate delegating to ``slack/enterprise.py``."""
+    """Default-open gate delegating to ``slack/enterprise.py``.
+
+    ``extra_ids`` is accepted for protocol compatibility and IGNORED: the module
+    re-reads ``slack.allowed_enterprise_ids`` itself, which is the same key the
+    callers derive this value from, so a passed set is at best a duplicate and
+    at worst an older copy naming ids the operator removed.
+    """
 
     def validate_enterprise(self, bot_token: str, *, extra_ids: "set[str] | None" = None) -> bool:
         # deferred: defaults.py loads at platform-init (bootstrap imports it);
@@ -353,6 +359,12 @@ class DefaultAppsLoader:
     def registry_rows(self) -> List[Dict[str, Any]]:
         # The public edition bundles no extra App-Store rows beyond
         # apps/app-registry.json. A companion returns its internal catalog rows.
+        return []
+
+    def default_registries(self) -> List[Dict[str, Any]]:
+        # The public edition pins no external registry: the only registries are
+        # the ones the operator typed into config.registries. A companion returns
+        # its organisation's official registry.
         return []
 
 

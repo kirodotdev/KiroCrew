@@ -848,6 +848,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # rather than an egress boundary — the slot title's user-visible surface
         # is already covered by the registered dashboard sinks.
         "apps/builtins/issue_radar/backend/crew_runtime.py",
+        # Log/audit hygiene, not an egress boundary: strips ``user:password@`` from
+        # an external registry's clone URL before it reaches the SEL credential-grant
+        # record and the warning logs. The URL is index-supplied, so it can carry a
+        # token; scrubbing it keeps the secret out of a persisted audit trail. It is
+        # not an output bound for a human or a third party, and the value that DOES
+        # reach a dashboard client (``GET /api/apps/registries``) is protected by
+        # refusing a credential-bearing repo outright rather than by redacting it.
+        "apps/registry.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",

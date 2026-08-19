@@ -5919,7 +5919,11 @@
       "these_hosts": "これらのホスト",
       "this_host": "このホスト",
       "you_are_now_trusting_apps_from": "以下からのアプリを信頼するようになりました",
-      "registry_url_install_public_repos_only": "レジストリ URL からのインストールはパブリックリポジトリでのみ動作します。プライベートリポジトリの場合は、まずローカルにクローンしてから、下の Install from Path を使用してください。"
+      "registry_url_install_public_repos_only": "レジストリ URL からのインストールはパブリックリポジトリでのみ動作します。プライベートリポジトリの場合は、まずローカルにクローンしてから、下の Install from Path を使用してください。",
+      "name_is_taken_by_a_build_pinned_registry": "「{{name}}」はこのビルドで提供されるレジストリの名前です。別の名前を選んでください",
+      "included_with_this_installation": "このインストールに含まれています",
+      "trusted_source": "信頼されたソース",
+      "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。"
     },
     "remoteArtifactCard": {
       "clone": "クローン",
@@ -7644,7 +7648,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "固定したプロンプトを折りたたむ",
         "expand_pinned_prompt": "固定したプロンプトを展開",
-        "jump_to_this_prompt": "このプロンプトへ移動"
+        "jump_to_this_turn": "このターンへ移動"
       },
       "recoveryCard": {
         "backend_error_continuing": "バックエンドエラー・継続を自動送信しました",

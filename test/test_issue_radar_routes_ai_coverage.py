@@ -34,7 +34,9 @@ touched, and nothing is written outside the per-test ``KIROCREW_HOME`` that
 """
 import contextlib
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -1152,6 +1154,214 @@ class TestBuildRecoPrompt(unittest.TestCase):
 
     def test_an_empty_sample_is_named(self):
         self.assertIn("(no open issues)", routes._build_reco_prompt("o", "r", LABELS, []))
+
+
+# ── AI output-language localization (#4290) ──────────────────────────────────
+
+
+class TestAiPromptLocalization(unittest.TestCase):
+    """The three one-shot prompts localize their PROSE to the dashboard language.
+
+    Two invariants: an EMPTY tag (the follow-the-browser sentinel) leaves each
+    prompt BYTE-IDENTICAL to what unconfigured installs have always sent, and a
+    non-empty tag appends the directive AFTER the fenced untrusted block, so
+    issue/PR text cannot restate it as data."""
+
+    DETAIL = {"number": 7, "title": "crash", "body": "boom", "labels": []}
+    PR_DETAIL = {"number": 12, "title": "t", "body": "b", "state": "open"}
+    RECO_ISSUES = [{"number": 7, "title": "t", "body": "b", "labels": ["bug"]}]
+
+    def test_an_empty_tag_leaves_the_issue_prompt_byte_identical(self):
+        legacy = routes._build_ai_prompt("o", "r", self.DETAIL, LABELS, [])
+        self.assertEqual(
+            routes._build_ai_prompt("o", "r", self.DETAIL, LABELS, [], ui_language=""),
+            legacy,
+        )
+
+    def test_a_tag_appends_the_language_line_to_the_issue_prompt(self):
+        legacy = routes._build_ai_prompt("o", "r", self.DETAIL, LABELS, [])
+        got = routes._build_ai_prompt("o", "r", self.DETAIL, LABELS, [], ui_language="ko")
+        # Append-only: the fenced block and every instruction above it is
+        # untouched, and the directive sits after the closing fence.
+        self.assertTrue(got.startswith(legacy))
+        tail = got[len(legacy):]
+        self.assertIn("BCP-47 tag ko", tail)
+        self.assertIn('"summary"', tail)
+        self.assertIn('"reason"', tail)
+        self.assertIn("label names", tail)
+
+    def test_an_empty_tag_leaves_the_pr_prompt_byte_identical(self):
+        legacy = routes._build_pr_ai_prompt("o", "r", self.PR_DETAIL, [], [])
+        self.assertEqual(
+            routes._build_pr_ai_prompt("o", "r", self.PR_DETAIL, [], [], ui_language=""),
+            legacy,
+        )
+
+    def test_a_tag_appends_the_language_line_to_the_pr_prompt(self):
+        legacy = routes._build_pr_ai_prompt("o", "r", self.PR_DETAIL, [], [])
+        got = routes._build_pr_ai_prompt("o", "r", self.PR_DETAIL, [], [], ui_language="ja")
+        self.assertTrue(got.startswith(legacy))
+        self.assertIn("BCP-47 tag ja", got[len(legacy):])
+
+    def test_an_empty_tag_leaves_the_reco_prompt_byte_identical(self):
+        legacy = routes._build_reco_prompt("o", "r", LABELS, self.RECO_ISSUES)
+        self.assertEqual(
+            routes._build_reco_prompt("o", "r", LABELS, self.RECO_ISSUES, ui_language=""),
+            legacy,
+        )
+
+    def test_a_tag_localizes_only_the_reco_rationale(self):
+        legacy = routes._build_reco_prompt("o", "r", LABELS, self.RECO_ISSUES)
+        got = routes._build_reco_prompt("o", "r", LABELS, self.RECO_ISSUES, ui_language="de")
+        self.assertTrue(got.startswith(legacy))
+        tail = got[len(legacy):]
+        self.assertIn("BCP-47 tag de", tail)
+        self.assertIn('"rationale"', tail)
+        # name/description become repo content via /labels/create when a
+        # proposal is applied, so the directive must explicitly exempt them.
+        self.assertIn('"name" and "description"', tail)
+
+
+class TestPrAiFingerprintLanguage(unittest.TestCase):
+    """The dashboard language is a summary INPUT, so it must key the cache."""
+
+    DETAIL = {"number": 12, "state": "open", "head_sha": "a" * 40}
+
+    def test_an_empty_tag_keeps_the_legacy_digest(self):
+        # No one-time invalidation of every cached summary on upgrade.
+        legacy = routes._pr_ai_fingerprint(self.DETAIL, [], [])
+        self.assertEqual(routes._pr_ai_fingerprint(self.DETAIL, [], [], ui_language=""), legacy)
+
+    def test_a_language_switch_changes_the_digest(self):
+        base = routes._pr_ai_fingerprint(self.DETAIL, [], [])
+        ko = routes._pr_ai_fingerprint(self.DETAIL, [], [], ui_language="ko")
+        ja = routes._pr_ai_fingerprint(self.DETAIL, [], [], ui_language="ja")
+        self.assertNotEqual(ko, base)
+        self.assertNotEqual(ko, ja)
+
+
+class TestIssueAiCacheLanguageRoundTrip(unittest.TestCase):
+    """The REAL store must persist and return the tag — a writer that drops it
+    would make every configured-language open a cache miss (one model call per
+    open), invisible to the route tests because they mock the store."""
+
+    def test_the_tag_survives_a_real_write_read_round_trip(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store.write_issue_ai_cache(
+                "o", "r", 7,
+                {"summary": "s", "suggested_labels": [], "ui_language": "ko"},
+                root=root,
+            )
+            got = store.read_issue_ai_cache("o", "r", 7, root=root)
+        assert got is not None
+        self.assertEqual(got["ui_language"], "ko")
+        self.assertEqual(got["summary"], "s")
+
+    def test_a_legacy_entry_without_the_field_reads_as_the_empty_sentinel(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = store.issue_ai_cache_path("o", "r", 7, root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"summary": "old", "suggested_labels": []}), encoding="utf-8"
+            )
+            got = store.read_issue_ai_cache("o", "r", 7, root=root)
+        assert got is not None
+        # "" matches the unconfigured sentinel, so legacy caches stay servable.
+        self.assertEqual(got["ui_language"], "")
+
+
+class TestAiLanguageWiring(unittest.IsolatedAsyncioTestCase):
+    """Each compute path threads the RESOLVED tag into the prompt it sends."""
+
+    DETAIL = {"number": 7, "title": "crash", "body": "boom", "labels": []}
+
+    async def test_compute_issue_ai_threads_the_language_it_was_given(self):
+        with _oneshot('{"summary": "s"}') as model:
+            await routes._compute_issue_ai(
+                _get("issue-ai"), "o", "r", 7, self.DETAIL, LABELS, ui_language="ko"
+            )
+        prompt = model.call_args[0][2]
+        self.assertIn("BCP-47 tag ko", prompt)
+
+    async def test_issue_ai_handler_invalidates_a_cache_entry_from_another_language(self):
+        # An English summary cached before the user switched the dashboard to ko
+        # must NOT be served — it regenerates under the new tag, and the fresh
+        # write records the tag so the next open is a plain hit.
+        cached = {"summary": "old english", "suggested_labels": [], "ui_language": ""}
+        compute = AsyncMock(return_value={"summary": "fresh", "suggested_labels": []})
+        with _connected(), \
+                mock.patch.object(routes, "_ui_language", return_value="ko"), \
+                mock.patch.object(store, "read_issue_ai_cache", return_value=cached), \
+                mock.patch.object(
+                    routes, "_load_detail_for_ai", new=AsyncMock(return_value={"number": 7})
+                ), \
+                mock.patch.object(routes, "_load_labels_for_ai", new=AsyncMock(return_value=LABELS)), \
+                mock.patch.object(routes, "_compute_issue_ai", new=compute), \
+                mock.patch.object(store, "write_issue_ai_cache") as write:
+            response = await routes._handle_issue_ai(
+                _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
+            )
+        payload = _body(response)
+        self.assertFalse(payload["from_cache"])
+        self.assertEqual(payload["summary"], "fresh")
+        self.assertEqual(compute.call_args.kwargs["ui_language"], "ko")
+        # The stored payload carries the tag it was generated under.
+        self.assertEqual(write.call_args[0][3]["ui_language"], "ko")
+
+    async def test_issue_ai_handler_serves_a_cache_entry_matching_the_language(self):
+        cached = {"summary": "cached ko", "suggested_labels": [], "ui_language": "ko"}
+        with _connected(), \
+                mock.patch.object(routes, "_ui_language", return_value="ko"), \
+                mock.patch.object(store, "read_issue_ai_cache", return_value=cached), \
+                _oneshot() as model:
+            response = await routes._handle_issue_ai(
+                _get("issue-ai", {"owner": "o", "repo": "r", "number": "7"})
+            )
+        payload = _body(response)
+        self.assertTrue(payload["from_cache"])
+        self.assertEqual(payload["summary"], "cached ko")
+        model.assert_not_called()
+
+    async def test_compute_pr_ai_threads_the_language_it_was_given(self):
+        with _oneshot('{"summary": "s"}') as model:
+            await routes._compute_pr_ai(
+                _get("pull-ai"), "o", "r", 12,
+                {"number": 12, "state": "open"}, [], [], ui_language="ja",
+            )
+        self.assertIn("BCP-47 tag ja", model.call_args[0][2])
+
+    async def test_pull_ai_handler_feeds_one_resolved_tag_to_prompt_and_cache_key(self):
+        # The handler resolves the tag ONCE and hands it to both the fingerprint
+        # (cache key) and the model prompt — dropping either wire regresses:
+        # prompt-only keeps serving stale-language cache, key-only re-keys the
+        # cache but keeps generating English.
+        detail = {"number": 12, "title": "t", "body": "b", "state": "open", "head_sha": "a" * 40}
+        with _connected(), \
+                mock.patch.object(routes, "_ui_language", return_value="ko"), \
+                mock.patch.object(
+                    store, "read_pr_detail_cache",
+                    return_value={"detail": detail, "timeline": [], "checks": []},
+                ), \
+                mock.patch.object(store, "read_pr_ai_cache", return_value=None) as read_ai, \
+                mock.patch.object(store, "write_pr_ai_cache"), \
+                _oneshot('{"summary": "s"}') as model:
+            request = _get("pull-ai", {"owner": "o", "repo": "r", "number": "12"})
+            response = await routes._handle_pull_ai(request)
+        self.assertEqual(response.status, 200)
+        self.assertIn("BCP-47 tag ko", model.call_args[0][2])
+        expected = routes._pr_ai_fingerprint(detail, [], [], ui_language="ko")
+        self.assertEqual(read_ai.call_args.kwargs["fingerprint"], expected)
+
+    async def test_compute_label_recommendations_threads_the_dashboard_language(self):
+        state = _sessions()
+        request = _json_request("POST", "recommendations", {"owner": "o", "repo": "r"}, state=state)
+        with mock.patch.object(routes, "_ui_language", return_value="de"), \
+                _stream('{"recommendations": []}') as stream:
+            await routes._compute_label_recommendations(request, "o", "r", LABELS, [])
+        prompt = stream.call_args[0][1]
+        self.assertIn("BCP-47 tag de", prompt)
 
 
 class TestGetRecommendationsRoute(unittest.IsolatedAsyncioTestCase):

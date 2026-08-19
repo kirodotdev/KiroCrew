@@ -367,4 +367,141 @@ describe('RegistryManager', () => {
       expect(screen.getByText('Sync Apps')).toBeInTheDocument()
     })
   })
+
+  describe('build-pinned registries', () => {
+    const PINNED = { name: 'Official', repo: 'https://forge.example.com/org/registry.git', branch: 'main', trust: 'owner' }
+
+    it('renders a pinned registry with no remove control', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Official')).toBeInTheDocument())
+      expect(screen.getByText('Included with this installation')).toBeInTheDocument()
+      // A remove button would appear to work and be undone by the next read.
+      expect(screen.queryByLabelText('Remove Official registry')).toBeNull()
+    })
+
+    it('does not show the empty state when only a pinned registry exists', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Official')).toBeInTheDocument())
+      expect(screen.queryByText('No external registries')).toBeNull()
+    })
+
+    it('refuses to add a repo a pinned registry already owns', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), { target: { value: PINNED.repo } })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(screen.getByText(/already exists/)).toBeInTheDocument()
+      })
+      expect(mockUpdateRegistries).not.toHaveBeenCalled()
+    })
+
+    it('never sends a pinned registry back on the replace-all PUT', async () => {
+      // The PUT writes the operator's own config. Including a pinned row would
+      // persist it there, where a later build change could no longer move it.
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [], newlyTrustedHosts: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'https://forge.example.com/org/other.git' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: '', repo: 'https://forge.example.com/org/other.git', branch: '' },
+        ])
+      })
+    })
+
+    it('does not invent a trust tier for an operator row on a replace-all PUT', async () => {
+      // The backend resolves the trusted tier only from what the build supplies,
+      // because config.json is agent-writable — so an operator row always reads
+      // `index` and there is no tier for this round-trip to preserve. What must
+      // hold is that adding a row does not invent one.
+      mockListRegistries.mockResolvedValue({
+        registries: [{ name: 'Mine', repo: 'https://forge.example.com/org/mine.git', branch: 'main', trust: 'index' }],
+      })
+      mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [], newlyTrustedHosts: [] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'https://forge.example.com/org/second.git' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(mockUpdateRegistries).toHaveBeenCalledWith([
+          { name: 'Mine', repo: 'https://forge.example.com/org/mine.git', branch: 'main', trust: 'index' },
+          { name: '', repo: 'https://forge.example.com/org/second.git', branch: '' },
+        ])
+      })
+    })
+
+    it('refuses a NAME a pinned registry already owns', async () => {
+      // The backend merge drops a same-named operator row, so accepting it here
+      // would render a row whose apps never appear and whose refresh 404s.
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => screen.getByText('Add Registry'))
+      fireEvent.click(screen.getByText('Add Registry'))
+      fireEvent.change(screen.getByPlaceholderText(/Identity Services/i), { target: { value: 'Official' } })
+      fireEvent.change(screen.getByPlaceholderText(/app-registry/), {
+        target: { value: 'https://forge.example.com/org/mine.git' },
+      })
+      const buttons = screen.getAllByText('Add Registry')
+      fireEvent.click(buttons[buttons.length - 1])
+      await waitFor(() => {
+        expect(screen.getByText(/name of a registry this build provides/)).toBeInTheDocument()
+      })
+      expect(mockUpdateRegistries).not.toHaveBeenCalled()
+    })
+
+    it('keeps Sync Apps reachable when only pinned rows exist', async () => {
+      // A deployment whose users never add their own registry is exactly this
+      // feature's audience; gating Sync on operator rows hid it from them.
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Official')).toBeInTheDocument())
+      expect(screen.getByLabelText('Sync registry apps')).toBeInTheDocument()
+    })
+
+    it('offers the read-only open-repository control on a pinned row', async () => {
+      mockListRegistries.mockResolvedValue({ registries: [], pinned: [PINNED] })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Official')).toBeInTheDocument())
+      expect(
+        screen.getByLabelText(`Open ${PINNED.repo} repository`),
+      ).toBeInTheDocument()
+    })
+    it('gives the owner trust tier a text counterpart, not just an icon', async () => {
+      // The owner tier is the state that clones with the operator's git
+      // credentials. An icon swap alone is undecodable and silent to a screen
+      // reader, so the state must also be readable.
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [{ ...PINNED, trust: 'owner' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Trusted source')).toBeInTheDocument())
+    })
+
+    it('does not claim trusted source for the default index tier', async () => {
+      mockListRegistries.mockResolvedValue({
+        registries: [],
+        pinned: [{ ...PINNED, trust: 'index' }],
+      })
+      render(<RegistryManager />, { wrapper: Wrapper })
+      await waitFor(() => expect(screen.getByText('Official')).toBeInTheDocument())
+      expect(screen.queryByText('Trusted source')).toBeNull()
+    })
+  })
 })

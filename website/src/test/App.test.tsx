@@ -1133,6 +1133,55 @@ describe('TopbarMetrics widget', () => {
     localStorage.removeItem('mc-topbar-metrics')
   })
 
+  it('renders "MEM —" instead of crashing when mem_used_gb is missing but mem_total_gb is present', async () => {
+    const { api } = await import('../api/client')
+    const sysMock = vi.mocked(api.system)
+    // The shape that crashed the root app-shell boundary with
+    // "Cannot read properties of undefined (reading 'toFixed')":
+    // `_collect_system_metrics` seeds the frame from the CACHED static system
+    // info (which carries mem_total_gb) and then computes mem_used_gb/
+    // mem_free_gb under `try/except: pass`, so a failed memory probe yields a
+    // total with no used. A `memTotal > 0` gate admits that frame and then
+    // formats `undefined.toFixed(1)`.
+    sysMock.mockResolvedValueOnce({ mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    expect(await screen.findByText(/MEM —/)).toBeInTheDocument()
+    // The rest of the same frame still renders — one absent probe must not
+    // blank the whole capsule, let alone unmount the app.
+    expect(screen.getByText(/CPU 25%/)).toBeInTheDocument()
+    expect(screen.getByText(/DSK 40%/)).toBeInTheDocument()
+    sysMock.mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
+    localStorage.removeItem('mc-topbar-metrics')
+  })
+
+  it('renders "DSK —" instead of NaN when disk_free_gb is missing but disk_total_gb is present', async () => {
+    const { api } = await import('../api/client')
+    const sysMock = vi.mocked(api.system)
+    sysMock.mockResolvedValueOnce({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0 } as never)
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    expect(await screen.findByText(/DSK —/)).toBeInTheDocument()
+    expect(screen.getByText(/MEM 25%/)).toBeInTheDocument()
+    sysMock.mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
+    localStorage.removeItem('mc-topbar-metrics')
+  })
+
+  it('renders every readout as "—" instead of crashing when the frame carries non-finite numbers', async () => {
+    const { api } = await import('../api/client')
+    const sysMock = vi.mocked(api.system)
+    // NaN/Infinity reach the frame when a probe divides by an unmeasured total;
+    // they must take the placeholder path, not render "NaN%".
+    sysMock.mockResolvedValueOnce({ mem_used_gb: NaN, mem_total_gb: 16.0, cpu_pct: NaN, disk_total_gb: Infinity, disk_free_gb: 60.0 } as never)
+    localStorage.setItem('mc-topbar-metrics', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    expect(await screen.findByText(/CPU —/)).toBeInTheDocument()
+    expect(screen.getByText(/MEM —/)).toBeInTheDocument()
+    expect(screen.getByText(/DSK —/)).toBeInTheDocument()
+    sysMock.mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
+    localStorage.removeItem('mc-topbar-metrics')
+  })
+
   it('renders "CPU —" instead of crashing when cpu_pct is undefined', async () => {
     const { api } = await import('../api/client')
     const sysMock = vi.mocked(api.system)

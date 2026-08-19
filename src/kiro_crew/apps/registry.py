@@ -64,7 +64,7 @@ except ImportError:
     _sel_fn = None  # type: ignore[assignment]
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import config_dir
 from kiro_crew.platform import PlatformCompositionError, current_context
 
 logger = logging.getLogger(__name__)
@@ -305,25 +305,378 @@ def _entry_git_url(entry: dict[str, Any]) -> str:
     return raw.strip()
 
 
-def _sel_credential_grant(operation: str, git_url: str) -> None:
-    """SEL-audit an owner-designated credential grant (best-effort).
+#: Trust tiers an ``ExternalRegistryConfig.trust`` value may name.
+#
+# ``index`` is the historical (and default) posture: the registry's index is
+# untrusted content, so every app it lists clones credential-free. ``owner``
+# is the operator's assertion that the index itself is under change control
+# they own, which lets its apps clone with the machine's git identity.
+#
+# Anything not in this set resolves to ``_TRUST_INDEX`` — a typo, or a tier a
+# future core adds and this one does not know, must fail toward the restrictive
+# posture rather than the credentialed one.
+_TRUST_INDEX = "index"
+_TRUST_OWNER = "owner"
+_REGISTRY_TRUST_TIERS: frozenset[str] = frozenset({_TRUST_INDEX, _TRUST_OWNER})
 
-    The same-repo carve-out escalates a clone from anonymous+strict to
-    owner credentials + context sandbox. That is a security-relevant
-    permission decision and must leave an audit record, mirroring the
-    existing ``fetch_external_registry`` SEL events.
+
+def _registry_identity_key(name_or_repo: str) -> str:
+    """The key two registries collide on: the cache file they would share.
+
+    Not the raw name. A registry's index cache is a FILE, and the file is what is
+    actually contended — so the collision rule has to be derived from the path, not
+    from the string. Two consequences that the raw name misses:
+
+    * On a case-insensitive filesystem (Windows, default macOS) ``Official`` and
+      ``official`` are one file, so they collide there and not on Linux. Folding
+      case makes the answer the same everywhere: a configuration that would corrupt
+      on one platform is refused on all of them, rather than working until someone
+      runs it on a laptop.
+    * ``_external_registry_cache_path`` slugifies and hash-disambiguates a name
+      carrying unusual characters, so the mapping from name to file is not the
+      identity function. Asking the path keeps this rule correct if that
+      derivation ever changes.
+    """
+    return _external_registry_cache_path(name_or_repo).name.casefold()
+
+
+def _is_supported_registry_transport(repo: str) -> bool:
+    """Whether *repo* is a form a registry index may legitimately be fetched from.
+
+    Accepts an https URL, an ssh/scp remote, or a bare legacy name — and nothing
+    else, so plaintext ``http://``, ``git://`` and ``ext::`` never reach a clone.
+    The index this fetches becomes install coordinates, so an unauthenticated
+    transport lets anything on the network path substitute app code.
+
+    **A credential embedded in the URL is refused outright**, not redacted. A
+    pinned repo travels further than a log line: the fetch uses it, ``GET
+    /api/apps/registries`` returns it to dashboard clients, and the SEL trail
+    records it. Redaction covers the sinks this module controls and would leave
+    the others, so the value simply must not carry a secret — an edition should
+    rely on the ambient git credentials the clone already has. ``https://`` refuses
+    ANY userinfo, since a bare token is commonly the whole of it; ssh/scp refuse a
+    ``user:password@`` form while allowing the conventional ``git@host``, which is
+    a username, not a secret.
+
+    Deliberately a mirror of ``routes._is_safe_repo_identifier`` rather than an
+    import: ``routes`` imports this module, so the dependency can only run one
+    way. Keep the two in step — both gate the same decision from opposite ends
+    (operator-typed rows there, edition-pinned rows here).
+    """
+    repo = (repo or "").strip()
+    if not repo:
+        return False
+    if ".." in repo or any(c in repo for c in " \t\n\r;|&$`<>()*?!\\\"'"):
+        return False
+    if re.match(r"^[A-Za-z0-9_\-]+$", repo):  # bare legacy name
+        return True
+    if repo.startswith("https://"):
+        authority = repo[len("https://") :].split("/", 1)[0]
+        return "@" not in authority
+    if _is_ssh_git_url(repo):
+        # Reject only a password-bearing userinfo; ``git@host`` is a username.
+        # Userinfo is split off BEFORE the port: stripping at the first colon
+        # would cut inside ``user:token@host`` and hide the very thing being
+        # looked for.
+        scheme, sep, rest = repo.partition("://")
+        hostpart = (rest if sep else repo).split("/", 1)[0]
+        userinfo = hostpart.rsplit("@", 1)[0] if "@" in hostpart else ""
+        return ":" not in userinfo
+    return False
+
+
+def _pinned_registries() -> list[Any]:
+    """The edition's default registries, materialised and validated.
+
+    Rows the edition supplies are dicts (see ``AppsLoader.default_registries``);
+    they are materialised into ``ExternalRegistryConfig`` here so every call site
+    sees one attribute shape. A malformed row is dropped with a warning rather
+    than raised on: this list feeds security gates
+    (:func:`is_clone_host_trusted`), and those must keep answering.
+    """
+    try:
+        edition_rows = current_context().apps_loader.default_registries()
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("edition default_registries() unavailable", exc_info=True)
+        return []
+
+    if not edition_rows:
+        return []
+    if isinstance(edition_rows, (str, bytes, dict)) or not hasattr(edition_rows, "__iter__"):
+        # A companion returning a scalar (or a mapping, or a bare string) is a
+        # companion bug, but this list feeds `is_clone_host_trusted` — the SSRF
+        # gate must answer, not raise, so the malformed value is dropped whole.
+        logger.warning(
+            "Ignoring a malformed default_registries() return of type %s",
+            type(edition_rows).__name__,
+        )
+        return []
+
+    from kiro_crew.config.loader import ExternalRegistryConfig
+
+    pinned: list[Any] = []
+    for row in edition_rows:
+        if not isinstance(row, dict):
+            logger.warning("Ignoring a non-object edition registry row: %s", type(row).__name__)
+            continue
+        repo = row.get("repo")
+        if not isinstance(repo, str) or not repo.strip():
+            logger.warning("Ignoring an edition registry row with no repo URL: %r", row.get("name"))
+            continue
+        repo = repo.strip()
+        # An edition is trusted code, but a MISCONFIGURED one must not be able to
+        # downgrade the transport that carries installable app code: this index is
+        # cloned and its rows become install coordinates, so a plaintext fetch lets
+        # anything on the path replace them. `PUT /api/apps/registries` already
+        # refuses a non-https/ssh repo, and a pinned row must not be the weaker
+        # door. Mirrored rather than imported because `routes` imports this module.
+        if not _is_supported_registry_transport(repo):
+            logger.error(
+                "Ignoring edition registry %r: %s is not an https/ssh git URL or a bare name",
+                row.get("name"),
+                _redact_url_userinfo(repo),
+            )
+            continue
+        name = row.get("name")
+        branch = row.get("branch")
+        trust = row.get("trust")
+        pinned.append(
+            ExternalRegistryConfig(
+                name=name.strip() if isinstance(name, str) else "",
+                repo=repo,
+                branch=branch if isinstance(branch, str) and branch else "main",
+                trust=trust if isinstance(trust, str) and trust else _TRUST_INDEX,
+            )
+        )
+    # Two pinned rows sharing an effective key would fetch into the SAME
+    # name-keyed cache file, so each refresh would overwrite the other and later
+    # reads would list — and install — entries from whichever repository wrote
+    # last. Drop ALL rows for a duplicated key rather than keeping the first: an
+    # edition shipping two registries under one name has a bug, and picking a
+    # winner would hide it behind intermittently wrong app listings.
+    counts: dict[str, int] = {}
+    for reg in pinned:
+        key = _registry_identity_key(reg.name or reg.repo)
+        counts[key] = counts.get(key, 0) + 1
+    duplicated = {key for key, n in counts.items() if n > 1}
+    if duplicated:
+        for key in sorted(duplicated):
+            logger.error(
+                "Ignoring %d edition registries that would share the index cache file %r — "
+                "they would overwrite each other's entries.",
+                counts[key],
+                key,
+            )
+        pinned = [
+            reg for reg in pinned if _registry_identity_key(reg.name or reg.repo) not in duplicated
+        ]
+    return pinned
+
+
+def _effective_registries() -> list[Any]:
+    """The external registries in force: edition defaults + operator config.
+
+    Every consumer of the registry list goes through here, so an edition-pinned
+    registry is visible to index fetch/refresh, the trusted-host allowlist, row
+    lookup, install, and the blob-proxy allowlist alike. A seam wired into only
+    some of those would surface an app the install path then refuses — the
+    half-implemented-mechanism failure mode.
+
+    Merge rule: an **edition default wins** on a ``name`` collision, and when the
+    two rows name DIFFERENT repositories **neither is served**. The second half is
+    not fastidiousness: the on-disk index cache is keyed by registry NAME, so the
+    displaced row's cache would be read under the winning row's identity and every
+    reader stamps ``_registry`` from the registry it asked for — apps the pinned
+    repository does not list, attributed to it and installable under it. Refusing
+    the ambiguous name makes that a visible, diagnosable state instead. The
+    credential path is separately safe (``_owner_tier_confirmed`` re-reads the
+    real index), so this is about provenance, not escalation.
+
+    Same name AND same repo is not a conflict — the pinned row simply supersedes
+    an operator row that already agreed with it, and the shared cache is correct.
+
+    Operators can add registries freely; they just cannot silently repoint one the
+    edition pinned. ``PUT /api/apps/registries`` refuses to create such a
+    collision, so the case that survives here is a ``config.json`` that already
+    used the name before the build pinned it.
+
+    Edition rows come first, which is also the lookup precedence
+    :func:`_registry_app_candidates` documents, so a pinned registry is the first
+    row consulted for a same-named app. A config-load failure degrades to the
+    pinned rows alone rather than raising — the security gates must keep
+    answering.
+    """
+    pinned = _pinned_registries()
+    # Resolved at call time from the loader module (not the module-level import)
+    # so this stays the single seam callers and tests already patch for the
+    # config boundary — see test_catalog_inventory's registry-candidate tests.
+    from kiro_crew.config.loader import (
+        KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
+    )
+
+    try:
+        configured = list(KiroCrewConfig.load().registries or [])
+    except Exception as exc:  # config load is best-effort for the security gates
+        logger.debug("Could not load config for the registry list: %s", exc)
+        configured = []
+
+    if not pinned:
+        return configured
+
+    pinned_by_key = {_registry_identity_key(reg.name or reg.repo): reg for reg in pinned}
+    contested: set[str] = set()
+    kept_configured = []
+    for reg in configured:
+        key = _registry_identity_key(reg.name or reg.repo)
+        rival = pinned_by_key.get(key)
+        if rival is None:
+            kept_configured.append(reg)
+            continue
+        if (rival.repo, rival.branch) != (reg.repo, reg.branch):
+            contested.add(key)
+            logger.warning(
+                "Registry name %r is claimed by this build (%s@%s) and by your config (%s@%s); "
+                "serving neither until the names differ, because the index cache is keyed "
+                "by name and would otherwise be read under the wrong registry's identity.",
+                key,
+                _redact_url_userinfo(rival.repo),
+                rival.branch,
+                _redact_url_userinfo(reg.repo),
+                reg.branch,
+            )
+        # Same repo AND same branch: the pinned row supersedes it, nothing is lost.
+
+    return [
+        reg for reg in pinned if _registry_identity_key(reg.name or reg.repo) not in contested
+    ] + kept_configured
+
+
+def _registry_trust_tier(registry_name: str) -> str:
+    """The trust tier in force for the registry identified by *registry_name*.
+
+    **Only a BUILD-PINNED registry can carry ``owner``.** A row in
+    ``config.json`` is read as ``index`` no matter what it declares, because
+    ``config.json`` is agent-writable — ``security.py`` says so in as many words,
+    with the check inline: ``is_sensitive_bash_command("echo x > …/config.json")``
+    is ``None``. A tier read from there would therefore not be an operator's
+    assertion at all; a prompt-injected shell could mint ``owner``, and the same
+    write also adds its chosen host to ``_configured_registry_hosts()`` and lets
+    it control the index that :func:`_owner_tier_confirmed` re-fetches. Every
+    layer that decision passes through would be one the same write had already
+    satisfied. ``default_registries()`` ships in the wheel instead, so an
+    ``owner`` tier is a claim the build makes and the agent cannot forge.
+
+    *registry_name* is the ``_registry`` tag an index entry carries, which is the
+    registry's ``name`` or (when unnamed) its ``repo``. Returns ``_TRUST_INDEX``
+    for an unknown registry, an unrecognised tier, or any lookup failure — the
+    caller uses this to decide whether to offer credentials, so every ambiguous
+    answer must be the credential-free one.
+    """
+    if not registry_name:
+        return _TRUST_INDEX
+    try:
+        # Pinned AND in force. `_pinned_registries()` alone is not enough: a name
+        # contested between a pinned row and a config row is served by NEITHER
+        # (see `_effective_registries`), and reading the tier off the pinned list
+        # would keep granting `owner` for a registry whose apps are not being
+        # listed at all. So the row must survive the merge and be one the build
+        # pinned — config rows are read as `index` regardless.
+        pinned_keys = {_registry_identity_key(reg.name or reg.repo) for reg in _pinned_registries()}
+        wanted = _registry_identity_key(registry_name)
+        if wanted not in pinned_keys:
+            return _TRUST_INDEX
+        for reg in _effective_registries():
+            if _registry_identity_key(reg.name or reg.repo) == wanted:
+                tier = getattr(reg, "trust", _TRUST_INDEX)
+                if isinstance(tier, str) and tier in _REGISTRY_TRUST_TIERS:
+                    return tier
+                if tier != _TRUST_INDEX:
+                    logger.warning(
+                        "Registry %r declares unknown trust %r — reading it as %r",
+                        registry_name,
+                        tier,
+                        _TRUST_INDEX,
+                    )
+                return _TRUST_INDEX
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("trust-tier lookup failed for %r", registry_name, exc_info=True)
+    return _TRUST_INDEX
+
+
+def _redact_url_userinfo(url: str) -> str:
+    """Strip any ``user[:password]@`` from *url* before it reaches a log.
+
+    A clone URL is index-supplied and may embed credentials
+    (``https://user:token@host/path``). These URLs are written to the SEL audit
+    trail and to warnings, both of which persist and the former of which is
+    dashboard-readable, so the credential must not travel with them.
+
+    Userinfo is removed rather than the whole URL: a record whose purpose is
+    "credentials were offered to clone THIS" is worth little if it cannot say
+    which repository, and a bare host cannot distinguish two repos on one forge.
+    """
+    if not url:
+        return url
+    scheme, sep, rest = url.partition("://")
+    if sep:
+        head, slash, tail = rest.partition("/")
+        if "@" in head:
+            host = head.rsplit("@", 1)[1]
+            return f"{scheme}://[redacted]@{host}{slash}{tail}"
+        return url
+    # scp-style ``user@host:path`` carries no password, but the user is still an
+    # identity; normalise it the same way so both forms read alike in a log.
+    if "@" in url and ":" in url.split("@", 1)[1]:
+        return "[redacted]@" + url.split("@", 1)[1]
+    return url
+
+
+def _sel_credential_decision(
+    operation: str, git_url: str, *, granted: bool, reason: str = ""
+) -> None:
+    """SEL-audit a credential decision on a registry clone (best-effort).
+
+    Records the REFUSAL as well as the grant. A refusal is the more interesting
+    record of the two: `_owner_tier_confirmed` returns False when a fresh read of
+    the registry's index does not list the coordinates the local row claims, which
+    is exactly the signal that something tried to escalate and was stopped. Left
+    to a rotating ``logger.warning`` alone, the one event an incident responder
+    would want is the one that ages out.
+
+    Only a decision on an ATTEMPTED escalation is recorded. The ordinary
+    non-escalation answers — a registry at the default tier, a bundled entry, an
+    entry with no URL — are not decisions about credentials and would bury the
+    real ones under a record per browse.
     """
     if _sel_fn is None:
         return
+    detail = f"owner_designated_clone url={_redact_url_userinfo(git_url)}"
+    if reason:
+        detail = f"{detail} reason={reason}"
     try:
         _sel_fn().log_api_access(
             caller="registry",
             operation=operation,
-            outcome="granted",
-            resources=f"owner_designated_clone url={git_url}",
+            outcome="granted" if granted else "denied",
+            resources=detail,
         )
     except Exception as exc:
         logger.debug("SEL audit log failed for %s: %s", operation, exc)
+
+
+def _sel_credential_grant(operation: str, git_url: str) -> None:
+    """SEL-audit an owner-designated credential GRANT (best-effort).
+
+    The same-repo carve-out and the owner tier both escalate a clone from
+    anonymous+strict to owner credentials + context sandbox. That is a
+    security-relevant permission decision and must leave an audit record,
+    mirroring the existing ``fetch_external_registry`` SEL events.
+    """
+    _sel_credential_decision(operation, git_url, granted=True)
 
 
 def _is_owner_designated_repo(entry: dict[str, Any]) -> bool:
@@ -337,6 +690,13 @@ def _is_owner_designated_repo(entry: dict[str, Any]) -> bool:
     exactly that URL by adding the registry. Such entries may use owner
     credentials (``minimal_env`` + context sandbox mode) instead of the
     anonymous+strict posture.
+
+    This predicate is safe on the AUTOMATIC (browse/refresh) paths, which is why
+    it is the only escalation they get: it compares against a URL the operator
+    typed, so an entry read from the agent-writable index cache cannot widen it.
+    The registry ``trust`` tier is deliberately NOT consulted here — see
+    :func:`_owner_tier_confirmed`, which is install-only and re-confirms against a
+    fresh index.
 
     Security boundary:
       - Compares against the **config-stored** repo URL, never against
@@ -358,13 +718,152 @@ def _is_owner_designated_repo(entry: dict[str, Any]) -> bool:
     if not effective_url:
         return False
 
-    # Look up the owner-configured registry repo URL from config.
-    config = KiroCrewConfig.load()
-    for reg in config.registries or []:
+    for reg in _effective_registries():
         reg_key = reg.name or reg.repo
         if reg_key == registry_name:
             # Byte-identical comparison — the security contract.
             return effective_url == reg.repo
+    return False
+
+
+def _install_coordinates(entry: dict[str, Any]) -> tuple[str, str, str, str]:
+    """The four values that decide WHAT an install clones and runs.
+
+    Name, clone URL, branch and subdirectory together select the bytes and the
+    setup script. They are compared as one tuple by :func:`_owner_tier_confirmed`
+    so a credential escalation requires the fresh index to agree on all of them,
+    not merely on the repository.
+
+    Byte-identical string comparison, no normalization — the same rule as the
+    same-repo carve-out, for the same reason: any normalization here is a place
+    two spellings could be made to collide.
+    """
+    return (
+        str(entry.get("name", "") or ""),
+        _entry_git_url(entry),
+        str(entry.get("branch", "") or ""),
+        str(entry.get("subdirectory", "") or ""),
+    )
+
+
+async def _owner_tier_confirmed(entry: dict[str, Any]) -> bool:
+    """True when an ``owner``-tier registry FRESHLY confirms *entry*'s clone URL.
+
+    The credential escalation an organisation-wide registry needs cannot come from
+    :func:`_is_owner_designated_repo`: that compares against the index URL itself,
+    and a real catalog's apps live in other repos. But it also cannot simply
+    believe the row, because the row reaching this point was read from
+    ``_read_external_registry_cache`` — **agent-writable** content, as
+    :func:`_resolve_registry_row` says of the same file when it refuses to resolve
+    an install from it. Trusting the tier on a cached row would let anything able
+    to write that cache name an arbitrary repo on the operator's own forge and
+    have it cloned with the gateway's git identity: the confused-deputy read the
+    anonymous posture exists to prevent, merely relocated from the index to its
+    cache.
+
+    So the tier is honoured only after a FRESH fetch of that registry's index
+    confirms an entry whose clone URL is **byte-identical** to this one's. That
+    mirrors the official catalog, whose install coordinates likewise never come
+    from a cache. Consequences, all deliberate:
+
+    - **Install only.** Callers are the explicit per-app install action. The
+      automatic browse/refresh clones keep the credential-free posture
+      unconditionally, per :func:`anonymous_git_env`'s contract — they are not
+      gated by any owner action, and a network round trip per listed row would be
+      the wrong cost anyway.
+    - **Fail closed, never fall back.** An unreachable index, a parse failure, a
+      missing entry, or a URL that does not match exactly all return ``False``,
+      which leaves the anonymous posture in place. The cost is availability on a
+      path that already needs the network to clone.
+    - **The fresh index is authority for the URL only.** It cannot promote the
+      tier (that is read from operator/edition config) and it cannot widen the
+      host set (``is_clone_host_trusted`` still gates the clone).
+    - **Every install coordinate must match, not just the URL.** ``branch`` and
+      ``subdirectory`` reach the clone from the same cached row, and
+      :func:`_apply_configured_branch` forces the configured branch only onto
+      **same-repo** entries — an owner-tier registry's apps are cross-repo by
+      definition, so their branch declaration survives from the cache. Matching
+      the URL alone would leave a poisoned row free to keep the curated URL and
+      swap the ref, or point ``subdirectory`` at another app's directory in the
+      same repo, and have either cloned with credentials and its setup script
+      run. So the fresh row must agree on name, URL, branch AND subdirectory.
+    """
+    registry_name = entry.get("_registry")
+    if not registry_name:
+        return False
+
+    effective_url = _entry_git_url(entry)
+    if not effective_url:
+        return False
+
+    registry_name = str(registry_name)
+    if await asyncio.to_thread(_registry_trust_tier, registry_name) != _TRUST_OWNER:
+        return False
+
+    reg = None
+    for candidate in await asyncio.to_thread(_effective_registries):
+        if (candidate.name or candidate.repo) == registry_name:
+            reg = candidate
+            break
+    if reg is None:
+        return False
+
+    try:
+        fresh = await _fetch_external_registry_index(reg.repo, reg.branch)
+    except Exception:
+        logger.warning(
+            "owner-tier confirmation failed for %r; keeping the credential-free posture",
+            registry_name,
+            exc_info=True,
+        )
+        _sel_credential_decision(
+            "install_from_registry_owner_tier",
+            effective_url,
+            granted=False,
+            reason="index_unreadable",
+        )
+        return False
+    if not fresh:
+        logger.info(
+            "owner-tier registry %r could not be re-read; keeping the credential-free posture",
+            registry_name,
+        )
+        _sel_credential_decision(
+            "install_from_registry_owner_tier",
+            effective_url,
+            granted=False,
+            reason="index_unavailable",
+        )
+        return False
+
+    fresh_rows = [row for row in fresh if isinstance(row, dict)]
+    # Normalise the fresh rows the same way a cached row was normalised, so the
+    # comparison is like-for-like rather than a branch-override artefact.
+    _apply_configured_branch(fresh_rows, reg)
+
+    wanted = _install_coordinates(entry)
+    for row in fresh_rows:
+        if _install_coordinates(row) == wanted:
+            return True
+
+    logger.warning(
+        "owner-tier registry %r does not currently list app %r at %s (branch %r, subdir %r) — "
+        "refusing the credential escalation",
+        registry_name,
+        wanted[0],
+        _redact_url_userinfo(wanted[1]),
+        wanted[2],
+        wanted[3],
+    )
+    # The load-bearing audit record: the local row claimed coordinates the
+    # registry's own current index does not list, which is what a poisoned cache
+    # looks like from here.
+    _sel_credential_decision(
+        "install_from_registry_owner_tier",
+        wanted[1],
+        granted=False,
+        reason="coordinates_not_in_fresh_index",
+    )
     return False
 
 
@@ -449,23 +948,15 @@ def _clone_sandbox_mode(git_url: str, trusted_hosts: frozenset[str] | None = Non
 
 
 def _configured_registry_hosts() -> frozenset[str]:
-    """Hosts of the user-configured external registries (trusted for SSH).
+    """Hosts of the external registries in force (trusted for SSH).
 
-    A registry the owner deliberately added to their config is a host they
-    intend to authenticate to, so its SSH clones are allowed ~/.ssh access even
-    if it is not a well-known public forge (e.g. a self-hosted Gitea/GitLab).
+    A registry the owner deliberately added to their config — or one the edition
+    pins as a default (:func:`_effective_registries`) — is a host they intend to
+    authenticate to, so its SSH clones are allowed ~/.ssh access even if it is not
+    a well-known public forge (e.g. a self-hosted Gitea/GitLab).
     """
-    from kiro_crew.config.loader import (
-        KiroCrewConfig,  # deferred: loader imports apps/ at module level
-    )
-
-    try:
-        config = KiroCrewConfig.load()
-    except Exception as exc:  # config load is best-effort for this gate
-        logger.debug("Could not load config for registry host allowlist: %s", exc)
-        return frozenset()
     hosts = {
-        _git_url_host(reg.repo) for reg in (config.registries or []) if _git_url_host(reg.repo)
+        _git_url_host(reg.repo) for reg in _effective_registries() if _git_url_host(reg.repo)
     }
     return frozenset(hosts)
 
@@ -1178,6 +1669,20 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     return result
 
 
+def _is_external_row(entry: dict[str, Any]) -> bool:
+    """Whether *entry* is an EXTERNAL registry's row, for trust-field stamping.
+
+    Refuses on the PRESENCE of an external marker rather than granting from its
+    absence: ``_registry`` is attached server-side per configured registry and
+    cannot be forged by index content, and ``provenance == "external"`` is the
+    server-computed stamp derived from it. Deliberately NOT
+    :func:`_remote_controlled_url`: a ``_catalog`` row is remote-controlled for
+    CREDENTIAL purposes but is still an app WE list, so its trust fields are
+    first-party.
+    """
+    return bool(entry.get("_registry")) or entry.get("provenance") == "external"
+
+
 def _enrich_with_install_status(
     entries: list[dict[str, Any]],
     installed_map: dict[str, dict[str, Any]],
@@ -1198,7 +1703,15 @@ def _enrich_with_install_status(
         if existing:
             entry["installedVersion"] = existing.get("version", "")
             entry["enabled"] = existing.get("enabled", False)
-            entry["origin"] = existing.get("origin", "registry")
+            # ``origin`` is trust-adjacent (surfaces read ``"builtin"`` as
+            # first-party), and ``installed_map`` matches by NAME alone — so an
+            # external registry's row named after an installed built-in must not
+            # inherit that app's ``origin``, or the gateway emits a row whose
+            # ``origin`` contradicts the ``provenance: "external"`` stamped
+            # beside it by ``_apply_trust_fields``. External rows keep whatever
+            # the trust boundary decides for them instead.
+            if not _is_external_row(entry):
+                entry["origin"] = existing.get("origin", "registry")
             entry["resources"] = existing.get("resources", "gateway")
             entry["lifecycle"] = existing.get("lifecycle", "gateway")
             entry["updateAvailable"] = _version_newer(
@@ -1297,6 +1810,10 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     - ``featured``: dropped entirely from external rows so an external index
       can never self-flag into the Discover spotlight, regardless of client
       logic. Core-entry ``featured`` flags are preserved.
+    - ``origin``: on external rows, any value other than the server-stamped
+      ``"external"`` is dropped, so the wire never carries an ``origin`` that
+      contradicts ``provenance: "external"`` — neither an index-published one
+      nor one cross-stamped from an installed same-named app.
     """
     for entry in entries:
         index_author = entry.pop("_index_author", None)
@@ -1305,6 +1822,19 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             entry["provenance"] = "external"
             entry["verified"] = False
             entry.pop("featured", None)
+            # ``origin`` is trust-adjacent (``"builtin"`` reads as first-party
+            # to every consumer), and on an external row it can arrive from
+            # untrusted content: an index may publish the key itself, and it
+            # survives a failed manifest fetch because ``_resolve_manifest``
+            # returns the row as-is on that path. The only value the server
+            # itself stamps on an external row is ``"external"``
+            # (``detectInstalled`` hits in ``_enrich_with_install_status``);
+            # anything else must not go on the wire beside
+            # ``provenance: "external"``. Scrubbed HERE and not only at the
+            # sources because this function is the trust boundary — a rule
+            # stated anywhere else is a rule some later assignment can undo.
+            if entry.get("origin") != "external":
+                entry.pop("origin", None)
         else:
             builtin = entry.get("origin") == "builtin"
             entry["provenance"] = "builtin" if builtin else "official"
@@ -1733,12 +2263,8 @@ async def _load_external_registries() -> list[dict[str, Any]]:
     Results are cached for 1 hour. Each entry is tagged with its registry
     source for UI grouping.
     """
-    from kiro_crew.config.loader import (
-        KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
-    )
-
-    config = await asyncio.to_thread(KiroCrewConfig.load)
-    if not config.registries:
+    registries = await asyncio.to_thread(_effective_registries)
+    if not registries:
         return []
 
     all_entries: list[dict[str, Any]] = []
@@ -1776,7 +2302,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         return []
 
     results = await asyncio.gather(
-        *[_load_one(reg) for reg in config.registries],
+        *[_load_one(reg) for reg in registries],
         return_exceptions=True,
     )
     for result in results:
@@ -1832,12 +2358,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
     """
-    from kiro_crew.config.loader import (
-        KiroCrewConfig,  # deferred: loader imports apps/ at module level
-    )
-
-    config = await asyncio.to_thread(KiroCrewConfig.load)
-    registries = list(config.registries or [])
+    registries = await asyncio.to_thread(_effective_registries)
     if repo:
         registries = [r for r in registries if r.repo == repo]
         # A caller-supplied ``repo`` that matches no configured registry is a
@@ -2216,12 +2737,7 @@ def _external_registry_row(name: str) -> dict[str, Any] | None:
     different trust class: they carry ``_registry``, which flips provenance and is
     attached here at the lookup boundary so a stale cache cannot omit it.
     """
-    from kiro_crew.config.loader import (
-        KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
-    )
-
-    config = KiroCrewConfig.load()
-    for reg in config.registries:
+    for reg in _effective_registries():
         reg_name = reg.name or reg.repo
         cached = _read_external_registry_cache(reg_name, ignore_ttl=True)
         if cached:
@@ -2294,11 +2810,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         # credentials. `_resolve_registry_row` already refuses before any fallback;
         # this is its sibling and must refuse the same way.
         return []
-    from kiro_crew.config.loader import (
-        KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
-    )
-
-    for reg in KiroCrewConfig.load().registries:
+    for reg in _effective_registries():
         cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
@@ -2365,11 +2877,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
     still resolves) — never fetches, so it is safe to call from the per-request
     blob-proxy worker. Fails open to ``None``."""
     try:
-        from kiro_crew.config.loader import (
-            KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
-        )
-
-        for reg in KiroCrewConfig.load().registries:
+        for reg in _effective_registries():
             cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
             for entry in cached or []:
                 if isinstance(entry, dict) and entry.get("repo") == repo:
@@ -2414,11 +2922,7 @@ def _external_registry_repos() -> set[str]:
     """
     repos: set[str] = set()
     try:
-        from kiro_crew.config.loader import (
-            KiroCrewConfig,  # circular import: loader.py imports from apps/ at module level; deferring avoids ImportError
-        )
-
-        for reg in KiroCrewConfig.load().registries:
+        for reg in _effective_registries():
             cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
             for entry in cached or []:
                 if isinstance(entry, dict) and entry.get("repo"):
@@ -3980,6 +4484,12 @@ async def install_from_registry(
     if index_originated and await asyncio.to_thread(_is_owner_designated_repo, entry):
         index_originated = False
         _sel_credential_grant("install_from_registry", _entry_git_url(entry) or "")
+    elif index_originated and await _owner_tier_confirmed(entry):
+        # An ``owner``-tier registry re-confirmed this exact clone URL in a fresh
+        # fetch of its index. Install-only and never from the cache — see
+        # `_owner_tier_confirmed`.
+        index_originated = False
+        _sel_credential_grant("install_from_registry_owner_tier", _entry_git_url(entry) or "")
     # Capture event kind before clone/build/install scripts can register or
     # otherwise change app state. The receipt describes this call's starting
     # state, not an intermediate side effect.
