@@ -8184,6 +8184,7 @@
       "running_session_other": "실행 중인 세션 {{count}}개",
       "search_older_sessions": "이전 세션 검색…",
       "search_sessions": "세션 검색…",
+      "session_dropped_into_itself": "세션을 자기 자신에 놓을 수는 없습니다… 자기 자신에… 자기 자신에…",
       "session_other": "{{count}}개 세션",
       "session_source": "세션",
       "sessions": "세션",

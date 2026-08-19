@@ -78,7 +78,9 @@ export function sessionRefBlockReason(opts: {
 }): SessionRefBlockReason | null {
   if (isPrivateMemoryMode(opts.memoryMode)) return 'private'
   // Referencing the session you are already in is a no-op that would read as a
-  // bug: a chip pointing at the current chat.
+  // bug: a chip pointing at the current chat. Unlike 'private' this is not a
+  // guard — nothing was withheld, the user just aimed at the pane they dragged
+  // from — so the drop zone answers it with a joke rather than a warning.
   if (opts.activeSlot && opts.key === opts.activeSlot) return 'self'
   return null
 }

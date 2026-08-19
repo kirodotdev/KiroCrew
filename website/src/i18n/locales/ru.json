@@ -8511,6 +8511,7 @@
       "running_session_other": "{{count}} активной сессии",
       "search_older_sessions": "Поиск старых сессий…",
       "search_sessions": "Поиск сессий…",
+      "session_dropped_into_itself": "Нельзя перетащить сессию в саму себя… в саму себя… в саму себя…",
       "session_few": "{{count}} сессии",
       "session_many": "{{count}} сессий",
       "session_one": "{{count}} сессия",

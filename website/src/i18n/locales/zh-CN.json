@@ -8184,6 +8184,7 @@
       "running_session_other": "{{count}} 个运行中的会话",
       "search_older_sessions": "搜索较早的会话…",
       "search_sessions": "搜索会话…",
+      "session_dropped_into_itself": "无法将会话拖到它自己上… 它自己上… 它自己上…",
       "session_other": "{{count}} 个会话",
       "session_source": "会话",
       "sessions": "会话",

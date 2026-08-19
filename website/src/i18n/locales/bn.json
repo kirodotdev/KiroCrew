@@ -8293,6 +8293,7 @@
       "running_session_other": "{{count}}টি চলমান সেশন",
       "search_older_sessions": "পুরোনো সেশন খুঁজুন…",
       "search_sessions": "সেশন খুঁজুন…",
+      "session_dropped_into_itself": "কোনো সেশন তার নিজের মধ্যেই ছাড়া যায় না… নিজের মধ্যেই… নিজের মধ্যেই…",
       "session_one": "{{count}}টি সেশন",
       "session_other": "{{count}}টি সেশন",
       "session_source": "সেশন",

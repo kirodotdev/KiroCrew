@@ -5560,6 +5560,7 @@
       "running_session_other": "{{count}} running sessions",
       "search_older_sessions": "Search older sessions…",
       "search_sessions": "Search sessions…",
+      "session_dropped_into_itself": "Can't drop a session into itself… itself… itself…",
       "session_one": "{{count}} session",
       "session_other": "{{count}} sessions",
       "sessions": "Sessions",

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -25,7 +25,7 @@ import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
-import { sessionRefBlockReason } from '../utils/sessionRefs'
+import { sessionRefBlockReason, type SessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
@@ -267,12 +267,16 @@ const CHAT_PANE_DROP_TYPE = 'chat-pane-ref'
  * resolves collisions from measured rects, not DOM hit-testing, so the zone
  * still receives the drop while the chat underneath stays fully interactive.
  *
- * When the dragged session is incognito/temporary the zone renders a refusal
- * state instead of an invitation. Explaining the block beats silently ignoring
- * the drop — and the drop handler refuses independently, so this is the visible
- * half of a guard that does not depend on the UI being reached.
+ * When the dragged session may not be referenced the zone renders a refusal state
+ * instead of an invitation, and the two refusals are NOT interchangeable:
+ * incognito/temporary is a guard stated plainly, while dropping a session onto
+ * its own pane is a harmless mis-aim answered with a recursive joke rather than a
+ * warning. Explaining the block beats silently ignoring the drop — and the drop
+ * handler refuses independently, so this is the visible half of a guard that does
+ * not depend on the UI being reached.
  */
-function ChatPaneDropZone({ refused }: { refused: boolean }) {
+function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason | null }) {
+  const refused = refusal !== null
   const { setNodeRef, isOver } = useDroppable({ id: 'chat-pane-ref', data: { type: CHAT_PANE_DROP_TYPE } })
   const zoneRef = useRef<HTMLDivElement | null>(null)
   /** The composer's box in zone-local coordinates (plus the zone's own height, so
@@ -305,18 +309,32 @@ function ChatPaneDropZone({ refused }: { refused: boolean }) {
     })
   }, [])
   const active = isOver && !refused
-  const tone = refused
+  // Two refusals, told apart deliberately. 'private' is a GUARD — the user asked
+  // for something the product will not do, so it keeps the warn tone. 'self' is
+  // not a guard at all: dropping a session onto its own pane is a no-op the user
+  // reached by aiming badly, and dressing a harmless gesture in warning colour
+  // teaches them they broke something. It gets the resting neutral tone and a
+  // joke that IS the explanation — the sentence recurses the way the drop would.
+  const tone = refusal === 'private'
     ? 'border-warn bg-bg-elevated/90 text-warn'
-    : active
-      ? 'border-accent bg-bg-elevated/90 text-accent ring-2 ring-accent'
-      : 'border-border bg-bg-elevated/90 text-muted'
+    : refusal === 'self'
+      ? 'border-border bg-bg-elevated/90 text-muted'
+      : active
+        ? 'border-accent bg-bg-elevated/90 text-accent ring-2 ring-accent'
+        : 'border-border bg-bg-elevated/90 text-muted'
   const pill = (
     <div className={`inline-flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-[12px] shadow-lg backdrop-blur-sm ${tone}`}>
-      {refused ? <EyeOff size={14} className="shrink-0" /> : <MessagesSquare size={14} className="shrink-0" />}
+      {refusal === 'private'
+        ? <EyeOff size={14} className="shrink-0" />
+        : refusal === 'self'
+          ? <Repeat size={14} className="shrink-0" />
+          : <MessagesSquare size={14} className="shrink-0" />}
       <span>
-        {refused
+        {refusal === 'private'
           ? i18nT('pages.chatSidebar.private_session_cannot_be_referenced')
-          : i18nT('pages.chatSidebar.drop_to_reference_session')}
+          : refusal === 'self'
+            ? i18nT('pages.chatSidebar.session_dropped_into_itself')
+            : i18nT('pages.chatSidebar.drop_to_reference_session')}
       </span>
     </div>
   )
@@ -324,10 +342,10 @@ function ChatPaneDropZone({ refused }: { refused: boolean }) {
     <div
       ref={attach}
       data-testid="chat-pane-drop-zone"
-      data-refused={refused ? '' : undefined}
+      data-refused={refusal ?? undefined}
       aria-hidden="true"
       className={`absolute inset-0 z-30 pointer-events-none transition-colors ${
-        active ? 'bg-accent/[0.06]' : isOver && refused ? 'bg-warn/[0.06]' : 'bg-transparent'
+        active ? 'bg-accent/[0.06]' : isOver && refusal === 'private' ? 'bg-warn/[0.06]' : 'bg-transparent'
       }`}
     >
       {target ? (
@@ -3929,14 +3947,18 @@ function ChatSidebar({
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
   const draggingFolderedSession = activeDrag?.type === 'session' && !!slotFolders[activeDrag.id]
-  // Whether the session being dragged may not be referenced into the open chat
-  // (incognito/temporary, or the session already on screen). Drives the drop
-  // zone's refusal state; the drop handler re-decides with the same function.
-  const draggingRefBlocked = activeDrag?.type === 'session' && !!sessionRefBlockReason({
-    key: activeDrag.id,
-    activeSlot,
-    memoryMode: slots.find(x => x.key === activeDrag.id)?.memory_mode,
-  })
+  // WHY the session being dragged may not be referenced into the open chat, or
+  // null when it may be. Carries the reason rather than a boolean because the two
+  // refusals read differently to the user (a privacy guard vs a self-drop no-op).
+  // Drives the drop zone's refusal state; the drop handler re-decides with the
+  // same function.
+  const draggingRefRefusal = activeDrag?.type === 'session'
+    ? sessionRefBlockReason({
+      key: activeDrag.id,
+      activeSlot,
+      memoryMode: slots.find(x => x.key === activeDrag.id)?.memory_mode,
+    })
+    : null
   // True while dragging a folder that currently has a parent — the only case
   // where "drop on the root lane to move to top level" applies.
   const draggingNestedFolder = activeDrag?.type === 'folder' && !!folders.find(f => f.id === activeDrag.id)?.parent_id
@@ -4606,7 +4628,7 @@ function ChatSidebar({
                *  drag, and only when a pane and a handler exist. */}
               {chatDropTarget && onDropSessionRef && activeDrag?.type === 'session'
                 && createPortal(
-                  <ChatPaneDropZone refused={draggingRefBlocked} />,
+                  <ChatPaneDropZone refusal={draggingRefRefusal} />,
                   chatDropTarget,
                 )}
               {/* Root lane is the fallback drop target: dropping a session on

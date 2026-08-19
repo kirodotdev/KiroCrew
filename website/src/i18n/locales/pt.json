@@ -8402,6 +8402,7 @@
       "running_session_other": "{{count}} sessões em execução",
       "search_older_sessions": "Buscar sessões antigas…",
       "search_sessions": "Buscar sessões…",
+      "session_dropped_into_itself": "Não é possível soltar uma sessão sobre si mesma… sobre si mesma… sobre si mesma…",
       "session_many": "{{count}} sessões",
       "session_one": "{{count}} sessão",
       "session_other": "{{count}} sessões",

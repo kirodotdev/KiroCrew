@@ -8293,6 +8293,7 @@
       "running_session_other": "{{count}} चल रहे सत्र",
       "search_older_sessions": "पुराने सत्र खोजें…",
       "search_sessions": "सत्र खोजें…",
+      "session_dropped_into_itself": "सेशन को उसी में नहीं छोड़ा जा सकता… उसी में… उसी में…",
       "session_one": "{{count}} सत्र",
       "session_other": "{{count}} सत्र",
       "session_source": "सत्र",

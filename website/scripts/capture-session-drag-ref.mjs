@@ -15,6 +15,11 @@
  *   3. An incognito session shows the REFUSAL state and drops nothing.
  *   4. Sending transmits a LINK to the session — and NOT its content.
  *
+ * Scenario 5 covers the OTHER refusal: the open session dragged onto its own
+ * pane. It is not a guard — nothing was withheld, the user aimed at the pane they
+ * dragged from — so it must not borrow the privacy copy or its warn tone. The
+ * harness photographs both refusals so a reviewer can see they read differently.
+ *
  * Usage: node scripts/capture-session-drag-ref.mjs [outDir]
  */
 import { chromium } from 'playwright'
@@ -147,7 +152,7 @@ async function main() {
    * past a 5px distance constraint, and collision detection reads pointer
    * coordinates on each move.
    */
-  async function dragSessionToPane(key, { drop = true, midShot = null } = {}) {
+  async function dragSessionToPane(key, { drop = true, midShot = null, onMid = null } = {}) {
     const row = page.locator(`[data-slot-key="${key}"]`).first()
     const from = await row.boundingBox()
     if (!from) throw new Error(`session row not found: ${key}`)
@@ -172,6 +177,13 @@ async function main() {
     const zone = page.getByTestId('chat-pane-drop-zone')
     const zoneVisible = (await zone.count()) > 0
     const refused = zoneVisible ? (await zone.first().getAttribute('data-refused')) !== null : null
+    // The REASON, not just the fact. The two refusals must stay distinguishable:
+    // 'private' is a guard, 'self' is a no-op, and one wearing the other's copy is
+    // exactly the regression this reads for.
+    const reason = zoneVisible ? await zone.first().getAttribute('data-refused') : null
+    // What the pill actually says, so the copy is asserted rather than trusted to
+    // follow from the reason attribute.
+    const pillText = zoneVisible ? (await zone.first().innerText()).trim() : null
     // Where the cue is drawn, so "anchored on the composer" is guarded rather
     // than eyeballed: the outline must sit ON the composer, and the pill just
     // above it — NOT floating in the middle of the transcript.
@@ -189,6 +201,7 @@ async function main() {
       }
     }
     if (midShot) await shot(midShot)
+    if (onMid) await onMid()
     if (drop) {
       await page.mouse.up()
       await page.waitForTimeout(600)
@@ -197,16 +210,37 @@ async function main() {
       await page.mouse.up()
       await page.waitForTimeout(300)
     }
-    return { zoneVisible, refused, anchored }
+    return { zoneVisible, refused, reason, pillText, anchored }
+  }
+
+  /** Crop tight around the drop pill (which only exists mid-drag). */
+  async function pillShot(name, text) {
+    const box = await page.getByText(text, { exact: false }).first().boundingBox()
+    if (!box) return shot(name)
+    const pad = 22
+    await page.screenshot({
+      path: `${OUT}/${name}.png`,
+      clip: {
+        x: Math.max(0, box.x - pad),
+        y: Math.max(0, box.y - pad),
+        width: Math.min(VIEW.width - Math.max(0, box.x - pad), box.width + pad * 2),
+        height: Math.min(VIEW.height - Math.max(0, box.y - pad), box.height + pad * 2),
+      },
+    })
+    console.log('wrote', `${OUT}/${name}.png`)
   }
 
   // ---------------------------------------------------------------- scenario 1
   // Normal session, dark theme: affordance mid-drag, then the staged chip.
   await load('dark')
   await shot('01-before-drag-dark')
-  const normal = await dragSessionToPane(REF, { midShot: '02-drop-zone-dark' })
+  const normal = await dragSessionToPane(REF, {
+    midShot: '02-drop-zone-dark',
+    onMid: () => pillShot('02b-invite-pill-dark', 'Drop to reference'),
+  })
   record('drop zone appears while dragging a session', normal.zoneVisible)
   record('drop zone invites (not refuses) a normal session', normal.refused === false)
+  record('an invited drag carries no refusal reason', normal.reason === null, `reason=${normal.reason}`)
   record('cue is anchored on the composer, not floating mid-pane', normal.anchored === true)
 
   const chip = page.locator('[data-testid="session-ref-chip"]')
@@ -218,8 +252,13 @@ async function main() {
 
   // ---------------------------------------------------------------- scenario 2
   // The privacy guard: incognito shows the refusal and drops nothing.
-  const priv = await dragSessionToPane(PRIVATE, { midShot: '04-refused-incognito-dark' })
+  const priv = await dragSessionToPane(PRIVATE, {
+    midShot: '04-refused-incognito-dark',
+    onMid: () => pillShot('04b-private-pill-dark', 'Private sessions'),
+  })
   record('drop zone refuses an incognito session', priv.refused === true)
+  record('the incognito refusal names itself as the privacy guard', priv.reason === 'private',
+    `reason=${priv.reason}`)
   record('a refused drag outlines no destination', priv.anchored === null)
   const afterPrivate = await page.locator('[data-testid="session-ref-chip"]').count()
   record('dropping an incognito session stages nothing', afterPrivate === chipCount,
@@ -272,6 +311,31 @@ async function main() {
   await dragSessionToPane(REF)
   const afterDup = await page.locator('[data-testid="session-ref-chip"]').count()
   record('re-dropping the same session does not duplicate', afterDup === 2, `count=${afterDup}`)
+
+  // ---------------------------------------------------------------- scenario 5
+  // The self-drop: the OPEN session dragged onto its own pane. A no-op, but the
+  // user's near-miss rather than a guard firing — so it must NOT reuse the privacy
+  // copy (which would assert something untrue about this session) or its warn
+  // tone. Fresh loads so neither theme inherits a staged chip from above.
+  const SELF_LINE = "Can't drop a session into itself"
+  for (const theme of ['dark', 'light']) {
+    await load(theme)
+    const self = await dragSessionToPane(ACTIVE, {
+      midShot: `10-self-drop-${theme}`,
+      onMid: () => pillShot(`10b-self-pill-${theme}`, SELF_LINE),
+    })
+    record(`${theme}: dragging the open session onto its own pane is refused`, self.refused === true)
+    record(`${theme}: the self-drop names itself 'self', not 'private'`, self.reason === 'self',
+      `reason=${self.reason}`)
+    record(`${theme}: the pill shows the recursive line`, (self.pillText ?? '').includes(SELF_LINE),
+      JSON.stringify(self.pillText))
+    record(`${theme}: the self-drop does NOT borrow the privacy copy`,
+      !(self.pillText ?? '').includes('Private sessions'), JSON.stringify(self.pillText))
+    record(`${theme}: the self-drop outlines no destination`, self.anchored === null)
+    const stagedAfterSelf = await page.locator('[data-testid="session-ref-chip"]').count()
+    record(`${theme}: dropping a session on itself stages nothing`, stagedAfterSelf === 0,
+      `chips=${stagedAfterSelf}`)
+  }
 
   await page.close()
   await context.close()

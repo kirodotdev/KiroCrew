@@ -8293,6 +8293,7 @@
       "running_session_other": "{{count}} laufende Sitzungen",
       "search_older_sessions": "Ältere Sitzungen suchen…",
       "search_sessions": "Sitzungen suchen…",
+      "session_dropped_into_itself": "Eine Sitzung lässt sich nicht in sich selbst ablegen… in sich selbst… in sich selbst…",
       "session_one": "{{count}} Sitzung",
       "session_other": "{{count}} Sitzungen",
       "session_source": "Sitzung",

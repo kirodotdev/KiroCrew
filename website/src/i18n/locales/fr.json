@@ -8402,6 +8402,7 @@
       "running_session_other": "{{count}} sessions en cours",
       "search_older_sessions": "Rechercher d'anciennes sessions…",
       "search_sessions": "Rechercher des sessions…",
+      "session_dropped_into_itself": "Impossible de déposer une session sur elle-même… sur elle-même… sur elle-même…",
       "session_many": "{{count}} sessions",
       "session_one": "{{count}} session",
       "session_other": "{{count}} sessions",

@@ -8183,6 +8183,7 @@
       "running_session_other": "実行中のセッション {{count}} 件",
       "search_older_sessions": "以前のセッションを検索…",
       "search_sessions": "セッションを検索…",
+      "session_dropped_into_itself": "セッションをそれ自身にはドロップできません… それ自身に… それ自身に…",
       "session_other": "{{count}} セッション",
       "session_source": "セッション",
       "sessions": "セッション",

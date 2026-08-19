@@ -716,8 +716,42 @@ describe('ChatSidebar — surfaces that exist only during a drag', () => {
     dragStart({ type: 'session', key: SLOT_PRIVATE }, SLOT_PRIVATE)
     const zone = await screen.findByTestId('chat-pane-drop-zone', undefined, { timeout: 5_000 })
     expect(zone.hasAttribute('data-refused')).toBe(true)
+    expect(zone.getAttribute('data-refused')).toBe('private')
     expect(within(zone).getByText("Private sessions can't be referenced")).toBeTruthy()
     expect(within(zone).queryByTestId('chat-pane-drop-target')).toBeNull()
+  })
+
+  /**
+   * Dragging the OPEN session onto its own pane is a no-op, but it is the user's
+   * near-miss rather than a guard firing — so it must not borrow the privacy
+   * refusal's copy (which would state something untrue about the session) nor its
+   * warn tone (which would report a harmless gesture as a problem). It gets its
+   * own recursive line, and the two refusals stay tellable apart in the DOM.
+   */
+  it('answers a session dropped onto its own pane with the recursive line, not the privacy refusal', async () => {
+    renderSidebar({ chatPane: true, onDropSessionRef: vi.fn(), activeSlot: SLOT_LOOSE })
+    await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
+    dragStart({ type: 'session', key: SLOT_LOOSE }, SLOT_LOOSE)
+    const zone = await screen.findByTestId('chat-pane-drop-zone', undefined, { timeout: 5_000 })
+    expect(zone.getAttribute('data-refused')).toBe('self')
+    expect(within(zone).getByText("Can't drop a session into itself… itself… itself…")).toBeTruthy()
+    expect(within(zone).queryByText("Private sessions can't be referenced")).toBeNull()
+    // Still a refusal: no destination is outlined, and the pill is not the invite.
+    expect(within(zone).queryByTestId('chat-pane-drop-target')).toBeNull()
+    expect(within(zone).queryByText('Drop to reference this session')).toBeNull()
+  })
+
+  it('stages nothing when the open session is dropped onto its own pane', async () => {
+    const onDropSessionRef = vi.fn()
+    renderSidebar({ chatPane: true, onDropSessionRef, activeSlot: SLOT_LOOSE })
+    await waitFor(() => expect(dnd.onDragEnd).toBeTruthy())
+    act(() => {
+      dnd.onDragEnd?.({
+        active: { id: SLOT_LOOSE, data: { current: { type: 'session', key: SLOT_LOOSE } } },
+        over: { id: 'chat-pane-ref', data: { current: { type: 'chat-pane-ref' } } },
+      })
+    })
+    expect(onDropSessionRef).not.toHaveBeenCalled()
   })
 
   it('falls back to a centred pill when the pane has no composer to measure', async () => {
