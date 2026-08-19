@@ -1503,9 +1503,53 @@ jobs:
           mkdir -p src/kiro_crew/static
           cp -R website/dist src/kiro_crew/static/dist
 
-      - name: Install Playwright browser (Chromium)
+      # The browser install is the single largest source of red on this job, and
+      # never because a test failed: across 112 consecutive E2E jobs the
+      # conclusions were 76 success / 36 cancelled / 0 failure, and 22 of those
+      # cancels trace to this step. `--with-deps` runs `apt-get update` first, and
+      # when the runner's default mirror (azure.archive.ubuntu.com) answers `Ign:`
+      # apt falls back to archive.ubuntu.com and stalls silently -- observed at
+      # 23min, 15min and 12min, against a 25min job budget that then has nothing
+      # left for the specs.
+      #
+      # `--with-deps` is dropped rather than retried because it buys nothing this
+      # gate asserts on. Every shared library Chromium needs is already on the
+      # ubuntu-latest image (the apt log reports libnss3, libx11-6, libxcb1,
+      # libasound2 and libxkbcommon0 as `already the newest version`); the only
+      # packages it newly installs are 9 CJK/Thai/Cyrillic font packages. The suite
+      # has no pixel comparison (no toHaveScreenshot / toMatchSnapshot anywhere
+      # under website/), playwright.config.ts pins `locale: 'en-US'` so every spec
+      # renders the English catalog, and the i18n render gate below reads
+      # textContent rather than measuring geometry. A future spec that asserts
+      # glyph METRICS for a non-Latin script would need those fonts back -- add
+      # them as their own bounded, non-fatal step, not by restoring `--with-deps`.
+      #
+      # The version key must be exact: a restore-key prefix could hand the job a
+      # different Chromium revision than @playwright/test expects.
+      - name: Resolve Playwright version
+        id: playwright-version
         working-directory: website
-        run: npx playwright install --with-deps chromium
+        run: |
+          version="$(node -p \
+            "require('./package-lock.json').packages['node_modules/@playwright/test'].version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
+
+      # Runs unconditionally rather than behind `cache-hit != 'true'`: on a hit it
+      # is a ~2s no-op, and that keeps a partially-written cache entry from turning
+      # into a missing-browser failure inside the specs.
+      - name: Install Playwright browser (Chromium)
+        # A step-level cap. The download itself takes ~7s, so anything approaching
+        # this is a stalled mirror or CDN -- fail here with budget left for the
+        # specs instead of consuming the job's 25min and reporting nothing.
+        timeout-minutes: 6
+        working-directory: website
+        run: npx playwright install chromium
 
       - name: i18n render-time gate (en-XA + shipped locales)
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG

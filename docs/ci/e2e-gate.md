@@ -93,7 +93,7 @@ Config facts worth knowing before you touch a spec:
 | `retries` | 2 under `CI` | Absorbs gateway-load timeout flakes. |
 | `timeout` | 30s per test | Assertion (`expect`/`poll`) timeout stays at Playwright's 5s default so a genuine slowdown surfaces instead of passing inside a wide window. |
 | `grepInvert` | excludes `@needs-agent` unless `PLAYWRIGHT_RUN_AGENT_SPECS` | The default run is the credential-less green set. The harness wires the fake backend, so it opts the agent specs back in. `@needs-live-agent` stays excluded either way and currently tags nothing. |
-| browser | Playwright's own bundled Chromium | This fork vends no browser binary; CI installs it with `npx playwright install --with-deps chromium`. |
+| browser | Playwright's own bundled Chromium | This fork vends no browser binary; CI installs it with `npx playwright install chromium`, restored from an `actions/cache` entry keyed on the exact `@playwright/test` version. `--with-deps` is deliberately NOT used — see [what CI does](#what-ci-does-around-the-command). |
 
 ### Auth flow
 
@@ -161,6 +161,30 @@ with `--group dev`, runs `npm ci` and `npm run build` in `website/`, stages
 bundled dashboard rather than a 404, installs Chromium, runs the i18n render-time
 gate (which reuses that Chromium install), and finally runs `python setup.py
 test_e2e`.
+
+### The browser install is budgeted, and installs no apt packages
+
+The job's ceiling is `timeout-minutes: 25`, and the browser install is the step
+that historically consumed it. It carries three constraints, all in service of
+leaving the specs enough of that budget to actually run:
+
+- **`~/.cache/ms-playwright` is cached**, keyed on the exact `@playwright/test`
+  version read out of `website/package-lock.json`. The key has no restore-key
+  prefix on purpose: a near-miss would hand the job a Chromium revision that
+  `@playwright/test` does not expect.
+- **`--with-deps` is not used.** It runs `apt-get update` first, and when the
+  runner's default mirror answers `Ign:` apt falls back and stalls — measured at
+  23, 15 and 12 minutes. It also buys nothing this gate asserts on: every shared
+  library Chromium needs is already on the `ubuntu-latest` image, and the only
+  packages it newly installs are 9 CJK/Thai/Cyrillic font packages. There is no
+  pixel comparison anywhere under `website/`, `locale` is pinned to `en-US`, and
+  the render gate reads `textContent` rather than measuring geometry. A spec that
+  asserts glyph **metrics** for a non-Latin script would need those fonts back —
+  as its own bounded, non-fatal step, not by restoring `--with-deps`.
+- **`timeout-minutes: 6` on the step.** The download is ~7s and a cache hit is a
+  no-op, so anything near the cap is a stalled mirror or CDN. Failing there
+  reports the real cause while the job still has budget, instead of the job
+  timing out having run zero specs.
 
 Related: [i18n-gates.md](i18n-gates.md) for the render-time gate that shares this
 job, and [ci-and-reviews.md](ci-and-reviews.md) for where `e2e` sits among the
