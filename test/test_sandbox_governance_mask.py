@@ -388,3 +388,67 @@ class TestThirdPartyCredentialsKeepTheirExistingTiering:
         for listing in (sandbox._STRICT_DIRS, sandbox._CC_DIRS, sandbox._STANDARD_DIRS):
             assert ".local/share/kiro-cli" not in listing
             assert ".local/share/amazon-q" not in listing
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("mode", _MODES)
+def test_launcher_precreates_skills_private_root_before_hide_loop(mode):
+    """The launcher pre-creates ``skills/auto/.private`` so the isdir-guarded
+    hide loop masks it from the very first spawn (the tree is otherwise first
+    created by a later promotion, after children may already have spawned)."""
+    script = sandbox._build_launcher_script(mode)
+    precreate = script.find('endswith("skills/auto/.private")')
+    hide_loop = script.find("hiding credential directory")
+    assert precreate != -1, "pre-create block missing from the launcher"
+    assert hide_loop != -1
+    assert precreate < hide_loop, "pre-create must run before the hide loop"
+
+
+@_POSIX_ONLY
+def test_launcher_precreate_logic_creates_missing_root(tmp_path):
+    """Functional twin of the launcher's pre-create block: absent root under a
+    real skills tree is created; a linked ``auto`` and an absent skills tree
+    are both skipped without following or materializing anything.
+
+    POSIX-only like the launcher itself: the block runs only inside the Linux
+    namespace launcher, whose SENSITIVE_DIRS entries always carry ``/``
+    separators — a Windows-native path would (correctly) never match the
+    suffix guard.
+    """
+
+    def precreate(dirs):
+        for d in dirs:
+            if not d.endswith("skills/auto/.private") or os.path.lexists(d):
+                continue
+            auto_dir = os.path.dirname(d)
+            skills_dir = os.path.dirname(auto_dir)
+            try:
+                if os.path.islink(auto_dir) or not os.path.isdir(skills_dir):
+                    continue
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
+
+    # Absent .private under a real skills tree -> created.
+    home_a = tmp_path / "a"
+    (home_a / "skills").mkdir(parents=True)
+    target_a = str(home_a / "skills" / "auto" / ".private")
+    precreate([target_a])
+    assert os.path.isdir(target_a)
+
+    # Linked auto -> skipped, nothing created through the link.
+    home_b = tmp_path / "b"
+    (home_b / "skills").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(str(elsewhere), str(home_b / "skills" / "auto"))
+    target_b = str(home_b / "skills" / "auto" / ".private")
+    precreate([target_b])
+    assert not (elsewhere / ".private").exists()
+
+    # Absent skills tree -> never materialized.
+    home_c = tmp_path / "c"
+    home_c.mkdir()
+    target_c = str(home_c / "skills" / "auto" / ".private")
+    precreate([target_c])
+    assert not os.path.lexists(str(home_c / "skills"))

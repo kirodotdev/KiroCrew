@@ -488,6 +488,23 @@ _WIN_LOCK_POLL_SECS = 0.01
 _WIN_LOCK_TIMEOUT_SECS = 300.0
 
 
+def prepare_lock_file(fd: int) -> None:
+    """Make a dedicated lock-file descriptor usable by every platform.
+
+    ``msvcrt.locking`` locks a byte range and refuses an empty file. Dedicated
+    lock files opened with ``O_CREAT`` therefore need one inert byte before the
+    first Windows acquire. POSIX ``flock`` does not need or want a write, so
+    this helper is a no-op there. Callers must pass a writable descriptor for a
+    dedicated lock file, never an application-data file.
+    """
+    if not IS_WINDOWS:
+        return
+    if os.fstat(fd).st_size == 0:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+
+
 def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -> bool:
     """Windows blocking lock acquire: spin on LK_NBLCK until free or timeout.
 
@@ -683,6 +700,30 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
         return True
     except OSError:
         return False
+
+
+def rename_no_replace(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Atomically rename *src* to *dst*, refusing an existing destination.
+
+    ``os.rename`` replaces an empty destination directory on POSIX, while
+    ``shutil.move`` nests inside an existing directory. Neither behavior is
+    safe for publish/restore paths whose destination may be occupied by a
+    concurrent writer. Path-taking adapter over :func:`rename_noreplace` for
+    callers that hold plain paths rather than pinned directory descriptors
+    (``AT_FDCWD`` gives the same cwd-relative semantics as ``os.rename``).
+    Fails closed with ``ENOTSUP`` when the host provides no native no-replace
+    primitive, so callers handle one exception family (``OSError``) for both
+    destination contention and platform unavailability.
+    """
+    if IS_WINDOWS:
+        # MoveFileW, which backs os.rename, fails when the destination exists.
+        os.rename(src, dst)
+        return
+    at_fdcwd = getattr(os, "AT_FDCWD", -100)
+    try:
+        rename_noreplace(src, dst, src_dir_fd=at_fdcwd, dst_dir_fd=at_fdcwd)
+    except NotImplementedError as exc:
+        raise OSError(errno.ENOTSUP, str(exc), os.fspath(dst)) from exc
 
 
 def probe_file_persistence(directory: Path) -> str | None:

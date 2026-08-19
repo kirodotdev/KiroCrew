@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import errno
 import fnmatch
@@ -12,6 +13,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import time
@@ -22,7 +24,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Callable, Iterator
 
-from kiro_crew import pinned_fs, skill_trust
+from kiro_crew import pinned_fs, platform_compat, skill_trust
 from kiro_crew.atomic_write import (
     atomic_write,
     open_access_control_source,
@@ -183,6 +185,18 @@ VERSIONS_DIRNAME = ".versions"
 # Cap on retained per-skill version snapshots; oldest are pruned past this.
 MAX_SKILL_VERSIONS = 20
 
+# Agent-denied same-filesystem area for active candidate claims and their locks.
+# The whole subtree is on security.is_sensitive_path's permanent deny floor, so
+# a prompt-injected agent cannot enumerate or mutate a snapshot after validation.
+AUTO_PRIVATE_DIRNAME = ".private"
+AUTO_CLAIMS_DIRNAME = "claims"
+
+# ``pending.lock`` serializes pending publish/claim/restore; target-specific
+# files serialize live updates or first publication to one auto-skill.
+AUTO_LOCKS_DIRNAME = "locks"
+_PROMOTE_LOCK_TIMEOUT_S = 10.0
+_PROMOTE_LOCK_POLL_S = 0.05
+
 # ── Pending-staged observer hook ──────────────────────────────────────────────
 # A candidate can be staged by ANY ``SkillsLoader`` instance (consolidation uses
 # the ContextBuilder's loader; dashboard requests build their own), so the
@@ -250,6 +264,28 @@ def _emit_pending_consumed(payload: dict) -> None:
         fn(payload)
     except Exception:  # pragma: no cover - defensive
         logger.debug("pending-consumed hook failed", exc_info=True)
+
+
+# Informational observer for prose-only updates promoted without review. This is
+# separate from the staged hook because the candidate is already live.
+_UPDATE_AUTO_APPLIED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_update_auto_applied_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear) the unattended-update observer."""
+    global _UPDATE_AUTO_APPLIED_HOOK
+    _UPDATE_AUTO_APPLIED_HOOK = fn
+
+
+def _emit_update_auto_applied(payload: dict) -> None:
+    """Invoke the unattended-update observer without affecting promotion."""
+    fn = _UPDATE_AUTO_APPLIED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("update-auto-applied hook failed", exc_info=True)
 
 
 # Frontmatter field used to mark a skill as auto-generated.  Absence means
@@ -2345,6 +2381,14 @@ class SkillsLoader:
         """Create a new skill directory with SKILL.md.  Returns True on success."""
         if not self._safe_name(name):
             return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Create lock unavailable for %s", name)
+                return False
+            return self._create_skill_unlocked(name, content)
+
+    def _create_skill_unlocked(self, name: str, content: str) -> bool:
+        """Create one skill while any required target lock is held."""
         skill_dir = self._dir / name
         if skill_dir.exists():
             return False
@@ -2545,6 +2589,14 @@ class SkillsLoader:
         """Overwrite an existing skill's SKILL.md.  Returns True if found."""
         if not self._safe_name(name):
             return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Update lock unavailable for %s", name)
+                return False
+            return self._update_skill_unlocked(name, content)
+
+    def _update_skill_unlocked(self, name: str, content: str) -> bool:
+        """Write one skill body while any required target lock is held."""
         skill_dir = self._dir / name
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():
@@ -2641,6 +2693,14 @@ class SkillsLoader:
         """Delete a skill directory.  Returns True if found and removed."""
         if not self._safe_name(name):
             return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Delete lock unavailable for %s", name)
+                return False
+            return self._delete_skill_unlocked(name)
+
+    def _delete_skill_unlocked(self, name: str) -> bool:
+        """Delete one skill while any required target lock is held."""
         skill_dir = self._dir / name
         if not skill_dir.is_dir():
             return False
@@ -2744,6 +2804,32 @@ class SkillsLoader:
         procedure_md: str,
         provenance: AutoSkillProvenance,
     ) -> str | None:
+        """Create an auto-skill under its target publication lock."""
+        if not _AUTO_NAME_PATTERN.match(slug):
+            logger.warning("Rejected auto skill: slug %r failed validation", slug)
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Create lock unavailable for %s", name)
+                return None
+            return self._create_auto_skill_unlocked(
+                slug,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+            )
+
+    def _create_auto_skill_unlocked(
+        self,
+        slug: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+    ) -> str | None:
         """Write a new auto-generated skill under ``auto/<slug>/SKILL.md``.
 
         Returns the full skill name (``auto/<slug>``) on success, or
@@ -2785,6 +2871,35 @@ class SkillsLoader:
         return name
 
     def update_auto_skill(
+        self,
+        name: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+    ) -> bool:
+        """Refine an auto-skill under its target promotion lock."""
+        if not self.is_auto_generated(name):
+            logger.warning(
+                "Refusing to auto-refine non-auto skill: %s (not in %s/)",
+                name,
+                AUTO_SKILL_NAMESPACE,
+            )
+            return False
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Refine lock unavailable for %s", name)
+                return False
+            return self._update_auto_skill_unlocked(
+                name,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+            )
+
+    def _update_auto_skill_unlocked(
         self,
         name: str,
         *,
@@ -2953,6 +3068,14 @@ class SkillsLoader:
         return hits, anchor
 
     def set_pinned(self, name: str, pinned: bool) -> bool:
+        """Pin/unpin an auto-skill under its promotion lock."""
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Pin lock unavailable for %s", name)
+                return False
+            return self._set_pinned_unlocked(name, pinned)
+
+    def _set_pinned_unlocked(self, name: str, pinned: bool) -> bool:
         """Pin/unpin an auto-skill (exempt from lifecycle eviction).
 
         Edits the ``pinned:`` frontmatter line in place. Returns True on
@@ -2979,6 +3102,14 @@ class SkillsLoader:
         return True
 
     def set_inject_on_trigger(self, name: str, inject: bool) -> bool:
+        """Change auto-skill injection mode under its promotion lock."""
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Injection lock unavailable for %s", name)
+                return False
+            return self._set_inject_on_trigger_unlocked(name, inject)
+
+    def _set_inject_on_trigger_unlocked(self, name: str, inject: bool) -> bool:
         """Opt a skill in or out of full-body injection on a trigger match.
 
         Edits the ``inject_on_trigger:`` frontmatter line in place, mirroring
@@ -3059,6 +3190,14 @@ class SkillsLoader:
         )
 
     def archive_auto_skill(self, name: str) -> bool:
+        """Move an auto-skill into the archive under its promotion lock."""
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Archive lock unavailable for %s", name)
+                return False
+            return self._archive_auto_skill_unlocked(name)
+
+    def _archive_auto_skill_unlocked(self, name: str) -> bool:
         """Move an auto-skill into the archive (recoverable, never deleted).
 
         Refuses non-auto skills. Returns True on success.
@@ -3085,6 +3224,17 @@ class SkillsLoader:
         return True
 
     def restore_auto_skill(self, slug: str) -> str | None:
+        """Restore an archived auto-skill under its target publication lock."""
+        if not self._is_pending_slug_safe(slug):
+            return None
+        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        with self._live_auto_mutation_lock(name) as acquired:
+            if not acquired:
+                logger.warning("Restore lock unavailable for %s", name)
+                return None
+            return self._restore_auto_skill_unlocked(slug)
+
+    def _restore_auto_skill_unlocked(self, slug: str) -> str | None:
         """Restore an archived auto-skill back to ``auto/<slug>``.
 
         Returns the restored skill name, or None if not found / name clash.
@@ -3201,6 +3351,499 @@ class SkillsLoader:
     def _pending_root(self) -> Path:
         return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PENDING_DIRNAME
 
+    def _private_root(self) -> Path:
+        return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PRIVATE_DIRNAME
+
+    def _claims_root(self) -> Path:
+        return self._private_root() / AUTO_CLAIMS_DIRNAME
+
+    def _locks_root(self) -> Path:
+        return self._private_root() / AUTO_LOCKS_DIRNAME
+
+    def _private_state_roots_safe(self, *, create: bool, require_sensitive: bool = False) -> bool:
+        """Authenticate private state roots before any claim or lock operation.
+
+        RESIDUAL (accepted, documented): these are path-based checks, so a
+        SAME-PRIVILEGE local writer could in principle swap ``auto`` or
+        ``.pending`` to a link in the window between validation and the
+        following mkdir/rename. That principal is outside this feature's
+        threat model — it defends against LLM-planted CONTENT, and the agent
+        is denied this subtree by the in-process tool gate and the OS sandbox
+        mask; a same-user process that can rewrite ``self._dir`` can rewrite
+        this module instead. Descriptor-relative pinning (mkdirat/renameat
+        under O_NOFOLLOW dir handles) has no portable Windows equivalent and
+        is deliberately not used. Defense-in-depth still bounds the residual:
+        the claim path re-runs this guard at ``pending.lock`` setup (at
+        ``_file_lock`` entry, immediately BEFORE acquisition — not under the
+        held lock), with the claim rename following only after acquisition;
+        the resolved-containment check below rejects an escaped private root
+        after the fact; and unattended promotion re-verifies the stage-token
+        binding under the target lock, so swapped content cannot be promoted.
+        """
+        private_root = self._private_root()
+        descendants = (
+            self._claims_root(),
+            self._locks_root(),
+            self._locks_root() / "claims",
+        )
+        try:
+            # Reject linked ANCESTORS on the agent-writable segment before any
+            # mkdir or rename traverses them. Scope matters: components at or
+            # above ``self._dir`` are operator-controlled and are legitimately
+            # links on common platforms (macOS ``/tmp`` -> ``/private/tmp``,
+            # ostree ``/home`` -> ``/var/home``), so an unscoped
+            # ``first_linked_ancestor`` walk would refuse healthy installs.
+            # Everything BELOW ``self._dir`` is writable by generated skill
+            # content. ``auto`` is the one component between ``self._dir`` and
+            # the private roots authenticated below; ``auto/.pending`` is a
+            # SIBLING of ``.private`` checked here as a separate source root,
+            # because the claim rename reads candidates out of it.
+            namespace_root = private_root.parent
+            if is_link_or_junction(namespace_root):
+                raise OSError("auto namespace root is a link or junction")
+            pending_root = self._pending_root()
+            if is_link_or_junction(pending_root):
+                raise OSError("pending root is a link or junction")
+            if is_link_or_junction(private_root):
+                raise OSError("private root is a link or junction")
+            if create:
+                private_root.mkdir(parents=True, exist_ok=True)
+            elif not os.path.lexists(private_root):
+                return True
+            if is_link_or_junction(private_root) or not private_root.is_dir():
+                raise OSError("private root is not a real directory")
+            resolved_private = private_root.resolve(strict=True)
+            if require_sensitive and (
+                not is_sensitive_path(str(private_root))
+                or not is_sensitive_path(str(resolved_private))
+            ):
+                raise OSError("private root is not agent-denied")
+            if os.path.lexists(self._dir):
+                # Containment: the resolved private root must live under the
+                # resolved skills dir (the resolve() follows only the
+                # operator-controlled prefix, which the scoped checks above
+                # deliberately allow to be linked).
+                resolved_private.relative_to(self._dir.resolve(strict=True))
+            for root in descendants:
+                if is_link_or_junction(root):
+                    raise OSError(f"private descendant is a link or junction: {root}")
+                if create:
+                    root.mkdir(exist_ok=True)
+                elif not os.path.lexists(root):
+                    continue
+                if is_link_or_junction(root) or not root.is_dir():
+                    raise OSError(f"private descendant is not a real directory: {root}")
+                resolved = root.resolve(strict=True)
+                resolved.relative_to(resolved_private)
+        except (OSError, RuntimeError, ValueError):
+            logger.error("Refusing unsafe auto-skill private state under %s", private_root)
+            return False
+        return True
+
+    @staticmethod
+    def _open_skill_lock(path: Path) -> int:
+        """Open an authenticated lone regular lock file without following links."""
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | nofollow
+        fd: int | None = None
+        pre: os.stat_result | None = None
+        try:
+            try:
+                pre = os.lstat(path)
+            except FileNotFoundError:
+                fd = os.open(str(path), flags | os.O_CREAT | os.O_EXCL, 0o600)
+            else:
+                if is_link_or_junction(path) or not stat.S_ISREG(pre.st_mode) or pre.st_nlink != 1:
+                    raise OSError(f"refusing unsafe skill lock {path}")
+                fd = os.open(str(path), flags)
+            opened = os.fstat(fd)
+            if pre is not None and (opened.st_dev, opened.st_ino) != (
+                pre.st_dev,
+                pre.st_ino,
+            ):
+                raise OSError(f"skill lock changed during open: {path}")
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise OSError(f"refusing unsafe skill lock {path}")
+            platform_compat.prepare_lock_file(fd)
+            return fd
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            raise
+
+    @contextlib.contextmanager
+    def _file_lock(self, name: str) -> Iterator[bool]:
+        """Yield whether a bounded cross-process advisory lock was acquired."""
+        if not self._private_state_roots_safe(create=True):
+            yield False
+            return
+        path = self._locks_root() / name
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = self._open_skill_lock(path)
+        except OSError:
+            logger.warning("Could not open skill lock %s", path)
+            yield False
+            return
+        acquired = False
+        try:
+            deadline = time.monotonic() + _PROMOTE_LOCK_TIMEOUT_S
+            while True:
+                if platform_compat.try_acquire_lock(fd, exclusive=True):
+                    acquired = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_PROMOTE_LOCK_POLL_S)
+            yield acquired
+        finally:
+            if acquired:
+                platform_compat.release_lock(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    @contextlib.contextmanager
+    def _promotion_lock(self, target_slug: str) -> Iterator[bool]:
+        """Serialize promotions to one live auto-skill across processes.
+
+        Refuses a non-canonical slug instead of locking it: the lock file is
+        NAMED by the slug while the live directory is RESOLVED by the
+        filesystem, and the two disagree on aliases. On a case-insensitive
+        filesystem ``Foo`` opens ``auto/foo`` but locks ``target-Foo.lock``;
+        Win32 strips trailing dots/spaces from path components, so ``foo.``
+        opens ``auto/foo`` while locking ``target-foo..lock``. Either way two
+        writers hold different locks over one directory and updates are lost.
+        Every product-created slug already matches ``_AUTO_NAME_PATTERN`` (all
+        creation paths enforce it), so canonical callers are unaffected and an
+        alias fails closed here — at the one choke point every locked mutation
+        routes through — rather than at each caller.
+        """
+        if not _AUTO_NAME_PATTERN.fullmatch(target_slug):
+            logger.warning("Refusing promotion lock for non-canonical slug: %r", target_slug)
+            yield False
+            return
+        with self._file_lock(f"target-{target_slug}.lock") as acquired:
+            yield acquired
+
+    @contextlib.contextmanager
+    def _live_auto_mutation_lock(self, name: str) -> Iterator[bool]:
+        """Serialize a live auto-skill mutation with candidate promotion."""
+        if not self.is_auto_generated(name):
+            namespace, _separator, _slug = name.partition("/")
+            # Case-insensitive filesystems resolve e.g. ``AUTO/x`` to the same
+            # directory as ``auto/x``, and Win32 strips trailing dots/spaces
+            # from path components, so ``auto.`` (or ``auto ``) opens the
+            # ``auto`` directory too.  The bare reserved namespace — in any of
+            # those alias spellings — would otherwise take the lock-free
+            # manual-skill branch and let a delete remove every live, pending,
+            # and private auto-skill entry.
+            if namespace.rstrip(" .").casefold() == AUTO_SKILL_NAMESPACE.casefold():
+                logger.warning("Refusing reserved auto-skill path: %s", name)
+                yield False
+                return
+            yield True
+            return
+        target_slug = self._auto_slug_from_name(name)
+        if not self._is_pending_slug_safe(target_slug):
+            yield False
+            return
+        with self._promotion_lock(target_slug) as acquired:
+            yield acquired
+
+    def _pending_slug_claimed(self, slug: str) -> bool:
+        if not self._private_state_roots_safe(create=False):
+            return False
+        root = self._claims_root()
+        return root.is_dir() and any(
+            claim.name.rsplit("--", 1)[0] == slug for claim in root.glob(f"{slug}--*")
+        )
+
+    def _probe_no_replace_rename(self) -> bool:
+        """Verify atomic no-replace support before moving a public candidate."""
+        token = secrets.token_hex(16)
+        source = self._claims_root() / f".rename-probe-{token}-source"
+        destination = self._claims_root() / f".rename-probe-{token}-destination"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd: int | None = None
+        try:
+            fd = os.open(str(source), flags, 0o600)
+            os.close(fd)
+            fd = None
+            platform_compat.rename_no_replace(source, destination)
+            return True
+        except OSError:
+            logger.warning(
+                "Atomic no-replace rename is unavailable under %s",
+                self._claims_root(),
+                exc_info=True,
+            )
+            return False
+        finally:
+            if fd is not None:
+                os.close(fd)
+            for probe in (source, destination):
+                try:
+                    if is_link_or_junction(probe):
+                        platform_compat.unlink_link_or_junction(probe)
+                    else:
+                        probe.unlink(missing_ok=True)
+                except OSError:
+                    logger.debug("Could not remove rename probe %s", probe, exc_info=True)
+
+    def _claim_lock_path(self, claim_name: str) -> Path:
+        return self._locks_root() / "claims" / f"{claim_name}.lock"
+
+    @staticmethod
+    def _claim_lock_state_payload(claim_name: str, *, completed: bool) -> bytes:
+        return (("C" if completed else "A") + claim_name + "\n").encode("utf-8")
+
+    @classmethod
+    def _authenticated_claim_lock_state(
+        cls,
+        fd: int,
+        lock_path: Path,
+        claim_name: str,
+        *,
+        completed: bool,
+    ) -> bool:
+        """Authenticate a fixed-size active/completed record in a held claim lock."""
+        if is_link_or_junction(lock_path):
+            return False
+        try:
+            linked = os.lstat(lock_path)
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISREG(linked.st_mode)
+                or not stat.S_ISREG(opened.st_mode)
+                or linked.st_nlink != 1
+                or opened.st_nlink != 1
+                or (linked.st_dev, linked.st_ino) != (opened.st_dev, opened.st_ino)
+                or opened.st_size > 256
+            ):
+                return False
+            os.lseek(fd, 0, os.SEEK_SET)
+            payload = os.read(fd, 257)
+        except OSError:
+            return False
+        return payload == cls._claim_lock_state_payload(claim_name, completed=completed)
+
+    def _initialize_claim_lock_state(self, fd: int, lock_path: Path, claim_name: str) -> bool:
+        """Durably bind a fresh claim lock to its active claim before claiming."""
+        payload = self._claim_lock_state_payload(claim_name, completed=False)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("short claim-lock state write")
+                remaining = remaining[written:]
+            os.fsync(fd)
+        except OSError:
+            logger.warning("Could not initialize claim lock state %s", lock_path)
+            return False
+        return self._authenticated_claim_lock_state(fd, lock_path, claim_name, completed=False)
+
+    def _commit_claim_lock_state(self, fd: int, lock_path: Path, claim_name: str) -> bool:
+        """Durably transition a held claim lock from active to completed."""
+        if self._authenticated_claim_lock_state(fd, lock_path, claim_name, completed=True):
+            return True
+        active = self._authenticated_claim_lock_state(fd, lock_path, claim_name, completed=False)
+        payload = self._claim_lock_state_payload(claim_name, completed=True)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            if active:
+                if os.write(fd, b"C") != 1:
+                    raise OSError("short claim-lock completion write")
+            else:
+                remaining = memoryview(payload)
+                while remaining:
+                    written = os.write(fd, remaining)
+                    if written <= 0:
+                        raise OSError("short claim-lock completion write")
+                    remaining = remaining[written:]
+            os.fsync(fd)
+        except OSError:
+            logger.warning("Could not commit claim lock state %s", lock_path)
+            return False
+        return self._authenticated_claim_lock_state(fd, lock_path, claim_name, completed=True)
+
+    def _cleanup_claim_lock(self, claim_name: str) -> None:
+        """Remove a completed claim's unique lock file when no snapshot remains."""
+        if not self._private_state_roots_safe(create=False, require_sensitive=True):
+            return
+        # Link check FIRST: it is lstat-based and never traverses, so a planted
+        # link short-circuits the compound before ``exists`` could follow it.
+        if (
+            is_link_or_junction(self._claims_root() / claim_name)
+            or (self._claims_root() / claim_name).exists()
+        ):
+            return
+        try:
+            self._claim_lock_path(claim_name).unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not remove completed claim lock %s", claim_name, exc_info=True)
+
+    @staticmethod
+    def _completion_marker_present(claim: Path) -> bool:
+        marker = claim / ".promoted"
+        return os.path.lexists(marker) or is_link_or_junction(marker)
+
+    @staticmethod
+    def _remove_untrusted_completion_marker(claim: Path) -> bool:
+        """Remove only the reserved marker entry, never anything it links to."""
+        marker = claim / ".promoted"
+        try:
+            if is_link_or_junction(marker):
+                platform_compat.unlink_link_or_junction(marker)
+            elif marker.is_dir():
+                shutil.rmtree(marker)
+            else:
+                marker.unlink(missing_ok=True)
+            return True
+        except OSError:
+            logger.warning("Could not remove untrusted completion marker %s", marker)
+            return False
+
+    @staticmethod
+    def _authenticated_completion_marker(claim: Path) -> bool:
+        """Recognize only this claim's regular, single-link completion marker."""
+        marker = claim / ".promoted"
+        if is_link_or_junction(marker):
+            return False
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(str(marker), flags)
+        except OSError:
+            return False
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > 256:
+                return False
+            payload = os.read(fd, 257)
+            return payload == (claim.name + "\n").encode("utf-8")
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _write_completion_marker(claim: Path) -> bool:
+        """Exclusively commit a claim outcome without following an existing path."""
+        marker = claim / ".promoted"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd: int | None = None
+        created = False
+        wrote = False
+        try:
+            fd = os.open(str(marker), flags, 0o600)
+            created = True
+            remaining = memoryview((claim.name + "\n").encode("utf-8"))
+            while remaining:
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("short completion-marker write")
+                remaining = remaining[written:]
+            os.fsync(fd)
+            wrote = True
+        except OSError:
+            logger.warning("Could not commit claim completion marker %s", marker)
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    wrote = False
+        if wrote and SkillsLoader._authenticated_completion_marker(claim):
+            return True
+        if created:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return False
+
+    def _cleanup_completed_claim(self, claim: Path, claim_fd: int) -> bool:
+        """Delete a completed claim while preserving an authenticated outcome.
+
+        The held per-claim lock carries a durable fixed-size completion record
+        outside the recursively deleted tree. Therefore a partial ``rmtree``
+        cannot erase the only evidence that recovery must delete rather than
+        restore an already-consumed claim. The in-tree marker is still repaired
+        when possible for defense in depth and compatibility with older claims.
+        """
+        if is_link_or_junction(claim):
+            logger.error("Refusing to clean linked completed claim %s", claim)
+            return False
+        lock_path = self._claim_lock_path(claim.name)
+        lock_completed = self._authenticated_claim_lock_state(
+            claim_fd, lock_path, claim.name, completed=True
+        )
+        marker_completed = self._authenticated_completion_marker(claim)
+        if not lock_completed and marker_completed:
+            lock_completed = self._commit_claim_lock_state(claim_fd, lock_path, claim.name)
+        if not lock_completed:
+            if marker_completed:
+                logger.warning(
+                    "Deferred completed-claim cleanup until lock outcome is durable: %s",
+                    claim,
+                )
+                return True
+            logger.error("No authenticated committed outcome for claim %s", claim)
+            return False
+        try:
+            shutil.rmtree(claim)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            logger.warning("Deferred completed-claim cleanup for %s", claim)
+        if not (claim.exists() or is_link_or_junction(claim)):
+            return True
+        if is_link_or_junction(claim):
+            logger.error("Completed claim became a link during cleanup: %s", claim)
+            return False
+        if self._authenticated_completion_marker(claim):
+            return True
+        if self._completion_marker_present(claim) and not self._remove_untrusted_completion_marker(
+            claim
+        ):
+            return False
+        if self._write_completion_marker(claim):
+            return True
+        if self._authenticated_claim_lock_state(claim_fd, lock_path, claim.name, completed=True):
+            logger.warning(
+                "Claim marker could not be repaired; authenticated lock outcome retained for %s",
+                claim,
+            )
+            return True
+        logger.error("Could not preserve committed outcome for claim %s", claim)
+        return False
+
+    @staticmethod
+    def _auto_apply_candidate_binding(
+        skill_bytes: bytes,
+        *,
+        target: object,
+        base_version: object,
+        base_content_hash: object,
+    ) -> str:
+        """Bind unattended apply to exact staged bytes and live-base identity."""
+        fields = json.dumps(
+            [target, base_version, base_content_hash],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256()
+        digest.update(len(skill_bytes).to_bytes(8, "big"))
+        digest.update(skill_bytes)
+        digest.update(fields)
+        return digest.hexdigest()
+
     def stage_skill_candidate(
         self,
         slug: str,
@@ -3214,6 +3857,53 @@ class SkillsLoader:
         kind: str = "new",
         target: str | None = None,
         base_version: int | None = None,
+        notify: bool = True,
+        stage_token: str | None = None,
+        base_content_hash: str | None = None,
+        unattended_binding_out: list[str] | None = None,
+    ) -> str | None:
+        """Publish a complete candidate under the pending namespace."""
+        with self._file_lock("pending.lock") as acquired:
+            if not acquired:
+                logger.warning("Could not acquire pending-skill namespace lock")
+                return None
+            name = self._stage_skill_candidate_locked(
+                slug,
+                description=description,
+                triggers=triggers,
+                procedure_md=procedure_md,
+                provenance=provenance,
+                scripts=scripts,
+                source=source,
+                kind=kind,
+                target=target,
+                base_version=base_version,
+                notify=notify,
+                stage_token=stage_token,
+                base_content_hash=base_content_hash,
+                unattended_binding_out=unattended_binding_out,
+            )
+        if name and notify:
+            self.emit_pending_staged(name.split("/", 1)[-1])
+        return name
+
+    def _stage_skill_candidate_locked(
+        self,
+        slug: str,
+        *,
+        description: str,
+        triggers: str,
+        procedure_md: str,
+        provenance: AutoSkillProvenance,
+        scripts: list[dict] | None = None,
+        source: str = "consolidation",
+        kind: str = "new",
+        target: str | None = None,
+        base_version: int | None = None,
+        notify: bool = True,
+        stage_token: str | None = None,
+        base_content_hash: str | None = None,
+        unattended_binding_out: list[str] | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -3252,11 +3942,15 @@ class SkillsLoader:
         # staging, so this does not flood the queue with duplicates.
         pdir = root / slug
         try:
+            if self._pending_slug_claimed(slug):
+                raise FileExistsError(slug)
             pdir.mkdir(exist_ok=False)
         except FileExistsError:
             claimed: "Path | None" = None
             for _n in range(2, 51):
                 cand_dir = root / f"{slug}-{_n}"
+                if self._pending_slug_claimed(cand_dir.name):
+                    continue
                 try:
                     cand_dir.mkdir(exist_ok=False)
                 except FileExistsError:
@@ -3264,8 +3958,8 @@ class SkillsLoader:
                 claimed = cand_dir
                 break
             if claimed is None:
-                logger.warning("Too many pending candidates for slug %s; deferring re-stage", slug)
-                return name
+                logger.warning("Too many pending candidates for slug %s; rejecting re-stage", slug)
+                return None
             pdir = claimed
             slug = claimed.name
             name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
@@ -3278,7 +3972,14 @@ class SkillsLoader:
                 procedure_md=procedure_md,
                 provenance=provenance,
             )
-            (pdir / "SKILL.md").write_text(content, encoding="utf-8")
+            # Encode ONCE and write exactly these bytes. The unattended binding
+            # below must hash the byte object in memory, never a re-read of the
+            # file: the pending root is publicly writable, so a concurrent
+            # overwrite landing between this write and a read-back would let the
+            # binding vouch for bytes nobody validated — and the unattended
+            # promotion trusts the binding.
+            content_bytes = content.encode("utf-8")
+            (pdir / "SKILL.md").write_bytes(content_bytes)
             script_names: list[str] = []
             clean_scripts = [s for s in (scripts or []) if isinstance(s, dict)]
             if clean_scripts:
@@ -3301,12 +4002,26 @@ class SkillsLoader:
                 "has_scripts": bool(script_names),
                 "scripts": script_names,
                 "kind": kind or "new",
+                "notify_suppressed": not notify,
             }
             if target is not None:
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if stage_token is not None:
+                meta["stage_token"] = stage_token
+            if base_content_hash is not None:
+                meta["base_content_hash"] = base_content_hash
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            if unattended_binding_out is not None:
+                unattended_binding_out[:] = [
+                    self._auto_apply_candidate_binding(
+                        content_bytes,
+                        target=target,
+                        base_version=base_version,
+                        base_content_hash=base_content_hash,
+                    )
+                ]
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty
             # dir behind: a later stage would see it exists and report the slug as
@@ -3315,37 +4030,12 @@ class SkillsLoader:
             shutil.rmtree(pdir, ignore_errors=True)
             raise
         logger.info("Staged pending skill candidate: %s (scripts=%d)", name, len(script_names))
-        # Notify any registered observer (the gateway wires a bell-feed
-        # notification + a ``skills.pending_changed`` WS event) so a candidate
-        # awaiting review surfaces instead of sitting unseen in the queue. Fired
-        # for BOTH new and update candidates, from every producer that stages
-        # through this choke point. Best-effort: an observer failure must never
-        # fail the staging that already succeeded on disk.
-        #
-        # ``description``/``triggers`` ride along because the observer's only
-        # other option is to re-read ``.meta.json`` off disk (a second read of
-        # what was just written, on the staging path) -- and without them a
-        # notification can only say THAT a skill was generated, never what it
-        # does, which is the one fact a reviewer needs to decide whether to open
-        # the queue at all.
-        _emit_pending_staged(
-            {
-                "name": name,
-                "slug": slug,
-                "kind": kind or "new",
-                "target": target,
-                "source": source,
-                "has_scripts": bool(script_names),
-                "description": description,
-                "triggers": triggers,
-            }
-        )
         return name
 
-    def _read_pending_meta(self, slug: str) -> dict:
-        mf = self._pending_root() / slug / ".meta.json"
-        # Never follow an LLM-planted symlink (could point at a sensitive file).
-        if mf.is_symlink():
+    def _read_candidate_meta(self, candidate_dir: Path) -> dict:
+        mf = candidate_dir / ".meta.json"
+        # Never follow a linked candidate parent or linked metadata file.
+        if is_link_or_junction(candidate_dir) or is_link_or_junction(mf):
             return {}
         try:
             data = json.loads(mf.read_text(encoding="utf-8"))
@@ -3353,16 +4043,192 @@ class SkillsLoader:
             return {}
         if not isinstance(data, dict):
             return {}
-        # Recursively redact secrets from LLM-produced metadata before it can
-        # surface via the pending list/detail API. The crystallize skill writes
-        # .meta.json directly, bypassing the consolidation redaction path, so a
-        # credential in ANY (incl. nested) value must be scrubbed here.
         redacted = self._redact_deep(data)
         return redacted if isinstance(redacted, dict) else {}
+
+    def _read_pending_meta(self, slug: str) -> dict:
+        return self._read_candidate_meta(self._pending_root() / slug)
+
+    def emit_pending_staged(self, slug: str) -> None:
+        """Emit a review notification for an existing pending candidate."""
+        if not self._is_pending_slug_safe(slug):
+            return
+        candidate = self._pending_root() / slug
+        # The pending root is publicly writable: check the candidate dir and its
+        # SKILL.md for links BEFORE any traversing probe — ``exists`` follows a
+        # planted link (a UNC target on Windows triggers outbound SMB auth).
+        if is_link_or_junction(candidate) or is_link_or_junction(candidate / "SKILL.md"):
+            return
+        if not (candidate / "SKILL.md").exists():
+            return
+        meta = self._read_candidate_meta(candidate)
+        _emit_pending_staged(
+            {
+                "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
+                "slug": slug,
+                "kind": meta.get("kind", "new"),
+                "target": meta.get("target"),
+                "source": meta.get("source", ""),
+                "has_scripts": bool(meta.get("has_scripts")),
+                "description": meta.get("description", ""),
+                "triggers": meta.get("triggers", ""),
+            }
+        )
+
+    def _claim_pending_update(self, slug: str) -> tuple[Path, int, str] | None:
+        """Atomically move a public candidate to a private claimed snapshot."""
+        if not self._is_pending_slug_safe(slug):
+            return None
+        if not self._private_state_roots_safe(create=True, require_sensitive=True):
+            logger.error(
+                "Refusing to claim pending skill %s: private state is unsafe",
+                slug,
+            )
+            return None
+        # Restoration and new-skill publication both require an atomic
+        # no-replace rename. Prove that primitive on this filesystem before the
+        # first candidate operation so an unsupported host leaves the public
+        # candidate untouched instead of stranding it in private storage.
+        if not self._probe_no_replace_rename():
+            return None
+        claim_name = f"{slug}--{secrets.token_hex(16)}"
+        claim = self._claims_root() / claim_name
+        lock_path = self._claim_lock_path(claim_name)
+        try:
+            claim.parent.mkdir(parents=True, exist_ok=True)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = self._open_skill_lock(lock_path)
+        except OSError:
+            return None
+        if not platform_compat.try_acquire_lock(fd, exclusive=True):
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        if not self._initialize_claim_lock_state(fd, lock_path, claim_name):
+            platform_compat.release_lock(fd)
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
+        try:
+            with self._file_lock("pending.lock") as acquired:
+                if not acquired:
+                    raise OSError("pending namespace lock unavailable")
+                # The rename is the first candidate operation. Metadata, body,
+                # layout, and scripts are inspected only from ``claim``.
+                os.rename(self._pending_root() / slug, claim)
+        except OSError:
+            platform_compat.release_lock(fd)
+            os.close(fd)
+            self._cleanup_claim_lock(claim_name)
+            return None
+        if not is_link_or_junction(claim) and self._completion_marker_present(claim):
+            logger.warning("Refusing pending skill %s: reserved completion marker exists", slug)
+            try:
+                if self._remove_untrusted_completion_marker(claim):
+                    self._restore_claimed_update(claim, slug)
+            except OSError:
+                logger.error("Could not restore marker-bearing claim %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(fd)
+                os.close(fd)
+                self._cleanup_claim_lock(claim_name)
+            return None
+        return claim, fd, consumed_at
+
+    def _restore_claimed_update(self, claim: Path, slug: str) -> Path | None:
+        """Return a refused claim to review without overwriting another writer."""
+        notify = False
+        restored: Path | None = None
+        with self._file_lock("pending.lock") as acquired:
+            claim_linked = is_link_or_junction(claim)
+            if not acquired or (not claim_linked and not claim.is_dir()):
+                logger.error("Could not restore claimed update %s", claim)
+                return None
+            root = self._pending_root()
+            root.mkdir(parents=True, exist_ok=True)
+            for number in [None, *range(2, 51)]:
+                if number is None:
+                    candidate_slug = slug
+                else:
+                    suffix = f"-{number}"
+                    candidate_slug = f"{slug[: 64 - len(suffix)].rstrip('-')}{suffix}"
+                destination = root / candidate_slug
+                if not claim_linked:
+                    meta_file = claim / ".meta.json"
+                    if not is_link_or_junction(meta_file):
+                        try:
+                            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                            if not isinstance(meta, dict):
+                                raise TypeError("candidate metadata is not an object")
+                            notify = bool(meta.get("notify_suppressed")) or candidate_slug != slug
+                            meta["slug"] = candidate_slug
+                            meta["name"] = f"{AUTO_SKILL_NAMESPACE}/{candidate_slug}"
+                            meta["notify_suppressed"] = False
+                            atomic_write(meta_file, json.dumps(meta, indent=2))
+                        except (OSError, ValueError, TypeError):
+                            notify = candidate_slug != slug
+                try:
+                    platform_compat.rename_no_replace(claim, destination)
+                except OSError as exc:
+                    if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                        continue
+                    raise
+                restored = destination
+                break
+            if restored is None:
+                logger.error("No pending slot available to restore %s", claim)
+                return None
+        if notify:
+            self.emit_pending_staged(restored.name)
+        return restored
+
+    def _recover_abandoned_claims(self) -> None:
+        """Restore claims whose owning process exited before promotion finished."""
+        if not self._private_state_roots_safe(create=False, require_sensitive=True):
+            return
+        root = self._claims_root()
+        if not root.is_dir():
+            return
+        for claim in list(root.iterdir()):
+            claim_linked = is_link_or_junction(claim)
+            if (not claim_linked and not claim.is_dir()) or "--" not in claim.name:
+                continue
+            slug, _token = claim.name.rsplit("--", 1)
+            if not self._is_pending_slug_safe(slug):
+                continue
+            lock_path = self._claim_lock_path(claim.name)
+            try:
+                fd = self._open_skill_lock(lock_path)
+            except OSError:
+                continue
+            acquired = platform_compat.try_acquire_lock(fd, exclusive=True)
+            try:
+                if not acquired:
+                    continue
+                lock_completed = self._authenticated_claim_lock_state(
+                    fd, lock_path, claim.name, completed=True
+                )
+                marker_completed = not claim_linked and self._authenticated_completion_marker(claim)
+                if not claim_linked and (lock_completed or marker_completed):
+                    if not self._cleanup_completed_claim(claim, fd):
+                        logger.error("Could not safely clean completed claim %s", claim)
+                else:
+                    if not claim_linked and self._completion_marker_present(claim):
+                        if not self._remove_untrusted_completion_marker(claim):
+                            continue
+                    self._restore_claimed_update(claim, slug)
+            finally:
+                if acquired:
+                    platform_compat.release_lock(fd)
+                os.close(fd)
+                if acquired:
+                    self._cleanup_claim_lock(claim.name)
 
     def list_pending_skills(self) -> list[dict]:
         """Return ``{slug, name, description, triggers, has_scripts, created_at, path}``
         for every staged candidate."""
+        self._recover_abandoned_claims()
         root = self._pending_root()
         out: list[dict] = []
         if not root.is_dir():
@@ -3429,17 +4295,43 @@ class SkillsLoader:
         return obj
 
     @staticmethod
-    def _candidate_has_symlink(pdir: Path) -> bool:
-        """True if the candidate dir itself or any entry under it is a symlink —
-        so the read/approve paths never follow an LLM-planted link to a
-        sensitive file. (Scripts always require human review before going live;
-        this is defense-in-depth, not the primary control.)"""
-        if os.path.islink(str(pdir)):
+    def _candidate_has_unsafe_inode(pdir: Path) -> bool:
+        """True unless a tree contains only real dirs and lone regular files.
+
+        Renaming a candidate directory does not sever a hardlink to one of its
+        files. Reject every file whose inode has another name so no public alias
+        can mutate claimed bytes after review. Traversal and stat errors fail
+        closed because an uninspected entry is not safe to promote.
+        """
+        try:
+            if is_link_or_junction(pdir):
+                return True
+            if not stat.S_ISDIR(os.lstat(pdir).st_mode):
+                return True
+
+            def raise_walk_error(error: OSError) -> None:
+                raise error
+
+            for root, dirs, files in os.walk(
+                pdir,
+                onerror=raise_walk_error,
+                followlinks=False,
+            ):
+                for nm in dirs:
+                    entry = Path(root) / nm
+                    if is_link_or_junction(entry):
+                        return True
+                    if not stat.S_ISDIR(os.lstat(entry).st_mode):
+                        return True
+                for nm in files:
+                    entry = Path(root) / nm
+                    if is_link_or_junction(entry):
+                        return True
+                    entry_stat = os.lstat(entry)
+                    if not stat.S_ISREG(entry_stat.st_mode) or entry_stat.st_nlink != 1:
+                        return True
+        except OSError:
             return True
-        for root, dirs, files in os.walk(pdir):
-            for nm in list(dirs) + list(files):
-                if os.path.islink(os.path.join(root, nm)):
-                    return True
         return False
 
     def _redact_file_in_place(self, fp: Path) -> bool:
@@ -3491,11 +4383,11 @@ class SkillsLoader:
         skill_file = pdir / "SKILL.md"
         if not skill_file.exists():
             return None
-        # Reject any symlink in the candidate on the read path too (approval
-        # already rejects them) so the detail API can't be tricked into reading
-        # a sensitive file a candidate symlinked SKILL.md / a nested file to.
-        if self._candidate_has_symlink(pdir):
-            logger.warning("Refusing to read pending %s: candidate contains a symlink", slug)
+        # Apply the promotion inode rules on the read path too, so the detail
+        # API cannot read through a link, hardlink alias, special file, or an
+        # entry whose identity could not be established.
+        if self._candidate_has_unsafe_inode(pdir):
+            logger.warning("Refusing to read pending %s: candidate tree is unsafe", slug)
             return None
         meta = self._read_pending_meta(slug)
         scripts = self._collect_scripts(pdir / "scripts")
@@ -3516,17 +4408,17 @@ class SkillsLoader:
     def _candidate_layout_ok(self, src: Path, name: str) -> bool:
         """Shared candidate-layout guard for BOTH approve paths.
 
-        Rejects (a) any symlink anywhere in the candidate (defense-in-depth on
-        top of the mandatory human review — promotion + chmod must only touch
-        real files), and (b) any unexpected top-level entry: only ``SKILL.md``,
+        Rejects (a) any link, hardlinked/non-regular file, or unstatable entry
+        anywhere in the candidate (promotion + chmod must touch only stable,
+        private inodes), and (b) any unexpected top-level entry: only ``SKILL.md``,
         ``.meta.json`` and a ``scripts`` DIRECTORY are allowed. An injected
         auxiliary file (dropped outside the validated set) would ride live
         WITHOUT validation or redaction; a regular file named ``scripts`` would
         skip the directory-only script validation + redaction walk. Returns True
         only when the layout is safe to promote.
         """
-        if self._candidate_has_symlink(src):
-            logger.warning("Refusing to approve %s: candidate contains a symlink", name)
+        if self._candidate_has_unsafe_inode(src):
+            logger.warning("Refusing to approve %s: candidate tree is unsafe", name)
             return False
         _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
         for entry in src.iterdir():
@@ -3853,39 +4745,166 @@ class SkillsLoader:
         )
         return highest + 1
 
-    def approve_pending_update(self, slug: str) -> str | None:
-        """Promote a pending UPDATE candidate over its live target auto-skill.
+    def _promote_pending_update(
+        self,
+        slug: str,
+        *,
+        refuse_scripts: bool = False,
+        expected_stage_token: str | None = None,
+        expected_candidate_binding: str | None = None,
+    ) -> tuple[str, int] | None:
+        """Claim and promote an update, returning its lock-authoritative version."""
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
+            return None
+        claim, claim_fd, consumed_at = claimed
+        result: tuple[str, int] | None = None
+        try:
+            if is_link_or_junction(claim):
+                return None
+            meta = self._read_candidate_meta(claim)
+            target = meta.get("target")
+            if meta.get("kind") != "update" or not isinstance(target, str) or not target:
+                return None
+            target_slug = self._auto_slug_from_name(target)
+            if not self._is_pending_slug_safe(target_slug):
+                return None
+            with self._promotion_lock(target_slug) as acquired:
+                if not acquired:
+                    logger.warning("Promotion lock unavailable for %s", target)
+                    return None
+                result = self._approve_claimed_update_locked(
+                    claim,
+                    slug=slug,
+                    meta=meta,
+                    refuse_scripts=refuse_scripts,
+                    expected_stage_token=expected_stage_token,
+                    expected_candidate_binding=expected_candidate_binding,
+                )
+            if result is None:
+                return None
+            name, _new_version = result
+            marker_completed = self._write_completion_marker(claim)
+            lock_completed = self._commit_claim_lock_state(
+                claim_fd, self._claim_lock_path(claim.name), claim.name
+            )
+            if not marker_completed and not lock_completed:
+                # A process failure between the live commit and these outcome
+                # writes remains the documented narrow residual window.
+                logger.error(
+                    "Promoted %s but could not persist claim completion before cleanup", name
+                )
+            if not self._cleanup_completed_claim(claim, claim_fd):
+                logger.error("Could not safely clean promoted claim %s", claim)
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+            )
+            return result
+        finally:
+            try:
+                if result is None and (claim.exists() or is_link_or_junction(claim)):
+                    self._restore_claimed_update(claim, slug)
+            except OSError:
+                logger.error("Could not restore claimed update %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                self._cleanup_claim_lock(claim.name)
 
-        Preconditions (all checked BEFORE any live mutation; a failure here
-        leaves BOTH the live skill and the candidate untouched, returns None):
-        the slug is safe, the candidate has a ``SKILL.md``, its ``.meta.json``
-        has ``kind == "update"``, and ``target`` names an EXISTING live auto
-        skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
-        re-validated, and SKILL.md + scripts are redacted in place (originals
-        restored on failure).
+    def approve_pending_update(
+        self,
+        slug: str,
+        *,
+        refuse_scripts: bool = False,
+        expected_stage_token: str | None = None,
+        expected_candidate_binding: str | None = None,
+    ) -> str | None:
+        """Atomically claim and promote a pending UPDATE candidate.
 
-        Promotion: snapshot the current live ``SKILL.md`` to
-        ``auto/<target>/.versions/v<N>-SKILL.md`` (N = current live version),
-        write the candidate over live with frontmatter rewritten (preserve live
-        ``created_at``, ``name`` = ``auto/<target>``, ``version`` = N+1), move the
-        candidate scripts into the live ``scripts/`` (exec bit set on POSIX),
-        prune ``.versions`` to the newest ``MAX_SKILL_VERSIONS``, delete the
-        pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
+        The public directory is renamed before candidate inspection. A refusal
+        restores the claimed snapshot to review; success consumes only that
+        snapshot, never a replacement staged at the original slug.
         """
-        if not self._is_pending_slug_safe(slug):
+        result = self._promote_pending_update(
+            slug,
+            refuse_scripts=refuse_scripts,
+            expected_stage_token=expected_stage_token,
+            expected_candidate_binding=expected_candidate_binding,
+        )
+        return result[0] if result is not None else None
+
+    def _approve_claimed_update_locked(
+        self,
+        src: Path,
+        *,
+        slug: str,
+        meta: dict,
+        refuse_scripts: bool,
+        expected_stage_token: str | None,
+        expected_candidate_binding: str | None,
+    ) -> tuple[str, int] | None:
+        """Inspect and promote a private claim with the target lock held."""
+        # INVARIANT: validate the claimed tree BEFORE any child-path read or
+        # probe. Every dereference of ``src``'s children below — the binding's
+        # ``SKILL.md`` read, the scripts probe, the redaction walk — trusts this
+        # single no-follow, stable-inode, expected-entries check. Reviews of
+        # this surface kept finding one pre-validation dereference per round
+        # (a planted link's target — a UNC path on Windows — is touched before
+        # any guard sees it); running the shared guard first makes the whole
+        # class unreachable instead of patching probes one by one.
+        # The slug names this claim (already private), so use it for the log.
+        if not self._candidate_layout_ok(src, slug):
             return None
-        src = self._pending_root() / slug
-        if not (src / "SKILL.md").exists():
-            return None
-        meta = self._read_pending_meta(slug)
-        if meta.get("kind") != "update":
+        # Single authoritative read of the claimed body. A writer that opened
+        # the candidate's SKILL.md BEFORE the claim keeps a usable handle after
+        # the rename (rename moves the path, not the inode), so any re-read
+        # after a verification can observe different bytes than were verified.
+        # Every later use of the body on the unattended path derives from THESE
+        # bytes in memory — never from a second file read.
+        bound_raw: bytes | None = None
+        if expected_stage_token is not None:
+            try:
+                bound_raw = (src / "SKILL.md").read_bytes()
+            except OSError:
+                logger.warning("Refusing unattended promotion of %s: body is unreadable", slug)
+                return None
+            actual_token = meta.get("stage_token")
+            if not isinstance(actual_token, str) or not secrets.compare_digest(
+                actual_token, expected_stage_token
+            ):
+                logger.warning("Refusing unattended promotion of %s: stage token changed", slug)
+                return None
+            if not expected_candidate_binding:
+                logger.warning("Refusing unattended promotion of %s: binding is missing", slug)
+                return None
+            try:
+                actual_binding = self._auto_apply_candidate_binding(
+                    bound_raw,
+                    target=meta.get("target"),
+                    base_version=meta.get("base_version"),
+                    base_content_hash=meta.get("base_content_hash"),
+                )
+            except (OSError, TypeError, ValueError):
+                logger.warning("Refusing unattended promotion of %s: binding is unreadable", slug)
+                return None
+            if not secrets.compare_digest(actual_binding, expected_candidate_binding):
+                logger.warning("Refusing unattended promotion of %s: candidate changed", slug)
+                return None
+        # ``lexists`` (never ``exists``): probe the ``scripts`` entry by NAME
+        # without following it. _candidate_layout_ok already validated the
+        # claimed tree no-follow above, but this probe re-runs at every use
+        # site and an ``exists()`` here would traverse a link's target — on
+        # Windows a UNC target can trigger outbound SMB authentication or
+        # stall. A link named ``scripts`` refuses unattended promotion (fail
+        # safe to staged-for-review), matching the layout guard's rejection on
+        # the attended path.
+        if refuse_scripts and (meta.get("has_scripts") or os.path.lexists(src / "scripts")):
+            logger.info("Refusing unattended promotion of %s: scripts require review", slug)
             return None
         target = meta.get("target")
         if not isinstance(target, str) or not target:
             return None
         target_slug = self._auto_slug_from_name(target)
-        if not self._is_pending_slug_safe(target_slug):
-            return None
         live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
         live_skill = live_dir / "SKILL.md"
         if not live_skill.exists():
@@ -3894,23 +4913,72 @@ class SkillsLoader:
             )
             return None
         target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
-        # The LIVE side is a write target here (unlike approve_pending_skill, which
-        # moves into a fresh dest), so it needs its own symlink guard: a symlinked
-        # ``scripts/`` (or any symlinked entry) would let ``mkdir``/``copy2`` follow
-        # the link and write candidate content OUTSIDE the skill directory.
-        if self._candidate_has_symlink(live_dir):
+        # The frontmatter cache is keyed by mtime alone, and mtime granularity
+        # can be a full tick: a writer that replaced the live skill within the
+        # same tick as the cached read leaves this process asserting the OLD
+        # version and flags. Every read below this line decides correctness —
+        # the stale-base refusal, and the carried created_at/pinned/pointer-only
+        # flags — so drop the entry now that the target lock serializes writers,
+        # forcing one fresh parse of the current bytes.
+        self._fm_cache.pop(str(live_skill), None)
+        # The LIVE side is a write target here (unlike approve_pending_skill,
+        # which moves into a fresh dest), so it needs the same stable-inode guard.
+        # A linked entry could redirect or externally mutate copied content.
+        if self._candidate_has_unsafe_inode(live_dir):
             logger.warning(
-                "Refusing to approve update %s: live skill directory contains a symlink",
+                "Refusing to approve update %s: live skill directory is unsafe",
                 target_name,
             )
             return None
-        # Shared symlink + unexpected-entry rejection.
-        if not self._candidate_layout_ok(src, target_name):
-            return None
-        # Re-validate + redact the candidate in place (restores originals on fail).
-        redact_backup = self._validate_and_redact_candidate(src, target_name)
-        if redact_backup is None:
-            return None
+        # (The claimed tree itself was layout-validated at function entry.)
+        live_prev: str | None = None
+        if expected_stage_token is not None:
+            expected_hash = meta.get("base_content_hash")
+            if not isinstance(expected_hash, str) or not expected_hash:
+                logger.warning(
+                    "Refusing unattended promotion of %s: live-content hash is missing",
+                    target_name,
+                )
+                return None
+            try:
+                live_prev = live_skill.read_text(encoding="utf-8")
+            except OSError:
+                logger.warning(
+                    "Refusing unattended promotion of %s: live skill could not be read",
+                    target_name,
+                )
+                return None
+            actual_hash = hashlib.sha256(live_prev.encode("utf-8")).hexdigest()
+            if not secrets.compare_digest(expected_hash, actual_hash):
+                logger.warning(
+                    "Refusing unattended promotion of %s: live skill changed after staging",
+                    target_name,
+                )
+                return None
+        # Re-validate + redact, and compute the new live content BEFORE any
+        # live mutation — a failure aborts with live + candidate intact.
+        #
+        # UNATTENDED path: the shared in-place redactor is deliberately NOT
+        # run. It performs its own file read, so a retained pre-claim handle
+        # could feed it bytes other than the verified ones — no snapshot
+        # comparison can pin an input read we do not control. Instead the
+        # promoted body derives from ``bound_raw`` (the verified bytes) in
+        # memory via the same ``_redact_text`` transform, the claim tree is
+        # never mutated (nothing to restore on failure), and scripts were
+        # already refused above — so after the single ``bound_raw`` read there
+        # is NO file read or write of claim content on this path at all.
+        if bound_raw is not None:
+            redact_backup: dict[Path, bytes] = {}
+            try:
+                candidate_body = self._redact_text(bound_raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                logger.warning("Refusing unattended promotion of %s: body is not UTF-8", slug)
+                return None
+        else:
+            attended_backup = self._validate_and_redact_candidate(src, target_name)
+            if attended_backup is None:
+                return None
+            redact_backup = attended_backup
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -3919,13 +4987,12 @@ class SkillsLoader:
                 except OSError:
                     pass
 
-        # Compute the new live content from the redacted candidate BEFORE any
-        # live mutation — a read failure aborts with live + candidate intact.
-        try:
-            candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
-        except OSError:
-            _restore_redacted()
-            return None
+        if bound_raw is None:
+            try:
+                candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
+            except OSError:
+                _restore_redacted()
+                return None
         current_version = self.get_auto_skill_version(target_name)
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
@@ -4001,7 +5068,8 @@ class SkillsLoader:
         snapshot = versions_dir / f"v{snapshot_version}-SKILL.md"
         try:
             versions_dir.mkdir(parents=True, exist_ok=True)
-            live_prev = live_skill.read_text(encoding="utf-8")
+            if live_prev is None:
+                live_prev = live_skill.read_text(encoding="utf-8")
             atomic_write(snapshot, live_prev)
         except OSError:
             _restore_redacted()
@@ -4037,7 +5105,12 @@ class SkillsLoader:
         # and then failing on a later file would roll SKILL.md back while leaving
         # the replacement script live — an internally inconsistent skill.
         overwritten: dict[Path, tuple[bytes, int]] = {}
-        if src_scripts.is_dir():
+        # ``refuse_scripts`` (the unattended path) NEVER copies scripts, even if
+        # a ``scripts`` directory exists now: the probe above refused candidates
+        # that had one, so a directory present at this point was planted after
+        # the probe (a pre-claim directory handle allows mkdirat post-claim) and
+        # must not reach the live tree.
+        if not refuse_scripts and src_scripts.is_dir():
             live_scripts = live_dir / "scripts"
             try:
                 live_scripts.mkdir(parents=True, exist_ok=True)
@@ -4099,12 +5172,7 @@ class SkillsLoader:
                 return None
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
-        # (i) Remove the pending candidate.
-        # Captured BEFORE the removal so a same-slug replacement staged after
-        # this instant keeps its notification (see approve_pending_skill).
-        consumed_at = datetime.now(tz=timezone.utc).isoformat()
-        shutil.rmtree(src, ignore_errors=True)
-        # (j) Audit the approved update.
+        # (i) Audit the approved update.
         sel().log_tool_invocation(
             session_key="skills",
             tool_name="auto_skill_update_approve",
@@ -4118,56 +5186,75 @@ class SkillsLoader:
                 "stale_base": False,
             },
         )
-        # (8) Make the updated live skill visible to trigger matching now.
         self._invalidate_iter_cache()
         logger.info(
             "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
         )
-        # The candidate cleanup above ignores rmtree errors (e.g. a Windows
-        # file lock), so the candidate can survive in the pending queue even
-        # though the update went live. Only report it consumed when the
-        # directory is really gone — otherwise the queue still shows an
-        # actionable review and its notification must stay unread.
-        if not src.exists():
-            _emit_pending_consumed(
-                {
-                    "slug": slug,
-                    "outcome": "approved",
-                    "name": target_name,
-                    "consumed_at": consumed_at,
-                }
-            )
-        return target_name
+        return target_name, new_version
 
-    def approve_pending_skill(self, slug: str) -> str | None:
-        """Promote a pending candidate to a live auto-skill.
+    def auto_apply_pending_update(
+        self,
+        slug: str,
+        *,
+        expected_stage_token: str,
+        expected_candidate_binding: str,
+    ) -> tuple[str, int] | None:
+        """Promote a prose-only update when approval is disabled."""
+        applied = self._promote_pending_update(
+            slug,
+            refuse_scripts=True,
+            expected_stage_token=expected_stage_token,
+            expected_candidate_binding=expected_candidate_binding,
+        )
+        if applied is None:
+            # A refusal after claiming restores the candidate and clears this
+            # flag while emitting its staged event. A failure to claim leaves
+            # the original suppressed metadata in place, so surface it here.
+            if self._read_pending_meta(slug).get("notify_suppressed"):
+                self.emit_pending_staged(slug)
+            return None
+        name, version = applied
+        _emit_update_auto_applied(
+            {
+                "name": name,
+                "slug": slug,
+                "target": name,
+                "new_version": version,
+                # Deliberately no description: the only source would be the
+                # PUBLIC pending metadata read before the claim, which an
+                # attacker-writable sibling can rewrite so the notification
+                # describes different bytes than were promoted. The name,
+                # target and version above are computed from the claimed
+                # snapshot under the target lock.
+                "description": "",
+            }
+        )
+        return applied
 
-        Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
-        → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-        live name, or ``None`` if the candidate is missing, a live skill of that
-        name already exists, it contains a symlink, script validation fails, or
-        redaction fails. Every check runs BEFORE the move, so a rejected
-        candidate is left untouched in the pending queue.
-        """
-        if not self._is_pending_slug_safe(slug):
-            return None
-        src = self._pending_root() / slug
-        if not (src / "SKILL.md").exists():
-            return None
+    def _approve_claimed_skill_locked(self, src: Path, slug: str, consumed_at: str) -> str | None:
+        """Promote one claimed new-skill snapshot while its target lock is held."""
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         dest = self._dir / name
-        if dest.exists():
-            logger.warning("Cannot approve %s: a live skill already exists", name)
+        if is_link_or_junction(src):
             return None
-        # Reject any symlink in the candidate + any unexpected top-level entry
-        # (defense-in-depth on top of the mandatory human review); promotion +
-        # chmod must only touch known, real files. Factored into a shared helper
-        # so the update-approve path enforces the identical layout guard.
+        # INVARIANT: validate the claimed tree BEFORE any child-path read or
+        # probe (same rule as _approve_claimed_update_locked) — the meta read,
+        # the SKILL.md presence check, and the redaction walk all dereference
+        # children of ``src`` and must only ever touch validated inodes.
         if not self._candidate_layout_ok(src, name):
             return None
-        # Re-validate every script + redact the body + scripts before going live;
-        # snapshots each file first so a failure restores the ORIGINAL bytes and
-        # never leaves a corrupted pending draft. Shared with the update path.
+        meta = self._read_candidate_meta(src)
+        if meta.get("kind") == "update":
+            logger.warning("Refusing to approve %s as new: claimed candidate is an update", name)
+            return None
+        if not (src / "SKILL.md").exists():
+            return None
+        # ``lexists``: ANY entry at the destination — a plain dir, a file, or a
+        # planted link — means the slot is occupied; refuse without following a
+        # link's target (``exists`` would dereference it first).
+        if os.path.lexists(dest):
+            logger.warning("Cannot approve %s: a live skill already exists", name)
+            return None
         redact_backup = self._validate_and_redact_candidate(src, name)
         if redact_backup is None:
             return None
@@ -4179,15 +5266,6 @@ class SkillsLoader:
                 except OSError:
                     pass
 
-        # Drop pending-only bookkeeping ONLY after every check + redaction has
-        # passed and immediately before the move, so a failed approval leaves the
-        # candidate — including its .meta.json (description/triggers) — intact in
-        # the pending queue for re-review. A removal FAILURE (non-writable dir,
-        # etc.) must ABORT: otherwise the raw, possibly secret-bearing .meta.json
-        # would ride into the live skill dir and be exposed by the browser. Only
-        # an already-absent file (FileNotFoundError) is benign. We stash the meta
-        # bytes first so a subsequent MOVE failure can restore them (otherwise the
-        # candidate would be left stranded in pending without its metadata).
         meta_path = src / ".meta.json"
         meta_backup: bytes | None = None
         try:
@@ -4197,7 +5275,8 @@ class SkillsLoader:
         except OSError:
             _restore_redacted()
             logger.warning(
-                "Refusing to approve %s: could not read pending .meta.json before promotion", name
+                "Refusing to approve %s: could not read pending .meta.json before promotion",
+                name,
             )
             return None
         try:
@@ -4212,18 +5291,9 @@ class SkillsLoader:
             )
             return None
         dest.parent.mkdir(parents=True, exist_ok=True)
-        # Cutoff for notification resolution, captured BEFORE the candidate
-        # leaves the pending queue: staging refuses to overwrite an existing
-        # candidate, so a same-slug replacement can only be staged after this
-        # instant — its notification carries a strictly later ``ts`` and must
-        # survive the resolve.
-        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         try:
-            shutil.move(str(src), str(dest))
+            platform_compat.rename_no_replace(src, dest)
         except OSError:
-            # Promotion failed after we deleted the pending bookkeeping — restore
-            # .meta.json AND the redacted files so the candidate stays intact in
-            # the pending queue for re-review instead of being left corrupted.
             if meta_backup is not None and src.is_dir():
                 try:
                     meta_path.write_bytes(meta_backup)
@@ -4232,7 +5302,6 @@ class SkillsLoader:
             _restore_redacted()
             logger.warning("Refusing to approve %s: could not move candidate live", name)
             return None
-        # Mark scripts executable now that a human approved them (recursively).
         sdir = dest / "scripts"
         if sdir.is_dir():
             for root, _dirs, files in os.walk(sdir):
@@ -4250,20 +5319,82 @@ class SkillsLoader:
         )
         return name
 
+    def approve_pending_skill(self, slug: str) -> str | None:
+        """Atomically claim and promote a pending candidate to a live auto-skill.
+
+        The public directory is renamed before any metadata, layout, script, or
+        body inspection. Rejections restore that exact snapshot to review;
+        success consumes only the claim, never a same-slug replacement.
+        """
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
+            return None
+        src, claim_fd, consumed_at = claimed
+        promoted = False
+        try:
+            with self._promotion_lock(slug) as acquired:
+                if not acquired:
+                    logger.warning("Could not acquire promotion lock for auto/%s", slug)
+                    return None
+                result = self._approve_claimed_skill_locked(src, slug, consumed_at)
+                promoted = result is not None
+                return result
+        finally:
+            try:
+                if not promoted and (src.exists() or is_link_or_junction(src)):
+                    self._restore_claimed_update(src, slug)
+            except OSError:
+                logger.error("Could not restore claimed skill %s", src, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                self._cleanup_claim_lock(src.name)
+
     def dismiss_pending_skill(self, slug: str) -> bool:
-        """Delete a pending candidate. Returns True if it existed."""
-        if not self._is_pending_slug_safe(slug):
+        """Atomically claim and durably consume a pending candidate.
+
+        A committed marker makes a failed physical cleanup recoverable by the
+        same abandoned-claim pass used after promotion. Until that marker is
+        durable, every failure restores the exact claim to review.
+        """
+        claimed = self._claim_pending_update(slug)
+        if claimed is None:
             return False
-        pdir = self._pending_root() / slug
-        if not pdir.is_dir():
-            return False
-        # Captured BEFORE the removal so a same-slug replacement staged after
-        # this instant keeps its notification (see approve_pending_skill).
-        consumed_at = datetime.now(tz=timezone.utc).isoformat()
-        shutil.rmtree(pdir)
-        logger.info("Dismissed pending skill: %s", slug)
-        _emit_pending_consumed({"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at})
-        return True
+        claim, claim_fd, consumed_at = claimed
+        consumed = False
+        try:
+            if is_link_or_junction(claim):
+                try:
+                    platform_compat.unlink_link_or_junction(claim)
+                except OSError:
+                    logger.warning("Could not unlink pending-skill link: %s", slug)
+                    return False
+                consumed = True
+            else:
+                if not self._write_completion_marker(claim):
+                    logger.warning("Could not commit pending-skill dismissal: %s", slug)
+                    return False
+                consumed = True
+                self._commit_claim_lock_state(
+                    claim_fd, self._claim_lock_path(claim.name), claim.name
+                )
+                if not self._cleanup_completed_claim(claim, claim_fd):
+                    logger.error("Could not safely clean dismissed claim %s", claim)
+            logger.info("Dismissed pending skill: %s", slug)
+            _emit_pending_consumed(
+                {"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at}
+            )
+            return True
+        finally:
+            try:
+                if not consumed and (claim.exists() or is_link_or_junction(claim)):
+                    self._restore_claimed_update(claim, slug)
+            except OSError:
+                logger.error("Could not restore failed dismissal claim %s", claim, exc_info=True)
+            finally:
+                platform_compat.release_lock(claim_fd)
+                os.close(claim_fd)
+                self._cleanup_claim_lock(claim.name)
 
     def dismiss_all_pending(self) -> int:
         """Delete all pending candidates. Returns count dismissed."""
