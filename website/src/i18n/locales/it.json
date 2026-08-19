@@ -9289,6 +9289,7 @@
       "stub_aria": "Metti uno stub davanti a {{name}}",
       "stub_failed": "Non è stato possibile applicare la modifica. Potrebbe essere già salvata senza essere attiva: gli interruttori qui sotto mostrano ora lo stato salvato.",
       "stub_not_live": "Salvato, ma non ancora attivo: il gateway non è riuscito ad avviarsi. L'interruttore mostra ciò che è salvato, non ciò che è in esecuzione.",
+      "stub_restart_required": "Salvato. Riavvia il gateway per rendere effettiva la modifica. Le sessioni già in esecuzione mantengono i server con cui sono state avviate.",
       "stubbed_of_total": "{{stubbed}} su {{total}} con stub",
       "unsupported_platform": "La condivisione dei backend richiede socket di dominio Unix e non è disponibile su questa piattaforma.",
       "view_assessment": "Valutazione della condivisione",

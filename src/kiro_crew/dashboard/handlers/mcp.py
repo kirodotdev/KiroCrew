@@ -2734,14 +2734,16 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     Body ``{"name": "slack-mcp", "stub": true}`` for one server, or
     ``{"names": ["a-mcp", "b-mcp"], "stub": true}`` for several.  Adds or
     removes those names from ``mcp_gateway.stub_servers`` in config.json
-    (same config lock + atomic write as the enable toggle), then re-applies the
-    change in-process so new sessions pick up the new stub set without a
-    restart.  When the gateway is disabled, the allowlist is persisted only (it
-    takes effect when the gateway is enabled).
+    (same config lock + atomic write as the enable toggle).  The change is
+    RECORDED, not applied: the running broker is left alone and the response
+    carries ``restart_required``, because the daemon's routing is built with the
+    agent-spec rewrite at startup and a session's MCP toolset is fixed at
+    ``session/new``.  When the gateway is disabled, the allowlist is persisted
+    only (it takes effect when the gateway is enabled).
 
     The batch form exists because the UI's "toggle all" would otherwise issue
-    one request per server: N config rewrites and N pool re-applies for a single
-    user gesture, each one racing the others for the config lock.  One request
+    one request per server: N config rewrites for a single user gesture, each
+    one racing the others for the config lock.  One request
     means one write and one apply, so the allowlist can never land half-flipped.
 
     ``resolve_eligibility: true`` (with ``stub: true``) hands the POLICY to this
@@ -2950,7 +2952,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         apply = getattr(state, "_mcp_gateway_apply_stub", None)
         applied: dict[str, Any] = {"applied": False}
         # One apply for the whole batch: the allowlist is already fully written, so a
-        # single re-link picks up every name at once.
+        # single call records every name at once.
         audited = f"names={','.join(names)}" if batch else f"name={name}"
         if resolve_eligibility and stub:
             # Audit what was WRITTEN, not what was asked for -- the two differ by
@@ -2958,9 +2960,8 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             audited += f" written={','.join(resolved.get('eligible') or [])}"
         # Nothing qualified means nothing was written, so there is no new link for
         # an apply to pick up.
-        if apply is not None and not (
-            resolve_eligibility and stub and not resolved.get("eligible")
-        ):
+        nothing_written = bool(resolve_eligibility and stub and not resolved.get("eligible"))
+        if apply is not None and not nothing_written:
             try:
                 applied = await apply()
             except Exception as exc:
@@ -2972,6 +2973,14 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                     resources=f"{audited} stub={stub} error={exc}",
                 )
                 return web.json_response({"error": f"apply failed: {exc}"}, status=500)
+        elif not nothing_written:
+            # No callback means no gateway wired this process -- but the allowlist
+            # was already persisted above, so the change WAS recorded and takes
+            # effect at the next start, which is exactly what the callback would
+            # have reported. Answering it here keeps the client off its
+            # ``applied: false`` fault branch, which would otherwise tell the
+            # operator the gateway could not start a change that is safely saved.
+            applied = {"applied": False, "restart_required": True}
 
     sel().log_api_access(
         caller=request.get("user", "dashboard"),

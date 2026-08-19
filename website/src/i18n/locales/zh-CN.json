@@ -9059,6 +9059,7 @@
       "stub_aria": "在 {{name}} 前面放一个桩",
       "stub_failed": "改动没能生效。它可能已经保存但尚未生效 —— 下面的开关现在显示已存状态。",
       "stub_not_live": "已保存，但尚未生效 —— 网关没能启动。开关显示的是存下来的设置，并非当前运行状态。",
+      "stub_restart_required": "已保存。需要重启网关才会生效。已经在运行的会话仍使用它们启动时的服务器。",
       "stubbed_of_total": "{{total}} 台中有 {{stubbed}} 台已插桩",
       "unsupported_platform": "共享后端需要 Unix 域套接字，因此在当前平台不可用。",
       "view_assessment": "共享评估",

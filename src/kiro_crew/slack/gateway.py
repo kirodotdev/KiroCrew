@@ -1068,6 +1068,23 @@ class GatewayOrchestrator:
     :mod:`interactions` respectively.
     """
 
+    #: The stub set the broker's last start ATTEMPT was made with, which is not
+    #: the configured one: a stub change is recorded for the next gateway start
+    #: and deliberately not applied in place. Anything that restarts the broker
+    #: for an unrelated reason re-emits THIS set, or it silently applies a change
+    #: the operator was told is pending.
+    #:
+    #: Written on the attempt rather than on success, because a start that fails
+    #: leaves the broker down and something still has to know which set to bring
+    #: up when a later restart retries it. Recording only successes would turn a
+    #: transient start failure into a permanently absent broker.
+    #:
+    #: Declared on the class so it is total for every construction path,
+    #: including the ``__new__`` fixtures that never run ``__init__`` -- a
+    #: partially built orchestrator reading it must get "nothing attempted", not
+    #: AttributeError.
+    _mcp_stub_servers_started: frozenset[str] = frozenset()
+
     def __init__(
         self,
         cfg: KiroCrewConfig,
@@ -6352,7 +6369,7 @@ class GatewayOrchestrator:
     # MCP Gateway
     # ------------------------------------------------------------------
 
-    async def _init_mcp_gateway(self) -> None:
+    async def _init_mcp_gateway(self, stub_servers: frozenset[str] | None = None) -> None:
         """Start the MCP gateway sidecar and populate the agent-JSON overlay.
 
         Runs iff at least one server gets a stub
@@ -6364,10 +6381,17 @@ class GatewayOrchestrator:
         nothing. Any failure downgrades to today's per-session MCP path — the
         stub's graceful fallback keeps kiro-cli sessions working even when the
         broker is unreachable.
+
+        ``stub_servers`` overrides the configured set. A caller restarting the
+        broker for an unrelated reason passes the set already being served, so a
+        stub change recorded for the next gateway start is not applied early as a
+        side effect of that unrelated restart.
         """
         cfg_gw = self._cfg.mcp_gateway
-        if not cfg_gw.stub_servers:
+        stubs = frozenset(cfg_gw.stub_servers) if stub_servers is None else stub_servers
+        if not stubs:
             return
+        self._mcp_stub_servers_started = stubs
         # Runs on every platform the transport layer covers -- an AF_UNIX socket
         # on POSIX, a named pipe on Windows. Stub delivery is ACP session/new
         # injection, not a bind-mount, so no mount namespace is needed anywhere.
@@ -6394,7 +6418,7 @@ class GatewayOrchestrator:
                     work_dir=workspace_default,
                     sandbox_mode=self._cfg.agent.sandbox,
                     approval_mode=self._cfg.agent.approval_mode,
-                    stub_servers=frozenset(cfg_gw.stub_servers),
+                    stub_servers=stubs,
                     pooling_enabled=cfg_gw.enabled,
                 ),
             )
@@ -6418,11 +6442,16 @@ class GatewayOrchestrator:
             # serves: "N routed" beside a live daemon explains itself, and the
             # sharing suffix stops "sharing: off" next to a running broker from
             # reading as a contradiction.
+            #
+            # Counts ``stubs``, not the configured list. The two differ whenever a
+            # stub change is recorded for the next gateway start, and this line is
+            # read during exactly that diagnosis ("why is my stub not live?") --
+            # reporting the configured count there would answer it wrongly.
             logger.info(
                 "mcp-gateway: broker ready (socket=%s) for %d stubbed server(s), "
                 "backend sharing %s",
                 socket_path,
-                len(cfg_gw.stub_servers),
+                len(stubs),
                 "on" if cfg_gw.enabled else "off",
             )
 
@@ -6451,15 +6480,21 @@ class GatewayOrchestrator:
         rewriter reads the sharing flag when the broker starts, so re-running it
         is what re-emits every stub WITHOUT ``--poolable`` and actually stops the
         sharing the operator just turned off.
+        The restart re-emits the stub set the broker is ALREADY serving, not the
+        configured one. A stub change is recorded for the next gateway start, so
+        consuming it here would apply it early as a side effect of an unrelated
+        sharing edit -- the operator was told that change is waiting, and the
+        broker cycle that carried it would also cancel the in-flight tool calls
+        of every session attached to the old daemon.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
         self._cfg = KiroCrewConfig.load()
-        cfg_gw = self._cfg.mcp_gateway
+        serving = self._mcp_stub_servers_started
         if self._mcp_gateway_manager is not None:
             await self._stop_mcp_broker()
-        if cfg_gw.stub_servers:
-            await self._init_mcp_gateway()
+        if serving:
+            await self._init_mcp_gateway(stub_servers=serving)
         mgr = self._mcp_gateway_manager
         if self.dashboard_state is not None:
             self.dashboard_state._mcp_gateway_manager = mgr
@@ -6469,7 +6504,18 @@ class GatewayOrchestrator:
         # without killing live sessions — the correct semantics since a
         # running session has already sent session/new and cannot be
         # retrofitted.
-        if self.sessions is not None:
+        #
+        # Skipped while the configured set disagrees with what is being served,
+        # because the factory's overlay decision is all-or-nothing on the
+        # CONFIGURED list: ``config.loader`` passes ``mcp_gateway_overlay`` only
+        # ``if _gw.stub_servers`` and otherwise passes None, which drops the
+        # gateway out of the path entirely. So refreshing right after the last
+        # server was unstubbed would hand new sessions no overlay at all -- they
+        # would bypass the broker that is still serving that stub, which is the
+        # pending change taking effect early on an unrelated sharing edit. When
+        # the two agree the refresh is a no-op for the overlay, so the guard only
+        # ever suppresses the disagreeing case.
+        if self.sessions is not None and frozenset(self._cfg.mcp_gateway.stub_servers) == serving:
             await self.sessions.refresh_defaults()
         if mgr is None:
             return {"enabled": enabled, "running": False, "ping_ok": False}
@@ -6478,37 +6524,35 @@ class GatewayOrchestrator:
         return {"enabled": enabled, "running": running, "ping_ok": ping_ok}
 
     async def _apply_mcp_stub(self) -> dict:
-        """Dashboard callback: re-apply a stub change in-process.
+        """Dashboard callback: record a stub change for the NEXT gateway start.
 
-        Three transitions, and the broker's existence follows the stub set:
+        Deliberately leaves the running broker alone, because there is nothing
+        useful to do to it. A session's MCP toolset is fixed at ``session/new``,
+        so no running session can adopt a new stub set however the broker is
+        cycled; the change only ever matters to sessions created later, and the
+        next start builds their routing from this config.
 
-        * nothing stubbed -> something stubbed: START. There is no manager yet, so
-          a restart-only path would leave the operator's first stubbed server
-          inert until they happened to touch another switch.
-        * stubbed -> stubbed: RESTART, so the rewriter re-runs with the new set and
-          the daemon re-spawns with updated ``MC_MCP_TARGET_*`` env.
-        * something stubbed -> nothing stubbed: STOP, because an empty stub set
-          means there is nothing for a broker to serve.
+        Restarting to shorten that wait actively destroys work. The drain gives
+        in-flight tool calls ``DRAIN_SECS`` to finish and then cancels them, and
+        the stub does not re-handshake afterwards -- ``handshake()`` has a single
+        call site at startup, and the post-``initialize`` path deliberately does
+        not fall back to a per-session exec (kiro-cli never re-sends
+        ``initialize``, so an exec'd server would reject every later call). An
+        attached session therefore loses those servers for the rest of its life.
+
+        Rewriting the agent specs without restarting is worse still: a new
+        session would route a server through the stub while the running daemon
+        has no target for it, and an unknown target is a TERMINAL rejection in
+        ``stub.py``, not a fallback. The spec rewrite and the daemon's routing
+        environment are built together at startup and must stay that way, so
+        this callback persists intent only and reports that a restart is needed.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
         self._cfg = KiroCrewConfig.load()
-        want_broker = bool(self._cfg.mcp_gateway.stub_servers)
-        if self._mcp_gateway_manager is not None:
-            await self._stop_mcp_broker()
-        if want_broker:
-            await self._init_mcp_gateway()
-        if self.dashboard_state is not None:
-            self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
-        # The overlay and socket paths are resolved during config load and then
-        # CAPTURED by the provider factory and the warm pool, so without this the
-        # next session would still be launched with the routing from boot — the
-        # operator's first stub would look like it did nothing. The sharing switch
-        # already refreshes for the same reason.
-        if self.sessions is not None:
-            await self.sessions.refresh_defaults()
         return {
-            "applied": (self._mcp_gateway_manager is not None) == want_broker,
+            "applied": False,
+            "restart_required": True,
             "stub_servers": sorted(self._cfg.mcp_gateway.stub_servers),
         }
 

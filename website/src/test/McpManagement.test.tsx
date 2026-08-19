@@ -96,6 +96,30 @@ describe('McpManagement', () => {
     })
   })
 
+  it('asks for a restart without painting it as a failure', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+    // The normal outcome: the allowlist is stored and nothing was cycled, so the
+    // change is pending a restart rather than broken.
+    vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({
+      name: 'alpha-mcp',
+      stub: true,
+      applied: false,
+      restart_required: true,
+    } as never)
+
+    mount()
+    const row = await screen.findByRole('switch', { name: /alpha-mcp/i })
+    row.click()
+
+    // role=status, not role=alert: an operator who is told "restart to apply"
+    // has nothing to fix, and an error banner sends them looking for a fault.
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toBeTruthy()
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('does not claim zero servers when the request failed', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockRejectedValue(new Error('boom'))
@@ -1008,6 +1032,35 @@ describe('stub every server the evidence allows', () => {
     // One stubbed, one skipped -- both read off the RESPONSE.
     await waitFor(() => expect(screen.getByText(/Stubbed 1\./)).toBeTruthy())
     expect(screen.getByText(/Left 1 alone\./)).toBeTruthy()
+  })
+
+  it('does not claim the gateway failed when the server skipped every candidate', async () => {
+    // Nothing qualified, so the handler deliberately never calls the apply hook
+    // and answers `applied: false` with no `restart_required`. Reading that as
+    // "the gateway could not start" blames a failure for a write that was never
+    // attempted -- the "0 of N" notice is the whole story.
+    const { fireEvent } = await import('@testing-library/react')
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: true }) as never)
+    vi.spyOn(api, 'mcpMeasureProgress').mockResolvedValue(idleProgress as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [{ ...server({ name: 'other-mcp' }), recommendation: declared }],
+    } as never)
+    vi.spyOn(api, 'mcpGatewaySetStubMany').mockResolvedValue({
+      ok: true,
+      names: ['other-mcp'],
+      stub: true,
+      stubbed: [],
+      skipped: [{ name: 'other-mcp', reason: 'evidence_insufficient' }],
+      applied: false,
+    } as never)
+
+    mount()
+    await screen.findByText('other-mcp')
+    fireEvent.click(await screen.findByRole('button', { name: /evidence allows/i }))
+
+    await waitFor(() => expect(screen.getByText(/Left 1 alone\./)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('renders the measured tier with its own label, not "not measured"', async () => {

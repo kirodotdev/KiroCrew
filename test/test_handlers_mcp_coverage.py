@@ -1896,7 +1896,13 @@ class TestGatewaySetStub:
     async def test_persists_allowlist_without_an_apply_callback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """With the gateway unwired the allowlist is persisted, applied=False."""
+        """With the gateway unwired the allowlist is persisted AND reported pending.
+
+        The write happens before the callback is ever reached, so an unwired
+        gateway means the change was recorded -- the same state the callback
+        reports. Answering ``applied: false`` alone would drop the client onto its
+        fault branch and blame the gateway for a change that is safely saved.
+        """
         from kiro_crew.config.loader import config_path
 
         monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
@@ -1910,9 +1916,39 @@ class TestGatewaySetStub:
             "name": "ok-mcp",
             "stub": True,
             "applied": False,
+            "restart_required": True,
         }
         saved = json.loads(config_path().read_text(encoding="utf-8"))
         assert saved["mcp_gateway"]["stub_servers"] == ["ok-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_an_unwired_batch_that_wrote_nothing_claims_no_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The unwired answer must stay tied to something having been WRITTEN.
+
+        A server-resolved batch where no candidate qualified persists nothing, so
+        there is no pending change and nothing for a restart to pick up. Claiming
+        ``restart_required`` here would send the operator to restart the gateway
+        for a write that never happened.
+        """
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(
+            mcp_mod,
+            "_collect_server_rows",
+            lambda *a, **k: {},
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(
+                {"names": ["nope-mcp"], "stub": True, "resolve_eligibility": True},
+                state=SimpleNamespace(),
+            )
+        )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body.get("applied") is False
+        assert "restart_required" not in body
+        assert body.get("stubbed") == []
 
     @pytest.mark.asyncio
     async def test_the_first_toggle_keeps_the_migrated_legacy_set(
@@ -2103,6 +2139,7 @@ class TestGatewaySetStubBatch:
             "names": ["b-mcp", "a-mcp", "a-mcp"],
             "stub": True,
             "applied": False,
+            "restart_required": True,
         }
         saved = json.loads(path.read_text(encoding="utf-8"))
         assert saved["mcp_gateway"]["stub_servers"] == [
@@ -2171,6 +2208,7 @@ class TestGatewaySetStubBatch:
             "name": "ok-mcp",
             "stub": True,
             "applied": False,
+            "restart_required": True,
         }
         audited = [c.kwargs.get("resources") for c in sel.log_api_access.call_args_list]
         assert any("name=ok-mcp" in (r or "") for r in audited)

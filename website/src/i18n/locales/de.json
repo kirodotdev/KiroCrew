@@ -9174,6 +9174,7 @@
       "stub_aria": "Stub vor {{name}} setzen",
       "stub_failed": "Die Änderung konnte nicht angewendet werden. Sie ist möglicherweise gespeichert, aber nicht aktiv — die Schalter unten zeigen jetzt den gespeicherten Stand.",
       "stub_not_live": "Gespeichert, aber noch nicht aktiv — das Gateway konnte nicht starten. Der Schalter zeigt den gespeicherten Stand, nicht den laufenden.",
+      "stub_restart_required": "Gespeichert. Starte das Gateway neu, damit die Änderung wirksam wird. Bereits laufende Sitzungen behalten die Server, mit denen sie gestartet sind.",
       "stubbed_of_total": "{{stubbed}} von {{total}} mit Stub",
       "unsupported_platform": "Das Teilen von Backends benötigt Unix-Domain-Sockets und ist auf dieser Plattform nicht verfügbar.",
       "view_assessment": "Freigabebewertung",

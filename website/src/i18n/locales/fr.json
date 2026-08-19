@@ -9289,6 +9289,7 @@
       "stub_aria": "Placer un stub devant {{name}}",
       "stub_failed": "Impossible d'appliquer le changement. Il est peut-être déjà enregistré sans être actif : les interrupteurs ci-dessous montrent désormais l'état enregistré.",
       "stub_not_live": "Enregistré, mais pas encore actif : la passerelle n'a pas pu démarrer. L'interrupteur montre ce qui est enregistré, pas ce qui tourne.",
+      "stub_restart_required": "Enregistré. Redémarrez la passerelle pour que la modification prenne effet. Les sessions déjà en cours conservent les serveurs avec lesquels elles ont démarré.",
       "stubbed_of_total": "{{stubbed}} sur {{total}} avec stub",
       "unsupported_platform": "Le partage de backend nécessite des sockets de domaine Unix et n'est pas disponible sur cette plateforme.",
       "view_assessment": "Évaluation du partage",

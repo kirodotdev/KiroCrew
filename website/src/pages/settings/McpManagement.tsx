@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ExternalLink, Gauge, ListChecks, Server as ServerIcon } from 'lucide-react'
+import { AlertTriangle, ExternalLink, Gauge, ListChecks, RefreshCw, Server as ServerIcon } from 'lucide-react'
 import {
   api,
   type McpManagedServer,
@@ -576,6 +576,11 @@ export function McpManagement() {
   const qc = useQueryClient()
   const [confirmSharing, setConfirmSharing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Pending-effect information, kept separate from `error` so a stub change that
+  // needs a restart is not painted as a failure. Distinct from the enable-all
+  // `notice` below, which is that control's own inline hint rather than a
+  // page-level statement about the gateway.
+  const [restartNotice, setRestartNotice] = useState<string | null>(null)
 
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
@@ -613,12 +618,16 @@ export function McpManagement() {
     mutationFn: ({ name, stub }: { name: string; stub: boolean }) =>
       api.mcpGatewaySetStub(name, stub),
     // A 200 means the config was persisted, NOT that the broker reached the
-    // wanted state: a failed start still answers 200 with `applied: false`.
-    // Reporting that as success would draw a live-looking switch over routing
-    // that never came up.
+    // wanted state. A stub change is never applied in place -- the daemon's
+    // routing is built with the agent-spec rewrite at startup -- so the normal
+    // outcome is `restart_required`, which is pending information rather than a
+    // failure. `applied: false` with no restart hint is the real fault case:
+    // the gateway never wired the apply callback, so nothing was recorded.
     onSuccess: res => {
       invalidate()
-      if (res && res.applied === false) {
+      if (res && res.restart_required) {
+        setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      } else if (res && res.applied === false) {
         setError(i18nT('pages.mcpManagement.stub_not_live'))
       }
     },
@@ -710,7 +719,7 @@ export function McpManagement() {
       // acting on a half-measured fleet.
       if (unmeasuredCount > 0) {
         await api.mcpMeasureStart()
-        if (!(await waitForMeasurePass(qc))) return { enabled: 0, skipped: 0, pending: true }
+        if (!(await waitForMeasurePass(qc))) return { enabled: 0, skipped: 0, pending: true, restart_required: false }
       }
       // Send every row that COULD be stubbed and let the server decide which
       // ones the evidence allows. The client cannot answer that soundly: the
@@ -728,9 +737,8 @@ export function McpManagement() {
       const fresh = await api.mcpGatewayServers()
       const rows = fresh?.servers ?? []
       const candidates = rows.filter(s => s.can_stub && !s.stub).map(s => s.name)
-      if (candidates.length === 0) return { enabled: 0, skipped: 0, pending: false }
-      // Batch form: one config write and one pool re-apply, so the allowlist
-      // cannot land half-flipped.
+      if (candidates.length === 0) return { enabled: 0, skipped: 0, pending: false, restart_required: false }
+      // Batch form: one config write, so the allowlist cannot land half-flipped.
       const res = await api.mcpGatewaySetStubMany(candidates, true, true)
       // Counts come from the RESPONSE, never from the request: the two differ by
       // design now, and reporting the request would claim stubs that were skipped.
@@ -740,6 +748,9 @@ export function McpManagement() {
         skipped: (res.skipped ?? []).length,
         pending: false,
         applied: res.applied,
+        // Carried through so the success handler can tell "waiting for a restart"
+        // (the normal answer) from "nothing was recorded" (a fault).
+        restart_required: res.restart_required === true,
       }
     },
     onSuccess: r => {
@@ -754,8 +765,17 @@ export function McpManagement() {
           skipped: r.skipped,
         }),
       )
-      // Same asymmetry as the single toggle: persisted is not live.
-      if (r.applied === false) setError(i18nT('pages.mcpManagement.stub_not_live'))
+      // A stub change is never applied in place, so `restart_required` is the
+      // normal answer and must not read as a fault. The not-live error is gated on
+      // something having been WRITTEN: when the server skips every candidate it
+      // deliberately never calls the apply hook, so `applied: false` there means
+      // "nothing to apply", not "the gateway could not start" -- and the
+      // "0 of N enabled" notice above already says what happened.
+      if (r.restart_required) {
+        setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      } else if (r.enabled > 0 && r.applied === false) {
+        setError(i18nT('pages.mcpManagement.stub_not_live'))
+      }
     },
     onError: () => {
       invalidate()
@@ -850,6 +870,16 @@ export function McpManagement() {
         </div>
       )}
 
+      {restartNotice && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-[var(--accent)] bg-[var(--accent-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
+        >
+          <RefreshCw size={14} className="mt-0.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+          <span>{restartNotice}</span>
+        </div>
+      )}
+
       {/* Global: route every stub to one shared backend. */}
       <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
         <div className="flex items-start gap-5">
@@ -936,6 +966,7 @@ export function McpManagement() {
             onClick={() => {
               setError(null)
               setNotice(null)
+              setRestartNotice(null)
               enableAll.mutate()
             }}
             disabled={
@@ -1021,6 +1052,7 @@ export function McpManagement() {
                       label={i18nT('pages.mcpManagement.stub_aria', { name: s.name })}
                       onClick={() => {
                         setError(null)
+                        setRestartNotice(null)
                         setStub.mutate({ name: s.name, stub: !s.stub })
                       }}
                     />
