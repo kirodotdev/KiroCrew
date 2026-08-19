@@ -6823,6 +6823,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "एक कार्य को तुम्हारे फ़ैसले की ज़रूरत है",
       "approval_required": "स्वीकृति आवश्यक",
+      "ready": "तैयार",
       "tool_approval": "टूल की मंज़ूरी: {{name}}",
       "unknown": "अज्ञात"
     }

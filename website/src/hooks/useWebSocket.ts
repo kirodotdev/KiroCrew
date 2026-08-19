@@ -955,7 +955,7 @@ export function useWebSocket() {
             if (data.role === 'assistant') emitThemeSound('message-received')
             if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); voiceProgressRef.current = null; synthChainRef.current = Promise.resolve() }
             if (data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
-              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', label: 'Thinking…', ts: Date.now() }))
+              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', label: i18nT('pages.chatSidebar.thinking'), ts: Date.now() }))
             }
             break
           case 'chat_message_update':
@@ -1036,7 +1036,7 @@ export function useWebSocket() {
               entry.content += data.content ?? ''
               if (data.seq !== undefined) entry.lastSeq = data.seq
               if (store.getState().chat.slotStatusDetail[cs]?.kind !== 'streaming') {
-                dispatch(setSlotStatusDetail({ slot: cs, kind: 'streaming', label: 'Streaming', ts: Date.now() }))
+                dispatch(setSlotStatusDetail({ slot: cs, kind: 'streaming', label: i18nT('pages.chatSidebar.streaming'), ts: Date.now() }))
               }
               scheduleChunkFlush()
             }
@@ -1275,7 +1275,7 @@ export function useWebSocket() {
             // made explicit.
             const detailKind = data.slot ? store.getState().chat.slotStatusDetail[data.slot]?.kind : undefined
             if (data.slot && detailKind !== 'streaming' && detailKind !== 'thinking') {
-              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', label: 'Thinking…', ts: Date.now() }))
+              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', label: i18nT('pages.chatSidebar.thinking'), ts: Date.now() }))
             }
             break
           }
@@ -1332,7 +1332,7 @@ export function useWebSocket() {
               dispatch(warmSlotCache(data.slot))
             }
             if (data.slot) {
-              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', label: 'Ready', ts: Date.now() }))
+              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', label: i18nT('hooks.useWebSocket.ready'), ts: Date.now() }))
             }
             if (data.slot) dispatch(refreshSlot(data.slot))
             if (data.slot) {

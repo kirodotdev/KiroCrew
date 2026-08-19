@@ -139,18 +139,20 @@ const ROW_ICON_PX = 10
  *  put the glyph back off the line it exists to mark. */
 const ROW_GUTTER_TOP = 24
 
-/** Translate a slot's running-status line. The status `label` is stored as a raw
- *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
- *  never scans), so it must be localized at render time. The two fixed phases
- *  (`thinking`/`streaming`) map to catalog keys; a `tool` phase or a
- *  server-supplied status carries its own dynamic text and is passed through.
+/** Translate a slot's running-status line. The websocket layer (a plain `.ts`
+ *  module that cannot call `useTranslation`) already localizes the two fixed
+ *  phases' `label` via `i18nT()` at dispatch time — see the `chat_message`/
+ *  `tool_call` cases in useWebSocket — so this re-runs the same lookup rather
+ *  than storing (and comparing against) a raw English sentinel. A `tool` phase
+ *  or a server-supplied status carries its own dynamic text and is passed
+ *  through.
  *
  *  A `tool` phase honors the user's `simplifiedToolNames` preference (purpose vs
  *  raw tool title) via toolStatusLabel, so the row agrees with the inline tool
  *  pill in the transcript rather than always showing the purpose. */
 function slotStatusText(detail: { kind?: string; label?: string; purpose?: string } | undefined, simplifiedToolNames: boolean, uiLang: string): string {
   if (detail?.kind === 'streaming') return i18nT('pages.chatSidebar.streaming')
-  if (detail?.kind === 'thinking' && detail.label === 'Thinking…') return i18nT('pages.chatSidebar.thinking')
+  if (detail?.kind === 'thinking' && detail.label === i18nT('pages.chatSidebar.thinking')) return i18nT('pages.chatSidebar.thinking')
   return toolStatusLabel(detail, simplifiedToolNames, uiLang) || i18nT('pages.chatSidebar.thinking')
 }
 

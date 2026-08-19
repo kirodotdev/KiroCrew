@@ -6734,6 +6734,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "결정이 필요한 작업이 있습니다",
       "approval_required": "승인 필요",
+      "ready": "준비됨",
       "tool_approval": "도구 승인: {{name}}",
       "unknown": "알 수 없음"
     }

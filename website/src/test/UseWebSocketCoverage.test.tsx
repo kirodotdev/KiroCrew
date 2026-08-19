@@ -537,7 +537,7 @@ describe('useWebSocket frame router', () => {
       })
     })
     expect(chat().slotStatusDetail[ACTIVE]?.kind).toBe('tool')
-    expect(chat().slotStatusDetail[ACTIVE]?.toolName).toBe('fs_read')
+    expect(chat().slotStatusDetail[ACTIVE]?.label).toBe('fs_read')
 
     act(() => {
       ws.simulateMessage({ type: 'tool_result', data: { slot: ACTIVE, output: '42 lines', tool_call_id: 'tc-9' } })
@@ -769,11 +769,11 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE, status: 'Compacting…' } })
     })
     expect(chat().slotContextPct[ACTIVE]).toBe(42)
-    expect(chat().slotStatusDetail[ACTIVE]?.text).toBe('Compacting…')
+    expect(chat().slotStatusDetail[ACTIVE]?.label).toBe('Compacting…')
 
     // A status frame with no text is ignored rather than clearing the detail.
     act(() => { ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE } }) })
-    expect(chat().slotStatusDetail[ACTIVE]?.text).toBe('Compacting…')
+    expect(chat().slotStatusDetail[ACTIVE]?.label).toBe('Compacting…')
   })
 
   it('re-reads the transcript when a variant switch names a slot', () => {

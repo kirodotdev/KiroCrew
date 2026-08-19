@@ -134,7 +134,7 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'stale' }]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { activeSlot: 'k', goalLoops: { k: { cycle_count: 3, max_cycles: 24 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
+      { activeSlot: 'k', goalLoops: { k: { cycle_count: 3, max_cycles: 24 } }, slotStatusDetail: { k: { label: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
     expect(getByText('Loop 3/24')).toBeTruthy()

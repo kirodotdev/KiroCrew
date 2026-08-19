@@ -2356,6 +2356,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "A task needs your decision",
       "approval_required": "Approval Required",
+      "ready": "Ready",
       "tool_approval": "Tool approval: {{name}}",
       "unknown": "Unknown"
     },

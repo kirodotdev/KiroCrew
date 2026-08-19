@@ -188,7 +188,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, last_message: 'cycle 7 output' }]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
+      { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { label: 'Reading gateway.log' } } },
     )
     expect(getByText('Loop 7/24')).toBeTruthy()
     expect(getByText(/cycle 7 output/)).toBeTruthy()
@@ -199,7 +199,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'cycle 7 output' }]
     const { getByText, queryByText } = renderSidebar(
       slots,
-      { activeSlot: 'k', goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
+      { activeSlot: 'k', goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { label: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
     expect(getByText('Loop 7/24')).toBeTruthy()

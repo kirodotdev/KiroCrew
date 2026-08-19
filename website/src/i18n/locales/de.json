@@ -6823,6 +6823,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "Eine Aufgabe braucht deine Entscheidung",
       "approval_required": "Genehmigung erforderlich",
+      "ready": "Bereit",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
       "unknown": "Unbekannt"
     }

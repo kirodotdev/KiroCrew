@@ -6734,6 +6734,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "有任务需要你决策",
       "approval_required": "需要审批",
+      "ready": "就绪",
       "tool_approval": "工具审批：{{name}}",
       "unknown": "未知"
     }

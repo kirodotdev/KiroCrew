@@ -7001,6 +7001,7 @@
     "useWebSocket": {
       "a_task_needs_your_decision": "Задача требует твоего решения",
       "approval_required": "Требуется подтверждение",
+      "ready": "Готово",
       "tool_approval": "Подтверждение инструмента: {{name}}",
       "unknown": "Неизвестно"
     }
