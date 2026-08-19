@@ -4026,6 +4026,26 @@ class GatewayOrchestrator:
                 await _alert_cron_failure(job, gate_reason, denied=True)
                 return None
 
+            # ── Default-agent fallback (LLM jobs) ──
+            # A job with no explicit agent_id must run the configured default
+            # agent (config.agent.default_agent), matching the chat transports'
+            # fallback (transport_dispatch: `self.agent or cfg.agent.default_agent`).
+            # Without this, `job.agent_id or None` flows to the provider factory,
+            # AcpProvider omits the kwarg, and AcpClient falls back to its
+            # hardcoded CLIENT_NAME ("kirocrew") — an agent that carries none of
+            # the default agent's MCP servers (observed: default-agent MCP servers absent from
+            # cron sessions). In-memory only: _merge_job_result never persists
+            # agent_id, so this cannot rewrite crons.json.
+            if not (job.agent_id or "").strip() and not job.agent_sequence:
+                _default_agent = ""
+                if hasattr(self, "_cfg"):
+                    try:
+                        _default_agent = (self._cfg.agent.default_agent or "").strip()
+                    except Exception:
+                        _default_agent = ""
+                if _default_agent:
+                    job.agent_id = _default_agent
+
             def _cron_extra_env() -> dict[str, str] | None:
                 """job.env plus KIROCREW_APPROVAL_MODE when the job runs auto.
 
