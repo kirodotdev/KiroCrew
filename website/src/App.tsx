@@ -174,6 +174,70 @@ export function metricColor(pct: number): string {
 }
 export const memColorClass = metricColor
 
+/**
+ * One `/api/system` metrics frame, as the topbar readout capsule consumes it.
+ *
+ * EVERY field is optional on purpose. `_collect_system_metrics` builds the
+ * payload key-by-key with per-probe `try/except: pass`, so a probe that fails
+ * (vm_stat timeout, unreadable /proc/meminfo, `system_memory()` returning None
+ * on Windows) simply omits its keys — while `mem_total_gb` can still be served
+ * from the cached STATIC system info the frame is seeded with. A frame with
+ * `mem_total_gb` but no `mem_used_gb` is therefore normal, not corrupt, and any
+ * readout must prove a value is a finite number before formatting it. Typing
+ * these as required `number` is what let `undefined.toFixed(1)` crash the root
+ * app-shell boundary; `api.system()` returns `any`, so only this annotation
+ * makes the compiler check the guards.
+ */
+export type SysMetricsFrame = {
+  memUsed?: number
+  memTotal?: number
+  cpuPct?: number
+  diskTotal?: number
+  diskFree?: number
+  posture?: 'ample' | 'tight' | 'critical' | 'unknown'
+  availableGb?: number
+  subagentCap?: number
+}
+
+/** Narrow a possibly-absent metric to a formattable number (excludes NaN/Infinity). */
+export function isMetricNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+/**
+ * Coerce a possibly-absent metric to a finite number, absent/NaN/Infinity -> 0.
+ *
+ * Paired with `isMetricNumber`: the guard decides whether a readout is SHOWN,
+ * this makes the formatting itself unable to throw, so a future gate that
+ * forgets a field degrades to a wrong-looking 0 instead of unmounting the app.
+ */
+export function metricNumber(v: unknown): number {
+  return isMetricNumber(v) ? v : 0
+}
+
+/**
+ * Validity flags + a sanitized frame for one metrics readout.
+ *
+ * Both readouts (the desktop button and the mobile passive row) derive their
+ * flags here so the two cannot drift apart: a `memTotal > 0` check says nothing
+ * about `memUsed`, and formatting a value the flag never proved is what crashed
+ * the shell.
+ */
+export function readMetricsFrame(raw: SysMetricsFrame) {
+  return {
+    cpuValid: isMetricNumber(raw.cpuPct),
+    memValid: isMetricNumber(raw.memUsed) && isMetricNumber(raw.memTotal) && raw.memTotal > 0,
+    dskValid: isMetricNumber(raw.diskTotal) && isMetricNumber(raw.diskFree) && raw.diskTotal > 0,
+    m: {
+      cpuPct: metricNumber(raw.cpuPct),
+      memUsed: metricNumber(raw.memUsed),
+      memTotal: metricNumber(raw.memTotal),
+      diskTotal: metricNumber(raw.diskTotal),
+      diskFree: metricNumber(raw.diskFree),
+    },
+  }
+}
+
 // The top-bar search is laid out by CSS, not measured here: `.topbar` in
 // index.css is a three-track grid whose centre track is
 // `clamp(240px, 22vw, 480px)` and whose side tracks are equal `minmax(0,1fr)`
@@ -1552,7 +1616,7 @@ export default function App() {
   // separate strip inset to relay to Electron — positionTrafficLights centers on
   // the header height directly. Remote panes get their own inset via `macInset`.
   const macInset = isMacElectron && !macFullscreen
-  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then(d => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen ? 30_000 : 60_000, enabled: true })
+  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen ? 30_000 : 60_000, enabled: true })
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
   useEffect(() => {
@@ -1995,13 +2059,15 @@ export default function App() {
               } else if (!sysMetrics) {
                 if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
               } else {
-                const m = sysMetrics
-                const memPct = m.memTotal > 0 ? m.memUsed / m.memTotal : 0
+                // Validity is decided on the RAW frame; formatting happens on a
+                // sanitized copy. A `memTotal > 0` check says nothing about
+                // `memUsed`, and a frame carrying a total with no used is normal
+                // (see SysMetricsFrame) — that mismatch is what crashed the root
+                // app-shell boundary with `undefined.toFixed(1)`.
+                const { cpuValid, memValid, dskValid, m } = readMetricsFrame(sysMetrics)
+                const memPct = memValid ? m.memUsed / m.memTotal : 0
                 const dskUsed = m.diskTotal - m.diskFree
-                const dskPct = m.diskTotal > 0 ? dskUsed / m.diskTotal : 0
-                const memValid = m.memTotal > 0
-                const dskValid = m.diskTotal > 0
-                const cpuValid = typeof m.cpuPct === 'number' && Number.isFinite(m.cpuPct)
+                const dskPct = dskValid ? dskUsed / m.diskTotal : 0
                 const staleTitle = sysMetricsStale ? ` ${i18nT('app.stale_fetch_failing')}` : ''
                 // The container query can collapse this button to a bare icon, and
                 // the per-value tooltips ride on the spans it hides — so the
@@ -2045,13 +2111,12 @@ export default function App() {
             // capsule is expanded and data is available. No independent toggle —
             // visibility is tied to the capsule expand/collapse state.
             if (isMobile && sysMetrics) {
-              const m = sysMetrics
-              const memPct = m.memTotal > 0 ? m.memUsed / m.memTotal : 0
+              // Same derivation as the desktop readout, from the one helper, so
+              // the two cannot disagree about what a partial frame means.
+              const { cpuValid, memValid, dskValid, m } = readMetricsFrame(sysMetrics)
+              const memPct = memValid ? m.memUsed / m.memTotal : 0
               const dskUsed = m.diskTotal - m.diskFree
-              const dskPct = m.diskTotal > 0 ? dskUsed / m.diskTotal : 0
-              const cpuValid = typeof m.cpuPct === 'number' && Number.isFinite(m.cpuPct)
-              const memValid = m.memTotal > 0
-              const dskValid = m.diskTotal > 0
+              const dskPct = dskValid ? dskUsed / m.diskTotal : 0
               segments.push(<span key="metrics-mobile" className={`${seg} gap-2 text-[11px] font-mono tabular-nums`} aria-label={i18nT('app.system_metrics')}>
                 <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'}>{i18nT('app.cpu')} {cpuValid ? fmtPercent(m.cpuPct / 100) : '\u2014'}</span>
                 <span className={memValid ? metricColor(memPct) : 'text-muted'}>{i18nT('app.mem')} {memValid ? fmtPercent(memPct) : '\u2014'}</span>
