@@ -72,7 +72,8 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
-from kiro_crew.apps.official_editorial import load_category_order, load_sections
+from kiro_crew.apps.official_category_order import load_category_order
+from kiro_crew.apps.official_editorial import load_sections
 from kiro_crew.apps.registry import (
     _REGISTRY_TRUST_TIERS,
     _TRUST_INDEX,
@@ -1525,20 +1526,29 @@ async def handle_registry(request: web.Request) -> web.Response:
     if not apps:
         apps = await list_registry()
     # Published rail order and layout ride along on the response the store already
-    # makes, rather than endpoints the page would have to wait on separately. Off
-    # the event loop: the first call after a cache expiry does network I/O. Both
-    # are presentation, so a failure degrades to the client's own defaults and
-    # must never 500 the store -- the same contract the catalog annotation keeps.
-    try:
-        category_order = await asyncio.to_thread(load_category_order)
-    except Exception:  # noqa: BLE001 - presentation is never worth a failed store
-        logger.warning("ignoring the editorial category order", exc_info=True)
-        category_order = []
-    try:
-        sections = await asyncio.to_thread(load_sections)
-    except Exception:  # noqa: BLE001 - same contract as the order above
-        logger.warning("ignoring the editorial sections", exc_info=True)
-        sections = []
+    # makes, rather than endpoints the page would have to wait on separately. They
+    # are two documents with two caches, loaded CONCURRENTLY: each cold-cache load
+    # does network I/O, and paying two fetch timeouts in series would delay the
+    # whole store response. Both are presentation, so a failure degrades to the
+    # client's own defaults per document and must never 500 the store -- the same
+    # contract the catalog annotation keeps.
+    order_result, sections_result = await asyncio.gather(
+        asyncio.to_thread(load_category_order),
+        asyncio.to_thread(load_sections),
+        return_exceptions=True,
+    )
+    if isinstance(order_result, BaseException):
+        logger.warning(
+            "ignoring the published category order", exc_info=order_result
+        )
+        category_order: list = []
+    else:
+        category_order = order_result
+    if isinstance(sections_result, BaseException):
+        logger.warning("ignoring the editorial sections", exc_info=sections_result)
+        sections: list = []
+    else:
+        sections = sections_result
     return web.json_response(
         {
             "apps": apps,

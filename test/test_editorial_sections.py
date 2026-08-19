@@ -313,24 +313,9 @@ class TestRefusalsAndCaps:
         assert len(got[0]["appRefs"]) == oe.MAX_APP_REFS
 
 
-class TestOneDocumentTwoReaders:
-    def test_both_readers_share_one_fetch(self):
-        calls: list[int] = []
-
-        def fetcher():
-            calls.append(1)
-            return {
-                "schemaVersion": 1,
-                "categories": [{"id": "other", "label": "Other", "order": 1}],
-                "sections": [_full(_app())],
-            }
-
-        assert oe.load_category_order(fetcher=fetcher) == ["other"]
-        assert len(oe.load_sections(fetcher=fetcher)) == 1
-        assert len(calls) == 1, "the second reader must be served from cache"
-
+class TestTheLiveDocument:
     def test_the_live_shape_today_yields_no_sections(self):
         # `sections: []` is what the CDN publishes right now, so shipping this
         # consumer changes nothing until a curator authors a block.
-        doc = {"schemaVersion": 1, "categories": [], "sections": []}
+        doc = {"schemaVersion": 1, "sections": []}
         assert oe.load_sections(fetcher=lambda: doc) == []

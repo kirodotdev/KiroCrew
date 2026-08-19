@@ -1,35 +1,29 @@
-"""The editorial document: presentation the curator controls without a release.
+"""The editorial document: the featured list the curator controls without a release.
 
 WHAT THIS IS. ``editorial.json`` is published beside ``official-registry.json``
-and carries PRESENTATION only -- which categories the Discover rail shows and in
-what order, and which apps the featured list above it promotes. The registry says
-what exists; this says how it is arranged. Keeping them apart is what lets a
-curator reorder the rail or re-cut the featured list without touching the list of
-apps, and lets the client refuse one document while still rendering the other.
+and carries the featured sections above the Discover rail -- which apps are
+promoted, and under what framing. The registry says what exists; this says what is
+put forward. Keeping them apart is what lets a curator re-cut the featured list
+without touching the list of apps, and lets the client refuse one document while
+still rendering the other.
 
-Two readers live here, over ONE fetch: ``load_category_order`` for the rail and
-``load_sections`` for the featured list. A section is either an ``app`` (one
-featured app) or a ``collection`` (several under a curator's theme); any other
-``type`` is skipped, which is what lets a new shape publish before every client
-can draw it.
+A section is either an ``app`` (one featured app) or a ``collection`` (several
+under a curator's theme); any other ``type`` is skipped, which is what lets a new
+shape publish before every client can draw it.
+
+The rail's ORDER is not here. It is a separate document with a separate schema
+gate -- see ``official_category_order`` for why that separation is load-bearing
+rather than tidiness.
 
 WHAT THIS DOES NOT DO, YET.
 
-- **No labels from the document.** A category's ``label`` is published in
-  English only, while the rail is translated into 11 languages, so honouring it
-  would replace localised copy with English for every user. The client therefore
-  takes ``id`` and ``order`` and resolves copy through its own catalog; an id the
-  client has no copy for is DROPPED rather than shown raw. Consequence, stated
-  plainly: a genuinely new category needs a release, and until then it is
-  invisible instead of appearing as a slug.
-
 - **No signature verification.** Same basis as the registry: TLS to our own
   domain. Presentation is a lower-stakes payload than inventory -- the worst a
-  hostile document achieves here is a reordered or shortened rail -- but the
-  omission is named here rather than left for a reader to infer from silence.
+  hostile document achieves here is a re-cut featured list -- but the omission is
+  named here rather than left for a reader to infer from silence.
 
-Every failure degrades to the client's built-in order, which is what the rail
-used before this module existed.
+Every failure degrades to the derived featured pick, which is what Discover shows
+when this document carries no sections.
 """
 
 from __future__ import annotations
@@ -43,13 +37,19 @@ from typing import Any
 from kiro_crew.apps.official_catalog import (
     MAX_BYTES,
     OFFICIAL_CATALOG_BASE,
-    SUPPORTED_SCHEMA_VERSION,
     _resolve_ref,
     fetch_document,
 )
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
+
+#: This document's own supported schema version -- deliberately NOT the shared
+#: constant from ``official_catalog``, for the same reason
+#: ``official_category_order`` owns its own: per-document version gates are the
+#: point of the document split, and one shared constant would make a registry
+#: v2 bump start refusing editorial documents still published at v1.
+SUPPORTED_SCHEMA_VERSION = 1
 
 OFFICIAL_EDITORIAL_URL = f"{OFFICIAL_CATALOG_BASE}editorial.json"
 
@@ -59,16 +59,13 @@ OFFICIAL_EDITORIAL_URL = f"{OFFICIAL_CATALOG_BASE}editorial.json"
 CACHE_TTL = 3600
 FAILURE_TTL = 60
 
-#: The schema's own ceiling. A document above it is malformed, not merely large,
-#: and the cap is applied here so a bad document cannot make the rail unbounded.
-MAX_CATEGORIES = 30
-#: Same reasoning for the layout: `sections` is capped at 40 by the schema and a
-#: collection's `appRefs` at 6, so a document cannot make Discover unbounded.
-#: The 6 is small on purpose -- every member of a collection is rendered, with no
-#: detail page to hold an overflow, so the SCHEMA refuses more than the card can
-#: draw. Here the same number is a truncation instead, because this reader also
-#: sees documents that never passed that gate (a stale cache, a hand-edited file)
-#: and rendering the first 6 beats refusing the card outright.
+#: `sections` is capped at 40 by the schema and a collection's `appRefs` at 6, so a
+#: document cannot make Discover unbounded. The 6 is small on purpose -- every
+#: member of a collection is rendered, with no detail page to hold an overflow, so
+#: the SCHEMA refuses more than the card can draw. Here the same number is a
+#: truncation instead, because this reader also sees documents that never passed
+#: that gate (a stale cache, a hand-edited file) and rendering the first 6 beats
+#: refusing the card outright.
 MAX_SECTIONS = 40
 MAX_APP_REFS = 6
 #: A one-app collection is an `app` section wearing a costume, so the schema
@@ -127,23 +124,8 @@ def _download() -> dict[str, Any] | None:
     return fetch_document(OFFICIAL_EDITORIAL_URL)
 
 
-def _coerce_order(value: Any) -> int | None:
-    """An ``order`` that is not a real int is missing, not zero.
-
-    ``type(...) is int`` rather than ``isinstance``: ``bool`` subclasses ``int``,
-    so ``True`` would otherwise sort as 1 and quietly place a category first.
-    """
-    return value if type(value) is int else None
-
-
 def _load_document(fetcher: Any = None) -> dict[str, Any] | None:
-    """Fetch-or-cache the editorial document, applying the schema gate.
-
-    One loader for both readers: `load_category_order` and `load_sections` are
-    two projections of ONE document, and letting each fetch separately would
-    double the network cost and let the rail be ordered by one revision while the
-    featured list came from another.
-    """
+    """Fetch-or-cache the editorial document, applying the schema gate."""
     doc = _read_cache()
     if doc is not None and _FAILED_KEY in doc:
         # A recent fetch failed. Answer from the default WITHOUT another attempt --
@@ -356,45 +338,4 @@ def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
     return out
 
 
-def load_category_order(fetcher: Any = None) -> list[str]:
-    """Return published category ids in rail order, or ``[]`` to use the default.
-
-    Empty is always a safe answer -- the rail falls back to the order compiled
-    into the client, which is what it showed before this module existed. Nothing
-    read here may raise: a malformed field degrades that field only.
-
-    *fetcher* is injected by tests.
-    """
-    doc = _load_document(fetcher)
-    if doc is None:
-        return []
-
-    raw = doc.get("categories")
-    if not isinstance(raw, list):
-        return []
-
-    ranked: list[tuple[int, int, str]] = []
-    for position, item in enumerate(raw[:MAX_CATEGORIES]):
-        if not isinstance(item, dict):
-            continue
-        cid = item.get("id")
-        if not isinstance(cid, str) or not cid.strip():
-            continue
-        order = _coerce_order(item.get("order"))
-        if order is None:
-            continue
-        # Document position breaks an `order` tie, so a duplicated order is
-        # stable rather than dependent on sort implementation details.
-        ranked.append((order, position, cid.strip()))
-
-    ranked.sort()
-    seen: set[str] = set()
-    out: list[str] = []
-    for _, _, cid in ranked:
-        if cid not in seen:
-            seen.add(cid)
-            out.append(cid)
-    return out
-
-
-__all__ = ["load_category_order", "load_sections", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]
+__all__ = ["load_sections", "MAX_BYTES", "OFFICIAL_EDITORIAL_URL"]
