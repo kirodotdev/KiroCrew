@@ -156,6 +156,31 @@ export const RAIL_TYPE: Record<
   micro: { fontSize: '10px', lineHeight: 1 },
 }
 
+/**
+ * Section label inside the rail's own dropdown menus — `VIEW` / `SORT BY`.
+ *
+ * Deliberately NOT a `RAIL_TYPE` slot. This is a menu element that merely lives
+ * in the rail's file, and `RAIL_TYPE` carries no 12px on purpose: removing 12px
+ * from the rail is the point of that ramp, so folding a 12px menu size into the
+ * same table would quietly contradict it.
+ *
+ * 12/500 uppercase matches the dashboard's own dropdown section labels
+ * (`components/HookSkillsDropdown.tsx` — uppercase, `font-medium`, one size step
+ * under its items), NOT Radix's `DropdownMenuLabel`, which is 12/600 and never
+ * uppercase. Sitting one step under the 13px items is what keeps it reading as a
+ * heading rather than as another choice.
+ *
+ * Know this before changing it: `textTransform: uppercase` is a no-op for CJK,
+ * Korean, Devanagari and Bengali, and those glyphs fill their em box. In those
+ * locales only weight and colour separate this label from the items it heads, so
+ * the case treatment carries none of the load it carries in Latin and Cyrillic.
+ */
+export const MENU_SECTION_LABEL: CSSProperties = {
+  fontSize: '12px',
+  lineHeight: '16px',
+  fontWeight: 500,
+}
+
 /** Debounce before a note edit is persisted. */
 export const SAVE_DEBOUNCE_MS = 1000
 /** External-change poll interval. */

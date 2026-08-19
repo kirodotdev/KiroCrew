@@ -37,6 +37,7 @@ import {
   FONT_MONO,
   LS,
   MAX_AUTO_SYNC_MINS,
+  MENU_SECTION_LABEL,
   MIN_AUTO_SYNC_MINS,
   PANEL_DEFAULT_WIDTH,
   PANEL_MAX_WIDTH,
@@ -1539,7 +1540,7 @@ export default function MdNotebookPage() {
                 >
                   <div
                     style={{
-                      ...RAIL_TYPE.meta,
+                      ...MENU_SECTION_LABEL,
                       textTransform: 'uppercase',
                       letterSpacing: '.04em',
                       color: 'var(--muted)',
@@ -1578,7 +1579,7 @@ export default function MdNotebookPage() {
                   <div style={{ height: '1px', background: 'var(--border)', margin: '4px 0' }} />
                   <div
                     style={{
-                      ...RAIL_TYPE.meta,
+                      ...MENU_SECTION_LABEL,
                       textTransform: 'uppercase',
                       letterSpacing: '.04em',
                       color: 'var(--muted)',
