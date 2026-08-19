@@ -39,8 +39,9 @@ const HEALTHY: Record<string, { status: number, text: string }> = {
   dnt: run(0, 'OK: 19 DNT term(s) intact across 9 catalog(s) — 62207 value(s) scanned.'),
   manifest: run(0, 'OK: 16 built-in manifests, 147 strings match locales/en.json exactly.'),
   units: run(0, '[added-lines] 0 number+unit literal(s) on lines you wrote\n[vs-base] 0 touched file(s) gained number+unit literals\nOK: 52 un-migrated number+unit literal(s) across 1026 file(s), baseline 74.'),
-  source: run(0, '[source-strings] 0 new key(s) vs origin/main, 0 finding(s).\n[changed-values] 0 catalog QA finding(s) among values changed vs origin/main.'),
+  source: run(0, '[source-strings] 0 new key(s) vs origin/main, 0 finding(s).\n[changed-values] 0 catalog QA finding(s) among values changed vs origin/main.\n[changed-passthrough] 0 untranslated value(s) among values changed vs origin/main.'),
   strings: run(0, '[added-lines] 0 untranslated string(s) on lines this branch wrote.\n[vs-base] 0 touched file(s) gained untranslated strings vs the base.\nOK: 1324 untranslated strings across 241 files, at or below the baseline of 1837.\nOK: 1118 untranslated string(s) inside ALL-CAPS constants across 249 files, at or below the ceiling of 1118.'),
+  passthrough: run(0, 'OK: 3352 untranslated passthrough value(s) across 11 catalog(s) — 118913 value(s) scanned.'),
 }
 
 const runsOf = (over: Record<string, { status: number, text: string }> = {}) => {
@@ -241,7 +242,7 @@ describe('a whole-repo total over its ceiling reports and does NOT fail', () => 
 })
 
 describe('the table covers the chain it replaced', () => {
-  it('runs exactly the nine scripts, with the flags the && chain used', () => {
+  it('runs exactly the ten scripts, with the flags the && chain used', () => {
     // Dropping a script from this table is a silent loss of coverage, and this is the
     // only test that would notice. `--baseline=3` is part of the contract: the codemod
     // ratchet lived in the package.json chain and moved here.
@@ -255,6 +256,7 @@ describe('the table covers the chain it replaced', () => {
       'check-dnt-catalogs.mjs',
       'check-app-manifest-sync.mjs',
       'check-unit-literals.mjs',
+      'check-untranslated-values.mjs',
     ])
   })
 
@@ -274,10 +276,36 @@ describe('the table covers the chain it replaced', () => {
     // whole-repo number is a stored total another branch can move without touching your
     // files, so it reports. `dynamic-keys` was the last bidirectional ratchet in the repo.
     expect(CHECKS.filter(c => c.enforce === 'info').map(c => c.id))
-      .toEqual(['unit-ceiling', 'dynamic-keys', 'extractable', 'untranslated', 'allcaps'])
+      .toEqual(['unit-ceiling', 'dynamic-keys', 'extractable', 'untranslated', 'allcaps',
+        'untranslated-passthrough'])
     for (const c of CHECKS.filter(x => x.scope === 'repo' && x.enforce !== 'hard-zero')) {
       expect(c.enforce, `${c.id} is whole-repo and not a hard zero, so it must be info`)
         .toBe('info')
     }
+  })
+})
+
+describe('untranslated passthrough — the total reports, only the diff fails', () => {
+  it('reports thousands of inherited English values without failing the step', () => {
+    // The whole-catalog total is inherited debt: eleven catalogs carry it, and the branch
+    // that touches a catalog next did not put it there. Failing on this number would
+    // red-line PRs whose own diff is clean.
+    const { rows, failed } = decide({
+      passthrough: run(0, 'OK: 3352 untranslated passthrough value(s) across 11 catalog(s) — 118913 value(s) scanned.'),
+    })
+    expect(row(rows, 'untranslated-passthrough').state).toBe('PASS')
+    expect(row(rows, 'untranslated-passthrough').summary).toContain('3352')
+    expect(failed).toBe(false)
+  })
+
+  it('fails when values THIS branch changed are still English', () => {
+    const { rows, failed } = decide({
+      source: run(1, '[source-strings] 0 new key(s) vs origin/main, 0 finding(s).\n[changed-values] 0 catalog QA finding(s) among values changed vs origin/main.\n[changed-passthrough] 2 untranslated value(s) among values changed vs origin/main.'),
+    })
+    expect(row(rows, 'changed-passthrough').state).toBe('FAIL')
+    // Its own row, so the sibling's number keeps meaning what it meant: a reader can
+    // tell "you left this in English" from "your quotes do not pair".
+    expect(row(rows, 'changed-values').state).toBe('PASS')
+    expect(failed).toBe(true)
   })
 })

@@ -54,6 +54,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { changedValueFindings, flatten as qaFlatten } from './lib/qa-checks.mjs'
+import { passthroughChecks, passthroughFindings } from './lib/passthrough-checks.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -241,14 +242,36 @@ function readFlat(paths, ref) {
 
 const byLang = catalogFiles()
 const enHead = readFlat(byLang.en ?? [], null)
+// The do-not-translate list is the exclusion set the language checks measure against:
+// a value made only of product names is not untranslated, it is correct.
+const dnt = JSON.parse(
+  fs.readFileSync(path.join(ROOT, 'src', 'i18n', 'glossary.json'), 'utf-8'),
+).dnt ?? []
+const ptChecks = passthroughChecks(dnt)
 const qaFindings = []
+const ptFindings = []
 for (const [lang, paths] of Object.entries(byLang)) {
+  // Read each catalog once at each ref: both checks want the same two snapshots, and
+  // a second `git show` per locale doubles the I/O of the slowest part of this gate.
+  const catalogBase = readFlat(paths, BASE_REF)
+  const catalogHead = readFlat(paths, null)
   qaFindings.push(
     ...changedValueFindings({
       lang,
-      base: readFlat(paths, BASE_REF),
-      head: readFlat(paths, null),
+      base: catalogBase,
+      head: catalogHead,
       enHead,
+    }),
+  )
+  // English is the source; there is nothing for it to be an untranslated copy of.
+  if (lang === 'en') continue
+  ptFindings.push(
+    ...passthroughFindings({
+      lang,
+      base: catalogBase,
+      head: catalogHead,
+      enHead,
+      checks: ptChecks,
     }),
   )
 }
@@ -275,7 +298,32 @@ if (qaFindings.length > 0) {
   )
 }
 
-if (findings.length === 0 && qaFindings.length === 0) {
+console.log(
+  `[changed-passthrough] ${ptFindings.length} untranslated value(s) among values changed vs ${BASE_REF}.`,
+)
+
+if (ptFindings.length > 0) {
+  const byPassthroughId = {}
+  for (const f of ptFindings) {
+    (byPassthroughId[f.check.id] = byPassthroughId[f.check.id] || []).push(f)
+  }
+  console.error('')
+  for (const [id, list] of Object.entries(byPassthroughId)) {
+    console.error(`${id} — ${list[0].check.describe}`)
+    for (const f of list) console.error(`    ${f.lang}:${f.key}\n      ${JSON.stringify(f.value)}`)
+    console.error('')
+  }
+  console.error(
+    'These values are NEW or EDITED on this branch and still read as English, so they are\n'
+    + 'not inherited debt and there is no ceiling to raise. Translate them.\n\n'
+    + 'If a value is legitimately identical in this locale — a product name, a command, an\n'
+    + 'identifier — add the term to `dnt` in src/i18n/glossary.json instead of working around\n'
+    + 'the check. That list is what every locale is measured against, so registering it once\n'
+    + 'exempts it everywhere and documents why.',
+  )
+}
+
+if (findings.length === 0 && qaFindings.length === 0 && ptFindings.length === 0) {
   process.exit(0)
 }
 

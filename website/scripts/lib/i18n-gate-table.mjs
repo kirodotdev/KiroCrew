@@ -22,7 +22,7 @@
 
 /** @typedef {'PASS'|'FAIL'|'MISSING'|'NOT RUN'} RowState */
 
-/** The eight processes. Each may host more than one check. */
+/** The ten processes. Each may host more than one check. */
 export const SCRIPTS = [
   { key: 'pseudo', argv: ['gen-pseudolocale.mjs', '--check'] },
   { key: 'keys', argv: ['check-i18n-keys.mjs'] },
@@ -33,10 +33,11 @@ export const SCRIPTS = [
   { key: 'dnt', argv: ['check-dnt-catalogs.mjs'] },
   { key: 'manifest', argv: ['check-app-manifest-sync.mjs'] },
   { key: 'units', argv: ['check-unit-literals.mjs'] },
+  { key: 'passthrough', argv: ['check-untranslated-values.mjs'] },
 ]
 
 /**
- * The thirteen checks, in reading order within their section.
+ * The eighteen checks, in reading order within their section.
  *
  * `find` pulls the numbers out of the owning script's output on the PASSING path;
  * `whenFailed` does the same for the failing path, because most of these scripts print
@@ -93,6 +94,17 @@ export const CHECKS = [
     find: /^\[changed-values\] (\d+) catalog QA finding/m,
     ok: m => m[1] === '0',
     summary: m => `${m[1]} QA finding(s) among catalog values you added or changed`,
+  },
+  {
+    // Separate from `changed-values` although the same script hosts both: "you left
+    // this in English" and "your quotes do not pair" are different work, and folding
+    // the counts together would make the row's number mean two things. This is the
+    // ONLY tier the language checks can fail in — the whole-catalog total they share
+    // predicates with is inherited debt and reports instead.
+    id: 'changed-passthrough', script: 'source', scope: 'diff', enforce: 'zero',
+    find: /^\[changed-passthrough\] (\d+) untranslated value\(s\)/m,
+    ok: m => m[1] === '0',
+    summary: m => `${m[1]} value(s) you added or changed still read as English`,
   },
   // ---- whole-repo: may be inherited, but can still fail this step ------------
   {
@@ -207,6 +219,17 @@ export const CHECKS = [
       find: /^\[allcaps\] REPORT: (\d+) untranslated string\(s\) sit inside ALL-CAPS module\n?constants, (\d+) above the ceiling of (\d+)/m,
       summary: m => `${m[1]} inside ALL-CAPS constants — ${m[2]} over the ceiling of ${m[3]}`,
     },
+  },
+  {
+    // Deliberately has no ceiling, unlike every other info row. A stored total would
+    // exist only to notice growth, and `changed-passthrough` already refuses growth at
+    // the moment it is introduced — so the number would buy nothing while adding a file
+    // to update, a ritual for raising it, and a way for two branches to conflict over a
+    // count. What it reports is the backfill worklist, per locale.
+    id: 'untranslated-passthrough', script: 'passthrough', scope: 'repo', enforce: 'info',
+    find: /^OK: (\d+) untranslated passthrough value\(s\) across (\d+) catalog\(s\) — (\d+) value/m,
+    summary: m => `${m[1]} English value(s) across ${m[2]} catalog(s)`,
+    note: m => `${m[3]} scanned · no ceiling, enforced on the diff instead`,
   },
 ]
 
