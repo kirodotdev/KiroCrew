@@ -4456,14 +4456,27 @@ async def api_dev_fleet_pod_provision_dismiss(request: web.Request) -> web.Respo
     name = body.get("name")
     run_id = body.get("run_id")
     if not isinstance(name, str) or not name:
-        return web.json_response({"error": "'name' must be a non-empty string"}, status=400)
+        return web.json_response(
+            {"error": "'name' must be a non-empty string", "code": "invalid_name"}, status=400
+        )
     if not isinstance(run_id, str) or not run_id:
-        return web.json_response({"error": "'run_id' must be a non-empty string"}, status=400)
+        return web.json_response(
+            {"error": "'run_id' must be a non-empty string", "code": "invalid_run_id"}, status=400
+        )
     target, ferr = await _find_worktree(name)
     if target is None:
-        return web.json_response({"error": ferr}, status=400)
+        return web.json_response({"error": ferr, "code": "invalid_worktree"}, status=400)
     result = await _pod_provision_dismiss(name, run_id)
-    return web.json_response(result, status=200 if result.get("ok") else 409)
+    if result.get("ok"):
+        return web.json_response(result, status=200)
+    return web.json_response(
+        {
+            "ok": False,
+            "error": result.get("error", "cannot dismiss provision"),
+            "code": "provision_dismiss_conflict",
+        },
+        status=409,
+    )
 
 
 @_audited("dev_fleet_rebase")
