@@ -472,6 +472,79 @@ scope-name-agnostic (adding a scope is a `SCOPE_CATALOG` data change).
 
 Spec: [`../system-specs/modules/platform-context.md`](../system-specs/modules/platform-context.md).
 
+## The app boundary
+
+Tenet 8 in [`../../TENETS.md`](../../TENETS.md) says everything is an app. This
+section is where that becomes a line you can point at in review.
+
+**The core is the trust boundary plus the state every app shares.** Five things
+live below the line, and they are there for one reason each:
+
+| In the core | Why it cannot be an app |
+|---|---|
+| Sessions and transcripts | Every surface reads the same conversation. Two implementations means two histories. |
+| Memory and lessons | Same argument, across sessions instead of across surfaces. |
+| Approvals and the PreToolUse gate | Its value is being unavoidable. An app-supplied gate is a gate with an off switch. |
+| The governance ceiling | `effective = POLICY ∩ PROFILE`, tightest-wins, and the keystone files the agent cannot write. A replaceable ceiling is not a ceiling. |
+| The event bus and identity | The thing apps agree through. It cannot itself be one of the parties. |
+
+Everything above that line renders or interprets, and is an app: pages, overview
+and summary surfaces, review and triage workflows, editors, panels. When a
+surface up there cannot be built as an app, the missing seam is the bug to file.
+
+**That boundary is enforced against the agent, not against app code.** Every
+control in the table gates the agent's tool-call surface. An app's Python runs in
+the gateway process: `src/kiro_crew/apps/module_loader.py:34-39` states that the
+permission system "does NOT restrict `import`, filesystem, network, or access to
+in-memory credentials. Installing an app is therefore equivalent to granting it
+full gateway-process privileges." So the table says what no app may be *asked* to
+supply, and the mechanism that would stop one supplying it anyway does not exist
+yet — the keystone path list is a mutable module-level list
+(`src/kiro_crew/security.py:4436`), and app admission admits when no policy file
+is present (`src/kiro_crew/apps/admission.py:25-30`). Read the table as the
+intended boundary and
+[`../request-for-change/rfc-app-sandbox-isolation.md`](../request-for-change/rfc-app-sandbox-isolation.md)
+as the work that makes it real.
+
+**Replacement is whole-surface, not per-widget.** An app takes over a named slot
+and owns what appears there. Several apps each contributing a card into one page
+needs layout negotiation between parties who cannot see each other, and produces
+a surface nobody owns. This is what makes the per-job-family overview tractable:
+a team swaps the whole overview, rather than five apps bidding for space inside
+one. The card-composition shape already exists as edition seam 7,
+`registerOverviewStatCards`, and it has no registrants in the stock build.
+
+**The shipped set is a starting opinion.** Built-in apps are curated defaults, so
+users and field engineers pick which surfaces are central to their work. Because
+users take defaults, arguing about the default set is a product argument with a
+small blast radius, which is the point of moving it out of the architecture.
+
+**An app has to be able to do what a built-in page does**, or "make it an app"
+becomes a way to decline a feature while appearing to accept it. Three gaps are
+open against that standard today:
+
+- Apps add, and cannot intervene. `backend.hooks` (`routes`, `on_startup`,
+  `on_shutdown`) and `setup.onEnable` / `onDisable` are the in-gateway entry
+  points, and none of them lets an app take a position in a flow the core owns.
+  `HookManager` is built only from `config.json`'s `hooks` section
+  (`src/kiro_crew/hooks.py:931`) and exposes no registration path.
+- The platform states no version for its own app-facing surface.
+  `minKiroCrewVersion` is a floor an app declares about the gateway, checked at
+  install and update only (`src/kiro_crew/apps/manager.py:281`), so changing or
+  withdrawing a seam carries no compatibility promise in the other direction.
+- Manifest fields that nothing reads. `ui.sidebar.section` and `ui.sidebar.order`
+  are documented and parsed, and the dashboard does not place apps by them, so
+  navigation position is not yet app-controlled. Ten more fields are in the same
+  state, `jobFamilies` among them.
+
+Decomposing a core surface into an app is how the list above gets shorter, and
+the list is the evidence for which seam to build next.
+
+Rationale, the full dead-field inventory, and the phased plan:
+[`../request-for-change/rfc-everything-is-an-app.md`](../request-for-change/rfc-everything-is-an-app.md).
+Contracts: [`../system-specs/modules/app-kit-platform.md`](../system-specs/modules/app-kit-platform.md),
+[`../app-kit/manifest-reference.md`](../app-kit/manifest-reference.md).
+
 ## Frontend architecture
 
 ```mermaid

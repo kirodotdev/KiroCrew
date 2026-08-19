@@ -11,7 +11,10 @@ Last audited **2026-08-03** against main `0ab6ed48`. Every status below was
 verified against the code (definitions *and* callers) and against merged/open PR
 history, not taken from the document's own claims. The `rfc-tailnet-dashboard-access`
 row was added later and re-verified against `429cbad8`, and `rfc-session-address-model`
-was added later still and verified against `b23ab77af`; the other rows have
+was added later still and verified against `b23ab77af`; the
+`rfc-everything-is-an-app` and `rfc-amend-tenets-everything-is-an-app` rows
+were added
+2026-08-18 and verified against `e6b06685e`; the other rows have
 not been re-audited since 2026-08-03.
 
 | Document | Status | What is actually on main |
@@ -38,6 +41,8 @@ not been re-audited since 2026-08-03.
 | [rfc-navigation-placement-seam.md](rfc-navigation-placement-seam.md) | `draft` | Nothing. Verified at `2a665e735`: `UISidebar` ships in the manifest and no frontend code reads `ui.sidebar`; `appNavTarget` still resolves `pages[0]` only, and `registerBuiltinSurface` is not one of the nine edition seams |
 | [rfc-append-only-session-transcript.md](rfc-append-only-session-transcript.md) | `draft` | Nothing. Verified at `2a665e735`: `_save_slot_to_history` still re-serializes the whole in-memory window on every flush, and `rewrite_session` / `sliding_window` still have no production caller |
 | [version-compliance-framework.md](version-compliance-framework.md) | `draft` | Nothing. Framework doc, not an RFC; premise is pre-fork and stale |
+| [rfc-everything-is-an-app.md](rfc-everything-is-an-app.md) | `draft` | Nothing. Phase 0's boundary section is in this document's own branch and not yet merged; the eleven declared-but-unread manifest fields it inventories are all still declared and still unread |
+| [rfc-amend-tenets-everything-is-an-app.md](rfc-amend-tenets-everything-is-an-app.md) | `draft` | Nothing. `TENETS.md` still carries seven tenets on main. `git log --follow` on it shows two commits and no prior amendment, and `grep -i tenet` returns zero hits in `GOVERNANCE.md` |
 
 Nothing in this directory is `implemented` or `superseded` today.
 
