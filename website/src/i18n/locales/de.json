@@ -11068,7 +11068,7 @@
         "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden"
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn ein nicht triviales mehrstufiges Verfahren erkannt wird. Standardmäßig aus. Entwürfe werden in der Warteschlange auf dem Tab „Skills“ zur Überprüfung bereitgestellt — nichts geht ohne Ihre Genehmigung live (siehe unten).",
+        "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn die Sitzung ein wiederkehrendes Verfahren zeigt — eines, das eine künftige Sitzung an einem anderen Ziel erneut ausführen würde. Standardmäßig aus. Entwürfe werden in der Warteschlange auf dem Tab „Skills“ zur Überprüfung bereitgestellt — nichts geht ohne Ihre Genehmigung live (siehe unten).",
         "auto_generate_skills_from_sessions": "Skills automatisch aus Sitzungen erzeugen",
         "failed_to_save_skills_setting": "Skills-Einstellung konnte nicht gespeichert werden",
         "keep_every_auto_generated_candidate_in_the_pendi": "Jeden automatisch erzeugten Kandidaten in der Warteschlange halten, bis Sie ihn genehmigen. Wenn Sie dies deaktivieren, werden Skills, die nur Text enthalten, automatisch veröffentlicht; Skills mit gebündelten Skripten erfordern in jedem Fall eine Genehmigung.",

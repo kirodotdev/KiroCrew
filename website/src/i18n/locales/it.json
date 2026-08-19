@@ -11192,7 +11192,7 @@
         "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9"
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando viene rilevata una procedura non banale in più passaggi. Disattivato per impostazione predefinita. Le bozze vengono messe in coda nella scheda Skill per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",
+        "analyze_each_completed_session_and_draft_a_reusa": "Analizza ogni sessione completata e redigi una SKILL.md riutilizzabile quando la sessione dimostra una procedura ricorrente — una che una sessione futura, lavorando su un obiettivo diverso, eseguirebbe di nuovo. Disattivato per impostazione predefinita. Le bozze vengono messe in coda nella scheda Skill per la revisione — nulla va in produzione senza la tua approvazione (vedi sotto).",
         "auto_generate_skills_from_sessions": "Genera automaticamente skill dalle sessioni",
         "failed_to_save_skills_setting": "Impossibile salvare l’impostazione delle skill",
         "keep_every_auto_generated_candidate_in_the_pendi": "Mantieni ogni candidato generato automaticamente nella coda in attesa fino alla tua approvazione. Disattivandolo, le skill di solo testo vengono pubblicate automaticamente; le skill che includono script richiedono sempre l'approvazione.",

@@ -10944,7 +10944,7 @@
         "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 使用 ⌃ Ctrl（而不是 ⌥ Option）"
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，检测到有价值的多步骤流程时起草可复用 SKILL.md。默认关闭。草稿会暂存到“技能”标签页的待审队列中供审阅 — 未经你批准不会生效（见下文）。",
+        "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，当该会话展示出会复现的流程（即未来会话在处理不同目标时仍会再次执行的流程）时起草可复用 SKILL.md。默认关闭。草稿会暂存到“技能”标签页的待审队列中供审阅 — 未经你批准不会生效（见下文）。",
         "auto_generate_skills_from_sessions": "从会话自动生成技能",
         "failed_to_save_skills_setting": "保存技能设置失败",
         "keep_every_auto_generated_candidate_in_the_pendi": "将所有自动生成的候选技能保留在待审队列中，直到你批准。关闭此项后，纯文本技能会自动发布；包含脚本的技能无论如何都需要批准。",

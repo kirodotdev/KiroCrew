@@ -11193,7 +11193,7 @@
         "use_ctrl_not_option_for_chat_1_9": "Utiliser ⌃ Ctrl (et non ⌥ Option) pour les chats 1–9"
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'une procédure non triviale en plusieurs étapes est détectée. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de l'onglet Compétences pour relecture — rien n'est activé sans votre approbation (voir ci-dessous).",
+        "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'elle démontre une procédure récurrente — une procédure qu'une session future, travaillant sur une autre cible, exécuterait à nouveau. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de l'onglet Compétences pour relecture — rien n'est activé sans votre approbation (voir ci-dessous).",
         "auto_generate_skills_from_sessions": "Générer automatiquement des compétences à partir des sessions",
         "failed_to_save_skills_setting": "Échec de l’enregistrement du réglage des compétences",
         "keep_every_auto_generated_candidate_in_the_pendi": "Conserver chaque candidat généré automatiquement dans la file d'attente jusqu'à ce que vous l'approuviez. Désactiver cette option permet aux compétences purement textuelles d'être publiées automatiquement ; les compétences qui embarquent des scripts nécessitent toujours une approbation.",

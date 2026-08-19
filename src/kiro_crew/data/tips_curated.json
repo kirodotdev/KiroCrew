@@ -155,7 +155,7 @@
       "id": "auto-skills",
       "feature": "Auto-generated Skills",
       "title": "Turn repeated work into a skill",
-      "body": "Let Kiro Crew draft a reusable skill whenever a finished session contains a multi-step procedure worth repeating. Enable **Auto-generate skills from sessions** in **Settings › Skills** — drafts wait in a review queue and never go live without your approval. Off by default.",
+      "body": "Let Kiro Crew draft a reusable skill when a finished session shows a procedure a future session would run again on a different target. Enable **Auto-generate skills from sessions** in **Settings › Skills** — drafts wait in a review queue and never go live without your approval. Off by default.",
       "why": "",
       "doc": "",
       "doc_link": "skills.md",

@@ -11193,7 +11193,7 @@
         "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9"
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando se detecta un procedimiento de varios pasos no trivial. Desactivado por defecto. Los borradores pasan a la cola de pendientes de la pestaña Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",
+        "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando la sesión demuestra un procedimiento recurrente — uno que una sesión futura, trabajando sobre un objetivo distinto, volvería a ejecutar. Desactivado por defecto. Los borradores pasan a la cola de pendientes de la pestaña Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",
         "auto_generate_skills_from_sessions": "Generar habilidades automáticamente a partir de las sesiones",
         "failed_to_save_skills_setting": "No se pudo guardar la configuración de habilidades",
         "keep_every_auto_generated_candidate_in_the_pendi": "Mantén cada candidato generado automáticamente en la cola de pendientes hasta que lo apruebes. Si lo desactivas, las habilidades de solo texto se publican automáticamente; las que incluyen scripts siempre requieren aprobación.",

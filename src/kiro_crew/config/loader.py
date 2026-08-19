@@ -3184,10 +3184,11 @@ class SkillsConfig:
         metadata=_meta(
             "Auto-Create Skills",
             "When true, analyze each session after completion and synthesize a reusable "
-            "SKILL.md when a non-trivial multi-step procedure is detected. Candidates are "
-            "staged for review (see approval_required) rather than going live, and live "
-            "under skills/auto/ so they never collide with hand-authored skills. Disabled "
-            "by default; enable in Settings → Skills.",
+            "SKILL.md when the session demonstrates a recurring procedure — one a future "
+            "session, working on a different target, would run again. Candidates are staged "
+            "for review (see approval_required) rather than going live, and live under "
+            "skills/auto/ so they never collide with hand-authored skills. Disabled by "
+            "default; enable in Settings → Skills.",
         ),
     )
     auto_refine_on_deviation: bool = field(

@@ -10944,7 +10944,7 @@
         "use_ctrl_not_option_for_chat_1_9": "チャット 1～9 に ⌃ Ctrl（⌥ Option ではなく）を使用します"
       },
       "skillsPanel": {
-        "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、トリビアルでない複数ステップの手順が検出されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトはスキルタブの保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",
+        "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、繰り返し使われる手順 — 将来のセッションが別の対象に対して再び実行するような手順 — が示されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトはスキルタブの保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",
         "auto_generate_skills_from_sessions": "セッションからスキルを自動生成",
         "failed_to_save_skills_setting": "スキル設定を保存できませんでした",
         "keep_every_auto_generated_candidate_in_the_pendi": "承認するまで、自動生成されたすべての候補を保留キューに保持します。これをオフにすると、テキストのみのスキルを自動公開できます。スクリプトをバンドルするスキルは、関係なく常に承認が必要です。",
