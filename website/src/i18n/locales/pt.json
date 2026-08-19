@@ -6383,7 +6383,9 @@
       "search_everywhere": "Pesquisar em tudo",
       "show_or_focus_the_kiro_crew_window": "Mostrar ou focar a janela do {{productName}}",
       "use_ctrl_not_option_for_chat_1_9": "Use ⌃ Ctrl (não ⌥ Option) para os chats 1–9",
-      "use_ctrl_not_option_for_chat_1_to_9": "Use Ctrl (não Option) para os chats 1 a 9"
+      "use_ctrl_not_option_for_chat_1_to_9": "Use Ctrl (não Option) para os chats 1 a 9",
+      "panel_toggles": "Alternar painéis",
+      "unset": "Não definido"
     },
     "sidePanelLayout": {
       "update_available": "atualização disponível"
@@ -6980,7 +6982,10 @@
       "switch_to_remote_crew": "Alternar para a crew remota {{n}}",
       "walk_back_mru_history": "Voltar no histórico MRU",
       "stop_speaking": "Parar de falar",
-      "toggle_focus_mode": "Alternar o modo de foco"
+      "toggle_focus_mode": "Alternar o modo de foco",
+      "toggle_left_sidebar": "Alternar barra lateral esquerda",
+      "toggle_session_panel": "Alternar painel de sessões",
+      "toggle_side_panel": "Alternar painel lateral"
     },
     "usePanelTabs": {
       "artifacts": "Artefatos",
@@ -11505,7 +11510,9 @@
         "record_prompt": "Pressione as teclas…",
         "search": "Pesquisar",
         "turn_keyboard_shortcuts_on_or_off_globally": "Ativar ou desativar os atalhos de teclado globalmente — {{mod}} + K (esta referência) sempre funciona",
-        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (não ⌥ Option) para chats 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (não ⌥ Option) para chats 1–9",
+        "clear_shortcut": "Limpar",
+        "panel_toggles": "Alternar painéis"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analisa cada sessão concluída e cria um rascunho de SKILL.md reutilizável quando ela demonstra um procedimento recorrente — um que uma sessão futura, trabalhando em um alvo diferente, executaria novamente. Desativado por padrão. Os rascunhos vão para a fila de pendentes na aba Habilidades para revisão — nada entra em vigor sem a sua aprovação (veja abaixo).",

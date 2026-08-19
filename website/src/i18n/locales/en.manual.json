@@ -2380,6 +2380,10 @@
       "unbound_tokens_can_wake_any_crew_other": "{{count}} tokens without a crew binding also exist; they can wake any crew, this one included.",
       "webhook": "Webhook",
       "webhooks_that_wake_this_crew": "Webhooks that wake this crew"
+    },
+    "shortcutsModal": {
+      "panel_toggles": "Panel toggles",
+      "unset": "Not set"
     }
   },
   "hooks": {
@@ -2427,7 +2431,10 @@
       "walk_back_mru_history": "Walk back MRU history",
       "stop_speaking": "Stop speaking",
       "toggle_focus_mode": "Toggle focus mode",
-      "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)"
+      "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)",
+      "toggle_left_sidebar": "Toggle left sidebar",
+      "toggle_session_panel": "Toggle session panel",
+      "toggle_side_panel": "Toggle side panel"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",
@@ -4697,7 +4704,9 @@
         "preset_custom": "Custom",
         "record_prompt": "Press keys…",
         "custom_hint": "Use at least one modifier key.",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works"
+        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works",
+        "clear_shortcut": "Clear",
+        "panel_toggles": "Panel toggles"
       },
       "reportProblemCard": {
         "support": "Support",

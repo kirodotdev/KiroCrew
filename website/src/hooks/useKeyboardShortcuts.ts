@@ -5,6 +5,13 @@ import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { queryComposer, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
+import {
+  loadPanelToggleOverrides,
+  matchPanelToggleEvent,
+  PANEL_TOGGLE_SHORTCUTS_EVENT,
+  PANEL_TOGGLE_SHORTCUTS_KEY,
+  type PanelToggleOverrides,
+} from '../lib/panelToggleShortcuts'
 import { i18nT } from '../i18n/t'
 
 export const SHORTCUTS_ENABLED_KEY = 'mc-keyboard-shortcuts'
@@ -590,10 +597,13 @@ interface UseKeyboardShortcutsOpts {
   onCycleModel?: () => void
   onCyclePrevModel?: () => void
   onToggleFocusMode?: () => void
+  onToggleLeftSidebar?: () => void
+  onToggleSessionPanel?: () => void
+  onToggleSidePanel?: () => void
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const appStore = useAppStore()
@@ -605,6 +615,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
   const suppressNextInputRef = useRef(false)
   const [enabled, setEnabled] = useState(() => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0')
   const [ctrlDigits, setCtrlDigits] = useState(() => getCtrlDigitsEnabled())
+  // In state, not read per keystroke, to keep the hot keydown path off localStorage.
+  const [panelBindings, setPanelBindings] = useState<PanelToggleOverrides>(() => loadPanelToggleOverrides())
 
   // Listen for toggle changes from Settings
   useEffect(() => {
@@ -614,6 +626,18 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     }
     window.addEventListener(SHORTCUTS_ENABLED_EVENT, onToggle)
     return () => window.removeEventListener(SHORTCUTS_ENABLED_EVENT, onToggle)
+  }, [])
+
+  // Pick up rebinds from Settings (same-tab event) and other tabs (storage).
+  useEffect(() => {
+    const refresh = () => setPanelBindings(loadPanelToggleOverrides())
+    const onStorage = (e: StorageEvent) => { if (e.key === PANEL_TOGGLE_SHORTCUTS_KEY) refresh() }
+    window.addEventListener(PANEL_TOGGLE_SHORTCUTS_EVENT, refresh)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(PANEL_TOGGLE_SHORTCUTS_EVENT, refresh)
+      window.removeEventListener('storage', onStorage)
+    }
   }, [])
 
   // Reset MRU walk index when Alt is released
@@ -742,6 +766,22 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       e.preventDefault()
       dispatch(openActivityToTab('subagents'))
       navigate('/chat')
+      return
+    }
+
+    // User-rebindable toggles for the sidebar / session list / activity panel.
+    // Before the Alt gate because the defaults are ⌘/Ctrl chords with no Alt;
+    // like the bracket chords they fire inside the composer but yield to a
+    // terminal. `defaultPrevented` defers to a handler that already claimed the
+    // key (e.g. the Pierre editor's capture-phase ⌘S save), so a shared chord
+    // saves there rather than also toggling a panel.
+    const panelToggle = matchPanelToggleEvent(e, panelBindings)
+    if (panelToggle && !e.defaultPrevented && !isTerminalTarget(e.target)) {
+      if (!enabled || disabled) return
+      e.preventDefault()
+      if (panelToggle === 'left-sidebar') onToggleLeftSidebar?.()
+      else if (panelToggle === 'session-panel') onToggleSessionPanel?.()
+      else onToggleSidePanel?.()
       return
     }
 
@@ -902,7 +942,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, disabled, enabled, ctrlDigits])
+  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, disabled, enabled, ctrlDigits, panelBindings])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while

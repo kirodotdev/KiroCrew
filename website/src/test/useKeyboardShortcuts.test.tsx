@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, act } from '@testing-library/react'
 import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld, jumpLetters, jumpLabelFor, jumpIndexForCode } from '../hooks/useKeyboardShortcuts'
+import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import chatReducer from '../store/chatSlice'
@@ -221,6 +222,24 @@ describe('ShortcutsModal', () => {
     expect(screen.getByText('Actions')).toBeInTheDocument()
   })
 
+  it('lists the panel-toggle shortcuts with their default bindings', () => {
+    renderWithProviders(<ShortcutsModal onClose={onClose} />)
+    expect(screen.getByText('Toggle left sidebar')).toBeInTheDocument()
+    expect(screen.getByText('Toggle session panel')).toBeInTheDocument()
+    expect(screen.getByText('Toggle side panel')).toBeInTheDocument()
+    // jsdom is non-Mac, so the default session-panel chord renders as Ctrl + B.
+    // The label is itself a block div (an i18n run boundary), so the row is its parent.
+    const row = screen.getByText('Toggle session panel').parentElement!
+    expect(row).toHaveTextContent('Ctrl')
+    expect(row).toHaveTextContent('B')
+  })
+
+  it('shows "Not set" for a panel the user has cleared to unbound', () => {
+    localStorage.setItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify({ 'session-panel': null }))
+    renderWithProviders(<ShortcutsModal onClose={onClose} />)
+    expect(screen.getByText('Toggle session panel').parentElement!).toHaveTextContent('Not set')
+  })
+
   it('renders the enable toggle checked by default', () => {
     renderWithProviders(<ShortcutsModal onClose={onClose} />)
     const toggle = screen.getByRole('switch')
@@ -413,6 +432,119 @@ describe('⌘/Ctrl+[ and ⌘/Ctrl+] session cycling', () => {
     expect(next).toMatchObject({ key: ']', meta: true, group: 'chat-navigation' })
     expect(prev?.alt).toBeUndefined()
     expect(next?.ctrl).toBeUndefined()
+  })
+})
+
+/**
+ * Panel-toggle shortcuts (user-rebindable). jsdom reports a non-Mac platform, so
+ * the default `mod` chords resolve to Ctrl: session panel = Ctrl+B, side panel =
+ * Ctrl+\, left sidebar = Ctrl+Shift+S. Handled BEFORE the Alt gate (the defaults
+ * carry no Alt) and fire even inside the composer, like the bracket chords.
+ */
+describe('panel-toggle shortcuts', () => {
+  const cbs = () => ({
+    onToggleLeftSidebar: vi.fn(),
+    onToggleSessionPanel: vi.fn(),
+    onToggleSidePanel: vi.fn(),
+  })
+
+  function setup(handlers: ReturnType<typeof cbs>, opts: { enabled?: boolean; disabled?: boolean } = {}) {
+    if (opts.enabled === false) localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = createTestStore()
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn(), disabled: opts.disabled, ...handlers }),
+      { store },
+    )
+    return store
+  }
+
+  it('Ctrl+B toggles the session panel', () => {
+    const h = cbs(); setup(h)
+    fireEvent.keyDown(document, { code: 'KeyB', ctrlKey: true })
+    expect(h.onToggleSessionPanel).toHaveBeenCalledTimes(1)
+    expect(h.onToggleLeftSidebar).not.toHaveBeenCalled()
+    expect(h.onToggleSidePanel).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+\\ toggles the side panel', () => {
+    const h = cbs(); setup(h)
+    fireEvent.keyDown(document, { code: 'Backslash', key: '\\', ctrlKey: true })
+    expect(h.onToggleSidePanel).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves the left sidebar unbound by default (no default chord fires it)', () => {
+    const h = cbs(); setup(h)
+    fireEvent.keyDown(document, { code: 'KeyS', ctrlKey: true, shiftKey: true })
+    expect(h.onToggleLeftSidebar).not.toHaveBeenCalled()
+  })
+
+  it('toggles the left sidebar once the user binds a chord to it', () => {
+    localStorage.setItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify({ 'left-sidebar': { key: 's', mod: true, shift: true } }))
+    const h = cbs(); setup(h)
+    fireEvent.keyDown(document, { code: 'KeyS', ctrlKey: true, shiftKey: true })
+    expect(h.onToggleLeftSidebar).toHaveBeenCalledTimes(1)
+  })
+
+  it('claims the keystroke so the browser default does not run', () => {
+    const h = cbs(); setup(h)
+    const event = new KeyboardEvent('keydown', { code: 'KeyB', ctrlKey: true, cancelable: true, bubbles: true })
+    expect(!document.dispatchEvent(event)).toBe(true)
+  })
+
+  it('fires from inside a text field (toggle while composing)', () => {
+    const h = cbs(); setup(h)
+    const ta = document.createElement('textarea')
+    document.body.appendChild(ta)
+    fireEvent.keyDown(ta, { code: 'KeyB', ctrlKey: true })
+    expect(h.onToggleSessionPanel).toHaveBeenCalledTimes(1)
+    ta.remove()
+  })
+
+  it('leaves the keystroke to the PTY inside an embedded terminal', () => {
+    const h = cbs(); setup(h)
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const inner = document.createElement('textarea')
+    term.appendChild(inner)
+    document.body.appendChild(term)
+    fireEvent.keyDown(inner, { code: 'KeyB', ctrlKey: true })
+    expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
+    term.remove()
+  })
+
+  it('does not fire when shortcuts are globally disabled', () => {
+    const h = cbs(); setup(h, { enabled: false })
+    fireEvent.keyDown(document, { code: 'KeyB', ctrlKey: true })
+    expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
+  })
+
+  it('does not fire while a modal holds the shortcuts (disabled prop)', () => {
+    const h = cbs(); setup(h, { disabled: true })
+    fireEvent.keyDown(document, { code: 'KeyB', ctrlKey: true })
+    expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
+  })
+
+  it('yields when another handler already consumed the keystroke (defaultPrevented)', () => {
+    // A capture-phase handler upstream (e.g. the Pierre editor's ⌘⇧S save) calls
+    // preventDefault before this document-level listener sees the bubble; the
+    // panel toggle must defer rather than double-fire.
+    const h = cbs(); setup(h)
+    const consume = (e: KeyboardEvent) => e.preventDefault()
+    document.addEventListener('keydown', consume, true)
+    try {
+      // Ctrl+B is the bound session-panel default, so it WOULD fire without the guard.
+      fireEvent.keyDown(document, { code: 'KeyB', ctrlKey: true })
+      expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', consume, true)
+    }
+  })
+
+  it('does not fire for a panel the user has cleared to unbound', () => {
+    localStorage.setItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify({ 'session-panel': null }))
+    const h = cbs(); setup(h)
+    fireEvent.keyDown(document, { code: 'KeyB', ctrlKey: true })
+    expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
   })
 })
 

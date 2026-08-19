@@ -6205,7 +6205,9 @@
       "search_everywhere": "すべてを検索",
       "show_or_focus_the_kiro_crew_window": "{{productName}} ウィンドウを表示・フォーカス",
       "use_ctrl_not_option_for_chat_1_9": "チャット 1–9 には ⌃ Ctrl を使用してください (⌥ Option ではなく)",
-      "use_ctrl_not_option_for_chat_1_to_9": "チャット 1 から 9 には Ctrl を使用してください (Option ではなく)"
+      "use_ctrl_not_option_for_chat_1_to_9": "チャット 1 から 9 には Ctrl を使用してください (Option ではなく)",
+      "panel_toggles": "パネルの表示切り替え",
+      "unset": "未設定"
     },
     "sidePanelLayout": {
       "update_available": "アップデート利用可能"
@@ -6798,7 +6800,10 @@
       "switch_to_remote_crew": "リモートクルー {{n}} に切り替え",
       "walk_back_mru_history": "MRU履歴を戻る",
       "stop_speaking": "読み上げを停止",
-      "toggle_focus_mode": "フォーカスモードを切り替え"
+      "toggle_focus_mode": "フォーカスモードを切り替え",
+      "toggle_left_sidebar": "左サイドバーの表示を切り替え",
+      "toggle_session_panel": "セッションパネルの表示を切り替え",
+      "toggle_side_panel": "サイドパネルの表示を切り替え"
     },
     "usePanelTabs": {
       "artifacts": "アーティファクト",
@@ -11249,7 +11254,9 @@
         "record_prompt": "キーを押してください…",
         "search": "検索",
         "turn_keyboard_shortcuts_on_or_off_globally": "キーボードショートカットを全体で有効または無効にします — {{mod}} + K（このリファレンス）は常に有効です",
-        "use_ctrl_not_option_for_chat_1_9": "チャット 1～9 に ⌃ Ctrl（⌥ Option ではなく）を使用します"
+        "use_ctrl_not_option_for_chat_1_9": "チャット 1～9 に ⌃ Ctrl（⌥ Option ではなく）を使用します",
+        "clear_shortcut": "クリア",
+        "panel_toggles": "パネルの表示切り替え"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、繰り返し使われる手順 — 将来のセッションが別の対象に対して再び実行するような手順 — が示されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトはスキルタブの保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",

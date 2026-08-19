@@ -6472,7 +6472,9 @@
       "search_everywhere": "Искать везде",
       "show_or_focus_the_kiro_crew_window": "Показать окно {{productName}} или переключиться на него",
       "use_ctrl_not_option_for_chat_1_9": "Используйте ⌃ Ctrl (не ⌥ Option) для чатов 1–9",
-      "use_ctrl_not_option_for_chat_1_to_9": "Используйте Ctrl (не Option) для чатов с 1 по 9"
+      "use_ctrl_not_option_for_chat_1_to_9": "Используйте Ctrl (не Option) для чатов с 1 по 9",
+      "panel_toggles": "Переключение панелей",
+      "unset": "Не задано"
     },
     "sidePanelLayout": {
       "update_available": "доступно обновление"
@@ -7071,7 +7073,10 @@
       "switch_to_remote_crew": "Переключиться на удалённую команду {{n}}",
       "walk_back_mru_history": "Назад по истории MRU",
       "stop_speaking": "Остановить речь",
-      "toggle_focus_mode": "Переключить режим фокусировки"
+      "toggle_focus_mode": "Переключить режим фокусировки",
+      "toggle_left_sidebar": "Показать или скрыть левую боковую панель",
+      "toggle_session_panel": "Показать или скрыть панель сессий",
+      "toggle_side_panel": "Показать или скрыть боковую панель"
     },
     "usePanelTabs": {
       "artifacts": "Артефакты",
@@ -11634,7 +11639,9 @@
         "record_prompt": "Нажмите клавиши…",
         "search": "Поиск",
         "turn_keyboard_shortcuts_on_or_off_globally": "Включить или отключить сочетания клавиш глобально — {{mod}} + K (эта справка) работает всегда",
-        "use_ctrl_not_option_for_chat_1_9": "Использовать ⌃ Ctrl (а не ⌥ Option) для чатов 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Использовать ⌃ Ctrl (а не ⌥ Option) для чатов 1–9",
+        "clear_shortcut": "Очистить",
+        "panel_toggles": "Переключение панелей"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Анализировать каждую завершённую сессию и составлять черновик переиспользуемого SKILL.md, когда она демонстрирует повторяющуюся процедуру — такую, которую будущая сессия, работая над другой целью, выполнила бы снова. По умолчанию выключено. Черновики попадают в очередь ожидания на вкладке «Навыки» для проверки — ничего не публикуется без вашего одобрения (см. ниже).",
