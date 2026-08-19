@@ -230,7 +230,10 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // width from CSS var --mc-content-width
   return (
     <div data-testid="chat-footer" className={`px-4 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <div className="px-3.5 py-2.5">
+      {/* Vertical breathing room only. A horizontal pad here would stack on the
+          row wrapper's own `px-4` gutter and inset the indicator 14px right of
+          every message, tool and card row it sits under. */}
+      <div className="py-2.5">
         {stopState === 'soft_pending' ? (
           <motion.span
             className="text-danger text-[13px] font-mono"
