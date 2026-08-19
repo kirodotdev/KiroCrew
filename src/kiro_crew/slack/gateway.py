@@ -94,7 +94,11 @@ from kiro_crew.cron import (
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
-from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _arm_queued_delivery_settlement,
+    _resolve_channel_target,
+    _run_chat,
+)
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -6976,6 +6980,56 @@ class GatewayOrchestrator:
                             return
 
                         # Slot is idle — start _run_chat.
+                        #
+                        # This branch hands the digest off ASYNCHRONOUSLY: the
+                        # turn is a task, and `_on_done` returns to
+                        # `_report_terminal` while it is still pending — so a
+                        # bare return here is a local routing success, not
+                        # evidence the parent received anything (#2233). Owe
+                        # the delivery bookkeeping to the turn's CONSUMPTION
+                        # instead, through the same `_defer_queued_delivery`
+                        # the queue branch uses: it records the debt (the
+                        # completed member's own tombstone AND any held wave
+                        # siblings) in the slot's content-keyed ledger, keyed
+                        # on this announce, and flags `_delivery_queued` — so
+                        # the run loop's `mark_delivered` and its digest-hold
+                        # settle both become no-ops for this route, and the
+                        # two settle paths cannot both fire.
+                        #
+                        # The task's own OUTCOME is deliberately not the
+                        # signal: `_run_chat` returns NORMALLY on a signed-out
+                        # CLI, a dead provider, exhausted retries and a first
+                        # empty response — several of them after re-queueing
+                        # the announce itself — so "the task finished cleanly"
+                        # says nothing about delivery. Consumption does, and a
+                        # failure before it re-queues the announce, whose drain
+                        # claims this same content-keyed debt on the replay. An
+                        # unconfirmed hand-off leaves the debt parked on
+                        # purpose: a duplicate announce after a restart is
+                        # visible to the parent and recoverable, a lost result
+                        # is neither.
+                        #
+                        # Computed BEFORE the transfer (which detaches the held
+                        # ids); stays False when there is nothing to owe — a
+                        # failed or stopped solo member settles through its own
+                        # failure tombstone, not this ledger.
+                        _owes_delivery = bool(info._digest_settle_ids) or (
+                            not _flush_only and info.outcome == "completed"
+                        )
+                        self._defer_queued_delivery(
+                            _injection_slot, announce, info, flush_only=_flush_only
+                        )
+                        _consumed: list[bool] = [False]
+
+                        def _note_consumed(consumed: bool = True) -> None:
+                            # False is a retraction: the first empty response
+                            # re-queues this exact announce verbatim, so the
+                            # delivery that counts has not happened yet.
+                            _consumed[0] = consumed
+
+                        _run_kwargs: dict[str, Any] = {}
+                        if _owes_delivery:
+                            _run_kwargs["_on_consumed"] = _note_consumed
                         _task = asyncio.create_task(
                             bounded_chat_turn(
                                 _run_chat(
@@ -6983,6 +7037,7 @@ class GatewayOrchestrator:
                                     _injection_slot,
                                     announce,
                                     _directive_user_origin=False,
+                                    **_run_kwargs,
                                 )
                             )
                         )
@@ -7007,6 +7062,20 @@ class GatewayOrchestrator:
                                     )
 
                         _task.add_done_callback(_on_inject_done)
+                        if _owes_delivery:
+                            # Settle the owed tombstones only once the model has
+                            # consumed this turn's prompt — the drain's own
+                            # settlement path, reused verbatim (#2233, riding
+                            # the #4839 ledger). If the transfer above fell
+                            # back (stubbed slot), the ledger holds no debt and
+                            # the claim inside is an empty no-op.
+                            _arm_queued_delivery_settlement(
+                                self.dashboard_state,
+                                _injection_slot,
+                                _task,
+                                [announce],
+                                _consumed,
+                            )
                         self.dashboard_state.push_slots_update()
                         logger.info("Subagent %s → _run_chat in %s", info.id, _slot_name)
                     finally:

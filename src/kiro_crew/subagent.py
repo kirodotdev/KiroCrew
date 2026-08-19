@@ -4827,16 +4827,28 @@ class SubagentManager:
     def _settle_digest_holds(self, info: SubagentInfo) -> None:
         """Settle delivery tombstones for wave members whose injection was
         held for this member's digest. Called ONLY after ``_on_done`` returned
-        without raising — the digest has been handed off, so marking the held
-        members delivered no longer risks the restart-loss window
-        (settling at digest composition, before routing, would).
+        without raising — and it is a real settle only for the routes where
+        that return IS the confirmation. Both dashboard routes hand off
+        asynchronously, so they detach the ids before ``_on_done`` returns and
+        owe them to the parent's consumption instead (the queue branch via
+        ``_defer_queued_delivery``, the direct-injection branch via the same
+        slot ledger), leaving this a no-op there. Marking the held members
+        delivered no longer risks the restart-loss window here (settling at
+        digest composition, before routing, would).
+
+        The ids are taken off ``info`` BEFORE settling, so a re-entry cannot
+        write a second tombstone and a route that detached them first leaves
+        this a no-op.
+
+        A failing tombstone write is logged and skipped, never raised: one
+        unwritable run folder must not strand the rest of the chunk.
         """
-        for _hid in info._digest_settle_ids:
+        ids, info._digest_settle_ids = info._digest_settle_ids, []
+        for _hid in ids:
             try:
                 mark_delivered(_hid)
             except Exception:
                 logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
-        info._digest_settle_ids = []
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         """Get agent info by ID."""
