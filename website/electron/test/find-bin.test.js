@@ -21,29 +21,11 @@ const none = {
 };
 
 describe("findKirocrewBin", () => {
-  it("returns bundled path when it exists", () => {
-    const bundled = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "kirocrew-backend");
-    const fakeFs = only(bundled);
-    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME);
-    assert.equal(result, bundled);
-  });
-
-  it("returns bundled venv layout (backend-dist/.../bin/kirocrew) when the flat PyInstaller exe is absent", () => {
+  it("returns the bundled backend launcher (backend-dist/.../bin/kirocrew) when it exists", () => {
     const venvLayout = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
     const fakeFs = only(venvLayout);
     const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME);
     assert.equal(result, venvLayout);
-  });
-
-  it("prefers the flat PyInstaller exe over the venv-layout bin/kirocrew", () => {
-    const bundled = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "kirocrew-backend");
-    const venvLayout = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
-    const fakeFs = {
-      accessSync: (p) => { if (p !== bundled && p !== venvLayout) throw new Error("ENOENT"); },
-      constants: { X_OK: fs.constants.X_OK },
-    };
-    const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME);
-    assert.equal(result, bundled);
   });
 
   it("returns ~/.toolbox/bin/kirocrew when bundled paths don't exist", () => {
@@ -163,7 +145,7 @@ describe("findKirocrewBin", () => {
   });
 
   it("returns first match when multiple candidates exist", () => {
-    const bundled = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "kirocrew-backend");
+    const bundled = path.join(RESOURCES, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
     const localBin = path.join(HOME, ".local", "bin", "kirocrew");
     const fakeFs = {
       accessSync: (p) => { if (p !== bundled && p !== localBin) throw new Error("ENOENT"); },
@@ -181,7 +163,7 @@ describe("findKirocrewBin", () => {
   });
 
   it("resolves dirname-relative dev path correctly", () => {
-    const devBin = path.resolve(DIRNAME, "backend-dist", "kirocrew-backend", "kirocrew-backend");
+    const devBin = path.resolve(DIRNAME, "backend-dist", "kirocrew-backend", "bin", "kirocrew");
     const fakeFs = only(devBin);
     const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME);
     assert.equal(result, devBin);
