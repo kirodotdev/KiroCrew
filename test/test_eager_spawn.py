@@ -759,6 +759,39 @@ class TestRemoveIfUnclaimed:
         mgr = SessionManager(cfg, provider_factory=_stub_factory())
         assert await mgr.remove_if_unclaimed("dashboard:absent") is False
 
+    @pytest.mark.asyncio
+    async def test_unclaimed_removal_re_rescues_a_previously_rescued_queue(self, cfg):
+        """A resume prefetch can race ahead of the real follow-up and adopt a
+        queue reset() rescued into _orphaned_queues (see get_or_create's
+        cold-start seeding and reset()'s own docstring). If nothing claims
+        the speculative session before this TTL backstop reaps it, the queue
+        must go back into _orphaned_queues instead of vanishing with the
+        discarded session -- otherwise an unclaimed prefetch silently
+        finishes the exact data loss reset() exists to prevent."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-rescue"
+        await mgr.get_or_create(key)  # turn 1 in flight
+        mgr.enqueue(key, "ts2", "second", force=True)
+        await mgr.reset(key)  # rescues the queue into _orphaned_queues
+        assert mgr._orphaned_queues.get(key)
+
+        # A resume prefetch races ahead of the real follow-up and adopts the
+        # rescued queue as part of its speculative cold start.
+        await mgr.get_or_create(key, speculative=True)
+        assert key not in mgr._orphaned_queues  # adopted onto the speculative session
+        mgr.release(key)
+
+        assert await mgr.remove_if_unclaimed(key) is True
+        assert key not in mgr._sessions
+        assert mgr._orphaned_queues.get(key)  # re-rescued, not lost
+
+        await mgr.get_or_create(key)  # the next real cold start for this key
+        assert mgr.dequeue(key) == ("ts2", "second", {})
+        mgr.release(key)
+        await mgr.close_all()
+
 
 class TestResumePrefetchWiring:
     """chat_runner's allow_resume path: flag pass-through and the TTL arm."""

@@ -1800,6 +1800,99 @@ class TestResetPreservesQueuedMessages:
         assert not temp.exists()
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_cancel_queued_cancels_an_already_rescued_message(self, cfg):
+        """A Slack ``message_deleted`` landing in the orphan window -- after
+        reset() rescued the queue but before the next session reopens the
+        key -- must still be able to cancel the entry it names. Without
+        this, the next cold start adopts and dispatches a message the user
+        already deleted."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")  # rescues the queue into _orphaned_queues
+        assert "k1" not in mgr._sessions
+
+        assert mgr.cancel_queued("k1", "ts2") is True
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_unlinks_temp_images_for_a_rescued_message(self, cfg, tmp_path):
+        temp = tmp_path / "queued-image.png"
+        temp.write_bytes(b"x")
+
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(temp)])
+        await mgr.reset("k1")
+        assert temp.exists()
+
+        assert mgr.cancel_queued("k1", "ts2") is True
+        assert not temp.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_misses_land_safely_during_the_orphan_window(self, cfg):
+        """A cancel for an unrelated msg_ts while a rescued queue sits in
+        _orphaned_queues (no live session) must miss cleanly -- not raise,
+        and not touch the rescued entries it doesn't name."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")
+
+        assert mgr.cancel_queued("k1", "no-such-ts") is False
+
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") == ("ts2", "second", {})
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_clears_an_already_rescued_queue(self, cfg):
+        """A ``/stop`` issued in the orphan window -- no live session yet,
+        but a queue reset() rescued is sitting in _orphaned_queues -- must
+        still clear it, matching clear_queue's own no-live-session handling.
+        Before the fix, stop_turn's early return on a missing session
+        skipped clear_queue entirely, leaving the rescued queue to resurface
+        on the next cold start despite the explicit stop."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")  # rescues the queue into _orphaned_queues
+        assert "k1" not in mgr._sessions
+
+        outcome = await mgr.stop_turn("k1")
+        assert outcome == "idle"
+        assert "k1" not in mgr._orphaned_queues
+
+        await mgr.get_or_create("k1")  # the next cold start for this key
+        assert mgr.dequeue("k1") is None
+        mgr.release("k1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_preserve_queue_leaves_a_rescued_queue_alone(self, cfg):
+        """preserve_queue=True must skip the rescued-queue drop too, same as
+        it already skips the live-queue drop."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True)
+        await mgr.reset("k1")
+
+        outcome = await mgr.stop_turn("k1", preserve_queue=True)
+        assert outcome == "idle"
+        assert mgr._orphaned_queues.get("k1")
+
+        await mgr.get_or_create("k1")
+        assert mgr.dequeue("k1") == ("ts2", "second", {})
+        mgr.release("k1")
+        await mgr.close_all()
+
 
 class TestDrainProviders:
     """Tests for drain_all_providers and drain_warm_pool."""

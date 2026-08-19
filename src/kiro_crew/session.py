@@ -3650,6 +3650,17 @@ class SessionManager:
             del self._sessions[key]
             self._compact_cooldown_until.pop(key, None)
             self._origin_links.pop(key, None)
+            # This session can carry a queue get_or_create() rescued from a
+            # PRIOR reset() (see its docstring): a resume prefetch racing
+            # ahead of the real turn adopts that rescue speculatively, and if
+            # nothing claims it before this TTL backstop fires, discarding it
+            # here with no re-rescue would silently finish the data loss
+            # reset() tried to prevent in the first place -- the messages
+            # would never reach any live session. Put it back exactly as
+            # reset() does, so the next real cold start for this key adopts
+            # it same as if this speculative detour never happened.
+            if session.queue:
+                self._orphaned_queues[key] = session.queue
         await session.provider.shutdown()
         await self.release_subagent_runtime(key)
         logger.info("Removed unclaimed speculative session (map preserved): %s", key)
@@ -4255,6 +4266,19 @@ class SessionManager:
         key = self._fold_key(key)
         session = self._sessions.get(key)
         if not session:
+            # No live session for this key doesn't mean nothing is queued: a
+            # reset() may have rescued a queue into _orphaned_queues that
+            # hasn't been adopted by a new session yet (see reset()'s
+            # docstring). A deletion landing in that window must still be
+            # able to cancel the entry it names -- otherwise the next cold
+            # start adopts and dispatches a message the user already deleted.
+            orphaned = self._orphaned_queues.get(key)
+            if orphaned:
+                for i, (ts, _, kwargs) in enumerate(orphaned):
+                    if ts == msg_ts:
+                        unlink_queued_temp_paths(kwargs)
+                        del orphaned[i]
+                        return True
             return False
         for i, (ts, _, kwargs) in enumerate(session.queue):
             if ts == msg_ts:
@@ -4639,11 +4663,20 @@ class SessionManager:
         """
         key = self._fold_key(key)
         session = self._sessions.get(key)
+
+        if not preserve_queue:
+            # Ahead of the no-session early-return below on purpose: a reset()
+            # can rescue a queue into _orphaned_queues (see its docstring)
+            # before the next session reopens this key, and clear_queue()
+            # drops that rescue too. Skipping this call whenever session is
+            # None would leave a stop issued during that orphan window unable
+            # to clear it, and the messages it just asked to drop would
+            # resurface once a session next opens for this key.
+            self.clear_queue(key)
+
         if not session:
             return "idle"
 
-        if not preserve_queue:
-            self.clear_queue(key)
         budget: float = self._cfg.agent.soft_stop_budget_secs
         t0 = time.monotonic()
 
