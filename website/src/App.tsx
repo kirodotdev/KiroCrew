@@ -32,6 +32,7 @@ import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
+import { isMetricNumber, metricNumber } from './utils/metrics'
 import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
@@ -188,7 +189,7 @@ export const memColorClass = metricColor
  * app-shell boundary; `api.system()` returns `any`, so only this annotation
  * makes the compiler check the guards.
  */
-export type SysMetricsFrame = {
+type SysMetricsFrame = {
   memUsed?: number
   memTotal?: number
   cpuPct?: number
@@ -199,22 +200,6 @@ export type SysMetricsFrame = {
   subagentCap?: number
 }
 
-/** Narrow a possibly-absent metric to a formattable number (excludes NaN/Infinity). */
-export function isMetricNumber(v: unknown): v is number {
-  return typeof v === 'number' && Number.isFinite(v)
-}
-
-/**
- * Coerce a possibly-absent metric to a finite number, absent/NaN/Infinity -> 0.
- *
- * Paired with `isMetricNumber`: the guard decides whether a readout is SHOWN,
- * this makes the formatting itself unable to throw, so a future gate that
- * forgets a field degrades to a wrong-looking 0 instead of unmounting the app.
- */
-export function metricNumber(v: unknown): number {
-  return isMetricNumber(v) ? v : 0
-}
-
 /**
  * Validity flags + a sanitized frame for one metrics readout.
  *
@@ -223,7 +208,7 @@ export function metricNumber(v: unknown): number {
  * about `memUsed`, and formatting a value the flag never proved is what crashed
  * the shell.
  */
-export function readMetricsFrame(raw: SysMetricsFrame) {
+function readMetricsFrame(raw: SysMetricsFrame) {
   return {
     cpuValid: isMetricNumber(raw.cpuPct),
     memValid: isMetricNumber(raw.memUsed) && isMetricNumber(raw.memTotal) && raw.memTotal > 0,

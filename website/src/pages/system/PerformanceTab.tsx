@@ -13,6 +13,7 @@ import { api } from '../../api/client'
 import { Card } from '../../components/ui'
 import { fmtBytes, fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { isMetricNumber, metricNumber } from '../../utils/metrics'
 import type { SessionStorageReport, SystemData } from '../../types'
 import type { PlaneState } from '../SystemPage'
 import SessionStorageScreen from './SessionStorageScreen'
@@ -33,15 +34,27 @@ interface HistoryPoint {
   netTx: number
 }
 
-/** Headline value shown on the left rail tile for each resource. */
+/** Headline value shown on the left rail tile for each resource.
+ *
+ * Probe-derived fields are optional (see SystemData), so each headline proves
+ * its inputs before dividing — the same predicate set as the topbar capsule's
+ * memValid/dskValid, so one frame cannot show '—' in the topbar and a number
+ * here. A zero total means "unmeasured", not "divide by a placeholder": the
+ * frame {mem_used_gb: 4, mem_total_gb: 0} must read '—', never 400%.
+ */
 function headline(d: SystemData | null, resource: Resource): string {
   if (!d) return '—'
   switch (resource) {
-    case 'cpu': return fmtPercent(d.cpu_pct / 100)
-    case 'memory': return fmtPercent(d.mem_used_gb / (d.mem_total_gb || 1))
+    case 'cpu':
+      return isMetricNumber(d.cpu_pct) ? fmtPercent(d.cpu_pct / 100) : '—'
+    case 'memory':
+      return isMetricNumber(d.mem_used_gb) && isMetricNumber(d.mem_total_gb) && d.mem_total_gb > 0
+        ? fmtPercent(d.mem_used_gb / d.mem_total_gb)
+        : '—'
     case 'disk': {
+      if (!isMetricNumber(d.disk_total_gb) || d.disk_total_gb <= 0 || !isMetricNumber(d.disk_free_gb)) return '—'
       const used = d.disk_total_gb - d.disk_free_gb
-      return fmtPercent(used / (d.disk_total_gb || 1))
+      return fmtPercent(used / d.disk_total_gb)
     }
     case 'network': return fmtUnit(d.net_rx_kbs + d.net_tx_kbs, 'kilobyte-per-second', { maximumFractionDigits: 0 })
   }
@@ -120,12 +133,25 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
     if (!data || !dataUpdatedAt) return
     if (dataUpdatedAt === lastDataId.current) return
     lastDataId.current = dataUpdatedAt
+    // The history buffer requires numbers, but any probe-derived field can be
+    // absent (see SystemData) — including net_rx_kbs/net_tx_kbs, which the
+    // server assigns inside the same per-probe try/except. An unmeasured
+    // sample records as 0 (a one-sample dip; the tile headline's '—' is the
+    // signal that it was unmeasured, and fabricating a carried-forward value
+    // would be worse) — never NaN, which would render as invalid clip-path
+    // vertices and blank the trace for the whole buffer. A subtraction from
+    // an absent operand must not coerce it: a missing disk_free_gb would
+    // otherwise read as a 100%-full disk.
+    const memTotal = metricNumber(data.mem_total_gb)
+    const diskTotal = metricNumber(data.disk_total_gb)
     const point: HistoryPoint = {
-      cpu: data.cpu_pct,
-      mem: data.mem_total_gb > 0 ? (data.mem_used_gb / data.mem_total_gb) * 100 : 0,
-      disk: data.disk_total_gb > 0 ? ((data.disk_total_gb - data.disk_free_gb) / data.disk_total_gb) * 100 : 0,
-      netRx: data.net_rx_kbs,
-      netTx: data.net_tx_kbs,
+      cpu: metricNumber(data.cpu_pct),
+      mem: memTotal > 0 ? (metricNumber(data.mem_used_gb) / memTotal) * 100 : 0,
+      disk: diskTotal > 0 && isMetricNumber(data.disk_free_gb)
+        ? ((diskTotal - data.disk_free_gb) / diskTotal) * 100
+        : 0,
+      netRx: metricNumber(data.net_rx_kbs),
+      netTx: metricNumber(data.net_tx_kbs),
     }
     setHistory(prev => {
       const next = [...prev, point]
@@ -400,7 +426,9 @@ function ResourceSubtitle({ d, resource }: { d: SystemData | null; resource: Res
       return (
         <>
           {i18nT('pages.performanceTab.memory_subtitle', {
-            size: fmtUnit(d.mem_total_gb, 'gigabyte', { maximumFractionDigits: 1 }),
+            size: isMetricNumber(d.mem_total_gb)
+              ? fmtUnit(d.mem_total_gb, 'gigabyte', { maximumFractionDigits: 1 })
+              : '—',
           })}
         </>
       )
@@ -408,7 +436,9 @@ function ResourceSubtitle({ d, resource }: { d: SystemData | null; resource: Res
       return (
         <>
           {i18nT('pages.performanceTab.disk_subtitle', {
-            size: fmtUnit(d.disk_total_gb, 'gigabyte', { maximumFractionDigits: 0 }),
+            size: isMetricNumber(d.disk_total_gb)
+              ? fmtUnit(d.disk_total_gb, 'gigabyte', { maximumFractionDigits: 0 })
+              : '—',
           })}
         </>
       )
@@ -425,7 +455,7 @@ function ResourceStats({ d, resource }: { d: SystemData | null; resource: Resour
     case 'cpu':
       return (
         <>
-          <Stat label={i18nT('pages.performanceTab.utilization')} value={fmtPercent(d.cpu_pct / 100)} />
+          <Stat label={i18nT('pages.performanceTab.utilization')} value={isMetricNumber(d.cpu_pct) ? fmtPercent(d.cpu_pct / 100) : '—'} />
           <Stat label={i18nT('pages.performanceTab.gateway_cpu')} value={fmtPercent(d.proc_cpu_pct / 100)} />
           <Stat label={i18nT('pages.performanceTab.cores')} value={fmtNumber(d.cpu_count)} />
           <Stat label={i18nT('pages.performanceTab.load_1m')} value={fmtNumber(d.load_1m, { maximumFractionDigits: 2 })} />
@@ -446,20 +476,24 @@ function ResourceStats({ d, resource }: { d: SystemData | null; resource: Resour
     case 'memory':
       return (
         <>
-          <Stat label={i18nT('pages.performanceTab.total')} value={fmtUnit(d.mem_total_gb, 'gigabyte', { maximumFractionDigits: 1 })} />
-          <Stat label={i18nT('pages.performanceTab.used')} value={fmtUnit(d.mem_used_gb, 'gigabyte', { maximumFractionDigits: 1 })} />
-          <Stat label={i18nT('pages.performanceTab.free')} value={fmtUnit(d.mem_free_gb, 'gigabyte', { maximumFractionDigits: 1 })} />
+          <Stat label={i18nT('pages.performanceTab.total')} value={isMetricNumber(d.mem_total_gb) ? fmtUnit(d.mem_total_gb, 'gigabyte', { maximumFractionDigits: 1 }) : '—'} />
+          <Stat label={i18nT('pages.performanceTab.used')} value={isMetricNumber(d.mem_used_gb) ? fmtUnit(d.mem_used_gb, 'gigabyte', { maximumFractionDigits: 1 }) : '—'} />
+          <Stat label={i18nT('pages.performanceTab.free')} value={isMetricNumber(d.mem_free_gb) ? fmtUnit(d.mem_free_gb, 'gigabyte', { maximumFractionDigits: 1 }) : '—'} />
           <Stat label={i18nT('pages.performanceTab.gateway_rss')} value={fmtUnit(d.proc_mem_mb, 'megabyte', { maximumFractionDigits: 0 })} />
         </>
       )
     case 'disk':
       return (
         <>
-          <Stat label={i18nT('pages.performanceTab.total')} value={fmtUnit(d.disk_total_gb, 'gigabyte', { maximumFractionDigits: 0 })} />
-          <Stat label={i18nT('pages.performanceTab.free')} value={fmtUnit(d.disk_free_gb, 'gigabyte', { maximumFractionDigits: 0 })} />
+          <Stat label={i18nT('pages.performanceTab.total')} value={isMetricNumber(d.disk_total_gb) ? fmtUnit(d.disk_total_gb, 'gigabyte', { maximumFractionDigits: 0 }) : '—'} />
+          <Stat label={i18nT('pages.performanceTab.free')} value={isMetricNumber(d.disk_free_gb) ? fmtUnit(d.disk_free_gb, 'gigabyte', { maximumFractionDigits: 0 }) : '—'} />
           <Stat
             label={i18nT('pages.performanceTab.used_pct')}
-            value={fmtPercent((d.disk_total_gb - d.disk_free_gb) / (d.disk_total_gb || 1))}
+            value={
+              isMetricNumber(d.disk_total_gb) && d.disk_total_gb > 0 && isMetricNumber(d.disk_free_gb)
+                ? fmtPercent((d.disk_total_gb - d.disk_free_gb) / d.disk_total_gb)
+                : '—'
+            }
           />
         </>
       )
