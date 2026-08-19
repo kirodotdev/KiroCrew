@@ -621,7 +621,7 @@ export default function SideChat({ slot }: { slot: string }) {
           placeholder={i18nT('pages.chat.sideChat.ask_a_side_question_2')}
           rows={2}
           style={{ maxHeight: MAX_INPUT_H }}
-          className="flex-1 resize-none overflow-y-auto min-h-[52px] rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus:border-accent disabled:opacity-60"
+          className="flex-1 resize-none overflow-y-auto min-h-[52px] rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus-visible:border-accent disabled:opacity-60"
         />
         {isBusy ? (
           <BusySendButton

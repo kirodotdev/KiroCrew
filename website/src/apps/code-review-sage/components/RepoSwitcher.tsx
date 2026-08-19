@@ -75,7 +75,7 @@ export default function RepoSwitcher() {
             aria-label={activeRepo
           ? i18nT('apps.codeReviewSage.components.repoSwitcher.repository_named', { name: label })
           : i18nT('apps.codeReviewSage.components.repoSwitcher.pick_a_repository')}
-            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-border-strong bg-bg-elevated shadow-sm hover:border-accent hover:bg-bg-hover cursor-pointer outline-none transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-border-strong bg-bg-elevated shadow-sm hover:border-accent hover:bg-bg-hover cursor-pointer transition-colors"
           >
             {activeRepo
               ? <GithubLogo size={18} className="flex-shrink-0" />
@@ -110,7 +110,7 @@ export default function RepoSwitcher() {
                 onKeyDown={(e) => e.stopPropagation()}
                 placeholder={i18nT('apps.codeReviewSage.components.repoSwitcher.filter_repos')}
                 aria-label={i18nT('apps.codeReviewSage.components.repoSwitcher.filter_repositories')}
-                className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-none focus:border-accent"
+                className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px] text-text placeholder:text-muted outline-none focus-visible:border-accent"
               />
             </div>
           )}

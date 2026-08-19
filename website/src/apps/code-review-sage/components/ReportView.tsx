@@ -200,7 +200,7 @@ function ReportRowCard({
           aria-expanded={open}
           disabled={!hasDetail}
           onClick={() => setOpen((v) => !v)}
-          className="group flex-1 min-w-0 text-left flex items-start gap-2 cursor-pointer disabled:cursor-default bg-transparent focus:outline-none"
+          className="group flex-1 min-w-0 text-left flex items-start gap-2 cursor-pointer disabled:cursor-default bg-transparent"
         >
           <span
             className={`${BAND_DOT[row.band]} mt-1 flex-shrink-0`}

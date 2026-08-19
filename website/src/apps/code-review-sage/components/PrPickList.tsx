@@ -96,7 +96,7 @@ function PasteLinks() {
           onChange={(e) => setText(e.target.value)}
           aria-label={i18nT('apps.codeReviewSage.components.prPickList.paste_pr_links')}
           placeholder={i18nT('apps.codeReviewSage.components.prPickList.one_or_more_github_pr_links')}
-          className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-[12px] font-mono font-normal text-text outline-none focus:border-accent resize-y block"
+          className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-[12px] font-mono font-normal text-text outline-none focus-visible:border-accent resize-y block"
         />
       </label>
       <div className="flex items-center gap-2">

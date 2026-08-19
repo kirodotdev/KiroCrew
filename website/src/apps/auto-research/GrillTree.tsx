@@ -107,7 +107,7 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
           ) : <span className="text-warn mt-0.5">◆</span>}
 
           {node.kind === 'research' ? (
-            <AutoGrow className="flex-1 bg-transparent text-text border-b border-transparent focus:border-border outline-none"
+            <AutoGrow className="flex-1 bg-transparent text-text border-b border-transparent focus-visible:border-border outline-none"
                       ariaLabel={i18nT('apps.autoResearch.grillTree.research_question')}
                       value={node.text} onChange={t => dispatch({ type: 'edit', id: node.id, text: t })} />
           ) : <span className="flex-1 text-text">{node.text}</span>}

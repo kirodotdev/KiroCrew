@@ -608,6 +608,11 @@ export function Slider({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onPointerLeave={onPointerLeave}
+        // outline-none is CORRECT here and must stay: the knob below already
+        // carries the replacement cue (`group-focus-visible:ring-2`), which
+        // points at the current value instead of boxing the whole track. Letting
+        // the global :focus-visible outline through as well would paint two
+        // indicators on one control.
         className={`group relative h-[18px] flex items-center select-none touch-none outline-none ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
       >
         {/* groove */}

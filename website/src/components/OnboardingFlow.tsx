@@ -639,7 +639,7 @@ export default function OnboardingFlow({
             }}
             placeholder={i18nT('components.onboardingFlow.e_g_solutions_architect_sre_founder')}
             aria-label={i18nT('components.onboardingFlow.describe_your_role')}
-            className="mt-2 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-[13px] text-text placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-60"
+            className="mt-2 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-[13px] text-text placeholder:text-muted focus-visible:border-accent focus:outline-none disabled:opacity-60"
           />
         )}
 

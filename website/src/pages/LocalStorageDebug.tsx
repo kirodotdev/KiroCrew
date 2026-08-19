@@ -190,7 +190,7 @@ export default function LocalStorageDebug() {
           aria-label={i18nT('pages.localStorageDebug.filter_keys_2')}
           value={filter}
           onChange={e => setFilter(e.target.value)}
-          className="w-full px-3 py-2 text-xs rounded-md border border-border bg-bg text-text placeholder:text-muted mb-3 focus:border-accent focus:outline-none"
+          className="w-full px-3 py-2 text-xs rounded-md border border-border bg-bg text-text placeholder:text-muted mb-3 focus-visible:border-accent focus:outline-none"
         />
 
         <div className="space-y-px">

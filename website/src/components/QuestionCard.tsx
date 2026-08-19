@@ -243,7 +243,7 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
                     if (ime.isComposing(e)) return
                     if (allAnswered && !busy) handleSubmit()
                   }}
-                  className="mt-2 w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus:border-accent focus:outline-none"
+                  className="mt-2 w-full px-3 py-2 rounded-lg border border-border bg-bg text-text text-[13px] placeholder:text-muted focus-visible:border-accent focus:outline-none"
                 />
                 </motion.div>
               )}

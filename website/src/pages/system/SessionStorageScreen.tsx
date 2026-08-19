@@ -247,7 +247,7 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
 
           {/* Toolbar: search + sort */}
           <div className="flex items-center gap-2">
-            <label className="flex-1 flex items-center gap-2 bg-bg-elevated border border-border rounded-md px-2.5 py-1.5">
+            <label className="flex-1 flex items-center gap-2 bg-bg-elevated border border-border focus-within:border-accent rounded-md px-2.5 py-1.5">
               <Search className="w-3.5 h-3.5 text-muted" />
               <input
                 type="text"

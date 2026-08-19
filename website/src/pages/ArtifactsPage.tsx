@@ -666,7 +666,7 @@ function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, 
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
-      className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-none text-sm select-text"
+      className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-none text-sm select-text focus-ring"
       {...ime.bindEnter<HTMLInputElement>({
         onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
         onEscape: () => { cancelledRef.current = true; onCancel() },

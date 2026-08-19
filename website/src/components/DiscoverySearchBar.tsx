@@ -49,7 +49,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
             onChange={e => onQueryChange(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder={i18nT('components.discoverySearchBar.search_across_providers', { subject })}
-            className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+            className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             autoFocus
           />
           {query && (

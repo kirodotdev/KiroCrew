@@ -167,7 +167,7 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           disabled={disabled}
           rows={3}
           aria-label={ariaLabel ?? label}
-          className="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-text focus:border-accent focus:outline-none resize-y flex-none"
+          className="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-text focus-visible:border-accent focus:outline-none resize-y flex-none"
         />
       ) : (
         <Input

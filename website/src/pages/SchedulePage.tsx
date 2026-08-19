@@ -984,7 +984,7 @@ export default function SchedulePage() {
               onChange={e => setConfirmText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && confirmArmed && !batchDeleting) runBatchDelete() }}
               placeholder={BULK_DELETE_TOKEN}
-              className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-none focus:border-accent"
+              className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-none focus-visible:border-accent"
             />
             {batchError && <p className="text-danger text-[12px] mt-2">{batchError}</p>}
           </DialogBody>

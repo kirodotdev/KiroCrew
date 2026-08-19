@@ -138,7 +138,7 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
         {/* Description */}
         {editable ? (
           <textarea aria-label={i18nT('pages.aidlc.taskDetailPanel.task_description')} value={editDesc} disabled={saving} onChange={e => { setEditDesc(e.target.value); reportEdit(editTitle, e.target.value, editDeps) }}
-            className="w-full text-[13px] leading-relaxed bg-bg-elevated border border-border rounded-md p-2 text-text outline-none resize-y min-h-[80px]" />
+            className="w-full text-[13px] leading-relaxed bg-bg-elevated border border-border rounded-md p-2 text-text outline-none resize-y min-h-[80px] focus-ring" />
         ) : (
           <div className="text-[13px] leading-relaxed whitespace-pre-wrap">{task.description}</div>
         )}

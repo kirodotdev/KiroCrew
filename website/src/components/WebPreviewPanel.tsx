@@ -835,7 +835,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
-            className="flex-1 min-w-0 h-full bg-transparent border-none text-[12px] text-text placeholder:text-muted focus:outline-none px-1"
+            className="flex-1 min-w-0 h-full bg-transparent border-none text-[12px] text-text placeholder:text-muted px-1"
           />
           <a
             href={native.state?.url || undefined}
@@ -895,7 +895,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
-            className="flex-1 min-w-0 h-full bg-transparent border-none text-[12px] text-text placeholder:text-muted focus:outline-none px-1"
+            className="flex-1 min-w-0 h-full bg-transparent border-none text-[12px] text-text placeholder:text-muted px-1"
           />
           <a
             href={url || undefined}

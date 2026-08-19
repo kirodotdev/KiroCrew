@@ -88,7 +88,7 @@ function NamespacePicker({ value, onChange, namespaces }: { value: string; onCha
       <span className="text-[12px] text-muted shrink-0">{i18nT('pages.knowledge.sourcesList.namespace')}</span>
       <input value={value} onChange={e => onChange(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.default')}
         aria-label={i18nT('pages.knowledge.sourcesList.namespace_2')}
-        className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-36"
+        className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-36 focus-ring"
         list="ns-picker-list" />
       <datalist id="ns-picker-list">
         {namespaces.map(ns => <option key={ns.name} value={ns.name}>{ns.name} ({ns.count})</option>)}
@@ -536,7 +536,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     <input autoFocus value={editDraft} onChange={e => setEditDraft(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter' && !renameMutation.isPending) submitRename(); else if (e.key === 'Escape') setEditingId(null) }}
                       maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
-                      className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-full max-w-xs" />
+                      className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-full max-w-xs focus-ring" />
                     <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}
                       className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
                     <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => setEditingId(null)}

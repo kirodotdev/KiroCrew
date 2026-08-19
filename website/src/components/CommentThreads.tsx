@@ -199,7 +199,7 @@ function ReplyBox({
           // Both modifiers send (see the keydown handler), so name the one the
           // reader actually has rather than hardcoding the mac chord.
           { keys: platformShortcut('Cmd+Enter') })}
-        className="w-full resize-y rounded-lg border border-border bg-card px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-none focus:border-accent"
+        className="w-full resize-y rounded-lg border border-border bg-card px-2.5 py-2 text-[13px] text-text placeholder:text-muted outline-none focus-visible:border-accent"
       />
       <div className="flex items-center gap-2">
         <button

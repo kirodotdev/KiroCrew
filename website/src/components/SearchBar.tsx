@@ -82,7 +82,7 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
   return (
     <div className={docked
       ? 'flex items-center gap-1.5 w-full text-[13px]'
-      : 'absolute top-14 right-4 z-20 flex items-center gap-1.5 bg-bg-elevated border border-border rounded-lg shadow-md px-2.5 py-1.5 text-[13px]'}>
+      : 'absolute top-14 right-4 z-20 flex items-center gap-1.5 bg-bg-elevated border border-border focus-within:border-accent rounded-lg shadow-md px-2.5 py-1.5 text-[13px]'}>
       <input
         ref={inputRef}
         type="text"

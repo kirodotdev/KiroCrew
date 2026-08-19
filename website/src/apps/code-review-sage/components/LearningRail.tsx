@@ -203,7 +203,7 @@ export default function LearningRail() {
               }}
               aria-label={i18nT('apps.codeReviewSage.components.learningRail.new_namespace_name')}
               placeholder={i18nT('apps.codeReviewSage.components.learningRail.new_namespace_2')}
-              className="flex-1 min-w-0 rounded-md border border-border bg-bg-elevated px-2 py-1 font-mono text-[12px] text-text outline-none focus:border-accent"
+              className="flex-1 min-w-0 rounded-md border border-border bg-bg-elevated px-2 py-1 font-mono text-[12px] text-text outline-none focus-visible:border-accent"
             />
             <button
               type="button"

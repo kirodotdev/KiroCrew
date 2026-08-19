@@ -346,7 +346,7 @@ function LinksTab({
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={i18nT('pages.chat.activityViewer.search_files')}
-              className="w-full h-7 pl-8 pr-8 rounded-md bg-bg-elevated border border-border text-[12px] text-text placeholder:text-muted/50 focus:outline-none focus:border-border-strong transition-colors"
+              className="w-full h-7 pl-8 pr-8 rounded-md bg-bg-elevated border border-border text-[12px] text-text placeholder:text-muted/50 focus:outline-none focus-visible:border-border-strong transition-colors"
               aria-label={i18nT('pages.chat.activityViewer.search_files')}
             />
             {query && (
@@ -645,7 +645,7 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
                 onChange={e => setLibQuery(e.target.value)}
                 placeholder={i18nT('pages.chat.activityViewer.artifacts_search_library')}
                 aria-label={i18nT('pages.chat.activityViewer.artifacts_search_library')}
-                className="w-full text-[12px] pl-7 pr-2.5 py-1.5 rounded-md bg-bg border border-border text-text placeholder:text-muted focus:outline-none focus:border-accent transition-colors"
+                className="w-full text-[12px] pl-7 pr-2.5 py-1.5 rounded-md bg-bg border border-border text-text placeholder:text-muted focus:outline-none focus-visible:border-accent transition-colors"
               />
             </div>
             {libQuery.trim() && (

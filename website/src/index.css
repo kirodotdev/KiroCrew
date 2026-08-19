@@ -1227,9 +1227,12 @@ html:lang(ko) {
      Scoped with :has() so the onboarding and welcome views, which legitimately
      grow past the viewport, keep their document scroll. */
   body:has([data-testid="dashboard-shell"]){overflow:hidden}
-  /* Global focus ring for keyboard navigation */
-  /* TESTING: disabled to check scroll bug */
-  /* :focus-visible{outline:2px solid var(--accent);outline-offset:2px} */
+  /* Global focus ring for keyboard navigation. Keyed on `:focus-visible` rather
+     than `:focus` so a pointer click never paints it — the ring is drawn only
+     for the keyboard and AT interactions that have no other cue to where focus
+     sits. `outline` is used (not border/box-shadow) because it is painted
+     outside the box and so cannot shift layout. */
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   @media(prefers-reduced-motion:reduce){*:not([data-virtuoso-scroller] *),*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important}}
   /* The rule above zeroes animation-DURATION but not animation-DELAY, and
      `animate-rise` uses fill-mode `backwards` — so a stagger-delayed card
@@ -1842,7 +1845,14 @@ file-tree-container{
 
 /* ── Consistent focus ring ── */
 .focus-ring{transition:border-color 0.2s,box-shadow 0.2s}
-.focus-ring:focus{outline:none;border-color:var(--ring);
+/* Keyed on `:focus-visible` for the same reason as the global ring: a pointer
+   click on one of these (cards, list rows, template tiles) leaves no ring.
+   Text inputs are the exception the UA makes for us — they match
+   `:focus-visible` even on a click, since keyboard input is expected next — so
+   the treatment below still appears where it is a typing affordance.
+   `outline:none` opts out of the global ring in favour of this border + glow,
+   and the extra class raises specificity so the two never stack. */
+.focus-ring:focus-visible{outline:none;border-color:var(--ring);
   box-shadow:0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
 
 /* ── Syntax highlighting (highlight.js) ── */

@@ -81,7 +81,7 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
     <div className="flex items-center gap-2">
       <Tag size={11} className="text-muted shrink-0" />
       <input aria-label={i18nT('pages.knowledge.detailView.comma_separated_tags')} value={value} onChange={e => setValue(e.target.value)} placeholder={i18nT('pages.knowledge.detailView.tag1_tag2_tag3')}
-        className="flex-1 px-2 py-1 text-[12px] bg-bg-elevated border border-border rounded outline-none"
+        className="flex-1 px-2 py-1 text-[12px] bg-bg-elevated border border-border rounded outline-none focus-ring"
         onKeyDown={e => { if (e.key === 'Enter') saveMutation.mutate(value); if (e.key === 'Escape') setEditing(false) }}
         autoFocus />
       <button onClick={() => saveMutation.mutate(value)} disabled={saveMutation.isPending}

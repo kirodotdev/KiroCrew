@@ -62,7 +62,7 @@ export default function LabelPicker({
             onChange={(e) => setQ(e.target.value)}
             placeholder={i18nT('apps.issueRadar.components.labelPicker.filter_labels')}
             aria-label={i18nT('apps.issueRadar.components.labelPicker.filter_labels_2')}
-            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-border bg-bg text-text placeholder:text-muted outline-none focus:border-accent"
+            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-border bg-bg text-text placeholder:text-muted outline-none focus-visible:border-accent"
           />
         </div>
         {onAddMany && suggestions.length > 0 && (

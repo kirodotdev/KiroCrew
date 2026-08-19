@@ -431,7 +431,7 @@ export default function ChatPane({
     [slotKey, toolDisclosure, setToolDisclosureFor],
   )
 
-  const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus:border-accent'
+  const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus-visible:border-accent'
 
   return (
     <SlotProvider slotId={slotKey}>

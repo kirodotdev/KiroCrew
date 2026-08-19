@@ -480,7 +480,7 @@ function ConnectionCard({
                   disabled={busy === 'relay'}
                   aria-invalid={invalidReturnAddress}
                   aria-describedby={invalidReturnAddress ? `return-address-error-${provider.slug}` : undefined}
-                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text outline-none focus:ring-1 focus:ring-accent"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 />
                 <Btn primary onClick={() => void runRelay()} disabled={!returnAddress.trim() || busy === 'relay'}>
                   {busy === 'relay' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
