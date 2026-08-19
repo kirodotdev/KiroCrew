@@ -71,7 +71,20 @@ describe('editorial artwork', () => {
     expect(img.getAttribute('src')).not.toContain('app.example')
   })
 
-  it('falls back to the app hero image when there is no artwork', () => {
+  it('renders NO art at all when the curator published none', () => {
+    // The app's own hero is deliberately not borrowed. That art argues for one
+    // app, and an editorial placement is the curator's claim -- illustrating it
+    // with the author's picture attributes the claim to the wrong party. The
+    // band is dropped rather than filled, which is also what keeps an uncurated
+    // section from spending 220px on a borrowed image.
+    mount({ curated: true, apps: [app('hero-app', { heroImage: '/app-assets/x/hero.png' } as Partial<RegistryApp>)] })
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('a DERIVED pick still uses the app own hero, which is what `curated` scopes', () => {
+    // Without this the rule above reads as "featured cards never show app art",
+    // and the derived shelf -- the only one that ships while `sections` is
+    // published empty -- would lose its picture with nothing to catch it.
     mount({ apps: [app('hero-app', { heroImage: '/app-assets/x/hero.png' } as Partial<RegistryApp>)] })
     const img = document.querySelector('img') as HTMLImageElement
     expect(img.getAttribute('src')).toContain('/app-assets/x/hero.png')
@@ -118,12 +131,25 @@ describe('editorial artwork', () => {
     expect(img.getAttribute('alt')).toBe('')
   })
 
-  it('shares one art fallback across both types', () => {
-    // A collection has no hero app, so its fallback art comes from the lead
-    // entry. Pinned because it is the one place the lead is still privileged.
-    mountCollection({ apps: [app('first', { heroImage: '/app-assets/f/h.png' } as Partial<RegistryApp>), app('second')] })
+  it('never borrows a collection member art, so no member is promoted', () => {
+    // A collection states why several apps belong together, and its own comment
+    // says no member is promoted above the others in the rows. Taking the lead
+    // entry's hero for the band broke exactly that -- and which member got
+    // promoted was an accident of array order.
+    mountCollection({ curated: true, apps: [app('first', { heroImage: '/app-assets/f/h.png' } as Partial<RegistryApp>), app('second')] })
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('still draws curator artwork on a collection', () => {
+    // The rule above is about BORROWING, not about collections going pictureless:
+    // artwork is optional on a collection but rendered whenever it is published.
+    mountCollection({
+      curated: true,
+      apps: [app('first'), app('second')],
+      artwork: { url: 'https://apps.crew.kiro.dev/assets/editorial/c.png' },
+    })
     const img = document.querySelector('img') as HTMLImageElement
-    expect(img.getAttribute('src')).toContain('/app-assets/f/h.png')
+    expect(img.getAttribute('src')).toContain('assets/editorial/c.png')
   })
 })
 

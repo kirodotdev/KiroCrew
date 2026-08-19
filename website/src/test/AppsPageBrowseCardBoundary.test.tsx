@@ -194,8 +194,10 @@ describe('AppsPage Browse-tab per-card error boundaries (#3702)', () => {
       registryApp('casa', 'Casa'),
       registryApp('delta', 'Delta'),
     ], [
-      { type: 'collection', title: 'Zzq Picks', appRefs: ['zzq-broken-spot', 'beta'] },
-      { type: 'collection', title: 'Zzq Safe', appRefs: ['casa', 'delta'] },
+      { form: 'row', items: [
+        { type: 'collection', title: 'Zzq Picks', appRefs: ['zzq-broken-spot', 'beta'] },
+        { type: 'collection', title: 'Zzq Safe', appRefs: ['casa', 'delta'] },
+      ] },
     ])
     renderPage()
 
@@ -239,7 +241,7 @@ describe('AppsPage Browse-tab per-card error boundaries (#3702)', () => {
     // correction to a section-level field (title/blurb/artwork) must remount
     // the boundary even though the member refs did not change.
     const apps = [registryApp('alpha', 'Alpha'), registryApp('beta', 'Beta'), registryApp('casa', 'Casa')]
-    setup(apps, [{ type: 'collection', title: 'zzq-crash-title', appRefs: ['alpha', 'beta'] }])
+    setup(apps, [{ form: 'full', items: [{ type: 'collection', title: 'zzq-crash-title', appRefs: ['alpha', 'beta'] }] }])
     const qc = renderPage()
 
     expect(await screen.findByText(i18nT('pages.appsPage.this_section_could_not_be_displayed'))).toBeInTheDocument()
@@ -251,7 +253,7 @@ describe('AppsPage Browse-tab per-card error boundaries (#3702)', () => {
       qc.setQueryData(['registry'], {
         apps,
         categoryOrder: [],
-        editorialSections: [{ type: 'collection', title: 'Zzq Fixed', appRefs: ['alpha', 'beta'] }],
+        editorialSections: [{ form: 'full', items: [{ type: 'collection', title: 'Zzq Fixed', appRefs: ['alpha', 'beta'] }] }],
       })
     })
 
