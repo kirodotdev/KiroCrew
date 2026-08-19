@@ -3,6 +3,27 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Two `ArtifactStore` instances pointed at the same root no longer race
+  each other.** `__init__` handed out a fresh `threading.Lock()` per
+  instance — correct for a single long-lived store, but `ArtifactStore`'s
+  own docstring claims "concurrent writes to the same artifact are
+  serialized," which was only true within one instance. Any code
+  constructing its own `ArtifactStore()` against the shared default root,
+  instead of threading `get_default_store()`'s process-wide singleton
+  through, got an unserialized lock: a write from that second instance was
+  never mutually exclusive with the singleton's own reads/writes on the
+  same slug. `auto_research/handlers.py` does exactly this (two call
+  sites, one of them writing a new version via `store.update(...,
+  snapshot=True)`) — a plausible mechanism for #2492 (`artifact_get`
+  without a version param returning stale content right after
+  `artifact_update` wrote a new one), though the original report's exact
+  repro sequence could not be reproduced through the always-singleton
+  MCP/dashboard path alone. The lock is now looked up from a small
+  root-keyed registry (keyed by the resolved path, so a symlinked alias of
+  the same directory still shares it) instead of always minting a new one,
+  so every `ArtifactStore` instance addressing the same root is
+  serialized against every other, matching what the class already claimed
+  to guarantee. (#2492)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

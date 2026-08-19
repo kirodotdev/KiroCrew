@@ -513,6 +513,53 @@ class TestSecurity:
             store.update("x", content="v3", snapshot=True)
 
 
+class TestSharedLockAcrossInstances:
+    """#2492: two ``ArtifactStore`` instances pointed at the same root must
+    serialize against EACH OTHER, not just against themselves.
+
+    ``__init__`` used to hand out a fresh ``threading.Lock()`` per instance —
+    correct for a single long-lived store, but any code constructing its own
+    ``ArtifactStore()`` against the shared default root (rather than going
+    through :func:`get_default_store`) got an unserialized lock: a concurrent
+    write from that second instance was never mutually exclusive with the
+    singleton's own reads/writes on the same slug, exactly the class of race
+    that can make ``get()`` (no version) observe content mid-write.
+    """
+
+    def test_two_instances_on_the_same_root_share_one_lock(self, tmp_path: Path) -> None:
+        root = tmp_path / "artifacts"
+        a = ArtifactStore(root=root)
+        b = ArtifactStore(root=root)
+        assert a._lock is b._lock
+
+    def test_instances_on_different_roots_do_not_share_a_lock(self, tmp_path: Path) -> None:
+        a = ArtifactStore(root=tmp_path / "artifacts-a")
+        b = ArtifactStore(root=tmp_path / "artifacts-b")
+        assert a._lock is not b._lock
+
+    def test_a_write_through_a_second_instance_is_visible_to_the_first(
+        self, tmp_path: Path
+    ) -> None:
+        """Not just the same lock OBJECT -- an update from a second instance
+        must actually be observable (and mutually exclusive) through the
+        first, which is what the shared lock is for."""
+        root = tmp_path / "artifacts"
+        a = ArtifactStore(root=root)
+        a.create(name="x", content="v1", kind="text")
+        b = ArtifactStore(root=root)
+        b.update("x", content="v2")
+        assert a.get("x").content == "v2"
+
+    def test_resolved_symlinked_root_shares_the_same_lock(self, tmp_path: Path) -> None:
+        real = tmp_path / "real-artifacts"
+        real.mkdir()
+        link = tmp_path / "linked-artifacts"
+        link.symlink_to(real)
+        a = ArtifactStore(root=real)
+        b = ArtifactStore(root=link)
+        assert a._lock is b._lock
+
+
 # ── Tolerant load / persistence ─────────────────────────────────────────────
 
 
