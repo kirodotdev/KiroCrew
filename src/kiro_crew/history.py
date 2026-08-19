@@ -703,6 +703,25 @@ _RECENCY_HALF_WEIGHT_DAYS = 30.0
 # ranks CJK results. They still gate the AND match at full strength — the weight
 # only dampens their contribution to the relevance score.
 _CJK_CHAR_WEIGHT = 0.25
+# Weight of one forge-reference spelling hit contributed for RANKING a bare
+# number query ("4411"). Such a query keeps its plain substring needle, so
+# recall is untouched — the spellings only move the session that actually
+# references pull request 4411 above one that happens to contain those digits
+# inside a run id. Sized like _PHRASE_BOOST: strong enough that a single real
+# reference outranks incidental digit noise, not so strong that a session
+# repeating the digits many times can never win.
+_FORGE_REF_WEIGHT = 4.0
+# Forge expansions per query. Each one costs one substring scan of every scanned
+# session PER SPELLING it carries — up to eight for a reference the query named,
+# and up to thirteen for a bare number's ranking needle, which carries both
+# families. Three expansions therefore top out around 39 substring scans per
+# field over the scan window, each a single C-level ``str.count`` against
+# already-folded, memoized text — which is why the cap stays at three rather
+# than shrinking as the spelling sets grew: a query naming three references
+# ("compare #1 #2 #3") is legitimate, and the scans it costs are not the
+# expensive part of a search. A fourth forge-shaped token degrades to a plain
+# needle.
+_SEARCH_MAX_FORGE_REFS = 3
 
 
 def _is_cjk_char(ch: str) -> bool:
@@ -736,11 +755,78 @@ class SearchNeedle(NamedTuple):
     both title and content) is disqualified. ``required=False`` needles only
     contribute to the relevance score. ``weight`` scales each occurrence's
     contribution to that score.
+
+    ``alts`` are ALTERNATIVE SPELLINGS of the same reference: the needle is
+    satisfied by ``text`` or by any alt, and occurrences of every spelling
+    count toward the score. That is a bounded OR *inside* one needle, not an OR
+    over the query — it exists because one forge reference has several written
+    forms (``#4411`` and ``…/pull/4411`` name the same pull request), and a
+    transcript may carry any of them.
+
+    ``digit_bounded`` rejects a match that sits inside a LONGER number, on
+    either side — so ``4411`` matches ``PR 4411.`` but not ``#44110`` and not
+    the run id ``1544110293``. Only meaningful for a spelling made of digits or
+    ending in one.
+
+    ``adjacency`` marks a needle as ADJACENCY EVIDENCE (a CJK bigram) — the only
+    kind the adjacency floor in :meth:`ConversationLog.search_sessions` counts.
+    Scoring-only needles that are not adjacency evidence (the forge spellings
+    added for ranking a bare number) therefore cannot arm that floor, which
+    would otherwise turn a ranking hint into a hidden gate.
     """
 
     text: str
     weight: float
     required: bool
+    alts: tuple[str, ...] = ()
+    digit_bounded: bool = False
+    adjacency: bool = False
+
+
+def count_needle(needle: SearchNeedle, folded_text: str) -> int:
+    """Occurrences of any of *needle*'s spellings in *folded_text*.
+
+    The single counter every matcher and ranker shares, so the alternation and
+    the digit boundary cannot be honored by one caller and dropped by another.
+    *folded_text* must already be casefolded (needle spellings are).
+
+    An ordinary needle (no alts, unbounded) costs exactly one :meth:`str.count`,
+    the same as before spellings existed — the scan cost that
+    :func:`parse_search_query`'s needle caps are sized against. A needle with
+    alts costs one scan per spelling, which is why forge expansions carry their
+    own cap.
+    """
+    if not folded_text:
+        return 0
+    total = 0
+    for text in (needle.text, *needle.alts):
+        if not text:
+            continue
+        if not needle.digit_bounded:
+            total += folded_text.count(text)
+            continue
+        # Non-overlapping scan, matching str.count, skipping a hit that sits
+        # inside a longer number (``4411`` in ``1544110293``, ``#4411`` in
+        # ``#44110``). The LEFT guard applies only to a spelling that starts with
+        # a digit: for a delimited spelling the character before it says nothing
+        # about the number's length, and demanding a non-digit there would refuse
+        # ``#4411`` inside ``owner/repo2#4411`` — a repository whose name ends in
+        # a digit, matched against the very reference the query named.
+        left_bounded = text[0].isdigit()
+        start = 0
+        while True:
+            found = folded_text.find(text, start)
+            if found < 0:
+                break
+            end = found + len(text)
+            before_ok = (
+                not left_bounded or found == 0 or not folded_text[found - 1].isdigit()
+            )
+            after_ok = end >= len(folded_text) or not folded_text[end].isdigit()
+            if before_ok and after_ok:
+                total += 1
+            start = end
+    return total
 
 
 def _script_runs(token: str) -> Iterator[tuple[str, bool]]:
@@ -753,6 +839,266 @@ def _script_runs(token: str) -> Iterator[tuple[str, bool]]:
             yield token[start:i], cur
             start, cur = i, nxt
     yield token[start:], cur
+
+
+# Words that only NAME a reference type in front of its number ("PR 4411",
+# "merge request !12"). They are dropped from the gate when they introduce a
+# number, because they are not part of the reference: requiring the literal
+# "pr" would disqualify the very transcripts this expansion exists to find —
+# one that names the pull request only by URL never contains those letters.
+_FORGE_MR_WORDS = frozenset({"mr", "merge-request", "merge_request", "mergerequest"})
+# "merge" and "request" name no type on their own: "merge 1234" and "requests 12"
+# are ordinary prose, and treating either as a reference would drop the word from
+# the gate and pull in every session mentioning that number. They qualify only
+# TOGETHER ("merge request 12"), which does name GitLab's type.
+_FORGE_REQUEST_WORDS = frozenset({"request", "requests"})
+_FORGE_CHAIN_ONLY_WORDS = _FORGE_REQUEST_WORDS | frozenset({"merge"})
+# Words that DO name a type by themselves, so one of them in the lead-in run is
+# what makes a following number a reference.
+_FORGE_TYPE_WORDS = (
+    frozenset({"pr", "prs", "pull", "pulls", "pull-request", "pull_request", "pullrequest"})
+    | frozenset({"issue", "issues"})
+    | _FORGE_MR_WORDS
+)
+# The full lead-in vocabulary: type words plus the chain-only members, which must
+# be droppable and visible to the family test even though neither names a type.
+_FORGE_REF_WORDS = _FORGE_TYPE_WORDS | _FORGE_CHAIN_ONLY_WORDS
+
+
+def _lead_names_merge_request(lead: tuple[str, ...]) -> bool:
+    """True when the words introducing a number name a GitLab merge request.
+
+    Either an unambiguous word ("MR 12", "merge_request 12") or the two-word
+    form "merge request 12".
+    """
+    if any(word in _FORGE_MR_WORDS for word in lead):
+        return True
+    return "merge" in lead and any(word in _FORGE_REQUEST_WORDS for word in lead)
+
+
+def _lead_names_a_type(lead: tuple[str, ...]) -> bool:
+    """True when the lead-in run actually names a forge type.
+
+    A run of chain-only words does not: "requests 12" is prose about requests,
+    not a reference to item 12, and reading it as one would drop "requests" from
+    the gate and admit every session mentioning ``#12``.
+    """
+    return any(word in _FORGE_TYPE_WORDS for word in lead) or _lead_names_merge_request(lead)
+
+
+# Punctuation a reference collects from surrounding prose ("(#4411)," / "PR
+# #4411."). Stripped before the shapes below are tried, and only from the edges,
+# so the token's own delimiters survive. '!' is NOT in the leading set: it is
+# GitLab's merge-request sigil, not decoration.
+_FORGE_LEAD_PUNCT = "([{<\"'“‘"
+_FORGE_TRAIL_PUNCT = ")]}>,.;:?\"'”’"
+# A path-shaped reference, with or without a scheme/host: ``pull/4411``,
+# ``https://github.com/o/r/pull/4411/files``, ``…/-/merge_requests/12``.
+_FORGE_URL_RE = re.compile(
+    r"^(?:\S*/)?(?P<kind>pull|pulls|merge_requests|merge-requests|issues)"
+    r"/(?P<number>\d{1,9})(?:/\S*)?$"
+)
+# The owner/repo slug inside such a URL, used only for ranking.
+_FORGE_URL_REPO_RE = re.compile(
+    r"^(?:https?://)?[^/\s]+\.[^/\s]+"
+    r"/(?P<repo>[a-z0-9._-]+(?:/[a-z0-9._-]+)+?)"
+    r"(?:/-)?/(?:pull|pulls|merge_requests|merge-requests|issues)/\d"
+)
+# A sigil reference: ``#4411``, ``!12``, ``owner/repo#4411``, ``pr#4411``.
+_FORGE_SIGIL_RE = re.compile(
+    r"^(?:(?P<repo>[a-z0-9._-]+(?:/[a-z0-9._-]+)+)|(?P<word>pr|mr|pull|issue))?"
+    r"(?P<sigil>[#!])(?P<number>\d{1,9})$"
+)
+# A glued word+number reference: ``pr4411``, ``pr-4411``, ``mr-12``.
+_FORGE_WORD_NUM_RE = re.compile(r"^(?P<word>pr|mr|pull|issue)-?(?P<number>\d{1,9})$")
+
+
+class _ForgeRef(NamedTuple):
+    """A forge item (pull request / merge request / issue) named by a query.
+
+    ``bare`` records that the QUERY spelled the number with no sigil ("PR 4411",
+    "issue 42", "pr4411"). That decides whether plain digits are one of the
+    item's spellings — see :func:`_forge_spellings`.
+
+    """
+
+    number: str
+    merge_request: bool
+    repo: str | None
+    bare: bool = False
+
+
+def _forge_spellings(ref: _ForgeRef) -> tuple[str, tuple[str, ...]]:
+    """Return ``(canonical, alts)`` — how *ref* can be written in a transcript.
+
+    The families are kept apart because the sigils are not interchangeable:
+    GitHub draws pull requests and issues from ONE number sequence (``#4411``,
+    ``/pull/4411`` and ``/issues/4411`` are the same item), while GitLab numbers
+    merge requests separately from issues, which is why it spells them ``!12``
+    and ``#12``. For a SIGIL query that separation is a guarantee — ``!12`` never
+    matches ``#12``, a different object. A sigil-free query ("merge request 12")
+    also carries the bare digits, which a ``#12`` mention satisfies, so there the
+    separation governs ranking rather than exclusion.
+
+    Path spellings carry no leading slash so they match both ``/pull/4411`` in a
+    URL and a bare ``pull/4411`` written on its own.
+
+    The prose spellings ("pr 4411", "pull request 4411", "pr4411") are included
+    because a transcript often names the item in words rather than with a sigil,
+    and a query that typed the sigil should still find it. They match as plain
+    substrings, so a glued form can hit inside a longer word (``expr4411``
+    satisfies ``pr4411``). That is deliberate: this module matches every other
+    needle as a substring — ``cont`` hits ``contention`` — and adding word
+    boundaries for some spellings and not others would make the rule harder to
+    predict than the false positive it avoids, which ranks last anyway on a
+    single hit. The digit boundary still bounds the numeric side.
+
+    A bare digit spelling is a substring of its own sigil and glued spellings, so
+    one mention of ``#4411`` counts twice inside a bare reference's needle. That
+    only lifts the relevance score of a session that really does reference the
+    item, and never gates.
+
+    Plain digits are a spelling only for a ``bare`` reference, and that
+    asymmetry is deliberate. A query that typed no sigil ("issue 42") is looking
+    for the number as written, so the digits belong; a query that typed one
+    ("#4411", a PR URL) was explicit, and admitting bare digits there would make
+    ``!12`` match every session that mentions a standalone 12 — ordinary prose
+    (a count, a date, a version).
+
+    Recall relative to the plain substring gate this replaces does not rest on
+    the list being exhaustive by inspection — three shapes slipped past that
+    reasoning — but on a property test that drives every shape the parser
+    accepts against a transcript quoting it verbatim. Concretely: a sigil shape
+    contains its own canonical spelling (``owner/repo2#4411`` contains
+    ``#4411``), a path or URL shape contains a path spelling, and a glued or
+    two-token shape contains the bare digits. The one session the expansion can
+    still drop is one whose only claim to the old match was the digits sitting
+    INSIDE a longer number ("4411" within run id 1544110293) — and excluding that
+    is the point of the digit boundary, since such a session never referenced
+    the item.
+    """
+    number = ref.number
+    bare = (number,) if ref.bare else ()
+    if ref.merge_request:
+        return (
+            f"!{number}",
+            (
+                f"merge_requests/{number}",
+                f"merge-requests/{number}",
+                f"mr {number}",
+                f"merge request {number}",
+                f"mr{number}",
+                *bare,
+            ),
+        )
+    return (
+        f"#{number}",
+        (
+            f"pull/{number}",
+            f"pulls/{number}",
+            f"issues/{number}",
+            f"pr {number}",
+            f"pull request {number}",
+            f"pr{number}",
+            *bare,
+        ),
+    )
+
+
+def _forge_lead_in(parts: list[str], index: int) -> tuple[str, ...]:
+    """The contiguous run of reference-vocabulary words before ``parts[index]``.
+
+    Raw material for :func:`_forge_type_suffix`, which decides how much of the
+    run is actually part of the reference.
+    """
+    back = index - 1
+    while back >= 0 and parts[back] in _FORGE_REF_WORDS:
+        back -= 1
+    return tuple(parts[back + 1 : index])
+
+
+def _forge_type_suffix(lead: tuple[str, ...]) -> tuple[str, ...]:
+    """The part of *lead* that names the reference's type — its SHORTEST naming suffix.
+
+    Only the words adjacent to the number belong to the reference; anything
+    before them is the user's own search term. "merge issue 42" is a query about
+    ``merge`` AND issue 42, so the reference is ``issue 42`` and ``merge`` stays
+    in the gate — taking the whole run would drop it and return every session
+    mentioning #42.
+
+    SHORTEST, not longest: a longer suffix can still contain a type word without
+    that word being the head of the phrase ("merge issue" would qualify on
+    ``issue`` alone and swallow ``merge``). The shortest naming suffix is the
+    complete type phrase and no more — which still admits the two-word forms,
+    since neither "request" nor "merge" names a type by itself and only
+    ("merge", "request") together qualify.
+
+    Returns ``()`` when no suffix names a type, i.e. the number is not a
+    reference at all.
+
+    Two known limitations, accepted rather than special-cased. A chain-only word
+    wedged BETWEEN the type word and the number ("issue merge 42") is swallowed,
+    because the shortest naming suffix is ``("issue", "merge")``; the mirror case
+    ("merge issue 42") is handled. And because the gate is keyed by term text, a
+    query repeating a suffix word as its own search term ("pull the pull request
+    12") loses that term when the suffix is dropped. Both need a query nobody
+    writes, both only widen the result set, and closing them means keying the
+    gate by token position rather than by text — a redesign of the needle map,
+    not a fix here.
+    """
+    for size in range(1, len(lead) + 1):
+        suffix = lead[len(lead) - size :]
+        if _lead_names_a_type(suffix):
+            return suffix
+    return ()
+
+
+def _parse_forge_ref(token: str, lead: tuple[str, ...]) -> _ForgeRef | None:
+    """Parse *token* as a forge reference, or return ``None``.
+
+    *token* is one casefolded whitespace-separated term; *lead* is the run of
+    type-naming words before it (:func:`_forge_lead_in`), which is what makes
+    the two-token form ("PR 4411", "merge request 12") a reference rather than a
+    bare number, and which names the family when the token itself does not. A
+    bare number with no such lead-in is NOT a reference — treating every number
+    in a query as one would rewrite ordinary numeric content search (ports,
+    error codes, dates).
+    """
+    token = token.lstrip(_FORGE_LEAD_PUNCT).rstrip(_FORGE_TRAIL_PUNCT)
+    if not token:
+        return None
+    url = _FORGE_URL_RE.match(token)
+    if url:
+        repo_match = _FORGE_URL_REPO_RE.match(token)
+        return _ForgeRef(
+            url.group("number"),
+            url.group("kind").startswith("merge"),
+            repo_match.group("repo") if repo_match else None,
+        )
+    sigil = _FORGE_SIGIL_RE.match(token)
+    if sigil:
+        # The TYPED sigil decides the family, not the word before it: "#" names
+        # the shared pull/issue sequence and "!" names GitLab's merge requests,
+        # so letting a word override the sigil produced a reference ("mr#12")
+        # none of whose spellings was the string the user typed.
+        return _ForgeRef(
+            sigil.group("number"),
+            sigil.group("sigil") == "!",
+            sigil.group("repo"),
+        )
+    glued = _FORGE_WORD_NUM_RE.match(token)
+    if glued:
+        return _ForgeRef(
+            glued.group("number"),
+            glued.group("word") in _FORGE_MR_WORDS,
+            None,
+            bare=True,
+        )
+    if token.isdigit() and len(token) <= 9:
+        suffix = _forge_type_suffix(lead)
+        if suffix:
+            return _ForgeRef(token, _lead_names_merge_request(suffix), None, bare=True)
+    return None
 
 
 def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
@@ -789,6 +1135,28 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     Precision moves from the gate into the ranking, which is the module's
     existing philosophy for the substring-prefix looseness on ASCII terms.
 
+    A term that names a FORGE ITEM — a pull request, merge request or issue —
+    becomes ONE required needle carrying every spelling of that item instead of
+    the literal term (see :func:`_parse_forge_ref`). ``#4411``, ``pr 4411``,
+    ``pull/4411``, a full PR URL and ``owner/repo#4411`` therefore all find the
+    same sessions, whichever form each transcript happens to use, and the
+    spellings are digit-bounded so ``#4411`` never matches ``#44110``. A naming
+    word that introduces a number ("PR 4411") is dropped from the gate: it is
+    not part of the reference, and requiring the letters "pr" would disqualify a
+    transcript that names the pull request only by URL. When the query spelled
+    the number with no sigil, plain digits stay one of the spellings, so the
+    expansion keeps the recall of the literal AND it replaces — the one session
+    it can drop is a session whose digits merely sat inside a longer number,
+    which is what the digit boundary is for. Only a run of words that actually
+    NAMES a type makes a following number a reference: "requests 12" and
+    "merge 1234" stay literal terms, since dropping such a word from the gate
+    would trade a real term for every session mentioning that number. A BARE
+    number with no naming word at all is not a reference either: it keeps its
+    plain substring needle, so numeric content search is unchanged, and gains
+    the spellings as scoring-only needles, so the session that actually
+    references pull request 4411 outranks one that merely contains those digits
+    inside a run id.
+
     Bounds (both exist because **every needle costs one full scan** of a
     session's text): required needles cap at :data:`SEARCH_MAX_TOKENS` and
     scoring extras at :data:`_SEARCH_MAX_SCORING_EXTRAS`. Deduplication is free
@@ -810,25 +1178,98 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
     if not parts:
         return ([], "", False)
     phrase = " ".join(parts)
-    required: dict[str, float] = {}
-    extras: dict[str, float] = {}
-    for part in dict.fromkeys(parts):
+    required: dict[str, SearchNeedle] = {}
+    extras: dict[str, SearchNeedle] = {}
+    ranking: dict[str, SearchNeedle] = {}
+    forge_budget = _SEARCH_MAX_FORGE_REFS
+    # One ledger keyed by the item's canonical spelling, so a slot is charged per
+    # ITEM rather than per needle. "#4411 4411" names one pull request twice — as
+    # a required reference and as a bare number's ranking hint — and charging
+    # both spent a phantom slot that could push a later distinct reference past
+    # the cap. Keyed rather than counted so the order the two forms appear in
+    # cannot change the outcome.
+    charged: set[str] = set()
+    for index, part in enumerate(parts):
+        lead = _forge_lead_in(parts, index)
+        ref = _parse_forge_ref(part, lead)
+        if ref is not None:
+            canonical, alts = _forge_spellings(ref)
+            if canonical in required:
+                # The item is already gated, but this occurrence still carries
+                # information: its own naming words must leave the gate, and a
+                # sigil-free spelling contributes the bare digits the first
+                # occurrence may not have had. Skipping outright let
+                # "#42 issue 42" keep `issue` required AND lose the bare-digit
+                # spelling — narrowing a query that named the item twice, which
+                # the loosen-only contract forbids.
+                for word in _forge_type_suffix(lead):
+                    required.pop(word, None)
+                if ref.bare:
+                    seen = required[canonical]
+                    if ref.number not in seen.alts:
+                        required[canonical] = seen._replace(alts=(*seen.alts, ref.number))
+                continue
+            if canonical not in charged and not forge_budget:
+                ref = None
+        if ref is not None:
+            if canonical not in charged:
+                charged.add(canonical)
+                forge_budget -= 1
+            # The words that NAME the reference's type are not part of the search
+            # text, and requiring them would disqualify a transcript that names
+            # the item only by URL — one that never spells the letters "pr". Only
+            # that naming suffix is dropped: in "merge issue 42" the reference is
+            # "issue 42" and `merge` is the user's own term, so popping the whole
+            # run would return every session mentioning #42.
+            for word in _forge_type_suffix(lead):
+                required.pop(word, None)
+            required.setdefault(canonical, SearchNeedle(canonical, 1.0, True, alts, True))
+            if ref.repo:
+                # Ranking only: the repo slug appears in a URL mention but not in
+                # a prose "#4411" one, so requiring it would hide real hits. It
+                # breaks the tie between the same number in two repos.
+                ranking.setdefault(ref.repo, SearchNeedle(ref.repo, 1.0, False))
+            continue
+        if part.isdigit() and len(part) <= 9:
+            gh_text, gh_alts = _forge_spellings(_ForgeRef(part, False, None))
+            # Charged against the shared ledger, so a number already gated as a
+            # reference does not spend a second slot on a hint the dedup below
+            # will discard anyway. This branch deliberately does NOT `continue` —
+            # the plain digit needle added below is what keeps numeric content
+            # search working, and it belongs in the gate whether or not the hint
+            # fits in the budget.
+            if gh_text not in charged and forge_budget:
+                charged.add(gh_text)
+                forge_budget -= 1
+                mr_text, mr_alts = _forge_spellings(_ForgeRef(part, True, None))
+                # Every sigil spelling of the number, both families: these only
+                # score, so a wrong-family hit costs a little rank rather than
+                # admitting a wrong object into the results.
+                spellings = tuple(
+                    dict.fromkeys(
+                        s for s in (gh_text, *gh_alts, mr_text, *mr_alts) if s != part
+                    )
+                )
+                ranking[gh_text] = SearchNeedle(
+                    spellings[0], _FORGE_REF_WEIGHT, False, spellings[1:], True
+                )
         for run, is_cjk in _script_runs(part):
             if not is_cjk or len(run) == 1:
-                required.setdefault(run, 1.0)
+                required.setdefault(run, SearchNeedle(run, 1.0, True))
                 continue
             for ch in run:
-                required.setdefault(ch, _CJK_CHAR_WEIGHT)
+                required.setdefault(ch, SearchNeedle(ch, _CJK_CHAR_WEIGHT, True))
             for i in range(len(run) - 1):
-                extras.setdefault(run[i : i + 2], 1.0)
-    needles = [
-        SearchNeedle(text, weight, True)
-        for text, weight in list(required.items())[:SEARCH_MAX_TOKENS]
-    ]
-    needles.extend(
-        SearchNeedle(text, weight, False)
-        for text, weight in list(extras.items())[:_SEARCH_MAX_SCORING_EXTRAS]
-    )
+                bigram = run[i : i + 2]
+                extras.setdefault(bigram, SearchNeedle(bigram, 1.0, False, adjacency=True))
+    # A spelling that is already REQUIRED must not also score as a ranking hint:
+    # a query naming the same item twice ("#4411 4411") would count its hits
+    # twice over.
+    for text in [t for t in ranking if t in required]:
+        del ranking[text]
+    needles = list(required.values())[:SEARCH_MAX_TOKENS]
+    needles.extend(list(extras.values())[:_SEARCH_MAX_SCORING_EXTRAS])
+    needles.extend(ranking.values())
     adjacency_floor = 0 < len(extras) <= _SEARCH_MAX_SCORING_EXTRAS
     return (needles, phrase, adjacency_floor)
 
@@ -843,6 +1284,10 @@ def snippet_needles(query: str) -> list[str]:
     queries, where a predictable first-typed-term fallback is part of the
     contract — and down-weighted lone CJK characters last, the anchor of last
     resort. Returns ``[]`` for a whitespace-only query.
+
+    A forge-reference needle contributes every spelling it carries, right after
+    its canonical form: the transcript that matched may name the item any of
+    those ways, and centering the snippet on the mention is the whole point.
     """
     needles, phrase, _ = parse_search_query(query)
     if not needles:
@@ -851,7 +1296,7 @@ def snippet_needles(query: str) -> list[str]:
     # order (required terms first-seen, then bigrams) is the display order.
     ordered = sorted(needles, key=lambda n: -n.weight)
     out: list[str] = []
-    for text in (phrase, *(n.text for n in ordered)):
+    for text in (phrase, *(t for n in ordered for t in (n.text, *n.alts))):
         if text not in out:
             out.append(text)
     return out
@@ -873,6 +1318,10 @@ def needles_match_text(
     exactly as in ``search_sessions`` (a partial bigram set cannot prove
     "no adjacency anywhere"). *folded_text* must already be casefolded
     (needle texts are).
+
+    Satisfaction is per NEEDLE, not per literal: a needle carrying alternative
+    spellings (a forge reference) is satisfied by any one of them, via the
+    shared :func:`count_needle`.
     """
     if not needles:
         return False
@@ -880,11 +1329,11 @@ def needles_match_text(
     has_adjacency = False
     for needle in needles:
         if needle.required:
-            if needle.text not in folded_text:
+            if not count_needle(needle, folded_text):
                 return False
-        else:
+        elif needle.adjacency:
             has_adjacency = True
-            if needle.text in folded_text:
+            if count_needle(needle, folded_text):
                 adjacency_hit = True
     return adjacency_hit or not has_adjacency or not adjacency_floor
 
@@ -3069,6 +3518,12 @@ class ConversationLog:
         bigram hit (the adjacency floor) — see :func:`parse_search_query` for
         the recall/precision split.
 
+        A term naming a forge item (``#4411``, ``pr 4411``, ``pull/4411``, a PR
+        URL, ``owner/repo#4411``) gates on ANY spelling of that item rather than
+        on the literal term, so the session that discussed the pull request is
+        found whichever form its transcript used. A bare number additionally
+        RANKS on those spellings while still gating on the plain digits.
+
         Each needle is matched case-insensitively as a SUBSTRING (so ``"cont"``
         hits ``"contention"``, which keeps search-as-you-type responsive) using
         full Unicode case folding via :meth:`str.casefold` (so e.g. German ``ß``
@@ -3137,14 +3592,14 @@ class ConversationLog:
             adjacency_hits = 0
             disqualified = False
             for needle in needles:
-                in_content = folded.count(needle.text) if folded else 0
-                in_title = title_folded.count(needle.text)
+                in_content = count_needle(needle, folded)
+                in_title = count_needle(needle, title_folded)
                 if needle.required and not in_content and not in_title:
                     # AND semantics: one absent required needle disqualifies the
                     # session, so stop counting the rest.
                     disqualified = True
                     break
-                if not needle.required:
+                if needle.adjacency:
                     adjacency_hits += in_content + in_title
                 content_hits += in_content * needle.weight
                 title_hits += in_title * needle.weight
