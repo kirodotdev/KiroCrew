@@ -362,6 +362,210 @@ class TestCronTransientRetry:
         assert job.consecutive_failures == 0
 
 
+class TestCronPostTokenResume:
+    """One-shot post-token resume for transient errors inside the prompt stream.
+
+    Closes the seam between the two existing retry layers: a transient error
+    raised AFTER the prompt was dispatched AND after at least one token had
+    streamed used to fail the whole cycle (stream_and_collect stops retrying
+    once tokens streamed; the whole-callback retry stops once the prompt is
+    dispatched). The callback now re-prompts the SAME live session ONCE with a
+    continuation instruction, preserving the partial instead of re-running the
+    turn — mirroring chat_runner's ``_posttoken_retry_used`` branch and the
+    subagent's post-activity arm.
+    """
+
+    def _run(
+        self,
+        gw_and_cb: tuple[Any, Any, Any],
+        job: CronJob,
+        *,
+        mock_stream: Any,
+    ) -> Any:
+        gw, get_cb, capture_cron = gw_and_cb
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+            patch("kiro_crew.slack.gateway.transient_retry_delay", return_value=0.0),
+        ):
+
+            async def _init_and_run() -> Any:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            return asyncio.run(_init_and_run())
+
+    def test_posttoken_transient_recovers_and_records_success(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """Transient after tokens: continuation resumes, partial preserved,
+        record_success() runs and the failure counter is untouched."""
+        from kiro_crew.slack.gateway import _CRON_POSTTOKEN_CONTINUE_MSG
+
+        calls: list[str] = []
+
+        async def mock_stream(client: Any, message: str, **kw: Any) -> str:
+            calls.append(message)
+            if len(calls) == 1:
+                kw["on_chunk"]("partial ")
+                raise _transient_err()
+            return "continued"
+
+        job = _job("pt1")
+        job.consecutive_failures = 3  # record_success() must reset this
+        result = self._run(gw_and_cb, job, mock_stream=mock_stream)
+        # Partial is preserved and the continuation appended — never re-run.
+        assert result == "partial continued"
+        assert len(calls) == 2
+        # The resume sends the CONTINUE instruction, not the original message.
+        assert calls[1] == _CRON_POSTTOKEN_CONTINUE_MSG
+        # Recovered cycle counts as a success: counter reset, no failure spent.
+        assert job.consecutive_failures == 0
+        assert not job.auto_paused
+
+    def test_pretoken_transient_still_takes_existing_path(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """Transient with NO tokens streamed: existing path, no resume.
+
+        stream_and_collect owns that window (its budget is spent by the time
+        the error propagates here), so the callback must not add a resume.
+        """
+        stream_calls = 0
+
+        async def mock_stream(client: Any, message: str, **kw: Any) -> str:
+            nonlocal stream_calls
+            stream_calls += 1
+            raise _transient_err()
+
+        job = _job("pt2")
+        with pytest.raises(AcpError):
+            self._run(gw_and_cb, job, mock_stream=mock_stream)
+        assert stream_calls == 1
+        assert job.consecutive_failures == 1
+
+    def test_non_transient_error_after_tokens_does_not_resume(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A non-transient error after tokens fails fast — no continuation."""
+        stream_calls = 0
+
+        async def mock_stream(client: Any, message: str, **kw: Any) -> str:
+            nonlocal stream_calls
+            stream_calls += 1
+            kw["on_chunk"]("partial ")
+            err = AcpError("ValidationException: prompt rejected")
+            err.transient = False  # type: ignore[attr-defined]
+            raise err
+
+        job = _job("pt3")
+        with pytest.raises(AcpError):
+            self._run(gw_and_cb, job, mock_stream=mock_stream)
+        assert stream_calls == 1
+        assert job.consecutive_failures == 1
+
+    def test_posttoken_resume_is_one_shot_per_turn(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """A transient error during the continuation propagates: the one shot
+        is spent, and the unrecovered cycle records the error exactly as
+        before (one failure, no third prompt)."""
+        stream_calls = 0
+
+        async def mock_stream(client: Any, message: str, **kw: Any) -> str:
+            nonlocal stream_calls
+            stream_calls += 1
+            kw["on_chunk"](f"chunk{stream_calls} ")
+            raise _transient_err()
+
+        job = _job("pt4")
+        with pytest.raises(AcpError):
+            self._run(gw_and_cb, job, mock_stream=mock_stream)
+        # Original + exactly ONE continuation — never a loop.
+        assert stream_calls == 2
+        assert job.consecutive_failures == 1
+
+    def test_continuation_owns_no_inner_transient_budget(
+        self, gw_and_cb: tuple[Any, Any, Any]
+    ) -> None:
+        """The continuation call passes retry_transient=False: its in-stream
+        retry re-sends the prompt whenever no text has streamed, so a mutating
+        tool completed by the continuation followed by a pre-text transient
+        would otherwise be re-run — amplifying the one-shot."""
+        flags: list[Any] = []
+
+        async def mock_stream(client: Any, message: str, **kw: Any) -> str:
+            flags.append(kw.get("retry_transient", "default"))
+            if len(flags) == 1:
+                kw["on_chunk"]("partial ")
+                raise _transient_err()
+            return "continued"
+
+        job = _job("pt6")
+        result = self._run(gw_and_cb, job, mock_stream=mock_stream)
+        assert result == "partial continued"
+        # First call keeps the default budget; the continuation gets none.
+        assert flags == [True, False]
+
+    def test_resumed_turn_bills_both_prompts(self, gw_and_cb: tuple[Any, Any, Any]) -> None:
+        """The usage row for a resumed cycle carries the interrupted prompt's
+        credits plus the continuation's — not only the continuation's, which a
+        single post-turn read of the (carried-over) per-turn stats would see.
+        """
+        from kiro_crew.acp.types import TurnUsage
+
+        async def mock_stream(client: Any, message: str, **kw: Any) -> str:
+            if not getattr(mock_stream, "_failed", False):
+                mock_stream._failed = True  # type: ignore[attr-defined]
+                kw["on_chunk"]("partial ")
+                raise _transient_err()
+            return "continued"
+
+        persisted: list[TurnUsage] = []
+
+        async def capture_persist(session_key: Any, model: Any, usage: Any, **kw: Any) -> None:
+            persisted.append(usage)
+
+        job = _job("pt5")
+        gw, get_cb, capture_cron = gw_and_cb
+        with (
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=mock_stream),
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
+            patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+            patch(
+                "kiro_crew.slack.gateway.CronService.create",
+                new=AsyncMock(side_effect=capture_cron),
+            ),
+            patch("kiro_crew.slack.gateway.transient_retry_delay", return_value=0.0),
+            patch(
+                "kiro_crew.slack.gateway.provider_last_turn_usage",
+                side_effect=[TurnUsage(credits=3.0), TurnUsage(credits=2.0)],
+            ),
+            patch(
+                "kiro_crew.slack.gateway.persist_token_record_async",
+                side_effect=capture_persist,
+            ),
+        ):
+
+            async def _init_and_run() -> Any:
+                await gw._init_cron()
+                cb = get_cb()
+                assert cb is not None
+                return await cb(job)
+
+            result = asyncio.run(_init_and_run())
+        assert result == "partial continued"
+        assert len(persisted) == 1
+        assert persisted[0].credits == pytest.approx(5.0)
+
+
 class TestWakeBudgetSubprocessGuard:
     """The wake budget must cover a command/script subprocess timeout."""
 

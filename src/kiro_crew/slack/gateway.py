@@ -213,6 +213,7 @@ from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
 from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
 from kiro_crew.subagent import (
+    _TRANSIENT_CONTINUE_MSG,
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
     SubagentInfo,
@@ -336,6 +337,15 @@ def _injection_slot_busy(slot: Any) -> bool:
 # client creation / context assembly), mirroring the subagent path's budget.
 # In-stream transient errors are retried separately by stream_and_collect.
 _CRON_TRANSIENT_RETRIES = 2
+
+# Continuation prompt for the one-shot post-token resume below. Reuses the
+# subagent path's constant verbatim (gateway.py already imports from
+# kiro_crew.subagent) instead of adding a third hand-maintained copy next to
+# the dashboard's _POSTTOKEN_RECOVER_MSG — see the PARITY NOTE in
+# dashboard/chat_runner.py. The cron result is delivered once at the end of
+# the turn, so the preserved partial is concatenated with the continuation
+# instead of being re-shown to a live viewer.
+_CRON_POSTTOKEN_CONTINUE_MSG = _TRANSIENT_CONTINUE_MSG
 
 logger = logging.getLogger(__name__)
 
@@ -734,6 +744,113 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     job.last_failure_at = 0.0
     job.record_success()
     return False
+
+
+async def _cron_stream_with_posttoken_resume(
+    client: Any, message: str, *, job_name: str, **stream_kwargs: Any
+) -> tuple[str, float | None]:
+    """Run a cron agent turn, resuming ONCE after a post-token transient error.
+
+    Closes the seam between the two existing transient-retry layers:
+    stream_and_collect's in-stream retry stops once tokens have streamed
+    (re-running would duplicate the already-emitted output), and
+    _cron_callback's whole-callback retry stops once the prompt is dispatched
+    (tools may have run). A transient backend error raised AFTER the first
+    token therefore failed the whole cycle even though the live session still
+    holds the interrupted turn's context.
+
+    Recovery mirrors the dashboard's post-token CONTINUE re-prompt
+    (chat_runner's ``_posttoken_retry_used`` branch) and the subagent's
+    ``_stream_with_transient_retry`` post-activity arm: the streamed partial is
+    preserved, the SAME live session is re-prompted with a continuation
+    instruction (never the original message, so completed work is not re-run),
+    and the returned result is partial + continuation. The allowance is a
+    strict one-shot per turn (``_resume_used``, same style as
+    ``_posttoken_retry_used``): a transient error during the continuation
+    propagates unchanged, so the unrecovered path records the error exactly as
+    before.
+
+    Returns ``(text, carried_credits)``. ``carried_credits`` is ``None`` when
+    the turn completed without a resume; on a resumed turn it is the credits
+    the INTERRUPTED prompt accumulated — snapshotted before the continuation
+    prompt's ``AcpPromptStats.carry_over()`` zeroes the per-turn counter — so
+    the caller's usage row can bill both prompts instead of only the
+    continuation.
+
+    Eligibility deliberately reuses ``acp_error_is_transient`` — the one
+    authoritative classifier — so auth/validation failures and every other
+    non-transient error propagate untouched. With NO tokens streamed the error
+    also propagates untouched: that window is stream_and_collect's own retry's
+    job, and by the time it raises here its budget is spent.
+
+    Inherited tradeoffs, stated for the record (both are the mirrored owner
+    decisions from chat_runner/subagent, extended here to the cron surface):
+
+    - A side-effecting tool that was IN FLIGHT (dispatched, no completion)
+      when the transient hit may be legitimately re-issued by the continuation
+      turn — the CONTINUE instruction forbids re-running *completed* tools
+      only. On an ``approval_mode == "auto"`` job that re-issue meets no gate
+      and no human, an unattended posture narrower than the live-viewer
+      surface the tradeoff was originally accepted for. Accepted: the window
+      is rare (mid-flight tool AND a transient), and failing the whole cycle
+      fast was exactly the behaviour this fix exists to remove.
+    - The resume adds at most one bounded prompt plus one backoff sleep to the
+      cycle's worst case, inside the same per-wake ``asyncio.wait_for``
+      deadline. A deadline firing mid-continuation degrades exactly as a
+      deadline mid-turn does today (``CancelledError`` is not caught here), so
+      no remaining-budget plumbing is added for a one-shot.
+
+    ``parts`` observes chunks across stream_and_collect's internal attempts.
+    Its transient retry only fires while no text has streamed, and — a stated
+    ASSUMPTION about the provider, not an enforced invariant — a prompt-busy
+    error is only raised at prompt submission, before this turn's stream emits
+    chunks. Under that assumption the accumulated text never contains chunks
+    from an abandoned attempt.
+    """
+    parts: list[str] = []
+    preserved = ""
+    carried_credits: float | None = None
+    _resume_used = False  # one-shot, same style as slot._posttoken_retry_used
+    msg = message
+    while True:
+        try:
+            text = await stream_and_collect(
+                client,
+                msg,
+                on_chunk=parts.append,
+                # The continuation call owns NO further transient budget: its
+                # in-stream retry re-sends the prompt whenever no text has
+                # streamed, so a mutating tool completed by the continuation
+                # followed by a pre-text transient would be re-run by the
+                # inner replay — amplifying the one-shot. The first call keeps
+                # the default (existing pre-token behaviour, unchanged).
+                retry_transient=not _resume_used,
+                **stream_kwargs,
+            )
+            return preserved + text, carried_credits
+        except Exception as exc:
+            partial = "".join(parts)
+            if _resume_used or not partial or not acp_error_is_transient(exc):
+                raise
+            _resume_used = True
+            preserved = partial
+            parts.clear()
+            # Snapshot the interrupted prompt's billing NOW: sending the
+            # continuation runs AcpPromptStats.carry_over(), which zeroes the
+            # per-turn credit counter, and the caller's single post-turn read
+            # would otherwise bill only the continuation.
+            carried_credits = provider_last_turn_usage(client).credits
+            _delay = transient_retry_delay(1)
+            logger.warning(
+                "Cron '%s': transient backend error after %d chars streamed — "
+                "one-shot CONTINUE re-prompt of live session in %.1fs: %s",
+                job_name,
+                len(preserved),
+                _delay,
+                exc,
+            )
+            await asyncio.sleep(_delay)
+            msg = _CRON_POSTTOKEN_CONTINUE_MSG
 
 
 def _result_hash(text: str) -> str:
@@ -2832,9 +2949,10 @@ class GatewayOrchestrator:
                         # the episodic-query embed above are setup, not the turn.
                         _turn_t0 = time.monotonic()
                         _prompt_dispatched = True
-                        result_text = await stream_and_collect(
+                        result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
                             client,
                             full_message,
+                            job_name=job.name,
                             approval_policy=(
                                 ToolApprovalPolicy.AUTO_APPROVE
                                 if job.approval_mode == "auto"
@@ -2856,6 +2974,12 @@ class GatewayOrchestrator:
                         try:
 
                             _used, _window = read_context_tokens(client)
+                            _turn_usage = provider_last_turn_usage(client)
+                            if _carried_credits:
+                                # A resumed turn's post-turn read sees only the
+                                # continuation prompt; bill the interrupted
+                                # prompt's snapshotted credits too.
+                                _turn_usage.credits += _carried_credits
                             await persist_token_record_async(
                                 agent_session_key,
                                 # Blank on a downgrade: the configured model was
@@ -2864,7 +2988,7 @@ class GatewayOrchestrator:
                                 # that never executed. Blank defers to
                                 # model_source, which reports what actually ran.
                                 "" if _seq_downgraded else (job.model or ""),
-                                provider_last_turn_usage(client),
+                                _turn_usage,
                                 provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
                                 surface="cron",
                                 agent=read_effective_agent(client) or agent or "",
@@ -2960,9 +3084,10 @@ class GatewayOrchestrator:
                 _turn_t0 = time.monotonic()
                 _gate = _GateTally()
                 _prompt_dispatched = True
-                result_text = await stream_and_collect(
+                result_text, _carried_credits = await _cron_stream_with_posttoken_resume(
                     client,
                     full_message,
+                    job_name=job.name,
                     approval_policy=(
                         ToolApprovalPolicy.AUTO_APPROVE
                         if job.approval_mode == "auto"
@@ -2994,11 +3119,17 @@ class GatewayOrchestrator:
                 try:
 
                     _used, _window = read_context_tokens(client)
+                    _turn_usage = provider_last_turn_usage(client)
+                    if _carried_credits:
+                        # See the sequential site above: bill the interrupted
+                        # prompt's snapshotted credits alongside the
+                        # continuation's on a resumed turn.
+                        _turn_usage.credits += _carried_credits
                     await persist_token_record_async(
                         session_key,
                         # Blank on a downgrade — see the sequential site above.
                         "" if _model_downgraded else (job.model or ""),
-                        provider_last_turn_usage(client),
+                        _turn_usage,
                         provider=_provider,
                         surface="cron",
                         agent=read_effective_agent(client) or job.agent_id or "",
