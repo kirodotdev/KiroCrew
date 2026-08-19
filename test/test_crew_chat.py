@@ -179,8 +179,8 @@ class TestWindowsReplaceWindow:
         """
         inflight: set[str] = set()
         gate = threading.Event()
-        real_write_text, real_replace, real_read_text = (
-            Path.write_text, Path.replace, Path.read_text)
+        real_write_text, real_replace, real_read_text, real_read_bytes = (
+            Path.write_text, Path.replace, Path.read_text, Path.read_bytes)
 
         def write_text(self, data, *a, **k):          # type: ignore[no-untyped-def]
             if self.name == f".{target}.tmp":
@@ -199,9 +199,21 @@ class TestWindowsReplaceWindow:
                 raise PermissionError(errno.EACCES, "Permission denied", str(self))
             return real_read_text(self, *a, **k)
 
+        def read_bytes(self, *a, **k):                # type: ignore[no-untyped-def]
+            # Faulted alongside read_text so the emulator stays armed against
+            # the call the store actually makes: ``CrewStore._load`` reads bytes
+            # through ``read_bytes_with_retry`` (#4331). Patching only read_text
+            # would leave the positive control below passing vacuously — it
+            # would observe no failure because it never intercepted the read,
+            # not because the window closed.
+            if str(self) in inflight:
+                raise PermissionError(errno.EACCES, "Permission denied", str(self))
+            return real_read_bytes(self, *a, **k)
+
         monkeypatch.setattr(Path, "write_text", write_text)
         monkeypatch.setattr(Path, "replace", replace)
         monkeypatch.setattr(Path, "read_text", read_text)
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
         return inflight, gate
 
     @pytest.mark.asyncio

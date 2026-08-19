@@ -29,6 +29,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
@@ -261,7 +262,7 @@ class CrewStore:
         """
         path = self.dir / name
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         except FileNotFoundError:
             return []
         except (json.JSONDecodeError, OSError) as exc:

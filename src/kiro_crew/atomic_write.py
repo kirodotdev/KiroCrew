@@ -176,6 +176,62 @@ def replace_with_retry(src: Path | str, dst: Path | str) -> None:
     os.replace(str(src), str(dst))
 
 
+def read_bytes_with_retry(path: Path | str) -> bytes:
+    """``Path.read_bytes()``, retrying the Windows sharing-violation window.
+
+    The read-side twin of :func:`replace_with_retry`, and the same OS fact seen
+    from the other end: on Windows a read fails with ``PermissionError``
+    (``WinError 32``) while another handle holds the file open for write, so a
+    reader can lose to a concurrent tmp-file-plus-rename writer that is
+    perfectly correct. POSIX permits the read, which is why this class of bug
+    only ever surfaces on the ``Backend Tests (Windows)`` matrix and on Windows
+    hosts.
+
+    Only ``PermissionError`` is retried. ``FileNotFoundError`` and a decode or
+    parse failure propagate untouched: they mean the file is absent or damaged,
+    and sleeping cannot change either.
+
+    Shares :data:`_REPLACE_MAX_ATTEMPTS` / :data:`_REPLACE_BACKOFF_SECONDS` with
+    the rename retry deliberately. Both bound the same transient — one Windows
+    sharing-violation window — so a second knob would only let the two halves of
+    one behaviour drift apart.
+
+    On POSIX a ``PermissionError`` is a genuine access fault and is re-raised
+    immediately rather than slept over, and the retry is gated on there being no
+    running event loop in this thread: a caller reached from the gateway loop
+    gets the plain single-attempt semantics instead of pausing the one loop for
+    the whole budget. Callers wanting the retry from a loop-driven path offload
+    the read (``asyncio.to_thread`` / ``run_in_executor``), which is what
+    ``CrewStore``'s builder already does.
+
+    The final attempt sits OUTSIDE the loop for the same reason it does in
+    :func:`replace_with_retry`: with it inside, a budget of 0 would fall out
+    having read nothing and return ``None`` to a caller expecting bytes.
+    """
+    target = Path(path)
+    for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
+        try:
+            return target.read_bytes()
+        except PermissionError:
+            if not platform_compat.IS_WINDOWS:
+                raise
+            if _on_event_loop():
+                logger.debug(
+                    "read contended at %s on the event loop; re-raising instead "
+                    "of sleeping (offload the read to retry)",
+                    target,
+                )
+                raise
+            logger.debug(
+                "read contended at %s; retrying (attempt %d/%d)",
+                target,
+                attempt + 1,
+                _REPLACE_MAX_ATTEMPTS,
+            )
+            time.sleep(_REPLACE_BACKOFF_SECONDS)
+    return target.read_bytes()
+
+
 def atomic_write(
     path: Path | str,
     content: str | bytes,
