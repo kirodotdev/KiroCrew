@@ -1977,7 +1977,17 @@ def safe_write_file_nolink(
         # O_RDWR, not O_WRONLY: the no-dir-fd path below needs to READ the
         # original bytes before truncating so it can put them back if the write
         # fails. Same inode checks either way.
-        fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        #
+        # O_BINARY is REQUIRED on Windows, where os.open defaults to TEXT mode
+        # and os.write then expands every \n to \r\n — so a caller handing this
+        # writer exact bytes got a longer file back, and a body just under a
+        # size cap lands as a file over it. Absent on POSIX, where getattr
+        # yields 0 and there is no text mode to opt out of. Same convention as
+        # dashboard/token_secret.py and dashboard/handlers/files.py.
+        fd = os.open(
+            path,
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
     except OSError:
         return False
     # The descriptor must survive validation (the no-dir-fd path below writes
@@ -2174,14 +2184,16 @@ def safe_write_file_nolink(
                 return False
             tfd = os.open(
                 tmp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0),
                 0o600,
                 dir_fd=dfd,
             )
         else:
             tfd = os.open(
                 os.path.join(parent, tmp_name),
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0),
                 0o600,
             )
         created = True

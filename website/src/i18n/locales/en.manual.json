@@ -3634,12 +3634,10 @@
         "save": "Save"
       },
       "promptsTab": {
-        "prompts_count": "Prompts ({{count}})",
-        "prompts_filtered_count": "Prompts ({{count}} of {{total}})",
+        "failed_to_load_prompts": "Failed to load prompts",
+        "no_prompts_match_query": "No prompts match “{{query}}”.",
         "saved_prompts_from": "Saved prompts from {{registry}} and ~/.kiro/prompts/. Invoke with @name in chat or /prompts get name.",
-        "user_prompts_count": "User Prompts ({{count}})",
-        "user_prompts_filtered_count": "User Prompts ({{count}} of {{total}})",
-        "failed_to_load_prompts": "Failed to load prompts"
+        "user_prompts_count": "User Prompts ({{count}})"
       },
       "skillsTab": {
         "adds_new_requirements_to": "Adds new requirements to {{target}} — {{description}}",
