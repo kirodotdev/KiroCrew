@@ -5,7 +5,9 @@ link-label, folder-icon, and session-summary generation.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -15,15 +17,20 @@ from kiro_crew.llm_helpers import run_bg_oneliner
 
 
 class _FakeSession:
-    def __init__(self, events, *, raise_on_prompt=False):
+    def __init__(self, events, *, raise_on_prompt=False, turn_credits=0.0, prior_credits=0.0):
         self._events = events
         self._raise = raise_on_prompt
+        self._turn_credits = turn_credits
         self.destroyed = False
         self.model = None
         # Mirrors AcpSessionHandle: "" until a set_model lands, then the
         # backend-resolved id (the fake resolves to exactly what was asked).
         self.served_model = ""
         self.rejected: list = []
+        # Mirrors AcpSessionHandle: the shared session arrives carrying whatever
+        # the PREVIOUS turn left behind, and installs fresh per-turn stats only
+        # once a turn actually begins (see prompt()).
+        self.last_prompt_stats = SimpleNamespace(credits=prior_credits)
 
     async def set_model(self, model):
         self.model = model
@@ -32,6 +39,10 @@ class _FakeSession:
     async def prompt(self, _prompt):
         if self._raise:
             raise RuntimeError("backend boom")
+        # Fresh per-turn stats, installed as the real handle does once the turn
+        # starts -- AFTER any pre-dispatch failure, which is what makes a failed
+        # dispatch distinguishable from a turn that ran.
+        self.last_prompt_stats = SimpleNamespace(credits=self._turn_credits)
         for e in self._events:
             yield e
 
@@ -52,11 +63,13 @@ class _FakeSessions:
 
 @pytest.mark.asyncio
 async def test_accumulates_text_and_sets_model_and_destroys():
-    sess = _FakeSession([
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="hello "),
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="world"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _FakeSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="hello "),
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="world"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     out = await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-haiku-4.5")
     assert out == "hello world"
     assert sess.model == "claude-haiku-4.5"
@@ -71,10 +84,12 @@ async def test_auto_model_is_passed_to_set_model_for_wire_resolution():
     advertised model — so a partition that doesn't serve auto never
     gets a raw ``auto`` on the wire. The fake session just records
     the requested value; resolver behavior is covered in test_acp_client."""
-    sess = _FakeSession([
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="hi"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _FakeSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="hi"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     out = await run_bg_oneliner(_FakeSessions(sess), "p", model="auto")
     assert out == "hi"
     assert sess.model == "auto"
@@ -84,10 +99,12 @@ async def test_auto_model_is_passed_to_set_model_for_wire_resolution():
 @pytest.mark.asyncio
 async def test_empty_model_does_not_override_session_default():
     """An empty model string inherits the session default (no set_model call)."""
-    sess = _FakeSession([
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="hi"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _FakeSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="hi"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     out = await run_bg_oneliner(_FakeSessions(sess), "p", model="")
     assert out == "hi"
     assert sess.model is None
@@ -103,11 +120,13 @@ async def test_permission_request_is_rejected_and_sel_logged(monkeypatch):
         return SimpleNamespace(log_tool_invocation=lambda **kw: logged.append(kw))
 
     monkeypatch.setattr(mod, "_sel", _fake_sel)
-    sess = _FakeSession([
-        SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="r1", text=""),
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="ok"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _FakeSession(
+        [
+            SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="r1", text=""),
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="ok"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     out = await run_bg_oneliner(_FakeSessions(sess), "p", sel_source="unit")
     assert out == "ok"
     assert sess.rejected == ["r1"]
@@ -126,10 +145,12 @@ async def test_permission_denial_is_sel_logged_even_without_sel_source(monkeypat
         return SimpleNamespace(log_tool_invocation=lambda **kw: logged.append(kw))
 
     monkeypatch.setattr(mod, "_sel", _fake_sel)
-    sess = _FakeSession([
-        SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="r1", text=""),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _FakeSession(
+        [
+            SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="r1", text=""),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     # No sel_source passed — mirrors chat_title / _summarize_one call sites.
     out = await run_bg_oneliner(_FakeSessions(sess), "p")
     assert out == ""
@@ -247,10 +268,12 @@ async def test_strict_model_rejects_silent_default_inherit():
     default (requested id not advertised), the canary must refuse rather than
     produce a success on a different model — that success would be fabricated
     evidence for discarding a healthy conversation."""
-    sess = _SilentInheritSession([
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="should never stream"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _SilentInheritSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="should never stream"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     with pytest.raises(RuntimeError, match="serves"):
         await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x", strict_model=True)
     assert sess.destroyed is True
@@ -260,10 +283,12 @@ async def test_strict_model_rejects_silent_default_inherit():
 async def test_strict_model_raises_when_set_model_fails():
     """``strict_model=True`` + failed set_model override → raise, never run
     the prompt on the session default model."""
-    sess = _SetModelFailsSession([
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="should never stream"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _SetModelFailsSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="should never stream"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     with pytest.raises(RuntimeError, match="override refused"):
         await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x", strict_model=True)
     assert sess.destroyed is True
@@ -273,10 +298,12 @@ async def test_strict_model_raises_when_set_model_fails():
 async def test_lenient_mode_still_degrades_on_set_model_failure():
     """Default (lenient) behavior is unchanged: a failed override logs and
     runs on the session default."""
-    sess = _SetModelFailsSession([
-        SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="ok"),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _SetModelFailsSession(
+        [
+            SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="ok"),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     out = await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-x")
     assert out == "ok"
     assert sess.destroyed is True
@@ -286,6 +313,7 @@ async def test_lenient_mode_still_degrades_on_set_model_failure():
 async def test_non_rejection_error_is_not_retried():
     """A generic AcpError with no rejected_model tag is not a model rejection —
     it must propagate unchanged (no retry), and the session is destroyed."""
+
     class _BoomSession(_FakeSession):
         async def prompt(self, _p):
             raise AcpError("backend boom")
@@ -309,8 +337,7 @@ class TestRejectedModelClassifier:
 
     def test_matches_model_not_available(self):
         assert (
-            _rejected_model_from_error({"data": "The model 'opus-x' is not available"})
-            == "opus-x"
+            _rejected_model_from_error({"data": "The model 'opus-x' is not available"}) == "opus-x"
         )
 
     def test_returns_none_for_unrelated_error(self):
@@ -329,7 +356,8 @@ async def test_permission_denial_is_audited_even_if_reject_fails(monkeypatch):
     import kiro_crew.llm_helpers as mod
 
     monkeypatch.setattr(
-        mod, "_sel",
+        mod,
+        "_sel",
         lambda: SimpleNamespace(log_tool_invocation=lambda **kw: logged.append(kw)),
     )
 
@@ -337,12 +365,98 @@ async def test_permission_denial_is_audited_even_if_reject_fails(monkeypatch):
         async def reject_tool(self, request_id):
             raise RuntimeError("transport down")
 
-    sess = _RejectRaises([
-        SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="r1", text=""),
-        SimpleNamespace(kind=EVENT_COMPLETE, text=""),
-    ])
+    sess = _RejectRaises(
+        [
+            SimpleNamespace(kind=EVENT_PERMISSION_REQUEST, request_id="r1", text=""),
+            SimpleNamespace(kind=EVENT_COMPLETE, text=""),
+        ]
+    )
     with pytest.raises(RuntimeError, match="transport down"):
         await run_bg_oneliner(_FakeSessions(sess), "p", sel_source="unit")
     # Denial was audited despite reject_tool failing, and the handle was destroyed.
     assert logged and logged[0]["outcome"] == "denied"
     assert sess.destroyed is True
+
+
+_USAGE_TARGET = "kiro_crew.dashboard.handlers.usage.persist_token_record_async"
+
+
+class _SubstitutingSession(_FakeSession):
+    """``set_model`` lands, but the backend serves a DIFFERENT id.
+
+    That is the substitute-style seam which makes a requested model a preference
+    rather than a guarantee, and it is the case where recording the request would
+    bill spend to a model that never ran.
+    """
+
+    async def set_model(self, model):
+        self.model = model
+        self.served_model = "claude-sonnet-4.6"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_while_accounting_still_destroys_the_session():
+    """CancelledError is a BaseException, so the accounting handler never sees
+    it. If destroy() sat after that handler rather than in a finally, a
+    cancelled turn would leak the session's runtime."""
+    sess = _FakeSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_credits=2.0)
+
+    with patch(_USAGE_TARGET, side_effect=asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_spend_is_recorded_against_the_served_model_not_the_requested_one():
+    sess = _SubstitutingSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_credits=1.5)
+
+    with patch(_USAGE_TARGET) as persist:
+        await run_bg_oneliner(_FakeSessions(sess), "p", model="claude-haiku-4.5")
+
+    assert persist.await_args.args[1] == "claude-sonnet-4.6"
+
+
+@pytest.mark.asyncio
+async def test_a_dispatch_that_never_ran_does_not_rebill_the_previous_turn():
+    """The shared session arrives carrying the last turn's credits, which were
+    already recorded. A prompt that fails before the runner installs fresh stats
+    must record nothing rather than bill that earlier turn a second time."""
+    sess = _FakeSession([], raise_on_prompt=True, prior_credits=9.0)
+
+    with patch(_USAGE_TARGET) as persist:
+        with pytest.raises(RuntimeError):
+            await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    persist.assert_not_awaited()
+    assert sess.destroyed is True
+
+
+@pytest.mark.asyncio
+async def test_an_unbilled_turn_records_nothing():
+    """A turn that ran but cost nothing has no row worth writing."""
+    sess = _FakeSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")])
+
+    with patch(_USAGE_TARGET) as persist:
+        await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_turn_duration_reaches_the_row():
+    """The acp provider never fills TurnUsage.duration_ms, so this local
+    measurement is the only duration a background row can carry. The clock is
+    substituted rather than timed, so the assertion pins the arithmetic rather
+    than the host's speed."""
+    sess = _FakeSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_credits=1.0)
+    # Exactly representable in binary floating point, so the truncation to ms is
+    # unambiguous and the assertion cannot drift on a fraction like 0.4.
+    clock = iter([50.0, 50.25])
+
+    with patch("kiro_crew.llm_helpers.time", SimpleNamespace(monotonic=lambda: next(clock))):
+        with patch(_USAGE_TARGET) as persist:
+            await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    assert persist.await_args.kwargs["elapsed_ms"] == 250

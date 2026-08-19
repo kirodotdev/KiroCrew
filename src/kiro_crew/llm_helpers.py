@@ -10,7 +10,9 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +32,25 @@ from kiro_crew.sel import sel as _sel
 
 _PROMPT_BUSY_RETRIES = 2
 _PROMPT_BUSY_DELAY = 1.5  # seconds between retries
+
+# Cap on the wrapper chain walked to find a turn's billing stats. A provider is
+# wrapped at most a few layers deep, so a longer walk means a cycle or an
+# unrelated object graph, not a deeper seam.
+_WRAPPER_WALK_MAX_NODES = 8
+
+# Sentinel for "no prior stats object was observed", distinct from a provider that
+# legitimately exposes None. Used by provider_last_turn_usage's identity guard.
+_NO_PRIOR_STATS = object()
+
+# Where stream_and_collect hands its caller the billing it observed across ALL
+# attempts of one logical turn. A retry installs fresh per-turn stats, so a
+# post-hoc read of last_prompt_stats sees only the final attempt and silently
+# drops an attempt that was billed before a transient error. This carries the sum
+# instead, and provider_last_turn_usage consumes it. The value is a
+# (stats object, TurnUsage) pair: the provider outlives the turn, so the identity
+# of the stats the sum was computed from is what tells a later turn that the sum
+# is not its own.
+_TURN_BILLED_ATTR = "_kc_turn_billed"
 
 # Transient backend (Bedrock 5xx / throttle / stream-reset) retry budget. These
 # are server-side hiccups where the credential is VALID — retry helps, re-auth
@@ -290,6 +311,16 @@ async def run_bg_oneliner(
     low-level helper stays free of a dashboard/session import cycle.
     """
     session = await sessions.get_bg_session()
+    # The stats object as it stands BEFORE this turn. The runner replaces it when
+    # a turn actually begins, so comparing identity at teardown separates a turn
+    # that ran from one whose dispatch failed while the previous turn's already
+    # recorded credits were still installed.
+    stats_before = _billing_stats(session)
+    # Wall clock for the turn itself, started after the session is in hand so the
+    # acquire wait is not charged as turn time. The acp provider never fills
+    # TurnUsage.duration_ms, so this local measurement is the only duration a
+    # background row can carry, and every other dispatch surface supplies one.
+    turn_started = time.monotonic()
 
     def _first_advertised_fallback(advertised: Any, rejected: str | None) -> str | None:
         """First advertised model that is neither the rejected id nor the
@@ -411,19 +442,132 @@ async def run_bg_oneliner(
             )
             return await _run(fallback)
     finally:
-        await session.destroy()
+        # Account BEFORE destroy(): the turn's billing lives on the session this
+        # tears down. Every caller of this helper — titles, link labels, folder
+        # icons, session summaries, tips, the canary — reaches the provider
+        # through here and none of them recorded spend of their own, so the
+        # bill moved while the usage store stayed empty. Recording at this one
+        # point covers all of them and a new caller cannot forget to.
+        # The inner finally is load-bearing: persisting is an await, and
+        # CancelledError is a BaseException that no `except Exception` catches,
+        # so without it a cancellation landing on that await would skip
+        # destroy() and leak the session's runtime.
+        try:
+            try:
+                # Imported here rather than at module scope because the usage
+                # module's own import chain reaches back into this one -- history
+                # and several dashboard handlers import ToolApprovalPolicy /
+                # run_bg_oneliner from here -- so a module-scope import raises
+                # ImportError against a partially initialized llm_helpers. It
+                # also pulls ~600 modules that every consumer of this low-level
+                # module would otherwise pay for at boot.
+                from kiro_crew.dashboard.handlers.usage import persist_token_record_async
+
+                usage = provider_last_turn_usage(session, since=stats_before)
+                if usage.credits or usage.input_tokens or usage.output_tokens:
+                    await persist_token_record_async(
+                        sel_session_key,
+                        # The model the session SERVED, never the one requested: a
+                        # rejected preference is replaced by the reactive fallback
+                        # above, so recording the request would bill the spend to a
+                        # model that did not run. An unreadable served model falls
+                        # through to model_source rather than naming a guess.
+                        str(getattr(session, "served_model", "") or "").strip(),
+                        usage,
+                        _provider_label(session),
+                        surface=f"bg:{sel_source}",
+                        elapsed_ms=int((time.monotonic() - turn_started) * 1000),
+                        model_source=session,
+                    )
+            except Exception:
+                logger.debug("bg oneliner accounting failed source=%s", sel_source, exc_info=True)
+        finally:
+            await session.destroy()
 
 
-def provider_last_turn_usage(provider: Any) -> TurnUsage:
+def _billing_stats(provider: Any) -> Any:
+    """The per-turn stats object behind *provider*, or ``None``.
+
+    Returned as the object rather than a value so callers can compare identity:
+    the runner installs a FRESH stats object as it begins a turn, which is what
+    tells a completed turn apart from one that never started.
+    """
+    try:
+        for node in _billing_stat_holders(provider):
+            stats = getattr(node, "last_prompt_stats", None)
+            if stats is not None:
+                return stats
+    except Exception:
+        logger.debug("billing stats lookup failed", exc_info=True)
+    return None
+
+
+def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
+    """Billing accrued on ONE attempt, read from the provider's live stats.
+
+    ``since`` is the stats object observed before the attempt. The runner installs
+    a fresh stats object as it begins a turn, with the credit counters at zero; a
+    dispatch that fails BEFORE that point -- a busy session, a dead runtime --
+    leaves the PREVIOUS turn's object in place, still carrying credits that were
+    already recorded. Comparing identity reports nothing in that case instead of
+    billing the earlier turn a second time.
+    """
+    stats = _billing_stats(provider)
+    if stats is None:
+        return TurnUsage()
+    if since is not _NO_PRIOR_STATS and stats is since:
+        return TurnUsage()
+    try:
+        return TurnUsage(credits=float(getattr(stats, "credits", 0.0) or 0.0))
+    except Exception:
+        logger.debug("attempt usage read failed", exc_info=True)
+    return TurnUsage()
+
+
+def _sum_usage(left: TurnUsage, right: TurnUsage) -> TurnUsage:
+    """Add two attempts' billing. Never raises; unknown fields stay at zero."""
+    try:
+        return TurnUsage(
+            credits=float(left.credits or 0.0) + float(right.credits or 0.0),
+            input_tokens=int(getattr(left, "input_tokens", 0) or 0)
+            + int(getattr(right, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(left, "output_tokens", 0) or 0)
+            + int(getattr(right, "output_tokens", 0) or 0),
+        )
+    except Exception:
+        logger.debug("usage sum failed", exc_info=True)
+        return left
+
+
+def provider_last_turn_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
     """Best-effort read of the just-completed turn's billing usage.
 
     ``stream_and_collect`` breaks on ``EVENT_COMPLETE`` and returns only text,
     discarding the event's ``usage``. Background surfaces that dispatch through
     it (cron, heartbeat, autonudge, workflow, task-runner self-review) therefore
     have no event to hand :func:`persist_token_record_async`. This recovers the
-    turn's billing from the provider's ``last_prompt_stats`` — the same post-turn
-    read ``chat_runner`` performs — and wraps it in a ``TurnUsage`` so it can be
-    passed straight through as the ``event`` argument.
+    turn's billing and wraps it in a ``TurnUsage`` so it can be passed straight
+    through as the ``event`` argument.
+
+    A turn can span several attempts: ``stream_and_collect`` retries a busy
+    session and a transient backend error, and each retry installs fresh per-turn
+    stats. Reading the provider's live stats afterwards therefore sees only the
+    LAST attempt and loses any earlier attempt that was already billed. So the
+    total ``stream_and_collect`` accumulated is preferred when present, and
+    consumed here -- one turn's billing is reported once. Callers that drive
+    ``provider.stream`` themselves publish no total and fall back to the live
+    read, which is what ``since`` guards (see :func:`_attempt_usage`).
+
+    The total is published WITH the stats object it was computed from, and is
+    accepted only while that object is still the provider's current one. The
+    provider outlives the turn -- the shared background session is reused by every
+    background caller, and a Slack session by every turn in its thread -- so a
+    total left unread by one turn would otherwise be consumed by the next one,
+    billing that turn's spend to the wrong surface and losing its own. Today every
+    reader happens to be paired with a publish in the same turn, which makes the
+    residue unreachable; the guard is here so that safety does not depend on the
+    next caller preserving that pairing. A fresh turn installs fresh stats, so a
+    stale total simply fails the identity check and the live read takes over.
 
     On the ACP backend the only non-zero per-turn billing signal is ``credits``;
     the token fields stay 0, matching the real usage record. Providers that expose
@@ -431,13 +575,187 @@ def provider_last_turn_usage(provider: Any) -> TurnUsage:
     (credits=0). Never raises.
     """
     try:
-        inner = getattr(provider, "_client", None) or getattr(provider, "_handle", None)
-        stats = getattr(inner, "last_prompt_stats", None) if inner is not None else None
-        if stats is not None:
-            return TurnUsage(credits=float(getattr(stats, "credits", 0.0) or 0.0))
+        accumulated = getattr(provider, _TURN_BILLED_ATTR, None)
+        if isinstance(accumulated, tuple) and len(accumulated) == 2:
+            published_stats, total = accumulated
+            # Clear on every read, match or not: a total that failed the identity
+            # check belongs to a turn that is already over and must not be seen
+            # again by a third one.
+            try:
+                delattr(provider, _TURN_BILLED_ATTR)
+            except Exception:
+                logger.debug("clearing accumulated turn usage failed", exc_info=True)
+            if isinstance(total, TurnUsage) and published_stats is _billing_stats(provider):
+                return total
     except Exception:
-        logger.debug("provider_last_turn_usage read failed", exc_info=True)
-    return TurnUsage()
+        logger.debug("accumulated turn usage read failed", exc_info=True)
+    return _attempt_usage(provider, since=since)
+
+
+def _billing_stat_holders(provider: Any) -> "list[Any]":
+    """Objects that may carry ``last_prompt_stats``, nearest wrapper first.
+
+    The turn-runner sits behind a different attribute per seam: the acp provider
+    keeps it on ``_client``, the session provider on ``_handle``, and the shared
+    background session hands non-kiro callers a thin adapter whose only link to
+    the runner is ``_sess.provider``. Walking all of them keeps a background turn
+    on the claude_code / bedrock seam from reporting 0 credits for a turn that
+    was billed. Bounded and identity-deduped so a self-referential wrapper chain
+    cannot loop.
+    """
+    out: list[Any] = []
+    seen: set[int] = set()
+    frontier: list[Any] = [provider]
+    while frontier and len(out) < _WRAPPER_WALK_MAX_NODES:
+        node = frontier.pop(0)
+        if node is None or id(node) in seen:
+            continue
+        seen.add(id(node))
+        out.append(node)
+        for attr in ("_client", "_handle", "_sess", "provider"):
+            frontier.append(getattr(node, attr, None))
+    return out
+
+
+def _provider_label(provider: Any) -> str:
+    """Backend label for the usage row's ``provider`` dimension. Never raises.
+
+    Left unset the row lands with ``provider=""`` and drops out of the usage
+    page's provider and provider-model breakdowns, so a background turn's spend
+    would be recorded yet unattributable to a backend.
+
+    ``provider_label`` is the shared resolver for this vocabulary -- the same
+    ``acp`` / ``claude_code`` / ``kas`` keys the session map and resume-compat
+    check use -- and it answers from the backend that actually served the turn,
+    which is the precedence this module already applies to the model and the
+    agent. Reading ``config.agent.provider`` instead would report a declaration:
+    that field's enum admits only ``acp``, so a claude_code-backed session would
+    be labelled ``acp``.
+
+    The resolver only recognises a provider it is handed directly, and the shared
+    background session wraps one behind ``_sess.provider``, so the wrapper chain
+    is walked and the first node that names a non-default backend wins. Falling
+    back to the default label rather than to ``""`` matches every other writer of
+    this field.
+    """
+    try:
+        from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+        from kiro_crew.providers.acp import provider_label
+
+        for node in _billing_stat_holders(provider):
+            label = provider_label(node)
+            if label and label != PROVIDER_LABEL_DEFAULT:
+                return label
+        return PROVIDER_LABEL_DEFAULT
+    except Exception:
+        logger.debug("resolving provider label failed", exc_info=True)
+        return ""
+
+
+@asynccontextmanager
+async def background_turn(
+    sessions: Any,
+    *,
+    task: str,
+    agent: "str | None" = None,
+) -> "AsyncIterator[Any]":
+    """Take the shared background session for ONE turn, then release and account.
+
+    Every background caller needs the same three steps around its prompt: acquire
+    the shared session (which takes its per-session semaphore), release that
+    semaphore in a ``finally`` or the next caller deadlocks on it, and recycle the
+    session afterwards. Callers that hand-rolled those steps had no reason to also
+    record what the turn cost, so background spend reached the provider's bill
+    without ever reaching the usage store — invisible on the dashboard even though
+    the account balance moved. Recording here makes it structural: a turn taken
+    through this manager is accounted for, and a new background caller cannot
+    forget to.
+
+    ``task`` labels the work in the ``surface`` dimension as ``bg:<task>`` so spend
+    is attributable per background job instead of pooling into one anonymous
+    bucket. Keep it a short fixed label — never per-session text, which would make
+    the dimension unbounded.
+
+    ``agent`` is forwarded to ``get_or_create`` ONLY when a caller supplies it:
+    the key decides which session is returned, but the agent decides what the
+    session is created AS, so injecting a default here would silently change that
+    for callers that deliberately pass none. The recorded row still names the
+    background agent so the dimension is never blank.
+
+    Exceptions are deliberately NOT swallowed. Callers distinguish "the session
+    could not be acquired" (nothing was sent, so nothing was billed) from "the turn
+    ran and failed" (billed), and collapsing the two corrupts the retry budgets
+    built on that distinction. Only the accounting write is best-effort.
+    """
+    from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
+
+    if agent is None:
+        client, _new, _resumed = await sessions.get_or_create(BACKGROUND_KEY)
+    else:
+        client, _new, _resumed = await sessions.get_or_create(BACKGROUND_KEY, agent=agent)
+    # The stats object as it stands BEFORE this turn. The shared session serves
+    # many turns, and the runner replaces this object only once a turn actually
+    # begins, so identity is what separates a turn that ran from one whose
+    # dispatch failed while a previous, already-recorded turn's credits were
+    # still installed.
+    stats_before = _billing_stats(client)
+    # Wall clock for the turn itself, started after the acquire so queue wait is
+    # not charged as turn time. The acp provider never fills TurnUsage.duration_ms,
+    # so this is the only duration a background row can carry.
+    turn_started = time.monotonic()
+    try:
+        yield client
+    finally:
+        turn_elapsed_ms = int((time.monotonic() - turn_started) * 1000)
+        # Snapshot the billing BEFORE releasing. ``last_prompt_stats`` is shared
+        # mutable state on the session: the next waiter's turn carries it over
+        # (zeroing credits) or starts accumulating its own, so a read after
+        # release attributes that waiter's spend to this task, or loses the row
+        # entirely. This read is a synchronous attribute walk, so taking it here
+        # costs nothing and keeps release ahead of every await.
+        usage = provider_last_turn_usage(client, since=stats_before)
+        # Release before any await: it is synchronous, so no cancellation can
+        # land between the turn ending and the next caller being unblocked.
+        # CancelledError is a BaseException that no `except Exception` catches,
+        # and an await ordered ahead of this would let a cancelled task hold the
+        # shared semaphore forever.
+        try:
+            sessions.release(BACKGROUND_KEY)
+        except Exception:
+            logger.debug("background session release failed task=%s", task, exc_info=True)
+        # Recycle sits in a finally for the same cancellation reason, and follows
+        # accounting because it may replace the provider entirely.
+        try:
+            try:
+                # Same cycle as the oneliner's teardown: the usage module's import
+                # chain reaches back into this one (history and several dashboard
+                # handlers import ToolApprovalPolicy / run_bg_oneliner from here),
+                # so a module-scope import raises ImportError against a partially
+                # initialized llm_helpers, and it would pull ~600 modules into
+                # every consumer's boot.
+                from kiro_crew.dashboard.handlers.usage import persist_token_record_async
+
+                # A turn that never reached the provider bills nothing and has no
+                # row to write; the same guard the chat path applies keeps
+                # acquire-time failures from landing as zero-credit noise.
+                if usage.credits or usage.input_tokens or usage.output_tokens:
+                    await persist_token_record_async(
+                        BACKGROUND_KEY,
+                        "",
+                        usage,
+                        _provider_label(client),
+                        surface=f"bg:{task}",
+                        agent=agent or BACKGROUND_AGENT,
+                        elapsed_ms=turn_elapsed_ms,
+                        model_source=client,
+                    )
+            except Exception:
+                logger.debug("background turn accounting failed task=%s", task, exc_info=True)
+        finally:
+            try:
+                await sessions.recycle_background()
+            except Exception:
+                logger.debug("background recycle failed task=%s", task, exc_info=True)
 
 
 async def stream_and_collect(
@@ -514,6 +832,9 @@ async def stream_and_collect(
     """
     transient_attempts = 0
     attempt = 0
+    # Accumulates across attempts, so it lives OUTSIDE the retry loop: a turn that
+    # was billed and then retried must report the sum, not the last attempt.
+    turn_billed = TurnUsage()
     while True:
         result_text = ""
         tool_call_count = 0
@@ -537,6 +858,10 @@ async def stream_and_collect(
         gate_decided_ids: set[str] = set()
         executed_calls: list[tuple[str, str]] = []
         retrying = False
+        # Billing accrued on THIS attempt is measured against the stats object as
+        # it stands now: a retry installs a fresh one, so without a per-attempt
+        # baseline an attempt that was billed and then failed is invisible.
+        attempt_stats_before = _billing_stats(provider)
         try:
             async for event in provider.stream(message):
                 if event.kind == EVENT_TEXT_CHUNK:
@@ -687,6 +1012,27 @@ async def stream_and_collect(
             # Runs before the value reaches the caller on success, and before the exception
             # propagates on failure, so the acknowledgement always precedes the cleanup that
             # would otherwise requeue the question.
+            #
+            # Billing is folded in on EVERY attempt, including the ones abandoned by a
+            # retry: an attempt whose metering frame landed before the error was billed,
+            # and the retry replaces the stats object that carried it. The total is
+            # published on the attempt that is terminal -- the same `not retrying`
+            # condition the callbacks below use -- so one logical turn publishes once,
+            # whether it returns or raises.
+            turn_billed = _sum_usage(
+                turn_billed, _attempt_usage(provider, since=attempt_stats_before)
+            )
+            if not retrying:
+                try:
+                    setattr(
+                        provider,
+                        _TURN_BILLED_ATTR,
+                        (_billing_stats(provider), turn_billed),
+                    )
+                except Exception:
+                    # A provider that refuses the attribute (slots, frozen doubles)
+                    # simply leaves the caller on the live-stats fallback.
+                    logger.debug("publishing accumulated turn usage failed", exc_info=True)
             if not retrying and on_steer_consumed:
                 for consumed_text in consumed_this_attempt:
                     on_steer_consumed(consumed_text)

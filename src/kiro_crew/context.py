@@ -1244,8 +1244,10 @@ async def compress_thread_history(
     *exclude_last_n* is forwarded to ``conversation_log.recent`` to drop
     the just-flushed current-turn user message from history.
     """
-    from kiro_crew.llm_helpers import stream_and_collect  # circular import
-    from kiro_crew.session import BACKGROUND_KEY  # circular import
+    from kiro_crew.llm_helpers import (  # circular import
+        background_turn,
+        stream_and_collect,
+    )
 
     compressed_cap = _resolve_caps(model_window).compressed_history
 
@@ -1283,33 +1285,27 @@ async def compress_thread_history(
         + transcript
     )
 
-    acquired = False
     try:
-        client, _is_new, _resumed = await sessions.get_or_create(
-            BACKGROUND_KEY, agent="kirocrew-lite"
-        )
-        acquired = True
-        result = await stream_and_collect(client, prompt)
-        if not result:
-            return None
+        async with background_turn(
+            sessions, task="thread_compress", agent="kirocrew-lite"
+        ) as client:
+            result = await stream_and_collect(client, prompt)
+            if not result:
+                return None
 
-        parts: list[str] = []
-        if head_lines:
-            parts.append("## Thread start (verbatim)\n" + "\n".join(head_lines))
-        parts.append("## Compressed history\n" + result[:compressed_cap])
-        if tail_lines:
-            parts.append("## Recent exchanges (verbatim)\n" + "\n".join(tail_lines))
-        final = "\n\n".join(parts)
-        final, _ = redact_exfiltration_urls(final)
-        final, _ = redact_credentials(final)
-        return final.translate(_MULTIBYTE_TABLE)
+            parts: list[str] = []
+            if head_lines:
+                parts.append("## Thread start (verbatim)\n" + "\n".join(head_lines))
+            parts.append("## Compressed history\n" + result[:compressed_cap])
+            if tail_lines:
+                parts.append("## Recent exchanges (verbatim)\n" + "\n".join(tail_lines))
+            final = "\n\n".join(parts)
+            final, _ = redact_exfiltration_urls(final)
+            final, _ = redact_credentials(final)
+            return final.translate(_MULTIBYTE_TABLE)
     except Exception:
         logger.warning("Thread history compression failed", exc_info=True)
         return None
-    finally:
-        if acquired:
-            sessions.release(BACKGROUND_KEY)
-            await sessions.recycle_background()
 
 
 # ── Provider-Agnostic Session Replay ──

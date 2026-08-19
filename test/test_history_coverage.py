@@ -36,6 +36,7 @@ from kiro_crew.history import (
     ConversationLog,
     HistoryConsolidator,
 )
+from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.vector_memory import SemanticRejectCode
 
 
@@ -921,7 +922,7 @@ class TestDedupeJudge:
             "kiro_crew.history.stream_and_collect", AsyncMock(return_value="DUP")
         ):
             assert await c._dedupe_judge("prompt") == "DUP"
-        sessions.release.assert_called_once_with(H.BACKGROUND_KEY)
+        sessions.release.assert_called_once_with(BACKGROUND_KEY)
         sessions.recycle_background.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -942,7 +943,7 @@ class TestDedupeJudge:
             AsyncMock(side_effect=RuntimeError("provider down")),
         ):
             assert await c._dedupe_judge("prompt") == ""
-        sessions.release.assert_called_once_with(H.BACKGROUND_KEY)
+        sessions.release.assert_called_once_with(BACKGROUND_KEY)
 
     @pytest.mark.asyncio
     async def test_release_failure_is_swallowed(self) -> None:
@@ -973,7 +974,7 @@ class TestMergeSkillUpdate:
         prompt = collector.await_args.args[1]
         for needle in ("EXISTING BODY", "the description", "trig1, trig2", "1. do it"):
             assert needle in prompt
-        sessions.release.assert_called_once_with(H.BACKGROUND_KEY)
+        sessions.release.assert_called_once_with(BACKGROUND_KEY)
         sessions.recycle_background.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -992,7 +993,7 @@ class TestMergeSkillUpdate:
             AsyncMock(side_effect=RuntimeError("provider down")),
         ):
             assert await c._merge_skill_update("b", "d", "t", "p") is None
-        sessions.release.assert_called_once_with(H.BACKGROUND_KEY)
+        sessions.release.assert_called_once_with(BACKGROUND_KEY)
 
     @pytest.mark.asyncio
     async def test_release_failure_is_swallowed(self) -> None:

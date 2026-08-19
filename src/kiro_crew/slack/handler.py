@@ -19,6 +19,7 @@ to check whether a Slack session should skip memory writes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -74,7 +75,11 @@ from kiro_crew.hooks import (
     safe_read_file_bytes,
     validate_file_path,
 )
-from kiro_crew.llm_helpers import record_interaction_event, save_conversation_turn_off_loop
+from kiro_crew.llm_helpers import (
+    background_turn,
+    record_interaction_event,
+    save_conversation_turn_off_loop,
+)
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
@@ -4189,35 +4194,35 @@ async def _maybe_auto_title_slack(
 ) -> None:
     """Generate and set a Slack thread title after the first response."""
     try:
-        from kiro_crew.session import BACKGROUND_KEY
-
         prompt = _build_title_prompt(user_text[:200], assistant_text[:200])
-        async with _get_auto_title_lock():
-            client, _, _ = await sessions.get_or_create(BACKGROUND_KEY)
+        # The lock stays OUTSIDE the session acquire: reversing them would take
+        # the shared background session before the title lock and invert the
+        # ordering every other caller uses.
+        async with _get_auto_title_lock(), contextlib.AsyncExitStack() as stack:
+            client = await stack.enter_async_context(
+                background_turn(sessions, task="slack_auto_title")
+            )
             title = ""
-            try:
 
-                async def _stream_title() -> str:
-                    t = ""
-                    async for event in client.stream(prompt):
-                        if event.kind == EVENT_TEXT_CHUNK:
-                            t += event.text
-                        elif event.kind == EVENT_PERMISSION_REQUEST:
-                            sel().log_api_access(
-                                caller="system",
-                                operation="auto_title.tool_rejected",
-                                outcome="denied",
-                                source="slack",
-                                resources=str(event.request_id),
-                            )
-                            await client.reject_tool(event.request_id)
-                        elif event.kind == EVENT_COMPLETE:
-                            break
-                    return t
+            async def _stream_title() -> str:
+                t = ""
+                async for event in client.stream(prompt):
+                    if event.kind == EVENT_TEXT_CHUNK:
+                        t += event.text
+                    elif event.kind == EVENT_PERMISSION_REQUEST:
+                        sel().log_api_access(
+                            caller="system",
+                            operation="auto_title.tool_rejected",
+                            outcome="denied",
+                            source="slack",
+                            resources=str(event.request_id),
+                        )
+                        await client.reject_tool(event.request_id)
+                    elif event.kind == EVENT_COMPLETE:
+                        break
+                return t
 
-                title = await asyncio.wait_for(_stream_title(), timeout=30)
-            finally:
-                sessions.release(BACKGROUND_KEY)
+            title = await asyncio.wait_for(_stream_title(), timeout=30)
 
         title = title.split("\n")[0].strip("\"'. \t")
         title = title.replace("<", "").replace(">", "")  # neutralize Slack mrkdwn links

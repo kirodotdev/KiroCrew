@@ -1195,7 +1195,6 @@ test/test_review_driver_loopback.py
 test/test_review_fixes.py
 test/test_role_models.py
 test/test_route_registry.py
-test/test_run_bg_oneliner.py
 test/test_run_config_write.py
 test/test_safety_override.py
 test/test_sage_backend_routes_coverage.py

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import unicodedata
 from typing import Any
@@ -17,10 +18,9 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
-from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.llm_helpers import background_turn, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.session import BACKGROUND_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -646,20 +646,15 @@ async def _rephrase_plan_lite(
 ) -> str | None:
     """Rephrase a plan using the cheap background session (kirocrew-lite)."""
 
-    try:
-        bg, _new, _resumed = await state.sessions.get_or_create(BACKGROUND_KEY)
-    except Exception:
-        logger.warning("Failed to get background session for plan rephrase", exc_info=True)
-        return None
-    try:
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            bg = await stack.enter_async_context(
+                background_turn(state.sessions, task="plan_rephrase")
+            )
+        except Exception:
+            logger.warning("Failed to get background session for plan rephrase", exc_info=True)
+            return None
         result = await rephrase_plan(text, issues, bg, might_not_be_plan=might_not_be_plan)
-    finally:
-        state.sessions.release(BACKGROUND_KEY)
-        # Recycle the shared BG session if it's accumulated too much context.
-        # Without this, repeated dashboard plan-rephrases bloat the kiro-cli
-        # child until a mid-stream recycle eventually kills an in-flight call,
-        # blocking every chat queued behind the BG session for minutes.
-        await state.sessions.recycle_background()
     if result:
         result, _ = redact_exfiltration_urls(result)
         result, _ = redact_credentials(result)

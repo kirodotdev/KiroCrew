@@ -28,12 +28,16 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
-from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect, stream_and_collect_json
+from kiro_crew.llm_helpers import (
+    ToolApprovalPolicy,
+    background_turn,
+    stream_and_collect,
+    stream_and_collect_json,
+)
 from kiro_crew.messaging.link import canonical_key, legacy_key
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance
 from kiro_crew.skills_dedupe import (
     VERDICT_DUP,
@@ -5982,34 +5986,24 @@ class HistoryConsolidator:
         if not self._sessions:
             return ""
         try:
-            client, _new, _resumed = await self._sessions.get_or_create(
-                BACKGROUND_KEY, agent="kirocrew-lite"
-            )
-            text = await stream_and_collect(
-                client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
-            )
+            async with background_turn(
+                self._sessions, task="skill_dedupe", agent="kirocrew-lite"
+            ) as client:
+                text = await stream_and_collect(
+                    client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+                )
             return text or ""
         except Exception:
             logger.debug("Skill dedupe judge failed", exc_info=True)
             return ""
-        finally:
-            # get_or_create ACQUIRES the per-session semaphore — the caller MUST
-            # release it (mirror _call_llm), else the shared _bg session is held
-            # forever and the next consolidation turn deadlocks waiting for it.
-            try:
-                self._sessions.release(BACKGROUND_KEY)
-                await self._sessions.recycle_background()
-            except Exception:
-                logger.debug("Skill dedupe judge session release failed", exc_info=True)
 
     async def _merge_skill_update(
         self, live_body: str, description: str, triggers: str, procedure_md: str
     ) -> "str | None":
         """Merge an existing live skill body with a new candidate into ONE
         updated markdown body — a single text turn on the shared background
-        session. Mirrors ``_dedupe_judge`` exactly (get_or_create / REJECT_ALL /
-        finally-release + recycle). Fail-open (returns ``None`` on any error) so
-        the caller can fall back to a plain replacement proposal."""
+        session. Mirrors ``_dedupe_judge`` exactly. Fail-open (returns ``None`` on
+        any error) so the caller can fall back to a plain replacement proposal."""
         if not self._sessions:
             return None
         prompt = (
@@ -6026,25 +6020,16 @@ class HistoryConsolidator:
             f"NEW requirement — procedure:\n{procedure_md}\n"
         )
         try:
-            client, _new, _resumed = await self._sessions.get_or_create(
-                BACKGROUND_KEY, agent="kirocrew-lite"
-            )
-            text = await stream_and_collect(
-                client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
-            )
+            async with background_turn(
+                self._sessions, task="skill_merge", agent="kirocrew-lite"
+            ) as client:
+                text = await stream_and_collect(
+                    client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+                )
             return text or None
         except Exception:
             logger.debug("Skill update merge failed", exc_info=True)
             return None
-        finally:
-            # get_or_create ACQUIRES the per-session semaphore — the caller MUST
-            # release it (mirror _dedupe_judge), else the shared _bg session is
-            # held forever and the next consolidation turn deadlocks.
-            try:
-                self._sessions.release(BACKGROUND_KEY)
-                await self._sessions.recycle_background()
-            except Exception:
-                logger.debug("Skill update merge session release failed", exc_info=True)
 
     def _stage_skill_update(
         self,
@@ -6517,18 +6502,18 @@ class HistoryConsolidator:
             logger.warning("LLM consolidation skipped — no session manager")
             raise _ConsolidationNotDispatched("no session manager")
 
-        session_key = BACKGROUND_KEY
-        # Timing instrumentation (_bg stall investigation): measure both the
-        # wait to acquire the shared `_bg` session (queue contention behind
-        # other `_bg` consumers like chat_nav link-preview) and the LLM turn
-        # itself. No behavior change. Logged at DEBUG: silent in normal
-        # operation, surfaced only when log_level is raised to investigate a
-        # consolidation stall.
+        # Timing instrumentation: measure both the wait to acquire the shared
+        # `_bg` session (queue contention behind other `_bg` consumers like
+        # chat_nav link-preview) and the LLM turn itself. Logged at DEBUG:
+        # silent in normal operation, surfaced only when log_level is raised
+        # to investigate a consolidation stall.
         t_start = _time.monotonic()
-        try:
+        async with contextlib.AsyncExitStack() as stack:
             try:
-                client, _is_new, _resumed = await self._sessions.get_or_create(
-                    session_key, agent="kirocrew-lite"
+                client = await stack.enter_async_context(
+                    background_turn(
+                        self._sessions, task="consolidation", agent="kirocrew-lite"
+                    )
                 )
             except Exception as exc:
                 logger.warning(
@@ -6568,6 +6553,8 @@ class HistoryConsolidator:
                 result is not None,
             )
             return result
-        finally:
-            self._sessions.release(session_key)
-            await self._sessions.recycle_background()
+        # Reached only if the exit stack suppresses an exception. The prompt was
+        # already sent by then, so the turn may have been billed: report it as a
+        # spent-but-unusable result rather than a non-dispatch, which would hand
+        # the caller a free retry it has not earned.
+        return None
