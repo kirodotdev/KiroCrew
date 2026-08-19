@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ Ver registro completo de alterações",
     "what_s_new": "Novidades",
-    "you_re_on_the_latest_version": "Você está na versão mais recente"
+    "you_re_on_the_latest_version": "Você está na versão mais recente",
+    "k_run_a_command": "Executar um comando",
+    "open_command_bar": "Abrir o Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4307,6 +4309,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "Selecione uma execução para ver suas fases, agentes e resultado.",
         "unknown": "Desconhecido"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "Nova sessão",
+      "cmd_search_sessions": "Pesquisar sessões",
+      "fallback_sessions": "Pesquisar “{{query}}” nas sessões",
+      "group_apps": "Aplicativos",
+      "group_commands": "Comandos",
+      "group_settings": "Configurações",
+      "keep_typing": "Digite ao menos {{min}} caracteres",
+      "leave_scope": "Voltar para todos os comandos",
+      "manifest": {
+        "display_name": "Barra de comandos",
+        "description": "Substitui a busca rapida (Cmd+K / Ctrl+K) por um lancador: digite um comando, nao uma busca. A primeira pagina traz comandos de aplicativos, destinos e configuracoes do sistema e nao faz nenhuma requisicao, entao digitar nao custa nada. As sessoes passam a ser uma linha em que voce entra; enquanto estiver ativo nao e possivel buscar em conhecimento, artefatos, habilidades e prompts -- desative para recuperar."
+      },
+      "no_matches": "Nenhum resultado",
+      "no_sessions": "Nenhuma sessão corresponde",
+      "placeholder": "Digite um comando…",
+      "placeholder_sessions": "Pesquisar em todas as sessões…",
+      "searching": "Pesquisando…",
+      "title": "Barra de comandos",
+      "action_failed": "Nao foi possivel concluir \"{{action}}\". Pressione Enter para tentar de novo.",
+      "working": "Processando…",
+      "other_search_hint": "Para buscar em conhecimento, artefatos, habilidades ou prompts, desative o Command Bar na App Store — este lancador alcanca apenas sessoes",
+      "cmd_toggle_theme": "Alternar tema",
+      "search_failed": "A busca falhou",
+      "retry": "Tentar novamente"
     }
   },
   "autoImprovement": {
@@ -4956,7 +4984,8 @@
       "retry": "Tentar novamente",
       "search_failed": "Falha na pesquisa",
       "searching": "Pesquisando…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "Adicionar um comentário",

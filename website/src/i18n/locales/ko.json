@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ 전체 변경 내역 보기",
     "what_s_new": "새로운 기능",
-    "you_re_on_the_latest_version": "최신 버전을 사용 중입니다"
+    "you_re_on_the_latest_version": "최신 버전을 사용 중입니다",
+    "k_run_a_command": "명령 실행",
+    "open_command_bar": "Command Bar 열기"
   },
   "appSdk": {
     "chatEmbed": {
@@ -775,6 +777,32 @@
         "select_a_review_to_see_its_progress_and_report": "리뷰를 선택하면 진행 상황과 보고서가 표시됩니다.",
         "start_a_new_one_several_can_run_at_once": "새로 시작하세요 — 여러 개를 동시에 실행할 수 있습니다."
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "새 세션",
+      "cmd_search_sessions": "세션 검색",
+      "fallback_sessions": "세션에서 {{query}} 검색",
+      "group_apps": "앱",
+      "group_commands": "명령",
+      "group_settings": "설정",
+      "keep_typing": "{{min}}자 이상 입력하세요",
+      "leave_scope": "모든 명령으로 돌아가기",
+      "manifest": {
+        "display_name": "커맨드 바",
+        "description": "빠른 검색(Cmd+K / Ctrl+K) 화면을 런처로 대체합니다. 검색어가 아니라 명령을 입력하세요. 첫 페이지에는 앱 명령과 이동 대상, 시스템 설정만 있고 요청을 보내지 않으므로 입력에 비용이 없습니다. 세션은 들어가서 쓰는 행이 됩니다. 활성화된 동안에는 지식, 산출물, 스킬, 프롬프트 검색을 사용할 수 없습니다. 되돌리려면 비활성화하세요."
+      },
+      "no_matches": "일치하는 항목 없음",
+      "no_sessions": "일치하는 세션이 없습니다",
+      "placeholder": "명령을 입력하세요…",
+      "placeholder_sessions": "모든 세션 검색…",
+      "searching": "검색 중…",
+      "title": "커맨드 바",
+      "action_failed": "‘{{action}}’을(를) 완료할 수 없습니다. Enter를 눌러 다시 시도하세요.",
+      "working": "처리 중…",
+      "other_search_hint": "지식, 산출물, 스킬, 프롬프트를 검색하려면 App Store에서 Command Bar를 비활성화하세요 — 이 런처는 세션만 다룹니다",
+      "cmd_toggle_theme": "테마 전환",
+      "search_failed": "검색 실패",
+      "retry": "다시 시도"
     },
     "crewCompanion": {
       "accessory": {
@@ -4810,7 +4838,8 @@
       "search_for_anything": "무엇이든 검색",
       "search_scope": "{{scope}} 검색…",
       "searching": "검색 중…",
-      "tab": "Tab"
+      "tab": "Tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "댓글 추가",

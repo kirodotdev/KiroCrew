@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ Vedi il changelog completo",
     "what_s_new": "Novità",
-    "you_re_on_the_latest_version": "Stai usando la versione più recente"
+    "you_re_on_the_latest_version": "Stai usando la versione più recente",
+    "k_run_a_command": "Esegui un comando",
+    "open_command_bar": "Apri Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4307,6 +4309,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "Seleziona un'esecuzione per vederne le fasi, gli agenti e il risultato.",
         "unknown": "Sconosciuto"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "Nuova sessione",
+      "cmd_search_sessions": "Cerca sessioni",
+      "fallback_sessions": "Cerca «{{query}}» nelle sessioni",
+      "group_apps": "App",
+      "group_commands": "Comandi",
+      "group_settings": "Impostazioni",
+      "keep_typing": "Digita almeno {{min}} caratteri",
+      "leave_scope": "Torna a tutti i comandi",
+      "manifest": {
+        "display_name": "Barra dei comandi",
+        "description": "Sostituisce la ricerca rapida (Cmd+K / Ctrl+K) con un launcher: digita un comando, non una ricerca. La prima pagina contiene comandi delle app, destinazioni e impostazioni di sistema e non invia richieste, quindi digitare non costa nulla. Le sessioni diventano una riga in cui si entra; mentre e attivo non si può cercare in conoscenza, artefatti, competenze e prompt: disattivalo per riaverlo."
+      },
+      "no_matches": "Nessun risultato",
+      "no_sessions": "Nessuna sessione corrispondente",
+      "placeholder": "Digita un comando…",
+      "placeholder_sessions": "Cerca in tutte le sessioni…",
+      "searching": "Ricerca…",
+      "title": "Barra dei comandi",
+      "action_failed": "Non e stato possibile completare \"{{action}}\". Premi Invio per riprovare.",
+      "working": "In corso…",
+      "other_search_hint": "Per cercare in conoscenza, artefatti, competenze o prompt, disattiva Command Bar nell App Store — questo launcher raggiunge solo le sessioni",
+      "cmd_toggle_theme": "Cambia tema",
+      "search_failed": "Ricerca non riuscita",
+      "retry": "Riprova"
     }
   },
   "autoImprovement": {
@@ -4956,7 +4984,8 @@
       "retry": "Riprova",
       "search_failed": "Ricerca non riuscita",
       "searching": "Ricerca in corso…",
-      "tab": "scheda"
+      "tab": "scheda",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "Aggiungi un commento",

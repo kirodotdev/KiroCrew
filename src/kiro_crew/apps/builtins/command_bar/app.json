@@ -1,0 +1,25 @@
+{
+  "name": "command-bar",
+  "version": "0.1.0",
+  "displayName": "Command Bar",
+  "description": "Replaces the quick-search (Cmd+K / Ctrl+K) surface with a launcher: type a command, not a query. The first page carries app commands, destinations and system settings and issues no request, so typing costs nothing. Sessions become a row you enter; searching knowledge, artifacts, skills and prompts is not available while this is enabled — disable it to get that back.",
+  "author": "kirocrew",
+  "license": "MIT",
+  "iconUrl": "/app-assets/command-bar/icon.svg",
+  "tags": [
+    "launcher",
+    "commands",
+    "productivity",
+    "keyboard"
+  ],
+  "defaultEnabled": false,
+  "minKiroCrewVersion": "0.1.0",
+  "ui": {
+    "overlays": [
+      {
+        "id": "command-bar",
+        "replaces": "quick-search"
+      }
+    ]
+  }
+}

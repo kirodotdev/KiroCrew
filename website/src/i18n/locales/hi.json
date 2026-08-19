@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ पूरा चेंजलॉग देखें",
     "what_s_new": "नया क्या है",
-    "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं"
+    "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं",
+    "k_run_a_command": "कमांड चलाएं",
+    "open_command_bar": "Command Bar खोलें"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4243,6 +4245,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "इसके चरण, एजेंट और परिणाम देखने के लिए कोई रन चुनें।",
         "unknown": "अज्ञात"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "नया सेशन",
+      "cmd_search_sessions": "सेशन खोजें",
+      "fallback_sessions": "सेशन में “{{query}}” खोजें",
+      "group_apps": "ऐप",
+      "group_commands": "कमांड",
+      "group_settings": "सेटिंग्स",
+      "keep_typing": "कम से कम {{min}} अक्षर लिखें",
+      "leave_scope": "सभी कमांड पर वापस",
+      "manifest": {
+        "display_name": "कमांड बार",
+        "description": "क्विक सर्च (Cmd+K / Ctrl+K) की जगह एक लॉन्चर देता है: खोज शब्द नहीं, कमांड लिखें। पहले पेज पर ऐप कमांड, ठिकाने और सिस्टम सेटिंग्स होती हैं और वह कोई रिक्वेस्ट नहीं भेजता, इसलिए टाइप करना मुफ़्त है। सेशन एक ऐसी पंक्ति बन जाते हैं जिसमें जाना होता है; यह चालू रहने तक ज्ञान, आर्टिफ़ैक्ट, स्किल और प्रॉम्प्ट में खोज उपलब्ध नहीं है — वापस पाने के लिए इसे बंद करें।"
+      },
+      "no_matches": "कोई मेल नहीं",
+      "no_sessions": "कोई सेशन मेल नहीं खाता",
+      "placeholder": "कोई कमांड लिखें…",
+      "placeholder_sessions": "सभी सेशन खोजें…",
+      "searching": "खोज रहे हैं…",
+      "title": "कमांड बार",
+      "action_failed": "\"{{action}}\" पूरा नहीं हो सका। दोबारा कोशिश करने के लिए Enter दबाएं।",
+      "working": "चल रहा है…",
+      "other_search_hint": "ज्ञान, आर्टिफ़ैक्ट, स्किल या प्रॉम्प्ट खोजने के लिए App Store में Command Bar बंद करें — यह लॉन्चर केवल सेशन तक पहुंचता है",
+      "cmd_toggle_theme": "थीम बदलें",
+      "search_failed": "खोज विफल",
+      "retry": "फिर कोशिश करें"
     }
   },
   "autoImprovement": {
@@ -4883,7 +4911,8 @@
       "retry": "पुनः प्रयास करें",
       "search_failed": "खोज विफल",
       "searching": "खोजा जा रहा है…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "टिप्पणी जोड़ें",

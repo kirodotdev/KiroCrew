@@ -61,7 +61,10 @@ describe('APP_MANIFEST_KEY', () => {
 
   it('carries full literal keys, which is the only form check-i18n-keys resolves', () => {
     for (const [name, keys] of Object.entries(APP_MANIFEST_KEY)) {
-      for (const key of [keys.displayName, keys.description, keys.pageLabel, ...keys.highlights]) {
+      // `pageLabel` is absent for an overlay-only app (it contributes no page), so the
+      // filter keeps this a coverage assertion over the keys the entry actually declares.
+      const declared = [keys.displayName, keys.description, keys.pageLabel, ...keys.highlights]
+      for (const key of declared.filter((k): k is string => typeof k === 'string')) {
         expect(key, `${name} key is not a dotted literal`).toMatch(/^apps\.[A-Za-z]+\.manifest\.[a-z0-9_]+$/)
         expect(lookup(en, key), `${key} missing from en.json`).toBeTypeOf('string')
       }

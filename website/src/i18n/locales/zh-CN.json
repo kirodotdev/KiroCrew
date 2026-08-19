@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ 查看完整更新日志",
     "what_s_new": "新增内容",
-    "you_re_on_the_latest_version": "已是最新版本"
+    "you_re_on_the_latest_version": "已是最新版本",
+    "k_run_a_command": "运行命令",
+    "open_command_bar": "打开 Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4179,6 +4181,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。",
         "unknown": "未知"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "新建会话",
+      "cmd_search_sessions": "搜索会话",
+      "fallback_sessions": "在会话中搜索“{{query}}”",
+      "group_apps": "应用",
+      "group_commands": "命令",
+      "group_settings": "设置",
+      "keep_typing": "至少输入 {{min}} 个字符",
+      "leave_scope": "返回全部命令",
+      "manifest": {
+        "display_name": "命令栏",
+        "description": "接管快捷搜索（Cmd+K / Ctrl+K）界面，改成启动器：输入命令，而不是搜索词。第一页只有应用命令、去处和系统设置，且不发任何请求，所以打字没有成本。会话变成一个需要进入的条目；启用期间无法搜索知识库、产物、技能和提示词——想要回来就把它关掉。"
+      },
+      "no_matches": "没有匹配项",
+      "no_sessions": "没有匹配会话",
+      "placeholder": "输入命令…",
+      "placeholder_sessions": "搜索全部会话…",
+      "searching": "搜索中…",
+      "title": "命令栏",
+      "action_failed": "无法完成\"{{action}}\"。按 Enter 重试。",
+      "working": "处理中…",
+      "other_search_hint": "要搜索知识库、产物、技能或提示词，请在应用商店中停用 Command Bar — 这个启动器只能到达会话",
+      "cmd_toggle_theme": "切换主题",
+      "search_failed": "搜索失败",
+      "retry": "重试"
     }
   },
   "autoImprovement": {
@@ -4810,7 +4838,8 @@
       "retry": "重试",
       "search_failed": "搜索失败",
       "searching": "搜索中…",
-      "tab": "Tab"
+      "tab": "Tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "添加评论",

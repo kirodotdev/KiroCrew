@@ -278,6 +278,43 @@ class UIPage:
         )
 
 
+# Overlay ids and the host slots they replace are kebab-case slugs: they key the
+# frontend overlay registry, so the grammar is deliberately narrower than a page
+# route (no dots, no path separators, no leading dash).
+_OVERLAY_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+@dataclass
+class UIOverlay:
+    """A global overlay surface contributed by an app.
+
+    An overlay is not routed: it floats above whatever the user is looking at
+    and is opened by a gesture the host owns, so it carries no sidebar
+    placement and no URL. ``id`` keys the frontend overlay registry the same way
+    :class:`UIPage`'s ``route`` keys the builtin component registry.
+
+    ``replaces`` names the host overlay slot this app takes over while it is
+    enabled (e.g. ``"quick-search"``), and is required: the host opens an overlay
+    only through a slot it owns, so a declaration without one can never be shown.
+    Whether the named slot exists is decided by the frontend registry, which
+    reports an unknown slot rather than vanishing silently -- the same posture as
+    an unroutable page route.
+    """
+
+    id: str = ""
+    replaces: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "replaces": self.replaces}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UIOverlay:
+        return cls(
+            id=str(data.get("id", "")),
+            replaces=str(data.get("replaces", "")),
+        )
+
+
 @dataclass
 class UISidebar:
     """Sidebar placement config for app pages."""
@@ -307,6 +344,7 @@ class UIConfig:
 
     entry: str = ""  # ESM bundle path relative to app root, e.g. "dist/index.mjs"
     pages: list[UIPage] = field(default_factory=list)
+    overlays: list[UIOverlay] = field(default_factory=list)
     sidebar: UISidebar = field(default_factory=UISidebar)
 
     def to_dict(self) -> dict[str, Any]:
@@ -315,6 +353,8 @@ class UIConfig:
             d["entry"] = self.entry
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
+        if self.overlays:
+            d["overlays"] = [o.to_dict() for o in self.overlays]
         sidebar_d = self.sidebar.to_dict()
         if sidebar_d:
             d["sidebar"] = sidebar_d
@@ -323,9 +363,23 @@ class UIConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> UIConfig:
         pages = [UIPage.from_dict(p) for p in data.get("pages", []) if isinstance(p, dict)]
+        # A hand-edited manifest can carry `"overlays": null` (or a string, or a
+        # number): the key is present, so `get` returns that value rather than the
+        # default and iterating it would raise out of install validation.
+        raw_overlays = data.get("overlays", [])
+        overlays = (
+            [UIOverlay.from_dict(o) for o in raw_overlays if isinstance(o, dict)]
+            if isinstance(raw_overlays, list)
+            else []
+        )
         sidebar_raw = data.get("sidebar", {})
         sidebar = UISidebar.from_dict(sidebar_raw) if isinstance(sidebar_raw, dict) else UISidebar()
-        return cls(entry=str(data.get("entry", "")), pages=pages, sidebar=sidebar)
+        return cls(
+            entry=str(data.get("entry", "")),
+            pages=pages,
+            overlays=overlays,
+            sidebar=sidebar,
+        )
 
 
 @dataclass
@@ -1072,6 +1126,25 @@ class AppManifest:
                 errors.append("ui page missing required field: label")
             if page.entryPoint and _path_escapes_app_root(page.entryPoint, app_root):
                 errors.append(f"ui page entryPoint contains path traversal: {page.entryPoint!r}")
+
+        # UI overlay validation
+        seen_overlay_ids: set[str] = set()
+        for overlay in self.ui.overlays:
+            if not overlay.id:
+                errors.append("ui overlay missing required field: id")
+                continue
+            if not _OVERLAY_SLUG_RE.match(overlay.id):
+                errors.append(f"ui overlay id must be kebab-case: {overlay.id!r}")
+            if overlay.id in seen_overlay_ids:
+                errors.append(f"ui overlay duplicate id: {overlay.id!r}")
+            seen_overlay_ids.add(overlay.id)
+            if not overlay.replaces:
+                errors.append(f"ui overlay {overlay.id!r} missing required field: replaces")
+            elif not _OVERLAY_SLUG_RE.match(overlay.replaces):
+                errors.append(
+                    f"ui overlay {overlay.id!r}: replaces must be kebab-case: "
+                    f"{overlay.replaces!r}"
+                )
 
         # Cron validation
         for cron in self.crons:

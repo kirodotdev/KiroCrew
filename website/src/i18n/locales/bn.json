@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ পূর্ণ চেঞ্জলগ দেখো",
     "what_s_new": "নতুন কী আছে",
-    "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণে আছেন"
+    "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণে আছেন",
+    "k_run_a_command": "কমান্ড চালান",
+    "open_command_bar": "Command Bar খুলুন"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4243,6 +4245,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "ফেজ, এজেন্ট ও ফলাফল দেখতে একটি রান বেছে নিন।",
         "unknown": "অজানা"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "নতুন সেশন",
+      "cmd_search_sessions": "সেশন খুঁজুন",
+      "fallback_sessions": "সেশনে “{{query}}” খুঁজুন",
+      "group_apps": "অ্যাপ",
+      "group_commands": "কমান্ড",
+      "group_settings": "সেটিংস",
+      "keep_typing": "অন্তত {{min}} অক্ষর লিখুন",
+      "leave_scope": "সব কমান্ডে ফিরে যান",
+      "manifest": {
+        "display_name": "কমান্ড বার",
+        "description": "কুইক সার্চ (Cmd+K / Ctrl+K) এর জায়গায় একটি লঞ্চার দেয়: খোঁজার শব্দ নয়, কমান্ড লিখুন। প্রথম পাতায় থাকে অ্যাপ কমান্ড, গন্তব্য ও সিস্টেম সেটিংস, আর সেটি কোনো রিকোয়েস্ট পাঠায় না, তাই টাইপ করা বিনামূল্যে। সেশন এমন একটি সারি হয়ে যায় যেখানে ঢুকতে হয়; এটি চালু থাকলে জ্ঞান, আর্টিফ্যাক্ট, স্কিল ও প্রম্পটে খোঁজা যায় না — ফিরে পেতে এটি বন্ধ করুন।"
+      },
+      "no_matches": "কোনো মিল নেই",
+      "no_sessions": "কোনো সেশন মেলেনি",
+      "placeholder": "কমান্ড লিখুন…",
+      "placeholder_sessions": "সব সেশন খুঁজুন…",
+      "searching": "খোঁজা হচ্ছে…",
+      "title": "কমান্ড বার",
+      "action_failed": "\"{{action}}\" সম্পূর্ণ করা যায়নি। আবার চেষ্টা করতে Enter চাপুন।",
+      "working": "চলছে…",
+      "other_search_hint": "জ্ঞান, আর্টিফ্যাক্ট, স্কিল বা প্রম্পট খুঁজতে App Store-এ Command Bar বন্ধ করুন — এই লঞ্চার শুধু সেশনে পৌঁছায়",
+      "cmd_toggle_theme": "থিম বদলান",
+      "search_failed": "সার্চ ব্যর্থ",
+      "retry": "আবার চেষ্টা করুন"
     }
   },
   "autoImprovement": {
@@ -4883,7 +4911,8 @@
       "retry": "আবার চেষ্টা করুন",
       "search_failed": "অনুসন্ধান ব্যর্থ হয়েছে",
       "searching": "অনুসন্ধান চলছে…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "একটি মন্তব্য যোগ করুন",

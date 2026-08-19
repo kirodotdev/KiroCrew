@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ Ver el registro de cambios completo",
     "what_s_new": "Novedades",
-    "you_re_on_the_latest_version": "Tienes la versión más reciente"
+    "you_re_on_the_latest_version": "Tienes la versión más reciente",
+    "k_run_a_command": "Ejecutar un comando",
+    "open_command_bar": "Abrir Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4307,6 +4309,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "Selecciona una ejecución para ver sus fases, agentes y resultado.",
         "unknown": "Desconocido"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "Nueva sesión",
+      "cmd_search_sessions": "Buscar sesiones",
+      "fallback_sessions": "Buscar «{{query}}» en las sesiones",
+      "group_apps": "Aplicaciones",
+      "group_commands": "Comandos",
+      "group_settings": "Ajustes",
+      "keep_typing": "Escribe al menos {{min}} caracteres",
+      "leave_scope": "Volver a todos los comandos",
+      "manifest": {
+        "display_name": "Barra de comandos",
+        "description": "Reemplaza la busqueda rapida (Cmd+K / Ctrl+K) por un lanzador: escribe un comando, no una consulta. La primera pagina contiene comandos de aplicaciones, destinos y ajustes del sistema y no hace ninguna peticion, asi que escribir no cuesta nada. Las sesiones pasan a ser una fila en la que entras; mientras este activo no se puede buscar en conocimiento, artefactos, habilidades ni prompts: desactivalo para recuperarlo."
+      },
+      "no_matches": "Sin resultados",
+      "no_sessions": "Ninguna sesión coincide",
+      "placeholder": "Escribe un comando…",
+      "placeholder_sessions": "Buscar en todas las sesiones…",
+      "searching": "Buscando…",
+      "title": "Barra de comandos",
+      "action_failed": "No se pudo completar \"{{action}}\". Pulsa Enter para intentarlo de nuevo.",
+      "working": "Trabajando…",
+      "other_search_hint": "Para buscar en conocimiento, artefactos, habilidades o prompts, desactiva Command Bar en la App Store — este lanzador solo alcanza sesiones",
+      "cmd_toggle_theme": "Cambiar tema",
+      "search_failed": "La busqueda fallo",
+      "retry": "Reintentar"
     }
   },
   "autoImprovement": {
@@ -4956,7 +4984,8 @@
       "retry": "Reintentar",
       "search_failed": "La búsqueda falló",
       "searching": "Buscando…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "Añadir un comentario",

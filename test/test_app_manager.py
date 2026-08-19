@@ -163,6 +163,31 @@ class TestValidation:
         errors = _validate_source_path(src)
         assert any("name" in e for e in errors)
 
+    def test_installed_app_may_not_declare_ui_overlays(self, tmp_path):
+        """An overlay must name a component compiled into the dashboard bundle.
+
+        There is no per-overlay ``entryPoint`` the way ``ui.pages`` has one, so an
+        installed app cannot supply the component its declaration points at. Accepting
+        the manifest here would install an app whose overlay can only fail later as a
+        browser console warning -- the one channel an app author never reads. The
+        refusal belongs at install, which is the channel they do read.
+        """
+        src = _make_app_source(tmp_path)
+        raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        raw["ui"] = {"overlays": [{"id": "command-bar", "replaces": "quick-search"}]}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
+        errors = _validate_source_path(src)
+        assert any("ui.overlays is not available to installed apps" in e for e in errors)
+
+    def test_installed_app_without_overlays_is_unaffected(self, tmp_path):
+        # Guards the guard: the refusal must key on a declared overlay, not on the
+        # presence of a ui block.
+        src = _make_app_source(tmp_path)
+        raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
+        raw["ui"] = {"pages": [{"route": "/apps/x", "label": "X"}]}
+        (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
+        assert _validate_source_path(src) == []
+
 
 # ---------------------------------------------------------------------------
 # Install

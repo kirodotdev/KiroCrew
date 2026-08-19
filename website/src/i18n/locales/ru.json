@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ Показать полный журнал изменений",
     "what_s_new": "Что нового",
-    "you_re_on_the_latest_version": "У вас последняя версия"
+    "you_re_on_the_latest_version": "У вас последняя версия",
+    "k_run_a_command": "Выполнить команду",
+    "open_command_bar": "Открыть Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -4371,6 +4373,32 @@
         "select_a_run_to_see_its_phases_agents_and_result": "Выберите запуск, чтобы увидеть его этапы, агентов и результат.",
         "unknown": "Неизвестно"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "Новая сессия",
+      "cmd_search_sessions": "Поиск сессий",
+      "fallback_sessions": "Найти «{{query}}» в сессиях",
+      "group_apps": "Приложения",
+      "group_commands": "Команды",
+      "group_settings": "Настройки",
+      "keep_typing": "Введите не менее {{min}} символов",
+      "leave_scope": "Назад ко всем командам",
+      "manifest": {
+        "display_name": "Панель команд",
+        "description": "Заменяет быстрый поиск (Cmd+K / Ctrl+K) на панель запуска: вводите команду, а не поисковый запрос. На первой странице только команды приложений, переходы и системные настройки, и она не отправляет запросов, поэтому ввод ничего не стоит. Сессии становятся строкой, в которую нужно войти; пока это включено, поиск по знаниям, артефактам, навыкам и промптам недоступен -- отключите, чтобы вернуть его."
+      },
+      "no_matches": "Ничего не найдено",
+      "no_sessions": "Нет подходящих сессий",
+      "placeholder": "Введите команду…",
+      "placeholder_sessions": "Поиск по всем сессиям…",
+      "searching": "Поиск…",
+      "title": "Панель команд",
+      "action_failed": "Не удалось выполнить \"{{action}}\". Нажмите Enter, чтобы повторить.",
+      "working": "Выполняется…",
+      "other_search_hint": "Чтобы искать по знаниям, артефактам, навыкам или промптам, отключите Command Bar в App Store — эта панель запуска доходит только до сессий",
+      "cmd_toggle_theme": "Переключить тему",
+      "search_failed": "Поиск не удался",
+      "retry": "Повторить"
     }
   },
   "autoImprovement": {
@@ -5029,7 +5057,8 @@
       "retry": "Повторить",
       "search_failed": "Поиск не удался",
       "searching": "Поиск…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "Добавить комментарий",

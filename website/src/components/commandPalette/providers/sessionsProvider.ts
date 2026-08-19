@@ -245,14 +245,23 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
  *
  * @param opts.openInSplit - Optional Session Grid opener supplied by the
  *   palette host; when omitted, ⌘Enter is unbound for session rows.
+ * @param opts.active - Whether this provider's own background queries may run.
+ *   Defaults to true, which is the palette's behaviour: it mounts its providers
+ *   when the palette opens and searching is the point. A host that constructs the
+ *   provider BEFORE the user has asked for session search -- a launcher whose first
+ *   page is deliberately request-free -- passes false until the search surface is
+ *   actually entered, so merely building the provider issues nothing. `search()`
+ *   is unaffected either way; it is an imperative call, not a subscription.
  */
 export function useSessionsProvider(opts?: {
   openInSplit?: (ref: SessionRef) => void
+  active?: boolean
 }): ResourceProvider {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const openInSplit = opts?.openInSplit
+  const active = opts?.active ?? true
   // True when at least one remote instance holds a live connection; drives the
   // federated-vs-local endpoint choice per keystroke without rebuilding the
   // provider (read via ref inside the memoized fetch). Guarded read: the
@@ -270,7 +279,9 @@ export function useSessionsProvider(opts?: {
   const instancesQuery = useQuery({
     queryKey: ['instances'],
     queryFn: () => api.listInstances(),
-    enabled: hasWarmInstances,
+    // `active` is what keeps a request-free host request-free: constructing the
+    // provider must not subscribe anything until its surface is entered.
+    enabled: active && hasWarmInstances,
   })
   // Memoize the `[]` fallback so its identity is stable across renders (same
   // pattern as InstanceTabBar) — it feeds selectInstance's useCallback deps.

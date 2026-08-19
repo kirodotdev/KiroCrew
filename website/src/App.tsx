@@ -103,7 +103,7 @@ import { useCommandPalette } from './hooks/useCommandPalette'
 import { useProvider } from './providers/context'
 import { useAgents } from './hooks/useAgents'
 import ShortcutsModal from './components/ShortcutsModal'
-import CommandPalette from './components/CommandPalette'
+import QuickSearchSurface from './components/QuickSearchSurface'
 import ReportProblemModal from './components/ReportProblemModal'
 import FeedbackPill from './components/FeedbackPill'
 import KiroAccountModal, { type KiroAccountUsage } from './components/KiroAccountModal'
@@ -111,6 +111,7 @@ import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
+import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtPercent } from './i18n/format'
 
 const MAX_KIRO_BONUS_GRANT_NAME_CHARS = 100
@@ -131,6 +132,7 @@ interface AppListEntry {
     ui?: {
       entry?: string
       pages?: Array<{ route: string; icon?: string; iconUrl?: string; label?: string }>
+      overlays?: Array<{ id?: string; label?: string; replaces?: string }>
     }
   }
 }
@@ -1248,13 +1250,22 @@ export default function App() {
   // lingers. Mirrors ChatSidebar's handleSidebarDragCancel.
   const handleAppDragCancel = useCallback(() => setActiveAppDragId(null), [])
   const appNavRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Monotonic stamp for app-nav fetches. Cancelling a pending RETRY is not enough:
+  // a fetch already in flight cannot be cancelled, so a slow mount response landing
+  // after an enable/disable refresh would publish stale slot ownership and bind the
+  // quick-search gesture to the wrong surface. Only the newest generation may write.
+  const appNavGenRef = useRef(0)
+  const [slotOwners, setSlotOwners] = useState<SlotOwners>({})
+  const queryClient = useQueryClient()
   const refreshAppNav = useCallback((attempt = 0) => {
     // Cancel any pending retry up-front so external triggers (the reconnect
     // effect, the mc:apps-changed handler) or a just-fired retry can never run
     // overlapping fetch chains — exactly one chain is ever active.
     if (appNavRetryRef.current) { clearTimeout(appNavRetryRef.current); appNavRetryRef.current = null }
+    const gen = ++appNavGenRef.current
     api.listApps()
       .then((apps: AppListEntry[]) => {
+        if (gen !== appNavGenRef.current) return
         const items = apps
           .flatMap(a => {
             // Eligibility, route, id and label come from the shared derivation in
@@ -1294,8 +1305,17 @@ export default function App() {
           })
         setAppNavItems(items)
         dispatch(setEnabledAppIds(items.map(i => i.id)))
+        // Publish this response under the shared apps key so readers that want the
+        // list -- an overlay opened later, the palette's apps provider -- are served
+        // from cache instead of issuing a second identical request.
+        queryClient.setQueryData(['apps'], apps)
+        // Which app (if any) currently owns a host overlay slot. Derived from the
+        // SAME response as the nav rail — an app-contributed overlay costs no
+        // extra request, and the shell never names a specific app.
+        setSlotOwners(resolveSlotOverlays(apps))
       })
       .catch(() => {
+        if (gen !== appNavGenRef.current) return
         // A transient failure (e.g. the gateway mid-restart right after a
         // `kirocrew update`, or the cold apps-dir scan) used to be swallowed
         // here, leaving the Apps rail empty until a manual reload or an app
@@ -1304,7 +1324,7 @@ export default function App() {
         if (attempt >= APP_NAV_MAX_RETRIES) return
         appNavRetryRef.current = setTimeout(() => refreshAppNav(attempt + 1), APP_NAV_RETRY_BASE_MS * 2 ** attempt)
       })
-  }, [dispatch])
+  }, [dispatch, queryClient])
   useEffect(() => {
     refreshAppNav()
     return () => { if (appNavRetryRef.current) clearTimeout(appNavRetryRef.current) }
@@ -1375,7 +1395,6 @@ export default function App() {
   })
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger)
-  const queryClient = useQueryClient()
   const provider = useProvider()
   const agentSwitchNotice = useAppSelector(s => s.chat.agentSwitchNotice)
   useEffect(() => {
@@ -1935,10 +1954,32 @@ export default function App() {
             data-topbar-overlay
             onClick={commandPalette.openPalette}
             className="h-7 w-full px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
-            aria-label={i18nT('app.search_sessions_files_and_commands')}
-            title={i18nT('app.search_everywhere_k')}
+            /* The trigger has to describe the surface it actually opens. While an app
+               owns the quick-search slot the gesture opens a launcher -- typing runs
+               commands and does not search the corpora this label promises -- so
+               naming "search for anything" there is the most visible mispromise in
+               the product. */
+            aria-label={
+              slotOwners['quick-search']
+                ? i18nT('app.open_command_bar')
+                : i18nT('app.search_sessions_files_and_commands')
+            }
+            // Gated on the same condition as the label and aria-label above. Leaving
+            // this one unconditional made the hover contradict the words under the
+            // cursor and promise the corpus search the launcher deliberately omits --
+            // the diff's own fix applied to two of three attributes. The owned branch
+            // drops "(K)" because the chord is already printed in the visible label.
+            title={
+              slotOwners['quick-search']
+                ? i18nT('app.open_command_bar')
+                : i18nT('app.search_everywhere_k')
+            }
           >
-            <span className="text-[13px] truncate min-w-0">{i18nT('app.k_search_for_anything')}</span>
+            <span className="text-[13px] truncate min-w-0">
+              {slotOwners['quick-search']
+                ? i18nT('app.k_run_a_command')
+                : i18nT('app.k_search_for_anything')}
+            </span>
           </button>
         )}
         {/* Mobile centre track: the same trigger in its icon-only form, in the
@@ -1952,11 +1993,19 @@ export default function App() {
             type="button"
             onClick={commandPalette.openPalette}
             className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center cursor-pointer shrink-0"
-            aria-label={i18nT('app.search_sessions_files_and_commands')}
+            aria-label={
+              slotOwners['quick-search']
+                ? i18nT('app.open_command_bar')
+                : i18nT('app.search_sessions_files_and_commands')
+            }
             // Not the "(⌘K)" title the desktop trigger carries: this form only
             // renders below 768px, where advertising a chord to a touch surface
             // names a gesture the device may have no way to produce.
-            title={i18nT('app.search_sessions_files_and_commands')}
+            title={
+              slotOwners['quick-search']
+                ? i18nT('app.open_command_bar')
+                : i18nT('app.search_sessions_files_and_commands')
+            }
           >
             <SearchIcon size={14} />
           </button>
@@ -2814,7 +2863,8 @@ export default function App() {
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
     <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
-    <CommandPalette
+    <QuickSearchSurface
+      owners={slotOwners}
       open={commandPalette.open}
       onClose={commandPalette.close}
       openShortcuts={toggleShortcutsModal}

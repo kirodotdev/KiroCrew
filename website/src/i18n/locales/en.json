@@ -694,6 +694,12 @@
         "start_a_new_one_several_can_run_at_once": "Start a new one — several can run at the same time."
       }
     },
+    "commandBar": {
+      "manifest": {
+        "display_name": "Command Bar",
+        "description": "Replaces the quick-search (Cmd+K / Ctrl+K) surface with a launcher: type a command, not a query. The first page carries app commands, destinations and system settings and issues no request, so typing costs nothing. Sessions become a row you enter; searching knowledge, artifacts, skills and prompts is not available while this is enabled — disable it to get that back."
+      }
+    },
     "crewCompanion": {
       "manifest": {
         "description": "A desktop companion for Kiro Crew that helps you pace your day: it nudges you to take breaks, holds the reminders you set in plain language, and runs a short breathing exercise when you need to reset. It also lets you know when a session finishes, fails, or needs your OK.",

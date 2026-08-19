@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ Vollständiges Änderungsprotokoll anzeigen",
     "what_s_new": "Neuigkeiten",
-    "you_re_on_the_latest_version": "Sie verwenden die neueste Version"
+    "you_re_on_the_latest_version": "Sie verwenden die neueste Version",
+    "k_run_a_command": "Befehl ausfuehren",
+    "open_command_bar": "Command Bar oeffnen"
   },
   "appSdk": {
     "chatEmbed": {
@@ -800,6 +802,32 @@
         "select_a_review_to_see_its_progress_and_report": "Wähle ein Review, um seinen Fortschritt und Bericht zu sehen.",
         "start_a_new_one_several_can_run_at_once": "Starte ein neues — mehrere können gleichzeitig laufen."
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "Neue Sitzung",
+      "cmd_search_sessions": "Sitzungen durchsuchen",
+      "fallback_sessions": "Sitzungen nach „{{query}}“ durchsuchen",
+      "group_apps": "Apps",
+      "group_commands": "Befehle",
+      "group_settings": "Einstellungen",
+      "keep_typing": "Mindestens {{min}} Zeichen eingeben",
+      "leave_scope": "Zurück zu allen Befehlen",
+      "manifest": {
+        "display_name": "Befehlsleiste",
+        "description": "Ersetzt die Schnellsuche (Cmd+K / Ctrl+K) durch einen Starter: einen Befehl eingeben, keine Suchanfrage. Die erste Seite enthaelt App-Befehle, Ziele und Systemeinstellungen und stellt keine Anfrage, sodass Tippen nichts kostet. Sitzungen werden eine Zeile, die man betritt; die Suche in Wissen, Artefakten, Skills und Prompts ist bei aktivierter App nicht verfuegbar -- deaktivieren, um sie zurueckzuholen."
+      },
+      "no_matches": "Keine Treffer",
+      "no_sessions": "Keine passenden Sitzungen",
+      "placeholder": "Befehl eingeben…",
+      "placeholder_sessions": "Alle Sitzungen durchsuchen…",
+      "searching": "Suche läuft…",
+      "title": "Befehlsleiste",
+      "action_failed": "\"{{action}}\" konnte nicht abgeschlossen werden. Zum erneuten Versuch Enter druecken.",
+      "working": "Wird ausgefuehrt…",
+      "other_search_hint": "Um Wissen, Artefakte, Skills oder Prompts zu durchsuchen, deaktiviere Command Bar im App Store — dieser Starter erreicht nur Sitzungen",
+      "cmd_toggle_theme": "Theme wechseln",
+      "search_failed": "Suche fehlgeschlagen",
+      "retry": "Erneut versuchen"
     },
     "crewCompanion": {
       "accessory": {
@@ -4883,7 +4911,8 @@
       "retry": "Wiederholen",
       "search_failed": "Suche fehlgeschlagen",
       "searching": "Wird gesucht…",
-      "tab": "Tab"
+      "tab": "Tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "Kommentar hinzufügen",

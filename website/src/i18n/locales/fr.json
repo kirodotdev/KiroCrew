@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ Voir le journal complet des modifications",
     "what_s_new": "Nouveautés",
-    "you_re_on_the_latest_version": "Vous utilisez la dernière version"
+    "you_re_on_the_latest_version": "Vous utilisez la dernière version",
+    "k_run_a_command": "Executer une commande",
+    "open_command_bar": "Ouvrir Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -825,6 +827,32 @@
         "select_a_review_to_see_its_progress_and_report": "Choisis une revue pour voir sa progression et son rapport.",
         "start_a_new_one_several_can_run_at_once": "Lances-en une nouvelle — plusieurs peuvent tourner en même temps."
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "Nouvelle session",
+      "cmd_search_sessions": "Rechercher des sessions",
+      "fallback_sessions": "Rechercher « {{query}} » dans les sessions",
+      "group_apps": "Applications",
+      "group_commands": "Commandes",
+      "group_settings": "Paramètres",
+      "keep_typing": "Saisissez au moins {{min}} caractères",
+      "leave_scope": "Retour à toutes les commandes",
+      "manifest": {
+        "display_name": "Barre de commandes",
+        "description": "Remplace la recherche rapide (Cmd+K / Ctrl+K) par un lanceur : saisissez une commande, pas une requete. La premiere page contient les commandes d applications, les destinations et les parametres systeme et n emet aucune requete, donc la saisie ne coute rien. Les sessions deviennent une ligne dans laquelle on entre ; la recherche dans les connaissances, les artefacts, les competences et les prompts est indisponible tant que c est actif -- desactivez-le pour la retrouver."
+      },
+      "no_matches": "Aucun resultat",
+      "no_sessions": "Aucune session correspondante",
+      "placeholder": "Saisissez une commande…",
+      "placeholder_sessions": "Rechercher dans toutes les sessions…",
+      "searching": "Recherche…",
+      "title": "Barre de commandes",
+      "action_failed": "Impossible de terminer \"{{action}}\". Appuyez sur Entree pour reessayer.",
+      "working": "En cours…",
+      "other_search_hint": "Pour rechercher dans les connaissances, artefacts, competences ou prompts, desactivez Command Bar dans l App Store — ce lanceur n atteint que les sessions",
+      "cmd_toggle_theme": "Changer de theme",
+      "search_failed": "Recherche echouee",
+      "retry": "Reessayer"
     },
     "crewCompanion": {
       "accessory": {
@@ -4956,7 +4984,8 @@
       "retry": "Réessayer",
       "search_failed": "Échec de la recherche",
       "searching": "Recherche…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "Ajouter un commentaire",

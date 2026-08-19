@@ -131,7 +131,9 @@ for (const [name, app] of apps) {
   }
   check(keys.displayName, app.displayName, 'displayName')
   check(keys.description, app.description, 'description')
-  check(keys.pageLabel, app.pageLabel, 'pageLabel')
+  // An app that contributes no page has no page label to localise — the overlay-only
+  // case. Requiring the key there would force an empty catalog value that means nothing.
+  if (app.pageLabel) check(keys.pageLabel, app.pageLabel, 'pageLabel')
   keys.highlights.forEach((k, i) => check(k, app.highlights[i], `highlight_${i + 1}`))
 }
 

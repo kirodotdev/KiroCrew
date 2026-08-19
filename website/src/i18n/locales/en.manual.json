@@ -51,7 +51,9 @@
     "rebuilding_package": "Rebuilding package",
     "restarting_server": "Restarting server",
     "syncing_workspace": "Syncing workspace",
-    "report_a_problem_with_diagnostics": "Report a problem — collects logs and crash reports, secrets removed"
+    "report_a_problem_with_diagnostics": "Report a problem — collects logs and crash reports, secrets removed",
+    "k_run_a_command": "Run a command",
+    "open_command_bar": "Open Command Bar"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1123,6 +1125,28 @@
         "open_in_finder": "Open in Finder",
         "show_in_file_manager": "Show in file manager"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "New Session",
+      "cmd_search_sessions": "Search Sessions",
+      "fallback_sessions": "Search sessions for “{{query}}”",
+      "group_apps": "Apps",
+      "group_commands": "Commands",
+      "group_settings": "Settings",
+      "keep_typing": "Type at least {{min}} characters",
+      "leave_scope": "Back to all commands",
+      "no_matches": "No matches",
+      "no_sessions": "No sessions match",
+      "placeholder": "Type a command…",
+      "placeholder_sessions": "Search all sessions…",
+      "searching": "Searching…",
+      "title": "Command Bar",
+      "action_failed": "Could not complete {{action}}. Press Enter to try again.",
+      "working": "Working…",
+      "other_search_hint": "To search knowledge, artifacts, skills or prompts, disable Command Bar in the App Store — this launcher reaches sessions only",
+      "cmd_toggle_theme": "Toggle Theme",
+      "search_failed": "Search failed",
+      "retry": "Retry"
     }
   },
   "components": {
@@ -1379,7 +1403,8 @@
       "search_for_anything": "Search for anything",
       "search_scope": "Search {{scope}}…",
       "retry": "Retry",
-      "search_failed": "Search failed"
+      "search_failed": "Search failed",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentsSidebar": {
       "agent": "Agent",

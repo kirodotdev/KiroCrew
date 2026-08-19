@@ -101,7 +101,9 @@
     "v": "v",
     "view_full_changelog": "▸ チェンジログ全文を表示",
     "what_s_new": "新機能",
-    "you_re_on_the_latest_version": "最新バージョンをご使用です"
+    "you_re_on_the_latest_version": "最新バージョンをご使用です",
+    "k_run_a_command": "コマンドを実行",
+    "open_command_bar": "Command Bar を開く"
   },
   "appSdk": {
     "chatEmbed": {
@@ -775,6 +777,32 @@
         "select_a_review_to_see_its_progress_and_report": "レビューを選択すると、その進捗とレポートが表示されます。",
         "start_a_new_one_several_can_run_at_once": "新しく開始してください — 複数を同時に実行できます。"
       }
+    },
+    "commandBar": {
+      "cmd_new_session": "新しいセッション",
+      "cmd_search_sessions": "セッションを検索",
+      "fallback_sessions": "セッションを「{{query}}」で検索",
+      "group_apps": "アプリ",
+      "group_commands": "コマンド",
+      "group_settings": "設定",
+      "keep_typing": "{{min}} 文字以上入力してください",
+      "leave_scope": "すべてのコマンドに戻る",
+      "manifest": {
+        "display_name": "コマンドバー",
+        "description": "クイック検索（Cmd+K / Ctrl+K）をランチャーに置き換えます。検索語ではなくコマンドを入力します。最初のページはアプリのコマンド、移動先、システム設定だけでリクエストを出さないため、入力に費用がかかりません。セッションは入って使う行になります。有効な間はナレッジ、成果物、スキル、プロンプトの検索はできません。戻すには無効にしてください。"
+      },
+      "no_matches": "一致するものがありません",
+      "no_sessions": "一致するセッションはありません",
+      "placeholder": "コマンドを入力…",
+      "placeholder_sessions": "すべてのセッションを検索…",
+      "searching": "検索中…",
+      "title": "コマンドバー",
+      "action_failed": "「{{action}}」を完了できませんでした。Enter で再試行します。",
+      "working": "処理中…",
+      "other_search_hint": "ナレッジ、成果物、スキル、プロンプトを検索するには、App Store で Command Bar を無効にしてください — このランチャーはセッションのみに届きます",
+      "cmd_toggle_theme": "テーマを切り替え",
+      "search_failed": "検索に失敗しました",
+      "retry": "再試行"
     },
     "crewCompanion": {
       "accessory": {
@@ -4810,7 +4838,8 @@
       "retry": "再試行",
       "search_failed": "検索に失敗しました",
       "searching": "検索中…",
-      "tab": "tab"
+      "tab": "tab",
+      "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
       "add_a_comment": "コメントを追加",

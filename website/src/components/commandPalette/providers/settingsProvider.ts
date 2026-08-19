@@ -9,6 +9,8 @@ import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
 import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
 import { SETTINGS_KEYWORDS } from '../settingsKeywords'
+import { settingsRoute } from '../settingsRoute'
+import { settingsTabLabel } from '../settingsTabLabel'
 import type { SettingEntry } from '../settingsTypes'
 
 /**
@@ -113,15 +115,11 @@ export function resolveTabPrefix(prefix: string, tabKeys: string[]): string | nu
 }
 
 function buildResult(entry: SettingEntry, score: number, indices: number[], navigate: NavigateFunction): Result {
-  const tabLabel = entry.tab.charAt(0).toUpperCase() + entry.tab.slice(1)
-  const subtitle = `${tabLabel} › ${entry.label}`
-  // Extra params (e.g. channel=slack for the Channels list-detail tab) must
-  // ride the deep link or the target panel never mounts and the highlight
-  // silently no-ops.
-  const extra = entry.params
-    ? Object.entries(entry.params).map(([k, v]) => `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('')
-    : ''
-  const route = `/settings?tab=${entry.tab}${extra}&highlight=${encodeURIComponent(entry.id)}`
+  // Capitalizing the tab key produced "Computer-use" for `computer-use`, and in any
+  // non-English locale it rendered the English machine key for every tab. The shared
+  // resolver reads the same catalog label the settings page shows.
+  const subtitle = `${settingsTabLabel(entry.tab)} › ${entry.label}`
+  const route = settingsRoute(entry)
   return {
     id: `${PROVIDER_ID}:${entry.id}`,
     providerId: PROVIDER_ID,
