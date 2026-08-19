@@ -1,10 +1,10 @@
 ---
 title: Official App Registry + Editorial Feed
-status: accepted
+status: partial
 author: KiroCrew contributors
 created: 2026-07-29
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-08-19
+audited-at: cdd8b301
 doc-pr: 807
 implementation-prs: []
 tracking-issues: [581]
@@ -15,7 +15,9 @@ superseded-by: []
 
 **Author:** KiroCrew contributors
 **Date:** 2026-07-29
-**Status:** accepted — design decisions are locked and rollout step R1 has merged **in the sibling `kirodotdev/KiroCrewApps` repo** (PRs #1, #2). Zero client-side deliverables exist in KiroCrew: the `_registry` → `_tier` refactor (R2), the official fetch + signature gate + tombstones + tagged `source` union (R3), and editorial-driven Discover (R4) are all unstarted, and `pickFeatured()` / `categoryFor` / `detectInstalled` are each still the live path. Scoped strictly to this repo the status is `draft`.
+**Status:** partial, **and diverged** — this document's failure mode is the first one the [directory README](README.md) names: *the plan was overtaken.* Rollout step R1 shipped **in the sibling `kirodotdev/KiroCrewApps` repo**, but §4 was reversed on four decisions while it did, so §4 is now a record of what was decided rather than a description of the contract. **Read the note at the head of §4 before trusting anything below about categories.** The schema files in that repository are the current source of truth.
+
+On the Kiro Crew side, R3 and R4 are no longer unstarted as this line previously said, but neither is finished. The official **fetch** is live and so is editorial-driven Discover (`apps/official_catalog.py`, `apps/official_editorial.py`). The **signature gate is not**: that module's own header lists three deliberate omissions, and the first is "No signature verification" — the `.sig` sidecar is published and nothing checks it, so trust is TLS to our own domain, and the consequence is enforced rather than ignored (a curated author does not mint the verified mark while that holds). **Tombstone resolution is absent** on the same terms: a document carrying a non-empty `removed` or `reinstated` list is refused outright rather than half-resolved. The rail order's own document is published but not yet read by any client — the client still resolves category order from the editorial document, so that one URL exists ahead of its consumer by design.
 
 ---
 
@@ -168,13 +170,19 @@ division is what keeps each document editable by the right party:
 |---|---|---|
 | Identity + byte source | this document | curator |
 | What the app *is* (display, runtime shape, external presence) | the app's own `app.json` (§3.7) | app author |
-| How the store *presents* it (taxonomy, membership, layout) | `editorial.json` (§4) | curator |
+| How the store *features* apps (the Discover layout) | `editorial.json` (§4) | curator |
+| What order the category rail runs in | `category-order.json` | curator |
+| Which category an app is in (membership) | the app's own registry entry | curator |
 
 Three rules fall out, and each closes a specific hole:
 
-- **No curator-authored presentation in the catalog.** Taxonomy, membership and
-  layout live in `editorial.json`, so re-labelling or re-ordering a category is an
-  editorial edit. This is deliberately *not* a claim that no display text lives in
+- **No curator-authored presentation in the catalog.** The Discover layout lives
+  in `editorial.json` and the rail order in `category-order.json`, so re-ordering
+  a category is an editorial edit rather than a client release. Two corrections to
+  what this rule originally claimed, both covered in the note at §4: **membership**
+  is stated on the registry entry, not in editorial; and **re-labelling** is not an
+  editorial edit at all, because a label has to exist in every language the
+  dashboard ships. This is deliberately *not* a claim that no display text lives in
   the catalog: the generated search subset (§3.4) does, and changing an app's own
   `displayName`/`summary` therefore does ride a republish — that is the price of
   letting Discover search without a per-app manifest fetch.
@@ -205,7 +213,7 @@ discriminator exists from day one so a second transport is additive:
   }
   // Runtime shape and external-presence detection are NOT here — they describe
   // the app, so they live in its app.json (§3.7). Display fields are baked in
-  // at publish time (§3.4). Category membership lives in editorial.json (§4).
+  // at publish time (§3.4). Category membership is the `categories` key below.
 }
 ```
 
@@ -380,11 +388,15 @@ entry, and the rule that keeps it honest is that it is **generated**:
   last publish — the same cadence that already governs the pin in §3.1, so a
   version bump and a description change land together by construction.
 
-**Category membership is deliberately absent here.** Taxonomy *and* membership
-both live in `editorial.json` (§4). Two reasons: assigning a category is a
-merchandising decision, not a property of the app; and putting membership next to
-the taxonomy makes the reference check intra-document, so single-category becomes
-a *checkable invariant* rather than a convention (§4).
+**Category membership was deliberately absent here, and is not any more.** This
+section originally placed taxonomy *and* membership in `editorial.json` (§4), for
+two reasons: assigning a category is a merchandising decision rather than a
+property of the app, and keeping membership beside the taxonomy made the reference
+check intra-document. The first reason still holds and is why membership is
+curator-assigned; the second was traded away. Membership is now a `categories`
+array on the entry, so an app and its placement are one edit and a reference to an
+app that does not exist cannot be written down -- and the reference check became
+cross-document, which the publish gate performs. See the note at §4.
 
 
 ### 3.5 Document wrapper
@@ -401,7 +413,9 @@ The document wrapper carries the schema version and a generator stamp:
 }
 ```
 
-There is no `categories` key: the taxonomy is in `editorial.json` (§4). There is
+There IS a `categories` key -- see the note at §4; this sentence described the
+original design, where the vocabulary and the membership both sat in
+`editorial.json`. The vocabulary now lives in `category-order.json`. There is
 no `delegates` key either (§3.3).
 
 A bare top-level array (today's format) is still accepted and read as
@@ -579,6 +593,42 @@ checks).
   ]
 }
 ```
+
+> **Diverged from what shipped. Read this before §4.**
+>
+> Four of §4's decisions were reversed in `kirodotdev/KiroCrewApps` after this
+> document was accepted. The reasoning below is kept as the record of what was
+> decided and why; it is no longer a description of the contract. The schema
+> files in that repository are the current source of truth.
+>
+> 1. **Membership is not here.** It is a `categories` array on the app's own
+>    entry in `official-registry.json`, not `categories[].appRefs`. An app and
+>    its placement became one edit, and a reference to an app that does not
+>    exist became unrepresentable. §3.4's "deliberately absent here" is
+>    therefore backwards: membership is absent from *editorial*, not from the
+>    registry.
+> 2. **Ordering is a document of its own** (`category-order.json`), which is the
+>    `category-order` section §4 removed as redundant, reinstated one level up.
+>    The reason is not tidiness: a client refuses a document whose
+>    `schemaVersion` it does not recognise, whole and deliberately, so a bump
+>    made for a featuring layout would otherwise re-sort every category on an
+>    older client.
+> 3. **Sequence is array position, and there is no `order` field.** A numeric
+>    rank needed the two invariants §4 specifies — unique ranks, plus a
+>    tie-break — and bought nothing an array already gives, since inserting a
+>    category is inserting an element.
+> 4. **Relabeling is not a catalog edit.** §4's closing sentence says nothing
+>    references a category by label, and infers from that a curator can relabel
+>    one. The inference does not hold: a label has to exist in every language
+>    the dashboard ships, and a published document can carry one string, so the
+>    client holds the labels as translation keys and resolves them at render
+>    time. A `label` field existed, validated and published for months, and no
+>    reader ever consumed it. It is now deleted.
+>
+> Separately, the `spotlight` / `rail` / `banner` section types in the example
+> below were replaced by `app` and `collection`. Only 1 and 4's `label` deletion
+> postdate the audit stamp in the front matter; the rest were already true when
+> it was written.
 
 ### The taxonomy lives here, with membership
 

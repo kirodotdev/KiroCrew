@@ -25,7 +25,7 @@ not been re-audited since 2026-08-03.
 | [rfc-workspace-config-evolution.md](rfc-workspace-config-evolution.md) | `partial` | Phases 1–2 shipped. Phase 3's vector isolation was **reversed** on purpose; Phase 4 unstarted |
 | [rfc-resumable-subagent-sessions.md](rfc-resumable-subagent-sessions.md) | `partial` | Phase 0 ran and **redirected the design**: continuable conversations shipped instead of the record-store ladder |
 | [rfc-i18n-measurement.md](rfc-i18n-measurement.md) | `partial` | Overflow gate shipped, `localeCompare` migration partial. All three *measurement* proposals unstarted |
-| [rfc-appstore-official-registry.md](rfc-appstore-official-registry.md) | `accepted` | Nothing in this repo. Rollout R1 merged in the sibling `KiroCrewApps` repo |
+| [rfc-appstore-official-registry.md](rfc-appstore-official-registry.md) | `partial` | The official fetch and editorial-driven Discover are live (`apps/official_catalog.py`, `apps/official_editorial.py`); signature verification and tombstone resolution are deliberately absent and fail closed. **§4 diverged** — four of its decisions about categories were reversed in the sibling `KiroCrewApps` repo; the note at its head says which |
 | [rfc-notification-bridge.md](rfc-notification-bridge.md) | `accepted` | Nothing — zero implementation code |
 | [rfc-tips-kit.md](rfc-tips-kit.md) | `draft` | Nothing. T1 was built and **retracted** ([#775](https://github.com/kirodotdev/KiroCrew/pull/775)); the design section needs revising first |
 | [rfc-update-architecture.md](rfc-update-architecture.md) | `draft` | Nothing — zero of three phases |
@@ -95,7 +95,10 @@ calls out its own, but the patterns are worth knowing before you trust any of th
    what shipped (continuable conversations) is not what the phases below it
    describe. `rfc-workspace-config-evolution.md` had its Phase 3 vector-store
    isolation affirmatively reversed by a later commit. Neither document was
-   revised afterwards.
+   revised afterwards. `rfc-appstore-official-registry.md` is the same pattern
+   caught late but *revised*: four of §4's decisions about categories were
+   reversed as R1 shipped, and the section now opens with a note saying which,
+   so the reasoning survives as a record without still reading as the contract.
 2. **The credit is not the RFC's.** `rfc-i18n-measurement.md` shows `partial`,
    but the proposals that shipped were already in flight under a separate
    program, one of them merging 18 hours before the document did.
