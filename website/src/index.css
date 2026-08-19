@@ -612,7 +612,7 @@ html:lang(ko) {
   --chrome:rgba(250,244,237,.95);
   --text:#575279;--text-strong:#26233a;--muted:#716c7f;--muted-fg:#000;--muted-strong:#797593;
   --border:#e0d8d0;--border-strong:#d0c8c0;--border-hover:#b0a8a0;
-  --accent:#d7827e;--accent-fg:#fff;--accent-hover:#e09490;--accent-subtle:rgba(215,130,126,.12);
+  --accent:#d7827e;--accent-fg:#000;--accent-hover:#e09490;--accent-subtle:rgba(215,130,126,.12);
   --accent-glow:rgba(215,130,126,.15);--ring:#d7827e;
   --ok:#56949f;--ok-fg:#000;--ok-subtle:rgba(86,148,159,.1);
   --warn:#ea9d34;--warn-fg:#000;--warn-subtle:rgba(234,157,52,.1);
@@ -875,11 +875,11 @@ html:lang(ko) {
   --chrome:rgba(255,255,255,.98);
   --text:#1c1c1e;--text-strong:#000000;--muted:#6f6f74;--muted-fg:#000;--muted-strong:#636366;
   --border:#d1d1d6;--border-strong:#c7c7cc;--border-hover:#aeaeb2;
-  --accent:#007aff;--accent-fg:#fff;--accent-hover:#0a84ff;--accent-subtle:rgba(0,122,255,.12);
+  --accent:#007aff;--accent-fg:#000;--accent-hover:#0a84ff;--accent-subtle:rgba(0,122,255,.12);
   --accent-glow:rgba(0,122,255,.15);--ring:#007aff;
   --ok:#34c759;--ok-fg:#000;--ok-subtle:rgba(52,199,89,.1);
   --warn:#ff9500;--warn-fg:#000;--warn-subtle:rgba(255,149,0,.1);
-  --danger:#ff3b30;--danger-fg:#fff;--danger-subtle:rgba(255,59,48,.1);
+  --danger:#ff3b30;--danger-fg:#000;--danger-subtle:rgba(255,59,48,.1);
   --info:#5ac8fa;--info-fg:#000;
   --aim:#af52de;--aim-fg:#fff;--aim-subtle:rgba(175,82,222,.12);
   --clarify:#ff9500;--clarify-subtle:rgba(255,149,0,.06);
@@ -929,8 +929,8 @@ html:lang(ko) {
   --accent:#8e48ff;--accent-fg:#ffffff;--accent-hover:#7a35e0;--accent-subtle:rgba(142,72,255,.12);
   --accent-glow:rgba(142,72,255,.15);--ring:#8e48ff;
   --ok:#008543;--ok-subtle:rgba(0,133,67,.12);
-  --warn:#a38a00;--warn-subtle:rgba(163,138,0,.1);
-  --danger:#d92544;--danger-subtle:rgba(217,37,68,.1);
+  --warn:#a38a00;--warn-fg:#000;--warn-subtle:rgba(163,138,0,.1);
+  --danger:#d92544;--danger-fg:#fff;--danger-subtle:rgba(217,37,68,.1);
   --info:#285092;
   --aim:#8041e6;--aim-subtle:rgba(128,65,230,.12);
   --clarify:#a38a00;--clarify-subtle:rgba(163,138,0,.06);
@@ -977,11 +977,11 @@ html:lang(ko) {
   --chrome:rgba(239,240,242,.95);
   --text:#5c6370;--text-strong:#2b2d30;--muted:#666b74;--muted-strong:#6f737a;
   --border:#c8cad0;--border-strong:#b0b3ba;--border-hover:#9a9da6;
-  --accent:#5a8fd4;--accent-hover:#4a7dc0;--accent-subtle:rgba(90,143,212,.12);
+  --accent:#5a8fd4;--accent-fg:#000;--accent-hover:#4a7dc0;--accent-subtle:rgba(90,143,212,.12);
   --accent-glow:rgba(90,143,212,.15);--ring:#5a8fd4;
   --ok:#369b43;--ok-subtle:rgba(54,155,67,.1);
-  --warn:#b5a300;--warn-subtle:rgba(181,163,0,.1);
-  --danger:#db3b3b;--danger-subtle:rgba(219,59,59,.1);
+  --warn:#b5a300;--warn-fg:#000;--warn-subtle:rgba(181,163,0,.1);
+  --danger:#db3b3b;--danger-fg:#000;--danger-subtle:rgba(219,59,59,.1);
   --info:#5a8fd4;
   --aim:#9333ea;--aim-subtle:rgba(147,51,234,.12);
   --clarify:#b5a300;--clarify-subtle:rgba(181,163,0,.06);
@@ -1137,7 +1137,7 @@ html:lang(ko) {
   --accent:#5e54d9;--accent-fg:#fff;--accent-hover:#4f46c4;--accent-subtle:rgba(94,84,217,.10);
   --accent-glow:rgba(94,84,217,.18);--ring:#5e54d9;
   --ok:#059669;--ok-fg:#fff;--ok-subtle:rgba(5,150,105,.1);
-  --warn:#d97706;--warn-fg:#fff;--warn-subtle:rgba(217,119,6,.1);
+  --warn:#d97706;--warn-fg:#000;--warn-subtle:rgba(217,119,6,.1);
   --danger:#dc2626;--danger-fg:#fff;--danger-subtle:rgba(220,38,38,.1);
   --info:#4f46e5;--info-fg:#fff;
   --aim:#7c3aed;--aim-fg:#fff;--aim-subtle:rgba(124,58,237,.10);
@@ -1189,7 +1189,7 @@ html:lang(ko) {
   --accent:#4b5563;--accent-fg:#fff;--accent-hover:#1f2937;--accent-subtle:rgba(75,85,99,.12);
   --accent-glow:rgba(75,85,99,.18);--ring:#6b7280;
   --ok:#16a34a;--ok-fg:#fff;--ok-subtle:rgba(22,163,74,.1);
-  --warn:#ca8a04;--warn-fg:#fff;--warn-subtle:rgba(202,138,4,.1);
+  --warn:#ca8a04;--warn-fg:#000;--warn-subtle:rgba(202,138,4,.1);
   --danger:#dc2626;--danger-fg:#fff;--danger-subtle:rgba(220,38,38,.1);
   --info:#2563eb;--info-fg:#fff;
   --aim:#7c3aed;--aim-fg:#fff;--aim-subtle:rgba(124,58,237,.1);
