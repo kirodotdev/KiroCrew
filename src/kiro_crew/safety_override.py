@@ -249,6 +249,17 @@ class SafetyOverride:
         """True when the live grant has no expiry at all."""
         return bool(self._permanent) and bool(self._active)
 
+    @property
+    def is_declared(self) -> bool:
+        """True when the live grant is the operator's DECLARED config grant.
+
+        Identity is the grant's SOURCE, not the absence of a deadline. Permanence
+        does not separate the two cases in either direction: an ad-hoc grant under
+        ``yolo_duration: until_shutdown`` also has no expiry, and a declared grant
+        the governance ceiling refused to make permanent is timed.
+        """
+        return bool(self._active) and self._source == self._DECLARED_SOURCE
+
     # ── Public API ───────────────────────────────────────────────────────────
 
     def activate(self, source: str, ttl: Optional[int] = None) -> ActivationResult:

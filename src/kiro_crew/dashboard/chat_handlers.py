@@ -112,6 +112,12 @@ _SESSION_RELOAD_NOTICE = (
     "agent spec, environment, and MCP servers. The conversation is preserved."
 )
 
+# Approval modes that grant auto-approval to the SLOT they name, as opposed to
+# the process-global YOLO grant. A tuple, not a set: membership is tested against
+# a request-supplied value, and tuple `in` compares by equality rather than
+# hashing, so a non-string body value answers False instead of raising.
+_SLOT_SCOPED_TRUST_MODES = ("trust", "trust_reads")
+
 
 def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
     """Mark unresolved permissions from prior turns as stale.
@@ -4217,6 +4223,26 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     mode = body.get("mode", "normal")
     slot_key = body.get("slot") or None
 
+    # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
+    # per-slot, so revoking it on behalf of a request that named ONE slot drops
+    # every OTHER slot out of YOLO too. That is how a programmatic per-slot
+    # `trust` — the call an automation makes when it creates a session — silently
+    # ends an operator's live grant minutes after they enabled it.
+    #
+    # A slot-scoped `trust`/`trust_reads` therefore leaves the grant alone: it
+    # asks for auto-approval on one slot and cannot be answered by withdrawing
+    # authority elsewhere. Everything else still revokes, so `normal` remains the
+    # off-switch at any scope and the dashboard picker (which always names its own
+    # slot) keeps working.
+    #
+    # A grant DECLARED in owner-only config is exempt from the narrowing: it has
+    # no TTL, and selecting another approval mode is the one action documented to
+    # end it. Identity is the grant's source, never its permanence — an
+    # `until_shutdown` ad-hoc pick is equally permanent and must stay protected.
+    slot_scoped_trust = slot_key is not None and mode in _SLOT_SCOPED_TRUST_MODES
+    if mode != "yolo" and (not slot_scoped_trust or safety_override().is_declared):
+        safety_override().deactivate("dashboard")
+
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
         if not result.active:
@@ -4234,7 +4260,6 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("SEL audit failed for YOLO mode activation", exc_info=True)
     elif mode == "trust_reads":
-        safety_override().deactivate("dashboard")
         if slot_key and slot_key in state._slots:
             state._slots[slot_key]._trust = False
             state._slots[slot_key]._trust_reads = True
@@ -4254,7 +4279,6 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("SEL audit failed for trust_reads mode activation", exc_info=True)
     elif mode == "trust":
-        safety_override().deactivate("dashboard")
         mgr = getattr(state, "channel_manager", None)
         if slot_key is not None:
             if slot_key not in state._slots:
@@ -4287,7 +4311,6 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("SEL audit failed for trust mode activation", exc_info=True)
     else:  # normal
-        safety_override().deactivate("dashboard")
         mgr = getattr(state, "channel_manager", None)
         if slot_key is not None:
             if slot_key not in state._slots:

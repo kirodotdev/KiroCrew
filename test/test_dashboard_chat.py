@@ -6379,6 +6379,127 @@ class TestApiChatModePropagation:
         state.sessions.set_approval_policy.assert_any_call("dashboard:s2", "auto")
 
 
+class TestApiChatModeGlobalOverrideScope:
+    """A slot-scoped mode change must not revoke the process-global YOLO grant.
+
+    The grant covers every slot, so ending it on behalf of a request that named
+    ONE slot changes slots the request never mentioned — the shape that let a
+    per-slot `trust` setup call drop the whole gateway out of YOLO.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["trust", "trust_reads"])
+    async def test_slot_scoped_trust_preserves_global_grant(self, mode, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.safety_override import safety_override
+
+        safety_override().activate("dashboard")
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+        state.get_or_create_slot("s2")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": mode, "slot": "s1"})
+            assert (await resp.json())["ok"] is True
+
+        assert safety_override().is_active() is True
+        # The regression itself: a slot the request never named keeps auto-approving.
+        state.sessions.set_approval_policy.assert_any_call("dashboard:s2", "auto")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["trust", "trust_reads"])
+    async def test_global_trust_revokes_global_grant(self, mode, tmp_path, monkeypatch):
+        """Without a slot the request IS global, so it may end the grant."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.safety_override import safety_override
+
+        safety_override().activate("dashboard")
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/chat/mode", json={"mode": mode})
+
+        assert safety_override().is_active() is False
+
+    @pytest.mark.asyncio
+    async def test_slot_scoped_normal_revokes_global_grant(self, tmp_path, monkeypatch):
+        """`normal` asks for NO auto-approval, so it revokes at any scope.
+
+        This is the dashboard picker's YOLO off-switch: the picker always names
+        the slot it is attached to.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.safety_override import safety_override
+
+        safety_override().activate("dashboard")
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/chat/mode", json={"mode": "normal", "slot": "s1"})
+
+        assert safety_override().is_active() is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["trust", "trust_reads"])
+    async def test_declared_grant_is_revoked_at_any_scope(self, mode, tmp_path, monkeypatch):
+        """A declared grant has no TTL, so any mode selection is its off-switch."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.safety_override import safety_override
+
+        safety_override().activate_declared()
+        assert safety_override().is_declared is True
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/chat/mode", json={"mode": mode, "slot": "s1"})
+
+        assert safety_override().is_active() is False
+
+    @pytest.mark.asyncio
+    async def test_until_shutdown_grant_is_ad_hoc_and_protected(self, tmp_path, monkeypatch):
+        """`until_shutdown` is permanent but AD HOC, so the scope rule applies.
+
+        Classifying it by permanence instead of source would revoke the grant of
+        every operator who picked "until Kiro Crew restarts".
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.safety_override import safety_override
+
+        so = safety_override()
+        so.adhoc_until_shutdown = True
+        so.activate("dashboard")
+        assert so.is_permanent is True
+        assert so.is_declared is False
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/chat/mode", json={"mode": "trust", "slot": "s1"})
+
+        assert so.is_active() is True
+
+    @pytest.mark.asyncio
+    async def test_non_string_mode_does_not_raise(self, tmp_path, monkeypatch):
+        """The membership test must answer for an unhashable body value."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": {}, "slot": "s1"})
+
+        assert resp.status == 200  # falls through to the normal branch, as before
+
+
 class TestApproveYoloPropagation:
     """api_chat_slot_approve with yolo action propagates policy to all slots."""
 

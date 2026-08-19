@@ -1226,6 +1226,8 @@ Permanent YOLO mode has been eliminated. All activations go through the `SafetyO
 
 After expiry, re-authorization is required. A 5-minute grace window allows `!yolo renew` (Slack) or the dashboard re-auth button to extend the session without creating a new one. Outside the grace window, a fresh activation is needed.
 
+**The grant is process-global; approval modes are per-slot.** `POST /api/chat/mode` sets `normal` / `trust_reads` / `trust` against the slot named in `slot` (or every slot when it is omitted), while `yolo` is the global grant and ignores `slot`. Because the grant covers every slot, a **slot-scoped** `trust`/`trust_reads` does NOT revoke it: that request asks for auto-approval on one slot and cannot be answered by withdrawing authority from slots it never named (the shape that let a programmatic per-slot `trust` end an operator's live grant). Every other mode change still revokes, so `normal` remains the off-switch at any scope. A grant DECLARED in owner-only config is exempt from the narrowing — it has no TTL, and selecting another approval mode is the one action documented to end it. That exemption keys on the grant's **source** (`SafetyOverride.is_declared`), never its permanence: an `until_shutdown` ad-hoc pick is equally permanent and keeps the scope protection, while a declared grant the governance ceiling refused to make permanent is timed and still counts as declared.
+
 SEL audit events are emitted on every lifecycle transition:
 - `safety_override:activate` — override enabled
 - `safety_override:renew` — session extended within grace window
