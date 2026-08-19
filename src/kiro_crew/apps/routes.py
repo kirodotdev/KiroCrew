@@ -92,7 +92,7 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.executors import subprocess_executor
@@ -170,7 +170,15 @@ def _sync_builtin_config(name: str, *, enabled: bool) -> None:
     try:
         tmp.write_text(json.dumps(data, indent=2))
         tmp.chmod(0o600)
-        tmp.replace(path)  # replace, not rename: Windows rename refuses to overwrite
+        # replace, not rename: Windows rename refuses to overwrite. And through
+        # ``replace_with_retry``, because refusing to overwrite is not the only
+        # way Windows refuses: the replace also raises ``PermissionError``
+        # (WinError 32) while any other handle is open on either path, which a
+        # scanner touching the temp file we just wrote is enough to cause. The
+        # helper is Windows-only, bounded, and declines to sleep on the event
+        # loop -- which is why both callers hand this whole function to
+        # ``asyncio.to_thread``.
+        replace_with_retry(tmp, path)
     except OSError:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
@@ -1318,7 +1326,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                _sync_builtin_config(name, enabled=True)
+                await asyncio.to_thread(_sync_builtin_config, name, enabled=True)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 resp.setdefault("warnings", []).append(
@@ -1404,7 +1412,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                _sync_builtin_config(name, enabled=False)
+                await asyncio.to_thread(_sync_builtin_config, name, enabled=False)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 warnings.append(_redact_warning(f"config sync failed: {exc}"))
@@ -2726,8 +2734,7 @@ async def handle_registries(request: web.Request) -> web.Response:
             )
 
     data["registries"] = validated
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(cfg, json.dumps(data, indent=2) + "\n")
+    await asyncio.to_thread(_write_registries_config, cfg, data)
 
     sel().log_api_access(
         caller="dashboard",
@@ -2738,6 +2745,26 @@ async def handle_registries(request: web.Request) -> web.Response:
     return web.json_response(
         {"ok": True, "registries": validated, "newlyTrustedHosts": newly_trusted_hosts}
     )
+
+
+def _write_registries_config(cfg: Path, data: dict) -> None:
+    """Persist the registries config: mkdir + atomic write, off the loop.
+
+    Split out so the handler can hand ONE callable to ``asyncio.to_thread``.
+    Both statements are blocking filesystem work, and the atomic write matters
+    for a second reason: ``atomic_write``'s rename goes through
+    ``replace_with_retry``, which deliberately does NOT retry a Windows sharing
+    violation while a loop is running in this thread — it re-raises on the
+    first attempt rather than pausing the single event loop for the whole retry
+    budget. Called inline from the handler, the retry was therefore gated off
+    exactly where it was needed. On a worker there is no loop, so it applies.
+
+    This is the registry TRUST set: admitting a host is a trust grant, and the
+    grant is audited before this write lands, so losing the write to a
+    transient scanner hold leaves the audit and the config disagreeing.
+    """
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(cfg, json.dumps(data, indent=2) + "\n")
 
 
 async def handle_registries_refresh(request: web.Request) -> web.Response:
