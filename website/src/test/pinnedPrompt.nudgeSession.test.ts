@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { groupDisplayItems, applyRunningState, TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
-import { findPinnedPromptIdx } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, jumpAnchorIdx } from '../utils/pinnedPrompt'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import type { ChatMessage } from '../types'
 
@@ -75,6 +75,38 @@ describe('pinned prompt in a nudge-driven session', () => {
       expect(pinItem.msg.role).toBe('subagent')
       expect(pinItem.msg.content).toContain('agent-12')
     }
+  })
+
+  it('a fan-out under synthesisPending groups as one opener run and the jump anchors at its head', () => {
+    // Four completions carrying synthesisPending: groupDisplayItems suppresses
+    // each per-completion reply, so the four subagent rows are ADJACENT display
+    // items — the run shape jumpAnchorIdx's machine-opener walk exists for.
+    // Built through the real grouping pipeline so the adjacency is a checked
+    // fact, not a hand-shaped fixture.
+    const out: ChatMessage[] = []
+    const push = (role: string, content: string, meta?: Record<string, unknown>) =>
+      out.push({ role, content, ts: '2026-08-18T05:00:00Z', meta } as unknown as ChatMessage)
+    push('user', 'fan out over four agents')
+    push('assistant', 'dispatching')
+    for (let c = 1; c <= 4; c++) {
+      push('subagent', `[Subagent completion event] agent-${c}\n\nfindings for ${c}`,
+        { synthesisPending: true,
+          subagentCompletion: { kind: 'single', agentId: `agent-${c}`, outcome: 'ok', task: `task ${c}` } })
+      push('assistant', `ack ${c}`)
+    }
+    push('assistant', 'synthesis of all four')
+    const items = applyRunningState(groupDisplayItems(out), false)
+
+    // The four completions must be consecutive display items.
+    const subIdxs = items
+      .map((it, i) => (it.kind === 'single' && it.msg.role === 'subagent' ? i : -1))
+      .filter(i => i >= 0)
+    expect(subIdxs.length).toBe(4)
+    expect(subIdxs[3] - subIdxs[0]).toBe(3)
+
+    // Jumping to the third completion anchors at the first — the head of the
+    // block, with the dispatch that explains it directly above.
+    expect(jumpAnchorIdx(items, subIdxs[2])).toBe(subIdxs[0])
   })
 
   it('the pin scan and the grouping agree on the turn-opener roles', () => {

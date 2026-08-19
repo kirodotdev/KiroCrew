@@ -3199,12 +3199,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const chrome = pinnedJumpChrome()
     cancelAnimationFrame(navScrollRafRef.current)
     navPollCancelRef.current?.()
-    // Consecutive user rows (a steer follows its prompt directly): landing the
-    // clicked prompt at the chrome would leave the prompt above it straddling
-    // the hand-off line — unpinnable, while its top edge has already pushed the
-    // fallback banner fully out — so the banner unmounts and the chain dies.
-    // Anchor at the head of the run instead: the clicked prompt stays visible
-    // just below, and a non-prompt row takes the straddle.
+    // The jump lands at the head of the target's consecutive prompt run — a
+    // steer pair, a subagent fan-out, an unanswered nudge run — so the row on
+    // the hand-off line is a non-prompt and the previous turn's banner
+    // survives the landing. Rationale and near/far interaction: see
+    // jumpAnchorIdx's docblock (utils/pinnedPrompt.ts).
     const anchor = jumpAnchorIdx(displayItemsRef.current, target)
     const jumpedFar = mountIndexRef.current(anchor)
     if (jumpedFar) {

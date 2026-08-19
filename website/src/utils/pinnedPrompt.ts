@@ -108,15 +108,44 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
  * user asks for `target`.
  *
  * Normally that is `target` itself. But when the rows immediately BEFORE the
- * target are also prompts (consecutive user rows — a steer message follows its
- * prompt with no assistant row between), landing the target at the jump chrome
- * leaves the previous prompt straddling the hand-off line: it cannot pin (its
- * bottom is still below the line) while its own top edge has already pushed the
- * fallback banner fully out — so the banner unmounts and the jump chain dies on
- * a landing the scan treats as a transient. Anchoring the jump at the FIRST
- * prompt of the consecutive run puts a non-prompt row (or nothing) on the line
- * instead, so the previous turn's banner survives and the chain continues. For
- * a target with a non-prompt row above it this returns `target` unchanged.
+ * target are also prompts (turn openers, per `isPrompt`), the jump anchors at
+ * the FIRST prompt of that consecutive run — the walk finds the top of the
+ * contextual block the target belongs to.
+ *
+ * Why not land on `target` directly: putting it at the jump chrome leaves the
+ * prompt above it straddling the hand-off line — it cannot pin (its bottom is
+ * still below the line) while its own top edge has already pushed the fallback
+ * banner fully out — so the banner unmounts and the jump chain dies on a
+ * landing the scan treats as a transient. Anchoring at the head of the run
+ * puts a non-prompt row (or the top of the list) on the line instead, so the
+ * previous turn's banner survives and the chain continues.
+ *
+ * The walk deliberately consumes MACHINE turn openers too (nudge and subagent
+ * rows — `isPrompt` derives from `TURN_OPENER_ROLES`), not only consecutive
+ * user rows like a steer following its prompt. The mechanism-backed case is a
+ * subagent fan-out whose synthesis is still pending: `groupDisplayItems`
+ * suppresses each per-completion reply under `synthesisPending`, so the
+ * completions lay out as one run of consecutive opener rows. Consecutive
+ * nudge rows arise only when nudged turns persist no reply (an errored or
+ * cancelled cycle — a normal cycle interposes its tool/assistant rows). In
+ * both shapes each row is pinnable, and each belongs to the same contextual
+ * block as the row directly above the run: jumping to any member lands at the
+ * block's top, where the exchange reads in order — stopping mid-run would
+ * drop the reader between two machine rows with the context that explains
+ * them still hidden above.
+ *
+ * Walking up lengthens the jump. The virtualizer's near/far decision
+ * (`mountIndex` in useVirtualChat) compares the anchor's jump window against
+ * the COMMITTED window with `NEAR_JUMP_OVERSCAN_MULT` overscan windows of
+ * slack (24 rows for the transcript, which passes `overscan: 6`) — a budget
+ * shared with the distance the jump already covers, so the walk consumes
+ * whatever slack a near jump has left over. In the common case (the pinned
+ * prompt is the previous turn) that leaves the glide untouched; a jump
+ * already sitting at the band's edge can be tipped onto the far path by the
+ * walk, and that is the right outcome there — the gap is unmounted spacer,
+ * and a glide across it would scrub blank.
+ *
+ * For a target with a non-prompt row above it this returns `target` unchanged.
  */
 export function jumpAnchorIdx(items: DisplayItem[], target: number): number {
   let anchor = target
