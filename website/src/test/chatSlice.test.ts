@@ -2228,13 +2228,15 @@ describe('thinking survives refreshSlot (client-only reasoning)', () => {
     expect(state.messages.filter(m => m.role === 'thinking')).toHaveLength(1)
   })
 
-  it('parks the extra bursts of a multi-tool turn at the tail (known limit, #4218)', () => {
+  it('rebuilds the burst order of a multi-tool turn from tool ids (#4218)', () => {
     // Reasoning is client-only, so the refresh rebuilds the array from server
-    // history that has never seen a thinking row — the position of burst 2+ is
-    // unreconstructible here and they land below the answer. Pinned so the
-    // follow-up that fixes it (producer-side segment boundary, or the
-    // append-only transcript) shows the improvement in its diff rather than
-    // silently changing an untested behaviour. NOT a desired end state.
+    // history that has never seen a thinking row. The position is recoverable
+    // anyway: each burst is followed by its own tool row, whose server-minted
+    // `tool_call_id` persists into history, so the post-refresh order must equal
+    // the live order exactly. Anchoring on answer CONTENT instead cannot do this
+    // — a reason-then-tool turn flushes no text at the tool boundary, so history
+    // holds one assistant row for every burst and all but one were parked below
+    // the answer.
     let state = reducer(base, setActiveSlot('chat-1'))
     state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'why t1' }))
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 grep', meta: { tool_call_id: 't1' } }))
@@ -2244,18 +2246,70 @@ describe('thinking survives refreshSlot (client-only reasoning)', () => {
     // live: each burst above the step it explains
     expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'assistant'])
 
+    const payload = refreshPayload('chat-1', [
+      { role: 'tool', content: '🔧 grep', cls: '', meta: { tool_call_id: 't1' } },
+      { role: 'assistant', content: 'The answer', cls: 'msg msg-a' },
+    ])
+    state = reducer(state, refreshSlot.fulfilled(payload, 'r1', 'chat-1'))
+
+    expect(state.messages.filter(m => m.role === 'thinking').map(m => m.content))
+      .toEqual(['why t1', 'why t2'])
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'assistant'])
+
+    // Idempotent: a second refresh must not re-park or duplicate a block.
+    state = reducer(state, refreshSlot.fulfilled(payload, 'r2', 'chat-1'))
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'thinking', 'assistant'])
+  })
+
+  it('keeps every burst in place as the tool count grows (#4218)', () => {
+    // Severity scaled with burst count before the fix: only one block could
+    // anchor, so a turn that reasons before each of 10 calls left 9 stacked
+    // below the answer. Drive the count that was reported in the wild.
+    const N = 10
+    let state = reducer(base, setActiveSlot('chat-1'))
+    for (let n = 1; n <= N; n++) {
+      state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: `why t${n}` }))
+      state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 grep', meta: { tool_call_id: `t${n}` } }))
+    }
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'chunk', content: 'Done', seq: 0 }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: '_done', content: '' }))
+    const live = state.messages.map(m => m.role)
+
+    const history = []
+    for (let n = 1; n <= N; n++) {
+      history.push({ role: 'tool', content: '🔧 grep', cls: '', meta: { tool_call_id: `t${n}` } })
+    }
+    history.push({ role: 'assistant', content: 'Done', cls: 'msg msg-a' })
+    state = reducer(state, refreshSlot.fulfilled(refreshPayload('chat-1', history), 'r1', 'chat-1'))
+
+    expect(state.messages.map(m => m.role)).toEqual(live)
+    expect(state.messages.filter(m => m.role === 'thinking').map(m => m.content))
+      .toEqual(Array.from({ length: N }, (_, i) => `why t${i + 1}`))
+    // No tail stack: nothing reasoning-shaped after the answer.
+    expect(state.messages[state.messages.length - 1].role).toBe('assistant')
+  })
+
+  it('anchors on the earlier row of an auto-approved tool pair (#4218)', () => {
+    // An auto-approved call persists TWO tool rows sharing one tool_call_id
+    // (🔧 pre-approval + ✅ post-approval). The block reasoned its way TO the
+    // call, so it belongs above the first of the pair, not between them.
+    let state = reducer(base, setActiveSlot('chat-1'))
+    state = reducer(state, sseThinkingChunk({ slot: 'chat-1', content: 'why t1' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'tool', content: '🔧 grep', meta: { tool_call_id: 't1' } }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'chunk', content: 'The answer', seq: 0 }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: '_done', content: '' }))
+
     state = reducer(state, refreshSlot.fulfilled(
       refreshPayload('chat-1', [
         { role: 'tool', content: '🔧 grep', cls: '', meta: { tool_call_id: 't1' } },
+        { role: 'tool', content: '✅ grep', cls: '', meta: { tool_call_id: 't1' } },
         { role: 'assistant', content: 'The answer', cls: 'msg msg-a' },
       ]),
       'r1', 'chat-1',
     ))
 
-    // Both blocks survive with the right text; the second one's POSITION does not.
-    expect(state.messages.filter(m => m.role === 'thinking').map(m => m.content))
-      .toEqual(['why t1', 'why t2'])
-    expect(state.messages.map(m => m.role)).toEqual(['tool', 'thinking', 'assistant', 'thinking'])
+    expect(state.messages.map(m => m.role)).toEqual(['thinking', 'tool', 'tool', 'assistant'])
+    expect(state.messages.filter(m => m.role === 'thinking')).toHaveLength(1)
   })
 })
 

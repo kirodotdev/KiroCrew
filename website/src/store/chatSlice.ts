@@ -1169,33 +1169,61 @@ const OUT_OF_BAND_ROLES = new Set(['permission', 'queued', 'error', 'mcp_oauth']
 const isOutOfBandRow = (m: { role: string; kind?: string }): boolean =>
   OUT_OF_BAND_ROLES.has(m.role) || m.kind === 'stop_event'
 
+/** What a preserved reasoning block re-attaches to on the server-refreshed list:
+ *  a tool call addressed by its server-minted id, or a run of answer text
+ *  addressed by its content. */
+type ThinkingAnchor = { tool: string; text?: undefined } | { tool?: undefined; text: string }
+
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
  *  one fired on chat_done) would otherwise drop the thinking block the instant a
- *  turn finishes. Each preserved block is anchored to the assistant message that
- *  immediately followed it in the old list (matched by finalized content) and
- *  re-inserted just before it. At most one reasoning block per assistant. Any
- *  block whose anchor isn't found is appended so it is never silently lost.
- *  Returns `incoming` unchanged (reference-equal) when there is nothing to
- *  preserve. */
+ *  turn finishes. Each preserved block is anchored to the first row that followed
+ *  it in the old list and re-inserted just before that row again. Any block whose
+ *  anchor isn't found is appended so it is never silently lost. Returns
+ *  `incoming` unchanged (reference-equal) when there is nothing to preserve.
+ *
+ *  The anchor is the FOLLOWING TOOL CALL's `tool_call_id` when there is one, and
+ *  the following answer text only otherwise. A tool id is the sharper key and
+ *  the only one that scales: `_tool_meta` mints it server-side and persists it on
+ *  the tool row, so it survives into history and reads back identically on a
+ *  historical replay. Answer content does not scale, because a turn that reasons
+ *  before each of N tool calls emits no text at those boundaries — the backend's
+ *  segment flush is gated on pending text (`chat_runner._flush_segment`, called
+ *  under `if not in_tool_group and assistant_text`) — so history holds ONE
+ *  assistant row for all N bursts. Anchoring every burst on that single row let
+ *  exactly one land and parked the other N-1 at the tail, below the answer and
+ *  its footer, as a column of collapsed rows that read as duplicates (#4218).
+ *
+ *  Bursts and anchors are 1:1 under the tool rule: burst k is followed by tool k,
+ *  and the final burst by the answer. An auto-approved call emits two tool rows
+ *  sharing one id (🔧 pre-approval + ✅ post-approval, see
+ *  `applyToolOutputToMessages`); `used` makes the first win, which is the earlier
+ *  row and so the correct side of the pair. */
 function mergePreservedThinking<M extends { role: string; content: string; cls?: string; meta?: Record<string, unknown> }>(
   existing: M[],
   incoming: M[],
 ): M[] {
-  const preserved: Array<{ msg: M; anchor: string | null }> = []
+  const toolAnchorId = (m: M): string => {
+    if (m.role !== 'tool') return ''
+    const id = m.meta?.tool_call_id
+    return typeof id === 'string' ? id : ''
+  }
+  const preserved: Array<{ msg: M; anchor: ThinkingAnchor | null }> = []
   for (let i = 0; i < existing.length; i++) {
     const m = existing[i]
     if (m.role !== 'thinking' || !m.content) continue
-    let anchor: string | null = null
+    let anchor: ThinkingAnchor | null = null
     for (let j = i + 1; j < existing.length; j++) {
-      const r = existing[j].role
-      if (r === 'assistant' || r === 'streaming') { anchor = existing[j].content.trimEnd(); break }
-      // A confirmed steer does not end this block's turn, so the assistant row
-      // after it is still its anchor. Breaking here instead leaves `anchor`
-      // null, and an unanchored block is appended at the tail — below the answer
-      // and its footer — where the forward scan can never reach an assistant row
-      // again, so it stays there and is re-appended on every later refresh.
-      if (isTurnBoundaryUser(existing[j])) break
+      const cand = existing[j]
+      const tid = toolAnchorId(cand)
+      if (tid) { anchor = { tool: tid }; break }
+      if (cand.role === 'assistant' || cand.role === 'streaming') { anchor = { text: cand.content.trimEnd() }; break }
+      // A confirmed steer does not end this block's turn, so the row after it is
+      // still its anchor. Breaking here instead leaves `anchor` null, and an
+      // unanchored block is appended at the tail — below the answer and its
+      // footer — where the forward scan can never reach an anchorable row again,
+      // so it stays there and is re-appended on every later refresh.
+      if (isTurnBoundaryUser(cand)) break
     }
     preserved.push({ msg: m, anchor })
   }
@@ -1203,10 +1231,15 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
   const used = new Set<number>()
   const result: M[] = []
   for (const item of incoming) {
-    if (item.role === 'assistant' || item.role === 'streaming') {
-      const c = item.content.trimEnd()
+    const tid = toolAnchorId(item)
+    const isText = item.role === 'assistant' || item.role === 'streaming'
+    if (tid || isText) {
+      const c = isText ? item.content.trimEnd() : ''
       for (let p = 0; p < preserved.length; p++) {
-        if (!used.has(p) && preserved[p].anchor === c) {
+        if (used.has(p)) continue
+        const a = preserved[p].anchor
+        if (!a) continue
+        if (tid ? a.tool === tid : a.tool === undefined && a.text === c) {
           result.push({ ...preserved[p].msg }); used.add(p); break
         }
       }
@@ -3709,7 +3742,16 @@ const chatSlice = createSlice({
         // in-flight turn (the bubbles only reappeared on a later full fetch).
         // Routing every slot-detail reducer through the one helper is what keeps
         // this from silently diverging from switchSlot/refreshSlot again.
-        state.slotMessages[safeKey(key)] = hydrateQueuedBubbles(hydrated, queue)
+        // mergePreservedThinking for the same reason: a slot the user switched
+        // AWAY from mid-turn has its reasoning in this cache (switchSlot.pending
+        // caches `state.messages` wholesale), and this warm is driven by that
+        // slot's own chat_done — so overwriting with server history, which never
+        // holds a thinking row, dropped every block instead of only misplacing
+        // the later ones.
+        state.slotMessages[safeKey(key)] = hydrateQueuedBubbles(
+          mergePreservedThinking(state.slotMessages[key] || [], hydrated),
+          queue,
+        )
         // Clear the per-slot run indicator (the _done frame already idles it;
         // this is belt-and-braces for the fetch-completes-after-_done ordering).
         const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
