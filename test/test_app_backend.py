@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.apps.backend import (
     AppProcess,
     PortUnavailableError,
@@ -159,11 +160,16 @@ def app_env(tmp_path, monkeypatch, worker_id):
 
 
 class TestPortAllocation:
-    def test_find_free_port(self):
-        port = _find_free_port()
-        assert 9100 <= port <= 9200
+    def test_find_free_port(self, app_env):
+        import kiro_crew.apps.backend as bmod
 
-    def test_concurrent_allocation_never_hands_out_the_same_port(self, monkeypatch):
+        port = _find_free_port()
+        # Bounds read off the module, not the 9100/9200 literals: ``app_env`` gives
+        # each xdist worker a DISJOINT window, so a hardcoded range would fail on
+        # every worker but gw0.
+        assert bmod._MIN_PORT <= port <= bmod._MAX_PORT
+
+    def test_concurrent_allocation_never_hands_out_the_same_port(self, app_env, monkeypatch):
         """Parallel boot spawns must not collide on one auto-allocated port.
 
         Boot starts app backends concurrently, so two apps can select a port at
@@ -764,6 +770,7 @@ class TestBackendLifecycle:
         result = start_app_backend("bad-entry")
         assert result is None
 
+    @requires_symlinks
     def test_backend_entrypoint_escapes_app_root(self, tmp_path, app_env, caplog):
         # The boot path (start_installed_backends) spawns persisted manifests
         # WITHOUT re-running validate(), so a manifest whose backend.entryPoint

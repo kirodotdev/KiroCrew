@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
     HOOK_MODIFY,
@@ -768,8 +769,13 @@ class TestSafeReadFile:
         # bytes variant returns None (rejected) rather than leaking content
         assert safe_read_file_bytes(str(link)) is None
 
+    @requires_symlinks
     def test_allows_benign_symlink(self, tmp_path):
-        """A symlink to a non-sensitive file is still readable via its target."""
+        """A symlink to a non-sensitive file is still readable via its target.
+
+        A FILE symlink, so a junction cannot stand in for it — the marker skips
+        this only where symlink creation needs a privilege the shell lacks.
+        """
         from kiro_crew.hooks import safe_read_file_bytes
 
         real = tmp_path / "real.txt"

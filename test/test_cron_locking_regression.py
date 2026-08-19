@@ -835,7 +835,7 @@ class TestMutatorContract:
 
             async def ticker() -> None:
                 nonlocal ticks
-                for _ in range(5):
+                while True:
                     await asyncio.sleep(0.02)
                     ticks += 1
 
@@ -849,12 +849,22 @@ class TestMutatorContract:
                     await svc.remove_job_async(job.id)
                 with pytest.raises(CronStoreBusy):
                     await svc.enable_job_async(job.id, enabled=False)
+                # Sampled while the lock is still held, BEFORE the ticker is
+                # stopped: reading it afterwards would count ticks that ran once
+                # the mutators had returned, so the assertion would hold even for
+                # a mutator that parked the loop outright.
+                ticks_while_contended = ticks
             finally:
+                tick_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await tick_task
                 platform_compat.release_lock(holder.fileno())
                 holder.close()
-                await tick_task
             # The event loop advanced its other task while mutators waited.
-            assert ticks == 5
+            assert ticks_while_contended >= 1, (
+                "event loop parked while the contended mutators waited "
+                f"(ticks={ticks_while_contended})"
+            )
 
         asyncio.run(scenario())
 
@@ -932,7 +942,7 @@ class TestMergeResultOffLoop:
 
         async def ticker() -> None:
             nonlocal ticks
-            for _ in range(5):
+            while True:
                 await asyncio.sleep(0.02)
                 ticks += 1
 
@@ -944,13 +954,20 @@ class TestMergeResultOffLoop:
             # _run_job_isolated swallows it (best-effort) and completes without
             # ever parking the loop.
             await svc._run_job_isolated(job)
-            await tick_task
+            # Sampled before the ticker is stopped: counting ticks that ran after
+            # the merge returned would hold even for a merge that parked the loop.
+            ticks_during_merge = ticks
         finally:
+            tick_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await tick_task
             platform_compat.release_lock(holder.fileno())
             holder.close()
 
         assert merged_off_loop["ok"], "merge must run off the event loop (to_thread)"
-        assert ticks == 5, "the event loop must keep ticking while the merge waits"
+        assert ticks_during_merge >= 1, (
+            f"the event loop must keep ticking while the merge waits (ticks={ticks_during_merge})"
+        )
 
     @pytest.mark.asyncio
     async def test_merge_result_persists_uncontended(self, tmp_path: Path) -> None:
@@ -1228,7 +1245,7 @@ class TestTerminalStateMergeLocked:
 
         async def ticker() -> None:
             nonlocal ticks
-            for _ in range(5):
+            while True:
                 await asyncio.sleep(0.02)
                 ticks += 1
 
@@ -1239,13 +1256,20 @@ class TestTerminalStateMergeLocked:
             # The merge raises CronStoreBusy inside to_thread (store contended);
             # _force_reap swallows it (best-effort) and never parks the loop.
             await svc._force_reap(job.id, 5.0, 1)
-            await tick_task
+            # Sampled before the ticker is stopped: counting ticks that ran after
+            # the reap returned would hold even for a reap that parked the loop.
+            ticks_during_merge = ticks
         finally:
+            tick_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await tick_task
             platform_compat.release_lock(holder.fileno())
             holder.close()
 
         assert merged_off_loop["ok"], "terminal merge must run off the event loop"
-        assert ticks == 5, "the event loop must keep ticking while the merge waits"
+        assert ticks_during_merge >= 1, (
+            f"the event loop must keep ticking while the merge waits (ticks={ticks_during_merge})"
+        )
 
 
 def _bounded_lock(svc: CronService):  # type: ignore[no-untyped-def]

@@ -29,6 +29,14 @@ class TestProjectCRUD:
     def test_list_projects(self, store):
         p1 = store.create_project("first")
         p2 = store.create_project("second")
+        # Separate the two timestamps EXPLICITLY rather than trusting the clock to
+        # advance between two back-to-back creates. `time.time()` returns the same
+        # value for ~60% of adjacent calls on Windows (the ~15.6ms timer tick), and
+        # `sorted` is stable, so on a tie the newest-first assertion below sees
+        # insertion order and fails — the ordering under test, not the clock, is the
+        # subject, so pin it instead of sleeping.
+        p2["updated_at"] = p1["updated_at"] + 1
+
         listed = store.list_projects()
         assert len(listed) == 2
         # sorted by updated_at desc → second first

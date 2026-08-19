@@ -1020,17 +1020,6 @@ def _git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_load_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skip system load checks in tests — avoids real asyncio.sleep delays."""
-    from unittest.mock import AsyncMock
-
-    try:
-        monkeypatch.setattr("kiro_crew.task_executor._wait_for_load", AsyncMock())
-    except AttributeError:
-        pass  # load guard not present in this branch
-
-
-@pytest.fixture(autouse=True)
 def _enterprise_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")

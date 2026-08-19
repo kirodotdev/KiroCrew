@@ -18,6 +18,7 @@ thread and that the loop stays responsive while it runs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from types import SimpleNamespace
@@ -67,7 +68,7 @@ async def test_load_status_counts_does_not_block_the_loop():
 
     async def _ticker():
         nonlocal ticks
-        for _ in range(10):
+        while True:
             await asyncio.sleep(0.01)
             ticks += 1
 
@@ -82,8 +83,19 @@ async def test_load_status_counts_does_not_block_the_loop():
 
     ticker = asyncio.create_task(_ticker())
     crons, lessons = await _load_status_counts(state)  # type: ignore[arg-type]
-    await ticker
+    # Sampled the instant the load returns, BEFORE the ticker is awaited: reading
+    # `ticks` after awaiting it to completion would count the ticks that ran after
+    # the load, so the assertion would hold even for a load that blocked the loop
+    # outright. The ticker also runs unbounded rather than a fixed 10 iterations,
+    # so it cannot reach the floor on its own.
+    ticks_during_load = ticks
+    ticker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await ticker
 
     assert (crons, lessons) == (1, 0)
-    # The loop advanced the ticker concurrently with the 0.1s blocking load.
-    assert ticks >= 5, f"event loop appears stalled during blocking load (ticks={ticks})"
+    # 0.1s of blocking load at a 0.01s tick interval leaves ample room; the floor is
+    # low because Windows rounds sleeps up to the ~15.6ms timer tick.
+    assert (
+        ticks_during_load >= 2
+    ), f"event loop appears stalled during blocking load (ticks={ticks_during_load})"
