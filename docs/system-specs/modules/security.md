@@ -23,7 +23,7 @@ KiroCrew implements defense-in-depth security across multiple layers: OS-level p
 | Destructive CLI commands | LLM runs `rm -rf /`, `git push --force` | 130 built-in denied-command rules (`BUILTIN_DENIED_RULES`, default-on / user-disableable) enforced at the hooks PreToolUse gate + governance `commands` force-deny (enterprise, un-opt-out-able) + 55 suspicious bash patterns with per-segment matching (`security.py`) |
 | Frontend XSS | `dangerouslySetInnerHTML` with unsanitized content | DOMPurify + safe DOM APIs + Mermaid `securityLevel: 'strict'` (iframe sandbox) |
 | Widget postMessage forged turn | LLM-emitted `<script>` in a sandboxed `<mcwidget>` iframe calls `parent.postMessage({type:'mc-widget-action'})`, bypassing the in-iframe `isTrusted` click guard | Frontend requires a human gesture: a widget action only PRE-FILLS the composer (never auto-submits) and tags the resulting user-initiated send `meta.origin='widget'`. Backend deny-by-default: `api_chat` refuses the sole chat-text-reachable privilege escalation — orchestrator `go`/`go all` auto-run — for `origin='widget'` turns (SEL `auto_run_denied`), letting the text fall through to a normal fully-gated turn. Mode changes and tool approvals are on separate endpoints the iframe cannot reach |
-| YOLO mode abuse | Unbounded auto-approve window | Time-limited safety override: Slack 30min, dashboard 6h, config 24h (no permanent mode). Re-auth required after expiry. SEL audit on every lifecycle event |
+| YOLO mode abuse | Unbounded auto-approve window | Time-limited safety override: one ad-hoc duration for every surface (`agent.yolo_duration`, default 6h, hard ceiling 24h); the declared config grant is governed separately. Re-auth required after expiry. SEL audit on every lifecycle event |
 | Trust reads bypass | Read-only command classification tricked into approving writes | Deny-by-default: rejects redirections, command substitutions, newline separator bypasses. Prefix matching only |
 | Port-forward auth bypass | socat/ssh -R makes remote traffic appear as 127.0.0.1 | Loopback bypass removed; all requests require token auth. File-based IPC secret for internal paths |
 | Observe-mode context poisoning | Non-owner messages in shared channels influence LLM context | `channel_history.push` gated on `_user_authorized` |
@@ -1216,13 +1216,7 @@ Non-owners receive ephemeral message: "⛔ Only the KiroCrew owner can use these
 
 **Safety override (YOLO) — time-limited with re-authorization** (`safety_override.py`):
 
-Permanent YOLO mode has been eliminated. All activations go through the `SafetyOverride` singleton which enforces a hard ceiling of 24 hours. The tiered TTL defaults are:
-
-| Source | Default TTL | Max TTL |
-|--------|------------|---------|
-| Slack (`!yolo on`) | 30 minutes | 24 hours |
-| Dashboard YOLO button | 6 hours | 24 hours |
-| Config `approval_mode: "auto"` | 24 hours | 24 hours |
+Permanent YOLO mode has been eliminated. All activations go through the `SafetyOverride` singleton, which enforces a single ad-hoc duration shared by every surface (`agent.yolo_duration`, default 6 hours, hard ceiling 24 hours). Per-surface TTLs (Slack 30 min / dashboard 6 h / config 24 h) were removed: the same operator re-enabling the same grant got a different lifetime depending on where they clicked, which was unpredictable without buying any security. The declared `dangerouslySkipPermissions` grant and the `until_shutdown` ad-hoc duration are governed separately (see `safety_override.py`).
 
 After expiry, re-authorization is required. A 5-minute grace window allows `!yolo renew` (Slack) or the dashboard re-auth button to extend the session without creating a new one. Outside the grace window, a fresh activation is needed.
 
