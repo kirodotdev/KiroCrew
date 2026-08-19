@@ -480,11 +480,18 @@ function SwitcherMenu({
                   ? i18nT('components.instanceTabBar.unpin_crew', { name: entry.name })
                   : i18nT('components.instanceTabBar.pin_crew', { name: entry.name })
               }
-              // Two handlers, deliberately: `onClick` is the plain DOM event and is
-              // what actually toggles, while `onSelect` exists only to
-              // preventDefault so the menu stays open for a second pin.
-              onClick={() => onTogglePin(id)}
-              onSelect={(e: Event) => e.preventDefault()}
+              // Toggle from `onSelect`, the one activation handler Radix fires
+              // exactly once for BOTH pointer and keyboard (Enter/Space) — the
+              // menuitemcheckbox is unreachable by keyboard otherwise. Hanging the
+              // toggle on the raw DOM `onClick` also dropped pointer clicks: the
+              // whole entries list re-renders on every pin change (the check glyph
+              // flips), so the item pressed could be replaced between pointerdown
+              // and click and never receive the event. preventDefault keeps the
+              // menu open so a second crew can be pinned without reopening it.
+              onSelect={(e: Event) => {
+                e.preventDefault()
+                onTogglePin(id)
+              }}
             >
               <span
                 aria-hidden
