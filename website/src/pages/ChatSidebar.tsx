@@ -23,7 +23,8 @@ import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
-import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
+import { isChatPageSurface, slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
+import ErrorNotice from '../components/ErrorNotice'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
@@ -1284,6 +1285,12 @@ function ChatSidebar({
   // Sidebar-only state
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
+  // A resumed history row whose surface ChatPage cannot display (e.g. a
+  // dashboard session) used to succeed on the wire and then silently bounce
+  // the user back to whatever slot was already open, indistinguishable from a
+  // dead click (#3624). Set right after such a resume resolves; cleared on
+  // dismiss or the next resume attempt.
+  const [unresumableNotice, setUnresumableNotice] = useState<string | null>(null)
   // Digest of session keys + titles (NOT status), fed to both searches as their
   // revalidate signal. Sorted+joined so reordering `slots` alone cannot refetch.
   const slotTitleDigest = useMemo(
@@ -4949,6 +4956,14 @@ function ChatSidebar({
                   <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setHistoryFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
                 )}
               </div>
+              {unresumableNotice && (
+                <ErrorNotice
+                  message={unresumableNotice}
+                  onDismiss={() => setUnresumableNotice(null)}
+                  variant="block"
+                  className="mt-1.5"
+                />
+              )}
             </div>
             {/* scroll-shadow already fades the top/bottom edge as its
              *  scrollability cue, so the bar itself is redundant here. */}
@@ -5030,8 +5045,24 @@ function ChatSidebar({
                   const remoteInstanceId = (s as { instance_id?: string }).instance_id
                   const remoteInstanceName = (s as { instance_name?: string }).instance_name
                   const activateRow = () => {
+                    // A remote row never resumes here, so it can never produce the
+                    // unresumable notice below — the pane switch IS its outcome.
                     if (remoteInstanceId) { selectInstance(remoteInstanceId); return }
+                    // Resume, then check whether the resolved surface is one ChatPage
+                    // can actually show. The request itself succeeds either way
+                    // (`ok`), so `ok` alone cannot tell a genuinely usable resume
+                    // apart from one that will bounce right back (#3624).
+                    setUnresumableNotice(null)
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
+                      .unwrap()
+                      .then(result => {
+                        if (result.ok && !isChatPageSurface(result.surface)) {
+                          setUnresumableNotice(
+                            i18nT('pages.chatSidebar.this_session_cannot_be_opened_from_the_chat_side', { title: s.title || s.key, surface: surfaceLabel }),
+                          )
+                        }
+                      })
+                      .catch(() => { /* resumeFromHistory itself never rejects on an API-level failure; a genuine rejection has nothing more useful to add here. */ })
                   }
                   return (
                     <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {

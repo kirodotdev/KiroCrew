@@ -1519,7 +1519,12 @@ export const resumeFromHistory = createAsyncThunk(
     // Without a cursor this response cannot be paged, so do not advertise more:
     // a zero cursor beside hasMore renders an affordance that loads nothing.
     const cursor = typeof d.next_before === 'number' ? d.next_before : null
-    return { ok: d.ok, key: d.key, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
+    // `surface` (falling back to `mode`) is returned so a caller resuming from
+    // a surface that cannot display every slot (ChatPage's unified view only
+    // shows default/orchestrator/crew, see isChatPageSurface) can tell a
+    // silently-unusable resume apart from a genuinely failed one (#3624) --
+    // the request succeeds either way, so `ok` alone cannot distinguish them.
+    return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
   },
 )
 

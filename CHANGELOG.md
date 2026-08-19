@@ -3,6 +3,14 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Resuming a non-chat session from the chat sidebar no longer silently does
+  nothing.** `ChatPage` only ever renders the default/`orchestrator`/`crew`
+  surfaces; a history row for any other surface (e.g. a dashboard session)
+  resumed successfully over the wire and then bounced straight back with no
+  feedback, indistinguishable from a dead click. The sidebar now checks the
+  resolved surface against the same predicate `ChatPage` uses to filter its
+  slots, and shows an inline notice naming the session and its surface when a
+  resume can't be displayed there. (#3624)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
