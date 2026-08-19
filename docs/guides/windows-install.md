@@ -268,6 +268,49 @@ DACL and — because Windows grants *Bypass Traverse Checking* to Everyone by
 default — stays reachable through the tightened parent, so repairing an
 existing install needs a per-file pass, not a parent tighten.
 
+### The memory store: why a per-file pass, not just the directory
+
+`memory.db` (semantic/episodic memories and their embeddings) is the first
+caller to need that repair pass, and it names every memory-bearing file rather
+than only the `.db`. It runs under `journal_mode=WAL`, so SQLite keeps
+`memory.db-wal` and `memory.db-shm` beside it, and a *committed* row lives in
+the `-wal` until a checkpoint moves it — locking the `.db` alone would leave
+committed memories readable under whatever DACL a pre-lockdown sidecar carries.
+The pass covers the `.db`, its `-wal`/`-shm` sidecars, and `memory.faiss` /
+`memory.ids.json` (the embedding index and its id map).
+
+`VectorMemoryStore.init()` calls `make_owner_only_dir` on the parent first, so
+everything SQLite and FAISS create from then on inherits owner-only access on
+both platforms. The per-file pass is for what already exists — a restored
+backup, a home migration, a manual edit, or simply an install predating this
+lockdown. It therefore runs on **every** init rather than only when init created
+the files: gating on creation would leave every pre-existing install permanently
+readable, which is most of them.
+
+It runs **twice**, once before `sqlite3.connect` and once after. The first call
+is what stops the schema migrations running against a file another local user
+can still write; the second covers whatever SQLite has just created.
+
+The Windows cost is up to 11 `icacls` spawns per init — one for the directory
+plus one per file on each of the two passes, and a file that does not exist
+still spawns (icacls exits non-zero and the caller warns). That is more than it
+sounds and still cheap in context: once per workspace per process, beside the
+`sqlite3.connect`, the migrations and the FAISS index load already in that
+function — and `context.get_memory_for` caches the store and is reached from a
+worker thread, not the gateway event loop.
+
+It is fail-soft (warn, keep going), which is the contract `restrict_to_owner`
+documents for its callers: memory being unavailable is a supported degraded
+state, so a read-only filesystem must not take init down.
+
+> **Scope note.** With the default `db_path`, "the directory" *is* the data home
+> (`config_dir()`), so a memory init tightens the whole home to owner-only. That
+> direction is right — the home also holds the security policy, sessions and
+> lessons, all private on the same boundary — but it is wider than memory and it
+> is the only place in the tree that does it today. `memory.py`'s FTS index
+> (`memory_index.db`) and its sidecars carry the same secrets and are **not** yet
+> covered by the per-file pass.
+
 ## File locking on Windows
 
 `platform_compat.file_lock` / `acquire_lock` provide a genuine *blocking*

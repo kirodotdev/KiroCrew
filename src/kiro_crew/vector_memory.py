@@ -751,9 +751,90 @@ class VectorMemoryStore:
         # grows past _LAST_ACCESSED_CACHE_MAX.
         self._last_accessed_touch: dict[str, float] = {}
 
+    def _secret_bearing_files(self) -> tuple[Path, ...]:
+        """Every file beside the DB that carries the user's memories.
+
+        All of them, not just the DB, because on Windows the owner-only DIRECTORY is
+        not sufficient for a file that already exists: **Bypass Traverse Checking** is
+        granted to Everyone by default, so a permissive DACL on the file itself stays
+        reachable even inside a tightened directory. The directory governs what SQLite
+        and FAISS create from now on; this list is what repairs an existing install.
+
+        - ``-wal`` / ``-shm``: a COMMITTED row lives in the ``-wal`` until a
+          checkpoint moves it. Same suffix set ``memory.py`` uses to drop a corrupt
+          index.
+        - ``memory.faiss`` / ``memory.ids.json``: the embedding index and its
+          id map, written with no lockdown of their own.
+
+        Not exhaustive for the data home as a whole -- ``memory.py``'s FTS index
+        (``memory_index.db``) and its sidecars carry the same secrets and are not
+        this class's to open. Tracked separately rather than reached across a module
+        boundary from here.
+        """
+        return (
+            Path(f"{self._db_path}-wal"),
+            Path(f"{self._db_path}-shm"),
+            self._faiss_path,
+            self._faiss_path.with_suffix(".ids.json"),
+        )
+
+    def _restrict_memory_files(self) -> None:
+        """Make every memory-bearing file that exists owner-only.
+
+        Called TWICE by :meth:`init` -- once before the connect and once after -- and
+        the ordering is the point of the first call. The owner-only directory does not
+        cover a file that already EXISTS on Windows, because Bypass Traverse Checking
+        is granted to Everyone by default, so a permissive DACL on the file itself
+        stays reachable inside a tightened directory. Restricting before
+        ``sqlite3.connect`` means the migrations do not run against a file another
+        local user can still write; restricting again after covers whatever SQLite
+        just created.
+
+        Missing files are skipped BY AN EXISTENCE CHECK, not by catching the failure:
+        on Windows ``restrict_to_owner`` shells out, so a missing path raises plain
+        ``OSError`` (icacls exits non-zero) rather than ``FileNotFoundError``, which
+        only ever comes from the POSIX ``os.chmod``. Catching alone would spawn up to
+        five futile ``icacls`` processes on a clean init and log a false "may be
+        readable by other users" warning for each, twice per init. The race between
+        the check and the call is benign: a file that appears in between is created by
+        SQLite or FAISS inside the already-tightened directory, so it inherits
+        owner-only access on both platforms and the next init covers it regardless.
+
+        Any other failure warns rather than raising -- memory being unavailable is a
+        supported degraded state, and ``restrict_to_owner`` documents this
+        warn-and-continue handler as its caller contract.
+        """
+        for path in (self._db_path, *self._secret_bearing_files()):
+            if not path.exists():
+                continue  # SQLite and FAISS create theirs on demand
+            try:
+                platform_compat.restrict_to_owner(path)
+            except OSError:
+                logger.warning(
+                    "Cannot restrict %s to owner; it may be readable by other users",
+                    path,
+                    exc_info=True,
+                )
+
     def init(self) -> None:
         """Create DB, apply migrations, set permissions."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only lockdown, in two halves. This directory call covers everything
+        # SQLite and FAISS create from here on -- inheritable on Windows, because
+        # `make_owner_only_dir` routes through `restrict_dir_to_owner`. The per-file
+        # pass below repairs what already EXISTS, which a tightened parent cannot do:
+        # Windows grants *Bypass Traverse Checking* to Everyone by default, so a
+        # pre-lockdown file stays reachable through it. Full reasoning -- the sidecar
+        # file set, the every-init rationale, the Windows icacls cost, the fail-soft
+        # contract -- lives in docs/guides/windows-install.md, "The memory store".
+        #
+        # SCOPE: with the default `db_path` this directory IS the data home
+        # (`config_dir()`), so a memory init tightens the whole home. That is wider
+        # than this class and the only place in the tree that does it -- named here
+        # rather than left to be discovered.
+        platform_compat.make_owner_only_dir(self._db_path.parent)
+        # BEFORE the connect so the migrations do not run against a file another
+        # local user can still write; repeated after it to cover what SQLite created.
+        self._restrict_memory_files()
         self._db = sqlite3.connect(
             str(self._db_path), check_same_thread=False, isolation_level=None
         )
@@ -791,9 +872,23 @@ class VectorMemoryStore:
                 self._db.commit()
                 logger.info("Applied memory schema migration v%s", ver)
 
-        # Set file permissions (owner-only). chmod_safe already logs+swallows
-        # OSError internally and is a no-op on Windows, so no wrapper needed.
-        platform_compat.chmod_safe(self._db_path, 0o600)
+        # Second pass, after the connect: covers what SQLite has just created. Runs
+        # on EVERY init, not only when init created the files -- an existing DB is
+        # exactly the one that may have lost its protection since (restored backup,
+        # home migration, manual edit, or an install predating this lockdown).
+        # ``restrict_to_owner`` rather than ``chmod_safe``, which is a documented
+        # no-op on Windows. Cost, file set and fail-soft contract:
+        # docs/guides/windows-install.md, "The memory store".
+        #
+        # CALLER CONTRACT: an async caller must offload this. The Windows path shells
+        # out to icacls, so calling ``init()`` directly on an event loop freezes it
+        # for seconds. ``eval.runner`` offloads via ``asyncio.to_thread``. ONE known
+        # violator remains: ``dashboard/handlers/memory.py::_get_vector_store``'s
+        # standalone fallback inits on the loop. It is cached, so it costs at most one
+        # first-request stall per process and only when no context_builder supplied a
+        # store -- not fixed here because offloading it means making that sync helper
+        # async across ~15 handlers. Tracked in #5221.
+        self._restrict_memory_files()
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)
         try:

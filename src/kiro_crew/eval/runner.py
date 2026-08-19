@@ -248,7 +248,11 @@ class EvalRunner:
             conv_log.init()
             lesson_store = LessonStore(base_dir=ws)
             vector_store = VectorMemoryStore(db_path=ws / "vector_memory.db")
-            vector_store.init()
+            # Off the loop: init() now tightens the DB and its sidecars to
+            # owner-only, which on Windows shells out to icacls up to 11 times.
+            # This runs once per scenario, so a synchronous call would freeze the
+            # loop for seconds on every one.
+            await asyncio.to_thread(vector_store.init)
 
             # Wrap provider factory so all sessions share the same workspace root
             # (default factory creates per-session subdirs, which isolates memory)
