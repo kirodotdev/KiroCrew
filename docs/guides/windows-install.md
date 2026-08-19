@@ -161,6 +161,10 @@ gateway can't find the built-in `kirocrew-cron` / `kirocrew-core` MCP servers,
 that dir is appended to the MCP spawn `PATH` automatically
 (`env.augmented_path`), and the managed-server invocation falls back to
 `python -m kiro_crew <sub>` when the `kirocrew.exe` wrapper isn't resolvable.
+In the desktop bundle the relocatable `bin\kirocrew.cmd` shim is preferred
+over `Scripts\kirocrew.exe` (whose embedded interpreter path names the build
+machine) and is unwrapped to `<root>\python.exe -P -s -m kiro_crew <sub>` when
+spawned.
 
 ## The unsandboxed-exec opt-in
 

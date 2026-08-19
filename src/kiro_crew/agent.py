@@ -328,7 +328,13 @@ def _bin_is_usable(path: Path) -> bool:
     except OSError:
         return False
     if not head.startswith(b"#!"):
-        return True  # compiled launcher (pip's Windows .exe, a frozen binary)
+        # Compiled launcher (pip's Windows .exe, a frozen binary) or a Windows
+        # batch shim (`bin\kirocrew.cmd` starts with `@`). The shim DOES name
+        # its interpreter (`"%~dp0..\python.exe"`), but we choose not to parse
+        # the batch body here; the consumer that spawns it
+        # (`_kirocrew_mcp_invocation`) resolves and validates that sibling
+        # interpreter itself, mirroring website/electron/main.js.
+        return True
     text = head.decode("utf-8", errors="replace")
 
     shebang = text.splitlines()[0][2:].strip()
@@ -397,8 +403,23 @@ def _kirocrew_bin_subpath(root: Path) -> Path:
     on Windows finds nothing, which silently drops the built-in
     ``kirocrew-cron`` / ``kirocrew-core`` MCP servers (``command not found:
     .../bin/kirocrew``). Branch on the platform so both layouts resolve.
+
+    On Windows a relocatable ``bin\\kirocrew.cmd`` shim is preferred over the
+    pip-generated ``Scripts\\kirocrew.exe`` when it exists. The desktop bundle
+    (``packaging/build-desktop.sh``) ships BOTH: pip drops a console-script
+    ``.exe`` in ``Scripts\\``, but distlib embeds the ABSOLUTE interpreter path
+    of the machine that built it, so inside a shipped bundle that ``.exe``
+    points at a build-agent path that does not exist on the user's machine.
+    The ``.cmd`` shim resolves the interpreter via ``%~dp0`` and is the only
+    relocatable launcher of the two. The Electron resolver
+    (``website/electron/find-bin.js``) ranks them the same way — keep the two
+    in sync. Plain pip installs ship no ``bin\\kirocrew.cmd``, so they keep
+    resolving ``Scripts\\kirocrew.exe`` via the fallback.
     """
     if platform_compat.IS_WINDOWS:
+        cmd_shim = root / "bin" / "kirocrew.cmd"
+        if cmd_shim.is_file():
+            return cmd_shim
         return root / "Scripts" / "kirocrew.exe"
     return root / "bin" / "kirocrew"
 
@@ -586,9 +607,36 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     ``sys.executable`` is the absolute path of the running interpreter, so it
     needs no PATH entry and ignores any broken launcher. ``python -m
     kiro_crew`` dispatches the same CLI as the ``kirocrew`` console script.
+
+    A resolved ``bin\\kirocrew.cmd`` (the Windows bundle's relocatable shim,
+    see :func:`_kirocrew_bin_subpath`) is unwrapped to the sibling
+    interpreter — ``<root>\\python.exe -P -s -m kiro_crew <sub>`` — instead of
+    being emitted verbatim. This mirrors ``website/electron/main.js``, which
+    refuses to spawn the shim it resolved (Node's ``spawn()`` rejects
+    ``.cmd``/``.bat`` without ``shell:true``, CVE-2024-27980 hardening) and
+    substitutes exactly this invocation. Whether kiro-cli's spawner handles a
+    batch file is its own implementation detail; emitting the interpreter
+    directly removes the question — the shim exists for humans and find-bin
+    identity, the process tree runs ``python.exe``. When the sibling
+    interpreter is missing (corrupted bundle), fall back to
+    ``sys.executable``, which inside the bundle IS that interpreter.
     """
     bin_path = _resolve_kirocrew_bin()
     if bin_path == "kirocrew":  # unresolved sentinel from _resolve_kirocrew_bin
+        return sys.executable, ["-m", "kiro_crew", subcommand]
+    if bin_path.endswith(".cmd"):
+        interpreter = Path(bin_path).parent.parent / "python.exe"
+        if _interpreter_runnable(interpreter):
+            # ``-P`` (safe path, 3.11+) keeps the spawn CWD off ``sys.path``:
+            # kiro-cli spawns managed servers with the user's project as CWD,
+            # so with ``-m`` alone a cloned repo carrying a ``kiro_crew/``
+            # package would shadow the real one and run unconfined. Safe to
+            # pin here because this interpreter is always the bundle's own
+            # python-build-standalone 3.12 (packaging/build-desktop.sh); the
+            # generic ``sys.executable`` fallbacks below and above stay
+            # ``-P``-free because the project still supports Python 3.10,
+            # which lacks the flag.
+            return str(interpreter), ["-P", "-s", "-m", "kiro_crew", subcommand]
         return sys.executable, ["-m", "kiro_crew", subcommand]
     return bin_path, [subcommand]
 
