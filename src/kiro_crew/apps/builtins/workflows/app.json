@@ -41,6 +41,7 @@
     "port": "auto",
     "healthCheck": "/health"
   },
+  "iconUrl": "/app-assets/workflows/icon.svg",
   "heroImage": "/app-assets/workflows/hero-light.svg",
   "heroImageDark": "/app-assets/workflows/hero-dark.svg",
   "heroImageDetail": "/app-assets/workflows/hero-detail-light.svg",

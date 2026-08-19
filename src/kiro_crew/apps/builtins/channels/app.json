@@ -34,5 +34,6 @@
         "icon": "Users"
       }
     ]
-  }
+  },
+  "iconUrl": "/app-assets/channels/icon.svg"
 }

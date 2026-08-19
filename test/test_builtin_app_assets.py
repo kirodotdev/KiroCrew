@@ -60,13 +60,63 @@ def test_all_builtin_app_assets_exist() -> None:
     assert not missing, "builtin app-asset references with no file:\n" + "\n".join(missing)
 
 
-def test_agent_worlds_icon_wired_to_svg() -> None:
-    """Agent Worlds surfaces its colorful icon via top-level iconUrl.
+def test_every_builtin_declares_an_icon() -> None:
+    """Every builtin names its own mark in ``iconUrl``.
 
-    Regression: the shipped ``worlds/icon.svg`` was present but unreferenced, so
-    the app fell back to the lucide Gamepad2 glyph in both the store and nav.
+    Existence checks alone leave the store green when a manifest omits ``iconUrl``
+    entirely: the app then falls through ``AppIconTile``'s last resort — a
+    name-hashed gradient carrying the generic lucide ``Package`` glyph — and reads
+    as a stray placeholder among 20 apps that have real identities. That is how
+    Channels, Dev Fleet and Workflows shipped iconless, and how Dev Fleet's
+    ``icon.svg`` sat on disk unreferenced. The lucide name under
+    ``ui.pages[].icon`` does not substitute: it dresses the sidebar nav row, and
+    ``AppIcon``'s ICON_MAP carries only a handful of names, so most fall back to
+    ``Package`` too.
+    """
+    iconless = [
+        a.get("name") for a in _all_builtin_apps()
+        if not isinstance(a.get("iconUrl"), str) or not a["iconUrl"]
+    ]
+    assert not iconless, (
+        "builtins with no iconUrl (they render the gradient + Package "
+        f"placeholder): {sorted(map(str, iconless))}"
+    )
+
+
+def test_builtin_svg_icons_are_themeable() -> None:
+    """Builtin SVG icons paint through the ``--ico-a``/``--ico-b`` tokens.
+
+    ``AppIcon`` inlines these SVGs specifically so the active theme cascades in,
+    driving idle (muted + accent highlight) versus selected (accent-dominant)
+    from two custom properties. An icon that hardcodes its colours — a lucide
+    glyph pasted in with ``stroke="#8b90a5"``, say — opts out of both states: it
+    never lights up on selection and it keeps a light-theme grey on dark themes,
+    where it is the one low-contrast mark in the list. Raster icons are exempt;
+    their bytes are fixed, which is what ``iconUrlDark`` exists for.
+    """
+    unthemed: list[str] = []
+    for app in _all_builtin_apps():
+        for field, path in _asset_refs(app):
+            if field != "iconUrl" or not path.endswith(".svg"):
+                continue
+            markup = _resolve(path).read_text(encoding="utf-8")
+            if "--ico-a" not in markup and "--ico-b" not in markup:
+                unthemed.append(f"{app.get('name')} -> {path}")
+    assert not unthemed, (
+        "builtin SVG icons with hardcoded colours instead of --ico-a/--ico-b:\n"
+        + "\n".join(unthemed)
+    )
+
+
+def test_agent_worlds_icon_wired_to_svg() -> None:
+    """Agent Worlds' ``iconUrl`` still points at ``worlds/icon.svg`` specifically.
+
+    Only the literal path is this test's own: that the value exists is covered by
+    ``test_every_builtin_declares_an_icon`` and that it resolves by
+    ``test_all_builtin_app_assets_exist``. What neither can see is a manifest
+    silently repointed at some other app's art, which renders a plausible icon
+    and reads as green.
     """
     worlds = next((a for a in _all_builtin_apps() if a["name"] == "agent-worlds"), None)
     assert worlds is not None, "agent-worlds builtin missing from every registration path"
     assert worlds.get("iconUrl") == "/app-assets/worlds/icon.svg"
-    assert _resolve(worlds["iconUrl"]).is_file()
