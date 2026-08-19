@@ -837,7 +837,7 @@ function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphEleme
     )
   }
   if (unfurl && meta) return <LinkCard meta={meta} href={unfurl} />
-  return <p {...sp(node)} className="my-1.5 leading-relaxed">{children}</p>
+  return <p {...sp(node)} className="my-1 leading-6">{children}</p>
 }
 
 /**

@@ -97,7 +97,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   return (
     <div className="my-1">
       <button
-        className={`flex items-center gap-2 px-3.5 py-2 rounded-md text-[13px] font-mono text-muted bg-card border cursor-pointer transition-all w-full text-left ${needsAttention && !expanded ? 'border-amber-400 hover:border-amber-300' : localResolved ? 'border-ok/60 hover:border-ok/80' : 'border-border hover:border-border-strong'} hover:text-text`}
+        className={`flex items-center gap-2 px-4 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${needsAttention && !expanded ? 'ring-amber-400 hover:ring-amber-300' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
         onClick={() => { userToggled.current = true; setExpanded(e => !e) }}
         aria-expanded={expanded}
         aria-label={`${expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse') : i18nT('pages.chat.collapsibleToolGroup.expand')} ${labelText}`}
@@ -119,21 +119,21 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
 
       {/* Inline approval: command preview + action buttons */}
       {needsAttention && !expanded && onApprove && truncated && (
-        <div className="mt-1 ml-4 border-l-[3px] border-l-amber-400 pl-3">
-          <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-1.5"><ToolInputText text={truncated} /></pre>
+        <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_theme(colors.amber.400)] forced-colors:border-l-2">
+          <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-2"><ToolInputText text={truncated} /></pre>
         </div>
       )}
       {needsAttention && !expanded && onApprove && (
-        <div className="mt-1 ml-4 pl-3 flex gap-1.5 flex-wrap">
-          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
-          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>
-          <button disabled={submitting} className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('rejected') }}><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.reject')}</button>
+        <div className="mt-1 ml-4 pl-3 flex gap-2 flex-wrap">
+          <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
+          <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>
+          <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('rejected') }}><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.reject')}</button>
         </div>
       )}
 
-      {expanded && <div className="mt-1 ml-4 border-l border-border pl-3 flex flex-col gap-1">
+      {expanded && <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--border)] forced-colors:border-l-2 flex flex-col gap-1">
         {children}
-        {onViewActivity && !activityOpen && <button className="text-[12px] text-accent hover:underline cursor-pointer font-body self-start mt-1" onClick={onViewActivity}>{i18nT('pages.chat.collapsibleToolGroup.view_full_activity')}</button>}
+        {onViewActivity && !activityOpen && <button className="text-[12px] leading-5 text-accent hover:underline cursor-pointer font-body self-start mt-1" onClick={onViewActivity}>{i18nT('pages.chat.collapsibleToolGroup.view_full_activity')}</button>}
       </div>}
     </div>
   )

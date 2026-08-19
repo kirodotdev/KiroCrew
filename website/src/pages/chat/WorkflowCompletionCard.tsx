@@ -91,7 +91,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   // it here nested one clamp inside another and inset the card by a second full
   // gutter, so it sat 20px right of every sibling row and 40px narrower.
   return (
-    <div className="rounded-md bg-accent/10 border border-accent/20 overflow-hidden">
+    <div className="rounded-md bg-accent/10 ring-1 ring-inset forced-colors:border ring-accent/20 overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2">
         <span className="shrink-0">
           {ok ? (
@@ -101,9 +101,9 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
           )}
         </span>
         <Workflow size={12} className="text-accent/70 shrink-0" />
-        <span className="truncate text-[13px] font-medium text-text-strong">{label}</span>
+        <span className="truncate text-[13px] leading-5 font-medium text-text-strong">{label}</span>
         <span
-          className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${
+          className={`shrink-0 text-[10px] leading-4 px-1.5 py-0.5 rounded border ${
             ok
               ? 'bg-green-500/10 border-green-500/20 text-green-500'
               : 'bg-danger/10 border-danger/20 text-danger'
@@ -111,14 +111,14 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         >
           {status}
         </span>
-        <span className="text-[10px] text-muted font-mono truncate hidden sm:inline">{runId}</span>
+        <span className="text-[10px] leading-4 text-muted font-mono truncate hidden sm:inline">{runId}</span>
         <div className="ml-auto flex items-center gap-1 shrink-0">
           <button
             type="button"
             onClick={() => dispatch(openActivityToTab('workflows'))}
             title={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
             aria-label={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
-            className="pi-morph flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
+            className="pi-morph flex items-center gap-1 text-[11px] leading-4 text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
           >
             <PanelRightSolid size={13} />
             <span className="hidden sm:inline">{i18nT('pages.chat.workflowCompletionCard.panel')}</span>
@@ -129,7 +129,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
               onClick={() => setExpanded(e => !e)}
               aria-expanded={expanded}
               title={expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
-              className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
+              className="flex items-center gap-1 text-[11px] leading-4 text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
             >
               {expanded ? i18nT('pages.chat.workflowCompletionCard.hide_result') : i18nT('pages.chat.workflowCompletionCard.show_result')}
               <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />

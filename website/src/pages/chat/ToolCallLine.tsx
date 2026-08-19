@@ -654,7 +654,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           writes. The file-path chip below keeps mono, where it is earned. */}
       <button
         ref={pillButtonRef}
-        className={`inline-flex items-start gap-1 min-w-0 max-w-full text-[13px] px-2 py-0.5 rounded-md transition-all text-left focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
+        className={`inline-flex items-start gap-2 min-w-0 max-w-full text-[13px] px-2 py-0.5 rounded-md transition-all text-left focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${hasPendingPerm ? 'cursor-default' : 'cursor-pointer hover:brightness-110'}`}
         aria-expanded={effectivelyExpanded}
         aria-label={hasPendingPerm
           ? i18nT('pages.chat.toolCallLine.aria_awaiting_approval', { label })
@@ -695,7 +695,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           on hover; the icon inherits the button's currentColor. */}
       {showFileOpen && filePath && (
         <button
-          className="pi-morph shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-tight bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+          className="pi-morph shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[12px] leading-5 bg-bg-hover text-muted hover:text-accent hover:bg-accent/10 cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
           style={{ marginTop: '1px' }}
           onClick={(e) => { e.stopPropagation(); onFileOpen!(filePath) }}
           title={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
@@ -708,7 +708,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       </div>
 
       <StatusRow show={showShellActivity}>
-        <div className="ml-3 mt-1 text-[12px] text-muted">
+        <div className="ml-3 mt-1 text-[12px] leading-5 text-muted">
           <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
             {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
@@ -716,7 +716,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         </div>
       </StatusRow>
       <StatusRow show={showWaitCountdown}>
-        <div className="ml-3 mt-1 flex items-center gap-2 text-[12px] text-muted" data-testid="wait-countdown">
+        <div className="ml-3 mt-1 flex items-center gap-2 text-[12px] leading-5 text-muted" data-testid="wait-countdown">
           {/* The status word is announced once; the digits are aria-hidden so a
               screen reader is not re-read every second. Same split as the shell
               activity row above. */}
@@ -736,7 +736,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             type="button"
             disabled={endingWait}
             data-testid="wait-end-now"
-            className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={e => { e.stopPropagation(); endWaitNow() }}
           >
             {endingWait
@@ -775,7 +775,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           <button
             type="button"
             onClick={() => { if (toolCallId) onOpenApp?.(toolCallId) }}
-            className="mt-1.5 flex items-center gap-1.5 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            className="mt-1.5 flex items-center gap-2 px-1.5 py-0.5 -ml-1.5 rounded text-[12px] leading-5 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
           >
             <PanelRight size={13} aria-hidden />
             <span>{i18nT('pages.chat.toolCallLine.opened_in_the_side_panel')}</span>

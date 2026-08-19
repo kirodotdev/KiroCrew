@@ -20,7 +20,7 @@ export default function EarlierMessagesBar({ loading, failed, onLoad }: {
     : i18nT('pages.chat.earlierMessagesBar.load_earlier_messages')
 
   return (
-    <div className="flex justify-center py-2">
+    <div className="flex justify-center px-4 py-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <Btn
         type="button"
         data-testid="load-earlier-messages"
@@ -30,7 +30,7 @@ export default function EarlierMessagesBar({ loading, failed, onLoad }: {
         aria-disabled={loading}
         aria-busy={loading}
         className={[
-          'text-[13px]',
+          'text-[13px] leading-5',
           failed ? 'text-danger border-danger/40' : 'text-muted',
           loading ? 'opacity-50' : '',
         ].join(' ')}

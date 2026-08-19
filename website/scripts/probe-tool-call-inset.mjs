@@ -23,12 +23,23 @@ await page.waitForTimeout(1000)
 const out = await page.evaluate(() => {
   const root = document.querySelector('[data-capture-root]')
   const rb = root.getBoundingClientRect()
-  const textEdge = rb.x + (rb.width - 800) / 2 + 20
+  // Derive the gutter from the DOM rather than hardcoding it. A hardcoded class is
+  // how this probe's sibling silently went to zero rows: it kept selecting on
+  // `px-5` after the gutter was unified to `px-4`, so its assertion loop never ran
+  // and it exited 0. Reading the real padding cannot drift out of date.
+  const all = [...root.querySelectorAll('[style*="--mc-content-width"]')]
+  const gutter = {}
+  for (const el of all) {
+    const g = [...el.classList].find(c => /^px-[\d.]+$/.test(c))
+    if (g) gutter[g] = (gutter[g] || 0) + 1
+  }
+  const gutterClass = Object.entries(gutter).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
+  const wrappers = all.filter(el => el.classList.contains(gutterClass))
+  if (wrappers.length === 0) throw new Error('probe matched zero row wrappers — the selector has drifted')
+  const w0 = wrappers[0]
+  const textEdge = w0.getBoundingClientRect().x + parseFloat(getComputedStyle(w0).paddingLeft)
   const dx = el => Math.round(el.getBoundingClientRect().x - textEdge)
 
-  // Host row wrappers: the elements carrying the column geometry.
-  const wrappers = [...root.querySelectorAll('[style*="--mc-content-width"]')]
-    .filter(el => el.className.includes('px-5'))
 
   return wrappers.map(w => {
     const chain = []

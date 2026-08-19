@@ -232,7 +232,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
       onClick={open}
       title={i18nT('pages.chat.subagentRunCard.open_in_the_subagents_panel')}
       data-testid="subagent-run-card"
-      className="pi-morph group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
+      className="pi-morph group w-full text-left rounded-md bg-accent/10 ring-1 ring-inset forced-colors:border ring-accent/20 hover:bg-accent/15 hover:ring-accent/40 transition px-3 py-2 flex items-start gap-2"
     >
       <span className="shrink-0 mt-0.5">
         {counts.running > 0
@@ -246,12 +246,12 @@ const SubagentRunCard = memo(function SubagentRunCard({
                 : <Bot size={15} className="text-accent/70" />}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
           <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
-          <span className="truncate text-[13px] font-medium text-text-strong">{label}</span>
+          <span className="truncate text-[13px] leading-5 font-medium text-text-strong">{label}</span>
           {queued > 0 && settled === 0 && (
             <span
-              className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted"
+              className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted"
               data-testid="subagent-card-queued"
               title={i18nT('pages.chat.subagentRunCard.waiting_to_start_queued_behind_the_concurrency_l')}
             >
@@ -259,22 +259,22 @@ const SubagentRunCard = memo(function SubagentRunCard({
             </span>
           )}
           {counts.done > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-ok-subtle border border-ok/20 text-ok">
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-ok-subtle border border-ok/20 text-ok">
               <CheckCircle2 size={10} aria-hidden /> {counts.done}
             </span>
           )}
           {counts.failed > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-danger-subtle border border-danger/20 text-danger">
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-danger-subtle border border-danger/20 text-danger">
               <AlertCircle size={10} aria-hidden /> {counts.failed}
             </span>
           )}
           {counts.stopped > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted">
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted">
               <Square size={10} aria-hidden /> {counts.stopped}
             </span>
           )}
         </div>
-        <div className="text-[10px] text-muted font-mono truncate mt-0.5">
+        <div className="text-[10px] leading-4 text-muted font-mono truncate mt-1">
           {idPreview ? `${idPreview}${launch.ids.length > 4 ? ` +${launch.ids.length - 4}` : ''} · ` : ''}
           {i18nT('pages.chat.subagentRunCard.open_subagents_panel')}
         </div>

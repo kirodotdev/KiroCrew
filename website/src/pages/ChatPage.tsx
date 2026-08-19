@@ -5837,7 +5837,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         continuing={continuing}
       />
     )
-    if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] px-3 py-2 rounded-md border border-border self-center animate-scale-in">{m.content}</div>
+    if (m.role === 'notice') return <div key={key} className="bg-card text-muted text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-border self-center animate-scale-in">{m.content}</div>
     if (m.role === 'permission') return null
     if (m.role === 'mcp_oauth') {
       const banner = renderMcpOAuthMessage(m, connectionsUiOn)
@@ -5889,8 +5889,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 ? m.content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
                 : m.content
               return <>
-                {cronLabel && <span className="text-muted text-[11px] font-medium px-1 mb-0.5"><Clock className="lucide-inline" /> {cronLabel}</span>}
-                <div className="msg-content px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap rounded-lg bg-warning-subtle text-fg border border-warning/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}><MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} /></MessageErrorBoundary></div>
+                {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock className="lucide-inline" /> {cronLabel}</span>}
+                <div className="msg-content px-4 py-3 text-sm leading-6 whitespace-pre-wrap rounded-lg bg-warning-subtle text-fg ring-1 ring-inset forced-colors:border ring-warning/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}><MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} /></MessageErrorBoundary></div>
                 {/* No `font-mono`: a formatted date is prose, and Tailwind's
                     `font-mono` pins `var(--mono)` — a token the Font Family
                     setting never writes, so it overrode the user's choice and
@@ -5898,7 +5898,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     zh/ja dashboard renders WITH CJK characters. `tabular-nums`
                     keeps the digits fixed-width, which is the alignment the
                     mono was actually there for. */}
-                {chatConfig.showTimestamps && msgTime && <span className="text-muted text-[12px] tabular-nums px-1" title={msgTimeFull}>{msgTime}</span>}
+                {chatConfig.showTimestamps && msgTime && <span className="text-muted text-[12px] leading-4 tabular-nums px-1" title={msgTimeFull}>{msgTime}</span>}
               </>
             })()
           ) : (

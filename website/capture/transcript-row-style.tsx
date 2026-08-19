@@ -173,10 +173,13 @@ createRoot(document.getElementById('root')!).render(
           className="bg-bg text-text relative"
           style={{ width: 900, ['--mc-content-width' as string]: '800px' }}
         >
-          {/* The column's text edge: a 50px page gutter plus the 20px of px-5. */}
+          {/* The column's text edge: a 50px page gutter plus the 16px of px-4.
+              This was 20px while the row gutter was px-5; the gutter was unified
+              to px-4, so the guide had to move with it or the frame would show
+              every row 4px left of a line that claims to be the text edge. */}
           <div
             className="absolute top-0 bottom-0 border-l border-dashed border-accent/40 pointer-events-none"
-            style={{ left: 'calc(50% - 400px + 20px)' }}
+            style={{ left: 'calc(50% - 400px + 16px)' }}
           />
           <div className="py-4">
             <ChatMessageList messages={MESSAGES} running={false} contentWidth="800px" renderers={renderers} />

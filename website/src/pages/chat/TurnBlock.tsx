@@ -312,7 +312,7 @@ export default function TurnBlock({ turn, renderItem, collapseAll = false, appTo
 function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onToggle: () => void; label: string }) {
   return (
     <div className="px-4 py-0 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <button className="flex items-center gap-1.5 text-[12px] text-muted/60 hover:text-muted cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
+      <button className="flex items-center gap-2 text-[12px] leading-5 text-muted/60 hover:text-muted cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
         <ChevronRight size={12} className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
         {label}
       </button>
@@ -329,8 +329,8 @@ function CollapsibleSection({ expanded, children }: { expanded: boolean; childre
       transition={{ height: { duration: 0.3, ease: [0.4, 0, 0.2, 1] }, opacity: { duration: 0.2 } }}
       style={{ overflow: 'hidden' }}
     >
-      <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-        <div className="border-l-2 border-l-border opacity-60">{children}</div>
+      <div className="mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+        <div className="shadow-[inset_2px_0_0_0_var(--border)] forced-colors:border-l-2 opacity-60">{children}</div>
       </div>
     </motion.div>
   )

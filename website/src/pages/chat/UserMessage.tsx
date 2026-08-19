@@ -143,7 +143,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             bubble it replaces, capped at 550px or the column, whichever is
             smaller. No JS measurement. */}
         <div
-          className="edit-grow px-4 py-1.5 text-sm leading-relaxed rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] outline outline-2 -outline-offset-2 outline-accent/60"
+          className="edit-grow px-4 py-2 text-sm leading-6 rounded-xl bg-card text-card-fg overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] outline outline-2 -outline-offset-2 outline-accent/60"
           data-replicated-value={draft}
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
         >
@@ -151,7 +151,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
             ref={taRef}
             rows={1}
             aria-label={i18nT('pages.chat.userMessage.edit_message')}
-            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-none text-sm leading-relaxed"
+            className="bg-transparent text-card-fg resize-none overflow-hidden focus:outline-none text-sm leading-6"
             value={draft}
             onChange={e => setDraft(e.target.value)}
             {...ime.bindComposition()}
@@ -165,11 +165,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         </div>
         {/* Actions sit BELOW the bubble (like the read-only action row) so they
             never impose a min-width floor on the auto-sized bubble. */}
-        <div className="flex justify-end gap-1.5 mt-1">
-          <button onClick={cancel} className="px-2.5 py-1 text-[13px] text-muted hover:text-text rounded border border-border hover:bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
+        <div className="flex justify-end gap-2 mt-1">
+          <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
             {i18nT('pages.chat.userMessage.cancel')}
           </button>
-          <button onClick={submit} className="flex items-center gap-1 px-2.5 py-1 text-[13px] bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title={i18nT('pages.chat.userMessage.send_enter')}>
+          <button onClick={submit} className="flex items-center gap-1 px-3 py-1 text-[13px] leading-5 bg-accent text-accent-fg rounded hover:bg-accent/80 transition-colors" title={i18nT('pages.chat.userMessage.send_enter')}>
             <Send size={10} /> {i18nT('pages.chat.userMessage.send')}
           </button>
         </div>
@@ -179,7 +179,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
 
   const bubble = (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
-    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-1.5 text-sm leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       {renderContent(content, meta)}
     </div>
   )
@@ -201,7 +201,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         <>
           {/* Injected into the RUNNING turn — badge + accent bubble + one-shot
               entrance so the steer is visibly distinct from a normal message. */}
-          <div className="inline-flex items-center gap-1 text-[12px] font-semibold text-accent mb-1 pr-1">
+          <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
             <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
           <motion.div
@@ -227,7 +227,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           descendant overrides grow every action to a 40px touch target (20px
           icon + 10px padding); hover-capable pointers keep the reveal-on-hover
           behavior and the compact 14px icons untouched. */}
-      <div className={`flex items-center gap-1.5 px-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
+      <div className={`flex items-center gap-2 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
         <button
           onClick={() => {
             const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
@@ -280,7 +280,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         {/* No `font-mono`: see the twin in AssistantMessage's footer — a
             formatted date is prose, and `font-mono` pinned `var(--mono)`, which
             the Font Family setting never writes. */}
-        {timestamp && <span className="text-muted text-[12px] tabular-nums" title={timestampTitle}>{timestamp}</span>}
+        {timestamp && <span className="text-muted text-[12px] leading-5 tabular-nums" title={timestampTitle}>{timestamp}</span>}
       </div>
     </div>
   )

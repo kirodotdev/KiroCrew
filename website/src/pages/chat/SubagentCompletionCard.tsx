@@ -61,7 +61,7 @@ export function headline(parsed: ParsedSubagentCompletion): string {
   })
 }
 
-const CHIP = 'shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border'
+const CHIP = 'shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded border'
 
 /**
  * Make a wave digest's per-agent outcomes readable without an emoji font.
@@ -134,7 +134,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   // gutter, so it sat 20px right of every sibling row and 40px narrower.
   return (
     <div
-      className="rounded-md bg-accent/10 border border-accent/20 overflow-hidden"
+      className="rounded-md bg-accent/10 ring-1 ring-inset forced-colors:border ring-accent/20 overflow-hidden"
       data-testid="subagent-completion-card"
     >
       <div className="flex items-center gap-2 px-3 py-2">
@@ -152,7 +152,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           )}
         </span>
         <Bot size={12} className="text-accent/70 shrink-0" aria-hidden />
-        <span id={headlineId} className="truncate text-[13px] font-medium text-text-strong">{headline(parsed)}</span>
+        <span id={headlineId} className="truncate text-[13px] leading-5 font-medium text-text-strong">{headline(parsed)}</span>
         {parsed.kind === 'single' ? (
           <span
             className={`${CHIP} ${
@@ -187,7 +187,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           </>
         )}
         {parsed.kind === 'single' ? (
-          <span className="text-[10px] text-muted font-mono truncate hidden sm:inline">
+          <span className="text-[10px] leading-4 text-muted font-mono truncate hidden sm:inline">
             {parsed.agentId}
           </span>
         ) : parsed.chunks > 1 ? (
@@ -197,7 +197,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           // fraction: beside "10 of 18 results delivered" a second, smaller
           // "1/2" reads as a competing ratio, and a tooltip-only explanation is
           // invisible to touch and keyboard.
-          <span className="text-[10px] text-muted truncate hidden sm:inline">
+          <span className="text-[10px] leading-4 text-muted truncate hidden sm:inline">
             {i18nT('pages.chat.subagentCompletionCard.digest_chunk_n_of_n', {
               chunk: parsed.chunk,
               chunks: parsed.chunks,
@@ -211,7 +211,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               onClick={() => onOpenPanel(parsed)}
               title={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
               aria-label={i18nT('pages.chat.subagentCompletionCard.open_in_the_subagents_panel')}
-              className="pi-morph flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
+              className="pi-morph flex items-center gap-1 text-[11px] leading-4 text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
             >
               <PanelRightSolid size={13} />
               <span className="hidden sm:inline">{i18nT('pages.chat.subagentCompletionCard.panel')}</span>
@@ -223,7 +223,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
               onClick={() => setExpanded(e => !e)}
               aria-expanded={expanded}
               title={detailsLabel}
-              className="flex items-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
+              className="flex items-center gap-1 text-[11px] leading-4 text-muted hover:text-text bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-bg-hover transition-colors"
             >
               {detailsLabel}
               <ChevronDown size={13} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />

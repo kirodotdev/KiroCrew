@@ -23,7 +23,13 @@ describe('FileCard', () => {
   it('renders download link for non-media files', () => {
     render(<FileCard file={{ filename: 'report.pdf', content_type: 'application/pdf', size: 2048 }} />)
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
-    expect(screen.getByText('2.0 KB')).toBeInTheDocument()
+    // `fmtBytes` is SI (1000-based) and locale-formatted, so 2048 B is 2 kB and not
+    // the old hand-rolled "2.0 KB" — which divided by 1024 while labelling the result
+    // KB, i.e. printed kibibytes under a kilobyte label. Matched with a
+    // whitespace-insensitive matcher rather than a literal: `fmtUnit` asks CLDR for
+    // the `narrow` form and promotes any plain space to U+00A0, and the separator
+    // CLDR chooses differs per locale and can change across ICU versions.
+    expect(screen.getByText((_, el) => el?.textContent?.replace(/\s/g, '') === '2kB')).toBeInTheDocument()
     const link = document.querySelector('a[download]')
     expect(link).toBeInTheDocument()
     expect(link?.getAttribute('href')).toContain('/api/outbox/report.pdf')

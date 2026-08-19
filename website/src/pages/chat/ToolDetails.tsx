@@ -121,16 +121,16 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
               tooltip and is rendered verbatim in the payload table below. */}
           {showToolName && (
             <span
-              className="inline-flex items-center gap-1 min-w-0 max-w-[min(100%,320px)] px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-text text-[11px] font-mono"
+              className="inline-flex items-center gap-1 min-w-0 max-w-[min(100%,320px)] px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-text text-[11px] leading-4 font-mono"
               title={toolName}
             >
               <Wrench size={10} className="text-muted shrink-0" /> <span className="truncate">{toolName}</span>
             </span>
           )}
-          {ts > 0 && <span className="inline-flex items-center px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] font-mono">{fmtTime(ts)}</span>}
+          {ts > 0 && <span className="inline-flex items-center px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] leading-4 font-mono">{fmtTime(ts)}</span>}
           {pending && (
             <span
-              className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono"
+              className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] leading-4 font-mono"
               style={{
                 color: 'var(--warn)',
                 backgroundColor: 'color-mix(in srgb, var(--warn) 8%, transparent)',
@@ -140,8 +140,8 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
               {i18nT('pages.chat.toolDetails.waiting_for_approval')}
             </span>
           )}
-          {auto && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] font-mono"><Zap size={10} /> {i18nT('pages.chat.toolDetails.auto')}</span>}
-          {showPurpose && <span className={`text-[12px] text-muted/50 break-words min-w-0 ${compact ? 'line-clamp-1' : ''}`}>→ {purpose}</span>}
+          {auto && <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-bg-elevated text-muted text-[11px] leading-4 font-mono"><Zap size={10} /> {i18nT('pages.chat.toolDetails.auto')}</span>}
+          {showPurpose && <span className={`text-[12px] leading-5 text-muted/50 break-words min-w-0 ${compact ? 'line-clamp-1' : ''}`}>→ {purpose}</span>}
         </div>
       )}
       {(hasInput || hasOutput) && (
@@ -206,7 +206,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
         </>
       )}
       {reallyEmpty && (
-        <div className="text-[12px] text-muted/60 italic">
+        <div className="text-[12px] leading-5 text-muted/60 italic">
           {hasEntry ? i18nT('pages.chat.toolDetails.no_input_or_output_captured_for_this_tool_call') : i18nT('pages.chat.toolDetails.details_unavailable_for_historical_tool_calls')}
         </div>
       )}
@@ -245,7 +245,7 @@ function ToolSegmented({ active, hasInput, hasOutput, onChange, layoutId }: {
 }) {
   if (!hasInput || !hasOutput) {
     return (
-      <span className="text-[11px] font-mono text-muted px-1 py-0.5 tracking-wide">
+      <span className="text-[11px] leading-4 font-mono text-muted px-1 py-0.5 tracking-wide">
         {i18nT(SECTION_LABEL_KEY[active])}
       </span>
     )
@@ -375,7 +375,7 @@ function JsonTable({ data }: { data: Record<string, unknown> }): ReactNode {
  *  chips' own padding, giving the chip row and the table one shared inner inset
  *  rather than a 2px step between them. */
 function PayloadView({ text, raw, maxH }: { text: string; raw: boolean; maxH: string }): ReactNode {
-  const base = `px-2 py-2 bg-bg-elevated rounded-md text-[12px] font-mono ${maxH} overflow-y-auto leading-relaxed border border-border`
+  const base = `px-2 py-2 bg-bg-elevated rounded-md text-[12px] font-mono ${maxH} overflow-y-auto leading-5 border border-border`
   if (!raw) {
     const parsed = tryParseJsonObject(text)
     if (parsed) {

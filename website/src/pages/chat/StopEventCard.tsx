@@ -14,7 +14,7 @@ export default memo(function StopEventCard({ message }: { message: ChatMessage }
         role="status"
         aria-label={i18nT('pages.chat.stopEventCard.stopping_in_progress')}
         aria-live="polite"
-        className="text-danger text-[13px] font-mono px-3 py-2 rounded-md bg-danger-subtle inline-flex items-center gap-1.5"
+        className="text-danger text-[13px] leading-5 font-mono px-3 py-2 rounded-md bg-danger-subtle inline-flex items-center gap-2"
         animate={{ opacity: [0.6, 1, 0.6] }}
         transition={{ duration: 1.2, repeat: Infinity }}
         data-testid="stop-event-card"
@@ -31,7 +31,7 @@ export default memo(function StopEventCard({ message }: { message: ChatMessage }
       <div
         role="alert"
         aria-label={i18nT('pages.chat.stopEventCard.stop_failed_session_reset')}
-        className="text-danger text-[13px] font-mono px-3 py-2 rounded-md border border-danger/15 bg-danger-subtle inline-flex items-center gap-1.5"
+        className="text-danger text-[13px] leading-5 font-mono px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 bg-danger-subtle inline-flex items-center gap-2"
         data-testid="stop-event-card"
         data-state={state}
       >
@@ -46,7 +46,7 @@ export default memo(function StopEventCard({ message }: { message: ChatMessage }
     <div
       role="status"
       aria-label={i18nT('pages.chat.stopEventCard.stopped')}
-      className="text-danger text-[13px] font-mono px-3 py-2 rounded-md bg-danger-subtle inline-flex items-center gap-1.5"
+      className="text-danger text-[13px] leading-5 font-mono px-3 py-2 rounded-md bg-danger-subtle inline-flex items-center gap-2"
       data-testid="stop-event-card"
       data-state={state}
     >

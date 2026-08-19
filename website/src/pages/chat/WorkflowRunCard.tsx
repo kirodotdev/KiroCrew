@@ -96,7 +96,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
       type="button"
       onClick={open}
       title={i18nT('pages.chat.workflowRunCard.open_in_the_workflows_panel')}
-      className="pi-morph group w-full text-left rounded-md bg-accent/10 border border-accent/20 hover:bg-accent/15 hover:border-accent/40 transition-colors px-3 py-2 flex items-start gap-2"
+      className="pi-morph group w-full text-left rounded-md bg-accent/10 ring-1 ring-inset forced-colors:border ring-accent/20 hover:bg-accent/15 hover:ring-accent/40 transition px-3 py-2 flex items-start gap-2"
     >
       <span className="shrink-0 mt-0.5">
         {status === 'running' && <Loader2 size={15} className="text-accent animate-spin" />}
@@ -105,22 +105,22 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
         {!status && <Workflow size={15} className="text-accent/70" />}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <Workflow size={12} className="text-accent/70 shrink-0" />
-          <span className="truncate text-[13px] font-medium text-text-strong">{name}</span>
+          <span className="truncate text-[13px] leading-5 font-medium text-text-strong">{name}</span>
           {status && (
-            <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent">
+            <span className="shrink-0 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent">
               {status === 'running' && phase ? phase : status}
             </span>
           )}
         </div>
         {status === 'running' && lastLog && (
-          <div className="text-[12px] text-muted italic truncate mt-0.5">{lastLog}</div>
+          <div className="text-[12px] leading-5 text-muted italic truncate mt-1">{lastLog}</div>
         )}
         {(status === 'failed' || status === 'cancelled') && errMsg && (
-          <div className="text-[12px] text-danger truncate mt-0.5">{errMsg}</div>
+          <div className="text-[12px] leading-5 text-danger truncate mt-1">{errMsg}</div>
         )}
-        <div className="text-[10px] text-muted font-mono truncate mt-0.5">
+        <div className="text-[10px] leading-4 text-muted font-mono truncate mt-1">
           {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
         </div>
       </div>

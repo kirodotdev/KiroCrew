@@ -93,7 +93,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
         // The preview needs the full row to scroll in, but a row WITHOUT one
         // keeps its content-sized hit area: widening it unconditionally would
         // make empty space beside the label toggle every settled block.
-        className={`${tail ? 'flex w-full min-w-0 text-left' : 'inline-flex'} items-center gap-1.5 text-[12px] text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none p-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm`}
+        className={`${tail ? 'flex w-full min-w-0 text-left' : 'inline-flex'} items-center gap-2 text-[12px] leading-5 text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none p-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm`}
         aria-expanded={expanded}
         aria-label={expanded ? i18nT('pages.chat.thinkingBlock.collapse_model_reasoning') : i18nT('pages.chat.thinkingBlock.expand_model_reasoning')}
         title={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.thinkingBlock.show_reasoning')}
@@ -136,7 +136,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
           >
             <div className="max-h-[360px] overflow-auto">
               <div
-                className="flex gap-3 py-1 text-[12px] text-muted leading-[1.6] whitespace-pre-wrap"
+                className="flex gap-3 py-1 text-[12px] text-muted leading-5 whitespace-pre-wrap"
                 style={{ wordBreak: 'break-word' }}
               >
                 <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-accent opacity-40" />

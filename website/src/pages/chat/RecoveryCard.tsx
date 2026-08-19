@@ -240,7 +240,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
 
   return (
     <div
-      className="self-center w-full max-w-full min-w-0 rounded-md border border-border bg-card text-muted animate-scale-in"
+      className="self-center w-full max-w-full min-w-0 rounded-md ring-1 ring-inset forced-colors:border ring-border bg-card text-muted animate-scale-in"
       data-testid="recovery-card"
       data-kind={kind}
       data-severity={routine ? 'routine' : 'attention'}
@@ -255,7 +255,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
         // one thing a screen-reader user would otherwise have to expand the raw
         // machine prose to learn. The inner text names the button (matching what
         // sighted users read) and aria-expanded carries the toggle state.
-        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 min-w-0 text-left text-[13px] hover:text-fg transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 min-w-0 text-left text-[13px] leading-5 hover:text-fg transition-colors"
         data-testid="recovery-card-toggle"
       >
         <ChevronRight
@@ -269,10 +269,10 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
           aria-hidden="true"
         />
         <span className="font-medium text-fg shrink-0">{title}</span>
-        <span className="truncate text-[12px] opacity-75 min-w-0">{detail}</span>
+        <span className="truncate text-[12px] leading-5 opacity-75 min-w-0">{detail}</span>
         {chip && (
           <code
-            className="ml-auto shrink-0 max-w-[45%] truncate text-[11px] px-1.5 py-0.5 rounded border border-border bg-bg-elevated font-mono"
+            className="ml-auto shrink-0 max-w-[45%] truncate text-[11px] leading-4 px-1.5 py-0.5 rounded border border-border bg-bg-elevated font-mono"
             data-testid="recovery-card-chip"
           >
             {chip}
@@ -281,7 +281,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
       </button>
       {expanded && (
         <div
-          className="px-2.5 pb-2.5 pt-2 text-[12px] font-mono leading-relaxed whitespace-pre-wrap overflow-hidden border-t border-border"
+          className="px-3 pb-3 pt-2 text-[12px] font-mono leading-5 whitespace-pre-wrap overflow-hidden border-t border-border"
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
           data-testid="recovery-card-body"
         >
