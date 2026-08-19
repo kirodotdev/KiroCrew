@@ -3,7 +3,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import Clickable from '../../components/Clickable'
 import { i18nT } from '../../i18n/t'
-import { ACCENT_BG, FONT_BODY } from './constants'
+import {
+  ACCENT_BG,
+  DOC_BODY_LINE_HEIGHT,
+  DOC_BODY_PX,
+  DOC_H1_PX,
+  DOC_HEADING_WEIGHTS,
+  FONT_BODY,
+} from './constants'
 import { carriedMarker, isEmptyListItem, shiftListItem } from './utils'
 
 export interface BlockEditorProps {
@@ -140,9 +147,9 @@ export function BlockEditor({
         overflow: 'hidden',
         // Typography defaults to body text so an edited paragraph keeps its
         // rendered look; blocks with their own scale override it.
-        fontSize: '13px',
+        fontSize: `${DOC_BODY_PX}px`,
         fontFamily: FONT_BODY,
-        lineHeight: 1.55,
+        lineHeight: DOC_BODY_LINE_HEIGHT,
         ...textStyle,
       }}
     />
@@ -191,11 +198,13 @@ export function InlineTitle({
     ref.current.select()
   }, [editing, autoSize])
 
-  // Explicit px rather than the em heading ramp: this renders in the chrome
-  // header, which has no 13px reading-column base for em to resolve against.
+  // Absolute px rather than the em heading ramp: this renders in the chrome
+  // header, which sets no reading-column font-size for em to resolve against.
+  // The VALUE is derived from that ramp (`DOC_H1_PX`), so the title tracks h1
+  // instead of drifting from it the next time the reading base moves.
   const shared: CSSProperties = {
-    fontSize: '23px',
-    fontWeight: 700,
+    fontSize: `${DOC_H1_PX}px`,
+    fontWeight: DOC_HEADING_WEIGHTS[0],
     lineHeight: 1.25,
     fontFamily: FONT_BODY,
   }

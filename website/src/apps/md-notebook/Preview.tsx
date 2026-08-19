@@ -9,6 +9,12 @@ import type { CSSProperties, ReactNode } from 'react'
 import {
   ACCENT,
   ACCENT_BG,
+  DOC_BODY_LINE_HEIGHT,
+  DOC_BODY_PX,
+  DOC_CODE_EM,
+  DOC_CODE_PX,
+  DOC_HEADING_EM,
+  DOC_HEADING_WEIGHTS,
   FONT_MONO,
   HEADING_FG,
   HEADING_RAIL,
@@ -74,7 +80,7 @@ export function inline(text: string, key: number | string, noteDir?: string): Re
             border: '1px solid var(--border)',
             borderRadius: '4px',
             padding: '0 4px',
-            fontSize: '0.9em',
+            fontSize: `${DOC_CODE_EM}em`,
             fontFamily: FONT_MONO,
           }}
         >
@@ -132,7 +138,13 @@ export function inline(text: string, key: number | string, noteDir?: string): Re
   return nodes
 }
 
-const HEADING_SIZES = ['1.802em', '1.602em', '1.424em', '1.266em', '1.125em', '1em']
+/**
+ * The heading ramp itself lives in `constants.ts` (`DOC_HEADING_EM` /
+ * `DOC_HEADING_WEIGHTS`) because the inline note title has to match h1 and
+ * derives its px size from the same table. Read the rationale there before
+ * changing a value.
+ */
+const HEADING_SIZES = DOC_HEADING_EM.map(em => `${em}em`)
 
 const CELL_PAD = '5px 8px'
 const CELL_BORDER = '1px solid var(--border)'
@@ -351,7 +363,7 @@ export function Preview({
               idx,
               mermaid.end,
               <MermaidBlock code={mermaid.code} />,
-              { fontSize: '12px', fontFamily: FONT_MONO },
+              { fontSize: `${DOC_CODE_PX}px`, fontFamily: FONT_MONO },
               { split: false },
             ),
           )
@@ -364,7 +376,7 @@ export function Preview({
             codeStart,
             idx,
             <CodeFenceBlock code={codeBuf.join('\n')} lang={fenceLang(lines[codeStart])} />,
-            { fontSize: '12px', fontFamily: FONT_MONO },
+            { fontSize: `${DOC_CODE_PX}px`, fontFamily: FONT_MONO },
             { split: false },
           ),
         )
@@ -442,7 +454,7 @@ export function Preview({
       const Tag = `h${n}` as 'h1'
       const style: CSSProperties = {
         fontSize: HEADING_SIZES[n - 1],
-        fontWeight: n <= 2 ? 700 : 600,
+        fontWeight: DOC_HEADING_WEIGHTS[n - 1],
         lineHeight: 1.25,
         color: HEADING_FG,
         marginTop: n <= 2 ? '14px' : '10px',
@@ -579,8 +591,8 @@ export function Preview({
       // without it the chrome resolves to nothing.
       className="mdnb-note"
       style={{
-        fontSize: '13px',
-        lineHeight: 1.55,
+        fontSize: `${DOC_BODY_PX}px`,
+        lineHeight: DOC_BODY_LINE_HEIGHT,
         display: 'flex',
         flexDirection: 'column',
         minHeight: '100%',

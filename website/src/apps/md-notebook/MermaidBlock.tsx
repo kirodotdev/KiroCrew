@@ -23,7 +23,7 @@
  */
 import { useEffect, useState } from 'react'
 import { sanitize } from '../../api/helpers'
-import { FONT_MONO } from './constants'
+import { DOC_CODE_PX, FONT_MONO } from './constants'
 import { mermaidErrorLabel } from './labels'
 
 /**
@@ -105,7 +105,7 @@ const FRAME_STYLE: React.CSSProperties = {
 
 const SOURCE_STYLE: React.CSSProperties = {
   ...FRAME_STYLE,
-  fontSize: '12px',
+  fontSize: `${DOC_CODE_PX}px`,
   fontFamily: FONT_MONO,
   margin: 0,
 }

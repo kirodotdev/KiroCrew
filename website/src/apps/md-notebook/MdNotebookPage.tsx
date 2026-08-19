@@ -33,6 +33,10 @@ import {
   DEFAULT_AUTO_SYNC_MINS,
   DEFAULT_SORT,
   DEFAULT_SYNC_SHORTCUT,
+  DOC_BODY_LINE_HEIGHT,
+  DOC_BODY_PX,
+  DOC_H1_PX,
+  DOC_HEADING_WEIGHTS,
   FONT_BODY,
   FONT_MONO,
   LS,
@@ -1845,7 +1849,16 @@ export default function MdNotebookPage() {
                 mb="0"
               />
             ) : (
-              <div style={{ fontSize: '23px', fontWeight: 700, color: 'var(--muted)' }}>
+              <div
+                style={{
+                  // The placeholder alternates with `InlineTitle` in this exact
+                  // slot, so it takes the same derived size: a literal here is
+                  // the same drift, one branch away.
+                  fontSize: `${DOC_H1_PX}px`,
+                  fontWeight: DOC_HEADING_WEIGHTS[0],
+                  color: 'var(--muted)',
+                }}
+              >
                 {i18nT('apps.mdNotebook.title')}
               </div>
             )}
@@ -2015,8 +2028,8 @@ export default function MdNotebookPage() {
                 paddingRight: `max(${COLUMN_PAD_X}px, calc((100% - ${
                   COLUMN_MAX_WIDTH - COLUMN_PAD_X * 2
                 }px) / 2))`,
-                fontSize: '13px',
-                lineHeight: 1.55,
+                fontSize: `${DOC_BODY_PX}px`,
+                lineHeight: DOC_BODY_LINE_HEIGHT,
                 fontFamily: FONT_MONO,
               }}
             />

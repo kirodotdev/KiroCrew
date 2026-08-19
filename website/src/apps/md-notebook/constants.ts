@@ -199,3 +199,67 @@ export const RAIL_X = 7
 /** The reading column: 800px wide with 20px sides. */
 export const COLUMN_MAX_WIDTH = 800
 export const COLUMN_PAD_X = 20
+
+/**
+ * The document reading base — the size every `em` in the heading ramp resolves
+ * against, and the size body prose renders at.
+ *
+ * Exported because THREE surfaces must carry the same value or a documented
+ * promise breaks: the rendered preview, the raw whole-file editor (which matches
+ * rendered body metrics so toggling views does not reflow the reading position),
+ * and the inline block editor's default (so an edited paragraph keeps the look it
+ * had rendered). Each of those used to hardcode its own copy with a comment
+ * asserting they agreed, which is a drift waiting to happen.
+ */
+export const DOC_BODY_PX = 16
+export const DOC_BODY_LINE_HEIGHT = 1.55
+
+/**
+ * Document heading ramp — Obsidian's stock heading variables.
+ *
+ * Matched to Obsidian deliberately: a vault is read in both apps, and a note
+ * whose hierarchy shifts between them reads as two different documents. Stored as
+ * plain ratios so `DOC_H1_PX` below can be derived from them; the renderer spells
+ * them as `em`, which resolves against `DOC_BODY_PX` rather than against whatever
+ * font-size an enclosing surface happens to set.
+ *
+ * The ratios are Obsidian's, not a clean modular scale — 1.802 / 1.602 / 1.422 /
+ * 1.278 / 1.121 steps by roughly 1.125 but not exactly (1.278 -> 1.121 is 1.140).
+ * Do not "correct" them to powers of 1.125: matching Obsidian is the point, and
+ * the irregularity is what makes it a match.
+ *
+ * Weight is a TABLE, not a rule derived from the level: only h1 is 700, and every
+ * level below it is 600. That does not coincide with the h1/h2-vs-h3+ split the
+ * chrome uses (rule underneath vs left rail), so the two cannot share one
+ * `n <= 2` test — a single expression serving both is how they silently drift.
+ */
+export const DOC_HEADING_EM = [1.802, 1.602, 1.422, 1.278, 1.121, 1]
+export const DOC_HEADING_WEIGHTS = [700, 600, 600, 600, 600, 600]
+
+/**
+ * h1's size in absolute px, for the inline note title.
+ *
+ * That title renders in the chrome header, which sets no reading-column
+ * font-size, so an `em` there would resolve against the wrong base — it needs a
+ * real px value. Derived from the ramp rather than typed as a literal because the
+ * two are required to match: a hardcoded copy is what let the title sit 5.8px
+ * under h1 the moment the reading base moved from 13px to 16px.
+ */
+export const DOC_H1_PX = DOC_BODY_PX * DOC_HEADING_EM[0]
+
+/**
+ * Monospace inside a document, as a ratio of the reading base.
+ *
+ * Mono faces run visually larger than the body face at the same nominal size,
+ * so code is set slightly below body prose. ONE ratio serves both spellings of
+ * code — inline spans use the `em`, and the surfaces that cannot resolve `em`
+ * against the reading column (a fenced block's own `<pre>`, the block editor
+ * opened on a fence, a mermaid block's source fallback) use the derived px.
+ *
+ * They are derived from one number because they are the same size: while the
+ * fenced sites carried their own literal, raising the reading base moved inline
+ * code and left fences behind, which rendered a fenced block SMALLER than the
+ * inline code beside it.
+ */
+export const DOC_CODE_EM = 0.9
+export const DOC_CODE_PX = DOC_BODY_PX * DOC_CODE_EM

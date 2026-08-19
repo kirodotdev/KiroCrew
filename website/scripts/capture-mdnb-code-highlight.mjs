@@ -26,7 +26,9 @@ const NOTE_TITLE = 'Deploy Runbook'
 
 const NOTE_CONTENT = `# ${NOTE_TITLE}
 
-Redeploy the gateway service.
+Redeploy the gateway service. The guard is \`check_health(service)\`, which the
+fence below calls — inline and fenced code are the same size, so this line and
+the block under it must agree:
 
 \`\`\`python
 def redeploy(service: str) -> bool:

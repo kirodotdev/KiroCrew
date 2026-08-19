@@ -18,6 +18,8 @@ import {
   COLUMN_MAX_WIDTH,
   COLUMN_PAD_X,
   DEFAULT_SYNC_SHORTCUT,
+  DOC_H1_PX,
+  DOC_HEADING_WEIGHTS,
   FONT_BODY,
   FONT_MONO,
   MAX_AUTO_SYNC_MINS,
@@ -293,7 +295,21 @@ export function SettingsPage({
             padding: `24px ${COLUMN_PAD_X}px 14px`,
           }}
         >
-          <div style={{ fontSize: '23px', fontWeight: 700, lineHeight: 1.25 }}>
+          <div
+            style={{
+              // Authored to match the note header's title, and this page already
+              // shares the document column's geometry above. Derived so the two
+              // page titles cannot drift apart the way this one just did.
+              //
+              // This is chrome borrowing a document value, which holds only while
+              // the reading base is a constant. If it ever becomes a user
+              // preference, this needs its own page-title token rather than the
+              // reader's prose size.
+              fontSize: `${DOC_H1_PX}px`,
+              fontWeight: DOC_HEADING_WEIGHTS[0],
+              lineHeight: 1.25,
+            }}
+          >
             {i18nT('apps.mdNotebook.settings.title')}
           </div>
           <div

@@ -15,14 +15,14 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { highlightAsync } from '../../utils/highlightClient'
-import { FONT_MONO } from './constants'
+import { DOC_CODE_PX, FONT_MONO } from './constants'
 
 const PRE_STYLE: React.CSSProperties = {
   background: 'var(--card)',
   border: '1px solid var(--border)',
   borderRadius: '6px',
   padding: '10px',
-  fontSize: '12px',
+  fontSize: `${DOC_CODE_PX}px`,
   overflowX: 'auto',
   fontFamily: FONT_MONO,
 }
