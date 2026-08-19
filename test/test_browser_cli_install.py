@@ -191,7 +191,9 @@ def test_install_aborts_when_npm_is_missing(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls == []
 
 
-def test_install_runs_all_three_steps_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_install_runs_all_three_steps_and_scopes_browser_to_chromium(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/playwright-cli"})
 
     result = mod.install()
@@ -203,7 +205,9 @@ def test_install_runs_all_three_steps_in_order(monkeypatch: pytest.MonkeyPatch) 
         "install-skills",
     ]
     assert calls[0] == ["/n/npm", "install", "-g", "@playwright/cli@latest"]
-    assert calls[1] == ["/n/playwright-cli", "install-browser"]
+    # Omitting the argument installs every engine. Optional WebKit dependencies
+    # must not veto a baseline Chromium install on a host where Chromium works.
+    assert calls[1] == ["/n/playwright-cli", "install-browser", "chromium"]
     assert calls[2] == [
         "/n/playwright-cli",
         "install",
@@ -222,12 +226,12 @@ def test_install_adds_with_deps_only_where_the_host_honours_it(
     monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
     apt_calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
     mod.install()
-    assert ["/n/pw", "install-browser", "--with-deps"] in apt_calls
+    assert ["/n/pw", "install-browser", "chromium", "--with-deps"] in apt_calls
 
     monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: False)
     other_calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
     mod.install()
-    assert ["/n/pw", "install-browser"] in other_calls
+    assert ["/n/pw", "install-browser", "chromium"] in other_calls
     assert all("--with-deps" not in argv for argv in other_calls)
 
 
@@ -276,8 +280,8 @@ def test_install_falls_back_without_deps_when_the_package_step_is_refused(
     assert result["steps"][1]["ok"] is False
     # ...but it must not veto an install the retry completed.
     assert result["steps"][2]["ok"] is True
-    assert ["/n/pw", "install-browser", "--with-deps"] in calls
-    assert ["/n/pw", "install-browser"] in calls
+    assert ["/n/pw", "install-browser", "chromium", "--with-deps"] in calls
+    assert ["/n/pw", "install-browser", "chromium"] in calls
 
 
 def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(

@@ -88,11 +88,14 @@ once, at install, so registry auth applies at install time only.
 
 1. Detect `playwright-cli` on PATH and Node.js 20 or newer.
 2. Install when absent: `npm install -g @playwright/cli@latest`.
-3. `playwright-cli install-browser` for the browser binary. The CLI downloads one
-   on first use regardless, so the explicit step exists to give the operator a
-   progress surface and a visible failure rather than a stall inside the first
-   browse. `--with-deps` is appended only on an apt host, and a refusal there is
-   retried without it — see [OS dependencies](#os-dependencies).
+3. `playwright-cli install-browser chromium` for the baseline browser binary.
+   The engine argument is required: omitting it installs every engine and lets an
+   optional Firefox or WebKit dependency failure veto a working Chromium setup.
+   The CLI downloads Chromium on first use regardless, so the explicit step exists
+   to give the operator a progress surface and a visible failure rather than a
+   stall inside the first browse. `--with-deps` is appended only on an apt host,
+   and a refusal there is retried without it — see
+   [OS dependencies](#os-dependencies).
 4. `playwright-cli install --skills agents --global` so the command reference is
    discoverable from the skill file rather than occupying the system prompt.
    `--skills` accepts `claude` (default) or `agents`; `--global` targets the home

@@ -195,6 +195,7 @@ def _browsers_cache_dir() -> Path | None:
 # tuple, not free input: it is what validates the engine name before it reaches
 # argv (see `install_browser`), which is what keeps that spawn benign.
 BROWSER_ENGINES: tuple[str, ...] = ("chromium", "firefox", "webkit")
+_DEFAULT_BROWSER_ENGINE = BROWSER_ENGINES[0]
 
 
 def _cached_browser_names() -> set[str] | None:
@@ -663,7 +664,10 @@ def _download_browser(path: str, engine: str | None = None) -> list[dict[str, An
     Every attempt is judged on its output as well as its exit code: a build whose
     libraries are missing downloads "successfully" and cannot launch.
     """
-    base = [path, "install-browser"] + ([engine] if engine else [])
+    selected_engine = engine or _DEFAULT_BROWSER_ENGINE
+    base = [path, "install-browser", selected_engine]
+    # Keep baseline step names stable for the dashboard; optional engine
+    # downloads name their engine so concurrent outcomes remain distinguishable.
     suffix = f"-{engine}" if engine else ""
     hint = os_deps.missing_deps_hint()
 
