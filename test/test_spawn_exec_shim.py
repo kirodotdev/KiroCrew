@@ -438,6 +438,13 @@ class TestSyncReportedArgv:
     none of them can pass by the shim quietly ceasing to be prepended.
     """
 
+    # The regression these guards pin was an 8815-char message that was nearly
+    # all shim source. A generous cap still catches that leak while a clean,
+    # shim-free message can never trip it just because the interpreter path is
+    # long (a deep CI worktree or venv pushes a bare ``sys.executable`` message
+    # past a tight 200-char bound with zero code signal).
+    _MAX_REPORTED_MESSAGE_LEN = 1000
+
     def _shim_is_prepended(self, spawned: "list[str]") -> bool:
         return len(strip_spawn_shim(spawned)) < len(spawned)
 
@@ -458,14 +465,13 @@ class TestSyncReportedArgv:
             run_limited(cmd, check=True, capture_output=True)
         assert caught.value.cmd == cmd
         assert caught.value.returncode == 1
-        # The regression this guards: the message was 8815 chars, nearly all shim.
-        assert len(str(caught.value)) < 200
+        assert len(str(caught.value)) < self._MAX_REPORTED_MESSAGE_LEN
 
     def test_timeout_expired_names_the_command_not_the_shim(self):
         with pytest.raises(subprocess.TimeoutExpired) as caught:
             run_limited([sys.executable, "-c", "import time;time.sleep(30)"], timeout=0.3)
         assert caught.value.cmd == [sys.executable, "-c", "import time;time.sleep(30)"]
-        assert len(str(caught.value)) < 200
+        assert len(str(caught.value)) < self._MAX_REPORTED_MESSAGE_LEN
 
     def test_popen_communicate_timeout_names_the_command_not_the_shim(self):
         """``communicate(timeout=...)`` builds TimeoutExpired from ``Popen.args``."""
@@ -476,7 +482,7 @@ class TestSyncReportedArgv:
             assert proc.args == [sys.executable, "-c", "import time;time.sleep(30)"]
             with pytest.raises(subprocess.TimeoutExpired) as caught:
                 proc.communicate(timeout=0.3)
-            assert len(str(caught.value)) < 200
+            assert len(str(caught.value)) < self._MAX_REPORTED_MESSAGE_LEN
         finally:
             proc.kill()
             proc.wait()
