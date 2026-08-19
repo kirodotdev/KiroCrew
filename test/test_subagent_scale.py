@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.constants import SUBAGENT_DIGEST_SETTLE_META_KEY
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_scale import SubagentEventCoalescer
 
@@ -661,6 +662,9 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 12  # chunk size 10 -> chunks of 10 + 2
@@ -723,6 +727,9 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 12  # chunk size 10 -> chunk 1/2 at member 10, final 2/2 on close
@@ -777,6 +784,9 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 12
@@ -805,8 +815,11 @@ class TestWaveDigest:
         restart). The gateway must NOT settle them at chunk COMPOSITION
         either (routing could still fail); instead it stashes each chunk's
         held OK ids on that chunk's FLUSHING member (``_digest_settle_ids``)
-        and the run loop settles them only after ``_on_done`` — routing
-        included — returns cleanly."""
+        and settlement waits for the route that owns the hand-off: for the
+        dashboard route below that is the injection turn's done-callback, which
+        takes the ids off the member when the turn is launched (#2233); for
+        routes whose ``_on_done`` return really is the confirmation it is the
+        run loop, after ``_on_done`` — routing included — returns cleanly."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
         orch.ctx_builder = MagicMock()
@@ -818,6 +831,9 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 12
@@ -833,6 +849,12 @@ class TestWaveDigest:
                 mgr.batch_members_pending = MagicMock(return_value=i != total - 1)
                 await on_done(m)
                 await asyncio.sleep(0)
+            # Both chunks' injection turns must finish before their holds can
+            # settle -- the settle is now the turn's done-callback, not the
+            # `_on_done` return (#2233).
+            await _settle(
+                lambda: len(mgr.settle_handed_off_digest_holds.call_args_list) >= 2
+            )
         # Members 0-8 are held for chunk 1; member 9 (the 10th) flushes it.
         # Members 10 is held for chunk 2; member 11 (wave close) flushes it.
         held_idx = list(range(9)) + [10]
@@ -842,12 +864,19 @@ class TestWaveDigest:
         # NOTHING is tombstoned at composition time — a crash between
         # composing and routing must leave held results orphan-recoverable.
         assert marked == []
-        # Each FLUSHING member carries its own chunk's settle list: the held
-        # OK members of that chunk only (chunk buffers reset between flushes).
-        assert sorted(members[9]._digest_settle_ids) == sorted(
-            members[i].id for i in range(9) if not members[i].error
-        )
-        assert members[11]._digest_settle_ids == [members[10].id]
+        # Each FLUSHING member's settle list is its own chunk's held OK members
+        # only (chunk buffers reset between flushes). On THIS route the list is
+        # detached when the injection turn is launched and settled from the
+        # turn's done-callback, so what is asserted is the hand-off, not a
+        # residue left on the member (#2233): the member is left clean and the
+        # ids reach the manager exactly once, per chunk.
+        assert members[9]._digest_settle_ids == []
+        assert members[11]._digest_settle_ids == []
+        assert [list(c.args[0]) for c in
+                mgr.settle_handed_off_digest_holds.call_args_list] == [
+            [members[i].id for i in range(9) if not members[i].error],
+            [members[10].id],
+        ]
         # Per-wave bookkeeping pruned once the wave finished.
         mgr.finalize_batch.assert_called_once_with("bigwave")
 
@@ -880,6 +909,319 @@ class TestWaveDigest:
         assert settle_pos > on_done_pos
 
     @pytest.mark.asyncio
+    async def test_settle_handed_off_digest_holds_marks_ids(self):
+        """The manager half of the ownership split (#2233).
+
+        ``settle_handed_off_digest_holds`` is the seam a route calls once it has
+        CONFIRMED the hand-off, for ids it detached from the flushing member and
+        now owns. ``_settle_digest_holds`` — the run loop's settle, for routes
+        whose ``_on_done`` return really is the confirmation — delegates to it,
+        so there is one implementation of "mark these delivered" and the two
+        entry points cannot drift.
+        """
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        marked: list[str] = []
+        with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
+            mgr.settle_handed_off_digest_holds(["h1", "h2"])
+        assert marked == ["h1", "h2"]
+
+        # A failing tombstone write must not abort the rest of the chunk: one
+        # unwritable folder would otherwise strand every later sibling.
+        marked.clear()
+
+        def _boom(hid):
+            if hid == "h1":
+                raise OSError("disk full")
+            marked.append(hid)
+
+        with patch("kiro_crew.subagent.mark_delivered", side_effect=_boom):
+            mgr.settle_handed_off_digest_holds(["h1", "h2"])
+        assert marked == ["h2"]
+
+    @pytest.mark.asyncio
+    async def test_holds_settle_only_after_the_injection_turn_confirms(self):
+        """Ownership (#2233): the dashboard route hands off asynchronously, so a
+        bare ``_on_done`` return is not proof the digest reached the parent.
+
+        ``_report_terminal`` settles ``info._digest_settle_ids`` right after
+        ``_on_done`` returns. On the dashboard branch that return happens while
+        the injection turn is still a *pending task* — so a shutdown or a
+        cancelled slot turn between the two leaves the held siblings carrying
+        ``delivered`` tombstones for a digest the parent never saw. A tombstone
+        is exactly what ``list_orphans()`` uses to EXCLUDE a run folder from the
+        next start's reconciliation, so those complete ``result.txt`` files
+        become permanently invisible: no error, no notification, just N results
+        the parent never receives and recovery will never offer again.
+
+        The fix moves settlement to the side that actually owns the hand-off.
+        The flushing member's settle ids are DETACHED from ``info`` when the
+        injection task is launched, which makes the run loop's settle a no-op
+        for this route, and the ids are settled from the task's existing
+        ``_on_inject_done`` callback once the turn completes without error.
+        Ownership travels with the data, so no second settle can run.
+
+        The turn is gated on an ``asyncio.Event`` rather than timed: the state
+        under test is "task created, not yet finished", which a sleep can only
+        approximate.
+        """
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 12
+        members = [self._member(i, total) for i in range(total)]
+
+        turn_started = asyncio.Event()
+        release_turn = asyncio.Event()
+
+        async def _gated_run_chat(_state, _slot, _text):
+            turn_started.set()
+            await release_turn.wait()
+
+        marked: list[str] = []
+        with patch("kiro_crew.slack.gateway._run_chat", _gated_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered",
+                      side_effect=marked.append):
+            for i, m in enumerate(members[:10]):
+                mgr.batch_members_pending = MagicMock(return_value=True)
+                await on_done(m)
+                await asyncio.sleep(0)
+
+            # Preconditions: nine siblings are held, the tenth flushed chunk 1,
+            # and its injection turn is RUNNING but not finished.
+            held_ids = [members[i].id for i in range(9)]
+            assert all(members[i]._digest_held for i in range(9)), (
+                "precondition: the first nine members must be held for the chunk"
+            )
+            await _settle(turn_started.is_set)
+            assert turn_started.is_set(), "precondition: the injection turn started"
+            assert slot.task is not None and not slot.task.done(), (
+                "precondition: the hand-off is still in flight — this is the "
+                "window in which the current contract settles"
+            )
+
+            flusher = members[9]
+            assert flusher._digest_settle_ids == [], (
+                "the flushing member must not still be carrying the settle ids "
+                "while the hand-off is unconfirmed: the run loop settles that "
+                "list as soon as _on_done returns, which is now"
+            )
+            assert marked == [], "nothing may be tombstoned before the hand-off lands"
+
+            # The hand-off completes — NOW the digest has reached the parent.
+            release_turn.set()
+            await _settle(lambda: bool(mgr.settle_handed_off_digest_holds.call_args_list))
+
+        # Settled by the side that owns the hand-off, once, with exactly this
+        # chunk's held members. (`mgr` is the mocked manager here; the real
+        # method is pinned by `test_settle_handed_off_digest_holds_marks_ids`.)
+        mgr.settle_handed_off_digest_holds.assert_called_once_with(held_ids)
+        assert marked == [], (
+            "and never through the run loop's settle, which this route detached"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_queued_hand_off_is_not_confirmed_until_the_turn_runs(self):
+        """The same root cause one branch up (#2233, First Principles CONCERNS).
+
+        When the parent slot is busy the digest is appended to ``slot._queue``
+        and ``_subagent_done`` returns — so the run loop settles on that bare
+        return, exactly as it did for the direct branch.
+
+        ``slot._queue`` is a plain in-memory list (``state.py``): the
+        ``"queued"`` role is in ``chat_persistence._TRANSIENT_ROLES`` and no
+        producer writes it to disk. ``_run_chat``'s ``finally`` drains it on any
+        exit path *within the process*, which is why the enqueue looks durable —
+        but a shutdown before the drain loses the announce entirely, and by then
+        the held siblings already carry ``delivered`` tombstones. Enqueueing is
+        a local routing success, not evidence the parent received anything.
+
+        This test never drains the queue: that IS the process-loss window.
+        """
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        # Busy: a turn already owns the slot, so the completion is QUEUED rather
+        # than dispatched. `task = None` keeps the shield-await a no-op.
+        slot.running = True
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        slot._last_turn_auth_required = False
+        slot._subagents_inline_collected = set()
+        queued: list[dict] = []
+        slot.queue_append = MagicMock(
+            side_effect=lambda content, kind="", meta=None: (
+                queued.append({"content": content, "kind": kind, "meta": meta}) or "qid"
+            )
+        )
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 12
+        members = [self._member(i, total) for i in range(total)]
+
+        marked: list[str] = []
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock), \
+                patch("kiro_crew.subagent_persistence.mark_delivered",
+                      side_effect=marked.append):
+            for i, m in enumerate(members[:10]):
+                mgr.batch_members_pending = MagicMock(return_value=True)
+                await on_done(m)
+                await asyncio.sleep(0)
+
+        assert len(queued) == 1, (
+            "precondition: the flushing chunk must have been QUEUED, not dispatched"
+        )
+        # The queue is deliberately never drained — the process died here.
+        mgr.settle_handed_off_digest_holds.assert_not_called()
+        assert marked == [], (
+            "an announce sitting in an in-memory queue is not a hand-off: a "
+            "shutdown here loses the digest, and a delivered tombstone would "
+            "hide the held results from orphan reconciliation forever"
+        )
+        assert members[9]._digest_settle_ids == [], (
+            "the ids must have left the flushing member, so the run loop's "
+            "settle on the bare _on_done return is a no-op for this route too"
+        )
+        # The ownership travels with the queued entry, so the drain can settle it.
+        assert queued[0]["meta"] is not None
+        assert sorted(queued[0]["meta"].get(SUBAGENT_DIGEST_SETTLE_META_KEY, [])) == sorted(
+            members[i].id for i in range(9)
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_auth_required_turn_is_not_a_confirmed_hand_off(self):
+        """The third state: the turn ended cleanly and delivered nothing (#2233).
+
+        ``_run_chat`` CATCHES ``AcpAuthRequired`` — a signed-out CLI is
+        non-retryable, so it records the outcome on the slot, holds the queue
+        intact for post-login resume, and returns NORMALLY. The injection task
+        therefore completes with no exception and no cancellation, which is
+        indistinguishable from a delivered digest if "the task finished" is the
+        confirmation.
+
+        It is not delivered: the digest never reached the LLM. Settling here
+        tombstones results the parent has not seen — the exact loss this fix
+        exists to close, re-entered through a narrower door.
+
+        ``slot._last_turn_auth_required`` is the signal ``_run_chat`` already
+        publishes for precisely this question, and ``chat_orchestrator``'s
+        end-of-plan hand-off already gates on it for the same reason.
+        """
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        slot._last_turn_auth_required = False
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 12
+        members = [self._member(i, total) for i in range(total)]
+
+        async def _auth_required_run_chat(_state, _slot, _text):
+            # Exactly what _run_chat does on a signed-out CLI: record it and
+            # return. No raise, no cancellation.
+            _slot._last_turn_auth_required = True
+
+        marked: list[str] = []
+        with patch("kiro_crew.slack.gateway._run_chat", _auth_required_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered",
+                      side_effect=marked.append):
+            for i, m in enumerate(members[:10]):
+                mgr.batch_members_pending = MagicMock(return_value=True)
+                await on_done(m)
+                await asyncio.sleep(0)
+            await _settle(lambda: slot.task is None)
+
+        assert slot._last_turn_auth_required is True, (
+            "precondition: the turn must have ended in the auth-required state"
+        )
+        mgr.settle_handed_off_digest_holds.assert_not_called()
+        assert marked == [], (
+            "a signed-out CLI never received the digest — the held siblings' "
+            "results are still only on disk"
+        )
+        assert members[9]._digest_settle_ids == [], (
+            "and the run loop must not settle them either: the ids left the "
+            "flushing member when the turn was launched"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_injection_turn_leaves_holds_recoverable(self):
+        """The deliberate asymmetry (#2233): an unconfirmed hand-off must leave
+        holds UNsettled rather than settle them.
+
+        A duplicate digest after a restart is visible to the parent and
+        recoverable; a lost one is neither. So when the injection turn raises,
+        the held siblings keep no tombstone and stay visible to
+        ``list_orphans()`` — the same direction ``_digest_held`` itself encodes.
+        """
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 12
+        members = [self._member(i, total) for i in range(total)]
+
+        async def _failing_run_chat(_state, _slot, _text):
+            raise RuntimeError("injection turn died")
+
+        marked: list[str] = []
+        with patch("kiro_crew.slack.gateway._run_chat", _failing_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered",
+                      side_effect=marked.append):
+            for i, m in enumerate(members[:10]):
+                mgr.batch_members_pending = MagicMock(return_value=True)
+                await on_done(m)
+                await asyncio.sleep(0)
+            await _settle(lambda: slot.task is None)
+
+        assert marked == [], (
+            "a failed hand-off must not tombstone the held siblings — their "
+            "results are still only on disk"
+        )
+        assert members[9]._digest_settle_ids == [], (
+            "and the run loop must not settle them either: the ids left the "
+            "flushing member when the turn was launched"
+        )
+        mgr.settle_handed_off_digest_holds.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_guard_msgs_from_all_members_fold_into_digest(self):
         """Orchestration escalations from HELD mid-wave members must survive
         into the digest (Arbiter item 3) — not just the last member's."""
@@ -901,6 +1243,9 @@ class TestWaveDigest:
         slot.running = False
         slot.task = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         mgr.running_agents_for = MagicMock(return_value=["still-running"])
@@ -947,6 +1292,9 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         total = 3
@@ -986,6 +1334,9 @@ class TestWaveDigest:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
         mgr.running_agents_for = MagicMock(return_value=[])
@@ -1179,6 +1530,9 @@ class TestDigestHoldDeadline:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         slot._subagents_inline_collected = set()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         gw_mgr, on_done = TestWaveDigest()._capture_on_done(orch)
@@ -1249,6 +1603,9 @@ class TestDigestHoldDeadline:
         slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
+        # Real attribute, not a MagicMock truthy stub: a turn that ended in
+        # AcpAuthRequired is not a confirmed hand-off (#2233).
+        slot._last_turn_auth_required = False
         slot._subagents_inline_collected = set()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = TestWaveDigest()._capture_on_done(orch)
@@ -1313,8 +1670,15 @@ class TestDigestHoldDeadline:
         assert "wave digest flush" not in digest
         # Hold clocks stopped, so the sweep cannot force a duplicate flush.
         assert all(m._digest_held_at == 0.0 for m in members)
-        # Tombstones settle on the flushing record, after routing.
-        assert sorted(flush._digest_settle_ids) == ["s0", "s1"]
+        # Tombstones settle after routing — and on this route "after routing"
+        # means after the injection TURN, not after `_on_done` returns, so the
+        # ids left the flushing record when the turn was launched and were
+        # settled from its done-callback (#2233). The forced hold-deadline
+        # flush is one of the four settle callers, so it inherits the same
+        # ownership rule without a second code path.
+        assert flush._digest_settle_ids == []
+        assert [list(c.args[0]) for c in
+                mgr.settle_handed_off_digest_holds.call_args_list] == [["s0", "s1"]]
 
     @pytest.mark.asyncio
     async def test_flush_only_noop_when_nothing_held(self):

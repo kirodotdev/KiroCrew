@@ -74,7 +74,11 @@ from kiro_crew.config.loader import (
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY
+from kiro_crew.constants import (
+    DATA_WARNING,
+    SUBAGENT_COMPLETION_META_KEY,
+    SUBAGENT_DIGEST_SETTLE_META_KEY,
+)
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
@@ -5221,14 +5225,36 @@ class GatewayOrchestrator:
                                 # Bounded by the configured turn ceiling
                                 # (chat_turn_timeout_secs, 7200s default):
                                 # _run_chat's finally block drains slot._queue
-                                # on any exit path.
+                                # on any exit path — WITHIN this process.
+                                # ``slot._queue`` is an in-memory list that is
+                                # never persisted (the "queued" role is one of
+                                # ``chat_persistence._TRANSIENT_ROLES``), so a
+                                # shutdown before the drain loses the announce.
+                                #
+                                # Enqueueing is therefore a local routing
+                                # success, not evidence the parent received the
+                                # digest — the same distinction the direct
+                                # branch below draws. So the settle ids ride on
+                                # the ENTRY: the run loop's settle becomes a
+                                # no-op here too, and whoever drains this entry
+                                # owns the confirmation. If nobody ever does,
+                                # the holds stay recoverable (#2233).
+                                #
                                 # Carry the structured completion facts so the
                                 # drained row is a card without re-parsing the
                                 # prose (#1792); _start_next_queued_turn reads them.
+                                _queued_meta: dict[str, Any] = {
+                                    SUBAGENT_COMPLETION_META_KEY: sub_meta
+                                }
+                                if info._digest_settle_ids:
+                                    _queued_meta[SUBAGENT_DIGEST_SETTLE_META_KEY] = (
+                                        info._digest_settle_ids
+                                    )
+                                    info._digest_settle_ids = []
                                 _injection_slot.queue_append(
                                     announce,
                                     kind=SUBAGENT_COMPLETION_KIND,
-                                    meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                                    meta=_queued_meta,
                                 )
                                 self.dashboard_state.push_slots_update()
                                 logger.info("Subagent %s → queued in %s", info.id, _slot_name)
@@ -5249,6 +5275,29 @@ class GatewayOrchestrator:
                             return
 
                         # Slot is idle — start _run_chat.
+                        #
+                        # This branch hands the digest off ASYNCHRONOUSLY: the
+                        # turn is a task, and `_on_done` returns to
+                        # `_report_terminal` while it is still pending. The run
+                        # loop settles `info._digest_settle_ids` immediately on
+                        # that return, which for this route would tombstone the
+                        # held siblings for a digest the parent has not seen —
+                        # and a `delivered` tombstone is what `list_orphans()`
+                        # uses to EXCLUDE a run folder from the next start's
+                        # reconciliation, so a shutdown here loses those results
+                        # silently and permanently (#2233).
+                        #
+                        # So take the ids OFF the member before returning. That
+                        # makes the run loop's settle a no-op for this route and
+                        # hands ownership to `_on_inject_done` below, which
+                        # settles them only once the turn has actually completed
+                        # without error. Ownership travels with the data, so the
+                        # two settle paths cannot both fire. An unconfirmed
+                        # hand-off leaves the holds UNsettled on purpose: a
+                        # duplicate digest after a restart is visible to the
+                        # parent and recoverable, a lost one is neither.
+                        _settle_ids = info._digest_settle_ids
+                        info._digest_settle_ids = []
                         _task = asyncio.create_task(
                             bounded_chat_turn(
                                 _run_chat(self.dashboard_state, _injection_slot, announce)
@@ -5273,6 +5322,31 @@ class GatewayOrchestrator:
                                         info,
                                         reason=_reason,
                                     )
+                                return
+                            # The turn ran AND delivered: only now is the digest
+                            # in the parent's context, so this chunk's held
+                            # siblings can carry their delivery tombstones.
+                            #
+                            # ``_last_turn_auth_required`` is the third state a
+                            # bare "task finished" cannot see. ``_run_chat``
+                            # CATCHES ``AcpAuthRequired`` — a signed-out CLI is
+                            # non-retryable, so it records the outcome, holds the
+                            # queue for post-login resume, and returns NORMALLY.
+                            # The task then completes with no exception and no
+                            # cancellation while the digest never reached the
+                            # LLM. ``chat_orchestrator``'s end-of-plan hand-off
+                            # gates on the same flag for the same reason.
+                            #
+                            # Cancelled and failed turns fall out above. Every
+                            # non-delivery leaves the holds un-tombstoned and
+                            # recoverable by orphan reconciliation.
+                            if (
+                                _settle_ids
+                                and self.subagent_mgr
+                                and not t.cancelled()
+                                and not _injection_slot._last_turn_auth_required
+                            ):
+                                self.subagent_mgr.settle_handed_off_digest_holds(_settle_ids)
 
                         _task.add_done_callback(_on_inject_done)
                         self.dashboard_state.push_slots_update()

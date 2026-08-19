@@ -49,6 +49,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.connections import get_visible_providers
+from kiro_crew.constants import SUBAGENT_DIGEST_SETTLE_META_KEY
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -3496,6 +3497,19 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # (they drain one at a time and break any user-message merge), so this only
     # fires on the shape it was computed for.
     _row_meta = consumed[0].get("meta") if (is_subagent and len(consumed) == 1) else None
+    # Wave-digest holds whose settlement this entry now owns (#2233). Popped off
+    # the row meta rather than read in place: these are internal run ids, and the
+    # row meta is a wire contract with the completion card.
+    #
+    # The gateway detached them from the flushing member when it queued the
+    # announce, precisely because an in-memory enqueue is not a delivery. They
+    # settle only when THIS turn completes and actually delivered — so a
+    # process that dies with the entry undrained leaves the held results
+    # tombstone-free and recoverable by orphan reconciliation.
+    _digest_settle_ids: list[str] = []
+    if isinstance(_row_meta, dict) and SUBAGENT_DIGEST_SETTLE_META_KEY in _row_meta:
+        _row_meta = dict(_row_meta)
+        _digest_settle_ids = list(_row_meta.pop(SUBAGENT_DIGEST_SETTLE_META_KEY) or [])
     # When synthesis is pending, mark the completion so the frontend can collapse
     # the per-completion assistant response that follows (it will be restated by
     # the synthesis turn).
@@ -3527,8 +3541,45 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         slot,
         _run_chat(state, slot, next_msg, _synthetic_payload=synthetic_payload),
     )
+    if _digest_settle_ids:
+        _settle_digest_holds_on_delivery(state, slot, task, _digest_settle_ids)
     slot.task = task
     return True
+
+
+def _settle_digest_holds_on_delivery(
+    state: DashboardState,
+    slot: _ChatSlot,
+    task: "asyncio.Task[Any]",
+    ids: list[str],
+) -> None:
+    """Settle *ids* once *task* has delivered its queued digest — and not before.
+
+    The mirror of the gateway's direct-injection callback, for the branch that
+    went through the queue. Same three non-deliveries are excluded: a cancelled
+    turn, a failed turn, and a turn that returned normally after ``_run_chat``
+    caught ``AcpAuthRequired`` (a signed-out CLI holds the queue for post-login
+    resume, so the digest is still undelivered).
+
+    Failing to settle is the safe direction: the holds keep no tombstone and
+    stay visible to orphan reconciliation, which risks a duplicate digest —
+    visible and recoverable — rather than a silent loss (#2233).
+    """
+
+    def _on_delivered(t: "asyncio.Task[Any]") -> None:
+        if t.cancelled() or t.exception() is not None:
+            return
+        if slot._last_turn_auth_required:
+            return
+        mgr = getattr(state, "subagents", None)
+        if mgr is None:
+            return
+        try:
+            mgr.settle_handed_off_digest_holds(ids)
+        except Exception:
+            logger.debug("Failed to settle queued digest holds", exc_info=True)
+
+    task.add_done_callback(_on_delivered)
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:

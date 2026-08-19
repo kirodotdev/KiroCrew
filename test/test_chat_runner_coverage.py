@@ -38,8 +38,17 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.constants import (
+    SUBAGENT_COMPLETION_META_KEY,
+    SUBAGENT_DIGEST_SETTLE_META_KEY,
+)
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
+from kiro_crew.dashboard.state import (
+    SUBAGENT_BATCH_COMPLETION_PREFIX,
+    DashboardState,
+    _ChatSlot,
+)
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
@@ -1389,6 +1398,122 @@ class TestStartNextQueuedTurn:
 
         assert any("Session reset" in err for err in _errors(slot))
         assert slot._stopping is False
+
+
+class TestQueuedDigestHoldSettlement:
+    """A queued wave digest settles its holds only when the turn delivers (#2233).
+
+    The gateway detaches the flushing member's hold ids onto the queue ENTRY,
+    because appending to ``slot._queue`` — an in-memory list that is never
+    persisted — is a local routing success, not evidence the parent received
+    anything. Whoever drains the entry owns the confirmation; if nobody ever
+    does, the holds keep no ``delivered`` tombstone and stay visible to orphan
+    reconciliation.
+    """
+
+    def _queue_digest(self, slot, ids: list[str]) -> None:
+        slot.queue_append(
+            f"{SUBAGENT_BATCH_COMPLETION_PREFIX} 2 agents finished",
+            kind=SUBAGENT_COMPLETION_KIND,
+            meta={
+                SUBAGENT_COMPLETION_META_KEY: {"outcome": "completed"},
+                SUBAGENT_DIGEST_SETTLE_META_KEY: list(ids),
+            },
+        )
+
+    async def _drain(self, state, slot, *, outcome: str):
+        """Drain one queued entry with a real task whose *outcome* we control."""
+        done = asyncio.get_running_loop().create_future()
+
+        async def _turn():
+            if outcome == "raise":
+                raise RuntimeError("turn died")
+            if outcome == "auth":
+                slot._last_turn_auth_required = True
+            return None
+
+        task = asyncio.ensure_future(_turn())
+
+        def _spawn(_state, _slot, coro, **kw):
+            coro.close()  # the fake turn above replaces it
+            return task
+
+        with patch.object(chat_runner, "spawn_guarded_turn", _spawn):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+        try:
+            await task
+        except RuntimeError:
+            pass
+        await asyncio.sleep(0)
+        done.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_queued_digest_settles_its_holds_once(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        self._queue_digest(slot, ["h1", "h2"])
+
+        await self._drain(state, slot, outcome="ok")
+
+        state.subagents.settle_handed_off_digest_holds.assert_called_once_with(["h1", "h2"])
+
+    @pytest.mark.asyncio
+    async def test_an_undrained_queue_settles_nothing(self, tmp_path):
+        """The restart-loss window: the process dies with the entry queued."""
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        self._queue_digest(slot, ["h1"])
+
+        # No drain at all — this is the shutdown.
+        state.subagents.settle_handed_off_digest_holds.assert_not_called()
+        assert len(slot._queue) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_queued_turn_leaves_the_holds_recoverable(self, tmp_path):
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        self._queue_digest(slot, ["h1"])
+
+        await self._drain(state, slot, outcome="raise")
+
+        state.subagents.settle_handed_off_digest_holds.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_auth_required_queued_turn_does_not_settle(self, tmp_path):
+        """Signed-out CLI: the turn returns normally having delivered nothing."""
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        self._queue_digest(slot, ["h1"])
+
+        await self._drain(state, slot, outcome="auth")
+
+        assert slot._last_turn_auth_required is True
+        state.subagents.settle_handed_off_digest_holds.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_settle_ids_never_reach_the_row_meta(self, tmp_path):
+        """Internal run ids must not leak into the completion card's wire meta."""
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        self._queue_digest(slot, ["h1"])
+
+        await self._drain(state, slot, outcome="ok")
+
+        rows = [m for m in slot.messages if m.get("role") == "subagent"]
+        assert rows, "the drained entry must have produced a subagent row"
+        for row in rows:
+            assert SUBAGENT_DIGEST_SETTLE_META_KEY not in (row.get("meta") or {})
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_queued_message_is_unaffected(self, tmp_path):
+        """No settle metadata, no settle call — and the turn still starts."""
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        slot.queue_append("just a user message")
+
+        await self._drain(state, slot, outcome="ok")
+
+        state.subagents.settle_handed_off_digest_holds.assert_not_called()
 
 
 class TestRunPendingSynthesis:

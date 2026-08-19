@@ -205,6 +205,17 @@ SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
 # demote to a legacy-scrollback fallback (issue #1792).
 SUBAGENT_COMPLETION_META_KEY = "subagentCompletion"
 
+# Queue-entry meta: the wave-digest hold ids whose delivery this QUEUED announce
+# is now responsible for settling (#2233). Not a wire contract with the frontend
+# — the drain pops it before the row meta is built, so it never reaches a card.
+#
+# It exists because enqueueing is a local routing success, not evidence the
+# parent received the digest: ``slot._queue`` is in-memory only, so a shutdown
+# before the drain loses the announce. Carrying the ids on the ENTRY moves
+# settlement ownership to whoever actually runs the turn, and leaves the holds
+# recoverable if that never happens.
+SUBAGENT_DIGEST_SETTLE_META_KEY = "digestSettleIds"
+
 
 # Windows reserved device names, lowercase stems. Windows resolves these inside
 # EVERY directory, so no file OR directory may be named after one — the rule is
