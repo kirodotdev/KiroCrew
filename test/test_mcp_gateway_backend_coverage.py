@@ -590,6 +590,147 @@ class TestUpstreamInitializeResolution:
         assert "missing/malformed result" in (backend.dead_reason or "")
 
 
+class TestFirstHandshakeDeadline:
+    """The timer that closes an in-flight window a backend never resolves.
+
+    A backend that stays alive but never answers ``initialize`` is invisible to
+    every death-driven recovery path, so the deadline is the only thing that
+    turns that silence into a terminal state and reclaims the process.
+    """
+
+    @staticmethod
+    def _init(id_: Any = 1) -> dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": id_, "method": "initialize",
+                "params": {"capabilities": {}}}
+
+    @staticmethod
+    async def _expire_now(backend: Backend) -> None:
+        """Close the in-flight window without a wall-clock wait.
+
+        The zero-timeout coroutine is installed AS the stored task, so a disarm
+        reached from inside it sees the timer's own identity -- the property
+        ``test_disarm_from_inside_the_timer_does_not_self_cancel`` pins.
+        """
+        backend._cancel_init_deadline()
+        backend._init_deadline_task = asyncio.create_task(backend._init_deadline(0))
+        await backend._init_deadline_task
+
+    @pytest.mark.asyncio
+    async def test_respawn_priming_shares_the_one_handshake_bound(self) -> None:
+        # Two paths drive the same handshake, so they must expire together. A
+        # literal default here is how they silently came to differ.
+        import inspect
+        default = inspect.signature(Backend.prime_initialize).parameters["timeout"].default
+        assert default == backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_first_handshake_arms_the_deadline(self) -> None:
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(1))
+        task = backend._init_deadline_task
+        assert task is not None and not task.done()
+        backend._cancel_init_deadline()
+
+    @pytest.mark.asyncio
+    async def test_write_failure_does_not_arm(self) -> None:
+        # No handshake ever started, so there is no window for a timer to close.
+        backend = _make_backend()
+        cast(Any, backend.stdin).write.side_effect = ConnectionResetError("reset")
+        with pytest.raises(BackendGone):
+            await backend.forward_from_stub("s1", self._init(1))
+        assert backend._init_deadline_task is None
+
+    @pytest.mark.asyncio
+    async def test_arming_twice_keeps_one_timer(self) -> None:
+        # A second arm must not replace the task: the displaced one would never
+        # be cancelled and would outlive the window it was meant to close.
+        backend = _make_backend()
+        backend._init_state = "in_flight"
+        backend._arm_init_deadline()
+        first = backend._init_deadline_task
+        backend._arm_init_deadline()
+        assert backend._init_deadline_task is first
+        backend._cancel_init_deadline()
+
+    @pytest.mark.asyncio
+    async def test_queued_stubs_do_not_extend_the_deadline(self) -> None:
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.attach_stub("s2")
+        await backend.forward_from_stub("s1", self._init(1))
+        armed = backend._init_deadline_task
+        await backend.forward_from_stub("s2", self._init(2))
+        assert backend._init_deadline_task is armed
+        backend._cancel_init_deadline()
+
+    @pytest.mark.asyncio
+    async def test_expiry_fails_init_errors_waiters_and_reaps(self) -> None:
+        backend = _make_backend()
+        inbox = await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(7))
+        await self._expire_now(backend)
+        assert backend._init_state == "failed"
+        assert "initialize did not complete within 0s" in cast(str, backend._dead_reason)
+        reply = await _drain(inbox)
+        assert reply["id"] == 7
+        assert "init failed" in reply["error"]["message"]
+        # Reaped rather than left running: closing stdin is shutdown's first act.
+        assert cast(Any, backend.stdin).close.called
+
+    @pytest.mark.asyncio
+    async def test_expiry_after_the_handshake_resolved_touches_nothing(self) -> None:
+        # The timer may be scheduled a tick before the reply lands. A resolved
+        # window is not its to close -- firing anyway would kill a healthy
+        # backend every time a handshake finished near the deadline.
+        backend = _make_backend()
+        backend._init_state = "ready"
+        await backend._init_deadline(0)
+        assert backend._init_state == "ready"
+        assert not cast(Any, backend.stdin).close.called
+        assert backend._dead_reason is None
+
+    @pytest.mark.asyncio
+    async def test_successful_handshake_disarms_the_deadline(self) -> None:
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(1))
+        await backend._on_upstream_initialize(
+            {"jsonrpc": "2.0", "id": "gw-4242-1",
+             "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+        )
+        assert backend._init_state == "ready"
+        assert backend._init_deadline_task is None
+
+    @pytest.mark.asyncio
+    async def test_failed_handshake_disarms_the_deadline(self) -> None:
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(1))
+        await backend._fail_init("upstream said no")
+        assert backend._init_deadline_task is None
+
+    @pytest.mark.asyncio
+    async def test_backend_gone_disarms_the_deadline(self) -> None:
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(1))
+        await backend._broadcast_backend_gone("stdout eof")
+        assert backend._init_deadline_task is None
+
+    @pytest.mark.asyncio
+    async def test_disarm_from_inside_the_timer_does_not_self_cancel(self) -> None:
+        # Teardown runs inside the timer's own coroutine (the deadline calls
+        # shutdown), so cancelling the current task would abort the very
+        # transition being made. The expiry path must still complete.
+        backend = _make_backend()
+        await backend.attach_stub("s1")
+        await backend.forward_from_stub("s1", self._init(1))
+        await self._expire_now(backend)
+        assert backend._init_state == "failed"
+        assert cast(Any, backend.stdin).close.called
+
+
 class TestPrimeInitialize:
     @pytest.mark.asyncio
     async def test_ready_backend_is_a_noop(self) -> None:

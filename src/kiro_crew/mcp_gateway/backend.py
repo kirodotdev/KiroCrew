@@ -485,6 +485,14 @@ class Backend:
     # freshly spawned backend so stub traffic only resumes when the new
     # backend is handshake-complete.
     _init_done_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Bounds the FIRST upstream handshake. A backend that is alive but never
+    # answers ``initialize`` leaves ``_init_state`` at "in_flight" forever:
+    # every queued stub waits on a reply that never comes, and because the
+    # process has not died no death-driven recovery (breaker, zombie sweep)
+    # observes it. The timer turns that silence into the terminal "failed"
+    # state and reaps the process group. Respawn priming carries its own
+    # bounded wait, so only the lazy first handshake arms this.
+    _init_deadline_task: Optional[asyncio.Task[None]] = None
     _dead_reason: Optional[str] = None
     # Idempotency guard for _broadcast_backend_gone (see there): the terminal
     # "backend gone" broadcast is reachable near-simultaneously from several
@@ -822,6 +830,64 @@ class Backend:
         except (BrokenPipeError, ConnectionResetError) as exc:
             self._dead_reason = f"stdin closed: {exc}"
             raise BackendGone(self._dead_reason) from exc
+        # Armed only once the forward is on the wire: a write that failed never
+        # started a handshake, and arming there would leave a timer with no
+        # in-flight window to close.
+        self._arm_init_deadline()
+
+    def _arm_init_deadline(self) -> None:
+        """Start the timer that fails and reaps a backend which never answers
+        the first ``initialize``.
+
+        Idempotent per in-flight window: an already-armed timer is left alone
+        so queued stubs cannot each extend the deadline.
+        """
+        if self._init_deadline_task is not None and not self._init_deadline_task.done():
+            return
+        self._init_deadline_task = asyncio.create_task(
+            self._init_deadline(_DEFAULT_INITIALIZE_TIMEOUT_SECS)
+        )
+
+    def _cancel_init_deadline(self) -> None:
+        """Disarm the first-handshake timer once init reaches a terminal state.
+
+        Safe from inside the timer's own coroutine: cancelling the currently
+        running task is skipped, so a terminal transition driven BY the
+        deadline does not cancel itself mid-flight.
+        """
+        task = self._init_deadline_task
+        if task is None:
+            return
+        self._init_deadline_task = None
+        if task is asyncio.current_task():
+            return
+        if not task.done():
+            task.cancel()
+
+    async def _init_deadline(self, timeout: float) -> None:
+        """Fail and reap a backend whose first ``initialize`` never resolves.
+
+        ``_fail_init`` performs the terminal transition every waiter observes
+        (failed state, done event, an explicit JSON-RPC error to each queued
+        stub); ``shutdown`` then reaps the process group, since a wedged
+        backend that is still running would otherwise hold its core until the
+        idle sweep reclaims it. shutdown() touches no pool bookkeeping, so
+        there is no reserve/evict race with a concurrent acquirer.
+        """
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return
+        # The handshake may have resolved while this coroutine was scheduled;
+        # only a still-in-flight window is this timer's to close.
+        if self._init_state != "in_flight":
+            return
+        reason = f"initialize did not complete within {timeout:g}s"
+        self._dead_reason = self._dead_reason or reason
+        with contextlib.suppress(Exception):
+            await self._fail_init(reason)
+        with contextlib.suppress(Exception):
+            await self.shutdown()
 
     async def _deliver_cached_initialize(
         self,
@@ -846,7 +912,7 @@ class Backend:
         self,
         init_msg: dict[str, Any],
         *,
-        timeout: float = 15.0,
+        timeout: float = _DEFAULT_INITIALIZE_TIMEOUT_SECS,
     ) -> None:
         """Re-drive the MCP ``initialize`` handshake on a freshly respawned
         backend using a stub's captured ``initialize`` request, WITHOUT
@@ -934,6 +1000,10 @@ class Backend:
         if self._gone_broadcast:
             return
         self._gone_broadcast = True
+        # The backend is terminal from here, so the first-handshake timer has
+        # nothing left to close. Disarming is a no-op when the deadline itself
+        # drove this broadcast.
+        self._cancel_init_deadline()
         # Fast-fail any in-flight prime_initialize() waiter. If the backend
         # dies mid-handshake (stdout EOF before it answered initialize),
         # neither _on_upstream_initialize nor _fail_init fires, so a
@@ -1306,6 +1376,7 @@ class Backend:
         self._init_state = "failed"
         self._dead_reason = self._dead_reason or f"init failed: {reason}"
         self._init_done_event.set()
+        self._cancel_init_deadline()
         logger.error("backend pid=%s %s", self.pid, self._dead_reason)
         pending = list(self._init_pending)
         self._init_pending.clear()
@@ -1349,6 +1420,7 @@ class Backend:
         self._init_result = result
         self._init_state = "ready"
         self._init_done_event.set()
+        self._cancel_init_deadline()
         capabilities = result.get("capabilities") or {}
         experimental = capabilities.get("experimental") or {}
         self.supports_caller_identity = isinstance(experimental, dict) and (
@@ -1935,6 +2007,10 @@ class Backend:
         keeps running and leaks its stderr pipe fd whenever the
         process outlives SIGKILL — across LRU-eviction churn this exhausts fds.
         """
+        # Disarmed rather than awaited: teardown is reachable from inside the
+        # deadline's own coroutine (it calls shutdown), and awaiting the
+        # current task would deadlock. _cancel_init_deadline skips that case.
+        self._cancel_init_deadline()
         for attr in ("_stdout_task", "_stderr_task"):
             task = getattr(self, attr)
             if task is not None:
