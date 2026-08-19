@@ -113,7 +113,6 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -3573,11 +3572,36 @@ async def handle_registries(request: web.Request) -> web.Response:
             )
         validated.append({"name": name, "repo": repo, "branch": branch, "trust": trust})
 
-    # Update config file (atomic write to prevent corruption on crash)
+    # The registry list is part of config.json, so its read-modify-write must
+    # serialize against BOTH config writer generations, not just one: the sidecar
+    # advisory flock that ``update_config_locked`` takes, and the loop-side
+    # ``_get_config_lock`` asyncio lock that the legacy dashboard writers (agents
+    # endpoint, updates.py, security.py, messaging.py, mcp.py, core.py STT) still
+    # serialize on ALONE. Holding only the flock does not exclude that family, so
+    # a concurrent PUT there could commit from a snapshot taken before this write
+    # and silently revert it — the lost update ``config/loader.py`` warns about
+    # when it says such callers must ALSO hold the in-process asyncio lock.
+    # ``run_config_write`` is the one entry point that holds both, and it still
+    # hands the blocking work to a worker, so the loop never stalls.
+    #
+    # Imported at call time rather than module scope for the same layering reason
+    # ``handle_app_uninstall`` imports ``_get_config_lock`` lazily: ``apps`` sits
+    # below ``dashboard`` in the package tree, and a load-time import would invert
+    # that direction.
+    from kiro_crew.dashboard.chat_utils import run_config_write
+
     cfg = Path(config_path())
     try:
-        data = json.loads(cfg.read_text(encoding="utf-8")) if cfg.is_file() else {}
-    except json.JSONDecodeError:
+        newly_trusted = await run_config_write(_write_registries_config, cfg, validated)
+    except ConfigReadError as exc:
+        if isinstance(exc.__cause__, OSError):
+            sel().log_api_access(
+                caller="dashboard",
+                operation="registries.update",
+                outcome="failed",
+                resources=f"config read error: {exc.__cause__}",
+            )
+            return web.json_response({"error": f"cannot read config: {exc.__cause__}"}, status=500)
         sel().log_api_access(
             caller="dashboard",
             operation="registries.update",
@@ -3593,43 +3617,27 @@ async def handle_registries(request: web.Request) -> web.Response:
             caller="dashboard",
             operation="registries.update",
             outcome="failed",
-            resources=f"config read error: {exc}",
+            resources=f"config write error: {exc}",
         )
-        return web.json_response({"error": f"cannot read config: {exc}"}, status=500)
-    # Detect hosts this PUT newly introduces to the registry trust set. A
-    # configured registry host is fed into the loosened-sandbox / SSH-clone
-    # trust set (see registry._configured_registry_hosts) AND its apps become
-    # installable with gateway privileges, so admitting a host is a genuine
-    # trust grant — not just a config edit. The generic ``registries.update``
-    # event does not record WHICH host gained trust, leaving an unreconstructable
-    # audit gap; emit a distinct, per-host ``registries.host_trust_granted``
-    # event so incident response can always establish when/how a host entered
-    # the trust set. Compare against the PRIOR on-disk config, not the freshly
-    # validated list, so re-saving an unchanged list emits nothing.
-    # ``data.get("registries") or []`` (not ``data.get("registries", [])``):
-    # a config carrying an explicit ``"registries": null`` loads fine elsewhere
-    # via the same ``or []`` idiom, so iterating the bare ``.get`` default would
-    # attempt to loop over ``None`` and turn this repair-PUT into an HTTP 500,
-    # blocking the only dashboard path that could fix the malformed value.
-    prior = data.get("registries") or []
-    prior_hosts = {
-        h for r in prior if isinstance(r, dict) and (h := _git_url_host(str(r.get("repo", ""))))
-    }
-    newly_trusted_hosts: list[str] = []
-    for r in validated:
-        host = _git_url_host(r["repo"])
-        if host and host not in prior_hosts and host not in newly_trusted_hosts:
-            newly_trusted_hosts.append(host)
-            sel().log_api_access(
-                caller="dashboard",
-                operation="registries.host_trust_granted",
-                outcome="success",
-                resources=f"host={host} repo={_strip_git_target_userinfo(r['repo'])}",
-            )
+        return web.json_response(
+            {
+                "error": f"cannot write config: {exc}",
+                "code": "registries_config_write_failed",
+            },
+            status=500,
+        )
 
-    data["registries"] = validated
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(cfg, json.dumps(data, indent=2) + "\n")
+    # Audit trust grants only after the locked update succeeds.  This keeps the
+    # event stream aligned with the persisted trust set when a Windows sharing
+    # violation or another write failure prevents the config change.
+    newly_trusted_hosts = [host for host, _repo in newly_trusted]
+    for host, public_repo in newly_trusted:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="registries.host_trust_granted",
+            outcome="success",
+            resources=f"host={host} repo={public_repo}",
+        )
 
     sel().log_api_access(
         caller="dashboard",
@@ -3650,6 +3658,49 @@ async def handle_registries(request: web.Request) -> web.Response:
             "newlyTrustedHosts": newly_trusted_hosts,
         }
     )
+
+
+def _write_registries_config(cfg: Path, validated: list[dict[str, str]]) -> list[tuple[str, str]]:
+    """Replace the registry trust set under the config lock, off the loop.
+
+    Returns each newly trusted ``(host, public_repo)`` pair so the async handler
+    can emit SEL events after, and only after, the write commits.  Host discovery
+    belongs inside the locked mutation: comparing with a pre-lock snapshot would
+    race a concurrent config writer and could report a grant that was not new.
+
+    Why the returned hosts are audited at all: a configured registry host is fed
+    into the loosened-sandbox / SSH-clone trust set (see
+    ``registry._configured_registry_hosts``) AND its apps become installable with
+    gateway privileges, so admitting a host is a genuine trust grant, not just a
+    config edit.  The generic ``registries.update`` event does not record WHICH
+    host gained trust, leaving an unreconstructable audit gap; the caller emits a
+    distinct per-host ``registries.host_trust_granted`` event so incident response
+    can always establish when and how a host entered the trust set.  Comparison is
+    against the PRIOR on-disk config rather than the freshly validated list, so
+    re-saving an unchanged list emits nothing.
+    """
+    newly_trusted: list[tuple[str, str]] = []
+
+    def _mutate(data: dict) -> dict:
+        # ``or []`` deliberately treats a legacy explicit null as an empty list,
+        # keeping PUT as the repair path for that otherwise valid JSON value.
+        prior = data.get("registries") or []
+        prior_hosts = {
+            host
+            for row in prior
+            if isinstance(row, dict) and (host := _git_url_host(str(row.get("repo", ""))))
+        }
+        seen_hosts: set[str] = set()
+        for row in validated:
+            host = _git_url_host(row["repo"])
+            if host and host not in prior_hosts and host not in seen_hosts:
+                seen_hosts.add(host)
+                newly_trusted.append((host, _strip_git_target_userinfo(row["repo"])))
+        data["registries"] = validated
+        return data
+
+    update_config_locked(cfg, mutate=_mutate)
+    return newly_trusted
 
 
 async def handle_registries_refresh(request: web.Request) -> web.Response:
