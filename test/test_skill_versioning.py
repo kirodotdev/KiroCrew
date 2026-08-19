@@ -9,9 +9,15 @@ loadable skill.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import os
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -20,15 +26,14 @@ from kiro_crew.skills import MAX_SKILL_VERSIONS, AutoSkillProvenance, SkillsLoad
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    return SkillsLoader(install_builtins=False)
 
 
 def _prov(created_at: str = "") -> AutoSkillProvenance:
     return AutoSkillProvenance(
         session_key="s",
-        created_at=created_at
-        or datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        created_at=created_at or datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     )
 
 
@@ -58,7 +63,23 @@ def _write_live(
     return live
 
 
-def _stage_update(loader, slug, *, target, base_version=1, body="## Steps\n\nnew steps", scripts=None):
+def _stage_update(
+    loader,
+    slug,
+    *,
+    target,
+    base_version=1,
+    body="## Steps\n\nnew steps",
+    scripts=None,
+    notify=True,
+    stage_token=None,
+    base_content_hash=None,
+    unattended_binding_out=None,
+):
+    if base_content_hash is None and stage_token is not None:
+        live_body = loader.read_auto_skill_body(target)
+        assert live_body is not None
+        base_content_hash = hashlib.sha256(live_body.encode("utf-8")).hexdigest()
     return loader.stage_skill_candidate(
         slug,
         description=f"updated {slug}",
@@ -69,10 +90,15 @@ def _stage_update(loader, slug, *, target, base_version=1, body="## Steps\n\nnew
         kind="update",
         target=target,
         base_version=base_version,
+        notify=notify,
+        stage_token=stage_token,
+        base_content_hash=base_content_hash,
+        unattended_binding_out=unattended_binding_out,
     )
 
 
 # ── version reads ──
+
 
 def test_get_auto_skill_version_defaults_to_one(loader):
     loader.create_auto_skill(
@@ -100,6 +126,7 @@ def test_read_auto_skill_body_and_namespace_guard(loader):
 
 # ── staging update candidates ──
 
+
 def test_staged_update_meta_appears_in_pending_list(loader):
     _write_live(loader, "greet")
     assert _stage_update(loader, "greet", target="auto/greet", base_version=1) == "auto/greet"
@@ -115,6 +142,7 @@ def test_staged_update_meta_appears_in_pending_list(loader):
 
 # ── approve_pending_update happy path ──
 
+
 def test_approve_update_carries_the_injection_opt_out_forward(loader):
     """A candidate never sets `inject_on_trigger`, so live must supply it.
 
@@ -124,9 +152,7 @@ def test_approve_update_carries_the_injection_opt_out_forward(loader):
     live_dir = _write_live(loader, "quiet", body="v1 body")
     live = live_dir / "SKILL.md"
     live.write_text(
-        live.read_text(encoding="utf-8").replace(
-            "\n---\n", "\ninject_on_trigger: false\n---\n", 1
-        ),
+        live.read_text(encoding="utf-8").replace("\n---\n", "\ninject_on_trigger: false\n---\n", 1),
         encoding="utf-8",
     )
     loader._invalidate_iter_cache()
@@ -193,6 +219,7 @@ def test_approve_update_moves_scripts_executable(loader):
 
 # ── rejections ──
 
+
 def test_approve_update_rejects_missing_target(loader):
     # target names a skill that is not live → refused, candidate intact.
     _stage_update(loader, "orphan", target="auto/nope")
@@ -213,6 +240,28 @@ def test_approve_update_rejects_non_update_kind(loader):
     )
     assert loader.approve_pending_update("plain-cand") is None
     assert any(p["slug"] == "plain-cand" for p in loader.list_pending_skills())
+
+
+def test_new_skill_approval_rejects_claimed_update_kind(loader):
+    live = _write_live(loader, "stale-route", version=1, body="live original")
+    _stage_update(
+        loader,
+        "stale-route-update",
+        target="auto/stale-route",
+        body="## Steps\n\nupdated body",
+    )
+    pending = loader._pending_root() / "stale-route-update"
+    candidate_before = (pending / "SKILL.md").read_bytes()
+    metadata_before = (pending / ".meta.json").read_bytes()
+    live_before = (live / "SKILL.md").read_bytes()
+
+    # Simulate a dashboard request routed as "new" from stale pre-claim metadata.
+    assert loader.approve_pending_skill("stale-route-update") is None
+
+    assert (live / "SKILL.md").read_bytes() == live_before
+    assert not (loader._dir / "auto" / "stale-route-update").exists()
+    assert (pending / "SKILL.md").read_bytes() == candidate_before
+    assert (pending / ".meta.json").read_bytes() == metadata_before
 
 
 def test_approve_update_rejects_symlink(loader):
@@ -246,6 +295,7 @@ def test_failed_update_leaves_candidate_and_live_intact(loader, monkeypatch):
 
 # ── version pruning ──
 
+
 def test_approve_update_prunes_versions_at_cap(loader):
     over = MAX_SKILL_VERSIONS + 5  # current live version
     _write_live(loader, "capped", version=over, body="current")
@@ -266,6 +316,7 @@ def test_approve_update_prunes_versions_at_cap(loader):
 
 
 # ── .versions never surfaces as a live skill ──
+
 
 def test_versions_dir_absent_from_list_skills(loader):
     _write_live(loader, "shown", body="v1")
@@ -493,13 +544,16 @@ def test_refine_preserves_version_and_pinned(loader):
     live_skill = loader._dir / "auto" / "refine-keep" / "SKILL.md"
     assert loader.set_pinned("auto/refine-keep", True) is True
 
-    assert loader.update_auto_skill(
-        "auto/refine-keep",
-        description="refined desc",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(created_at="2099-01-01T00:00:00+00:00"),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-keep",
+            description="refined desc",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(created_at="2099-01-01T00:00:00+00:00"),
+        )
+        is True
+    )
 
     body = live_skill.read_text(encoding="utf-8")
     assert "version: 3" in body
@@ -519,13 +573,16 @@ def test_refine_preserves_the_injection_opt_out(loader):
     live_skill = loader._dir / "auto" / "refine-quiet" / "SKILL.md"
     assert loader.set_inject_on_trigger("auto/refine-quiet", False) is True
 
-    assert loader.update_auto_skill(
-        "auto/refine-quiet",
-        description="refined desc",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-quiet",
+            description="refined desc",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(),
+        )
+        is True
+    )
 
     body = live_skill.read_text(encoding="utf-8")
     assert "refined" in body
@@ -535,13 +592,16 @@ def test_refine_preserves_the_injection_opt_out(loader):
 
 def test_refine_does_not_invent_an_opt_out(loader):
     _write_live(loader, "refine-loud", body="OLD")
-    assert loader.update_auto_skill(
-        "auto/refine-loud",
-        description="d",
-        triggers="t",
-        procedure_md="## Steps\n\nrefined",
-        provenance=_prov(),
-    ) is True
+    assert (
+        loader.update_auto_skill(
+            "auto/refine-loud",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n\nrefined",
+            provenance=_prov(),
+        )
+        is True
+    )
     body = (loader._dir / "auto" / "refine-loud" / "SKILL.md").read_text(encoding="utf-8")
     assert "inject_on_trigger" not in body
 
@@ -775,3 +835,1224 @@ def test_stale_rejection_leaves_the_candidate_unredacted(loader):
     # Still pending, and byte-identical to what was staged.
     assert candidate.exists()
     assert candidate.read_bytes() == before
+
+
+# ── unattended update promotion / atomic claim ──
+
+
+def test_claim_requires_resolved_private_root_to_be_sensitive(loader, monkeypatch, tmp_path):
+    _write_live(loader, "alias-guard", version=1, body="OLD")
+    _stage_update(loader, "alias-guard-update", target="auto/alias-guard")
+    private_root = loader._private_root()
+    physical_alias = tmp_path / "project" / "crew-data" / "skills" / "auto" / ".private"
+    real_resolve = Path.resolve
+
+    def resolve_private_root(path, *args, **kwargs):
+        if path == private_root:
+            return physical_alias
+        return real_resolve(path, *args, **kwargs)
+
+    checked: list[str] = []
+
+    def sensitive(path: str) -> bool:
+        checked.append(path)
+        return path == str(private_root)
+
+    monkeypatch.setattr(Path, "resolve", resolve_private_root)
+    monkeypatch.setattr(skills_mod, "is_sensitive_path", sensitive)
+
+    assert loader._claim_pending_update("alias-guard-update") is None
+    assert checked == [str(private_root), str(physical_alias)]
+    assert (loader._pending_root() / "alias-guard-update" / "SKILL.md").exists()
+
+
+@pytest.mark.parametrize("root_kind", ["private", "claims", "locks"])
+def test_claim_rejects_linked_private_state_roots(loader, tmp_path, root_kind):
+    _write_live(loader, "linked-private-root", version=1, body="OLD")
+    _stage_update(
+        loader,
+        f"linked-{root_kind}-root-update",
+        target="auto/linked-private-root",
+    )
+    private_root = loader._private_root()
+    claims_root = loader._claims_root()
+    locks_root = loader._locks_root()
+    if root_kind == "private":
+        link = private_root
+        shutil.rmtree(private_root)
+    elif root_kind == "claims":
+        link = claims_root
+        claims_root.rmdir()
+    else:
+        link = locks_root
+        (locks_root / "pending.lock").unlink()
+        (locks_root / "claims").rmdir()
+        locks_root.rmdir()
+    outside = tmp_path / f"outside-{root_kind}"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("DO NOT TOUCH", encoding="utf-8")
+    skills_mod.platform_compat.symlink_or_junction(outside, link)
+
+    assert loader._claim_pending_update(f"linked-{root_kind}-root-update") is None
+
+    assert sentinel.read_text(encoding="utf-8") == "DO NOT TOUCH"
+    assert sorted(child.name for child in outside.iterdir()) == ["sentinel"]
+    assert (loader._pending_root() / f"linked-{root_kind}-root-update" / "SKILL.md").exists()
+
+
+def test_auto_apply_prose_update_snapshots_and_notifies(loader):
+    _write_live(loader, "auto-prose", version=2, body="OLD")
+    token = "a" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "auto-prose-update",
+        target="auto/auto-prose",
+        base_version=2,
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    seen: list[dict] = []
+    skills_mod.set_update_auto_applied_hook(seen.append)
+    try:
+        assert loader.auto_apply_pending_update(
+            "auto-prose-update",
+            expected_stage_token=token,
+            expected_candidate_binding=binding[0],
+        ) == ("auto/auto-prose", 3)
+    finally:
+        skills_mod.set_update_auto_applied_hook(None)
+
+    assert loader.get_auto_skill_version("auto/auto-prose") == 3
+    assert (loader._dir / "auto" / "auto-prose" / ".versions" / "v2-SKILL.md").exists()
+    assert not (loader._pending_root() / "auto-prose-update").exists()
+    assert seen[0]["new_version"] == 3
+
+
+def test_auto_apply_binding_uses_exact_staged_bytes(loader, monkeypatch):
+    _write_live(loader, "windows-newlines", version=1, body="OLD")
+    real_write_text = Path.write_text
+
+    def write_with_windows_newlines(path, data, *args, **kwargs):
+        candidate = Path(path)
+        if candidate.name == "SKILL.md" and loader._pending_root() in candidate.parents:
+            return candidate.write_bytes(data.replace("\n", "\r\n").encode("utf-8"))
+        return real_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_with_windows_newlines)
+    token = "9" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "windows-newlines-update",
+        target="auto/windows-newlines",
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    staged = loader._pending_root() / "windows-newlines-update" / "SKILL.md"
+    assert b"\r\n" in staged.read_bytes()
+
+    assert loader.auto_apply_pending_update(
+        "windows-newlines-update",
+        expected_stage_token=token,
+        expected_candidate_binding=binding[0],
+    ) == ("auto/windows-newlines", 2)
+
+
+def test_auto_apply_refuses_concurrent_dashboard_edit(loader, monkeypatch):
+    live_dir = _write_live(loader, "dashboard-race", version=1, body="OLD")
+    live_file = live_dir / "SKILL.md"
+    token = "e" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "dashboard-race-update",
+        target="auto/dashboard-race",
+        base_version=1,
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    dashboard_content = live_file.read_text(encoding="utf-8").replace("OLD", "DASHBOARD EDIT")
+
+    writer_has_lock = threading.Event()
+    allow_writer = threading.Event()
+    auto_lock_attempted = threading.Event()
+    real_write = loader._update_skill_unlocked
+    real_lock = loader._promotion_lock
+
+    def blocked_dashboard_write(name, content):
+        writer_has_lock.set()
+        assert allow_writer.wait(timeout=5)
+        return real_write(name, content)
+
+    @contextlib.contextmanager
+    def observed_lock(slug):
+        if threading.current_thread().name.startswith("auto-apply"):
+            auto_lock_attempted.set()
+        with real_lock(slug) as acquired:
+            yield acquired
+
+    monkeypatch.setattr(loader, "_update_skill_unlocked", blocked_dashboard_write)
+    monkeypatch.setattr(loader, "_promotion_lock", observed_lock)
+
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="dashboard-edit") as edit_pool,
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-apply") as apply_pool,
+    ):
+        edit_future = edit_pool.submit(
+            loader.update_skill, "auto/dashboard-race", dashboard_content
+        )
+        assert writer_has_lock.wait(timeout=5)
+        try:
+            apply_future = apply_pool.submit(
+                loader.auto_apply_pending_update,
+                "dashboard-race-update",
+                expected_stage_token=token,
+                expected_candidate_binding=binding[0],
+            )
+            assert auto_lock_attempted.wait(timeout=5)
+            assert not apply_future.done()
+        finally:
+            allow_writer.set()
+        assert edit_future.result(timeout=5) is True
+        assert apply_future.result(timeout=5) is None
+
+    assert live_file.read_text(encoding="utf-8") == dashboard_content
+    assert (loader._pending_root() / "dashboard-race-update" / "SKILL.md").exists()
+    assert not (live_dir / ".versions").exists()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "helper_name", "extra_args"),
+    [
+        ("update_skill", "_update_skill_unlocked", ("dashboard body",)),
+        ("delete_skill", "_delete_skill_unlocked", ()),
+        ("set_pinned", "_set_pinned_unlocked", (True,)),
+        ("set_inject_on_trigger", "_set_inject_on_trigger_unlocked", (False,)),
+        ("archive_auto_skill", "_archive_auto_skill_unlocked", ()),
+    ],
+)
+def test_live_auto_mutators_share_promotion_lock(
+    loader, monkeypatch, method_name, helper_name, extra_args
+):
+    _write_live(loader, "mutation-lock", version=1, body="OLD")
+    name = "auto/mutation-lock"
+    attempted = threading.Event()
+    mutation_entered = threading.Event()
+    real_lock = loader._promotion_lock
+    real_mutation = getattr(loader, helper_name)
+
+    @contextlib.contextmanager
+    def observed_lock(slug):
+        if threading.current_thread().name.startswith("live-mutator"):
+            attempted.set()
+        with real_lock(slug) as acquired:
+            yield acquired
+
+    def observed_mutation(*args, **kwargs):
+        mutation_entered.set()
+        return real_mutation(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "_promotion_lock", observed_lock)
+    monkeypatch.setattr(loader, helper_name, observed_mutation)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="live-mutator") as pool:
+        with real_lock("mutation-lock") as acquired:
+            assert acquired is True
+            future = pool.submit(getattr(loader, method_name), name, *extra_args)
+            assert attempted.wait(timeout=5)
+            assert not mutation_entered.is_set()
+        assert future.result(timeout=5) is True
+    assert mutation_entered.is_set()
+
+
+@pytest.mark.parametrize("name", ["AUTO/mutation-lock", "Auto/mutation-lock", "aUtO/mutation-lock"])
+def test_live_auto_mutator_refuses_noncanonical_namespace_alias(loader, monkeypatch, name):
+    def unexpected_write(_name, _content):
+        pytest.fail("noncanonical auto namespace reached the unlocked writer")
+
+    monkeypatch.setattr(loader, "_update_skill_unlocked", unexpected_write)
+
+    assert loader.update_skill(name, "dashboard body") is False
+
+
+def test_auto_apply_refuses_physical_scripts_and_restores_review(loader):
+    _write_live(loader, "physical", version=1, body="OLD")
+    token = "b" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "physical-update",
+        target="auto/physical",
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    script_dir = loader._pending_root() / "physical-update" / "scripts"
+    script_dir.mkdir()
+    (script_dir / "late.py").write_text("print('late')\n", encoding="utf-8")
+
+    assert (
+        loader.auto_apply_pending_update(
+            "physical-update",
+            expected_stage_token=token,
+            expected_candidate_binding=binding[0],
+        )
+        is None
+    )
+    assert (loader._pending_root() / "physical-update" / "scripts" / "late.py").exists()
+    assert loader.get_auto_skill_version("auto/physical") == 1
+
+
+def test_auto_apply_refuses_stage_token_swap(loader):
+    _write_live(loader, "tokened", version=1, body="OLD")
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "tokened-update",
+        target="auto/tokened",
+        notify=False,
+        stage_token="original",
+        unattended_binding_out=binding,
+    )
+    assert (
+        loader.auto_apply_pending_update(
+            "tokened-update",
+            expected_stage_token="replacement",
+            expected_candidate_binding=binding[0],
+        )
+        is None
+    )
+    assert (loader._pending_root() / "tokened-update" / "SKILL.md").exists()
+    assert loader.get_auto_skill_version("auto/tokened") == 1
+
+
+def test_auto_apply_refuses_candidate_and_metadata_substitution(loader):
+    original_dir = _write_live(loader, "binding-original", version=1, body="ORIGINAL")
+    other_dir = _write_live(loader, "binding-other", version=1, body="OTHER")
+    original_body = (original_dir / "SKILL.md").read_text(encoding="utf-8")
+    other_body = (other_dir / "SKILL.md").read_text(encoding="utf-8")
+    token = "f" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "binding-update",
+        target="auto/binding-original",
+        body="## Steps\n\nSAFE",
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    pending = loader._pending_root() / "binding-update"
+    (pending / "SKILL.md").write_text("SUBSTITUTED", encoding="utf-8")
+    meta_file = pending / ".meta.json"
+    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    meta["target"] = "auto/binding-other"
+    meta["base_content_hash"] = hashlib.sha256(other_body.encode("utf-8")).hexdigest()
+    meta_file.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert (
+        loader.auto_apply_pending_update(
+            "binding-update",
+            expected_stage_token=token,
+            expected_candidate_binding=binding[0],
+        )
+        is None
+    )
+    assert (original_dir / "SKILL.md").read_text(encoding="utf-8") == original_body
+    assert (other_dir / "SKILL.md").read_text(encoding="utf-8") == other_body
+    assert (loader._pending_root() / "binding-update" / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "SUBSTITUTED"
+
+
+def test_auto_apply_inspects_only_claimed_snapshot(loader, monkeypatch):
+    _write_live(loader, "snapshot", version=1, body="OLD")
+    token = "c" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "snapshot-update",
+        target="auto/snapshot",
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    real_layout = loader._candidate_layout_ok
+    injected = False
+
+    def inject_at_public_path(src, name):
+        nonlocal injected
+        assert src.parent == loader._claims_root()
+        assert not (loader._pending_root() / "snapshot-update").exists()
+        replacement = loader._pending_root() / "snapshot-update"
+        replacement.mkdir()
+        (replacement / "SKILL.md").write_text("replacement", encoding="utf-8")
+        (replacement / ".meta.json").write_text("{}", encoding="utf-8")
+        scripts = replacement / "scripts"
+        scripts.mkdir()
+        (scripts / "late.py").write_text("print('late')\n", encoding="utf-8")
+        injected = True
+        return real_layout(src, name)
+
+    monkeypatch.setattr(loader, "_candidate_layout_ok", inject_at_public_path)
+    assert loader.auto_apply_pending_update(
+        "snapshot-update",
+        expected_stage_token=token,
+        expected_candidate_binding=binding[0],
+    ) == (
+        "auto/snapshot",
+        2,
+    )
+    assert injected is True
+    assert (loader._pending_root() / "snapshot-update" / "scripts" / "late.py").exists()
+    assert not (loader._dir / "auto" / "snapshot" / "scripts" / "late.py").exists()
+
+
+def test_abandoned_claim_is_recovered_by_pending_listing(loader):
+    _write_live(loader, "recover", version=1, body="OLD")
+    _stage_update(loader, "recover-update", target="auto/recover")
+    claimed = loader._claim_pending_update("recover-update")
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    assert claim.exists()
+    assert not (loader._pending_root() / "recover-update").exists()
+
+    skills_mod.platform_compat.release_lock(fd)
+    os.close(fd)
+    assert [row["slug"] for row in loader.list_pending_skills()] == ["recover-update"]
+    assert not claim.exists()
+
+
+def test_concurrent_same_target_promotions_serialize(loader):
+    _write_live(loader, "serialized", version=1, body="ORIGINAL")
+    _stage_update(
+        loader,
+        "serialized-a",
+        target="auto/serialized",
+        base_version=1,
+        body="## Steps\n\nFROM-A",
+    )
+    _stage_update(
+        loader,
+        "serialized-b",
+        target="auto/serialized",
+        base_version=1,
+        body="## Steps\n\nFROM-B",
+    )
+    barrier = threading.Barrier(2)
+
+    def promote(slug):
+        barrier.wait()
+        return loader.approve_pending_update(slug)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(promote, ["serialized-a", "serialized-b"]))
+
+    assert results.count("auto/serialized") == 1
+    assert results.count(None) == 1
+    assert loader.get_auto_skill_version("auto/serialized") == 2
+    assert len(loader.list_pending_skills()) == 1
+
+
+def test_auto_apply_uses_version_computed_under_promotion_lock(loader, monkeypatch):
+    _write_live(loader, "authoritative", version=2, body="OLD")
+    token = "d" * 32
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "authoritative-update",
+        target="auto/authoritative",
+        base_version=2,
+        notify=False,
+        stage_token=token,
+        unattended_binding_out=binding,
+    )
+    real_get_version = loader.get_auto_skill_version
+    version_reads = 0
+
+    def changed_after_first_read(name):
+        nonlocal version_reads
+        version_reads += 1
+        if version_reads > 1:
+            return 99
+        return real_get_version(name)
+
+    monkeypatch.setattr(loader, "get_auto_skill_version", changed_after_first_read)
+    seen: list[dict] = []
+    skills_mod.set_update_auto_applied_hook(seen.append)
+    try:
+        assert loader.auto_apply_pending_update(
+            "authoritative-update",
+            expected_stage_token=token,
+            expected_candidate_binding=binding[0],
+        ) == ("auto/authoritative", 3)
+    finally:
+        skills_mod.set_update_auto_applied_hook(None)
+
+    assert version_reads == 1
+    assert seen[0]["new_version"] == 3
+    claim_locks = loader._locks_root() / "claims"
+    assert not claim_locks.exists() or not list(claim_locks.glob("*.lock"))
+
+
+def test_restore_failure_releases_claim_lock_for_recovery(loader, monkeypatch):
+    _write_live(loader, "restore-failure", version=1, body="OLD")
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "restore-failure-update",
+        target="auto/restore-failure",
+        stage_token="original",
+        unattended_binding_out=binding,
+    )
+    real_restore = loader._restore_claimed_update
+    restore_calls = 0
+
+    def fail_once(claim, slug):
+        nonlocal restore_calls
+        restore_calls += 1
+        if restore_calls == 1:
+            raise OSError("injected restore failure")
+        return real_restore(claim, slug)
+
+    monkeypatch.setattr(loader, "_restore_claimed_update", fail_once)
+    assert (
+        loader.auto_apply_pending_update(
+            "restore-failure-update",
+            expected_stage_token="replacement",
+            expected_candidate_binding=binding[0],
+        )
+        is None
+    )
+    assert not (loader._pending_root() / "restore-failure-update").exists()
+
+    assert [row["slug"] for row in loader.list_pending_skills()] == ["restore-failure-update"]
+    assert restore_calls == 2
+    claim_locks = loader._locks_root() / "claims"
+    assert not claim_locks.exists() or not list(claim_locks.glob("*.lock"))
+
+
+def test_new_skill_approval_inspects_only_claimed_snapshot(loader, monkeypatch):
+    loader.stage_skill_candidate(
+        "approve-replacement-race",
+        description="original candidate",
+        triggers="candidate",
+        procedure_md="## Steps\n\nORIGINAL",
+        provenance=_prov(),
+    )
+    pending = loader._pending_root() / "approve-replacement-race"
+    live = loader._dir / "auto" / "approve-replacement-race"
+    inspection_started = threading.Event()
+    allow_approval = threading.Event()
+    real_layout = loader._candidate_layout_ok
+
+    def blocking_layout(src, name):
+        assert src.parent == loader._claims_root()
+        assert not pending.exists()
+        inspection_started.set()
+        assert allow_approval.wait(timeout=2)
+        return real_layout(src, name)
+
+    monkeypatch.setattr(loader, "_candidate_layout_ok", blocking_layout)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        approval = pool.submit(loader.approve_pending_skill, "approve-replacement-race")
+        assert inspection_started.wait(timeout=2)
+        try:
+            # Dismissal cannot touch the in-flight private claim.
+            assert loader.dismiss_pending_skill("approve-replacement-race") is False
+
+            # A direct writer can reoccupy the public slug without taking the
+            # namespace lock. Approval must never inspect or consume these bytes.
+            pending.mkdir()
+            (pending / "SKILL.md").write_text("REPLACEMENT", encoding="utf-8")
+            (pending / ".meta.json").write_text("{}", encoding="utf-8")
+            scripts = pending / "scripts"
+            scripts.mkdir()
+            (scripts / "late.py").write_text("print('late')\n", encoding="utf-8")
+        finally:
+            allow_approval.set()
+        assert approval.result(timeout=2) == "auto/approve-replacement-race"
+
+    assert "ORIGINAL" in (live / "SKILL.md").read_text(encoding="utf-8")
+    assert "REPLACEMENT" not in (live / "SKILL.md").read_text(encoding="utf-8")
+    assert not (live / "scripts" / "late.py").exists()
+    assert (pending / "scripts" / "late.py").exists()
+    claim_locks = loader._locks_root() / "claims"
+    assert not claim_locks.exists() or not list(claim_locks.glob("*.lock"))
+
+
+def test_claim_fails_closed_outside_agent_denied_root(tmp_path):
+    unprotected = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+    unprotected.stage_skill_candidate(
+        "unprotected-candidate",
+        description="candidate",
+        triggers="candidate",
+        procedure_md="## Steps\n\nORIGINAL",
+        provenance=_prov(),
+    )
+
+    assert unprotected.approve_pending_skill("unprotected-candidate") is None
+    assert (unprotected._pending_root() / "unprotected-candidate" / "SKILL.md").exists()
+    assert not list(unprotected._claims_root().iterdir())
+
+
+def test_skill_lock_files_are_prepared_for_windows(loader, monkeypatch):
+    monkeypatch.setattr(skills_mod.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        skills_mod.platform_compat, "try_acquire_lock", lambda _fd, exclusive=False: True
+    )
+    monkeypatch.setattr(skills_mod.platform_compat, "release_lock", lambda _fd: None)
+    loader.stage_skill_candidate(
+        "windows-lock-byte",
+        description="candidate",
+        triggers="candidate",
+        procedure_md="## Steps\n\nORIGINAL",
+        provenance=_prov(),
+    )
+    pending_lock = loader._locks_root() / "pending.lock"
+    assert pending_lock.read_bytes() == b"\0"
+
+    claimed = loader._claim_pending_update("windows-lock-byte")
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    claim_lock = loader._claim_lock_path(claim.name)
+    assert claim_lock.read_bytes() == loader._claim_lock_state_payload(claim.name, completed=False)
+    os.close(fd)
+    loader._restore_claimed_update(claim, "windows-lock-byte")
+    loader._cleanup_claim_lock(claim.name)
+
+
+def test_skill_lock_refuses_hardlink_without_touching_target(loader):
+    assert loader._private_state_roots_safe(create=True) is True
+    victim = loader._locks_root() / "hardlink-victim"
+    victim.write_bytes(b"DO NOT TOUCH")
+    lock_path = loader._locks_root() / "hardlinked.lock"
+    os.link(victim, lock_path)
+
+    with pytest.raises(OSError):
+        loader._open_skill_lock(lock_path)
+
+    assert victim.read_bytes() == b"DO NOT TOUCH"
+    assert lock_path.read_bytes() == b"DO NOT TOUCH"
+
+
+def test_skill_lock_detects_opened_inode_swap_without_nofollow(loader, monkeypatch):
+    assert loader._private_state_roots_safe(create=True) is True
+    lock_path = loader._locks_root() / "swapped.lock"
+    lock_path.write_bytes(b"")
+    victim = loader._locks_root() / "swap-victim"
+    victim.write_bytes(b"DO NOT TOUCH")
+    real_open = skills_mod.os.open
+
+    def open_swapped_inode(path, flags, *args, **kwargs):
+        if Path(path) == lock_path:
+            return real_open(victim, flags, *args, **kwargs)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.delattr(skills_mod.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(skills_mod.os, "open", open_swapped_inode)
+
+    with pytest.raises(OSError):
+        loader._open_skill_lock(lock_path)
+
+    assert lock_path.read_bytes() == b""
+    assert victim.read_bytes() == b"DO NOT TOUCH"
+
+
+def _linked_pending_candidate(loader, slug):
+    victim = loader._pending_root() / f"{slug}-victim"
+    victim.mkdir(parents=True, exist_ok=True)
+    (victim / "SKILL.md").write_text("VICTIM", encoding="utf-8")
+    metadata = '{"name": "victim", "notify_suppressed": true}'
+    (victim / ".meta.json").write_text(metadata, encoding="utf-8")
+    link = loader._pending_root() / slug
+    skills_mod.platform_compat.symlink_or_junction(victim, link)
+    return link, victim, metadata
+
+
+def test_linked_claim_restores_without_touching_target_metadata(loader):
+    link, victim, metadata = _linked_pending_candidate(loader, "linked-approval")
+
+    assert loader.approve_pending_skill("linked-approval") is None
+
+    assert skills_mod.platform_compat.is_link_or_junction(link)
+    assert (victim / ".meta.json").read_text(encoding="utf-8") == metadata
+    assert not (victim / ".promoted").exists()
+
+
+def test_linked_claim_dismissal_unlinks_only_claim(loader):
+    link, victim, metadata = _linked_pending_candidate(loader, "linked-dismissal")
+
+    assert loader.dismiss_pending_skill("linked-dismissal") is True
+
+    assert not skills_mod.platform_compat.is_link_or_junction(link)
+    assert (victim / "SKILL.md").read_text(encoding="utf-8") == "VICTIM"
+    assert (victim / ".meta.json").read_text(encoding="utf-8") == metadata
+    assert not (victim / ".promoted").exists()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected", "link_remains"),
+    [
+        ("approve_pending_skill", None, True),
+        ("dismiss_pending_skill", True, False),
+    ],
+)
+def test_completion_marker_check_does_not_follow_linked_claim_parent(
+    loader, method_name, expected, link_remains
+):
+    slug = f"linked-marker-parent-{method_name}"
+    link, victim, metadata = _linked_pending_candidate(loader, slug)
+    victim_marker = victim / ".promoted"
+    victim_marker.write_text("VICTIM MARKER\n", encoding="utf-8")
+
+    assert getattr(loader, method_name)(slug) == expected
+
+    assert skills_mod.platform_compat.is_link_or_junction(link) is link_remains
+    assert (victim / "SKILL.md").read_text(encoding="utf-8") == "VICTIM"
+    assert (victim / ".meta.json").read_text(encoding="utf-8") == metadata
+    assert victim_marker.read_text(encoding="utf-8") == "VICTIM MARKER\n"
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_dismiss_refuses_preplanted_completion_marker_without_touching_target(
+    loader, tmp_path, link_kind
+):
+    slug = f"marker-{link_kind}"
+    loader.stage_skill_candidate(
+        slug,
+        description="candidate",
+        triggers="candidate",
+        procedure_md="## Steps\n\nORIGINAL",
+        provenance=_prov(),
+    )
+    marker = loader._pending_root() / slug / ".promoted"
+    victim = tmp_path / f"{link_kind}-victim"
+    victim.write_text("DO NOT TOUCH", encoding="utf-8")
+    if link_kind == "symlink":
+        os.symlink(victim, marker)
+    else:
+        os.link(victim, marker)
+
+    assert loader.dismiss_pending_skill(slug) is False
+
+    assert victim.read_text(encoding="utf-8") == "DO NOT TOUCH"
+    restored = loader._pending_root() / slug
+    assert restored.is_dir()
+    assert not os.path.lexists(restored / ".promoted")
+
+
+def test_non_object_metadata_is_restored_without_rewrite(loader):
+    _stage_update(loader, "list-metadata", target="auto/target")
+    meta_file = loader._pending_root() / "list-metadata" / ".meta.json"
+    meta_file.write_text("[]", encoding="utf-8")
+
+    assert loader.approve_pending_update("list-metadata") is None
+
+    assert meta_file.read_text(encoding="utf-8") == "[]"
+    assert not loader._claims_root().exists() or not list(loader._claims_root().iterdir())
+
+
+def test_auto_apply_claim_failure_emits_suppressed_staged_notification(loader, monkeypatch):
+    _write_live(loader, "claim-notify", version=1, body="OLD")
+    binding: list[str] = []
+    _stage_update(
+        loader,
+        "claim-notify-update",
+        target="auto/claim-notify",
+        notify=False,
+        stage_token="expected",
+        unattended_binding_out=binding,
+    )
+    seen = []
+    monkeypatch.setattr(loader, "_claim_pending_update", lambda _slug: None)
+    monkeypatch.setattr(loader, "emit_pending_staged", seen.append)
+
+    assert (
+        loader.auto_apply_pending_update(
+            "claim-notify-update",
+            expected_stage_token="expected",
+            expected_candidate_binding=binding[0],
+        )
+        is None
+    )
+    assert seen == ["claim-notify-update"]
+
+
+def test_concurrent_new_skill_approvals_serialize_and_preserve_replacement(loader, monkeypatch):
+    slug = "concurrent-new-approval"
+    loader.stage_skill_candidate(
+        slug,
+        description="original candidate",
+        triggers="candidate",
+        procedure_md="## Steps\n\nORIGINAL",
+        provenance=_prov(),
+    )
+    pending = loader._pending_root() / slug
+    live = loader._dir / "auto" / slug
+    first_inspection = threading.Event()
+    allow_first = threading.Event()
+    second_claimed = threading.Event()
+    unexpected_second_inspection = threading.Event()
+    real_claim = loader._claim_pending_update
+    real_layout = loader._candidate_layout_ok
+    count_lock = threading.Lock()
+    claim_count = 0
+    layout_count = 0
+
+    def recording_claim(candidate_slug):
+        nonlocal claim_count
+        result = real_claim(candidate_slug)
+        if result is not None:
+            with count_lock:
+                claim_count += 1
+                if claim_count == 2:
+                    second_claimed.set()
+        return result
+
+    def blocking_first_layout(src, name):
+        nonlocal layout_count
+        with count_lock:
+            layout_count += 1
+            current = layout_count
+        if current == 1:
+            first_inspection.set()
+            assert allow_first.wait(timeout=2)
+        else:
+            unexpected_second_inspection.set()
+        return real_layout(src, name)
+
+    monkeypatch.setattr(loader, "_claim_pending_update", recording_claim)
+    monkeypatch.setattr(loader, "_candidate_layout_ok", blocking_first_layout)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(loader.approve_pending_skill, slug)
+        assert first_inspection.wait(timeout=2)
+        pending.mkdir()
+        (pending / "SKILL.md").write_text("REPLACEMENT", encoding="utf-8")
+        (pending / ".meta.json").write_text("{}", encoding="utf-8")
+        scripts = pending / "scripts"
+        scripts.mkdir()
+        (scripts / "late.py").write_text("print('late')\n", encoding="utf-8")
+        second = pool.submit(loader.approve_pending_skill, slug)
+        assert second_claimed.wait(timeout=2)
+        assert not second.done()
+        assert not unexpected_second_inspection.is_set()
+        allow_first.set()
+        assert first.result(timeout=2) == f"auto/{slug}"
+        assert second.result(timeout=2) is None
+
+    assert "ORIGINAL" in (live / "SKILL.md").read_text(encoding="utf-8")
+    assert not any(child.name.startswith(f"{slug}--") for child in live.iterdir())
+    assert (pending / "scripts" / "late.py").exists()
+    assert not loader._claims_root().exists() or not list(loader._claims_root().iterdir())
+
+
+def test_restore_no_replace_preserves_direct_writer(loader, monkeypatch):
+    slug = "restore-direct-writer"
+    _stage_update(loader, slug, target="auto/restore-target")
+    claimed = loader._claim_pending_update(slug)
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    skills_mod.platform_compat.release_lock(fd)
+    os.close(fd)
+    pending = loader._pending_root() / slug
+    entered_restore = threading.Event()
+    allow_restore = threading.Event()
+    real_rename = skills_mod.platform_compat.rename_no_replace
+    blocked = False
+
+    def blocking_rename(src, destination):
+        nonlocal blocked
+        if Path(src) == claim and Path(destination) == pending and not blocked:
+            blocked = True
+            entered_restore.set()
+            assert allow_restore.wait(timeout=2)
+        return real_rename(src, destination)
+
+    monkeypatch.setattr(skills_mod.platform_compat, "rename_no_replace", blocking_rename)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(loader._restore_claimed_update, claim, slug)
+        assert entered_restore.wait(timeout=2)
+        pending.mkdir()
+        (pending / "SKILL.md").write_text("DIRECT REPLACEMENT", encoding="utf-8")
+        allow_restore.set()
+        restored = future.result(timeout=2)
+
+    assert restored is not None and restored.name == f"{slug}-2"
+    assert (pending / "SKILL.md").read_text(encoding="utf-8") == "DIRECT REPLACEMENT"
+    assert "new steps" in (restored / "SKILL.md").read_text(encoding="utf-8")
+    loader._cleanup_claim_lock(claim.name)
+
+
+def test_claim_refuses_before_public_move_when_no_replace_is_unsupported(loader, monkeypatch):
+    import errno
+
+    slug = "unsupported-no-replace"
+    _stage_update(loader, slug, target="auto/no-replace-target")
+    pending = loader._pending_root() / slug
+
+    def unsupported(_source, _destination):
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename unavailable")
+
+    monkeypatch.setattr(skills_mod.platform_compat, "rename_no_replace", unsupported)
+
+    assert loader._claim_pending_update(slug) is None
+    assert pending.is_dir()
+    assert "new steps" in (pending / "SKILL.md").read_text(encoding="utf-8")
+    assert not list(loader._claims_root().glob(f"{slug}--*"))
+    assert not list((loader._locks_root() / "claims").glob(f"{slug}--*.lock"))
+
+
+def test_partial_cleanup_marker_repair_failure_uses_completed_lock_state(loader, monkeypatch):
+    _write_live(loader, "lock-outcome-recovery", version=1, body="OLD")
+    slug = "lock-outcome-recovery-update"
+    _stage_update(loader, slug, target="auto/lock-outcome-recovery")
+    real_rmtree = skills_mod.shutil.rmtree
+    real_write_marker = loader._write_completion_marker
+    cleanup_failed = False
+    marker_writes = 0
+
+    def remove_marker_then_fail(path, *args, **kwargs):
+        nonlocal cleanup_failed
+        candidate = Path(path)
+        if candidate.parent == loader._claims_root() and not cleanup_failed:
+            cleanup_failed = True
+            assert loader._authenticated_completion_marker(candidate) is True
+            (candidate / ".promoted").unlink()
+            raise PermissionError("injected partial cleanup after marker removal")
+        return real_rmtree(path, *args, **kwargs)
+
+    def write_initial_marker_only(candidate):
+        nonlocal marker_writes
+        marker_writes += 1
+        if marker_writes == 1:
+            return real_write_marker(candidate)
+        return False
+
+    monkeypatch.setattr(skills_mod.shutil, "rmtree", remove_marker_then_fail)
+    monkeypatch.setattr(loader, "_write_completion_marker", write_initial_marker_only)
+
+    assert loader.approve_pending_update(slug) == "auto/lock-outcome-recovery"
+    leftovers = list(loader._claims_root().glob(f"{slug}--*"))
+    assert len(leftovers) == 1
+    claim = leftovers[0]
+    assert loader._authenticated_completion_marker(claim) is False
+
+    lock_path = loader._claim_lock_path(claim.name)
+    fd = loader._open_skill_lock(lock_path)
+    acquired = skills_mod.platform_compat.try_acquire_lock(fd, exclusive=True)
+    try:
+        assert acquired is True
+        assert loader._authenticated_claim_lock_state(fd, lock_path, claim.name, completed=True)
+    finally:
+        if acquired:
+            skills_mod.platform_compat.release_lock(fd)
+        os.close(fd)
+
+    assert loader.list_pending_skills() == []
+    assert not claim.exists()
+    assert not (loader._pending_root() / slug).exists()
+    assert loader.get_auto_skill_version("auto/lock-outcome-recovery") == 2
+
+
+def test_partial_promoted_cleanup_recreates_authenticated_marker(loader, monkeypatch):
+    _write_live(loader, "promote-partial-cleanup", version=1, body="OLD")
+    _stage_update(
+        loader,
+        "promote-partial-cleanup-update",
+        target="auto/promote-partial-cleanup",
+    )
+    real_rmtree = skills_mod.shutil.rmtree
+    failed = False
+
+    def partially_remove_first_claim(path, *args, **kwargs):
+        nonlocal failed
+        candidate = Path(path)
+        if candidate.parent == loader._claims_root() and not failed:
+            failed = True
+            assert loader._authenticated_completion_marker(candidate) is True
+            (candidate / ".promoted").unlink()
+            raise PermissionError("injected Windows-style partial cleanup")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(skills_mod.shutil, "rmtree", partially_remove_first_claim)
+
+    assert loader.approve_pending_update("promote-partial-cleanup-update") == (
+        "auto/promote-partial-cleanup"
+    )
+    leftovers = list(loader._claims_root().iterdir())
+    assert len(leftovers) == 1
+    assert loader._authenticated_completion_marker(leftovers[0]) is True
+    assert loader.get_auto_skill_version("auto/promote-partial-cleanup") == 2
+    assert loader.list_pending_skills() == []
+    assert not loader._claims_root().exists() or not list(loader._claims_root().iterdir())
+
+
+def test_partial_recovery_cleanup_recreates_authenticated_marker(loader, monkeypatch):
+    _stage_update(loader, "recovery-partial-cleanup", target="auto/recovery-target")
+    claimed = loader._claim_pending_update("recovery-partial-cleanup")
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    assert loader._write_completion_marker(claim) is True
+    skills_mod.platform_compat.release_lock(fd)
+    os.close(fd)
+    real_rmtree = skills_mod.shutil.rmtree
+    failed = False
+
+    def partially_remove_first_claim(path, *args, **kwargs):
+        nonlocal failed
+        candidate = Path(path)
+        if candidate == claim and not failed:
+            failed = True
+            assert loader._authenticated_completion_marker(candidate) is True
+            (candidate / ".promoted").unlink()
+            raise PermissionError("injected Windows-style partial cleanup")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(skills_mod.shutil, "rmtree", partially_remove_first_claim)
+
+    assert loader.list_pending_skills() == []
+    assert claim.is_dir()
+    assert loader._authenticated_completion_marker(claim) is True
+    assert loader.list_pending_skills() == []
+    assert not claim.exists()
+
+
+def test_failed_dismiss_cleanup_is_recovered(loader, monkeypatch):
+    slug = "dismiss-cleanup-failure"
+    loader.stage_skill_candidate(
+        slug,
+        description="candidate",
+        triggers="candidate",
+        procedure_md="## Steps\n\nORIGINAL",
+        provenance=_prov(),
+    )
+    real_rmtree = skills_mod.shutil.rmtree
+    failed = False
+
+    def fail_first_claim_cleanup(path, *args, **kwargs):
+        nonlocal failed
+        candidate = Path(path)
+        if candidate.parent == loader._claims_root() and not failed:
+            failed = True
+            assert loader._authenticated_completion_marker(candidate) is True
+            (candidate / ".promoted").unlink()
+            raise PermissionError("injected Windows-style partial cleanup")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(skills_mod.shutil, "rmtree", fail_first_claim_cleanup)
+
+    assert loader.dismiss_pending_skill(slug) is True
+    leftovers = list(loader._claims_root().iterdir())
+    assert len(leftovers) == 1
+    assert loader._authenticated_completion_marker(leftovers[0]) is True
+    assert loader.list_pending_skills() == []
+    assert not loader._claims_root().exists() or not list(loader._claims_root().iterdir())
+
+
+def test_pending_slug_claim_requires_exact_double_hyphen_prefix(loader):
+    claim = loader._claims_root() / "foo--x--0123456789abcdef"
+    claim.mkdir(parents=True)
+
+    assert loader._pending_slug_claimed("foo--x") is True
+    assert loader._pending_slug_claimed("foo") is False
+    assert (
+        loader.stage_skill_candidate(
+            "foo",
+            description="distinct candidate",
+            triggers="foo",
+            procedure_md="body",
+            provenance=_prov(),
+        )
+        == "auto/foo"
+    )
+
+
+def test_dismiss_pending_serializes_with_atomic_claim(loader, monkeypatch):
+    _write_live(loader, "dismiss-race", version=1, body="OLD")
+    _stage_update(loader, "dismiss-race-update", target="auto/dismiss-race")
+    pending = loader._pending_root() / "dismiss-race-update"
+    entered_rename = threading.Event()
+    allow_rename = threading.Event()
+    claim_started = threading.Event()
+    real_rename = skills_mod.os.rename
+
+    def blocking_rename(src, dest, *args, **kwargs):
+        if os.fspath(src) == os.fspath(pending):
+            entered_rename.set()
+            assert allow_rename.wait(timeout=2)
+        return real_rename(src, dest, *args, **kwargs)
+
+    def claim():
+        claim_started.set()
+        return loader._claim_pending_update("dismiss-race-update")
+
+    monkeypatch.setattr(skills_mod.os, "rename", blocking_rename)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        dismissed = pool.submit(loader.dismiss_pending_skill, "dismiss-race-update")
+        assert entered_rename.wait(timeout=2)
+        claimed = pool.submit(claim)
+        assert claim_started.wait(timeout=2)
+        assert not claimed.done()
+        allow_rename.set()
+        assert dismissed.result(timeout=2) is True
+        assert claimed.result(timeout=2) is None
+
+    assert not pending.exists()
+    assert not loader._claims_root().exists() or not list(loader._claims_root().iterdir())
+
+
+def test_failed_claim_attempt_removes_unique_lock_file(loader):
+    assert loader._claim_pending_update("missing-update") is None
+
+    claim_locks = loader._locks_root() / "claims"
+    assert not claim_locks.exists() or not list(claim_locks.glob("*.lock"))
+
+
+def test_restore_claimed_update_does_not_follow_symlinked_meta(loader, monkeypatch):
+    _write_live(loader, "symlinked-meta", version=1, body="OLD")
+    _stage_update(loader, "symlinked-meta-update", target="auto/symlinked-meta")
+    claimed = loader._claim_pending_update("symlinked-meta-update")
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    meta_file = claim / ".meta.json"
+    path_type = type(meta_file)
+    real_is_link_or_junction = skills_mod.is_link_or_junction
+    real_read_text = path_type.read_text
+
+    def fake_is_link_or_junction(path):
+        return Path(path) == meta_file or real_is_link_or_junction(path)
+
+    def guarded_read_text(path, *args, **kwargs):
+        if path == meta_file:
+            raise AssertionError("restore followed symlinked candidate metadata")
+        return real_read_text(path, *args, **kwargs)
+
+    skills_mod.platform_compat.release_lock(fd)
+    os.close(fd)
+    monkeypatch.setattr(skills_mod, "is_link_or_junction", fake_is_link_or_junction)
+    monkeypatch.setattr(path_type, "read_text", guarded_read_text)
+
+    loader._restore_claimed_update(claim, "symlinked-meta-update")
+
+    assert (loader._pending_root() / "symlinked-meta-update").is_dir()
+    loader._cleanup_claim_lock(claim.name)
+
+
+def test_spoofed_abandoned_completion_marker_restores_claim(loader):
+    _write_live(loader, "spoofed-recovery", version=1, body="OLD")
+    _stage_update(
+        loader,
+        "spoofed-recovery-update",
+        target="auto/spoofed-recovery",
+    )
+    claimed = loader._claim_pending_update("spoofed-recovery-update")
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    (claim / ".promoted").write_text("not-this-claim\n", encoding="utf-8")
+    skills_mod.platform_compat.release_lock(fd)
+    os.close(fd)
+
+    assert [row["slug"] for row in loader.list_pending_skills()] == ["spoofed-recovery-update"]
+    restored = loader._pending_root() / "spoofed-recovery-update"
+    assert restored.is_dir()
+    assert not (restored / ".promoted").exists()
+    assert not claim.exists()
+
+
+def test_promoted_abandoned_claim_is_deleted_instead_of_restored(loader):
+    _write_live(loader, "promoted-recovery", version=1, body="OLD")
+    _stage_update(
+        loader,
+        "promoted-recovery-update",
+        target="auto/promoted-recovery",
+    )
+    claimed = loader._claim_pending_update("promoted-recovery-update")
+    assert claimed is not None
+    claim, fd, _consumed_at = claimed
+    assert loader._write_completion_marker(claim) is True
+    skills_mod.platform_compat.release_lock(fd)
+    os.close(fd)
+
+    assert loader.list_pending_skills() == []
+    assert not claim.exists()
+    claim_locks = loader._locks_root() / "claims"
+    assert not claim_locks.exists() or not list(claim_locks.glob("*.lock"))
+
+
+# ── reserved namespace and claimed-inode hardening ──
+
+
+@pytest.mark.parametrize("name", ["auto", "AUTO", "Auto", "aUtO"])
+def test_delete_refuses_bare_reserved_auto_namespace(loader, monkeypatch, name):
+    live_dir = _write_live(loader, "namespace-survivor", version=1, body="KEEP")
+
+    def unexpected_delete(_name):
+        pytest.fail("reserved auto namespace reached the recursive delete helper")
+
+    monkeypatch.setattr(loader, "_delete_skill_unlocked", unexpected_delete)
+
+    assert loader.delete_skill(name) is False
+    assert (live_dir / "SKILL.md").exists()
+
+
+def test_approval_refuses_candidate_mutated_through_hardlink_after_claim(loader, monkeypatch):
+    slug = "hardlinked-candidate"
+    assert (
+        loader.stage_skill_candidate(
+            slug,
+            description="hardlink isolation",
+            triggers="hardlink",
+            procedure_md="## Steps\n\nORIGINAL",
+            provenance=_prov(),
+        )
+        == f"auto/{slug}"
+    )
+    pending_skill = loader._pending_root() / slug / "SKILL.md"
+    alias = loader._dir / "candidate-hardlink-alias"
+    os.link(pending_skill, alias)
+    assert pending_skill.stat().st_nlink == 2
+
+    real_layout_check = loader._candidate_layout_ok
+
+    def mutate_after_claim(src, name):
+        assert src.parent == loader._claims_root()
+        alias.write_text("MUTATED AFTER CLAIM\n", encoding="utf-8")
+        return real_layout_check(src, name)
+
+    monkeypatch.setattr(loader, "_candidate_layout_ok", mutate_after_claim)
+
+    assert loader.approve_pending_skill(slug) is None
+    restored = loader._pending_root() / slug / "SKILL.md"
+    assert restored.read_text(encoding="utf-8") == "MUTATED AFTER CLAIM\n"
+    assert not (loader._dir / "auto" / slug).exists()
+
+
+def test_candidate_inode_guard_fails_closed_on_stat_error(loader, monkeypatch):
+    slug = "unstatable-candidate"
+    assert (
+        loader.stage_skill_candidate(
+            slug,
+            description="stat failure",
+            triggers="stat",
+            procedure_md="## Steps\n\nBODY",
+            provenance=_prov(),
+        )
+        == f"auto/{slug}"
+    )
+    skill_file = loader._pending_root() / slug / "SKILL.md"
+    real_lstat = skills_mod.os.lstat
+
+    def fail_candidate_stat(path, *args, **kwargs):
+        if os.fspath(path) == os.fspath(skill_file):
+            raise PermissionError("injected candidate stat failure")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(skills_mod.os, "lstat", fail_candidate_stat)
+
+    assert loader.get_pending_skill(slug) is None

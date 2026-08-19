@@ -3276,6 +3276,14 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kiro/crew/.env") is True
         assert is_sensitive_path("~/.kirocrew/.env") is True
 
+    def test_auto_skill_private_claim_state(self) -> None:
+        home = str(Path.home())
+        private = f"{home}/.kiro/crew/skills/auto/.private"
+        assert is_sensitive_path(private) is True
+        assert is_sensitive_path(f"{private}/claims/demo--token/scripts/run.py") is True
+        assert is_sensitive_path(f"{private}/locks/claims/demo--token.lock") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/skills/auto/.pending/demo") is False
+
     def test_browser_auth_cookie_paths(self) -> None:
         # The browser-auth cookie jar + the Playwright storage-state derived from
         # it hold reusable authenticated-session cookies. Agent file tools must

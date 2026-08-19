@@ -26,8 +26,8 @@ from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    return SkillsLoader(install_builtins=False)
 
 
 @pytest.fixture(autouse=True)
@@ -35,9 +35,11 @@ def _clear_hook():
     """Never leak a hook across tests (they are module-level global state)."""
     S.set_pending_staged_hook(None)
     S.set_pending_consumed_hook(None)
+    S.set_update_auto_applied_hook(None)
     yield
     S.set_pending_staged_hook(None)
     S.set_pending_consumed_hook(None)
+    S.set_update_auto_applied_hook(None)
 
 
 def _prov() -> AutoSkillProvenance:
@@ -173,31 +175,30 @@ def test_consumed_hook_fires_on_update_approve(loader):
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
     assert loader.approve_pending_update("cand-upd") == "auto/cand-upd"
-    assert _payloads_sans_stamp(seen) == [{"slug": "cand-upd", "outcome": "approved", "name": "auto/cand-upd"}]
+    assert _payloads_sans_stamp(seen) == [
+        {"slug": "cand-upd", "outcome": "approved", "name": "auto/cand-upd"}
+    ]
 
 
-def test_consumed_hook_not_fired_when_update_cleanup_leaves_candidate(loader, monkeypatch):
-    # approve_pending_update deletes the candidate with ignore_errors=True
-    # (a Windows file lock can silently defeat it). A surviving candidate is
-    # still an actionable review in the pending queue, so its notification
-    # must NOT be retired.
+def test_consumed_hook_fires_when_private_claim_cleanup_is_blocked(loader, monkeypatch):
     _stage(loader, "cand-locked")
     assert loader.approve_pending_skill("cand-locked") == "auto/cand-locked"
     _stage(loader, "cand-locked", kind="update", target="auto/cand-locked", base_version=1)
-    pending_dir = loader._pending_root() / "cand-locked"
     real_rmtree = shutil.rmtree
 
     def _locked_rmtree(path, *args, **kwargs):
-        if Path(path) == pending_dir and kwargs.get("ignore_errors"):
-            return  # swallow, like rmtree with a locked file inside
+        if Path(path).parent == loader._claims_root() and kwargs.get("ignore_errors"):
+            return
         return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr("kiro_crew.skills.shutil.rmtree", _locked_rmtree)
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
     assert loader.approve_pending_update("cand-locked") == "auto/cand-locked"
-    assert pending_dir.is_dir()  # cleanup really was defeated
-    assert seen == []
+    assert not (loader._pending_root() / "cand-locked").exists()
+    assert _payloads_sans_stamp(seen) == [
+        {"slug": "cand-locked", "outcome": "approved", "name": "auto/cand-locked"}
+    ]
 
 
 def test_consumed_hook_fires_on_dismiss(loader):
