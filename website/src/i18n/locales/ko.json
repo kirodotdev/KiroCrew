@@ -6709,7 +6709,8 @@
       "schedule_panel": "스케줄 패널",
       "switch_to_local": "로컬로 전환",
       "switch_to_remote_crew": "원격 크루 {{n}}(으)로 전환",
-      "walk_back_mru_history": "MRU 기록 되돌아가기"
+      "walk_back_mru_history": "MRU 기록 되돌아가기",
+      "stop_speaking": "말하기 중지"
     },
     "usePanelTabs": {
       "artifacts": "아티팩트",

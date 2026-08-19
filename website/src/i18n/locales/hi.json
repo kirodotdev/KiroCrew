@@ -6798,7 +6798,8 @@
       "schedule_panel": "शेड्यूल पैनल",
       "switch_to_local": "स्थानीय पर जाएँ",
       "switch_to_remote_crew": "रिमोट क्रू {{n}} पर जाएँ",
-      "walk_back_mru_history": "MRU इतिहास में पीछे जाएँ"
+      "walk_back_mru_history": "MRU इतिहास में पीछे जाएँ",
+      "stop_speaking": "बोलना बंद करें"
     },
     "usePanelTabs": {
       "artifacts": "आर्टिफ़ैक्ट",

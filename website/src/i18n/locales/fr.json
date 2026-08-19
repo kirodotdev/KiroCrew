@@ -6887,7 +6887,8 @@
       "schedule_panel": "Panneau de planification",
       "switch_to_local": "Passer en local",
       "switch_to_remote_crew": "Passer à la crew distante {{n}}",
-      "walk_back_mru_history": "Remonter l’historique MRU"
+      "walk_back_mru_history": "Remonter l’historique MRU",
+      "stop_speaking": "Arrêter la lecture"
     },
     "usePanelTabs": {
       "artifacts": "Artefacts",

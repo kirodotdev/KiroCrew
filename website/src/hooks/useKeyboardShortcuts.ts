@@ -168,6 +168,10 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   // Literal Ctrl on every platform — see isAgentMonitorChord for why this one
   // does NOT follow the ⌘-on-Mac convention.
   { id: 'agent-monitor', key: 'g', ctrl: true, group: 'actions' },
+  // Stop in-progress voice read-back. Bare Escape, handled by the capture-phase
+  // listener (see the voice-stop effect); listed here so it appears in the
+  // shortcuts modal / Settings -> Shortcuts. Label lives in SHORTCUT_LABEL_KEY.
+  { id: 'stop-speaking', key: 'Escape', group: 'actions' },
   // Instance switcher — Cmd on Mac / Ctrl on Win-Linux. 1 = Local, 2..6 = the
   // 1st..5th remote instance, matching the InstanceTabBar left-to-right order.
   // Handled by useInstanceShortcuts (not the Alt-based handler below); listed
@@ -239,6 +243,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',
+  'stop-speaking': 'hooks.useKeyboardShortcuts.stop_speaking',
   'instance-1': 'hooks.useKeyboardShortcuts.switch_to_local',
   'instance-2': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
   'instance-3': 'hooks.useKeyboardShortcuts.switch_to_remote_crew',
@@ -493,7 +498,7 @@ export function formatShortcut(def: ShortcutDef): string {
   if (def.ctrl) parts.push(mac ? '\u2303' : 'Ctrl')
   if (def.alt) parts.push(mac ? '\u2325' : 'Alt')
   if (def.shift) parts.push(mac ? '\u21e7' : 'Shift')
-  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === '`' ? '`' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === ',' ? ',' : def.key.toUpperCase()
+  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === '`' ? '`' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === ',' ? ',' : def.key === 'Escape' ? '\u238b' : def.key.toUpperCase()
   parts.push(keyLabel)
   return parts.join(mac ? '' : ' + ')
 }
@@ -761,6 +766,28 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       return
     }
   }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, disabled, enabled, ctrlDigits])
+
+  // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
+  // handler, which stopPropagation()s and would otherwise close the palette while
+  // speech kept playing. Does NOT preventDefault/stopPropagation: Escape must
+  // still close whatever it normally closes. Fires the existing `voice-stop`
+  // window event (handled by useWebSocket's stopVoice: pause active <audio>,
+  // drop queued chunks, clear voicePlaying). No-op unless audio is actually
+  // playing and shortcuts are enabled; voicePlaying is read live from the store,
+  // and this hook mounts once at the App root, so one listener covers every page.
+  // Deliberately ignores `disabled` (set while the shortcuts modal is open):
+  // Escape should stop speech consistently from any overlay, including the
+  // modal that advertises the shortcut. Only the global enable toggle gates it.
+  useEffect(() => {
+    if (!enabled) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (!appStore.getState().chat.voicePlaying) return
+      window.dispatchEvent(new Event('voice-stop'))
+    }
+    document.addEventListener('keydown', onEsc, true)
+    return () => document.removeEventListener('keydown', onEsc, true)
+  }, [enabled, appStore])
 
   useEffect(() => {
     document.addEventListener('keydown', handler)

@@ -6976,7 +6976,8 @@
       "schedule_panel": "Панель расписания",
       "switch_to_local": "Переключиться на локальную команду",
       "switch_to_remote_crew": "Переключиться на удалённую команду {{n}}",
-      "walk_back_mru_history": "Назад по истории MRU"
+      "walk_back_mru_history": "Назад по истории MRU",
+      "stop_speaking": "Остановить речь"
     },
     "usePanelTabs": {
       "artifacts": "Артефакты",

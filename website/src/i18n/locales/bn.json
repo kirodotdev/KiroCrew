@@ -6798,7 +6798,8 @@
       "schedule_panel": "শিডিউল প্যানেল",
       "switch_to_local": "লোকাল-এ যাওয়া",
       "switch_to_remote_crew": "রিমোট ক্রু {{n}}-এ যাওয়া",
-      "walk_back_mru_history": "MRU ইতিহাসে পিছিয়ে যাওয়া"
+      "walk_back_mru_history": "MRU ইতিহাসে পিছিয়ে যাওয়া",
+      "stop_speaking": "কথা বলা বন্ধ করুন"
     },
     "usePanelTabs": {
       "artifacts": "আর্টিফ্যাক্ট",

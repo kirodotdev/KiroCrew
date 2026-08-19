@@ -6709,7 +6709,8 @@
       "schedule_panel": "スケジュールパネル",
       "switch_to_local": "ローカルに切り替え",
       "switch_to_remote_crew": "リモートクルー {{n}} に切り替え",
-      "walk_back_mru_history": "MRU履歴を戻る"
+      "walk_back_mru_history": "MRU履歴を戻る",
+      "stop_speaking": "読み上げを停止"
     },
     "usePanelTabs": {
       "artifacts": "アーティファクト",

@@ -2336,7 +2336,8 @@
       "schedule_panel": "Schedule panel",
       "switch_to_local": "Switch to Local",
       "switch_to_remote_crew": "Switch to remote crew {{n}}",
-      "walk_back_mru_history": "Walk back MRU history"
+      "walk_back_mru_history": "Walk back MRU history",
+      "stop_speaking": "Stop speaking"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",

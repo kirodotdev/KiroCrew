@@ -783,3 +783,71 @@ describe('useDigitModifierHeld', () => {
     expect(result.current).toBe(false)
   })
 })
+
+describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
+  const onToggleShortcutsModal = vi.fn()
+  const onNewChat = vi.fn()
+
+  function setup(opts: { voicePlaying?: boolean; enabled?: boolean; disabled?: boolean } = {}) {
+    if (opts.enabled === false) localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = createTestStore({
+      dashboard: { slots: [] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: null, slotHistory: [], voicePlaying: opts.voicePlaying ?? false } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, disabled: opts.disabled }),
+      { store },
+    )
+    return store
+  }
+
+  beforeEach(() => { onToggleShortcutsModal.mockClear(); onNewChat.mockClear() })
+
+  // Capture-phase Escape: dispatched on document so the hook's capture listener fires.
+  function pressEscape() {
+    act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
+  }
+
+  it('fires voice-stop on Escape while speaking', () => {
+    const spy = vi.fn()
+    window.addEventListener('voice-stop', spy)
+    setup({ voicePlaying: true })
+    pressEscape()
+    window.removeEventListener('voice-stop', spy)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing on Escape when not speaking', () => {
+    const spy = vi.fn()
+    window.addEventListener('voice-stop', spy)
+    setup({ voicePlaying: false })
+    pressEscape()
+    window.removeEventListener('voice-stop', spy)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when shortcuts are globally disabled', () => {
+    const spy = vi.fn()
+    window.addEventListener('voice-stop', spy)
+    setup({ voicePlaying: true, enabled: false })
+    pressEscape()
+    window.removeEventListener('voice-stop', spy)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('fires voice-stop even while the shortcuts modal is open (disabled=true)', () => {
+    const spy = vi.fn()
+    window.addEventListener('voice-stop', spy)
+    setup({ voicePlaying: true, disabled: true })
+    pressEscape()
+    window.removeEventListener('voice-stop', spy)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('advertises stop-speaking in DEFAULT_SHORTCUTS', () => {
+    const def = DEFAULT_SHORTCUTS.find(s => s.id === 'stop-speaking')
+    expect(def).toBeDefined()
+    expect(def?.key).toBe('Escape')
+    expect(def?.group).toBe('actions')
+  })
+})

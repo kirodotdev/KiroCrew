@@ -6798,7 +6798,8 @@
       "schedule_panel": "Zeitplan-Panel",
       "switch_to_local": "Zu Lokal wechseln",
       "switch_to_remote_crew": "Zu Remote-Crew {{n}} wechseln",
-      "walk_back_mru_history": "MRU-Verlauf zurückgehen"
+      "walk_back_mru_history": "MRU-Verlauf zurückgehen",
+      "stop_speaking": "Vorlesen stoppen"
     },
     "usePanelTabs": {
       "artifacts": "Artefakte",

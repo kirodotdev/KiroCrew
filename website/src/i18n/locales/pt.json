@@ -6887,7 +6887,8 @@
       "schedule_panel": "Painel de agendamentos",
       "switch_to_local": "Alternar para Local",
       "switch_to_remote_crew": "Alternar para a crew remota {{n}}",
-      "walk_back_mru_history": "Voltar no histórico MRU"
+      "walk_back_mru_history": "Voltar no histórico MRU",
+      "stop_speaking": "Parar de falar"
     },
     "usePanelTabs": {
       "artifacts": "Artefatos",
