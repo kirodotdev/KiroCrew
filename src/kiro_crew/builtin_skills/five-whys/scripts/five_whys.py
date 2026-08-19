@@ -31,6 +31,7 @@ Usage:
   Free-text via stdin, e.g.:  five_whys.py ask <log> --parent 1 --stage what --stdin-json < fields.json
   where fields.json is {"q": "..."} written with a file tool (never interpolated).
 """
+
 import argparse
 import contextlib
 import json
@@ -190,6 +191,7 @@ def _append(path, ev):
 
 # ---- fold helpers -----------------------------------------------------------
 
+
 def _asks(events):
     """id -> ask event (first definition wins; duplicates are integrity errors)."""
     out: dict = {}
@@ -205,14 +207,11 @@ def _pruned(events, asks):
     pruned = set()
     for nid in asks:
         cur = nid
-        hit = False
         while cur is not None:
             if cur in roots:
-                hit = True
+                pruned.add(nid)
                 break
             cur = asks.get(cur, {}).get("parent")
-        if hit:
-            pruned.add(nid)
     return pruned
 
 
@@ -243,6 +242,7 @@ def _sort_key(nid):
 
 def _alloc_id(asks, parent):
     """Next child id under parent (None => root). Counts pruned ids to avoid reuse."""
+
     def _tail_num(nid):
         try:
             return int(str(nid).split(".")[-1])
@@ -277,14 +277,15 @@ def _children(asks, pruned, parent):
 
 # ---- commands ---------------------------------------------------------------
 
+
 def cmd_ask(a):
     _apply_stdin_json(a, "q", "stage")
     if not a.q:
         raise SystemExit("ask requires --q or a 'q' field in --stdin-json")
     if a.stage not in STAGES:
         raise SystemExit(
-            "ask requires --stage one of: %s (got %r)" % (
-                ", ".join(sorted(STAGES)), a.stage))
+            "ask requires --stage one of: %s (got %r)" % (", ".join(sorted(STAGES)), a.stage)
+        )
     events = _load(a.log)
     asks = _asks(events)
     parent = None if a.parent in (None, "", "root", "null") else a.parent
@@ -293,10 +294,20 @@ def cmd_ask(a):
     if parent is not None and parent in _pruned(events, asks):
         raise SystemExit(
             "parent %r is pruned; a child added under it would be dropped from "
-            "every projection" % parent)
+            "every projection" % parent
+        )
     nid = _alloc_id(asks, parent)
-    _append(a.log, {"type": "ask", "id": nid, "parent": parent,
-                    "stage": a.stage, "q": a.q, "origin": a.origin})
+    _append(
+        a.log,
+        {
+            "type": "ask",
+            "id": nid,
+            "parent": parent,
+            "stage": a.stage,
+            "q": a.q,
+            "origin": a.origin,
+        },
+    )
     print(nid)
 
 
@@ -359,7 +370,8 @@ def cmd_prune(a):
     if cur is not None and (cur == a.id or cur.startswith(a.id + ".")):
         raise SystemExit(
             "%r is the current focus or an ancestor of it; focus elsewhere "
-            "first so resume cannot land on a pruned node" % a.id)
+            "first so resume cannot land on a pruned node" % a.id
+        )
     _append(a.log, {"type": "prune", "id": a.id, "reason": a.reason})
     print("ok")
 
@@ -384,7 +396,8 @@ def cmd_event(a):
     if ev["type"] in CORE_TYPES:
         raise SystemExit(
             "event type %r is a core type; use its dedicated subcommand so the "
-            "required fields are validated" % ev["type"])
+            "required fields are validated" % ev["type"]
+        )
     _append(a.log, ev)
     print("ok")
 
@@ -400,11 +413,18 @@ def cmd_tree(a):
 
     def walk(nid, depth):
         node = asks[nid]
-        mark = " ✅" if nid in dones else (" ⏳" if nid == cur else "")
+        if nid in dones:
+            mark = " ✅"
+        elif nid == cur:
+            mark = " ⏳"
+        else:
+            mark = ""
         ans = answers.get(nid)
         tail = " → %s" % ans if ans else ""
-        lines.append("%s- [%s] (%s) %s%s%s" % (
-            "  " * depth, nid, node.get("stage", ""), node.get("q", ""), tail, mark))
+        lines.append(
+            "%s- [%s] (%s) %s%s%s"
+            % ("  " * depth, nid, node.get("stage", ""), node.get("q", ""), tail, mark)
+        )
         for kid in _children(asks, pruned, nid):
             walk(kid, depth + 1)
 
@@ -419,8 +439,11 @@ def _frontier(events):
     answers = _answers(events)
     dones = _dones(events)
     cur = _last(events, "focus")
-    return [i for i in sorted(asks, key=_sort_key)
-            if i not in pruned and i not in answers and i not in dones and i != cur]
+    return [
+        i
+        for i in sorted(asks, key=_sort_key)
+        if i not in pruned and i not in answers and i not in dones and i != cur
+    ]
 
 
 def cmd_frontier(a):
@@ -445,15 +468,17 @@ def cmd_view(a):
         print("open branches: %d" % len(fr))
         return
     parts = cur.split(".")
-    chain = [".".join(parts[:k + 1]) for k in range(len(parts))]
+    chain = [".".join(parts[: k + 1]) for k in range(len(parts))]
     print("current path:")
     for depth, nid in enumerate(chain):
         node = asks.get(nid, {})
         ans = answers.get(nid)
         tail = " → %s" % ans if ans else ""
         star = "  ← current" if nid == cur else ""
-        print("%s- [%s] (%s) %s%s%s" % (
-            "  " * depth, nid, node.get("stage", ""), node.get("q", ""), tail, star))
+        print(
+            "%s- [%s] (%s) %s%s%s"
+            % ("  " * depth, nid, node.get("stage", ""), node.get("q", ""), tail, star)
+        )
     print("open branches: %d" % len(fr))
 
 
@@ -466,8 +491,11 @@ def cmd_report(a):
     dones = _dones(events)
     roots = _children(asks, pruned, None)
     title = a.title or (asks[roots[0]].get("q") if roots else "5 Whys")
-    out = ["# 5 Whys report — %s" % title,
-           "_Generated: %s · %d events_" % (_now(), len(events)), ""]
+    out = [
+        "# 5 Whys report — %s" % title,
+        "_Generated: %s · %d events_" % (_now(), len(events)),
+        "",
+    ]
     out.append("## Starting point")
     for r in roots:
         out.append("- %s" % asks[r].get("q", ""))
@@ -477,10 +505,16 @@ def cmd_report(a):
         node = asks[nid]
         ans = answers.get(nid)
         tail = " → %s" % ans if ans else ""
-        flag = "  **[root]**" if dones.get(nid, {}).get("kind") == "root" else (
-            "  _[takeaway]_" if nid in dones else "")
-        out.append("%s- **[%s]** (%s) %s%s%s" % (
-            "  " * depth, nid, node.get("stage", ""), node.get("q", ""), tail, flag))
+        if dones.get(nid, {}).get("kind") == "root":
+            flag = "  **[root]**"
+        elif nid in dones:
+            flag = "  _[takeaway]_"
+        else:
+            flag = ""
+        out.append(
+            "%s- **[%s]** (%s) %s%s%s"
+            % ("  " * depth, nid, node.get("stage", ""), node.get("q", ""), tail, flag)
+        )
         for kid in _children(asks, pruned, nid):
             walk(kid, depth + 1)
 
@@ -517,8 +551,11 @@ def cmd_validate(a):
         t = e["type"]
         if t == "ask":
             aid = e.get("id")
-            if not isinstance(aid, str) or not aid or not all(
-                    part.isdigit() for part in aid.split(".")):
+            if (
+                not isinstance(aid, str)
+                or not aid
+                or not all(part.isdigit() for part in aid.split("."))
+            ):
                 issues.append("line %d: ask has invalid id %r" % (n, aid))
                 continue
             if "q" not in e:
