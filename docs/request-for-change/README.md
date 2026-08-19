@@ -11,15 +11,15 @@ Last audited **2026-08-03** against main `0ab6ed48`. Every status below was
 verified against the code (definitions *and* callers) and against merged/open PR
 history, not taken from the document's own claims. The `rfc-tailnet-dashboard-access`
 row was added later and re-verified against `429cbad8`, and `rfc-session-address-model`
-was added later still and verified against `b23ab77af`; the other rows have
+was added later still and re-verified against `fa6261c4f`; the other rows have
 not been re-audited since 2026-08-03.
 
 | Document | Status | What is actually on main |
 |---|---|---|
 | [rfc-issue-radar-crews.md](rfc-issue-radar-crews.md) | `draft` | Nothing. Design of record only; `crew_brief.md` and `crew_ledger_spec.md` sit beside the Issue Radar backend as companion specs, also unimplemented |
 | [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md) | `in-progress` | Nothing yet — all of it is in open PR [#1295](https://github.com/kirodotdev/KiroCrew/pull/1295) (`feat/crew-mode`) |
-| [rfc-channel-plugin-architecture.md](rfc-channel-plugin-architecture.md) | `partial` | Shared turn pipeline shipped; **4 of 7** channels adopted. Registry/seam collapse, telegram+discord, Feishu unstarted. Its §9 address rule is separately half-shipped — audit this row alongside [rfc-session-address-model.md](rfc-session-address-model.md) |
-| [rfc-session-address-model.md](rfc-session-address-model.md) | `partial` | The dashboard half of the channel-plugin RFC's §9 rule 1 shipped ([#1366](https://github.com/kirodotdev/KiroCrew/pull/1366) plus four follow-ups): a chat-app conversation opened in a dashboard tab is no longer copied into a second session, and `has_dashboard_surface` (7 callers) replaced the name-prefix capability tests. All four phases it proposes are unstarted — 23 named key converters and 5 copies of the session-type ladder remain, surface capability is still one boolean, and an unbound channel tab still starts a second session against the same transcript file |
+| [rfc-channel-plugin-architecture.md](rfc-channel-plugin-architecture.md) | `partial` | Shared turn pipeline shipped; **4 of 7** channels adopted. Registry/seam collapse, telegram+discord, Feishu unstarted. Its §9 address rule is contested by [rfc-session-address-model.md](rfc-session-address-model.md), which proposes an attribute store where §9 chose a canonical grammar — audit the two rows together |
+| [rfc-session-address-model.md](rfc-session-address-model.md) | `draft` | Nothing. Verified at `fa6261c4f`: all four phases unstarted. The seam is prior art, not a phase — [#1366](https://github.com/kirodotdev/KiroCrew/pull/1366) plus four follow-ups stopped a chat-app conversation being copied into a second session, and `has_dashboard_surface` replaced the name-prefix capability tests, but the identity still encodes origin. ~49 conversion sites and **6** copies of the session-type ladder remain, `session_map.json` still has no version envelope, surface capability is still one boolean, and an unbound channel tab still starts a second session |
 | [rfc-local-notification-bus.md](rfc-local-notification-bus.md) | `partial` | Phases 1/3/4 complete. Phase 2 wired but has no producer; Phase 5 shipped 2 of 3 |
 | [rfc-federated-app-platform.md](rfc-federated-app-platform.md) | `partial` | Phase 1 substantially shipped, Phase 3 half-built. Phase 2, Phase 1's removals, Phase 4, Phase 5 unstarted |
 | [rfc-workspace-config-evolution.md](rfc-workspace-config-evolution.md) | `partial` | Phases 1–2 shipped. Phase 3's vector isolation was **reversed** on purpose; Phase 4 unstarted |
