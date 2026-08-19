@@ -363,6 +363,7 @@ class TestGitCheckoutStillWorks:
                 (0, b""),  # git fetch
                 (0, b"aaaa\n"),  # rev-parse HEAD
                 (0, b"bbbb\n"),  # rev-parse @{u}
+                (0, b"0\t1\n"),  # rev-list --count --left-right HEAD...@{u}
                 (0, b'__version__ = "0.1.3rc2"\n'),  # git show
                 (0, b"+### 0.1.3rc2\n+- thing\n"),  # git diff CHANGELOG.md
             ],
@@ -381,6 +382,160 @@ class TestGitCheckoutStillWorks:
         assert info["channel"] == ""
         assert info["update_command"] == ""
         assert any("fetch" in c for c in calls)
+
+    def test_commits_behind_with_an_unchanged_version_is_an_update(self, _git_install, monkeypatch):
+        """The reported bug: 219 commits behind, both sides still ``0.3.0``.
+
+        ``__version__`` is bumped only at a release, so comparing version
+        strings reported "you're on the latest version" to a checkout days of
+        merges behind ``origin/main`` — for as long as the next bump took.
+        """
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),  # git fetch
+                (0, b"aaaa\n"),  # rev-parse HEAD
+                (0, b"bbbb\n"),  # rev-parse @{u}
+                (0, b"0\t219\n"),  # rev-list: 0 ahead, 219 behind
+                (0, b'__version__ = "0.3.0"\n'),  # git show — SAME version
+                (0, b""),  # git diff CHANGELOG.md
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["available"] is True
+        assert info["checked"] is True
+        assert info["error"] == ""
+
+    def test_ahead_after_a_version_bump_pull_is_not_an_update(self, _git_install, monkeypatch):
+        """A checkout that pulled a bump and committed on top must not be reset.
+
+        Its upstream still reads NEWER than the version this process imported,
+        so an ungated version signal marks it available and the unattended
+        ``_auto_apply_update`` resets hard onto the upstream, dropping the local
+        commits. The version signal only ever meant "pull landed, restart
+        pending", which is ``local_sha == remote_sha``.
+        """
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),  # git fetch
+                (0, b"dddd\n"),  # rev-parse HEAD — local commits on top
+                (0, b"bbbb\n"),  # rev-parse @{u}
+                (0, b"2\t0\n"),  # rev-list: 2 ahead, 0 behind
+                (0, b'__version__ = "0.4.0"\n'),  # git show — upstream bumped
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["available"] is False
+        assert info["checked"] is True
+        assert info["error"] == ""
+
+    def test_a_pull_awaiting_a_restart_is_still_reported(self, _git_install, monkeypatch):
+        """The version signal's real case survives the gate: shas agree.
+
+        The pull landed, so HEAD == upstream and there is no commit distance;
+        only the imported ``__version__`` is stale. Applying here is a restart,
+        not a reset, so this must still light up.
+        """
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),  # git fetch
+                (0, b"eeee\n"),  # rev-parse HEAD
+                (0, b"eeee\n"),  # rev-parse @{u} — SAME sha
+                (0, b"0\t0\n"),  # rev-list: level with upstream
+                (0, b'__version__ = "0.4.0"\n'),  # git show — on-disk is newer
+                (0, b""),  # git diff CHANGELOG.md
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["available"] is True
+        assert info["checked"] is True
+        assert info["error"] == ""
+
+    def test_a_diverged_checkout_is_not_offered_a_destructive_update(
+        self, _git_install, monkeypatch
+    ):
+        """Behind AND ahead: an update here would discard the local commits.
+
+        ``GatewayOrchestrator._auto_apply_update`` applies ``git fetch`` +
+        ``git reset --hard`` unattended under ``auto_update``, so a diverged
+        branch offered an update loses its own commits with no prompt. Only a
+        fast-forwardable checkout is offered one.
+        """
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),  # git fetch
+                (0, b"cccc\n"),  # rev-parse HEAD
+                (0, b"bbbb\n"),  # rev-parse @{u}
+                (0, b"3\t219\n"),  # rev-list: 3 ahead, 219 behind — DIVERGED
+                (0, b'__version__ = "0.3.0"\n'),  # git show
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["available"] is False
+        assert info["checked"] is True
+        assert info["error"] == ""
+
+    def test_a_checkout_only_ahead_is_up_to_date(self, _git_install, monkeypatch):
+        """Unpushed local commits are not an update to offer.
+
+        ``HEAD != @{u}`` is also true for a checkout that is merely AHEAD, and
+        the unattended apply path resets hard to the remote, so treating that as
+        an update would recommend discarding the user's own commits.
+        """
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),  # git fetch
+                (0, b"cccc\n"),  # rev-parse HEAD — ahead of upstream
+                (0, b"aaaa\n"),  # rev-parse @{u}
+                (0, b"2\t0\n"),  # rev-list: 2 ahead, 0 behind
+                (0, b'__version__ = "0.3.0"\n'),  # git show
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["available"] is False
+        assert info["checked"] is True
+        assert info["error"] == ""
+
+    def test_an_unparseable_version_does_not_discard_a_commit_distance_verdict(
+        self, _git_install, monkeypatch
+    ):
+        """``behind > 0`` answers on its own, so a junk version is not fatal."""
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),
+                (0, b"aaaa\n"),
+                (0, b"bbbb\n"),
+                (0, b"0\t4\n"),
+                (0, b'__version__ = "not-a-version"\n'),
+                (0, b""),
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["available"] is True
+        assert info["error"] == ""
 
     def test_git_fetch_failure_is_reported_not_swallowed(self, _git_install, monkeypatch):
         self._git_script(monkeypatch, [(128, b"")])
@@ -403,7 +558,13 @@ class TestGitCheckoutStillWorks:
     def test_unreadable_remote_version_is_reported(self, _git_install, monkeypatch):
         self._git_script(
             monkeypatch,
-            [(0, b""), (0, b"aaaa\n"), (0, b"bbbb\n"), (0, b"# no version here\n")],
+            [
+                (0, b""),
+                (0, b"aaaa\n"),
+                (0, b"bbbb\n"),
+                (0, b"0\t1\n"),
+                (0, b"# no version here\n"),
+            ],
         )
         asyncio.run(updates._do_update_check())
         assert updates.get_update_info()["error"] == "git_read_failed"
@@ -421,6 +582,7 @@ class TestGitCheckoutStillWorks:
                 (0, b""),
                 (0, b"aaaa\n"),
                 (0, b"aaaa\n"),
+                (0, b"0\t0\n"),
                 (0, b'__version__ = "0.1.2rc3"\n'),
             ],
         )
@@ -605,9 +767,21 @@ class TestAutoApplyGuard:
         # The wheel auto-apply IS called (new behavior).
         orch._auto_apply_wheel_update.assert_awaited_once()
 
-    def test_git_checkout_still_auto_applies(self):
+    def test_git_checkout_auto_applies_when_the_version_moved(self):
+        """The git apply needs `version_newer`, not just `available`.
+
+        `available` is true on commit distance alone for a checkout, and this
+        path applies `git reset --hard`. Requiring the version to have moved
+        keeps it firing no more often than while the verdict was version-only
+        (see `TestCheckForUpdates` in `test_slack_gateway.py` for the negative).
+        """
         orch = self._run(
-            {"available": True, "self_updatable": True, "install_kind": "git"},
+            {
+                "available": True,
+                "self_updatable": True,
+                "install_kind": "git",
+                "version_newer": True,
+            },
             auto_update=True,
         )
         orch._auto_apply_update.assert_awaited_once()

@@ -234,8 +234,8 @@ class TestGitCheckoutFailurePaths:
         self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
-    async def test_version_read_timeout(self, monkeypatch, tmp_path):
-        argv = await self._run(
+    async def test_behind_count_timeout(self, monkeypatch, tmp_path):
+        await self._run(
             monkeypatch,
             tmp_path,
             [
@@ -246,12 +246,10 @@ class TestGitCheckoutFailurePaths:
             ],
         )
         self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
-        # The version is read at the REMOTE sha when the two differ, not at HEAD:
-        # comparing HEAD against itself can never detect an update.
-        assert argv[-1] == ("git", "show", "bbb222:src/kiro_crew/__init__.py")
 
     @pytest.mark.asyncio
-    async def test_a_version_that_cannot_be_parsed_is_reported_as_such(self, monkeypatch, tmp_path):
+    async def test_behind_count_that_is_not_a_number_is_a_failed_check(self, monkeypatch, tmp_path):
+        """A count we cannot read is not licence to answer "up to date"."""
         await self._run(
             monkeypatch,
             tmp_path,
@@ -259,6 +257,44 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
                 _FakeProc(out=b"bbb222\n"),
+                _FakeProc(out=b"not a number\n"),
+            ],
+        )
+        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+
+    @pytest.mark.asyncio
+    async def test_version_read_timeout(self, monkeypatch, tmp_path):
+        argv = await self._run(
+            monkeypatch,
+            tmp_path,
+            [
+                _FakeProc(),
+                _FakeProc(out=b"aaa111\n"),
+                _FakeProc(out=b"bbb222\n"),
+                _FakeProc(out=b"0\t7\n"),
+                _FakeProc(time_out=True, kill_raises=True),
+            ],
+        )
+        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+        # The version is read at the REMOTE sha when the two differ, not at HEAD:
+        # comparing HEAD against itself can never detect an update.
+        assert argv[-1] == ("git", "show", "bbb222:src/kiro_crew/__init__.py")
+
+    @pytest.mark.asyncio
+    async def test_a_version_that_cannot_be_parsed_is_reported_as_such(self, monkeypatch, tmp_path):
+        """Unparseable version AND no commit distance — nothing left to answer with.
+
+        ``behind`` is scripted to 0 on purpose: a non-zero count is a verdict in
+        its own right and would (correctly) rescue the check.
+        """
+        await self._run(
+            monkeypatch,
+            tmp_path,
+            [
+                _FakeProc(),
+                _FakeProc(out=b"aaa111\n"),
+                _FakeProc(out=b"bbb222\n"),
+                _FakeProc(out=b"0\t0\n"),
                 _FakeProc(out=b'__version__ = "not/a/version"\n'),
             ],
         )
@@ -280,6 +316,7 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
                 _FakeProc(out=b"bbb222\n"),
+                _FakeProc(out=b"0\t7\n"),
                 _FakeProc(out=b'__version__ = "999.0.0"\n'),
                 _FakeProc(time_out=True, kill_raises=True),
             ],
@@ -309,6 +346,7 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(),
                 _FakeProc(out=b"aaa111\n"),
                 _FakeProc(out=b"bbb222\n"),
+                _FakeProc(out=b"0\t7\n"),
                 _FakeProc(out=b'__version__ = "999.0.0"\n'),
                 _FakeProc(out=diff),
             ],

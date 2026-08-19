@@ -823,10 +823,39 @@ underlying `journalctl`/`tail` process.
 
 ## Dashboard Self-Update
 
-On gateway startup and every 12 hours, a background task runs `git fetch`
-and compares the remote `__version__` with the local version. Only triggers
-when the remote version is strictly higher (commits without a version bump
-are ignored).
+On gateway startup and every 12 hours, a background task runs `git fetch` and
+reports an update when EITHER the checkout can be FAST-FORWARDED
+(`git rev-list --count --left-right HEAD...@{u}` shows commits behind and none
+ahead) OR the pull already landed and only a restart is missing (`HEAD` equals
+its upstream while the on-disk `__version__` outranks the one this process
+imported).
+
+Commit distance is the primary signal because `__version__` is bumped only at a
+release: comparing version strings alone reported "you're on the latest version"
+to a checkout hundreds of commits behind `main`, for as long as the next bump
+took.
+
+Both conditions are narrower than "is it behind", because `available` is also
+read by an unattended apply. `GatewayOrchestrator._auto_apply_update` applies
+`git fetch` + `git reset --hard origin/<branch>` with no prompt, so:
+
+- "Behind" alone is true both for a checkout that is purely behind and for a
+  DIVERGED one carrying its own commits, and the second would have those commits
+  reset away. Only a fast-forwardable checkout is offered an update.
+- The version signal is required to come with `HEAD == @{u}`. A checkout that
+  pulled a version bump and then committed on top is ahead, so its upstream
+  still reads newer than the imported version; without that requirement the
+  same reset would drop those commits.
+
+**The unattended apply is triggered by the version, not by commit distance.**
+The check reports `version_newer` beside `available`, and the git branch of the
+`auto_update` path requires both. `available` is what the dashboard shows, and
+on commit distance alone that would mean any upstream commit — resetting a
+source checkout within 12 hours of one, where the version-only verdict only did
+so at a release. Requiring both keeps that path firing no more often than
+before. Commit distance without a version bump lights the dashboard badge, and
+`POST /api/update` (`git pull`, dirty tree refused with 409) is the
+non-destructive way to apply it.
 
 - Topbar shows `📦 v0.1.3` badge — click to check and view changelog
 - If newer version found: badge turns into "📦 Update Available"

@@ -874,6 +874,70 @@ class TestCheckForUpdates:
         ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
+    async def test_commit_distance_alone_lights_the_badge_but_does_not_auto_apply(self):
+        """A git checkout behind upstream with an UNCHANGED version is not reset.
+
+        `available` is true on commit distance alone so the dashboard stops
+        claiming "you're on the latest version". This path is not the dashboard:
+        it applies `git reset --hard`, so acting on commit distance would reset a
+        developer's checkout within 12 hours of any upstream commit, where before
+        it only did so at a release. The badge is lit instead; the dashboard's own
+        apply (`git pull`, dirty tree refused) is the non-destructive way in.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch._auto_apply_update = AsyncMock()
+        import kiro_crew.dashboard.handlers as _h
+
+        fake_cfg = MagicMock()
+        fake_cfg.auto_update = True
+        orig = _h._update_info.copy()
+        try:
+            _h._update_info.update(
+                {"available": True, "self_updatable": True, "version_newer": False}
+            )
+            with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
+                with patch("kiro_crew.config.KiroCrewConfig.load", return_value=fake_cfg):
+                    with patch(
+                        "kiro_crew.platform.update_governance.update_required",
+                        return_value=False,
+                    ):
+                        await orch._check_for_updates()
+        finally:
+            _h._update_info.clear()
+            _h._update_info.update(orig)
+        orch._auto_apply_update.assert_not_awaited()
+        ds.push_refresh.assert_called_with("update_available")
+
+    @pytest.mark.asyncio
+    async def test_a_version_bump_still_auto_applies(self):
+        """The pre-existing trigger is unchanged: a release moved, so apply."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch._auto_apply_update = AsyncMock()
+        import kiro_crew.dashboard.handlers as _h
+
+        fake_cfg = MagicMock()
+        fake_cfg.auto_update = True
+        orig = _h._update_info.copy()
+        try:
+            _h._update_info.update(
+                {"available": True, "self_updatable": True, "version_newer": True}
+            )
+            with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
+                with patch("kiro_crew.config.KiroCrewConfig.load", return_value=fake_cfg):
+                    with patch(
+                        "kiro_crew.platform.update_governance.update_required",
+                        return_value=False,
+                    ):
+                        await orch._check_for_updates()
+        finally:
+            _h._update_info.clear()
+            _h._update_info.update(orig)
+        orch._auto_apply_update.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_min_version_mandate_fires_even_when_not_available(self):
         """The mandate is about THIS host, not the availability heuristic.
 

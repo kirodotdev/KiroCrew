@@ -6739,7 +6739,22 @@ class GatewayOrchestrator:
                 from kiro_crew.config import KiroCrewConfig
 
                 cfg = KiroCrewConfig.load()
-                if cfg.auto_update and _update_info.get("self_updatable"):
+                if (
+                    cfg.auto_update
+                    and _update_info.get("self_updatable")
+                    and _update_info.get("version_newer")
+                ):
+                    # A git checkout is applied by `git reset --hard`, so this
+                    # path needs more than "the dashboard would show a badge".
+                    # ``available`` is true on commit distance alone, which for a
+                    # source checkout means any upstream commit — acting on that
+                    # would reset a developer's tree within 12 hours of one,
+                    # where before it only happened at a release. Requiring the
+                    # version to have moved as well keeps this firing no more
+                    # often than it did while the verdict was version-only.
+                    # Commit distance without a version bump lights the badge
+                    # below instead, and the dashboard's own apply path (`git
+                    # pull`, dirty tree refused) is the non-destructive way in.
                     logger.info("Auto-update enabled — applying update")
                     await self._auto_apply_update()
                 elif (
