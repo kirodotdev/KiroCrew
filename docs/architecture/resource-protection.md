@@ -448,9 +448,12 @@ itself and the injection works as described above.
   `_BatchRuntimeHolder` multiplexes every concurrent review onto ONE batch-scoped
   `AcpRuntime` rather than a pool of subprocesses.
 
-- **Browser-triggerable read-only FS scans run on an isolated pool.** Dashboard list
+- **Browser-triggerable filesystem work runs on an isolated pool.** Dashboard list
   endpoints (`GET /api/skills`, `/api/agents/installed`, `/api/prompts`, plus the themes,
   steering and prompt readers) do `os.walk`-style filesystem discovery on the dedicated
   `discovery_executor` pool (`executors.py`), kept separate from the reaper-critical
   `maintenance_executor` so a burst of concurrent user-triggered scans can never starve the
-  orphan sweeps.
+  orphan sweeps. The prompt WRITE handlers (`POST /api/prompts`,
+  `PUT`/`DELETE /api/prompts/{name}`) use the same pool for the same reason: directory
+  resolution, the link check, and the write itself all touch the filesystem, and on a
+  network-mounted home that is a multi-second stall the event loop must not take.

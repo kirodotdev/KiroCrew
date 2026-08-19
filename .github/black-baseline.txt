@@ -276,7 +276,6 @@ src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/github_runner.py
-src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
 src/kiro_crew/kiro_prerequisite.py
@@ -764,7 +763,6 @@ test/test_history_locking_remediation.py
 test/test_history_race.py
 test/test_hook_matcher_modes.py
 test/test_hooks.py
-test/test_hooks_coverage.py
 test/test_hooks_json_shared_file.py
 test/test_host_isolation_floor.py
 test/test_host_service_guard.py
