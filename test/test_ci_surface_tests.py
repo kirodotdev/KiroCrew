@@ -277,6 +277,7 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_webapp_preview.py",
         "test_file_raw.py",
         "test_file_download.py",
+        "test_file_office_preview.py",
         "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
     }

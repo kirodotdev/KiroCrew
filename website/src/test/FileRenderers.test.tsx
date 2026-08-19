@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 import { columnLetter, detectFileType, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
 
 describe('detectFileType', () => {
@@ -65,28 +67,135 @@ describe('JsonlViewer', () => {
   })
 })
 
+/** OfficeViewer (and SheetViewer's fallback card, which renders it) fetch via
+ *  React Query, so renders need a QueryClientProvider. Fresh client per render
+ *  keeps the per-filePath query cache from leaking between tests; retry
+ *  disabled so error paths settle in one pass. */
+function renderWithQuery(ui: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>)
+}
+
 describe('OfficeViewer', () => {
-  it('renders filename, extension badge, and a Download link pointing at /api/file-download', () => {
-    render(<OfficeViewer filePath="/home/user/docs/quarterly-report.docx" />)
-    // Filename shown to the user (basename, not full path).
-    expect(screen.getByText('quarterly-report.docx')).toBeInTheDocument()
-    // Extension badge — uppercase, drives the visual "this is a DOCX" cue.
-    expect(screen.getByText('DOCX')).toBeInTheDocument()
-    // Accessible download control routed through /api/file-download so the
-    // browser sees attachment disposition + nosniff and downloads raw bytes
-    // instead of trying to render UTF-8-decoded ZIP garbage.
-    const link = screen.getByRole('link', { name: /quarterly-report\.docx/i })
-    expect(link).toHaveAttribute('href', expect.stringContaining('/api/file-download?path='))
-    expect(link).toHaveAttribute('href', expect.stringContaining('quarterly-report.docx'))
-    expect(link).toHaveAttribute('download', 'quarterly-report.docx')
+  const realFetch = globalThis.fetch
+
+
+  /** Stub /api/file-office-preview with a Response-shaped object. Mirrors the
+   *  pattern used in MarkdownRenderer.test.tsx for the file-read HEAD probe. */
+  function stubPreview(body: { text?: string; truncated?: boolean; error?: string } | null, ok = true, status = 200) {
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok,
+        status,
+        json: () => Promise.resolve(body ?? {}),
+      } as unknown as Response),
+    ) as unknown as typeof fetch
+  }
+
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    vi.restoreAllMocks()
   })
 
-  it('extracts the basename from a Windows path with backslash separators', () => {
+  it('renders the plaintext preview when /api/file-office-preview returns text', async () => {
+    // The component's decision about which UI state to render is driven
+    // entirely by (ok, body.text) — matches the backend contract
+    // in `api_file_office_preview`.
+    stubPreview({
+      text: 'Introduction\n\nThis is the first paragraph of the document.',
+      truncated: false,
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/quarterly-report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText(/Introduction/)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/first paragraph/)).toBeInTheDocument()
+    // Compact "Download original" affordance is present beneath the preview,
+    // not the full-size button — this is the preview state.
+    expect(screen.getByRole('link', { name: /quarterly-report\.docx/i })).toBeInTheDocument()
+    expect(screen.getByText('Download original')).toBeInTheDocument()
+  })
+
+  it('makes the preview scroll container keyboard-focusable', async () => {
+    // Long documents must stay readable past the fold without a pointer —
+    // the scroll region carries tabIndex=0 and an accessible name.
+    stubPreview({ text: 'Some document text', truncated: false })
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/quarterly-report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText('Some document text')).toBeInTheDocument()
+    })
+    const region = screen.getByRole('region', { name: 'quarterly-report.docx' })
+    expect(region).toHaveAttribute('tabindex', '0')
+  })
+
+  it('falls back to the download card when /api/file-office-preview returns 415', async () => {
+    // Server-side safety net: if the backend rejects a nominally previewable
+    // extension (list drift, direct API), the component MUST render the
+    // full-size download card — never block the user from getting the file.
+    stubPreview({ error: 'unsupported format for inline preview' }, false, 415)
+    renderWithQuery(<OfficeViewer filePath="/home/user/reports/report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText('report.docx')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Download')).toBeInTheDocument()
+    expect(screen.getByText(/Preview isn't available for this file/i)).toBeInTheDocument()
+  })
+
+  it('renders the download card for never-previewable extensions without fetching', async () => {
+    // Known-unsupported formats (.xls/.doc/.odt…) short-circuit client-side:
+    // no fetch, no "Loading preview…" flash for a guaranteed 415.
+    const fetchSpy = vi.fn()
+    globalThis.fetch = fetchSpy as unknown as typeof fetch
+    renderWithQuery(<OfficeViewer filePath="/home/user/reports/legacy.xls" />)
+    await waitFor(() => {
+      expect(screen.getByText('legacy.xls')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Download')).toBeInTheDocument()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the download card when the fetch itself throws', async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))) as unknown as typeof fetch
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/quarterly-report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText('quarterly-report.docx')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Download')).toBeInTheDocument()
+  })
+
+  it('falls back to the download card when extraction returns empty text', async () => {
+    // doc_parser returns "" for both a blank document and a parse failure —
+    // the frontend treats empty text as "no preview" and shows the card.
+    stubPreview({ text: '', truncated: false })
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/blank.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText('blank.docx')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Download')).toBeInTheDocument()
+  })
+
+  it('renders the truncation notice in the pinned footer when the backend flags truncation', async () => {
+    stubPreview({
+      text: 'A very long document that would keep going...',
+      truncated: true,
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/huge-report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText(/Preview shows only the beginning/i)).toBeInTheDocument()
+    })
+  })
+
+  it('extracts the basename from a Windows path with backslash separators', async () => {
     // Kiro Crew ships native on Windows where filePath arrives as
     // C:\Users\...\report.docx. A `/`-only split would surface the whole
     // path — split on BOTH separators to match MarkdownRenderer/VectorMemoryCard.
-    render(<OfficeViewer filePath="C:\\Users\\harpreet\\Documents\\report.docx" />)
-    expect(screen.getByText('report.docx')).toBeInTheDocument()
+    stubPreview({}, false, 415)  // force fallback so the download card is visible
+    renderWithQuery(<OfficeViewer filePath="C:\\Users\\harpreet\\Documents\\report.docx" />)
+    await waitFor(() => {
+      expect(screen.getByText('report.docx')).toBeInTheDocument()
+    })
     expect(screen.queryByText(/C:\\Users/)).not.toBeInTheDocument()
   })
 })
@@ -160,7 +269,8 @@ describe('SheetViewer', () => {
     // 422 = parse failure; the viewer must never be worse than the card it replaced,
     // and the banner must not claim xlsx can never preview inline.
     stubFetch(async () => ({ ok: false, status: 422, json: async () => ({ error: 'cannot parse workbook' }) }))
-    render(<SheetViewer filePath="/ws/outbox/model.xlsx" />)
+    // Fallback card renders OfficeViewer, which calls useQuery — needs the provider.
+    renderWithQuery(<SheetViewer filePath="/ws/outbox/model.xlsx" />)
     expect(await screen.findByText('model.xlsx')).toBeInTheDocument()
     expect(screen.getByText(/Preview failed/)).toBeInTheDocument()
     const link = screen.getByRole('link', { name: /model\.xlsx/i })
@@ -169,7 +279,7 @@ describe('SheetViewer', () => {
 
   it('degrades to the download card when fetch itself rejects', async () => {
     stubFetch(async () => { throw new Error('network down') })
-    render(<SheetViewer filePath="/ws/outbox/model.xlsx" />)
+    renderWithQuery(<SheetViewer filePath="/ws/outbox/model.xlsx" />)
     expect(await screen.findByRole('link', { name: /model\.xlsx/i })).toBeInTheDocument()
   })
 
