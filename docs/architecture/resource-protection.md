@@ -334,6 +334,14 @@ fails loudly rather than handing the child a reachable bus.
 
 ## Memory-aware cap for pytest-xdist `-n auto`
 
+> **Two compositions of one Mach struct, on purpose.** `subagent._macos_vm_reclaimable_pages`
+> and `platform_compat.host_available_mib` both read `host_statistics64`, and they sum its
+> page counters differently. The budget's version is tighter — it does not re-add
+> `speculative_count` (which `free_count` already contains) and it bounds `inactive_count`
+> by `external_page_count`. The sub-agent version is knowingly looser and stays that way,
+> because tightening it moves `compute_max_subagents`, a number that is documented and that
+> operators tune against. Do not "unify" them; only the Mach call itself is shared.
+
 pytest-xdist resolves `-n auto` to the CPU count and never looks at memory, so on a
 many-core host a full-suite run inside an agent turn spawns one worker per core at roughly
 1 GB each — and two agent sessions doing it concurrently can exhaust an unswapped host
@@ -351,6 +359,15 @@ explicit `-n N`, non-xdist runs, and venvs without xdist installed are untouched
 value already present in the environment is never overridden. Configured via
 `resource_limits.xdist_auto_cap`: `-1` (default) auto-computes, `0` disables the injection
 entirely, `N > 0` pins a fixed worker cap.
+
+In **this repo's own** test suite the variable is read by the worker budget in the
+rootdir `conftest.py` rather than by xdist, and it is honoured as a **ceiling** —
+tightened further by that budget's own memory readings, never loosened. The hook is
+`firstresult`, and a conftest implementation outranks a plugin one, so this hook runs
+*instead of* xdist's default; reading the variable there is what stops an injected cap
+being silently discarded. An agent-spawned run therefore gets the tighter of the two
+budgets. Anywhere else — a venv that merely has xdist installed — xdist reads it
+itself and the injection works as described above.
 
 ## Known gaps
 

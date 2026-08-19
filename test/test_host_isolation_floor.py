@@ -545,6 +545,45 @@ class TestTheWorkerBudgetIsMemoryBounded:
     rather than a bug. So each reading must degrade to "skip this bound", never to zero.
     """
 
+    def test_the_budget_is_registered_from_the_rootdir_not_from_test_conftest(self) -> None:
+        """The gap that was silent for every testpath but ``test/``.
+
+        ``test/conftest.py`` is not loaded when the target is ``transfer`` or an
+        in-package app suite, so a budget registered there resolved ``-n auto`` to
+        the raw core count for those invocations -- and ignored every knob, with
+        nothing in the output to say so, because an absent budget is
+        indistinguishable from a budget that chose not to clamp.
+
+        Asserted against the SOURCE of both files, so it holds however the run was
+        invoked: a test that inspected only the live plugin manager would pass from
+        ``test/`` even after a regression put the hook back in the wrong file.
+        """
+        root_conftest = (_REPO_ROOT / "conftest.py").read_text()
+        suite_conftest = (_REPO_ROOT / "test" / "conftest.py").read_text()
+        hook = "def pytest_xdist_auto_num_workers"
+
+        assert hook in root_conftest, (
+            "the worker budget must be registered from the ROOTDIR conftest, which is "
+            "the only one every testpath loads"
+        )
+        assert hook not in suite_conftest, (
+            "a budget registered in test/conftest.py is absent from transfer/ and from "
+            "the in-package app suites, and the absence is silent"
+        )
+
+    def test_the_budget_module_is_importable_from_every_testpath(self) -> None:
+        """The repository root is on ``sys.path`` for every invocation shape.
+
+        That is what lets one module serve both conftests. It holds because pytest
+        imports the rootdir conftest in ``prepend`` mode -- but it is load-bearing
+        and invisible, so it is pinned rather than assumed.
+        """
+        import xdist_budget
+
+        assert pathlib.Path(xdist_budget.__file__).parent == _REPO_ROOT
+        assert callable(xdist_budget.resolve_workers)
+        assert callable(xdist_budget.release_worker_slots)
+
     @pytest.fixture
     def slot_dir_env(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
         """Point the host-global slot directory at a tmp dir, and release what is taken.
@@ -560,11 +599,11 @@ class TestTheWorkerBudgetIsMemoryBounded:
         ``_held_slots`` is REPLACED rather than cleared, so the suite's own list is never
         touched and ``monkeypatch`` restores it even if the test fails.
         """
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setenv(suite_conftest._SLOT_DIR_ENV, str(tmp_path / "slots"))
+        monkeypatch.setenv(budget._SLOT_DIR_ENV, str(tmp_path / "slots"))
         held: list[int] = []
-        monkeypatch.setattr(suite_conftest, "_held_slots", held)
+        monkeypatch.setattr(budget, "_held_slots", held)
         yield tmp_path
         for fd in held:
             try:
@@ -575,15 +614,15 @@ class TestTheWorkerBudgetIsMemoryBounded:
     def test_every_reading_is_optional_and_the_tightest_wins(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setattr(suite_conftest, "_host_total_gib", lambda: 64)
-        monkeypatch.setattr(suite_conftest, "_cgroup_limit_mib", lambda: 8 * 1024)
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 64)
+        monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 8 * 1024)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 0)
 
         # 8 GiB ceiling at 2 GiB/worker is the tightest real reading, and the
         # unavailable one (0) is skipped rather than read as "no memory".
-        assert suite_conftest._static_memory_bounded_capacity(32) == 4
+        assert budget._static_memory_bounded_capacity(32) == 4
 
     def test_a_starved_host_is_bounded_rather_than_read_as_unknown(
         self, monkeypatch: pytest.MonkeyPatch
@@ -595,23 +634,23 @@ class TestTheWorkerBudgetIsMemoryBounded:
         the starved host it protects, leaving the static total-RAM term to allow 16
         workers on under a gigabyte of free memory.
         """
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 860)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 860)
 
-        assert suite_conftest._live_memory_bounded_cap(32) == 1
+        assert budget._live_memory_bounded_cap(32) == 1
 
     def test_a_small_container_ceiling_is_not_read_as_no_ceiling(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Same inversion, reached through the cgroup reading instead."""
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setattr(suite_conftest, "_host_total_gib", lambda: 256)
-        monkeypatch.setattr(suite_conftest, "_cgroup_limit_mib", lambda: 512)
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 256)
+        monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 512)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 0)
 
-        assert suite_conftest._static_memory_bounded_capacity(32) == 1
+        assert budget._static_memory_bounded_capacity(32) == 1
 
     def test_the_static_bound_shapes_the_shared_range_not_just_this_run(
         self, monkeypatch: pytest.MonkeyPatch, slot_dir_env: pathlib.Path
@@ -624,19 +663,19 @@ class TestTheWorkerBudgetIsMemoryBounded:
         both runs take 16 each: 32 workers against a 16-worker budget, which is the
         swapping incident the budget exists to prevent, reached from the other end.
         """
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
         monkeypatch.setattr(os, "cpu_count", lambda: 64)
-        monkeypatch.setattr(suite_conftest, "_host_total_gib", lambda: 32)
-        monkeypatch.setattr(suite_conftest, "_cgroup_limit_mib", lambda: 0)
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 0)
-        monkeypatch.delenv(suite_conftest._MAX_WORKERS_ENV, raising=False)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 32)
+        monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 0)
+        monkeypatch.delenv(budget._MAX_WORKERS_ENV, raising=False)
 
-        first = suite_conftest.pytest_xdist_auto_num_workers(None)
+        first = budget.resolve_workers()
         # A second run in this same process cannot re-lock what it already holds, so the
         # slot RANGE is what the assertion has to pin: 16, never 64.
         assert first == 16
-        assert suite_conftest._static_memory_bounded_capacity(64) == 16
+        assert budget._static_memory_bounded_capacity(64) == 16
 
     def test_the_live_bound_does_not_shrink_the_shared_range(
         self, monkeypatch: pytest.MonkeyPatch
@@ -647,13 +686,13 @@ class TestTheWorkerBudgetIsMemoryBounded:
         the slots an earlier run left free -- collapsing the later run while the machine
         idles.
         """
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setattr(suite_conftest, "_host_total_gib", lambda: 128)
-        monkeypatch.setattr(suite_conftest, "_cgroup_limit_mib", lambda: 0)
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 2048)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 128)
+        monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 2048)
 
-        assert suite_conftest._static_memory_bounded_capacity(32) == 32
+        assert budget._static_memory_bounded_capacity(32) == 32
 
     def test_an_unavailable_reading_never_collapses_the_run(
         self, monkeypatch: pytest.MonkeyPatch
@@ -661,25 +700,25 @@ class TestTheWorkerBudgetIsMemoryBounded:
         """macOS has no /proc/meminfo and no /sys/fs/cgroup; Windows raises on
         ``os.sysconf``. All three readings returning 0 must leave the core count
         standing."""
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setattr(suite_conftest, "_host_total_gib", lambda: 0)
-        monkeypatch.setattr(suite_conftest, "_cgroup_limit_mib", lambda: 0)
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 0)
+        monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 0)
 
-        assert suite_conftest._static_memory_bounded_capacity(12) == 12
+        assert budget._static_memory_bounded_capacity(12) == 12
 
     def test_a_tiny_host_still_gets_one_worker(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Slow beats stalled: the floor is one worker, never zero."""
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
-        monkeypatch.setattr(suite_conftest, "_host_total_gib", lambda: 1)
-        monkeypatch.setattr(suite_conftest, "_cgroup_limit_mib", lambda: 0)
-        monkeypatch.setattr(suite_conftest, "_host_available_mib", lambda: 1024)
+        monkeypatch.setattr(budget, "_host_total_gib", lambda: 1)
+        monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 0)
+        monkeypatch.setattr(budget, "_host_available_mib", lambda: 1024)
 
-        assert suite_conftest._static_memory_bounded_capacity(8) == 1
+        assert budget._static_memory_bounded_capacity(8) == 1
 
     @pytest.mark.parametrize(
         ("kb", "expected"),
@@ -701,8 +740,18 @@ class TestTheWorkerBudgetIsMemoryBounded:
         to whole GiB, so any host with under 1 GiB free returns 0 -- which is the
         function's own "could not determine" sentinel, i.e. a CORRECT return that the
         assertion would call a failure. Small CI containers are the most exposed.
+
+        The platform is pinned for the same reason the reading is: this exercises the
+        ``/proc/meminfo`` branch specifically, and reaching it must not depend on the
+        host the test happens to run on -- otherwise the whole parametrization silently
+        stops asserting anything on the macOS and Windows shards.
         """
-        import conftest as suite_conftest
+        import xdist_budget as budget
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
 
         meminfo = tmp_path / "meminfo"
         meminfo.write_text(
@@ -718,23 +767,43 @@ class TestTheWorkerBudgetIsMemoryBounded:
 
         monkeypatch.setattr("builtins.open", _fake)
 
-        assert suite_conftest._host_available_mib() == expected
+        assert budget._host_available_mib() == expected
 
-    @pytest.mark.skipif(
-        not pathlib.Path("/proc/meminfo").exists(), reason="Linux-only reading"
-    )
     def test_available_never_exceeds_total_on_a_real_host(self) -> None:
-        """The one invariant that holds at ANY memory level, so it cannot flake."""
-        import conftest as suite_conftest
+        """The one invariant that holds at ANY memory level, so it cannot flake.
 
-        assert suite_conftest._host_available_mib() <= suite_conftest._host_total_gib() * 1024
+        Gated on the READING rather than on ``/proc/meminfo``, so it runs on macOS
+        and Windows too. Gating it on the Linux file is what kept the only
+        real-host assertion here from ever executing on the platforms whose
+        readings were added last.
+        """
+        import xdist_budget as budget
+
+        available = budget._host_available_mib()
+        if available == 0:
+            pytest.skip("no available-memory reading on this platform")
+        assert available <= budget._host_total_gib() * 1024
 
     def test_a_missing_meminfo_is_reported_as_unknown_not_as_zero_memory(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
-        """Stands in for macOS and Windows, where the file does not exist at all."""
-        import conftest as suite_conftest
+        """On Linux a missing ``/proc/meminfo`` is unknown, never zero memory.
 
+        Zero would be indistinguishable from a genuinely starved host, and the
+        two must diverge: ``_bounded_by`` SKIPS an unknown reading and would
+        otherwise collapse every run to a single worker.
+        """
+        import xdist_budget as budget
+
+        # Imported in-body, not at module scope: this file's own ratchet asserts
+        # that no import-time ``~/.kiro`` binding escapes the isolation fixtures,
+        # and importing kiro_crew during COLLECTION binds them against the real
+        # home before any fixture has run.
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         real_open = open
 
         def _no_meminfo(path, *args, **kwargs):
@@ -744,7 +813,26 @@ class TestTheWorkerBudgetIsMemoryBounded:
 
         monkeypatch.setattr("builtins.open", _no_meminfo)
 
-        assert suite_conftest._host_available_mib() == 0
+        assert budget._host_available_mib() == 0
+
+    def test_a_platform_with_no_reading_at_all_is_unknown_not_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A platform none of the three branches claims returns 0 = unknown.
+
+        The branch that used to stand in for macOS and Windows. Those now have
+        readings of their own, so this covers only the genuinely unknown host --
+        and it must stay 0 so such a host keeps its parallelism instead of
+        silently dropping to one worker.
+        """
+        import xdist_budget as budget
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        assert budget._host_available_mib() == 0
 
     def test_an_unlimited_cgroup_is_not_read_as_a_ceiling(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
@@ -755,7 +843,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
         case: divided into GiB it is a number no ``min()`` will ever pick. Both are
         exercised here because the two files are read in the same loop.
         """
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
         limit_file = tmp_path / "memory.max"
         limit_file.write_text("max\n", encoding="utf-8")
@@ -775,14 +863,14 @@ class TestTheWorkerBudgetIsMemoryBounded:
 
         # "max" is skipped outright; the v1 sentinel converts to a ceiling far above
         # any real core count, so neither can bind.
-        assert suite_conftest._static_memory_bounded_capacity(8) <= 8
-        assert suite_conftest._cgroup_limit_mib() >= 8 * 1024
+        assert budget._static_memory_bounded_capacity(8) <= 8
+        assert budget._cgroup_limit_mib() >= 8 * 1024
 
     def test_a_real_cgroup_ceiling_binds(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
         """The container case: 8 GiB inside a cgroup on a 256 GiB machine."""
-        import conftest as suite_conftest
+        import xdist_budget as budget
 
         limit_file = tmp_path / "memory.max"
         limit_file.write_text(str(8 * 1024**3), encoding="utf-8")
@@ -802,4 +890,4 @@ class TestTheWorkerBudgetIsMemoryBounded:
 
         monkeypatch.setattr("builtins.open", _fake_cgroup)
 
-        assert suite_conftest._cgroup_limit_mib() == 8 * 1024
+        assert budget._cgroup_limit_mib() == 8 * 1024

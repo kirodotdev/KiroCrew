@@ -6,10 +6,10 @@ to ``test/``. ``[tool:pytest] testpaths`` also collects ``transfer`` and
 next to the code they cover), and those get no ``test/conftest.py`` fixtures at
 all -- only this file, plus that app's own ``tests/conftest.py`` where one exists.
 Anything that must hold for EVERY test therefore has to live here, at the
-rootdir, which is the one conftest pytest applies to all three testpaths.
+rootdir, which is the one conftest pytest applies to every testpath.
 
 Only the HOST-MUTATION FLOOR belongs in this file: the guards that must hold for a
-test collected from any of the three testpaths, because what they protect is the
+test collected from any testpath, because what they protect is the
 developer's machine rather than the correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
@@ -71,8 +71,10 @@ from __future__ import annotations
 
 import asyncio.base_events
 import contextlib
+import gc
 import getpass
 import importlib
+import linecache
 import os
 import pathlib
 import shutil
@@ -212,7 +214,7 @@ def _refusal_reason(argv: object, *, shell: bool = False) -> str | None:
             return f"{name!r} rewrites host security policy"
         if name not in _SERVICE_MANAGERS:
             continue
-        for candidate in tokens[index + 1:]:
+        for candidate in tokens[index + 1 :]:
             if _basename(candidate) in _MUTATING_VERBS:
                 return f"{name} {candidate!r} changes host service state"
     return None
@@ -446,6 +448,18 @@ def _block_host_service_mutation(request, monkeypatch):
 #: certain to still exist, and it is where every test expects to begin.
 _SESSION_CWD: str | None = None
 
+#: Tests between ``linecache`` clears. Measured on a 1,266-test slice: 500 saves
+#: 22.8 MiB and 100 saves 28.0 MiB, with no measurable difference in wall time, so the
+#: CPU side of this trade is flat enough to take the memory. The cache is per-process,
+#: so under ``-n auto`` each worker clears on its own count.
+_LINECACHE_CLEAR_EVERY = 100
+_TESTS_SINCE_LINECACHE_CLEAR = 0
+
+#: How many objects ``pytest_collection_finish`` moved into the permanent generation.
+#: ``None`` until it has run, which is what distinguishes "this hook did its job" from
+#: the few hundred objects the interpreter had already frozen on its own.
+_FROZEN_AT_COLLECTION: int | None = None
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Record the working directory pytest started in, before any test can move it."""
@@ -454,6 +468,155 @@ def pytest_configure(config: pytest.Config) -> None:
         _SESSION_CWD = os.getcwd()
     except OSError:  # pragma: no cover - pytest could not have started here
         _SESSION_CWD = str(_REPO_ROOT)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_warning_recorded(warning_message, when, nodeid, location) -> None:
+    """Drop a recorded warning's ``source`` object once the warning has been rendered.
+
+    Every warning this suite emits is retained for the whole session, and one kind of
+    warning brings a whole test's object graph with it.
+
+    The chain: ``_pytest/warnings.py`` records each warning with
+    ``pytest_warning_recorded.call_historic(...)``, and pluggy appends those kwargs to
+    ``_HookCaller._call_history`` -- a list it never clears, because a historic hook
+    exists precisely to be replayed to plugins registered later. So the
+    ``warnings.WarningMessage`` survives to the end of the run. Ordinarily that is a
+    few hundred bytes. But ``WarningMessage.source`` is the OBJECT the warning is
+    about, and for ``RuntimeWarning: coroutine '...' was never awaited`` that object is
+    the coroutine: it holds its frame, its frame holds every local, and those locals
+    hold whatever the test built. One un-awaited coroutine therefore pins an entire
+    test's graph for the session, in every worker.
+
+    ``trylast`` is what makes this free of diagnostic loss, and it is not a
+    preference. ``TerminalReporter.pytest_warning_recorded`` renders the warning to a
+    plain string IMMEDIATELY -- including ``tracemalloc_message(source)``, the
+    "Object allocated at:" traceback when tracemalloc is tracing and the "Enable
+    tracemalloc" hint when it is not -- and stores that string. Running last means the
+    text is already built before the reference goes, so nothing a reader would have
+    seen is lost. Clearing it ``tryfirst`` WOULD lose that suffix, which is why the
+    ordering is pinned by a test.
+
+    Kept as a BACKSTOP rather than for its average saving, and the distinction is
+    measured. Where un-awaited coroutines cluster it is large: ``test_dashboard_chat.py``
+    emits 60 of them across 590 tests, and clearing ``source`` takes that file from 284
+    to 219 MiB. On a mixed slice it is worth nothing at all -- an AsyncMock-dense
+    3,401-test set emits 11 and measures +1.7 MiB, i.e. noise. So this is not a
+    general-purpose win; it removes a tail risk whose cost is one attribute write per
+    warning, and which scales with however many un-awaited coroutines the suite acquires
+    later.
+
+    The residual edge: a plugin registered AFTER a warning was recorded receives the
+    replay with ``source`` already gone. Conftest plugins are all registered before
+    tests run, so in this repo that is unreachable.
+    """
+    warning_message.source = None
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Move the collected item tree out of the garbage collector's reach.
+
+    Collecting every testpath leaves roughly three million objects alive, and they
+    are alive for the rest of the run by design -- the item tree, its fixture closures,
+    the rewritten assertion code. The garbage collector does not know that, so every
+    full pass walks all of them looking for cycles it will never find. Worse, on the
+    interpreters this suite supports the full collection is scheduled from a measure of
+    how much long-lived material exists, so that static population also DELAYS
+    collection: a test's own cyclic garbage waits longer before anything reclaims it.
+    (The exact scheduling differs across 3.10-3.13 -- 3.13 replaced the generational
+    threshold with an incremental collector -- but the static set is unscanned either
+    way, which is the part this depends on.)
+
+    ``gc.freeze()`` moves everything currently tracked into a permanent generation that
+    is never scanned. Measured over 3,798 test executions: full passes went 1 -> 3 and
+    the objects they reclaimed went 61,604 -> 423,380, a 6.9x improvement in how much
+    cyclic garbage is actually collected during a run.
+
+    The end-RSS effect is small on its own (-3.5 MiB) because freed memory stays in the
+    allocator's arena rather than returning to the OS. What it buys is that the garbage
+    is reclaimed at all, which is why it is worth keeping despite the modest number.
+
+    Placed at collection finish, not at configure: before collection there is nothing
+    worth freezing, and after the first test the population is no longer purely static.
+    Freezing is safe here for the same reason it helps -- these objects were going to
+    live for the whole session anyway. Verified rather than assumed: live tracked objects
+    at session end are slightly FEWER with the freeze than without (3,221,373 vs
+    3,235,522), uncollectable stays 0, and the frozen count itself falls during the run,
+    so refcount reclamation still works inside the permanent generation. Only cyclic
+    garbage created BEFORE the freeze could leak, and collection creates none.
+
+    It also helps the sandbox's ``fork``-based probes rather than hurting them: this is
+    the documented pre-fork optimization, and the 16 sandbox suites pass identically
+    with and without it.
+
+    Records the delta rather than leaving the effect to be inferred from
+    ``gc.get_freeze_count()``: the interpreter already has a few hundred objects frozen
+    before this runs, so a bare "is anything frozen" assertion passes with this hook
+    deleted.
+    """
+    global _FROZEN_AT_COLLECTION
+    gc.collect()
+    before = gc.get_freeze_count()
+    gc.freeze()
+    _FROZEN_AT_COLLECTION = gc.get_freeze_count() - before
+
+
+def pytest_runtest_logfinish(nodeid: str, location) -> None:
+    """Periodically drop ``linecache``'s copy of every source file that was read.
+
+    ``linecache`` keeps the full TEXT of every file it is asked for, and nothing evicts
+    it, so a worker accumulates source it will not look at again. Measured on a
+    1,266-test slice: 90 files / 0.8 MiB after collection, growing to 170 files /
+    11.4 MiB by the end of the run, and the ceiling is the 27.7 MiB of text in ``src``.
+
+    The fillers are ``inspect.getsource`` (used by 128 test modules) and traceback
+    rendering, one module at a time -- NOT the source-scanning guard tests, which read
+    with ``Path.read_text()`` and add no linecache entries at all. The biggest single
+    entries are simply the biggest modules (``dashboard/chat_runner.py`` at 408 KiB,
+    ``slack/gateway.py`` at 388 KiB).
+
+    This is the one of the three retention guards that pays on an ORDINARY slice rather
+    than on a particular file, and it grows with the run: measured over 12,660 test
+    executions, end RSS 1025 -> 924 MiB (-101 MiB, -10%), with the repeat-visit slope
+    falling from 19.6 to 12.4 MiB per 1,000 tests.
+
+    ``logfinish`` rather than teardown for tidiness, not safety: a failure report is
+    unaffected either way. ``report.longrepr`` is a string already rendered at
+    ``pytest_runtest_makereport``, and ``inspect.findsource`` calls
+    ``linecache.checkcache()`` before ``getlines``, so a cleared or stale entry is
+    simply re-read. Verified by running a two-failure file with no clearing, clearing at
+    teardown, and clearing here: the ``FAILURES`` sections are byte-identical.
+
+    Every N tests rather than every test because the cache is also what makes the next
+    traceback cheap. The interval is a memory/CPU trade with a very flat CPU side --
+    clearing 5x more often buys another ~5 MiB at no measurable time cost.
+    """
+    global _TESTS_SINCE_LINECACHE_CLEAR
+    _TESTS_SINCE_LINECACHE_CLEAR += 1
+    if _TESTS_SINCE_LINECACHE_CLEAR >= _LINECACHE_CLEAR_EVERY:
+        _TESTS_SINCE_LINECACHE_CLEAR = 0
+        linecache.clearcache()
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
+    """Budget ``-n auto`` by memory and by what other runs on this host hold.
+
+    Registered HERE, at the rootdir, because a budget that only covers ``test/``
+    is absent from ``transfer`` and from the in-package app suites -- and absent
+    reads exactly like "decided not to clamp", so the gap is silent. Over-spawning
+    workers takes the whole machine down, which makes this a host-protection
+    concern and puts it on the same floor as the rest of them.
+
+    The policy lives in :mod:`xdist_budget`; this is only the registration.
+    Imported in-body to keep this file's module-level imports stdlib + pytest, and
+    returning ``None`` on an ImportError hands the decision back to xdist's own
+    default rather than breaking startup on a partial checkout.
+    """
+    try:
+        import xdist_budget
+    except ImportError:  # pragma: no cover - partial checkout
+        return None
+    return xdist_budget.resolve_workers()
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -520,9 +683,7 @@ def _live_exporter_threads() -> set:
     the same name, so a name-keyed set makes a second leak indistinguishable from the
     first one still running.
     """
-    return {
-        t for t in threading.enumerate() if _OTEL_THREAD_MARKER in t.name and t.is_alive()
-    }
+    return {t for t in threading.enumerate() if _OTEL_THREAD_MARKER in t.name and t.is_alive()}
 
 
 def _stop_leaked_exporter(thread) -> None:
@@ -1057,9 +1218,7 @@ def _isolate_tempfile_base_per_test(_isolate_tempfile_base, request):
     """
     if not os.environ.get(_TMP_PER_TEST_ENV):
         return
-    safe = "".join(
-        ch if (ch.isalnum() or ch in "-._") else "_" for ch in request.node.nodeid
-    )
+    safe = "".join(ch if (ch.isalnum() or ch in "-._") else "_" for ch in request.node.nodeid)
     _redirect_tempfile_base(_isolate_tempfile_base / safe[-100:])
 
 
@@ -1372,6 +1531,7 @@ def _isolate_agent_state_sidecar(_isolation_dirs, monkeypatch):
     sidecar_root = _isolation_dirs("agent-state")
     monkeypatch.setattr("kiro_crew.agent_state.config_dir", lambda: sidecar_root)
 
+
 # ── the repository checkout is host state too ─────────────────────────
 
 
@@ -1473,7 +1633,20 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     run, and an empty file produced this way has already been committed and
     shipped. Detected here rather than cleaned: deleting an unexpected file is
     not this guard's call to make.
+
+    Also releases the xdist worker slots this run holds, because a module may
+    define ``pytest_sessionfinish`` only once and appending a second definition
+    silently shadows this guard. Done FIRST, and before the early return below:
+    the kernel would drop the locks at process exit anyway, but returning capacity
+    at the end of the run rather than at interpreter teardown is the whole point,
+    and the early return would otherwise skip it.
     """
+    try:
+        import xdist_budget
+
+        xdist_budget.release_worker_slots()
+    except ImportError:  # pragma: no cover - partial checkout
+        pass
     if hasattr(session.config, "workerinput") or _ROOT_BASELINE is None:
         return
     current = _root_entries()

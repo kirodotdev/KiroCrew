@@ -34,15 +34,20 @@ would drift. The short version: only `test/` gets `test/conftest.py`;
 `src/kiro_crew/apps/builtins/*/tests/` gets the rootdir `conftest.py` plus that app's
 own `tests/conftest.py` where one exists.
 
-The rootdir `conftest.py` is the **host-mutation floor** — the guards that protect the
-developer's machine, so they hold everywhere. Everything else is in `test/conftest.py`.
+The rootdir `conftest.py` is the **host floor** — the guards that protect the
+developer's machine, so they hold everywhere. That covers damage (temp dirs, the data
+home, services) and *resource exhaustion*: the xdist worker budget is registered there,
+from the repo-root `xdist_budget.py`, because a run that spawns one worker per core on a
+small laptop takes the machine down and does not care which testpath asked. Everything
+else is in `test/conftest.py`.
 
 Getting this wrong is the most expensive mistake in this suite, because it fails
 **silently and asymmetrically**: an in-package test that assumes `test/conftest.py`'s
 fixtures passes on CI (where the operator's home is empty) and damages a real install
-locally. When you add isolation, ask: *could a test in ANY testpath damage the host
-without this?* If yes it belongs at the rootdir; if no, put it in `test/conftest.py`,
-where the in-package suites pay nothing for it.
+locally. When you add isolation, ask: *could a test in ANY testpath damage the host —
+or consume enough memory, cores or disk to take it down — without this?* If yes it
+belongs at the rootdir; if no, put it in `test/conftest.py`, where the in-package suites
+pay nothing for it.
 
 ## Rule 1 — The side-effect floor: what actually leaks
 
@@ -268,8 +273,8 @@ spawned without `cwd=`.
 
 ## Rule 5 — Keep the parallel suite fast
 
-At ~26.5k tests, **per-test setup cost dominates any single slow test** — an autouse
-fixture is paid ~26,500 times. Profile, never guess; compare candidates back to back on
+At ~56.5k tests, **per-test setup cost dominates any single slow test** — an autouse
+fixture is paid ~56,500 times. Profile, never guess; compare candidates back to back on
 the same host (`git stash`, run, pop, run), because a loaded host makes an absolute
 number meaningless.
 
@@ -292,6 +297,31 @@ of the file you mutated, not from git — `git checkout --` discards unrelated u
 work — and sequence with `;`, not `&&`, or the restore only runs when the mutation
 did *not* work.
 
+## Rule 6 — MEMORY is the other budget, and collection is most of it
+
+A worker costs ~1.5 GiB, and ~750 MiB of that is paid before your test runs: every
+xdist worker independently collects all 56,546 items, and 99% of that footprint is
+private, so more workers never amortize it. This is why `-n auto` is bounded by
+available memory — on an 8–16 GiB laptop the full suite otherwise swaps the machine.
+
+The consequence for how you write a test:
+
+- **An allocation at module scope is multiplied by every worker, and outlives the
+  test.** A big literal inside `@pytest.mark.parametrize` is the worst shape: it is
+  built while the module is IMPORTED and the mark keeps it alive on the function
+  object for the whole session, so one test's payload is charged to all of them. Two
+  such literals — a 64 MiB frame and a 40 MB string — cost 102 MiB per worker until
+  they were moved into the test bodies behind a sentinel.
+- **A transient peak counts too**, because a worker's high-water mark is what the
+  budget must reserve. Building an image as a list of per-pixel tuples cost ~390 MiB
+  for a 17 MB PNG; one `frombytes` over a bytes buffer was 10x smaller and
+  byte-equivalent.
+- **Derive a size from the production constant** rather than restating it. A literal
+  `40_000_001` beside a `_MAX_LAYER_B_CHARS` of `40_000_000` hides both the coupling
+  and the cost, and goes stale silently.
+- Suspect a **module-scope literal** whenever a file's collection RSS is large; measure
+  it with `pytest <file> --collect-only` and `/proc/self/status`'s `VmHWM`.
+
 ## Checklist before you push a test
 
 - [ ] Nothing outlives the run: no temp residue, no write to `~/.kiro` or the real data
@@ -307,5 +337,7 @@ did *not* work.
 - [ ] Source files read via `_REPO_ROOT = Path(__file__).resolve().parents[N]`, never a
       relative `Path("src/...")` — xdist workers may change CWD
 - [ ] Passes at `-n0` **and** under `-n auto`, and passes when run alone
+- [ ] No large allocation at module scope — especially not inside `parametrize`, where
+      every worker pays it at collection and holds it for the session
 - [ ] Cross-platform: `platform_compat` for process/signal/lock calls, no assumption
       about path separators, case sensitivity, `/tmp`, or timer granularity

@@ -1015,8 +1015,8 @@ class Backend:
                     # (``exc.consumed``) and retry. The previous ``read(8192)``
                     # drain discarded post-newline bytes of the next response,
                     # hanging the next request. The reader ``limit`` is
-                    # ``READ_BUFFER_LIMIT_BYTES`` (1 MiB); a longer line is
-                    # pathological and dropped.
+                    # ``READ_BUFFER_LIMIT_BYTES`` (64 MiB by default, and
+                    # operator-tunable); a longer line is pathological and dropped.
                     # Keep only the first _OVERSIZE_KEEP bytes — enough for
                     # _fail_oversize_request to parse the JSON-RPC id — while
                     # still draining the whole line off the pipe. Accumulating

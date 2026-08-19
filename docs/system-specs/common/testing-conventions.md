@@ -117,7 +117,7 @@ floor is under your file before you decide what to isolate yourself:
 
 The **rootdir `conftest.py` is the host-mutation floor**: everything in it protects the
 developer's machine rather than the correctness of one suite, so it holds for all
-three testpaths. It pins `$XDG_CONFIG_HOME` and the launchd paths, traps the spawn
+testpaths. It pins `$XDG_CONFIG_HOME` and the launchd paths, traps the spawn
 funnels against service mutation, pins `KIROCREW_HOME` and the import-time `~/.kiro`
 bindings, redirects `tempfile`'s base, and fails the run on residue in the checkout.
 
@@ -140,15 +140,27 @@ one scope down:
   multithreaded, which the kernel answers with an EINVAL the probe used to cache as
   "this host has no sandbox backend".
 
+It registers the xdist worker budget too — the policy is in the repo-root
+`xdist_budget.py`, a plain module rather than a second conftest, because the module
+name `conftest` is ambiguous: `test/` precedes the repository root on `sys.path`, so
+`import conftest` from a test in `test/` can never reach the rootdir file. A distinct
+name is reachable from both and resolves to one module object, which matters because
+the held slot descriptors are module state.
+
 `test/conftest.py` holds the rest: suite-specific isolation (Slack thread state, the
-model-window cache, the platform context, …), the Windows collect-ignore list, and the
-xdist worker budget.
+model-window cache, the platform context, …) and the Windows collect-ignore list.
 
 When you add isolation, put it in the rootdir conftest **only** if a test in any
-testpath could damage the host — or poison a process global for every later test —
-without it. Otherwise it belongs in `test/conftest.py`, where it costs the in-package
+testpath could damage the host, poison a process global for every later test, or
+consume enough of a shared *resource* — memory, cores, disk — to take the machine down
+with it. Otherwise it belongs in `test/conftest.py`, where it costs the in-package
 suites nothing. Both of the entries above started life in `test/conftest.py` and were
-silently absent from the ~1490 in-package tests, which is how each was found.
+silently absent from the in-package tests, which is how each was found.
+
+Resource consumption belongs on that list for the same reason damage does: a guard
+that only covers `test/` is invisibly absent from the other two testpaths, and the
+failure it was written to prevent — a swapped, unresponsive machine — does not care
+which testpath asked for the workers.
 
 ## Rules
 
@@ -408,9 +420,121 @@ python -m pytest
 `setup.cfg`'s `[tool:pytest] addopts` supplies `--verbose`,
 `--ignore=build/private`, `-n auto`, `--dist loadgroup`, `--max-worker-restart=2`,
 `--timeout=120`, `--durations=5` and `--color=yes`. Coverage is deliberately NOT in
-`addopts`: measured on a 1,231-test subset it cost +21% wall time and +36% peak
-worker RSS on every local and agent run, while CI asks for it explicitly. So you no
-longer need an override just to avoid coverage.
+`addopts`: measured on a 1,231-test subset it cost +21% wall time on every local and
+agent run, while CI asks for it explicitly. So you no longer need an override just to
+avoid coverage. (Coverage's cost is overwhelmingly TIME, not memory: re-measured
+across three slices it added +33% to +160% wall clock but only +1.6% to +8.1% peak
+worker RSS.)
+
+### Running on a machine with little RAM
+
+**A worker costs between 0.8 and 2.2 GiB depending on how many there are, and
+`-n auto` would ask for one per core.** Almost all of the fixed part is *collection*:
+every xdist worker independently collects every testpath — nearly 57,000 items —
+which costs ~750 MiB of peak RSS before it runs a single test, 99% of it private, so
+there is no page sharing to exploit. From there a worker grows another ~25 MiB per
+1,000 tests it runs, and that growth does not saturate.
+
+**Those two facts together mean per-worker cost rises as parallelism falls**, because
+fewer workers each run more tests. Projected peak is `750 + (57,000 / N) × 0.0255` MiB:
+
+| workers | tests each | projected peak |
+|---|---|---|
+| 32 | 1,780 | ~790 MiB |
+| 8 | 7,100 | ~930 MiB |
+| 2 | 28,500 | ~1.5 GiB |
+| 1 | 56,900 | ~2.2 GiB |
+
+That is why the reservation is 2 GiB per worker and why a measurement taken on a wide
+run makes it look twice as generous as it is: a real `-n 8` worker peaks at
+0.9–1.2 GiB, but sizing the divisor on that number would grant 6 workers on an 8 GiB
+laptop, whose ~9,500 tests each would then want ~6 GiB between them. **Do not lower
+the divisor on the strength of a high-parallelism measurement.**
+
+Where that ~750 MiB goes, measured by ablation on one worker (a `--collect-only -n0`
+run reproduces a real worker's peak to within about a megabyte, which is the cheap way
+to re-measure it — 66 seconds instead of a five-minute `-n 32` run):
+
+- **~77 MiB is spent before collection starts** — interpreter, pytest, its
+  auto-loaded plugins, and the two conftests. The rootdir conftest alone is ~35 MiB;
+  `test/conftest.py` adds the rest, mostly `hypothesis` and `kiro_crew.slack`.
+- **~320 MiB imports the ~1,540 test modules** and, through them, most of
+  `kiro_crew`. The package's ~960 modules cost ~145 MiB to import on their own, so
+  the product is a sixth of the floor, not a rounding error — `import kiro_crew`
+  alone is 2 MiB and is the wrong number to plan around.
+- **~350 MiB is pytest's item tree**, ~6 KiB per item. Roughly half of that is the
+  fixture closure, and the autouse guards in the two conftests are what fill it: they
+  apply to every item, so each one costs ~106 bytes per item it reaches, and holding
+  the closure to a single name per conftest level would drop the floor by 161 MiB.
+  That is an accounting of the cost, not a licence to delete a guard — this is the
+  host-mutation floor, so the only version of that saving is merging guards behind
+  fewer fixture *names* while every guard still runs.
+
+Every layer is live: the item tree, the closures and the rewritten modules are
+retained for the whole session by design, so none of the floor is reclaimable.
+
+So the full suite genuinely needs multiple gigabytes, and on an 8–16 GiB laptop with
+a browser open it does not fit. The budget in the rootdir conftest works this out for
+you and clamps `-n auto`, printing one line saying so:
+
+```
+xdist worker budget: 1 of 10 workers (3.0 GiB free, 16 GiB installed). Each worker
+needs about 2 GiB, mostly to collect the suite. A run this narrow is slow, not
+stuck -- free some memory, run a subset (pytest test/test_thing.py), or pass an
+explicit -n <N> to bypass this budget.
+```
+
+It bounds the worker count by **two** memory readings, and the split is deliberate:
+
+- **Total RAM and the cgroup ceiling** are constants of the machine, so they shape
+  the shared *slot range* (see below) — two concurrent runs share one budget rather
+  than each claiming it.
+- **What is free right now** (`platform_compat.host_available_mib()`, which answers
+  on Linux, macOS and Windows) throttles only *this* run. It is the reading that
+  notices the 10 GiB your browser is holding, and it is why the budget protects a
+  loaded laptop rather than only a small one.
+
+Either reading returning 0 means *unknown*, and an unknown reading is **skipped**,
+not treated as zero memory — a platform we cannot read keeps its parallelism instead
+of silently dropping to one worker.
+
+Concurrent runs coordinate through advisory locks under
+`~/.cache/kirocrew/test-slots/<hostname>`, one file per worker a run intends to
+spawn, held for the process's lifetime. The kernel releases them when the process
+exits, so an orphaned or killed run frees its share with no cleanup logic. A run
+arriving at a fully-locked machine drops to one worker: slow, never stalled.
+
+The knobs, tightest-wins:
+
+| Knob | Effect |
+|---|---|
+| `-n <N>` on the command line | Bypasses the budget entirely. xdist only calls it for `auto`/`logical`. |
+| `--maxprocesses=<N>` | Clamps *after* the budget, so it can only tighten. |
+| `KIROCREW_MAX_TEST_WORKERS` | Per-run ceiling, default 32. |
+| `PYTEST_XDIST_AUTO_NUM_WORKERS` | xdist's own ceiling. Honoured here, because this hook replaces xdist's default implementation. Kiro Crew seeds it with a memory-aware cap at every agent spawn boundary. |
+| `KIROCREW_TEST_SLOT_DIR` | Where the slot locks live. Point it at a throwaway dir to measure without contending with another run. |
+
+If the suite is slow on your machine, the answer is usually not a bigger `-n`: run
+the slice you are working on. A full-suite checkpoint is what CI is for.
+
+**Narrow by FILE, not by `--splits`.** `--splits/--group` — pytest-split, which CI
+uses to spread the suite across runners — deselects *after* the session has collected
+everything, so a 1-of-4 shard still pays the whole floor in every worker while running
+a quarter of the tests. Measured: 14,237 of 56,946 items selected, 744 MiB peak, which
+is the unsharded floor. It buys wall time across runners, never memory on one machine.
+
+What the floor actually tracks is the FILES a process is given. Measured on one
+worker: 1,540 files → ~745 MiB, 770 → 477, 385 → 332, 193 → 226–252. So at equal
+parallelism the aggregate is what changes, and summing the peaks of every process
+says so: eight xdist workers each collecting all 1,540 files come to 5,945 MiB, while
+eight single-worker processes given 193 files each — the same 56,946 items collected
+once between them, and the same eight-way execution — come to 1,896 MiB, a 68% cut on
+the machine as a whole. Two things make that a real runner rather than a one-liner,
+and both fail silently if skipped: naming files on the command line bypasses
+`collect_ignore`, so the runner must apply `test/windows-collect-ignore.txt` itself
+the way `scripts/ci-surface-tests.py` does, and files sharing an `xdist_group`
+(`subprocess_spawn`, `mcp_gateway`, `serial`) must land in the same process or they
+lose the serialization the mark exists to provide.
 
 ### A multi-test `--override-ini` MUST re-state the xdist flags
 
@@ -484,6 +608,7 @@ rest of the list, which is why a single-file run needs no `--override-ini` at al
 | Iterating on one task | `pytest --testmon` with the full override above |
 | Debugging a specific failure | `pytest --lf` with the override, or `-k "test_name" -n0` |
 | One file | `pytest test/test_foo.py -n0 -q` |
+| Small-RAM laptop | Run a subset. For a full run, let the budget clamp `-n auto` and expect it to be slow; do not raise it. |
 | Checkpoint before committing | `scripts/check_black_formatting.py && isort && flake8 && mypy && python -m pytest` |
 
 ## Determinism: the five flake classes
@@ -608,7 +733,7 @@ verify the threshold against a mutated implementation rather than reasoning abou
 
 ## Keeping the suite fast
 
-The suite is ~26.5k tests. At that count a per-test cost is multiplied by 26,500, so
+The suite is ~56.5k tests. At that count a per-test cost is multiplied by 56,500, so
 setup overhead, not any single slow test, is what dominates. Profile before optimizing:
 
 ```bash
@@ -626,7 +751,7 @@ hour earlier is not a baseline.
 ### The three highest-leverage patterns
 
 1. **Audit what the autouse fixtures cost, before anything else.** Every one of them is
-   paid ~26.5k times, so a few milliseconds there outweighs any single slow test. Two
+   paid ~56.5k times, so a few milliseconds there outweighs any single slow test. Two
    things to look for: a fixture requesting a fixture it never uses (one unused
    `tmp_path` allocated a directory for every test in the suite), and repeated
    `tmp_path_factory.mktemp` calls, which pick a numbered suffix by scanning the whole

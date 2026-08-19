@@ -123,10 +123,15 @@ def _emit_lazy_load_metrics(elapsed_ms: float, *, warm: bool) -> None:
 
 
 # Max bytes accepted for any single stub->gateway frame. Registration
-# payloads from the stub are well under 4 KiB; 1 MiB is a very loose cap
+# payloads from the stub are well under 4 KiB, so this is a very loose cap
 # that still guards against a malformed or hostile peer blowing memory
 # with ``readuntil(b"\n")``.
-_MAX_FRAME_BYTES = READ_BUFFER_LIMIT_BYTES  # 1 MiB; see pool.READ_BUFFER_LIMIT_BYTES
+#
+# It is the read-buffer limit: 64 MiB by default, and operator-tunable via
+# ``mcp_gateway.read_buffer_limit_bytes`` / ``KIROCREW_MCP_READ_LIMIT``. Anything
+# that materializes a frame this size -- a test, a fuzz payload -- allocates tens
+# of MiB, so build it inside the function that needs it.
+_MAX_FRAME_BYTES = READ_BUFFER_LIMIT_BYTES  # see pool.READ_BUFFER_LIMIT_BYTES
 
 # How long a connection handler waits for the first Register message
 # before giving up on an idle client. Keeps the event loop from

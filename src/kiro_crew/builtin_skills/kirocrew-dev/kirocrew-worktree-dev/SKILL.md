@@ -128,7 +128,7 @@ a ratchet/contract test failing on feature branches is a TRUE POSITIVE, not a fl
 The Windows shards fail far more than Linux, so expect timer-granularity and
 process-semantics causes there.
 
-**Suite speed: profile, don't guess.** At ~26.5k tests, per-test setup cost dominates
+**Suite speed: profile, don't guess.** At ~56.5k tests, per-test setup cost dominates
 any single slow test. Time one file with `pytest test/test_x.py -n0 -q --no-cov
 --durations=10` and compare a candidate fix **back to back** on the same machine
 (`git stash`, run, pop, run), because a loaded host makes an absolute number

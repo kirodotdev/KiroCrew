@@ -42,7 +42,7 @@ from kiro_crew.embeddings import (
 _REAL_LOAD_LLAMA = embeddings_mod._load_llama_class
 
 # >_GGUF_MIN_BYTES so the file passes the truncated-placeholder check.
-_MODEL_BYTES = b"g" * 1_100_000
+_MODEL_SIZE = embeddings_mod._GGUF_MIN_BYTES + 100_000
 _MODEL_PATH_ENV = "KIROCREW_EMBED_MODEL_PATH"
 
 
@@ -70,9 +70,20 @@ def _write_config(tmp_path: Path, memory: dict) -> None:
     (tmp_path / "config.json").write_text(json.dumps({"memory": memory}), encoding="utf-8")
 
 
-def _write_model(path: Path, payload: bytes = _MODEL_BYTES) -> Path:
+def _write_model(path: Path, payload: bytes | None = None) -> Path:
+    """Write a stand-in model file; ``payload=None`` means _MODEL_SIZE bytes.
+
+    The default is sparse rather than a bytes literal: these tests read only
+    ``stat().st_size``, and a literal this size would be allocated while the
+    module is IMPORTED -- charging every xdist worker for it at collection.
+    Callers pinning a specific size or a truncated file pass ``payload``.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
+    if payload is None:
+        with path.open("wb") as fh:
+            fh.truncate(_MODEL_SIZE)
+    else:
+        path.write_bytes(payload)
     return path
 
 
@@ -137,7 +148,7 @@ class TestResolveCustomModel:
         _write_config(tmp_path, {"embed_model_path": str(model)})
         spec = resolve_custom_model()
         assert spec is not None
-        assert spec.model_id == f"custom:mine.gguf:{len(_MODEL_BYTES)}"
+        assert spec.model_id == f"custom:mine.gguf:{_MODEL_SIZE}"
 
     def test_explicit_model_id_wins(self, tmp_path: Path) -> None:
         model = _write_model(tmp_path / "mine.gguf")

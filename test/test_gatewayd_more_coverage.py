@@ -482,6 +482,15 @@ class TestRegisterBookkeeping:
 # --- bridge-phase frame hygiene ---------------------------------------------
 
 
+#: Stands in for the oversize frame, which the test body materializes.
+#: ``_MAX_FRAME_BYTES`` is 64 MiB, and a bytes literal that size inside
+#: ``parametrize`` is allocated while the module is IMPORTED -- so every xdist
+#: worker pays it during collection and holds it for the whole session, because
+#: the mark keeps its argvalues alive on the function object. One test needs the
+#: payload; all of them were paying for it.
+_OVERSIZE_FRAME = "oversize-frame"
+
+
 class TestBridgeFrameHygiene:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -489,7 +498,7 @@ class TestBridgeFrameHygiene:
         [
             (asyncio.LimitOverrunError("no separator found", 64), True),
             (b"", True),
-            (b"x" * (gw._MAX_FRAME_BYTES + 2), True),
+            (_OVERSIZE_FRAME, True),
             (b"not json at all\n", False),
             (b"[1, 2, 3]\n", False),
         ],
@@ -503,6 +512,8 @@ class TestBridgeFrameHygiene:
         connection. Neither may ever acquire a backend."""
         acquire = AsyncMock()
         monkeypatch.setattr(gw, "_acquire_backend", acquire)
+        if bad_frame is _OVERSIZE_FRAME:
+            bad_frame = b"x" * (gw._MAX_FRAME_BYTES + 2)
         # The trailing ping is the probe: it is answered only if the connection
         # survived the bad frame.
         reader = _ScriptedReader(_register_frame(), bad_frame, {"type": "ping"})

@@ -1214,20 +1214,21 @@ def test_fat_head_with_a_decoy_marker_is_a_502(monkeypatch, shape: str) -> None:
     assert (status, body) == (502, {"code": "fetch_failed"})
 
 
-#: Truncated pages that DO carry their metadata before the cut. Each names the
-#: shape that could be mis-rejected by a stricter guard.
+#: Truncated pages that DO carry their metadata before the cut, as
+#: ``(head_prefix, filler_byte, expected_title)``. Each names the shape that
+#: could be mis-rejected by a stricter guard. Only the prefix is held here: the
+#: filler past the cap is appended in the test body, because a payload built at
+#: module scope is allocated during collection and then held for the whole
+#: session by every xdist worker, including those that never run this file.
 _TRUNCATED_BUT_TITLED = {
     # `<body/>` as the sole head terminator — a byte pattern keyed on `<body[\s>]`
     # misses the self-closing form and would reject this.
-    "self_closing_body": (
-        b"<html><head><title>Ok</title><body/>" + b"A" * (lu.MAX_BODY_BYTES + 4096),
-        "Ok",
-    ),
+    "self_closing_body": (b"<html><head><title>Ok</title><body/>", b"A", "Ok"),
     # No `<title>` at all, but an `og:title` — `extract_meta` prefers og, so the
     # preview is complete and the cut is harmless.
     "og_title_only": (
-        b'<html><head><meta property="og:title" content="Via OG"><style>'
-        + b"z" * (lu.MAX_BODY_BYTES + 4096),
+        b'<html><head><meta property="og:title" content="Via OG"><style>',
+        b"z",
         "Via OG",
     ),
 }
@@ -1237,7 +1238,8 @@ _TRUNCATED_BUT_TITLED = {
 def test_truncated_page_keeps_its_preview_when_the_title_arrived(
     monkeypatch, shape: str
 ) -> None:
-    page, expected = _TRUNCATED_BUT_TITLED[shape]
+    prefix, filler, expected = _TRUNCATED_BUT_TITLED[shape]
+    page = prefix + filler * (lu.MAX_BODY_BYTES + 4096)
     _install(
         monkeypatch,
         {

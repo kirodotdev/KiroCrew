@@ -15,6 +15,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1563,6 +1564,80 @@ class TestChmodShimsApply:
         pc.chmod_safe(str(f), 0o640)  # must NOT raise out
 
 
+#: An ACE that icacls prints with a bare ``(I)`` flag is INHERITED, so its presence
+#: means ``/inheritance:r`` did not take. Matching the flag rather than a rights token
+#: keeps this locale-independent: ``(I)`` is a flag spelling, not a display name.
+_INHERITED_ACE_RE = re.compile(r"\(I\)")
+
+#: The Owner Rights principal, in either spelling icacls may print: the raw
+#: ``S-1-3-4`` SID that ``restrict_to_owner`` grants, or the display name Windows
+#: substitutes for it. Both are accepted because the substitution is LOCALIZED --
+#: an English host prints ``OWNER RIGHTS`` and a translated one does not, so pinning
+#: a single spelling turns a security assertion into a system-language assertion.
+_OWNER_RIGHTS_FULL_RE = re.compile(r"(?:OWNER RIGHTS|S-1-3-4)\s*:\s*\(F\)")
+
+
+def _owner_only_dacl_violations(icacls_dump: str) -> list[str]:
+    """Reasons an ``icacls <path>`` dump is not the owner-only DACL we applied.
+
+    An empty list means compliant. The predicate is factored out of the Windows
+    test so it is exercised on every platform: the icacls spawn itself only runs on
+    Windows, and a predicate that silently matches nothing there leaves the
+    secret-at-rest posture (token signing key, per-app secrets, refresh-token state,
+    snapshot tarball, cron internal-secret temp file) verified by nothing at all.
+    """
+    problems: list[str] = []
+    if not _OWNER_RIGHTS_FULL_RE.search(icacls_dump):
+        problems.append("no full-control ACE for Owner Rights (S-1-3-4)")
+    if _INHERITED_ACE_RE.search(icacls_dump):
+        # Any surviving inherited ACE is a finding, not just an inherited (F):
+        # an inherited (RX) or (M) for Users still lets another local principal
+        # read the secret.
+        problems.append("an inherited ACE survived /inheritance:r")
+    return problems
+
+
+class TestOwnerOnlyDaclPredicate:
+    """Cover the DACL predicate on the POSIX matrix, where it always executes.
+
+    ``test_applies_owner_only_dacl_on_windows`` can only run on Windows, so without
+    these the predicate it asserts through would be unverified everywhere the suite
+    actually runs. Dumps are realistic ``icacls`` output shapes.
+    """
+
+    _LOCKED = (
+        "C:\\Temp\\x\\secret.key OWNER RIGHTS:(F)\n"
+        "                        RUNNER\\runneradmin:(F)\n"
+        "\n"
+        "Successfully processed 1 files; Failed processing 0 files.\n"
+    )
+
+    def test_locked_down_dump_has_no_violations(self):
+        assert _owner_only_dacl_violations(self._LOCKED) == []
+
+    def test_sid_spelling_of_owner_rights_is_accepted(self):
+        # A host that does not resolve S-1-3-4 to a display name must still pass;
+        # otherwise the Windows assertion fails for a correctly locked file.
+        dump = self._LOCKED.replace("OWNER RIGHTS", "S-1-3-4")
+        assert _owner_only_dacl_violations(dump) == []
+
+    def test_missing_owner_rights_ace_is_flagged(self):
+        dump = self._LOCKED.replace("OWNER RIGHTS:(F)", "RUNNER\\runneradmin:(RX)")
+        assert any("Owner Rights" in p for p in _owner_only_dacl_violations(dump))
+
+    def test_surviving_inherited_ace_is_flagged(self):
+        dump = (
+            "C:\\Temp\\x\\secret.key OWNER RIGHTS:(F)\n"
+            "                        BUILTIN\\Users:(I)(RX)\n"
+        )
+        assert any("inherited" in p for p in _owner_only_dacl_violations(dump))
+
+    def test_owner_rights_without_full_control_is_flagged(self):
+        # A downgrade from (F) to (RX) must not read as compliant.
+        dump = self._LOCKED.replace("OWNER RIGHTS:(F)", "OWNER RIGHTS:(RX)")
+        assert any("Owner Rights" in p for p in _owner_only_dacl_violations(dump))
+
+
 class TestRestrictToOwner:
     """Fail-loud owner-only lockdown used by every ~/.kirocrew secret writer.
 
@@ -1603,9 +1678,12 @@ class TestRestrictToOwner:
             pc.restrict_to_owner(f)
 
     def test_applies_owner_only_dacl_on_windows(self, tmp_path):
-        # Windows path: shell out to icacls, then re-read the DACL via icacls
-        # to confirm the expected owner-only shape (S-1-3-4 with F, no inherit).
-        # This is the actual defect the review flagged, so verify it end-to-end.
+        # Windows path: shell out to icacls, then re-read the DACL via icacls to
+        # confirm the owner-only shape end-to-end. Windows is the ONLY platform
+        # that can execute this branch, so the node id must never be added to
+        # windows-expected-failures.txt: listed there alongside this self-skip it
+        # would run on no platform at all, and the DACL would be the one control
+        # in the secret-at-rest posture that nothing verifies.
         if not pc.IS_WINDOWS:
             pytest.skip("Windows DACL branch")
         f = tmp_path / "secret.key"
@@ -1614,11 +1692,7 @@ class TestRestrictToOwner:
         out = subprocess.check_output(
             ["icacls", str(f)], stderr=subprocess.DEVNULL,
         ).decode("utf-8", "replace")
-        # Owner Rights SID rendered as "OWNER RIGHTS" in the DACL dump, with (F)
-        # for full control; inheritance stripping means "(I)" (inherited) markers
-        # from parent ACEs are gone.
-        assert "OWNER RIGHTS:(F)" in out
-        assert "(I)(F)" not in out  # no inherited full-control ACEs left
+        assert _owner_only_dacl_violations(out) == [], out
 
     def test_propagates_oserror_on_windows_when_icacls_missing(self, tmp_path, monkeypatch):
         # The fail-loud contract on Windows: icacls returning nonzero or
@@ -2091,12 +2165,13 @@ class TestProcessTokenSid:
         assert pc._process_token_sid() is None
 
 
-class TestWin32StructsAreModuleScoped:
+class TestCtypesStructsAreModuleScoped:
     """``ctypes.POINTER(T)`` memoises T -> POINTER(T) forever.
 
     ctypes keeps that memo in a module-level dict with no eviction, so a
     Structure subclass declared inside a function body pins a fresh pair of type
-    objects on EVERY call. The Windows metrics/enumeration helpers are polled
+    objects on EVERY call. The leak is ctypes', not Win32's, so this covers the
+    Mach layouts too. The Windows metrics/enumeration helpers are polled
     (the dashboard's system-metrics endpoint, the RSS-recycle watchdog, the
     tree-kill parent-map walk, the MCP pipe's per-connection peer check), which
     turned that into unbounded growth in a long-running gateway -- measured at
@@ -2106,8 +2181,8 @@ class TestWin32StructsAreModuleScoped:
     the Windows branches never execute.
     """
 
-    #: Helpers whose Win32 struct layouts must come from module scope.
-    _WIN32_STRUCT_USERS = (
+    #: Helpers whose ctypes struct layouts must come from module scope.
+    _CTYPES_STRUCT_USERS = (
         "get_ppid",
         "_windows_process_parent_map",
         "_win_process_image_name",
@@ -2117,6 +2192,9 @@ class TestWin32StructsAreModuleScoped:
         "system_memory",
         "apply_job_limits",
         "resume_process_main_thread",
+        # Mach, not Win32: same memo, same unbounded growth. This one is polled by
+        # the sub-agent auto-sizer and by the xdist worker budget.
+        "macos_vm_statistics",
     )
 
     def test_the_shared_layouts_are_defined_once_at_module_scope(self) -> None:
@@ -2132,10 +2210,11 @@ class TestWin32StructsAreModuleScoped:
             "_JobObjectBasicLimitInformation",
             "_JobObjectExtendedLimitInformation",
             "_ThreadEntry32",
+            "_VMStatistics64",
         ):
             assert issubclass(getattr(pc, name), ctypes.Structure), name
 
-    @pytest.mark.parametrize("func_name", _WIN32_STRUCT_USERS)
+    @pytest.mark.parametrize("func_name", _CTYPES_STRUCT_USERS)
     def test_no_helper_declares_a_structure_in_its_body(self, func_name: str) -> None:
         import ast
         import inspect

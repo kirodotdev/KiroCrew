@@ -10,7 +10,6 @@ No spawn recursion: subagents cannot spawn other subagents.
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import logging
 import math
 import os
@@ -702,106 +701,30 @@ def _available_memory_gb() -> float:
     return -1.0
 
 
-_NATURAL_T = ctypes.c_uint  # natural_t is 32-bit on macOS
-
-
-class _VMStatistics64(ctypes.Structure):
-    """Leading fields of ``vm_statistics64_data_t`` (``<mach/vm_statistics.h>``).
-
-    Declared in kernel order so the byte layout matches what the kernel fills.
-    Only free/inactive/speculative/purgeable are read, but the full struct is
-    declared so the element count handed to ``host_statistics64`` is exact.
-
-    Module scope is load-bearing: ``ctypes.POINTER(T)`` memoises T in a
-    module-level dict inside ctypes that is never evicted, so declaring this in
-    the probe's body would pin a fresh pair of type objects on every call and
-    grow the gateway without bound -- the auto-sizing probe runs per task group.
-    """
-
-    _fields_ = [
-        ("free_count", _NATURAL_T),
-        ("active_count", _NATURAL_T),
-        ("inactive_count", _NATURAL_T),
-        ("wire_count", _NATURAL_T),
-        ("zero_fill_count", ctypes.c_uint64),
-        ("reactivations", ctypes.c_uint64),
-        ("pageins", ctypes.c_uint64),
-        ("pageouts", ctypes.c_uint64),
-        ("faults", ctypes.c_uint64),
-        ("cow_faults", ctypes.c_uint64),
-        ("lookups", ctypes.c_uint64),
-        ("hits", ctypes.c_uint64),
-        ("purges", ctypes.c_uint64),
-        ("purgeable_count", _NATURAL_T),
-        ("speculative_count", _NATURAL_T),
-        ("decompressions", ctypes.c_uint64),
-        ("compressions", ctypes.c_uint64),
-        ("swapins", ctypes.c_uint64),
-        ("swapouts", ctypes.c_uint64),
-        ("compressor_page_count", _NATURAL_T),
-        ("throttled_count", _NATURAL_T),
-        ("external_page_count", _NATURAL_T),
-        ("internal_page_count", _NATURAL_T),
-        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
-    ]
-
-
-def _macos_vm_reclaimable_pages() -> Optional[int]:  # pragma: no cover
+def _macos_vm_reclaimable_pages() -> Optional[int]:
     """Reclaimable memory in **pages** via Mach ``host_statistics64``, or ``None``.
 
-    macOS-only. Excluded from coverage because the Linux CI fleet cannot execute
-    the Mach path; validated live against ``vm_stat`` on Apple silicon (matches
-    within live-fluctuation noise). Reads in-process through ``ctypes`` /
-    ``libSystem`` — **no subprocess** — so it is safe on the gateway event loop
-    and passes the spawn-audit guard.
+    macOS-only; validated live against ``vm_stat`` on Apple silicon (matches
+    within live-fluctuation noise). The Mach call itself lives in
+    ``platform_compat.macos_vm_statistics``, so the kernel struct is declared in
+    one place; what stays here is this caller's own composition of it.
 
     Reclaimable ≈ ``free + inactive + speculative + purgeable`` page classes:
     memory that can back a new allocation without swapping (the closest analogue
     to Linux ``MemAvailable``). Wired/active/compressed pages are excluded.
-    Returns ``None`` on any failure (non-macOS ``libSystem`` absent, non-zero
+    Returns ``None`` on any failure (non-macOS, ``libSystem`` absent, non-zero
     ``kern_return_t``) so the caller falls back to the legacy default.
+
+    This sum is knowingly looser than ``platform_compat.host_available_mib``,
+    which bounds ``inactive`` by ``external_page_count`` and does not re-add
+    ``speculative`` (``free_count`` already contains it). The two are not
+    interchangeable: tightening this one moves ``compute_max_subagents``, a
+    number that is documented and that operators tune against.
     """
-    try:
-        libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
-    except OSError:
-        return None  # not macOS / libSystem unavailable
-
-    HOST_VM_INFO64 = 4  # flavor selector for host_statistics64
-
-    try:
-        libc.mach_host_self.restype = ctypes.c_uint
-        libc.mach_task_self.restype = ctypes.c_uint
-        libc.mach_port_deallocate.argtypes = [ctypes.c_uint, ctypes.c_uint]
-        libc.host_statistics64.restype = ctypes.c_int
-        libc.host_statistics64.argtypes = [
-            ctypes.c_uint,
-            ctypes.c_int,
-            ctypes.POINTER(_VMStatistics64),
-            ctypes.POINTER(ctypes.c_uint),
-        ]
-        host_port = libc.mach_host_self()
-        try:
-            stats = _VMStatistics64()
-            count = ctypes.c_uint(ctypes.sizeof(_VMStatistics64) // ctypes.sizeof(ctypes.c_int))
-            kern_return = libc.host_statistics64(
-                host_port,
-                HOST_VM_INFO64,
-                ctypes.byref(stats),
-                ctypes.byref(count),
-            )
-        finally:
-            # Release the send right returned by mach_host_self so the port
-            # reference isn't leaked on every probe. Guard the deallocate so a
-            # missing symbol here still returns None cleanly below.
-            try:
-                libc.mach_port_deallocate(libc.mach_task_self(), host_port)
-            except (AttributeError, OSError, ValueError):
-                pass
-    except (AttributeError, OSError, ValueError):
+    probe = platform_compat.macos_vm_statistics()
+    if probe is None:
         return None
-    if kern_return != 0:  # non-zero kern_return_t → failure
-        return None
-
+    stats, _filled = probe
     return stats.free_count + stats.inactive_count + stats.speculative_count + stats.purgeable_count
 
 

@@ -1953,17 +1953,30 @@ def test_validate_accepts_a_v2_bundle_with_layer_b():
     assert bundle["layer_b"]["events"] == '{"k":1}\n'
 
 
+#: Stands in for the over-limit Layer B, which the test body materializes from
+#: the production constant. A 40 MB string literal here would be built while the
+#: module is IMPORTED, so every xdist worker pays ~38 MiB during collection and
+#: holds it for the whole session -- the mark keeps its argvalues alive on the
+#: function object. Deriving the length from ``_MAX_LAYER_B_CHARS`` also keeps
+#: the test honest if that limit ever moves.
+_OVERSIZE_LAYER_B = "oversize-layer-b"
+
+
 @pytest.mark.parametrize(
     "layer_b,code",
     [
         ("not a dict", "transfer_layer_b_not_object"),
         ({"envelope": "nope", "events": ""}, "transfer_layer_b_bad_envelope"),
         ({"envelope": {}, "events": 5}, "transfer_layer_b_bad_events"),
-        ({"envelope": {}, "events": "x" * 40_000_001}, "transfer_layer_b_too_large"),
+        (_OVERSIZE_LAYER_B, "transfer_layer_b_too_large"),
     ],
 )
 def test_validate_rejects_a_malformed_layer_b(layer_b, code):
     """Layer B is untrusted peer input and is bounded BEFORE anything is written."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    if layer_b is _OVERSIZE_LAYER_B:
+        layer_b = {"envelope": {}, "events": "x" * (st._MAX_LAYER_B_CHARS + 1)}
     _, err = _validate_bundle(_valid(layer_b=layer_b))
 
     assert err is not None

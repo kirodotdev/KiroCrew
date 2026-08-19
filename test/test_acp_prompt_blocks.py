@@ -508,11 +508,17 @@ class TestImageDownscale:
 
 
 def _noise_image(tmp_path, w, h, name="noise.png", fmt="PNG"):
-    """An image that resists compression, so its encoded size tracks pixel count."""
+    """An image that resists compression, so its encoded size tracks pixel count.
+
+    Built from one bytes buffer rather than a list of per-pixel tuples: at
+    2400x2400 that list is 5.76M three-tuples, ~390 MiB of transient peak for a
+    17 MB image, and it was the largest single-test excursion in the suite. A
+    worker's high-water mark is what the memory budget has to reserve for, so a
+    spike nobody sees still costs every other worker headroom.
+    """
     pil = pytest.importorskip("PIL.Image")
     rnd = random.Random(1234)
-    img = pil.new("RGB", (w, h))
-    img.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(w * h)])
+    img = pil.frombytes("RGB", (w, h), rnd.randbytes(w * h * 3))
     p = tmp_path / name
     img.save(p, format=fmt)
     return p

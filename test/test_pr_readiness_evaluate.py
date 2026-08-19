@@ -97,6 +97,16 @@ echo "gh stub: unhandled: $*" >&2
 exit 90
 """
 
+# ``sleep`` stub, shadowed on the same PATH as the ``gh`` stub. The retry
+# helper's backoff is a real shell ``sleep``, so a retry-exhausting call would
+# cost 2+4s of wall clock, and no assertion depends on that time passing.
+# Recording the requested seconds instead of waiting them is what makes the
+# backoff schedule assertable at all.
+SLEEP_STUB = r"""#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$FIXTURES/sleeps"
+exit 0
+"""
+
 
 def _steps() -> list[dict]:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -147,9 +157,10 @@ class Runner:
         self.temp = root / "runner_temp"
         for d in (self.fixtures, bindir, self.temp):
             d.mkdir(parents=True)
-        stub = bindir / "gh"
-        stub.write_text(GH_STUB)
-        stub.chmod(0o755)
+        for name, body in (("gh", GH_STUB), ("sleep", SLEEP_STUB)):
+            stub = bindir / name
+            stub.write_text(body)
+            stub.chmod(0o755)
         self.output = root / "github_output"
         self.output.touch()
         self.env = {
@@ -229,6 +240,13 @@ class Runner:
             outputs[key] = value
         return proc, outputs
 
+    def backoff(self) -> list[int]:
+        """Seconds the retry helper asked to sleep, in order."""
+        log = self.fixtures / "sleeps"
+        if not log.is_file():
+            return []
+        return [int(ln) for ln in log.read_text().split()]
+
 
 @pytest.fixture()
 def runner(tmp_path: Path) -> Runner:
@@ -274,6 +292,10 @@ class TestPersistentTransportFailureIsNonTerminal:
         assert "could not be evaluated" in outputs["description"]
         # Exactly 3 attempts -- bounded, not infinite.
         assert int((runner.fixtures / "flaky_count").read_text()) == 3
+        # Backed off between attempts, increasing, and never after the last one:
+        # a retry loop that hammers the endpoint with no pause makes a secondary
+        # rate limit worse rather than riding it out.
+        assert runner.backoff() == [2, 4]
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert "could not be evaluated" in summary
 

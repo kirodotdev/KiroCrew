@@ -18,10 +18,11 @@ import socket
 import subprocess
 import sys
 import textwrap
+import warnings
 
 import pytest
 
-import conftest as ct
+import xdist_budget as ct
 
 needs_symlinks = pytest.mark.skipif(
     os.name != "posix", reason="symlink creation needs privileges on Windows"
@@ -171,9 +172,22 @@ def test_host_total_gib_converts_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ct._host_total_gib() == 32
 
 
+@pytest.fixture
+def no_win32_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove the Win32 total-RAM fallback, so a test can assert about sysconf alone.
+
+    Without this a "sysconf gave nonsense" test asserts something different on each
+    platform: on POSIX there is no second reading and the answer is 0, on Windows
+    ``GlobalMemoryStatusEx`` answers and the total is real. Pinning it here is what
+    makes these assertions exact on every shard rather than accidentally true on the
+    one they were written on.
+    """
+    monkeypatch.setattr(ct.platform_compat, "system_memory", lambda: None)
+
+
 @pytest.mark.parametrize("pages,size", [(0, 4096), (100, 0), (-1, 4096)])
 def test_host_total_gib_rejects_nonsense(
-    monkeypatch: pytest.MonkeyPatch, pages: int, size: int
+    monkeypatch: pytest.MonkeyPatch, no_win32_memory: None, pages: int, size: int
 ) -> None:
     monkeypatch.setattr(
         os,
@@ -184,12 +198,29 @@ def test_host_total_gib_rejects_nonsense(
     assert ct._host_total_gib() == 0
 
 
-def test_host_total_gib_survives_unsupported_sysconf(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_host_total_gib_survives_unsupported_sysconf(
+    monkeypatch: pytest.MonkeyPatch, no_win32_memory: None
+) -> None:
     def _boom(name: str) -> int:
         raise ValueError(name)
 
     monkeypatch.setattr(os, "sysconf", _boom, raising=False)
     assert ct._host_total_gib() == 0
+
+
+def test_host_total_gib_falls_back_to_win32_when_sysconf_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows has no ``os.sysconf`` at all, and needs a static bound regardless.
+
+    Without the fallback both of this budget's memory readings return 0 there, every
+    bound is skipped as "unknown", and a Windows run gets one worker per core with no
+    memory ceiling of any kind.
+    """
+    monkeypatch.delattr(os, "sysconf", raising=False)
+    monkeypatch.setattr(ct.platform_compat, "system_memory", lambda: (48 * 1024**3, 4 * 1024**3))
+
+    assert ct._host_total_gib() == 48
 
 
 # ── claiming ───────────────────────────────────────────────────────────
@@ -398,14 +429,14 @@ def test_an_unwritable_slot_dir_drops_to_one_worker_and_says_why(
 
 def test_alone_gets_the_whole_machine(budget_host: pathlib.Path) -> None:
     """The speed guarantee: testing alone is unchanged by this budget."""
-    assert ct.pytest_xdist_auto_num_workers(None) == 10
+    assert ct.resolve_workers() == 10
 
 
 def test_second_run_takes_what_is_left(budget_host: pathlib.Path) -> None:
     budget_host.mkdir(parents=True, exist_ok=True)
     holder = _hold_slots_in_subprocess(budget_host, 7)
     try:
-        assert ct.pytest_xdist_auto_num_workers(None) == 3
+        assert ct.resolve_workers() == 3
     finally:
         holder.communicate()
 
@@ -413,26 +444,145 @@ def test_second_run_takes_what_is_left(budget_host: pathlib.Path) -> None:
 def test_memory_binds_before_cores(budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """8 GiB cannot back 10 workers, whatever the core count says."""
     monkeypatch.setattr(ct, "_host_total_gib", lambda: 8)
-    assert ct.pytest_xdist_auto_num_workers(None) == 8 // ct._GIB_PER_WORKER
+    assert ct.resolve_workers() == 8 // ct._GIB_PER_WORKER
 
 
 def test_unknown_memory_falls_back_to_cores(
     budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ct, "_host_total_gib", lambda: 0)
-    assert ct.pytest_xdist_auto_num_workers(None) == 10
+    assert ct.resolve_workers() == 10
+
+
+def test_a_loaded_laptop_is_bounded_by_what_is_free_not_by_what_it_owns(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The laptop-crash case: plenty of RAM installed, almost none available.
+
+    A 16 GiB machine with 3 GiB free is an ordinary developer machine with a
+    browser and an editor open. The STATIC bound sees 16 GiB and permits 8
+    workers; only the LIVE bound knows those 8 workers would need ~12 GiB that
+    is not there. Expressed against the constants so retuning either divisor
+    does not need a test edit.
+    """
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 16)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 3 * 1024)
+
+    resolved = ct.resolve_workers()
+
+    assert resolved == 3 // ct._GIB_PER_WORKER_AVAILABLE
+    assert resolved < 16 // ct._GIB_PER_WORKER, "the static bound alone would over-grant"
+
+
+def test_a_starved_host_floors_at_one_worker_instead_of_refusing(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slow is the right answer here; refusing to run is not.
+
+    A developer on a swapping machine still legitimately wants to run one test
+    file, and this hook must never raise out of pytest startup.
+    """
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 16)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 200)
+
+    assert ct.resolve_workers() == 1
 
 
 def test_env_cap_lowers_the_ceiling(budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ct._MAX_WORKERS_ENV, "3")
-    assert ct.pytest_xdist_auto_num_workers(None) == 3
+    assert ct.resolve_workers() == 3
 
 
 def test_garbage_env_cap_falls_back_to_default(
     budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(ct._MAX_WORKERS_ENV, "not-a-number")
-    assert ct.pytest_xdist_auto_num_workers(None) == 10
+    assert ct.resolve_workers() == 10
+
+
+def test_the_xdist_env_var_is_honoured_as_a_ceiling(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """xdist's own knob must not be discarded by taking over its hook.
+
+    ``pytest_xdist_auto_num_workers`` is ``firstresult``, and a conftest impl
+    outranks a plugin impl -- so this hook runs INSTEAD of xdist's default, which
+    is where the variable would otherwise have been read. Kiro Crew itself seeds
+    it with a memory-aware cap at every agent spawn boundary, so discarding it
+    would hand an agent session more workers than it deliberately asked for.
+    """
+    monkeypatch.setenv(ct._XDIST_ENV_CAP, "4")
+
+    assert ct.resolve_workers() == 4
+
+
+def test_the_xdist_env_var_is_a_ceiling_not_a_floor(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It may only tighten. A value above what memory allows is still clamped."""
+    monkeypatch.setenv(ct._XDIST_ENV_CAP, "64")
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 4 * 1024)
+
+    assert ct.resolve_workers() == 4 // ct._GIB_PER_WORKER_AVAILABLE
+
+
+@pytest.mark.parametrize("raw", ["", "not-a-number", "0", "-3"])
+def test_an_unusable_xdist_env_var_is_inert(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """Never let a malformed ceiling collapse the run.
+
+    ``0`` is included deliberately: xdist treats a falsy value as unset, and a
+    literal zero must not read as "zero workers".
+    """
+    monkeypatch.setenv(ct._XDIST_ENV_CAP, raw)
+
+    assert ct.resolve_workers() == 10
+
+
+# ── saying so ──────────────────────────────────────────────────────────
+
+
+def test_a_memory_clamped_run_says_why(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remedy is only obvious once the cause is named."""
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 16)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 2 * 1024)
+
+    with pytest.warns(UserWarning, match="slow, not stuck"):
+        assert ct.resolve_workers() == 1
+
+
+def test_a_healthy_host_is_silent(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole common path -- every CI runner, every idle workstation.
+
+    A budget that narrates on a host it did not clamp trains everyone to ignore
+    it, which costs exactly the run where it mattered.
+    """
+    monkeypatch.setattr(ct, "_host_total_gib", lambda: 64)
+    monkeypatch.setattr(ct, "_host_available_mib", lambda: 60 * 1024)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert ct.resolve_workers() == 10
+
+    assert [str(w.message) for w in caught] == []
+
+
+def test_a_contended_host_names_the_other_run_not_memory(
+    budget_host: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Different cause, different remedy: this capacity comes back on its own."""
+    budget_host.mkdir(parents=True, exist_ok=True)
+    holder = _hold_slots_in_subprocess(budget_host, 9)
+    try:
+        with pytest.warns(UserWarning, match="another run on this host"):
+            assert ct.resolve_workers() == 1
+    finally:
+        holder.communicate()
 
 
 def test_big_host_still_capped_at_default(
@@ -442,7 +592,7 @@ def test_big_host_still_capped_at_default(
     monkeypatch.setattr(os, "cpu_count", lambda: 64)
     monkeypatch.setattr(ct, "_host_total_gib", lambda: 512)
     monkeypatch.delenv(ct._MAX_WORKERS_ENV, raising=False)
-    assert ct.pytest_xdist_auto_num_workers(None) == ct._DEFAULT_WORKER_CAP
+    assert ct.resolve_workers() == ct._DEFAULT_WORKER_CAP
 
 
 def test_two_runs_on_a_big_host_both_get_the_cap(
@@ -455,7 +605,7 @@ def test_two_runs_on_a_big_host_both_get_the_cap(
     slot_dir.mkdir(parents=True, exist_ok=True)
     holder = _hold_slots_in_subprocess(slot_dir, ct._DEFAULT_WORKER_CAP)
     try:
-        assert ct.pytest_xdist_auto_num_workers(None) == ct._DEFAULT_WORKER_CAP
+        assert ct.resolve_workers() == ct._DEFAULT_WORKER_CAP
     finally:
         holder.communicate()
 
@@ -467,7 +617,7 @@ def test_sessionfinish_releases_every_slot(slot_dir: pathlib.Path) -> None:
     ct._claim_worker_slots(5, 64)
     assert len(ct._held_slots) == 5
 
-    ct.pytest_sessionfinish(None, 0)
+    ct.release_worker_slots()
 
     assert ct._held_slots == []
 
@@ -475,11 +625,11 @@ def test_sessionfinish_releases_every_slot(slot_dir: pathlib.Path) -> None:
 def test_sessionfinish_is_a_noop_without_slots(slot_dir: pathlib.Path) -> None:
     """xdist workers also run this hook and hold nothing."""
     assert ct._held_slots == []
-    ct.pytest_sessionfinish(None, 0)
+    ct.release_worker_slots()
     assert ct._held_slots == []
 
 
 def test_released_capacity_is_reusable(slot_dir: pathlib.Path) -> None:
     assert ct._claim_worker_slots(4, 64) == 4
-    ct.pytest_sessionfinish(None, 0)
+    ct.release_worker_slots()
     assert ct._claim_worker_slots(4, 64) == 4

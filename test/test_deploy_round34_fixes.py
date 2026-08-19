@@ -8,15 +8,20 @@ F2: attach/detach backend helpers must NEVER spawn AWS commands without the
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SERVER = (REPO / "src" / "kiro_crew" / "dashboard" / "server.py").read_text(encoding="utf-8")
+SERVER_PY = REPO / "src" / "kiro_crew" / "dashboard" / "server.py"
 SCRIPTS = REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "scripts"
 
 
 class TestF1MigrationOffLoop:
     def test_cleanup_runs_via_to_thread(self):
+        # Read here, not at module scope: server.py holds one astral-plane
+        # character, so CPython stores the whole text as UCS-4 and the string
+        # costs 4x the file size. At module scope every xdist worker would pay
+        # that during collection and hold it for the session.
+        server = SERVER_PY.read_text(encoding="utf-8")
         # the migration loop must be dispatched with asyncio.to_thread, and
         # the direct on-loop call shape must be gone.
-        block = SERVER.split("_MIGRATED_BUILTINS", 1)[1][:1600]
+        block = server.split("_MIGRATED_BUILTINS", 1)[1][:1600]
         assert "asyncio.to_thread(_run_migrated_cleanup)" in block
         # no bare cleanup call at statement level inside start_dashboard's
         # loop body (it now lives inside the worker function only)

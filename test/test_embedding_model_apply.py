@@ -16,12 +16,21 @@ import kiro_crew.embeddings as embeddings_mod
 from kiro_crew.embeddings import ReembedProgress, reembed_progress, validate_custom_model_path
 from kiro_crew.vector_memory import VectorMemoryStore
 
-_MODEL_BYTES = b"g" * 1_100_000
+# Wider than the production floor so the file is not read as a truncated
+# placeholder.
+_MODEL_SIZE = embeddings_mod._GGUF_MIN_BYTES + 100_000
 
 
 def _write_model(path: Path) -> Path:
+    """Write a stand-in model file of _MODEL_SIZE bytes.
+
+    Sparse rather than a bytes literal: nothing here reads the content, only
+    ``stat().st_size``, and a literal this size would be allocated while the
+    module is IMPORTED -- charging every xdist worker for it at collection.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(_MODEL_BYTES)
+    with path.open("wb") as fh:
+        fh.truncate(_MODEL_SIZE)
     return path
 
 

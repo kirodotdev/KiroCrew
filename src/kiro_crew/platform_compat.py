@@ -3386,6 +3386,241 @@ def system_cpu_percent() -> "float | None":
 
 
 # ---------------------------------------------------------------------------
+# Available physical memory, on every platform
+#
+# "How much RAM can a new process take without pushing this machine into swap"
+# has a different answer, and a different interface, on each OS: Linux publishes
+# the number outright, macOS publishes page counters and leaves the composition
+# to the caller, Windows has a Win32 call. A caller that reads only one of them
+# does not get a conservative answer on the others -- it gets NO answer, which
+# is why this lives here rather than at each call site.
+# ---------------------------------------------------------------------------
+
+_MIB_BYTES = 1024 * 1024
+
+#: ``natural_t`` is 32-bit on macOS, including on Apple silicon.
+_NATURAL_T = ctypes.c_uint
+
+#: ``host_statistics64`` flavor selector for ``vm_statistics64_data_t``.
+_HOST_VM_INFO64 = 4
+
+
+class _VMStatistics64(ctypes.Structure):
+    """``vm_statistics64_data_t`` (``<mach/vm_statistics.h>``), in kernel order.
+
+    Declared in full even though few fields are read, so the element count handed
+    to ``host_statistics64`` is exact and the trailing fields land at the offsets
+    the kernel writes them to.
+
+    Module scope is load-bearing: ``ctypes.POINTER(T)`` memoises T in a
+    module-level dict inside ctypes that is never evicted, so declaring this
+    inside the probe would pin a fresh pair of type objects on every call.
+    """
+
+    _fields_ = [
+        ("free_count", _NATURAL_T),
+        ("active_count", _NATURAL_T),
+        ("inactive_count", _NATURAL_T),
+        ("wire_count", _NATURAL_T),
+        ("zero_fill_count", ctypes.c_uint64),
+        ("reactivations", ctypes.c_uint64),
+        ("pageins", ctypes.c_uint64),
+        ("pageouts", ctypes.c_uint64),
+        ("faults", ctypes.c_uint64),
+        ("cow_faults", ctypes.c_uint64),
+        ("lookups", ctypes.c_uint64),
+        ("hits", ctypes.c_uint64),
+        ("purges", ctypes.c_uint64),
+        ("purgeable_count", _NATURAL_T),
+        ("speculative_count", _NATURAL_T),
+        ("decompressions", ctypes.c_uint64),
+        ("compressions", ctypes.c_uint64),
+        ("swapins", ctypes.c_uint64),
+        ("swapouts", ctypes.c_uint64),
+        ("compressor_page_count", _NATURAL_T),
+        ("throttled_count", _NATURAL_T),
+        ("external_page_count", _NATURAL_T),
+        ("internal_page_count", _NATURAL_T),
+        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+    ]
+
+
+#: How many ``natural_t``-sized elements the kernel must report having filled
+#: before ``external_page_count`` holds anything. ``host_statistics64`` writes
+#: the count back, and an older kernel that predates the field leaves it zero --
+#: indistinguishable from "no file-backed pages" unless the count is checked.
+#: Derived from the layout so it cannot go stale if a field is added above.
+_EXTERNAL_PAGE_COUNT_ELEMENTS = (
+    _VMStatistics64.external_page_count.offset + _VMStatistics64.external_page_count.size
+) // ctypes.sizeof(ctypes.c_int)
+
+
+def macos_vm_statistics() -> "tuple[_VMStatistics64, int] | None":
+    """Mach ``host_statistics64(HOST_VM_INFO64)``, or ``None`` on any failure.
+
+    Returns the filled struct and the element count the kernel wrote back, which
+    a caller needs to know whether the trailing (later-revision) fields are
+    meaningful. macOS-only; returns ``None`` everywhere else.
+
+    Reads in-process through ``ctypes``/``libSystem`` -- **no subprocess**. That
+    is not merely faster: the macOS app sandbox can deny spawning ``vm_stat`` or
+    ``sysctl``, and this probe runs on the gateway event loop.
+    """
+    try:
+        libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
+    except OSError:
+        return None  # not macOS / libSystem unavailable
+
+    try:
+        libc.mach_host_self.restype = ctypes.c_uint
+        libc.mach_task_self.restype = ctypes.c_uint
+        libc.mach_port_deallocate.argtypes = [ctypes.c_uint, ctypes.c_uint]
+        libc.host_statistics64.restype = ctypes.c_int
+        libc.host_statistics64.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.POINTER(_VMStatistics64),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        host_port = libc.mach_host_self()
+        try:
+            stats = _VMStatistics64()
+            count = ctypes.c_uint(ctypes.sizeof(_VMStatistics64) // ctypes.sizeof(ctypes.c_int))
+            kern_return = libc.host_statistics64(
+                host_port,
+                _HOST_VM_INFO64,
+                ctypes.byref(stats),
+                ctypes.byref(count),
+            )
+        finally:
+            # Release the send right from mach_host_self so the port reference is
+            # not leaked per probe. Guarded so a missing symbol still returns
+            # None cleanly below rather than raising out of a memory reading.
+            try:
+                libc.mach_port_deallocate(libc.mach_task_self(), host_port)
+            except (AttributeError, OSError, ValueError):
+                pass
+    except (AttributeError, OSError, ValueError):
+        return None
+    if kern_return != 0:  # non-zero kern_return_t -> failure
+        return None
+    return stats, int(count.value)
+
+
+def _macos_available_mib() -> int:
+    """RAM in MiB a new process can take on macOS without swapping, or 0.
+
+    macOS publishes no ``MemAvailable``; it publishes page counters, and which
+    ones count as available is a decision. Each term here is one:
+
+    * ``free_count`` ALREADY INCLUDES ``speculative_count`` -- Darwin's own
+      ``vm_stat`` prints ``free_count - speculative_count`` as its "Pages free"
+      line. Adding speculative on top double-counts it, which inflates the
+      reading on exactly the loaded machine where it must not.
+    * ``purgeable_count`` is volatile memory the kernel may drop outright, with
+      no I/O, so it is genuinely available.
+    * ``inactive_count`` is NOT all reclaimable: it mixes clean file-backed pages
+      with DIRTY ANONYMOUS pages that cannot be handed over without compressing
+      or swapping them. ``HOST_VM_INFO64`` publishes no inactive-AND-file
+      counter, so the intersection is not computable -- but
+      ``min(inactive, external_page_count)`` is an upper bound on the file-backed
+      share, and it is strictly tighter than ``inactive``. That tightening is
+      what stops a browser's gigabytes of inactive anonymous memory reading as
+      free.
+
+    Compressed pages are occupied, so the compressor counts are excluded.
+
+    ``0`` means UNKNOWN, and callers skip an unknown reading rather than treating
+    it as zero memory. A read that SUCCEEDED but computed nothing therefore
+    returns 0 too: a host with no free, purgeable or file-backed pages at all is
+    not a reading anyone should act on.
+    """
+    probe = macos_vm_statistics()
+    if probe is None:
+        return 0
+    stats, filled = probe
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return 0
+    if page_size <= 0:
+        return 0
+    inactive = int(stats.inactive_count)
+    if filled >= _EXTERNAL_PAGE_COUNT_ELEMENTS:
+        inactive = min(inactive, int(stats.external_page_count))
+    pages = int(stats.free_count) + int(stats.purgeable_count) + inactive
+    if pages <= 0:
+        return 0
+    # max(1, ...) only after the >0 check above, so a real but sub-MiB reading
+    # stays distinguishable from "unknown".
+    return max(1, pages * page_size // _MIB_BYTES)
+
+
+def _linux_available_mib() -> int:
+    """``MemAvailable`` in MiB, or 0 when ``/proc/meminfo`` cannot be read.
+
+    The kernel's own estimate of what a new allocation can use without swapping.
+    It counts reclaimable page cache, which ``MemFree`` and ``SC_AVPHYS_PAGES``
+    both omit -- on a host that has read any files those understate badly (they
+    match ``MemFree`` exactly, measured 43,574 MiB against ``MemAvailable``'s
+    74,768 MiB on the same idle host).
+    """
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith("MemAvailable:"):
+                    continue
+                # "MemAvailable:   107374182 kB" -- the unit is always kB.
+                return int(line.split()[1]) * 1024 // _MIB_BYTES
+    except (OSError, IndexError, ValueError):
+        return 0
+    return 0
+
+
+def host_total_mib() -> int:
+    """Total physical RAM in MiB, or 0 when it cannot be determined.
+
+    POSIX ``sysconf`` first, then the Win32 reading -- the same order
+    ``sandbox._default_max_memory_mb`` uses, and for the same reason: ``os.sysconf``
+    does not EXIST on Windows, so a probe written against it alone does not return a
+    conservative number there, it returns nothing. Paired with
+    :func:`host_available_mib` so both halves of a memory budget answer on every
+    platform; a budget with only one of them silently stops bounding anything.
+    """
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        if pages > 0 and page_size > 0:
+            return pages * page_size // _MIB_BYTES
+    except (AttributeError, OSError, ValueError):
+        pass
+    mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
+    return (mem[0] // _MIB_BYTES) if mem else 0
+
+
+def host_available_mib() -> int:
+    """RAM in MiB actually free for a new process right now, or 0 when unknown.
+
+    **MiB, not GiB, and the unit is load-bearing.** In GiB every reading under
+    1 GiB truncates to ``0``, which is also this function's "could not
+    determine" answer -- so on the starved host the reading exists to protect,
+    860 MiB free would read as "unknown" and the bound built on it would vanish.
+
+    ``0`` is returned only when the platform genuinely cannot be read, so a
+    caller can distinguish "no headroom" from "no reading" and fail open on the
+    latter.
+    """
+    if IS_LINUX:
+        return _linux_available_mib()
+    if IS_MACOS:
+        return _macos_available_mib()
+    if IS_WINDOWS:
+        mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
+        return (mem[1] // _MIB_BYTES) if mem else 0
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # strftime portability
 # ---------------------------------------------------------------------------
 

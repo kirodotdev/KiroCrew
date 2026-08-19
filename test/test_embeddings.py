@@ -14,6 +14,7 @@ import hashlib
 import threading
 import time
 import urllib.error
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -42,7 +43,22 @@ from kiro_crew.embeddings import (
 _REAL_LOAD_LLAMA = embeddings_mod._load_llama_class
 
 _DIM = 1024
-_MODEL_BYTES = b"g" * 1_100_000  # >1MB so model_file_present() accepts it
+# Wider than the production floor so model_file_present() does not read the file
+# as a truncated placeholder.
+_MODEL_SIZE = embeddings_mod._GGUF_MIN_BYTES + 100_000
+
+
+@lru_cache(maxsize=1)
+def _model_bytes() -> bytes:
+    """Stand-in GGUF payload, built on first use rather than at import.
+
+    These tests assert on the bytes (sha256 pins, byte-identity after salvage),
+    so the payload cannot shrink. Building it at module scope instead would
+    allocate it while the module is IMPORTED, so every xdist worker would pay it
+    during collection and hold it for the session -- including the workers that
+    never run this file.
+    """
+    return b"g" * _MODEL_SIZE
 
 
 @pytest.fixture(autouse=True)
@@ -57,9 +73,9 @@ def _reset_embedding_singletons():
     _REAL_LOAD_LLAMA.cache_clear()
 
 
-def _write_model_file(path: Path, payload: bytes = _MODEL_BYTES) -> Path:
+def _write_model_file(path: Path, payload: bytes | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
+    path.write_bytes(_model_bytes() if payload is None else payload)
     return path
 
 
@@ -456,7 +472,7 @@ class TestLlamaCppEmbedder:
 
 
 def _fake_urlopen_factory(
-    payload: bytes = _MODEL_BYTES,
+    payload: bytes | None = None,
     fail_rcs: list[bool] | None = None,
 ):
     """Build a urllib.request.urlopen replacement streaming a fake GGUF.
@@ -464,6 +480,7 @@ def _fake_urlopen_factory(
     ``fail_rcs`` is a per-attempt list of failure flags (True = the request
     raises URLError; False = the payload streams successfully).
     """
+    payload = _model_bytes() if payload is None else payload
     state = SimpleNamespace(calls=0, urls=[])
     fails = fail_rcs if fail_rcs is not None else [False]
 
@@ -518,12 +535,12 @@ class TestModelDownloadManager:
         fake_urlopen, state = _fake_urlopen_factory()
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
         monkeypatch.setattr(
-            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(_MODEL_BYTES).hexdigest()
+            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(_model_bytes()).hexdigest()
         )
         mgr = self._mgr(tmp_path)
         assert await mgr.ensure_model(attempts=1) is True
         assert mgr.target.is_file()
-        assert mgr.target.stat().st_size == len(_MODEL_BYTES)
+        assert mgr.target.stat().st_size == _MODEL_SIZE
         assert mgr.status["step"] == "ready"
         assert mgr.status["error"] == ""
         assert state.calls == 1
@@ -536,7 +553,7 @@ class TestModelDownloadManager:
         fake_urlopen, state = _fake_urlopen_factory()
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
         monkeypatch.setattr(
-            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(_MODEL_BYTES).hexdigest()
+            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(_model_bytes()).hexdigest()
         )
         mgr = self._mgr(tmp_path)
         assert await mgr.ensure_model(attempts=1) is True
@@ -604,7 +621,7 @@ class TestModelDownloadManager:
         fake_urlopen, state = _fake_urlopen_factory(fail_rcs=[True, False])
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
         monkeypatch.setattr(
-            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(_MODEL_BYTES).hexdigest()
+            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(_model_bytes()).hexdigest()
         )
         sleep_mock = AsyncMock()
         monkeypatch.setattr("kiro_crew.embeddings.asyncio.sleep", sleep_mock)
@@ -646,27 +663,27 @@ class TestModelDownloadManager:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """A byte-identical blob in the legacy Ollama store skips the download."""
-        digest = hashlib.sha256(_MODEL_BYTES).hexdigest()
+        digest = hashlib.sha256(_model_bytes()).hexdigest()
         monkeypatch.setattr("kiro_crew.embeddings._GGUF_SHA256", digest)
         blobs = tmp_path / "ollama" / "models" / "blobs"
         blobs.mkdir(parents=True)
-        (blobs / f"sha256-{digest}").write_bytes(_MODEL_BYTES)
+        (blobs / f"sha256-{digest}").write_bytes(_model_bytes())
         monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "ollama" / "models"))
         # urlopen stays blocked (autouse fixture) — salvage must not need it.
         mgr = self._mgr(tmp_path)
         assert await mgr.ensure_model(attempts=1) is True
         assert mgr.target.is_file()
-        assert mgr.target.read_bytes() == _MODEL_BYTES
+        assert mgr.target.read_bytes() == _model_bytes()
         assert mgr.status["step"] == "ready"
 
     @pytest.mark.asyncio
     async def test_salvage_rejects_wrong_sha_blob(self, tmp_path: Path, monkeypatch) -> None:
         """A blob at the expected path with WRONG bytes is rejected (sha gate)."""
-        digest = hashlib.sha256(_MODEL_BYTES).hexdigest()
+        digest = hashlib.sha256(_model_bytes()).hexdigest()
         monkeypatch.setattr("kiro_crew.embeddings._GGUF_SHA256", digest)
         blobs = tmp_path / "ollama" / "models" / "blobs"
         blobs.mkdir(parents=True)
-        (blobs / f"sha256-{digest}").write_bytes(b"x" * len(_MODEL_BYTES))
+        (blobs / f"sha256-{digest}").write_bytes(b"x" * _MODEL_SIZE)
         monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "ollama" / "models"))
         mgr = self._mgr(tmp_path)
         # Salvage fails sha verification; the blocked urlopen then fails too.

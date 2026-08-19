@@ -378,12 +378,17 @@ jobs:
         run: python3 scripts/check_black_formatting.py
 
       # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
+      #
+      # The two repo-root modules are named explicitly: `src/kiro_crew test` misses
+      # them, and between them they hold the host-protection floor for all three
+      # testpaths -- the isolation fixtures and the xdist worker budget -- so they
+      # are the last files that should go unlinted.
 
       - name: Check imports (isort)
-        run: isort --check-only src/kiro_crew test
+        run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py
 
       - name: Lint (flake8)
-        run: flake8 src/kiro_crew test
+        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
 
       - name: Type check (mypy)
         run: mypy src/kiro_crew/

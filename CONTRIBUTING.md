@@ -378,7 +378,16 @@ user.
 ```bash
 pytest                       # full suite (pytest-asyncio, pytest-xdist)
 pytest -k test_name          # single test
+pytest test/test_agent.py    # one file — what you want most of the time
 ```
+
+The suite is large (56k+ tests) and runs in parallel. Each worker needs about
+1.5 GiB, mostly just to collect the suite, so **on a laptop with 8–16 GiB of RAM a
+full run does not fit alongside a browser.** You do not have to work that out: the
+worker count is bounded by how much memory is actually free, and if it gets clamped
+the run says so in one line. If it clamps to one or two workers, run the subset you
+are changing instead — a full-suite checkpoint is what CI is for. Details and the
+override knobs: [testing-conventions](docs/system-specs/common/testing-conventions.md).
 
 | Pattern | Example |
 |---------|---------|

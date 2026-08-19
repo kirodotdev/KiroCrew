@@ -57,13 +57,15 @@ def _png_bytes(w: int, h: int) -> bytes:
 
 
 def _noise_png_bytes(w: int, h: int) -> bytes:
-    """A PNG that resists compression, so encoded size tracks pixel count."""
+    """A PNG that resists compression, so encoded size tracks pixel count.
+
+    One bytes buffer, not a list of per-pixel tuples: the list form costs ~68
+    bytes per pixel of transient peak, which is what a worker's high-water mark
+    -- and so the xdist memory budget's per-worker reservation -- has to cover.
+    """
     pil = pytest.importorskip("PIL.Image")
     rnd = random.Random(1234)
-    img = pil.new("RGB", (w, h))
-    img.putdata(
-        [(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(w * h)]
-    )
+    img = pil.frombytes("RGB", (w, h), rnd.randbytes(w * h * 3))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()

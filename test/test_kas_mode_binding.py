@@ -18,10 +18,25 @@ import sys
 
 import pytest
 
+from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp.kas_agents import _KAS_FALLBACK_PROMPT
 from kiro_crew.acp.kas_assets import ENV_KAS_NODE, ENV_KAS_SCRIPT
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+
+@pytest.fixture(autouse=True)
+def _fast_no_report_ceiling(monkeypatch):
+    """Shrink drain_init()'s no-report ceiling for every test in this module.
+
+    create_session() drains MCP-init frames before returning, and the KAS stub
+    here registers no MCP server, so nothing ever arms the idle exit and each
+    session pays the full production ceiling. drain_init() resolves the module
+    constant at call time precisely so this patch takes effect. Nothing in this
+    module asserts on the ceiling itself.
+    """
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05)
+
 
 #: Records what the client injected so a test can read it back, and gates
 #: ``session/set_mode`` on the resulting mode list the way KAS does.

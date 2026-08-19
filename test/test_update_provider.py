@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.platform import update_provider
 from kiro_crew.platform.governance import UpdatePins
 from kiro_crew.platform.update_provider import (
     CommandProvider,
@@ -743,8 +744,16 @@ class TestCancellationKillsUpdaterChild:
         assert tree.await_args.args[0] == 4242
 
     @pytest.mark.asyncio
-    async def test_kill_and_reap_bounds_the_reap(self) -> None:
+    async def test_kill_and_reap_bounds_the_reap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A descendant ignoring the signal must not turn cleanup into a hang."""
+        # The ceiling this test drives to expiry is a real wait, so state the
+        # production bound directly instead of spending it: cleanup runs on the
+        # gateway's shutdown path, and a ceiling on the far side of the outer
+        # bound below would be a hang rather than a bounded reap.
+        assert 0 < update_provider._REAP_TIMEOUT_SECS <= 30
+        monkeypatch.setattr(update_provider, "_REAP_TIMEOUT_SECS", 0.01)
         proc = MagicMock()
         proc.pid = 1
         proc.kill = MagicMock()

@@ -36,6 +36,24 @@ class FakeProc:
         self._alive = False
 
 
+class _FakeClock:
+    """Stand-in for the module's ``time``, advanced only by the code under test.
+
+    ``ensure_running``'s readiness gate is a ``time.monotonic`` deadline polled
+    at ``time.sleep(_POLL_INTERVAL_S)``, so driving the clock from the sleeps
+    turns "wait 30 real seconds" into a fixed, instant tick count.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
     """Clear the module singleton and neutralize real process signalling."""
@@ -193,19 +211,39 @@ def test_ensure_running_respawns_when_process_stops_answering(
 ) -> None:
     """Alive but unresponsive is still unusable, and the stale child is reaped."""
     spawns: list[int] = []
+    probes: list[int] = []
     monkeypatch.setattr(mod, "cli_path", lambda: "/n/pw")
     healthy = {"value": True}
-    monkeypatch.setattr(mod, "_healthy", lambda port: healthy["value"])
+
+    def probe(port: int) -> bool:
+        probes.append(port)
+        return healthy["value"]
+
+    monkeypatch.setattr(mod, "_healthy", probe)
     monkeypatch.setattr(
         mod, "_spawn", lambda cli, port: spawns.append(port) or FakeProc(pid=len(spawns))
     )
+    # This test deliberately never satisfies the startup gate, so it would
+    # otherwise wait out the real 30s budget one 0.25s tick at a time. The fake
+    # clock only advances when the gate sleeps, which costs no wall time and
+    # makes the tick count exact rather than timing-dependent.
+    monkeypatch.setattr(mod, "time", _FakeClock())
 
     mod.ensure_running()
     healthy["value"] = False
+    probes.clear()
     # Startup gate cannot pass while unhealthy, so this reports failure...
     assert mod.ensure_running() is None
-    # ...and the stale child was signalled rather than left holding the port.
-    assert 1 in reset_state
+    # ...and BOTH children were signalled rather than left holding a port: the
+    # incumbent it declined to reuse (pid 1) and the replacement that never
+    # answered (pid 2). Only checking pid 1 would leave the give-up path's reap
+    # untested, since the incumbent is reaped before the replacement is spawned.
+    assert reset_state == [1, 2]
+    # The gate polled for its whole documented budget before giving up, one probe
+    # per tick, plus the single probe of the incumbent it declined to reuse. A
+    # budget that expires before its first poll would report the same failure
+    # while proving nothing about an unhealthy child.
+    assert len(probes) == 1 + int(mod._STARTUP_TIMEOUT_S / mod._POLL_INTERVAL_S)
 
 
 def test_ensure_running_gives_up_when_child_exits_during_startup(
