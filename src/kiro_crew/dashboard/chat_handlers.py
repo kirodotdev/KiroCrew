@@ -5453,7 +5453,33 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     mode = body.get("mode", "normal")
-    slot_key = body.get("slot") or None
+    raw_slot = body.get("slot")
+    slot_key = raw_slot or None
+
+    # Refuse an unresolvable slot key BEFORE anything mutates: a slot-scoped
+    # request that names a slot which does not exist — or which is not a string
+    # at all — must neither widen to every slot (#4454) nor revoke the global
+    # grant, and its refusal must leave grant and slots exactly as they were.
+    # Falsy non-strings (``[]``, ``{}``, ``0``, ``False``) are refused on the
+    # raw value here, before ``raw_slot or None`` can erase them into the
+    # documented all-slots request. The resolved slot reference is what every
+    # branch writes through — nothing below re-indexes state._slots[slot_key]
+    # after the offloaded deactivate await, so a concurrent slot deletion
+    # cannot open a check/use gap. ``yolo`` is global and ignores ``slot``
+    # entirely (a stale key must not refuse it).
+    slot, denied = None, None
+    if mode != "yolo":
+        if raw_slot is not None and not isinstance(raw_slot, str):
+            denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+        elif slot_key is not None:
+            # An absent key is the documented "all slots" request; a present
+            # key must name a live slot or the whole request is refused here,
+            # before any mutation.
+            slot = state._slots.get(slot_key)
+            if slot is None:
+                denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+    if denied is not None:
+        return denied
 
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
@@ -5473,7 +5499,11 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     # `until_shutdown` ad-hoc pick is equally permanent and must stay protected.
     slot_scoped_trust = slot_key is not None and mode in _SLOT_SCOPED_TRUST_MODES
     if mode != "yolo" and (not slot_scoped_trust or safety_override().is_declared):
-        safety_override().deactivate("dashboard")
+        # deactivate() writes a SEL event, so it is offloaded exactly like the
+        # sibling activate() — never run on the gateway loop (#4454). Safe after
+        # the resolution above: every branch mutates the captured slot, never
+        # re-indexing state._slots.
+        await asyncio.to_thread(safety_override().deactivate, "dashboard")
 
     if mode == "yolo":
         result = await asyncio.to_thread(safety_override().activate, "dashboard")
@@ -5492,15 +5522,15 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("SEL audit failed for YOLO mode activation", exc_info=True)
     elif mode == "trust_reads":
-        if slot_key and slot_key in state._slots:
-            state._slots[slot_key]._trust = False
-            state._slots[slot_key]._trust_reads = True
-            state.sessions.set_approval_policy(effective_session_key(state._slots[slot_key]), "")
+        if slot is not None:
+            slot._trust = False
+            slot._trust_reads = True
+            state.sessions.set_approval_policy(effective_session_key(slot), "")
         else:
-            for slot in state._slots.values():
-                slot._trust = False
-                slot._trust_reads = True
-                state.sessions.set_approval_policy(effective_session_key(slot), "")
+            for s in state._slots.values():
+                s._trust = False
+                s._trust_reads = True
+                state.sessions.set_approval_policy(effective_session_key(s), "")
         try:
             sel().log_api_access(
                 caller="dashboard:mode",
@@ -5512,27 +5542,25 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             logger.warning("SEL audit failed for trust_reads mode activation", exc_info=True)
     elif mode == "trust":
         mgr = getattr(state, "channel_manager", None)
-        if slot_key is not None:
-            if slot_key not in state._slots:
-                return web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+        if slot is not None:
             # Every slot that SHARES the session, matching the revoke below. The
             # policy is per session while the flag is per slot, so setting one of
             # two sharing slots leaves them disagreeing about a session they both
             # address, and the propagation pass would then be decided by slot
             # iteration order rather than by what the operator asked for.
-            _granted_key = effective_session_key(state._slots[slot_key])
+            _granted_key = effective_session_key(slot)
             for _sharing in state._slots.values():
                 if effective_session_key(_sharing) == _granted_key:
                     _sharing._trust = True
             state.sessions.set_approval_policy(_granted_key, "auto")
-            linked_ch = getattr(state._slots[slot_key], "_slack_channel", None)
+            linked_ch = getattr(slot, "_slack_channel", None)
             if mgr and linked_ch and linked_ch in mgr._channels:
                 mgr._channels[linked_ch].trusted = True
                 mgr._channels[linked_ch]._save()
         else:
-            for slot in state._slots.values():
-                slot._trust = True
-                state.sessions.set_approval_policy(effective_session_key(slot), "auto")
+            for s in state._slots.values():
+                s._trust = True
+                state.sessions.set_approval_policy(effective_session_key(s), "auto")
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = True
@@ -5552,30 +5580,28 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             logger.warning("SEL audit failed for trust mode activation", exc_info=True)
     else:  # normal
         mgr = getattr(state, "channel_manager", None)
-        if slot_key is not None:
-            if slot_key not in state._slots:
-                return web.json_response({"ok": False, "error": "unknown slot"}, status=400)
+        if slot is not None:
             # Several slots can address ONE session (a rehydrated owner slot and
             # the alias its turns run under both resolve to the same effective
             # key), so revoking the selected slot alone leaves the others holding
             # a stale `_trust`, and the propagation below then rewrites the shared
             # session back to "auto" from it. The policy is per SESSION; the flag
             # is per slot; so the revoke has to clear every slot that shares it.
-            _revoked_key = effective_session_key(state._slots[slot_key])
+            _revoked_key = effective_session_key(slot)
             for _sharing in state._slots.values():
                 if effective_session_key(_sharing) == _revoked_key:
                     _sharing._trust = False
                     _sharing._trust_reads = False
             state.sessions.set_approval_policy(_revoked_key, "")
-            linked_ch = getattr(state._slots[slot_key], "_slack_channel", None)
+            linked_ch = getattr(slot, "_slack_channel", None)
             if mgr and linked_ch and linked_ch in mgr._channels:
                 mgr._channels[linked_ch].trusted = False
                 mgr._channels[linked_ch]._save()
         else:
-            for slot in state._slots.values():
-                slot._trust = False
-                slot._trust_reads = False
-                state.sessions.set_approval_policy(effective_session_key(slot), "")
+            for s in state._slots.values():
+                s._trust = False
+                s._trust_reads = False
+                state.sessions.set_approval_policy(effective_session_key(s), "")
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = False
