@@ -3,23 +3,6 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
-- **A hazard observed while a periodic or shutdown flush is in progress can
-  no longer crash that flush and be lost.** `HazardLedger.flush()` builds
-  its JSON payload by iterating the in-memory records off the event loop, in
-  a real worker thread; `record()`/`clear()` mutate those same objects
-  synchronously on the event loop thread in response to routine traffic —
-  genuinely concurrent OS threads. Only `flush()` callers were ever
-  serialized against each other; a `record()` landing mid-iteration could
-  raise "dictionary/set changed size during iteration", crashing the flush
-  before its payload reached disk. At shutdown that exception is swallowed,
-  silently dropping the write entirely — the strongest evidence the
-  shareability engine has for withdrawing a stub/share recommendation.
-  `record()`/`clear()` are now copy-on-write against the in-memory records —
-  never mutating a shared dict/set in place, only ever building a new one and
-  swapping it in with a single atomic assignment — so `flush()` can read a
-  frozen snapshot with no lock at all, and recording (called synchronously
-  on the event loop) never waits on anything a concurrent flush is doing,
-  I/O included. (#3761)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
