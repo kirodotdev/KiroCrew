@@ -428,19 +428,17 @@ class TestApplierAuditAndFailSoft:
         assert slot.project == "/existing"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["set_project", "suggest_followup", "ask_question"])
+    @pytest.mark.parametrize("kind", ["suggest_followup", "ask_question"])
     @pytest.mark.parametrize("session_key", ["cron:job-abc", "slack:C123.456", "sub:agent-1", ""])
     async def test_slot_targeting_directives_are_dashboard_only(
         self, kind, session_key, tmp_path, monkeypatch, sel_spy
     ):
-        """These three act on a dashboard SLOT, and the endpoints they replaced
-        rejected cron / Slack / sub-agent callers. A cron-linked slot flowing
-        through _run_chat must not have its project retargeted or get a card."""
+        """These two act on a dashboard SLOT card and require a connected
+        dashboard tab. A cron / Slack / sub-agent caller should not get a card."""
         monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
         slot = _FakeSlot(project="/original")
         state = _FakeState()
         args = {
-            "set_project": {"project": str(tmp_path), "clear": False},
             "suggest_followup": {"items": [{"title": "t", "prompt": "p"}]},
             "ask_question": {"questions": [{"question": "q", "options": [{"label": "a"}]}]},
         }[kind]
@@ -449,6 +447,62 @@ class TestApplierAuditAndFailSoft:
         assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
         # No effect landed on the slot.
         assert slot.project == "/original"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "session_key", ["telegram:kirocrew:direct:123:gen1", "slack:C123.456", "discord:guild1:chan2"]
+    )
+    async def test_set_project_works_on_channel_sessions(
+        self, session_key, tmp_path, monkeypatch, sel_spy
+    ):
+        """set_project should apply its CWD effect on any user-facing surface
+        (Telegram, Slack, Discord) — not just dashboard. Only suggest_followup
+        and ask_question are dashboard-only (they render UI cards)."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        slot = _FakeSlot(project="/original")
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, session_key, "set_project",
+            {"project": str(tmp_path), "clear": False},
+        )
+        assert "Project set to" in result
+        assert slot.project == str(tmp_path)
+        assert [c["outcome"] for c in sel_spy.calls] == ["success"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "session_key",
+        [
+            "cron:job-abc",
+            "cron_legacy",
+            "subagent:agent-1",
+            "taskrunner:t1",
+            "hook:h1",
+            "secretary:s1",
+            "_bg",
+            "_hb",
+            "",
+        ],
+    )
+    async def test_set_project_rejected_for_headless_callers(
+        self, session_key, tmp_path, monkeypatch, sel_spy
+    ):
+        """Callers without a user-facing surface (cron, sub-agent, task-runner,
+        hook, background, empty key — and any FUTURE key shape, since the gate
+        is a positive predicate that fails closed) must NOT retarget a slot's
+        project: a cron turn can run on a user's dashboard slot
+        (session="origin" injection) and a sub-agent shares its parent's slot,
+        so allowing them would silently repoint the user's own session."""
+        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        slot = _FakeSlot(project="/original")
+        state = _FakeState()
+        result = await apply_session_directive(
+            state, slot, session_key, "set_project",
+            {"project": str(tmp_path), "clear": False},
+        )
+        assert "Error" in result and "user-facing" in result
+        assert slot.project == "/original"
+        assert [c["outcome"] for c in sel_spy.calls] == ["denied"]
 
     @pytest.mark.asyncio
     async def test_returned_failure_is_audited_as_error_not_success(
