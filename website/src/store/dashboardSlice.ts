@@ -128,6 +128,74 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
   delete state.subagentText[slotKey]
 }
 
+/** Structural equality over the JSON shapes a slot payload is made of.
+ *
+ *  Key-order independent on purpose: one side is a fresh server payload, the
+ *  other may be a row an in-place reducer (`touchSlotActivity`, `updateSlot`,
+ *  `patchSlotLink`) has since patched, and a patch can append a key the payload
+ *  spells earlier. A serialization compare would call those unequal forever and
+ *  silently give back the wholesale-replacement behaviour this exists to avoid.
+ *
+ *  Field-agnostic for the same reason: a comparator listing `ChatSlot`'s fields
+ *  would stop seeing a newly added one and pin a stale row on screen, which is a
+ *  correctness bug where an extra re-render is only a cost. */
+const deepEqual = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  const aArr = Array.isArray(a)
+  if (aArr !== Array.isArray(b)) return false
+  if (aArr) {
+    const x = a as unknown[]
+    const y = b as unknown[]
+    return x.length === y.length && x.every((v, i) => deepEqual(v, y[i]))
+  }
+  const x = a as Record<string, unknown>
+  const y = b as Record<string, unknown>
+  const keys = Object.keys(x)
+  if (keys.length !== Object.keys(y).length) return false
+  return keys.every(k => Object.prototype.hasOwnProperty.call(y, k) && deepEqual(x[k], y[k]))
+}
+
+/** Apply an authoritative slot list, reusing the object identity of every row
+ *  whose content is unchanged, and touching `state.slots` only when the list
+ *  actually moved.
+ *
+ *  Membership AND order come from `next` — the server is authoritative on both.
+ *  Only per-row identity is carried across, and only for a structurally equal
+ *  row, so no consumer can read stale content off a reused reference.
+ *
+ *  Identity is load-bearing here rather than a micro-optimisation. The sidebar
+ *  renders every row as a Framer `motion.div` with `layout="position"` inside one
+ *  `LayoutGroup`, and every selector over `dashboard.slots` invalidates when the
+ *  array or any row changes reference. Assigning the incoming array wholesale
+ *  hands every row a new reference on every frame, so one slot's status change
+ *  re-renders and re-measures the entire list — which reads as the sidebar
+ *  reloading rather than as one session becoming active. Slot pushes coalesce at
+ *  200ms server-side, so a single active turn delivers several full lists per
+ *  second and the effect is continuous.
+ *
+ *  Skipping the assignment (rather than assigning an equal array) is the half
+ *  that matters most: it leaves the array reference alone, which lets a
+ *  downstream `useMemo` skip its filter and sort entirely instead of recomputing
+ *  an equal result. */
+const applySlots = (state: DashboardState, next: ChatSlot[]): void => {
+  const prev = state.slots ?? []
+  const byKey = new Map(prev.map(s => [s.key, s]))
+  let changed = prev.length !== next.length
+  const merged = next.map((incoming, i) => {
+    const existing = byKey.get(incoming.key)
+    // Reusing a draft row inside a freshly assigned array is fine: Immer
+    // finalizes drafts found in the assigned value within the same scope, so an
+    // untouched row resolves back to its base object and keeps its identity.
+    const reused = existing !== undefined && deepEqual(existing, incoming) ? existing : incoming
+    // Positional compare, so a pure reorder counts as changed even though every
+    // row is individually reusable.
+    if (reused !== prev[i]) changed = true
+    return reused
+  })
+  if (changed) state.slots = merged
+}
+
 const dashboardSlice = createSlice({
   name: 'dashboard',
   initialState,
@@ -157,7 +225,7 @@ const dashboardSlice = createSlice({
       // the sidebar until restoration finishes, and marking it loaded would
       // claim a snapshot arrived when none has.
       if (action.payload.length === 0 && !state.slotsLoaded) return
-      state.slots = action.payload
+      applySlots(state, action.payload)
       state.slotsLoaded = true
       reconcileSlots(state, new Set(action.payload.map(s => s.key)))
     },
@@ -370,7 +438,7 @@ const dashboardSlice = createSlice({
         // unread drain still runs — that is this path's documented job, and a
         // badge self-heals — but eviction is withheld once the stream is live.
         const fresh = !state.slotsLoaded
-        state.slots = action.payload
+        applySlots(state, action.payload)
         state.slotsLoaded = true
         reconcileSlots(state, new Set(action.payload.map((s: { key: string }) => s.key)), fresh)
       })

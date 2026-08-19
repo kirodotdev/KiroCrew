@@ -1,9 +1,9 @@
 # Frontend conventions
 
-Shared components, accessibility, security, data fetching, animation, styling,
-typography, and how a builtin app gets discovered. Page structure is in
-[page-layout](page-layout.md); color and CSS-var rules are in
-[theming-contract](theming-contract.md); user-facing strings are in
+Shared components, accessibility, security, data fetching, live-collection
+identity, animation, styling, typography, and how a builtin app gets discovered.
+Page structure is in [page-layout](page-layout.md); color and CSS-var rules are
+in [theming-contract](theming-contract.md); user-facing strings are in
 [i18n-catalog](i18n-catalog.md).
 
 ## Shared components
@@ -153,6 +153,47 @@ slices:
 
 Server data belongs in React Query, not in a slice. Reach for Redux only when the
 state is shell-wide and not a cached server read.
+
+## Live-updating collections: merge, don't replace
+
+A slice holding a collection the server re-broadcasts **in full** must merge the
+incoming list into the one it already holds, never assign it. Assigning hands
+every row a new object reference on every frame, so one row's change invalidates
+every selector over the collection, every `useMemo` keyed on the array, and every
+memoized child — and inside a Framer `LayoutGroup` it re-measures the entire list.
+The symptom is a collection that visibly reloads when one member changed, which
+reads as a bug rather than as an update. Broadcasts are coalesced server-side but
+not suppressed (slots at 200ms), so an active session delivers several full lists
+per second and the effect is continuous rather than incidental.
+
+What a merge has to hold:
+
+- **Membership and order come from the incoming list.** The server stays
+  authoritative on both; only per-row identity is carried across.
+- **Reuse a row only when it is structurally equal**, so no consumer can read
+  stale content off a kept reference.
+- **Leave the array itself alone when nothing moved.** This is the half that
+  pays: an equal-but-new array still reruns every downstream filter and sort.
+- **Compare field-agnostically and independently of key order.** A comparator
+  that enumerates the type's fields stops seeing a newly added one and pins a
+  stale row — a correctness bug, where a redundant re-render is only a cost. A
+  serialization compare calls a locally patched row unequal forever, because an
+  in-place patch can append a key the server payload spells earlier.
+
+`applySlots` in `dashboardSlice.ts` is the reference implementation, driving both
+authoritative writers (`sseSlots` and the `fetchSlots` refetch);
+`dashboardSlice.slotIdentity.test.ts` pins the contract. Reusing an Immer draft
+row inside a freshly assigned array is safe — a draft found in the assigned value
+is finalized within the same scope, so an untouched row resolves back to its base
+object and keeps its identity.
+
+Two habits belong to the same concern:
+
+- **Subscribe narrowly.** A selector returning a whole map re-renders its
+  component on any write to any member; pass `shallowEqual` when the component
+  only reads members out of it, as the sidebar does for `slotStatusDetail`.
+- **Don't re-rank a list on mid-turn activity.** An ordering key should move on
+  settled events only, or rows swap under the pointer while several sessions work.
 
 ## Animations
 
