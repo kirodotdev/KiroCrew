@@ -284,6 +284,21 @@ class DiscordApprovalDecider:
         try:
             return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
         except asyncio.TimeoutError:
+            # Nobody pressed a button for the whole window, so a monitoring loop
+            # bound to this session cannot act either -- record it so the loop
+            # stops on its next wake instead of spending the rest of its cycle
+            # cap being denied. Inert for a session with no loop
+            # (``notify_approval_stalled`` resolves by binding key), and
+            # best-effort: a monitoring convenience must never change how this
+            # turn's denial is reported.
+            try:
+                from kiro_crew.autonudge import get_instance as _autonudge_get
+
+                _autonudge = _autonudge_get()
+                if _autonudge is not None:
+                    _autonudge.notify_approval_stalled(self._session_key)
+            except Exception:
+                logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
             return False  # deny-by-default on timeout
         finally:
             DiscordApprovalDecider._REGISTRY.pop(k, None)

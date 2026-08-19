@@ -36,6 +36,7 @@ import pytest
 import kiro_crew.mcp_core as mcp_core
 from kiro_crew import autonudge_authz, session_directive
 from kiro_crew.autonudge import (
+    APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
     AutoNudgeService,
     binding_key_for,
@@ -497,6 +498,35 @@ def test_applier_manual_pause_is_never_revived_by_a_budget_raise(monkeypatch):
     )
     assert not update_calls, "a manual pause must not be resumed by a budget raise"
     assert "paused manually" in result
+
+
+def test_applier_approval_stalled_denial_names_the_authorization(monkeypatch):
+    """A stall is not revivable by raising a bound, and must not be mislabelled.
+
+    Raising a cap or budget cannot restore an authorization, so this stays in the
+    deny path — but the generic 'paused manually' wording would send the agent to
+    ask a human who already answered by letting the grant lapse.
+    """
+    loop = _FakeLoop(
+        "loop-stalled", cycle_count=3, max_cycles=24, active=False,
+        stopped_reason=APPROVAL_STALL_REASON,
+    )
+    svc = _FakeSvc(loop)
+    _install_svc(monkeypatch, svc)
+    update_calls = _record_update(monkeypatch)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(),
+            _SESSION,
+            "monitor_update",
+            {"patch": {"max_cycles": 48}},
+        )
+    )
+    assert not update_calls, "raising a cap must not resume a loop that lost approval"
+    assert "approval prompt" in result
+    assert "auto-approve" in result
+    assert "paused manually" not in result
 
 
 def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypatch):

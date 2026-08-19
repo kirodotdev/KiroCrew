@@ -120,7 +120,9 @@ def _build_orchestrator(client: object) -> gw.GatewayOrchestrator:
     async def _approve(_event: object) -> bool:
         return True
 
-    orch._interactive_approval = lambda _source: _approve
+    # Accepts the production signature's optional keywords (e.g. the monitor
+    # loop's binding key) so this double does not pin the real method's arity.
+    orch._interactive_approval = lambda _source, **_kw: _approve
     return orch
 
 

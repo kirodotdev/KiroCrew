@@ -45,6 +45,7 @@ import kiro_crew.crash_guard as crash_guard
 from kiro_crew import beacon, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.autonudge import (
+    APPROVAL_STALL_REASON,
     AutoNudgeService,
     NudgeLoop,
 )
@@ -1155,13 +1156,22 @@ class GatewayOrchestrator:
     # ------------------------------------------------------------------
 
     def _interactive_approval(
-        self, source: str, slot_resolver: Callable[[str], str] | None = None
+        self,
+        source: str,
+        slot_resolver: Callable[[str], str] | None = None,
+        nudge_key: str = "",
     ) -> ToolApprovalCallback:
         """Return an approval callback that races dashboard vs Slack DM.
 
         Uses the same rich Block Kit message as the main-agent approval flow
         so users see full command text, security redactions, and Trust-session
         controls for background agents too.
+
+        ``nudge_key`` names the monitoring loop whose cycle this callback serves,
+        when one does. A channel-bound loop's turns are approved here rather than
+        through the dashboard runner, so without it an unanswered prompt on this
+        path records no evidence and such a loop keeps waking, being declined and
+        spending its cycle cap -- while the expiry notice still promises a stop.
         """
 
         is_background = source in _BACKGROUND_APPROVAL_SOURCES
@@ -1436,6 +1446,20 @@ class GatewayOrchestrator:
                         outcome = await asyncio.wait_for(pending.future, timeout=approval_timeout)
                     except asyncio.TimeoutError:
                         outcome = "rejected"
+                        # Nobody answered on either surface -- this branch also
+                        # cancels the dashboard future below, so it is the single
+                        # authoritative "unanswered" point for a channel-bound
+                        # loop's cycle. Record it so the loop stops on its next
+                        # wake instead of spending the rest of its cap.
+                        if nudge_key:
+                            try:
+                                svc = self.autonudge_svc
+                                if svc is not None:
+                                    svc.notify_approval_stalled(nudge_key)
+                            except Exception:
+                                logger.debug(
+                                    "autonudge.notify_approval_stalled failed", exc_info=True
+                                )
                     finally:
                         _pending_approvals.pop(key, None)
                         # Resolve dashboard approval if Slack responded first
@@ -3755,7 +3779,7 @@ class GatewayOrchestrator:
                     # background-approval window (source "autonudge").
                     approval_policy=ToolApprovalPolicy.HOOK_BASED,
                     hooks=self.ctx_builder.hooks,
-                    on_tool_approval=self._interactive_approval("autonudge"),
+                    on_tool_approval=self._interactive_approval("autonudge", nudge_key=key),
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
@@ -4117,6 +4141,12 @@ class GatewayOrchestrator:
         feature. The wording distinguishes WHICH bound fired via the same
         ``runtime_budget_exceeded`` predicate ``_timer`` enforces with; when
         both are exhausted the cycle cap wins, matching the enforcement order.
+        A loop stopped because it could not obtain tool approval is a third
+        case naming a different remedy — restore the authorization, do not
+        raise a bound — so reporting it as a cap would send the operator to
+        change a setting that was never the problem. It is read from the
+        persisted reason and ranked below the two bounds, again matching
+        ``_timer``, which tests it last.
 
         Best-effort by construction: ``notify()`` never raises (it swallows
         validation errors and logs), and the whole call is wrapped anyway
@@ -4143,6 +4173,19 @@ class GatewayOrchestrator:
                     "without it reporting done, so its goal may still be "
                     "unmet. Restart it from the goal popover, or ask the agent "
                     "to raise the budget (monitor_update)."
+                )
+            elif not capped_out and loop.stopped_reason == APPROVAL_STALL_REASON:
+                title = "Monitoring loop stopped — it could not get tool approval"
+                body = (
+                    f"The loop stopped after {loop.cycle_count} cycles because a "
+                    "tool it needed went unanswered at the approval prompt, so "
+                    "further cycles would wake, be declined and accomplish "
+                    "nothing. A prompt you were merely away for counts too: if "
+                    "approval is available now, just restart the loop from the "
+                    "goal popover; otherwise re-enable auto-approve first. For "
+                    "runs meant to go unattended overnight, Settings → "
+                    "agent.yolo_duration has an 'until_shutdown' option that "
+                    "has no timed expiry."
                 )
             else:
                 title = "Monitoring loop hit its cycle cap"

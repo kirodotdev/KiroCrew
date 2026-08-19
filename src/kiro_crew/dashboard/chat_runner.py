@@ -6171,6 +6171,24 @@ async def _run_chat(
                             "retrying the same call.",
                             "msg msg-a",
                         )
+                    # Tell any monitoring loop bound to this slot that a cycle
+                    # could not obtain approval. This branch IS the evidence a
+                    # reactive stop needs: the prompt ran its full window with no
+                    # decision, which an auto-approved tool never reaches. The
+                    # loop stops on its next wake instead of spending the rest of
+                    # its cap on cycles that cannot act. Best-effort and
+                    # non-blocking — a monitoring convenience must never change
+                    # how this turn's denial is reported.
+                    try:
+                        from kiro_crew.autonudge import (
+                            get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_runner
+                        )
+
+                        _autonudge = _autonudge_get()
+                        if _autonudge is not None:
+                            _autonudge.notify_approval_stalled(slot.key)
+                    except Exception:
+                        logger.debug("autonudge.notify_approval_stalled failed", exc_info=True)
                 finally:
                     if _approval_card is not None:
                         try:

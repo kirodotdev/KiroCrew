@@ -1613,6 +1613,56 @@ class TestApprovalDecider:
     async def test_resolve_unknown_key_returns_false(self) -> None:
         assert not DiscordApprovalDecider.resolve_global("sk:none", True, nonce="x")
 
+    @pytest.mark.asyncio
+    async def test_timeout_records_the_stall_for_a_bound_loop(self, monkeypatch) -> None:
+        """A Discord nudge cycle stalls here, not in the dashboard runner.
+
+        Without this the loop keeps waking, is denied by default, and spends its
+        whole cycle cap accomplishing nothing.
+        """
+        from kiro_crew import autonudge as _an
+        from kiro_crew.discord import renderer as _rend
+
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            _an,
+            "get_instance",
+            lambda: SimpleNamespace(notify_approval_stalled=recorded.append),
+        )
+        monkeypatch.setattr(_rend, "_APPROVAL_TIMEOUT_S", 0.01)
+
+        decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
+        assert await decider(SimpleNamespace(request_id="r-timeout")) is False
+
+        assert recorded == ["discord:a:direct:7"], "the stall was not recorded"
+
+    @pytest.mark.asyncio
+    async def test_a_pressed_deny_is_not_recorded_as_a_stall(self, monkeypatch) -> None:
+        """An explicit deny is a decision, not evidence that nobody is present.
+
+        Recording it would stop a loop whose operator is right there declining
+        one tool.
+        """
+        from kiro_crew import autonudge as _an
+
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            _an,
+            "get_instance",
+            lambda: SimpleNamespace(notify_approval_stalled=recorded.append),
+        )
+
+        decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
+        ev = SimpleNamespace(request_id="r-deny")
+        task = asyncio.ensure_future(decider(ev))
+        await asyncio.sleep(0)
+        key = DiscordApprovalDecider.key("discord:a:direct:7", "r-deny")
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        assert DiscordApprovalDecider.resolve_global(key, False, nonce=nonce)
+
+        assert await task is False
+        assert recorded == [], "a pressed deny must not count as an unanswered prompt"
+
 
 # ── transport_dispatch.py ────────────────────────────────────────────────
 

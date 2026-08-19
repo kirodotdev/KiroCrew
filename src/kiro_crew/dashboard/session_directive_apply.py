@@ -38,7 +38,7 @@ from typing import Any
 from kiro_crew.apps.builtins.auto_research.session_keys import (
     is_owned_research_slot,
 )
-from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+from kiro_crew.autonudge import APPROVAL_STALL_REASON, AUTONUDGE_STOP_REASON
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
@@ -256,6 +256,16 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
                 )
             elif stopped_at_cap:
                 bound = "it hit its cycle cap; raise max_cycles above the cap (or pass 0)"
+            elif reason == APPROVAL_STALL_REASON:
+                # No revival affordance on purpose: raising a bound does not
+                # restore an authorization, so this stays in the deny path — but
+                # with the remedy that actually works, since the generic
+                # "paused manually" wording would send the user to ask a human
+                # who already answered by letting the grant lapse.
+                bound = (
+                    "a tool it needed went unanswered at the approval prompt; "
+                    "re-enable auto-approve, then re-arm it with monitor_start"
+                )
             else:
                 bound = "it was paused manually; ask the user, or use monitor_start"
             raise _DirectiveDenied(

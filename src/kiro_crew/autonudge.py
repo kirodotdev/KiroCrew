@@ -74,7 +74,13 @@ STOP_SENTINEL = "STOP"
 # The caller's free-form explanation is intentionally not stored: it is
 # model-authored text and the watchdog only needs the deterministic source.
 AUTONUDGE_STOP_REASON = "autonudge_stop"
-_TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget"})
+
+# Persisted reason for a loop stopped because one of its cycles could not obtain
+# tool approval. Named separately from the other bounds because its remedy is
+# different in kind: the cap and the budget are raised, this one needs an
+# authorization the loop cannot grant itself.
+APPROVAL_STALL_REASON = "approval_stalled"
+_TERMINAL_BOUND_REASONS = frozenset({"cycle_cap", "runtime_budget", APPROVAL_STALL_REASON})
 
 # Namespaced session-key prefixes that identify messaging-channel sessions
 # (as opposed to bare dashboard chat-slot keys). Channel-bound loops have no
@@ -277,14 +283,27 @@ class NudgeLoop:
     max_runtime_secs: int = 0
     # WHY the loop was last deactivated: "" (active / never stopped),
     # "manual" (user pause / any caller that didn't say otherwise),
-    # "autonudge_stop" (deliberate directive), "cycle_cap", or
-    # "runtime_budget" (set by _timer's terminal bounds).
+    # "autonudge_stop" (deliberate directive), "cycle_cap",
+    # "runtime_budget", or "approval_stalled" (set by _timer's terminal
+    # bounds).
     # Persisted so revival logic can distinguish a manual pause from a bound
     # expiry — elapsed wall-clock keeps growing after a manual pause, so
     # WITHOUT this record a paused loop whose budget has since elapsed is
     # indistinguishable from a budget-stopped one, and a budget raise would
     # resume unattended execution against the user's explicit pause.
     stopped_reason: str = ""
+    # Evidence that a cycle in this loop's session asked for tool approval and
+    # nobody answered within the window. Set by ``notify_approval_stalled`` and
+    # consumed by ``_timer`` as a terminal condition on the NEXT wake, which is
+    # the whole point: the loop stops on proof that it could not act, never on a
+    # prediction that it might not be able to. A loop whose turns only touch
+    # auto-approved tools never reaches an interactive wait, so it can never be
+    # flagged here — that is what keeps a working read-only loop running instead
+    # of needing a "does this loop need approval?" guess.
+    # Persisted, because the condition that produced it (a lapsed grant) usually
+    # outlives a restart; cleared on every revival so a re-granted loop is not
+    # stopped by stale evidence.
+    approval_stalled: bool = False
     # Absolute wall-clock deadline for the next fire (0 = unset: the next arm
     # starts a fresh full countdown). This is what makes the countdown
     # deadline-preserving — user turns cancel the pending timer TASK but never
@@ -780,6 +799,17 @@ class AutoNudgeService:
                     # "manual", which the revive logic never auto-resumes.
                     if loop.active:
                         loop.stopped_reason = ""
+                        # Spent only by an actual REVIVAL, hence ``not
+                        # was_active``. A still-active loop also receives
+                        # ``active=True`` from an ordinary settings save (the
+                        # goal popover sends it on every edit), and treating
+                        # that as an answer would erase evidence recorded
+                        # moments earlier and let one more doomed cycle fire.
+                        # Keeping it costs at most a resumable stop the operator
+                        # can undo; dropping it costs a wasted cycle and the
+                        # silence this stop exists to end.
+                        if not was_active:
+                            loop.approval_stalled = False
                     else:
                         loop.stopped_reason = stopped_reason or "manual"
             revived = loop.active and not was_active
@@ -916,6 +946,40 @@ class AutoNudgeService:
         return None
 
     # ── Reactive arming ──
+
+    def notify_approval_stalled(self, slot_key: str) -> None:
+        """Record that a tool approval in *slot_key* went unanswered.
+
+        Called from the approval path when a prompt times out with no decision.
+        That is the only evidence available that an unattended loop can no longer
+        act, and it is evidence rather than inference: an auto-approved tool
+        never reaches the interactive wait, so this is unreachable for a loop
+        whose cycles only touch read-only tools.
+
+        Records the fact and returns. The STOP is left to ``_timer``, which
+        already owns every terminal decision and evaluates them serialized before
+        a fire — stopping from here would mean cancelling a timer that may be
+        mid-fire (the one thing the fire-window contracts forbid, since it kills
+        the in-flight turn) and racing the very turn that produced the evidence.
+        Deferring costs the cycle already in flight and saves every later one.
+
+        The evidence is slot-level, not cycle-level: an unanswered prompt in an
+        attended tab counts too. That is the conservative direction — the loop
+        deactivates inspectable and restartable with a notice naming the remedy,
+        and a person who was merely away resumes it — whereas the alternative
+        needs a reliable "is this turn a nudge cycle?" test, which the fire
+        window does not provide for dashboard slots (their turn outlives it).
+        """
+        loop = self._find_by_slot(slot_key)
+        if not loop or not loop.active or loop.approval_stalled:
+            return
+        loop.approval_stalled = True
+        logger.warning(
+            "AutoNudge: a tool approval went unanswered in loop %s's session — "
+            "it will stop instead of firing another cycle",
+            loop.id,
+        )
+        self._persist_soon()
 
     def notify_turn_complete(self, slot_key: str) -> None:
         """Called by gateway after HOOK_EVENT_STOP — resume the countdown for this slot.
@@ -1072,6 +1136,30 @@ class AutoNudgeService:
                 loop.max_runtime_secs,
             )
             await self.update(loop.id, active=False, stopped_reason="runtime_budget")
+            self._emit("expired", loop)
+            return
+        # Proved unable to act? Checked LAST, so a loop that is also out of
+        # cycles or budget still reports the bound it historically would have. This one is reactive by construction: it fires only on recorded
+        # evidence that a cycle's approval went unanswered (see
+        # ``notify_approval_stalled``), never on a reading of whether a grant
+        # happens to be in force — a loop that only ever calls auto-approved
+        # tools needs no grant, and stopping it would turn a working
+        # configuration into a stopped one.
+        #
+        # Same terminal treatment as the other bounds: deactivate rather than
+        # remove, so the loop stays inspectable and can be resumed once the
+        # operator restores the authorization it cannot obtain for itself, and
+        # emit ``expired`` so the notifier tells them it stopped rather than
+        # finished. Without this the loop keeps waking, dispatching, being
+        # declined and spending its cap on cycles that were never able to work.
+        if loop.approval_stalled:
+            logger.info(
+                "AutoNudge: loop %s cannot obtain tool approval — deactivating "
+                "instead of firing cycle %d",
+                loop.id,
+                loop.cycle_count + 1,
+            )
+            await self.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
             self._emit("expired", loop)
             return
         # Fire. Update state only if the callback reports actual delivery —

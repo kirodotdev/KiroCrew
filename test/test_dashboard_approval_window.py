@@ -160,6 +160,66 @@ class TestPerSlotWindowIsAlsoBudgetBounded:
             td._TURN_DEADLINE.reset(token)
 
 
+class TestStallSignalReachesTheLoop:
+    """An unanswered prompt must tell any monitoring loop bound to this slot.
+
+    That branch is the only evidence a reactive stop can use, so the wiring is
+    pinned here: without it a loop whose grant lapsed keeps waking, being
+    declined, and spending its cycle cap on cycles that cannot act.
+    """
+
+    @staticmethod
+    def _timeout_branch() -> list[str]:
+        from kiro_crew.dashboard import chat_runner
+
+        lines = inspect.getsource(chat_runner._run_chat).split("\n")
+        start = next(
+            i for i, ln in enumerate(lines) if ln.strip() == "except asyncio.TimeoutError:"
+        )
+        indent = len(lines[start]) - len(lines[start].lstrip())
+        body = []
+        for ln in lines[start + 1 :]:
+            if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+                break
+            body.append(ln)
+        return body
+
+    def test_signal_is_sent_from_the_timeout_branch(self) -> None:
+        body = "\n".join(self._timeout_branch())
+        assert "notify_approval_stalled(slot.key)" in body, (
+            "the approval-timeout branch does not tell autonudge; a stalled loop "
+            "would keep burning cycles"
+        )
+
+    def test_signal_is_not_gated_on_the_unattended_flag(self) -> None:
+        """The loops this exists for are armed in ATTENDED slots.
+
+        ``_ChatSlot.unattended`` keys on app-ownership, so a babysit loop a
+        person armed in their own tab reads False. Nesting the signal under that
+        flag would skip exactly the case the stop was built for.
+        """
+        body = self._timeout_branch()
+        gate = next(i for i, ln in enumerate(body) if ln.strip() == "if _unattended_wait:")
+        gate_indent = len(body[gate]) - len(body[gate].lstrip())
+        call = next(i for i, ln in enumerate(body) if "notify_approval_stalled" in ln)
+        # Walk out to the STATEMENT that owns the call and confirm it is a
+        # sibling of the gate, not inside it. Blank and comment lines are
+        # skipped: neither owns a block, and a comment left at the outer indent
+        # would mask a call that had been nested under the gate.
+        owner = next(
+            i
+            for i in range(call, -1, -1)
+            if body[i].strip()
+            and not body[i].lstrip().startswith("#")
+            and (len(body[i]) - len(body[i].lstrip())) <= gate_indent
+        )
+        assert owner > gate, "the signal appears before the unattended gate"
+        assert (len(body[owner]) - len(body[owner].lstrip())) == gate_indent, (
+            "the stall signal is nested inside `if _unattended_wait:` — an "
+            "attended slot's monitoring loop would never be told"
+        )
+
+
 class TestResolver:
     def test_reads_config(self, cfg) -> None:
         cfg(window=300)
