@@ -5747,6 +5747,17 @@ class HistoryConsolidator:
         been appended since the last pass, yet still forces a fresh pass after a
         transcript rotation (which swaps the window's content); genuine repeats
         are still caught by the dedupe verdict in ``_process_auto_skills``.
+
+        The prompt gates on RECURRENCE, not effort. A session can be long,
+        difficult, and rich in tool calls while still being one-off — a single
+        bug's fix, a one-time audit of one component, a probe answering a
+        question that is now answered — and the tool-call floor
+        (``auto_min_tool_calls``) cannot tell those apart from a repeatable
+        method. So the prompt makes the model name the future session and the
+        DIFFERENT target that would reuse the procedure, and return null when
+        the only honest answer reuses this session's own artifact. It also
+        prefers null under uncertainty: an unreusable candidate is not free,
+        because it spends the human's review attention on every later proposal.
         """
         if self._skills_loader is None:
             return
@@ -5789,24 +5800,37 @@ class HistoryConsolidator:
             )
         skill_keys = [
             '"new_skill": Object or null. Return an object ONLY if this '
-            "session contained a non-trivial reusable multi-step procedure "
-            "that future sessions would benefit from (e.g. debugging a "
-            "specific class of error, running a multi-command sequence, "
-            "a research synthesis flow). The procedure may be demonstrated by "
-            "only PART of the excerpt below — you do NOT need to cover the whole "
-            "session, just capture the one reusable procedure it contains. Shape: "
+            "session demonstrated a procedure that will RECUR — one a future "
+            "session, working on a DIFFERENT target, would run again "
+            "substantially unchanged (e.g. a repeatable debugging method for a "
+            "class of error, a fixed command/API sequence, a verification "
+            "technique). The procedure may be demonstrated by only PART of the "
+            "excerpt below — you do NOT need to cover the whole session. "
+            "Shape: "
             '{"slug": "<kebab-case-4-to-60-chars>", '
             '"description": "<=150 chars, starts with verb>", '
             '"triggers": "<3-8 comma-separated keywords/phrases>", '
             '"procedure_md": "<concise markdown body with '
             "## When to use / ## Steps / ## Gotchas sections, "
             '<=8000 chars>"' + scripts_field + "}. "
-            "Return null if the session was trivial, a single-shot answer, "
-            "a one-off failure with no reusable takeaway, or involved "
-            "sensitive paths. When a session plausibly contains a procedure "
-            "a future session could reuse, lean toward returning it — every "
-            "candidate is staged for human approval before it can activate, "
-            "so a borderline proposal is cheap while a miss is lost for good. "
+            "## The recurrence test (apply BEFORE returning an object)\n"
+            "Name the future session that would load this skill and the "
+            "DIFFERENT target it would run against. If the only honest answer "
+            "reuses this session's specific artifact — this bug, this file, "
+            "this component, this one question — the procedure does not recur "
+            "and you MUST return null. Effort is not evidence of recurrence: a "
+            "long, many-step, genuinely difficult session is still one-off if "
+            "its steps were chosen for one target.\n"
+            "Return null for: a task done once and now finished (a specific "
+            "bug's fix, a one-time audit/trace of one component, a migration, "
+            "a probe run to answer a question that is now answered); a design "
+            "or planning discussion; a narrative of what happened in this "
+            "session; a procedure whose steps only make sense against the "
+            "exact artifact at hand; a trivial or single-shot answer; a "
+            "one-off failure with no reusable takeaway; anything touching "
+            "sensitive paths. Prefer null when uncertain — an unreusable "
+            "candidate costs the user review effort on every future proposal, "
+            "so silence is cheaper than a plausible-looking one-off. "
             "Do NOT include absolute paths, credentials, tokens, or user PII "
             "in the procedure body."
         ]
@@ -5844,6 +5868,16 @@ class HistoryConsolidator:
         self._last_skillgen_marker[key] = marker
         if not result:
             return
+        # Log the verdict, not just the proposals. The prompt's default is null,
+        # so silence is the common outcome, and the staging log in
+        # ``_process_auto_skills`` only fires when a candidate is produced --
+        # which would leave the queue showing the false-POSITIVE rate while the
+        # false-negative rate had no signal at all.
+        logger.debug(
+            "Skill detection verdict for %s: %s",
+            key,
+            "candidate proposed" if result.get("new_skill") else "no recurring procedure",
+        )
         # _event_loop was captured by our caller (_consolidate) so the
         # thread-offloaded dedupe judge can marshal back onto the gateway loop.
         await asyncio.to_thread(self._process_auto_skills, result, key)

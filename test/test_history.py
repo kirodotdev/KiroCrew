@@ -2893,6 +2893,89 @@ class TestConsolidationPromptJsonShape:
             "opener — don't split the value inside a quoted string."
         )
 
+    @pytest.mark.asyncio
+    async def test_prompt_gates_on_recurrence_not_effort(self, tmp_path):
+        """The built prompt must demand recurrence and must not bias toward yes.
+
+        The observed failure this pins: the prompt used to instruct the model to
+        "lean toward returning it" on any plausible procedure and judged only
+        triviality, so elaborate ONE-OFF sessions (a single bug's fix, a
+        one-time component audit, a probe answering a now-answered question)
+        were staged as skills and piled up unreviewable in the pending queue.
+        Asserts on the prompt the code actually builds, not on source text, so
+        the check survives refactors of how the string is assembled.
+        """
+        import asyncio as _asyncio
+        from unittest.mock import patch
+
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        c = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            approval_required=True,
+            auto_min_tool_calls=2,
+        )
+        key = "dashboard:chat-recurrence"
+        for i in range(4):
+            conv_log.append(key, "assistant", f"step {i}", tools=["execute_bash"])
+
+        captured: dict = {}
+
+        async def fake_llm(prompt):
+            captured["prompt"] = prompt
+            return {"new_skill": None}
+
+        c._event_loop = _asyncio.get_running_loop()
+        with patch.object(c, "_call_llm", side_effect=fake_llm):
+            await c._run_skill_detection(key)
+
+        prompt = " ".join(captured.get("prompt", "").split())
+        assert prompt, "skill detection must have built and issued a prompt"
+
+        # The yes-bias that caused the over-generation must be gone.
+        for banned in ("lean toward returning it", "a miss is lost for good"):
+            assert banned not in prompt, (
+                f"the prompt must not bias the model toward proposing a skill: "
+                f"found {banned!r}"
+            )
+
+        # Recurrence must be the actual gate, stated as a test the model applies.
+        assert "recurrence test" in prompt.lower(), (
+            "the prompt must make the model apply an explicit recurrence test "
+            "before returning a candidate"
+        )
+        assert "DIFFERENT target" in prompt, (
+            "the recurrence test must require naming a DIFFERENT future target — "
+            "that is what separates a repeatable method from a one-off task"
+        )
+        assert "Effort is not evidence of recurrence" in prompt, (
+            "the prompt must say effort is not evidence of recurrence, or a long "
+            "difficult one-off session still reads as skill-worthy"
+        )
+
+        # The one-off shapes actually observed in the pending queue.
+        for shape in ("one-time audit", "migration", "now answered"):
+            assert shape in prompt, (
+                f"the prompt must name {shape!r} as a return-null shape — these "
+                f"are the elaborate one-offs that polluted the pending queue"
+            )
+
+        # Uncertainty must resolve to null, and the reason must be stated in
+        # terms of the real cost (human review attention), not a free lunch.
+        assert "Prefer null when uncertain" in prompt, (
+            "the prompt must resolve uncertainty to null rather than to a "
+            "speculative candidate"
+        )
+
 
 class TestSkillDetectionFullWindow:
     """Skill detection judges the full-session window, not the consolidated tail.

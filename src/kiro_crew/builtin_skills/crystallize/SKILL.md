@@ -26,13 +26,21 @@ the work is worth keeping.
 
 - The user says any trigger phrase above (candidate mode), or explicitly asks
   for a "live" / "active" skill (live mode).
-- The session contains a **non-trivial, reusable procedure** — a multi-step
-  workflow, a debugging path for a class of error, a fixed command/API
-  sequence, or a research-synthesis flow — that a future session would benefit
-  from.
+- The session demonstrated a procedure that will **recur** — one a future
+  session, working on a DIFFERENT target, would run again substantially
+  unchanged: a repeatable debugging method for a class of error, a fixed
+  command/API sequence, a verification technique, a research-synthesis flow.
 
-Do **not** crystallize a trivial one-shot answer, a one-off failure, or a
-session that touched credentials / sensitive paths.
+Apply the same recurrence test the automatic pass uses: name the future session
+that would load this skill and the different target it would run against. If the
+only honest answer reuses this session's own artifact — this bug, this file,
+this component, this one question — the procedure does not recur. Effort is not evidence of recurrence: a long, many-step, genuinely difficult session is still one-off if its steps were chosen for one target.
+
+Do **not** crystallize a task done once and now finished (a specific bug's fix,
+a one-time audit or trace of one component, a migration, a probe run to answer a
+question that is now answered), a design or planning discussion, a narrative of
+what happened in this session, a trivial one-shot answer, a one-off failure, or
+a session that touched credentials / sensitive paths. Being asked does not make a one-off reusable — but the call is the user's, not yours. When the session carries no recurring procedure, say so and name what makes it one-off, then let them decide; if they still want it captured, crystallize it. Never silently decline a direct request.
 
 ## Procedure
 
