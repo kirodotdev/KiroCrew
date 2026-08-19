@@ -9,6 +9,7 @@ import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
+import { jsonEqual } from '../utils/structuralEqual'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
 import { secureRandomId } from '../utils/secureId'
@@ -416,19 +417,6 @@ export const shouldResolveAskOnSend = (
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
 type SlotQueueItem = { content: string; queueId: string; ts: string }
-
-/** Structural equality for the JSON-shaped message fields (`meta`, `variants`). */
-function jsonEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
-  const aArr = Array.isArray(a), bArr = Array.isArray(b)
-  if (aArr !== bArr) return false
-  if (aArr && bArr) return a.length === b.length && a.every((v, i) => jsonEqual(v, b[i]))
-  const ak = Object.keys(a), bk = Object.keys(b)
-  if (ak.length !== bk.length) return false
-  return ak.every(k => Object.prototype.hasOwnProperty.call(b, k)
-    && jsonEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
-}
 
 /** Field-for-field equality over every `ChatMessage` field a consumer can render. */
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {

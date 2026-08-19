@@ -1,4 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { sanitizeLlmOutput, isUnsafeKey } from '../utils/sanitize'
@@ -136,41 +137,19 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
   delete state.subagentText[slotKey]
 }
 
-/** Structural equality over the JSON shapes a slot payload is made of.
- *
- *  Key-order independent on purpose: one side is a fresh server payload, the
- *  other may be a row an in-place reducer (`touchSlotActivity`, `updateSlot`,
- *  `patchSlotLink`) has since patched, and a patch can append a key the payload
- *  spells earlier. A serialization compare would call those unequal forever and
- *  silently give back the wholesale-replacement behaviour this exists to avoid.
- *
- *  Field-agnostic for the same reason: a comparator listing `ChatSlot`'s fields
- *  would stop seeing a newly added one and pin a stale row on screen, which is a
- *  correctness bug where an extra re-render is only a cost. */
-const deepEqual = (a: unknown, b: unknown): boolean => {
-  if (a === b) return true
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
-  const aArr = Array.isArray(a)
-  if (aArr !== Array.isArray(b)) return false
-  if (aArr) {
-    const x = a as unknown[]
-    const y = b as unknown[]
-    return x.length === y.length && x.every((v, i) => deepEqual(v, y[i]))
-  }
-  const x = a as Record<string, unknown>
-  const y = b as Record<string, unknown>
-  const keys = Object.keys(x)
-  if (keys.length !== Object.keys(y).length) return false
-  return keys.every(k => Object.prototype.hasOwnProperty.call(y, k) && deepEqual(x[k], y[k]))
-}
-
 /** Apply an authoritative slot list, reusing the object identity of every row
  *  whose content is unchanged, and touching `state.slots` only when the list
  *  actually moved.
  *
  *  Membership AND order come from `next` — the server is authoritative on both.
  *  Only per-row identity is carried across, and only for a structurally equal
- *  row, so no consumer can read stale content off a reused reference.
+ *  row, so no consumer can read stale content off a reused reference. The
+ *  comparison uses the shared `jsonEqual`, whose key-order independence and
+ *  field-agnosticism this relies on: a row may have been patched in place by
+ *  `touchSlotActivity` / `updateSlot` / `patchSlotLink` since it was stored (so
+ *  its key order can differ from the payload's), and a comparator that listed
+ *  `ChatSlot`'s fields would stop seeing a newly added one and pin a stale row
+ *  on screen — a correctness bug, where an extra re-render is only a cost.
  *
  *  Identity is load-bearing here rather than a micro-optimisation. The sidebar
  *  renders every row as a Framer `motion.div` with `layout="position"` inside one
@@ -195,7 +174,7 @@ const applySlots = (state: DashboardState, next: ChatSlot[]): void => {
     // Reusing a draft row inside a freshly assigned array is fine: Immer
     // finalizes drafts found in the assigned value within the same scope, so an
     // untouched row resolves back to its base object and keeps its identity.
-    const reused = existing !== undefined && deepEqual(existing, incoming) ? existing : incoming
+    const reused = existing !== undefined && jsonEqual(existing, incoming) ? existing : incoming
     // Positional compare, so a pure reorder counts as changed even though every
     // row is individually reusable.
     if (reused !== prev[i]) changed = true

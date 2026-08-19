@@ -178,7 +178,10 @@ What a merge has to hold:
   that enumerates the type's fields stops seeing a newly added one and pins a
   stale row — a correctness bug, where a redundant re-render is only a cost. A
   serialization compare calls a locally patched row unequal forever, because an
-  in-place patch can append a key the server payload spells earlier.
+  in-place patch can append a key the server payload spells earlier. Use the
+  shared `jsonEqual` (`utils/structuralEqual.ts`) rather than writing a second
+  comparator — it already holds both properties, and a private copy is a second
+  set of guarantees to keep in sync.
 
 `applySlots` in `dashboardSlice.ts` is the reference implementation, driving both
 authoritative writers (`sseSlots` and the `fetchSlots` refetch);
@@ -186,6 +189,14 @@ authoritative writers (`sseSlots` and the `fetchSlots` refetch);
 row inside a freshly assigned array is safe — a draft found in the assigned value
 is finalized within the same scope, so an untouched row resolves back to its base
 object and keeps its identity.
+
+This is a convention for new and touched code, not a description of the current
+store. Two dashboard collections still assign wholesale and are known gaps rather
+than counterexamples: `sseSubagentStatus` rebuilds its `agents` array every frame,
+and `sseStatus` replaces `state.status` as a whole object that several panels
+subscribe to entirely. Converting them is worthwhile but is its own change —
+`state.status` in particular needs its consumers narrowed first, or the merge buys
+nothing.
 
 Two habits belong to the same concern:
 
