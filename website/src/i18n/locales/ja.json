@@ -7639,7 +7639,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "固定したプロンプトを折りたたむ",
         "expand_pinned_prompt": "固定したプロンプトを展開",
-        "jump_to_this_prompt": "このプロンプトへ移動"
+        "jump_to_this_turn": "このターンへ移動"
       },
       "recoveryCard": {
         "backend_error_continuing": "バックエンドエラー・継続を自動送信しました",

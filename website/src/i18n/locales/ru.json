@@ -7945,7 +7945,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Свернуть закреплённое сообщение",
         "expand_pinned_prompt": "Развернуть закреплённое сообщение",
-        "jump_to_this_prompt": "Перейти к этому сообщению"
+        "jump_to_this_turn": "Перейти к этому ходу"
       },
       "recoveryCard": {
         "backend_error_continuing": "ошибка бэкенда · продолжение отправлено автоматически",

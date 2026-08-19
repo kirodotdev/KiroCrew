@@ -7741,7 +7741,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "पिन किया गया संदेश संक्षिप्त करें",
         "expand_pinned_prompt": "पिन किया गया संदेश विस्तृत करें",
-        "jump_to_this_prompt": "इस संदेश पर जाएँ"
+        "jump_to_this_turn": "इस टर्न पर जाएँ"
       },
       "recoveryCard": {
         "backend_error_continuing": "बैकएंड त्रुटि · जारी रखने का अनुरोध अपने-आप भेज दिया गया",

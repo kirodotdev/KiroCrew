@@ -7741,7 +7741,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "পিন করা মেসেজ সংকুচিত করুন",
         "expand_pinned_prompt": "পিন করা মেসেজ প্রসারিত করুন",
-        "jump_to_this_prompt": "এই মেসেজে যান"
+        "jump_to_this_turn": "এই টার্নে যান"
       },
       "recoveryCard": {
         "backend_error_continuing": "ব্যাকএন্ড ত্রুটি · চালিয়ে যাওয়ার অনুরোধ স্বয়ংক্রিয়ভাবে পাঠানো হয়েছে",

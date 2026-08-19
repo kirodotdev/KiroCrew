@@ -7639,7 +7639,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "고정한 프롬프트 접기",
         "expand_pinned_prompt": "고정한 프롬프트 펼치기",
-        "jump_to_this_prompt": "이 프롬프트로 이동"
+        "jump_to_this_turn": "이 턴으로 이동"
       },
       "recoveryCard": {
         "backend_error_continuing": "백엔드 오류 · 자동으로 후속 요청 전송됨",

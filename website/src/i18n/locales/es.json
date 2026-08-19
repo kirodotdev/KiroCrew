@@ -7843,7 +7843,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Contraer mensaje fijado",
         "expand_pinned_prompt": "Expandir mensaje fijado",
-        "jump_to_this_prompt": "Ir a este mensaje"
+        "jump_to_this_turn": "Ir a este turno"
       },
       "recoveryCard": {
         "backend_error_continuing": "error de backend · continuación enviada automáticamente",

@@ -7741,7 +7741,7 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Angeheftete Nachricht einklappen",
         "expand_pinned_prompt": "Angeheftete Nachricht ausklappen",
-        "jump_to_this_prompt": "Zu dieser Nachricht springen"
+        "jump_to_this_turn": "Zu diesem Zug springen"
       },
       "recoveryCard": {
         "backend_error_continuing": "Backend-Fehler · Fortsetzung automatisch gesendet",

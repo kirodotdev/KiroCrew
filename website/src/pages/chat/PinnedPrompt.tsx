@@ -241,7 +241,7 @@ export default function PinnedPrompt({
           <button
             type="button"
             onClick={onJump}
-            title={i18nT('pages.chat.pinnedPrompt.jump_to_this_prompt')}
+            title={i18nT('pages.chat.pinnedPrompt.jump_to_this_turn')}
             className="min-w-0 flex-1 bg-transparent border-none p-0 m-0 text-left cursor-pointer"
           >
             {/* Expanded: images get their own strip at readable size, outside the
