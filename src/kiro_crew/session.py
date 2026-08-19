@@ -1501,7 +1501,7 @@ class SessionManager:
                 del self._sessions[key]
                 dead = sess.provider
         if dead is not None:
-            _unlink_session_queue(sess)
+            await asyncio.to_thread(_unlink_session_queue, sess)
             try:
                 await dead.shutdown()
             except Exception:
@@ -2566,7 +2566,7 @@ class SessionManager:
             # outside the lock — shutdown() may involve signals/waitpid.
             if stale_provider is not None:
                 if stale_session is not None:
-                    _unlink_session_queue(stale_session)
+                    await asyncio.to_thread(_unlink_session_queue, stale_session)
                 try:
                     await stale_provider.shutdown()
                 except Exception:
@@ -3137,7 +3137,7 @@ class SessionManager:
             self._compact_cooldown_until.pop(key, None)
             self._origin_links.pop(key, None)
         if session:
-            _unlink_session_queue(session)
+            await asyncio.to_thread(_unlink_session_queue, session)
             # Capture PID and child tree before shutdown clears them
             client = getattr(session.provider, "_client", None)
             raw_pid = getattr(client, "_pid", None) if client else None
@@ -3457,7 +3457,7 @@ class SessionManager:
                     popped = self._sessions.pop(key, None)
             # popped is session by identity when non-None (see pop-by-identity
             # above), but session's queue is abandoned in either branch below.
-            _unlink_session_queue(session)
+            await asyncio.to_thread(_unlink_session_queue, session)
             if popped is None:
                 # A racing cold-start already replaced the entry — the map
                 # now points at a fresh, healthy session. Reap OUR old
@@ -3625,7 +3625,7 @@ class SessionManager:
             self._compact_cooldown_until.pop(key, None)
             self._origin_links.pop(key, None)
         if session:
-            _unlink_session_queue(session)
+            await asyncio.to_thread(_unlink_session_queue, session)
             await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (the
             # get_subagent_runtime fallback path). shutdown() covers the common
@@ -3657,7 +3657,7 @@ class SessionManager:
             del self._sessions[key]
             self._compact_cooldown_until.pop(key, None)
             self._origin_links.pop(key, None)
-        _unlink_session_queue(session)
+        await asyncio.to_thread(_unlink_session_queue, session)
         await session.provider.shutdown()
         await self.release_subagent_runtime(key)
         logger.info("Removed unclaimed speculative session (map preserved): %s", key)
@@ -3675,7 +3675,7 @@ class SessionManager:
             self._compact_cooldown_until.pop(key, None)
         try:
             if session:
-                _unlink_session_queue(session)
+                await asyncio.to_thread(_unlink_session_queue, session)
                 await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (see remove()).
             await self.release_subagent_runtime(key)
@@ -3703,7 +3703,7 @@ class SessionManager:
             self._compact_cooldown_until.pop(key, None)
         try:
             if session:
-                _unlink_session_queue(session)
+                await asyncio.to_thread(_unlink_session_queue, session)
                 await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (see remove()).
             await self.release_subagent_runtime(key)
@@ -4760,7 +4760,7 @@ class SessionManager:
         # can pop many sessions at once, and os.unlink is blocking I/O that
         # would otherwise stall every other coroutine waiting on self._lock.
         for sess in popped:
-            _unlink_session_queue(sess)
+            await asyncio.to_thread(_unlink_session_queue, sess)
         return providers
 
     async def drain_warm_pool(self) -> list:

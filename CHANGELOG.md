@@ -3,23 +3,6 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
-- **Temp image files behind a queued message no longer leak on disk when a
-  whole session is torn down.** `unlink_queued_temp_paths` already unlinks a
-  queue entry's `image_temp_paths` on every path that discards it
-  piecemeal — cancel, clear, dequeue's cancelled-skip — but nine other
-  places pop an entire `_Session` (and its `.queue`) out of `_sessions` and
-  never touched it: stale-provider eviction (dead process detected on
-  `get_or_create`'s fast path), `reset()`, the RSS-recycle watchdog
-  (`_recycle_held`), `remove()`, `remove_if_unclaimed()` (the resume-prefetch
-  TTL backstop), `destroy()`, `discard_conversation()`, and the bulk
-  `drain_all_providers()` every gateway shutdown/restart runs. Any of these
-  reachable while a busy session held queued image-bearing messages
-  (history delete, error recovery, an idle sweep, a restart) leaked their
-  temp files permanently. All nine now route through one shared
-  `_unlink_session_queue()` helper, called after the popped session leaves
-  the lock (`os.unlink` is blocking I/O; the bulk drain in particular can
-  pop many sessions in one shutdown). (#3777)
-
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
   `kiro-cli` child holds its credential for the life of the session, so an
