@@ -54,8 +54,29 @@ class AidlcStore:
     def get_project(self, pid: str) -> dict | None:
         return next((p for p in self._data["projects"] if p["id"] == pid), None)
 
+    @staticmethod
+    def _ts(record: dict, key: str) -> float:
+        # The store file is plain JSON a user can hand-edit, and _save's
+        # default=str can stringify odd values; a non-numeric timestamp must
+        # sort as 0 rather than raise on a str/float comparison.
+        try:
+            return float(record.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def list_projects(self) -> list[dict]:
-        return sorted(self._data["projects"], key=lambda p: p.get("updated_at", 0), reverse=True)
+        # Newest first. updated_at alone under-determines the order: system
+        # clocks are coarse enough (~15.6ms on Windows) that back-to-back
+        # writes receive equal timestamps. created_at breaks that tie, and
+        # when it ties too, iterating in reverse insertion order lets the
+        # stable sort fall back to most-recently-created first (projects are
+        # appended on create), so the order is deterministic regardless of
+        # clock granularity.
+        return sorted(
+            reversed(self._data["projects"]),
+            key=lambda p: (self._ts(p, "updated_at"), self._ts(p, "created_at")),
+            reverse=True,
+        )
 
     def update_project(self, pid: str, **fields) -> dict | None:
         p = self.get_project(pid)
