@@ -4281,10 +4281,11 @@
       "active_in_this_session": "このセッションでアクティブ",
       "could_not_change_the_default_agent": "デフォルトエージェントを変更できませんでした",
       "default": "デフォルト",
+      "default_agent_for_new_sessions": "新しいセッションのデフォルトエージェント",
       "manage_agents": "エージェントを管理…",
       "new_sessions_start_with_this_agent": "新しいセッションはこのエージェントで始まります",
       "no_matches": "マッチするものがありません",
-      "start_new_sessions_with_this_agent": "新しいセッションをこのエージェントで始めます"
+      "set_default_agent": "<agent/> を新しいセッションのデフォルトエージェントに設定"
     },
     "agentImportFlow": {
       "back": "戻る",

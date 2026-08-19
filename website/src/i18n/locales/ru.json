@@ -4489,10 +4489,11 @@
       "active_in_this_session": "Активен в этой сессии",
       "could_not_change_the_default_agent": "Не удалось изменить агента по умолчанию",
       "default": "По умолчанию",
+      "default_agent_for_new_sessions": "Агент по умолчанию для новых сессий",
       "manage_agents": "Управление агентами…",
       "new_sessions_start_with_this_agent": "Новые сессии начинаются с этим агентом",
       "no_matches": "Нет совпадений",
-      "start_new_sessions_with_this_agent": "Начинать новые сессии с этим агентом"
+      "set_default_agent": "Сделать <agent/> агентом по умолчанию для новых сессий"
     },
     "agentImportFlow": {
       "back": "Назад",

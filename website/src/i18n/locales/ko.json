@@ -4281,10 +4281,11 @@
       "active_in_this_session": "이 세션에서 활성",
       "could_not_change_the_default_agent": "기본 에이전트를 변경할 수 없습니다",
       "default": "기본",
+      "default_agent_for_new_sessions": "새 세션의 기본 에이전트",
       "manage_agents": "에이전트 관리…",
       "new_sessions_start_with_this_agent": "새 세션은 이 에이전트로 시작합니다",
       "no_matches": "일치하는 항목 없음",
-      "start_new_sessions_with_this_agent": "새 세션을 이 에이전트로 시작합니다"
+      "set_default_agent": "<agent/>을(를) 새 세션의 기본 에이전트로 설정"
     },
     "agentImportFlow": {
       "back": "뒤로",

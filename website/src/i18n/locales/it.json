@@ -4425,10 +4425,11 @@
       "active_in_this_session": "Attivo in questa sessione",
       "could_not_change_the_default_agent": "Non è stato possibile cambiare l’agente predefinito",
       "default": "Predefinito",
+      "default_agent_for_new_sessions": "Agente predefinito per le nuove sessioni",
       "manage_agents": "Gestisci gli agenti…",
       "new_sessions_start_with_this_agent": "Le nuove sessioni iniziano con questo agente",
       "no_matches": "Nessuna corrispondenza",
-      "start_new_sessions_with_this_agent": "Avvia le nuove sessioni con questo agente"
+      "set_default_agent": "Imposta <agent/> come agente predefinito per le nuove sessioni"
     },
     "agentImportFlow": {
       "back": "Indietro",

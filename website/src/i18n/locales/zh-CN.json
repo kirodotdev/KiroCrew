@@ -4297,10 +4297,11 @@
       "active_in_this_session": "在此会话中使用",
       "could_not_change_the_default_agent": "无法更改默认代理",
       "default": "默认",
+      "default_agent_for_new_sessions": "新会话的默认代理",
       "manage_agents": "管理代理…",
       "new_sessions_start_with_this_agent": "新会话将使用该代理",
       "no_matches": "无匹配项",
-      "start_new_sessions_with_this_agent": "用该代理开始新会话"
+      "set_default_agent": "将 <agent/> 设为新会话的默认代理"
     },
     "agentImportFlow": {
       "back": "上一步",

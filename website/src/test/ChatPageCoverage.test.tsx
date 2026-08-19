@@ -77,7 +77,13 @@ let chatInputProps: ChatInputProps | null = null
 interface AgentDropdownListProps {
   onSelect: (name: string) => void
 }
+interface DefaultAgentRowProps {
+  agentName: string
+  isDefault: boolean
+  onSetDefault: () => void
+}
 let agentDropdownProps: AgentDropdownListProps | null = null
+let defaultAgentRowProps: DefaultAgentRowProps | null = null
 
 vi.mock('../components/QueueStack', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../components/QueueStack')>()
@@ -118,6 +124,7 @@ vi.mock('../components/AgentDropdownList', () => ({
     return <div data-testid="agent-dropdown" />
   },
   ManageAgentsFooter: () => null,
+  DefaultAgentRow: (props: DefaultAgentRowProps) => { defaultAgentRowProps = props; return null },
 }))
 vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
@@ -333,6 +340,7 @@ beforeEach(() => {
   userMsgProps = null
   chatInputProps = null
   agentDropdownProps = null
+  defaultAgentRowProps = null
   sessionStorage.clear()
   setItemSpy.mockClear()
   window.history.replaceState({}, '', '/chat')
@@ -394,6 +402,21 @@ describe('ChatPage agent-switch failure feedback', () => {
 
     await waitFor(() => expect(screen.queryByTestId('agent-dropdown')).not.toBeInTheDocument())
     expect(store.getState().chat.agentSwitchNotice).toBeNull()
+  })
+})
+describe('ChatPage default-agent footer row', () => {
+  it('points the row at the session\'s own agent and writes that one', async () => {
+    const setDefault = apiSpy('setDefaultAgent')
+    setDefault.mockResolvedValue(undefined)
+    renderChatPage([])
+
+    await waitFor(() => expect(chatInputProps?.onAgentClick).toBeTypeOf('function'))
+    act(() => { chatInputProps!.onAgentClick!({ left: 40, top: 80 } as DOMRect) })
+    await waitFor(() => expect(defaultAgentRowProps).not.toBeNull())
+
+    expect(defaultAgentRowProps!.agentName).toBe('default')
+    act(() => { defaultAgentRowProps!.onSetDefault() })
+    await waitFor(() => expect(setDefault).toHaveBeenCalledWith('default'))
   })
 })
 

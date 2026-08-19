@@ -2132,9 +2132,10 @@
       "active_in_this_session": "Active in this session",
       "could_not_change_the_default_agent": "Could not change the default agent",
       "default": "Default",
+      "default_agent_for_new_sessions": "Default agent for new sessions",
       "manage_agents": "Manage agents…",
       "new_sessions_start_with_this_agent": "New sessions start with this agent",
-      "start_new_sessions_with_this_agent": "Start new sessions with this agent"
+      "set_default_agent": "Set <agent/> as default agent for new sessions"
     },
     "agentSkillsEditor": {
       "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",

@@ -4361,10 +4361,11 @@
       "active_in_this_session": "In dieser Sitzung aktiv",
       "could_not_change_the_default_agent": "Der Standardagent konnte nicht geändert werden",
       "default": "Standard",
+      "default_agent_for_new_sessions": "Standard-Agent für neue Sitzungen",
       "manage_agents": "Agenten verwalten…",
       "new_sessions_start_with_this_agent": "Neue Sitzungen starten mit diesem Agenten",
       "no_matches": "Keine Treffer",
-      "start_new_sessions_with_this_agent": "Neue Sitzungen mit diesem Agenten starten"
+      "set_default_agent": "<agent/> als Standard-Agenten für neue Sitzungen festlegen"
     },
     "agentImportFlow": {
       "back": "Zurück",

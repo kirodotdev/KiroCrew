@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react'
+import { Trans } from 'react-i18next'
 import { SourceBadge } from './SourceBadge'
 import { Star, Check, Users } from 'lucide-react'
 
@@ -10,13 +11,12 @@ export interface AgentItem {
 }
 
 // ── Single agent row ──
-function AgentButton({ a, active, isDefault, activeRef, onSelect, onSetDefault, filter }: {
+function AgentButton({ a, active, isDefault, activeRef, onSelect, filter }: {
   a: AgentItem
   active: boolean
   isDefault: boolean
   activeRef: React.RefObject<HTMLButtonElement>
   onSelect: (name: string) => void
-  onSetDefault?: (name: string) => void
   filter?: string
 }) {
   const highlight = (text: string) => {
@@ -25,11 +25,6 @@ function AgentButton({ a, active, isDefault, activeRef, onSelect, onSetDefault, 
     if (idx === -1) return text
     return <>{text.slice(0, idx)}<mark className="bg-warn/30 text-text rounded-sm">{text.slice(idx, idx + filter.length)}</mark>{text.slice(idx + filter.length)}</>
   }
-
-  // Scope is named in full here rather than as a bare "Set as default": this pop-up's
-  // other job is switching the agent for THIS session, so an unqualified "default"
-  // reads as session-scoped when the setting is global.
-  const setDefaultLabel = i18nT('components.agentDropdownList.start_new_sessions_with_this_agent')
 
   return (
     <button
@@ -58,36 +53,6 @@ function AgentButton({ a, active, isDefault, activeRef, onSelect, onSetDefault, 
             <Check className="lucide-inline" />
           </span>
         )}
-        {onSetDefault && !isDefault && (
-          // Nested interactive control: the row selects the agent for this session,
-          // while this promotes it to the global default. stopPropagation keeps the two
-          // apart. Rendered as a span because a <button> cannot nest in a <button>.
-          //
-          // `data-option` enrols it in the listbox's roving-focus ring
-          // (useListboxKeyboard matches `[data-option],[role="option"]`), so Arrow
-          // keys reach it and its own Enter/Space handler invokes it. Without that it
-          // was pointer-only, which made the setting unreachable for a keyboard user.
-          //
-          // Only offered on rows that are NOT already the default: making the lit star
-          // clear the default put "leave the product with no default agent at all"
-          // behind the same gesture that sets one, with no confirmation. Clearing stays
-          // on the Templates page, where the control is labelled and the result is
-          // visible in a summary card.
-          <span
-            role="button"
-            data-option
-            tabIndex={-1}
-            aria-label={setDefaultLabel}
-            title={setDefaultLabel}
-            className="ml-auto shrink-0 flex items-center justify-center w-[22px] h-[22px] rounded-[5px] text-muted-strong hover:bg-warn-subtle hover:text-warn focus:bg-warn-subtle focus:text-warn focus:outline-none focus-ring transition-colors"
-            onClick={e => { e.stopPropagation(); onSetDefault(a.name) }}
-            onKeyDown={e => {
-              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSetDefault(a.name) }
-            }}
-          >
-            <Star className="lucide-inline" />
-          </span>
-        )}
       </div>
       {a.description && (
         <span className="text-[12px] text-muted leading-tight line-clamp-2" title={a.description}>
@@ -99,12 +64,63 @@ function AgentButton({ a, active, isDefault, activeRef, onSelect, onSetDefault, 
 }
 
 /**
+ * Footer row that promotes an agent to the global default, mirroring the model pop-up's
+ * own pin row. It acts on the agent the row selection has already made active, which is
+ * what lets the label name the exact agent it writes — a bare icon can only put that in
+ * a tooltip, and this pop-up's other job is switching the agent for THIS session, so an
+ * unqualified "default" reads as session-scoped.
+ *
+ * Set-only: once an agent holds the default the row reports that state instead of
+ * offering a no-op write, and clearing lives on the Agent Templates page, where the
+ * control is labelled and the outcome is visible in a summary card.
+ */
+export function DefaultAgentRow({ agentName, isDefault, onSetDefault }: {
+  agentName: string
+  isDefault: boolean
+  onSetDefault: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={isDefault ? undefined : onSetDefault}
+      disabled={isDefault}
+      aria-pressed={isDefault}
+      // `data-option` + tabIndex enrol the actionable row in the listbox's
+      // roving-focus ring (`useListboxKeyboard` moves real focus across
+      // `[data-option],[role="option"]`). Without it the row is pointer-only: the
+      // hook consumes Tab to close the pop-up, so a plain button in the footer can
+      // never receive focus. Enter/Space then work natively — the hook leaves a
+      // focused option's activation to the button itself. Omitted while disabled,
+      // so the ring never stops on a row that cannot be actuated.
+      {...(isDefault ? {} : { 'data-option': true, tabIndex: -1 })}
+      className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover focus:text-text focus:bg-bg-hover focus:outline-none focus-ring transition-colors disabled:cursor-default disabled:hover:bg-transparent"
+    >
+      {/* Wraps rather than truncates. The label's whole job is to name WHICH agent the
+          write targets, and that identifier sits mid-string — an ellipsis eats exactly
+          the part that carries the meaning. The pop-up caps at 340px and agent names
+          are unbounded, so a second line has to be free rather than clipped. */}
+      <span className="min-w-0 text-left break-words">
+        {isDefault
+          ? i18nT('components.agentDropdownList.default_agent_for_new_sessions')
+          : <Trans
+              i18nKey="components.agentDropdownList.set_default_agent"
+              components={{ agent: <span className="font-mono">{agentName}</span> }}
+            />}
+      </span>
+      {isDefault ? <Check size={13} className="text-accent" /> : <Star size={13} />}
+    </button>
+  )
+}
+
+/**
  * Footer link out of an agent pop-up to the Agent Templates page. Mirrors the model
  * pop-up's own "Set default for new sessions…" footer so the two pickers agree on where
  * a picker sends you to change what it is picking from.
  *
  * `error` renders the failed-write line: the default-agent write is fire-and-forget, so
- * without it a rejected request is indistinguishable from a successful one.
+ * without it a rejected request is indistinguishable from a successful one. It sits here
+ * rather than on `DefaultAgentRow` so the alert lands directly beneath the control that
+ * failed.
  */
 export function ManageAgentsFooter({ onManage, error }: { onManage: () => void; error?: boolean }) {
   return (
@@ -127,13 +143,11 @@ export function ManageAgentsFooter({ onManage, error }: { onManage: () => void; 
 }
 
 /** Shared agent list used in dropdown portals across ChatPage and AgentsPage */
-export default function AgentDropdownList({ agents, activeAgent, defaultAgent, onSelect, onSetDefault, filter }: {
+export default function AgentDropdownList({ agents, activeAgent, defaultAgent, onSelect, filter }: {
   agents: AgentItem[]
   activeAgent: string
   defaultAgent: string
   onSelect: (name: string) => void
-  /** Omit to render the list read-only (no per-row default toggle). */
-  onSetDefault?: (name: string) => void
   filter?: string
 }) {
   const activeRef = useRef<HTMLButtonElement>(null)
@@ -149,7 +163,7 @@ export default function AgentDropdownList({ agents, activeAgent, defaultAgent, o
     <div className="overflow-y-auto flex flex-col max-h-[300px]">
       {agents.map(a => {
         const active = activeAgent === a.name
-        return <AgentButton key={a.name} a={a} active={active} isDefault={a.name === defaultAgent} activeRef={activeRef} onSelect={onSelect} onSetDefault={onSetDefault} filter={filter} />
+        return <AgentButton key={a.name} a={a} active={active} isDefault={a.name === defaultAgent} activeRef={activeRef} onSelect={onSelect} filter={filter} />
       })}
     </div>
   )

@@ -4361,10 +4361,11 @@
       "active_in_this_session": "এই সেশনে সক্রিয়",
       "could_not_change_the_default_agent": "ডিফল্ট এজেন্ট বদলানো গেল না",
       "default": "ডিফল্ট",
+      "default_agent_for_new_sessions": "নতুন সেশনের ডিফল্ট এজেন্ট",
       "manage_agents": "এজেন্ট পরিচালনা করুন…",
       "new_sessions_start_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু হয়",
       "no_matches": "কোনো মিল নেই",
-      "start_new_sessions_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু করো"
+      "set_default_agent": "<agent/>-কে নতুন সেশনের ডিফল্ট এজেন্ট করো"
     },
     "agentImportFlow": {
       "back": "পিছনে",
