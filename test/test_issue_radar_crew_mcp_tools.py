@@ -130,7 +130,7 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
                     def read(self):
                         return b"{}"
 
-                def _capture(req: urllib.request.Request, timeout=None):
+                def _capture(req: urllib.request.Request, timeout=None, unix_socket_path=None):
                     seen["key"] = req.headers.get("X-session-key")
                     return _Resp()
 
@@ -148,6 +148,9 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
                         # so patching it succeeded while the real request went out
                         # unpatched, got swallowed into `{"error": ...}`, and the
                         # capture never ran — green locally, red on the merge.
+                        # It now also carries the attempt's resolved socket path
+                        # (#4106 item 1), so the fake must accept it or the same
+                        # swallow-into-error failure returns.
                         with patch.object(mcp_core, "_api_urlopen", _capture):
                             got = helper("/api/x", session_key="MINE", **kwargs)
 
