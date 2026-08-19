@@ -1067,7 +1067,15 @@ const McpSection: React.FC<{
           // network hiccup wipe the chip groups a user is mid-way through
           // configuring -- the error message must ADD to the view, not clear it.
           if (result.errorCode && previous) {
-            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode } }
+            // Clear a stale `status` along with the merge: discoverMcpTools never
+            // returns `errorCode` and `status: 'needs_auth'` together, so a fresh
+            // errorCode here means THIS attempt was not needs_auth even if a PRIOR
+            // attempt was. Carrying the old status forward made the muted "Not
+            // verified" copy stick around and silently swallow a real failure that
+            // happened after auth was granted (e.g. a later probe error) --
+            // the two are conflated in the render check below, so unless
+            // status is cleared here, the display would ignore the new errorCode.
+            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode, status: undefined } }
           }
           return { ...prev, [serverName]: result }
         })
