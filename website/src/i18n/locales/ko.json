@@ -3750,13 +3750,13 @@
     "personalShopper": {
       "manifest": {
         "description": "실제 스토어를 조사하고, 구매로 끝나지 않을 수도 있는 문제의 해결을 돕는 개인 어드바이저입니다. 취향 탭은 사용자용 참조 목록이며, 중요한 항목은 채팅에 붙여 주세요. 절대 직접 구매하지 않습니다 — 구매는 사용자가 합니다.",
-        "display_name": "퍼스널 쇼퍼",
+        "display_name": "Personal Shopper",
         "highlight_1": "무언가를 추천하기 전에 문제를 먼저 진단합니다 — 답이 구매가 아닐 때도 있습니다",
         "highlight_2": "중요한 취향은 채팅에 붙여 주세요 — 어드바이저가 읽는 것은 대화이며 취향 탭이 아닙니다",
         "highlight_3": "사용자가 지목한 스토어만 조사하고, 가격이 계정이 아니라 공개 페이지에서 나온 것임을 알려 줍니다",
         "highlight_4": "장바구니나 결제에 도달할 방법 자체가 없습니다",
         "highlight_5": "저장한 취향은 취향 탭에서 그룹으로 정리할 수 있습니다",
-        "page_label": "퍼스널 쇼퍼"
+        "page_label": "Personal Shopper"
       },
       "historyTab": {
         "liked": "좋아요",
@@ -3774,7 +3774,7 @@
         "change_feedback": "평가 변경"
       },
       "personalShopperPage": {
-        "personal_shopper": "퍼스널 쇼퍼",
+        "personal_shopper": "Personal Shopper",
         "say_something_like_help_me_find_running_shoes_or": "‘러닝화 찾아 줘’ 또는 ‘딸 생일이 다가와’처럼 말해 보세요",
         "start_a_conversation_with_your_personal_advisor": "어떤 채팅 세션에서든 퍼스널 어드바이저와 대화를 시작할 수 있습니다.",
         "start_advisor_conversation": "어드바이저와 대화 시작",
@@ -5618,7 +5618,7 @@
         "kind_notification": "알림",
         "kind_skills": "스킬",
         "kind_subagent": "서브에이전트",
-        "kind_task_runner": "작업 실행기",
+        "kind_task_runner": "Task Runner",
         "kind_webhook": "웹훅",
         "this_week": "이번 주",
         "today": "오늘",
@@ -6731,7 +6731,7 @@
     "schedule": "스케줄",
     "sessions": "세션",
     "settings": "설정",
-    "task_runner": "태스크 러너",
+    "task_runner": "Task Runner",
     "webhooks": "Webhooks"
   },
   "pages": {
@@ -9742,7 +9742,7 @@
       "running": "실행 중",
       "schedule": "정기 실행",
       "scheduled_as_daily_cron_job": "매일 실행되는 cron 작업으로 등록했습니다",
-      "task_runner": "작업 실행기",
+      "task_runner": "Task Runner",
       "upload_a_file": "파일 업로드",
       "workspace": "워크스페이스:",
       "workspace_folder": "워크스페이스 폴더",
@@ -10653,7 +10653,7 @@
         "category_subagent": "서브에이전트",
         "category_subagent_description": "백그라운드 서브에이전트 완료",
         "category_taskrunner": "작업",
-        "category_taskrunner_description": "작업 실행기 완료",
+        "category_taskrunner_description": "Task Runner 완료",
         "category_turn": "에이전트 응답",
         "category_turn_description": "에이전트가 어떤 채팅에서든 한 차례를 마쳤을 때",
         "channel_default": "채널 기본값",
@@ -11740,7 +11740,7 @@
     "worldsPage": {
       "active": "활동 중,",
       "agent_other": "에이전트 {{count}}개",
-      "agent_worlds": "에이전트 월드",
+      "agent_worlds": "Agent Worlds",
       "focus_popout": "팝아웃 포커스",
       "hide_controls": "컨트롤 숨기기",
       "open": "빈 시간",

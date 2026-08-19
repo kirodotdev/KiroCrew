@@ -175,7 +175,7 @@
       },
       "manifest": {
         "description": "Executa campanhas de pesquisa de vários ciclos que continuam trabalhando depois que você sai. Dê uma pergunta e ele a desdobra em uma árvore de subperguntas mais específicas, envia agentes para investigar cada uma e transmite as descobertas para a página conforme elas chegam. Uma campanha se conduz sozinha até a pergunta ser respondida ou até perceber que o progresso parou, e você pode enviar o relatório final para a sua biblioteca de Conhecimento ou para um artefato compartilhável.",
-        "display_name": "Laboratório de Pesquisa",
+        "display_name": "Research Lab",
         "highlight_1": "Desdobra uma pergunta ampla em uma árvore delimitada de subperguntas antes de gastar tempo de agente",
         "highlight_2": "As campanhas continuam pesquisando entre as suas visitas, com as descobertas transmitidas ao vivo",
         "highlight_3": "Percebe quando uma campanha para de progredir, em vez de repetir para sempre",
@@ -183,7 +183,7 @@
         "highlight_5": "Acrescente perguntas de acompanhamento no meio da campanha, sem começar de novo",
         "highlight_6": "Inicie, pause e retome qualquer campanha pelo painel",
         "highlight_7": "Exporte o relatório final para a sua biblioteca de Conhecimento ou para um artefato compartilhável",
-        "page_label": "Pesquisa"
+        "page_label": "Research Lab"
       },
       "researchLabPage": {
         "120s": "120s",
@@ -291,8 +291,8 @@
         "regenerate_the_report_updates_the_same_artifact": "Gerar o relatório novamente — atualiza o mesmo artefato como uma nova versão",
         "regenerating": "Gerando novamente…",
         "remove_sub_question": "Remover subpergunta",
-        "research_lab": "Laboratório de Pesquisa",
-        "research_lab_investigates_and_reports_it_never_t": "O Laboratório de Pesquisa investiga e relata — ele nunca executa ações nos seus sistemas (sem gravações, implantações ou alterações de código). Qualquer próximo passo que exija agir é repassado ao agente principal para você revisar e conduzir.",
+        "research_lab": "Research Lab",
+        "research_lab_investigates_and_reports_it_never_t": "Research Lab investiga e relata — ele nunca executa ações nos seus sistemas (sem gravações, implantações ou alterações de código). Qualquer próximo passo que exija agir é repassado ao agente principal para você revisar e conduzir.",
         "research_only": "Somente pesquisa.",
         "research_question": "Pesquisar “{{question}}”",
         "research_stalled": "Pesquisa estagnada",
@@ -1324,7 +1324,7 @@
     "devFleet": {
       "manifest": {
         "description": "Um painel de controle para trabalhar no próprio Kiro Crew. Lista cada worktree de feature junto com o estado da pull request, a contagem de commits e o uso de disco, e pode subir qualquer uma delas como um pod: uma instância de preview completa, em uma porta e um diretório de dados próprios, para você navegar por uma alteração inacabada sem incomodar o seu gateway ativo. Também cuida das tarefas em volta disso — fazer pull do main e reconstruir, fazer rebase de uma branch, acompanhar os logs do pod e limpar worktrees cujo trabalho já foi mesclado.",
-        "display_name": "Frota Dev",
+        "display_name": "Dev Fleet",
         "highlight_1": "Suba qualquer worktree como um pod isolado, com porta e diretório de dados próprios, deixando o seu gateway ativo intacto",
         "highlight_2": "Visão da frota com status de PR por branch, contagem de commits e uso de disco",
         "highlight_3": "Sincronize (pull do main e reconstrução) ou faça rebase de uma branch sem sair do painel",
@@ -1332,7 +1332,7 @@
         "highlight_5": "Acompanhe os logs do pod e emita tokens de acesso ao pod pela interface",
         "highlight_6": "Feito para quem desenvolve o próprio Kiro Crew — não é necessário no uso diário",
         "highlight_7": "Os pods rodam em Linux (systemd --user) e macOS (launchd) — mas o pod do macOS não tem limite de memória/CPU aplicado; Make Live continua só no Linux; a visão da frota, o status de PR, a sincronização, o rebase e a limpeza funcionam em qualquer plataforma",
-        "page_label": "Frota Dev"
+        "page_label": "Dev Fleet"
       }
     },
     "designTweak": {
@@ -4060,13 +4060,13 @@
     "projects": {
       "manifest": {
         "description": "Entregue um trabalho de várias etapas e deixe que ele vá até o fim sem supervisão. Descreva o trabalho em linguagem simples, cole uma especificação escrita ou envie um arquivo YAML e, então, gere primeiro um plano para revisar as etapas ou comece na hora. Cada execução ganha uma página própria com o progresso passo a passo, e você pode pausar, retomar, tentar novamente ou parar a qualquer momento.",
-        "display_name": "Executor de tarefas",
+        "display_name": "Task Runner",
         "highlight_1": "Três formas de começar: descreva o trabalho em linguagem simples, cole uma especificação ou envie um YAML",
         "highlight_2": "Gere um plano e revise as etapas antes de se comprometer com uma execução",
         "highlight_3": "As execuções acontecem sem supervisão, com o progresso passo a passo na página da própria execução",
         "highlight_4": "Pause, retome, tente novamente ou pare uma execução a qualquer momento",
         "highlight_5": "Mantém um histórico das execuções anteriores e dos resultados delas",
-        "page_label": "Tarefas"
+        "page_label": "Task Runner"
       }
     },
     "specBuilder": {
@@ -5782,7 +5782,7 @@
         "kind_notification": "Notificação",
         "kind_skills": "Habilidades",
         "kind_subagent": "Subagente",
-        "kind_task_runner": "Executor de tarefas",
+        "kind_task_runner": "Task Runner",
         "kind_webhook": "Webhook",
         "this_week": "Esta semana",
         "today": "Hoje",
@@ -6909,7 +6909,7 @@
     "schedule": "Agendamentos",
     "sessions": "Sessões",
     "settings": "Configurações",
-    "task_runner": "Executor de tarefas",
+    "task_runner": "Task Runner",
     "webhooks": "Webhooks"
   },
   "pages": {
@@ -9542,7 +9542,7 @@
         "no_lessons": "Nenhuma lição",
         "no_lessons_yet": "Nenhuma lição ainda",
         "no_sessions_to_consolidate_start_a_chat_first": "Nenhuma sessão para consolidar — inicie um chat primeiro",
-        "persistent_lessons_injected_into_every_session_a": "Lições persistentes injetadas em todas as sessões. Extraídas automaticamente das falhas do executor de tarefas. Adicione manualmente com 'kirocrew learn add'. Quando a memória vetorial está ativa, as lições são gerenciadas na aba Semântica como entradas lesson.*.",
+        "persistent_lessons_injected_into_every_session_a": "Lições persistentes injetadas em todas as sessões. Extraídas automaticamente das falhas do Task Runner. Adicione manualmente com 'kirocrew learn add'. Quando a memória vetorial está ativa, as lições são gerenciadas na aba Semântica como entradas lesson.*.",
         "preference": "preferência",
         "preferences": "Preferências",
         "projects": "Projetos",
@@ -9978,7 +9978,7 @@
       "running": "Em execução",
       "schedule": "Agendar",
       "scheduled_as_daily_cron_job": "Agendado como job de cron diário",
-      "task_runner": "Executor de tarefas",
+      "task_runner": "Task Runner",
       "upload_a_file": "Enviar um arquivo",
       "workspace": "Workspace:",
       "workspace_folder": "Pasta do workspace",
@@ -10890,7 +10890,7 @@
         "category_subagent": "Subagente",
         "category_subagent_description": "Conclusões de subagentes em segundo plano",
         "category_taskrunner": "Tarefas",
-        "category_taskrunner_description": "Conclusões do executor de tarefas",
+        "category_taskrunner_description": "Conclusões do Task Runner",
         "category_turn": "Respostas do agente",
         "category_turn_description": "Quando o agente termina um turno em qualquer conversa",
         "channel_default": "Padrão do canal",
@@ -12004,7 +12004,7 @@
       "agent_many": "{{count}} agentes",
       "agent_one": "{{count}} agente",
       "agent_other": "{{count}} agentes",
-      "agent_worlds": "Mundos de agentes",
+      "agent_worlds": "Agent Worlds",
       "focus_popout": "Focar janela destacada",
       "hide_controls": "Ocultar controles",
       "open": "aberto",

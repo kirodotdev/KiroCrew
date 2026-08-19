@@ -1324,7 +1324,7 @@
     "devFleet": {
       "manifest": {
         "description": "Un panel de control para trabajar en Kiro Crew mismo. Lista cada worktree de función junto con el estado de su pull request, su número de commits y su uso de disco, y puede levantar cualquiera de ellos como un pod: una instancia de vista previa completa en su propio puerto y con su propio directorio de datos, para que revises un cambio sin terminar sin tocar tu gateway en vivo. También se encarga de las tareas de alrededor — traer main y recompilar, hacer rebase de una rama, transmitir los logs del pod y purgar los worktrees cuyo trabajo ya se integró.",
-        "display_name": "Flota de desarrollo",
+        "display_name": "Dev Fleet",
         "highlight_1": "Levanta cualquier worktree como un pod aislado en su propio puerto y directorio de datos, sin tocar tu gateway en vivo",
         "highlight_2": "Vista de flota con el estado del PR por rama, el número de commits y el uso de disco",
         "highlight_3": "Sincroniza (trae main y recompila) o haz rebase de una rama sin salir del panel",
@@ -1332,7 +1332,7 @@
         "highlight_5": "Transmite los logs del pod y genera tokens de acceso al pod desde la interfaz",
         "highlight_6": "Hecho para quienes desarrollan Kiro Crew mismo — no hace falta para el uso diario",
         "highlight_7": "Los pods corren en Linux (systemd --user) y macOS (launchd) — pero el pod de macOS no tiene un límite de memoria/CPU aplicado; Activar sigue siendo solo para Linux; la vista de flota, el estado del PR, la sincronización, el rebase y la purga funcionan en cualquier plataforma",
-        "page_label": "Flota de desarrollo"
+        "page_label": "Dev Fleet"
       }
     },
     "designTweak": {
@@ -4060,13 +4060,13 @@
     "projects": {
       "manifest": {
         "description": "Delega un trabajo de varios pasos y déjalo llegar al final sin supervisión. Describe el trabajo en lenguaje natural, pega una especificación escrita o sube un archivo YAML, y luego genera primero un plan para revisar los pasos o inícialo de una vez. Cada ejecución tiene su propia página con el avance paso a paso, y puedes pausarla, reanudarla, reintentarla o detenerla en cualquier momento.",
-        "display_name": "Ejecutor de tareas",
+        "display_name": "Task Runner",
         "highlight_1": "Tres formas de empezar: describe el trabajo en lenguaje natural, pega una especificación o sube un YAML",
         "highlight_2": "Genera un plan y revisa los pasos antes de comprometerte con una ejecución",
         "highlight_3": "Las ejecuciones corren sin supervisión, con el avance paso a paso en la página de cada una",
         "highlight_4": "Pausa, reanuda, reintenta o detén una ejecución en cualquier momento",
         "highlight_5": "Guarda un historial de las ejecuciones anteriores y sus resultados",
-        "page_label": "Ejecutor de tareas"
+        "page_label": "Task Runner"
       }
     },
     "specBuilder": {
@@ -5782,7 +5782,7 @@
         "kind_notification": "Notificación",
         "kind_skills": "Habilidades",
         "kind_subagent": "Subagente",
-        "kind_task_runner": "Ejecutor de tareas",
+        "kind_task_runner": "Task Runner",
         "kind_webhook": "Webhook",
         "this_week": "Esta semana",
         "today": "Hoy",
@@ -6909,7 +6909,7 @@
     "schedule": "Programación",
     "sessions": "Sesiones",
     "settings": "Configuración",
-    "task_runner": "Ejecutor de tareas",
+    "task_runner": "Task Runner",
     "webhooks": "Webhooks"
   },
   "pages": {
@@ -9542,7 +9542,7 @@
         "no_lessons": "No hay lecciones",
         "no_lessons_yet": "Aún no hay lecciones",
         "no_sessions_to_consolidate_start_a_chat_first": "No hay sesiones para consolidar — inicia un chat primero",
-        "persistent_lessons_injected_into_every_session_a": "Lecciones persistentes que se inyectan en cada sesión. Se extraen automáticamente de los fallos del ejecutor de tareas. Añádelas manualmente con 'kirocrew learn add'. Cuando la memoria vectorial está activa, las lecciones se gestionan en la pestaña Semántica como entradas lesson.*.",
+        "persistent_lessons_injected_into_every_session_a": "Lecciones persistentes que se inyectan en cada sesión. Se extraen automáticamente de los fallos del Task Runner. Añádelas manualmente con 'kirocrew learn add'. Cuando la memoria vectorial está activa, las lecciones se gestionan en la pestaña Semántica como entradas lesson.*.",
         "preference": "preferencia",
         "preferences": "Preferencias",
         "projects": "Proyectos",
@@ -9978,7 +9978,7 @@
       "running": "En ejecución",
       "schedule": "Programar",
       "scheduled_as_daily_cron_job": "Programado como trabajo cron diario",
-      "task_runner": "Ejecutor de tareas",
+      "task_runner": "Task Runner",
       "upload_a_file": "Subir un archivo",
       "workspace": "Espacio de trabajo:",
       "workspace_folder": "Carpeta del espacio de trabajo",
@@ -10891,7 +10891,7 @@
         "category_subagent": "Subagente",
         "category_subagent_description": "Finalizaciones de subagentes en segundo plano",
         "category_taskrunner": "Tareas",
-        "category_taskrunner_description": "Finalizaciones del ejecutor de tareas",
+        "category_taskrunner_description": "Finalizaciones del Task Runner",
         "category_turn": "Respuestas del agente",
         "category_turn_description": "Cuando el agente termina un turno en cualquier chat",
         "channel_default": "Predeterminado del canal",
@@ -12005,7 +12005,7 @@
       "agent_many": "{{count}} agentes",
       "agent_one": "{{count}} agente",
       "agent_other": "{{count}} agentes",
-      "agent_worlds": "Mundos de agentes",
+      "agent_worlds": "Agent Worlds",
       "focus_popout": "Enfocar la ventana emergente",
       "hide_controls": "Ocultar los controles",
       "open": "sin ocupar",

@@ -14,7 +14,7 @@
     "apps": "アプリ",
     "auto_update_on_restart": "再起動時に自動更新",
     "bonus_credits": "ボーナスクレジット",
-    "builder_id": "ビルダー ID",
+    "builder_id": "Builder ID",
     "cancel_update": "更新をキャンセル",
     "changelog": "チェンジログ",
     "check_logs_for_details": "詳細はログを確認してください。",
@@ -3750,13 +3750,13 @@
     "personalShopper": {
       "manifest": {
         "description": "実際のストアを調べ、購入で終わるとは限らない問題の解決を手伝うパーソナルアドバイザーです。「好み」タブはあなた用の参照リストで、大事なものはチャットに貼ってください。購入は一切行いません — 決めるのはあなたです。",
-        "display_name": "パーソナルショッパー",
+        "display_name": "Personal Shopper",
         "highlight_1": "何かを薦める前に問題を見極めます — 買わないことが答えの場合もあります",
         "highlight_2": "大事な好みはチャットに貼ってください — アドバイザーが読むのはあなたのメッセージで、「好み」タブではありません",
         "highlight_3": "あなたが挙げたストアだけを調べ、価格はアカウント経由ではなく公開ページのものだと明示します",
         "highlight_4": "カートや決済に到達する手段をそもそも持ちません",
         "highlight_5": "保存した好みは「好み」タブでグループに整理できます",
-        "page_label": "パーソナルショッパー"
+        "page_label": "Personal Shopper"
       },
       "historyTab": {
         "liked": "高評価",
@@ -3774,7 +3774,7 @@
         "change_feedback": "評価を変更"
       },
       "personalShopperPage": {
-        "personal_shopper": "パーソナルショッパー",
+        "personal_shopper": "Personal Shopper",
         "say_something_like_help_me_find_running_shoes_or": "「ランニングシューズを探して」や「娘の誕生日が近い」のように話しかけてください",
         "start_a_conversation_with_your_personal_advisor": "どのチャットセッションでもパーソナルアドバイザーと会話を始められます。",
         "start_advisor_conversation": "アドバイザーと会話を始める",
@@ -5618,7 +5618,7 @@
         "kind_notification": "通知",
         "kind_skills": "スキル",
         "kind_subagent": "サブエージェント",
-        "kind_task_runner": "タスクランナー",
+        "kind_task_runner": "Task Runner",
         "kind_webhook": "Webhook",
         "this_week": "今週",
         "today": "今日",
@@ -6731,7 +6731,7 @@
     "schedule": "スケジュール",
     "sessions": "セッション",
     "settings": "設定",
-    "task_runner": "タスクランナー",
+    "task_runner": "Task Runner",
     "webhooks": "Webhooks"
   },
   "pages": {
@@ -9310,7 +9310,7 @@
         "no_lessons": "レッスンなし",
         "no_lessons_yet": "まだレッスンはありません",
         "no_sessions_to_consolidate_start_a_chat_first": "統合するセッションがありません — まずチャットを開始してください",
-        "persistent_lessons_injected_into_every_session_a": "すべてのセッションに注入される永続的なレッスン。タスクランナーの失敗から自動抽出されます。'kirocrew learn add' を使って手動で追加できます。ベクトルメモリがアクティブな場合、レッスンはセマンティックタブで lesson.* エントリとして管理されます。",
+        "persistent_lessons_injected_into_every_session_a": "すべてのセッションに注入される永続的なレッスン。Task Runnerの失敗から自動抽出されます。'kirocrew learn add' を使って手動で追加できます。ベクトルメモリがアクティブな場合、レッスンはセマンティックタブで lesson.* エントリとして管理されます。",
         "preference": "優先度",
         "preferences": "優先度",
         "projects": "プロジェクト",
@@ -9742,7 +9742,7 @@
       "running": "実行中",
       "schedule": "スケジュール",
       "scheduled_as_daily_cron_job": "日次cronジョブとしてスケジュール済み",
-      "task_runner": "タスクランナー",
+      "task_runner": "Task Runner",
       "upload_a_file": "ファイルをアップロード",
       "workspace": "ワークスペース：",
       "workspace_folder": "ワークスペースフォルダー",
@@ -10642,7 +10642,7 @@
         "category_subagent": "サブエージェント",
         "category_subagent_description": "バックグラウンドサブエージェントの完了",
         "category_taskrunner": "タスク",
-        "category_taskrunner_description": "タスクランナーの完了",
+        "category_taskrunner_description": "Task Runnerの完了",
         "category_turn": "エージェントの返信",
         "category_turn_description": "エージェントが任意のチャットでターンを完了するとき",
         "channel_default": "チャネルのデフォルト",
@@ -11740,7 +11740,7 @@
     "worldsPage": {
       "active": "アクティブ、",
       "agent_other": "{{count}} エージェント",
-      "agent_worlds": "エージェントワールド",
+      "agent_worlds": "Agent Worlds",
       "focus_popout": "ポップアウトをフォーカス",
       "hide_controls": "コントロールを隠す",
       "open": "空き",

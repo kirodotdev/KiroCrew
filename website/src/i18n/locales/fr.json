@@ -121,7 +121,7 @@
     "agentWorlds": {
       "manifest": {
         "description": "Transforme tes agents en cours d’exécution en personnages d’une scène animée en pixel art : un coup d’œil suffit pour savoir à quel point Kiro Crew est occupé. Chaque agent actif apparaît sous forme de sprite qui réagit quand une tâche démarre et quand elle se termine, dans des scènes thématiques allant du bureau classique à la tour du magicien ou au laboratoire sous-marin. Détache la scène dans sa propre fenêtre pour la garder sur un second écran pendant que tu travailles.",
-        "display_name": "Mondes d’agents",
+        "display_name": "Agent Worlds",
         "highlight_1": "Vue en direct des agents en cours d’exécution, sous forme de personnages plutôt que de liste",
         "highlight_2": "Scènes thématiques, dont Bureau, Repaire des pandas, Réseau neuronal, Tour du magicien et Labo des profondeurs",
         "highlight_3": "Détache la scène dans une fenêtre séparée pour un second écran ; le choix de scène reste synchronisé",
@@ -175,7 +175,7 @@
       },
       "manifest": {
         "description": "Mène des campagnes de recherche multi-cycles qui continuent de travailler après ton départ. Donne-lui une question et il la déploie en une arborescence de sous-questions plus précises, envoie des agents enquêter sur chacune et diffuse les conclusions sur la page à mesure qu’elles arrivent. Une campagne s’autopilote jusqu’à ce que la question soit résolue ou qu’elle détecte que la progression s’est arrêtée, et tu peux verser le rapport final dans ta bibliothèque de connaissances ou dans un artefact partageable.",
-        "display_name": "Labo de recherche",
+        "display_name": "Research Lab",
         "highlight_1": "Déploie une question large en une arborescence délimitée de sous-questions avant de consommer du temps d’agent",
         "highlight_2": "Les campagnes continuent de chercher entre tes passages, avec des conclusions diffusées en direct",
         "highlight_3": "Détecte qu’une campagne n’avance plus au lieu de boucler indéfiniment",
@@ -183,7 +183,7 @@
         "highlight_5": "Ajoute des questions complémentaires en cours de campagne, sans repartir de zéro",
         "highlight_6": "Démarre, mets en pause et reprends n’importe quelle campagne depuis le tableau de bord",
         "highlight_7": "Exporte le rapport final vers ta bibliothèque de connaissances ou un artefact partageable",
-        "page_label": "Labo de recherche"
+        "page_label": "Research Lab"
       },
       "researchLabPage": {
         "120s": "120s",
@@ -291,8 +291,8 @@
         "regenerate_the_report_updates_the_same_artifact": "Régénérer le rapport — met à jour le même artefact sous forme de nouvelle version",
         "regenerating": "Régénération…",
         "remove_sub_question": "Supprimer la sous-question",
-        "research_lab": "Labo de recherche",
-        "research_lab_investigates_and_reports_it_never_t": "Le Labo de recherche enquête et rend compte — il n'effectue jamais d'actions sur vos systèmes (aucune écriture, aucun déploiement, aucune modification de code). Toute étape suivante nécessitant une action est transmise à l'agent principal pour que vous puissiez l'examiner et la piloter.",
+        "research_lab": "Research Lab",
+        "research_lab_investigates_and_reports_it_never_t": "Research Lab enquête et rend compte — il n'effectue jamais d'actions sur vos systèmes (aucune écriture, aucun déploiement, aucune modification de code). Toute étape suivante nécessitant une action est transmise à l'agent principal pour que vous puissiez l'examiner et la piloter.",
         "research_only": "Recherche uniquement.",
         "research_question": "Recherche “{{question}}”",
         "research_stalled": "Recherche au point mort",
@@ -1461,7 +1461,7 @@
     "devFleet": {
       "manifest": {
         "description": "Un panneau de contrôle pour travailler sur Kiro Crew lui-même. Liste chaque worktree de fonctionnalité avec l’état de sa pull request, son nombre de commits et son occupation disque, et peut démarrer n’importe lequel sous forme de pod : une instance de prévisualisation complète, sur son propre port et avec son propre répertoire de données, pour parcourir une modification inachevée sans perturber ton gateway en service. Il prend aussi en charge les corvées associées — récupérer main et recompiler, rebaser une branche, diffuser les journaux d’un pod et élaguer les worktrees dont le travail est déjà fusionné.",
-        "display_name": "Flotte de dev",
+        "display_name": "Dev Fleet",
         "highlight_1": "Démarre n’importe quel worktree comme un pod isolé, sur son propre port et son propre répertoire de données, sans toucher à ton gateway en service",
         "highlight_2": "Vue de flotte avec l’état des PR par branche, le nombre de commits et l’occupation disque",
         "highlight_3": "Synchronise (récupère main et recompile) ou rebase une branche sans quitter le tableau de bord",
@@ -1469,7 +1469,7 @@
         "highlight_5": "Diffuse les journaux d’un pod et génère des jetons d’accès au pod depuis l’interface",
         "highlight_6": "Conçu pour les personnes qui développent Kiro Crew lui-même — inutile pour un usage quotidien",
         "highlight_7": "Les pods tournent sur Linux (systemd --user) et macOS (launchd) — mais le pod macOS n’a aucun plafond mémoire/CPU imposé ; « Mettre en service » reste réservé à Linux ; la vue de flotte, l’état des PR, la synchronisation, le rebase et l’élagage fonctionnent sur toutes les plateformes",
-        "page_label": "Flotte de dev"
+        "page_label": "Dev Fleet"
       }
     },
     "fileExplorer": {
@@ -4060,13 +4060,13 @@
     "projects": {
       "manifest": {
         "description": "Confie une tâche en plusieurs étapes et laisse-la s’exécuter jusqu’au bout sans surveillance. Décris le travail en langage simple, colle une spécification écrite ou charge un fichier YAML, puis génère d’abord un plan pour relire les étapes, ou lance-la tout de suite. Chaque exécution obtient sa propre page qui montre la progression étape par étape, et tu peux la mettre en pause, la reprendre, la relancer ou l’arrêter à tout moment.",
-        "display_name": "Exécuteur de tâches",
+        "display_name": "Task Runner",
         "highlight_1": "Trois points d’entrée : décrire le travail en langage simple, coller une spécification ou charger du YAML",
         "highlight_2": "Génère un plan et relis les étapes avant de t’engager dans une exécution",
         "highlight_3": "Les exécutions se déroulent sans surveillance, avec la progression étape par étape sur la page de l’exécution",
         "highlight_4": "Mets en pause, reprends, relance ou arrête une exécution à tout moment",
         "highlight_5": "Conserve un historique des exécutions passées et de leurs résultats",
-        "page_label": "Exécuteur de tâches"
+        "page_label": "Task Runner"
       }
     },
     "specBuilder": {
@@ -5782,7 +5782,7 @@
         "kind_notification": "Notification",
         "kind_skills": "Compétences",
         "kind_subagent": "Sous-agent",
-        "kind_task_runner": "Exécuteur de tâches",
+        "kind_task_runner": "Task Runner",
         "kind_webhook": "Webhook",
         "this_week": "Cette semaine",
         "today": "Aujourd’hui",
@@ -6909,7 +6909,7 @@
     "schedule": "Planification",
     "sessions": "Sessions",
     "settings": "Paramètres",
-    "task_runner": "Exécuteur de tâches",
+    "task_runner": "Task Runner",
     "webhooks": "Webhooks"
   },
   "pages": {
@@ -9542,7 +9542,7 @@
         "no_lessons": "Aucune leçon",
         "no_lessons_yet": "Aucune leçon pour le moment",
         "no_sessions_to_consolidate_start_a_chat_first": "Aucune session à consolider — démarrez d'abord une conversation",
-        "persistent_lessons_injected_into_every_session_a": "Leçons persistantes injectées dans chaque session. Extraites automatiquement des échecs de l’exécuteur de tâches. Ajoute-les manuellement via 'kirocrew learn add'. Quand la mémoire vectorielle est active, les leçons sont gérées dans l’onglet Sémantique en tant qu’entrées lesson.*.",
+        "persistent_lessons_injected_into_every_session_a": "Leçons persistantes injectées dans chaque session. Extraites automatiquement des échecs de l’Task Runner. Ajoute-les manuellement via 'kirocrew learn add'. Quand la mémoire vectorielle est active, les leçons sont gérées dans l’onglet Sémantique en tant qu’entrées lesson.*.",
         "preference": "préférence",
         "preferences": "Préférences",
         "projects": "Projets",
@@ -9978,7 +9978,7 @@
       "running": "En cours",
       "schedule": "Planifier",
       "scheduled_as_daily_cron_job": "Planifié comme tâche cron quotidienne",
-      "task_runner": "Exécuteur de tâches",
+      "task_runner": "Task Runner",
       "upload_a_file": "Importer un fichier",
       "workspace": "Espace de travail :",
       "workspace_folder": "Dossier de l'espace de travail",
@@ -10891,7 +10891,7 @@
         "category_subagent": "Sous-agent",
         "category_subagent_description": "Fins de sous-agents en arrière-plan",
         "category_taskrunner": "Tâches",
-        "category_taskrunner_description": "Fins de l’exécuteur de tâches",
+        "category_taskrunner_description": "Fins de l’Task Runner",
         "category_turn": "Réponses de l’agent",
         "category_turn_description": "Lorsque l’agent termine un tour dans n’importe quel chat",
         "channel_default": "Valeur par défaut du canal",
@@ -12005,7 +12005,7 @@
       "agent_many": "{{count}} agents",
       "agent_one": "{{count}} agent",
       "agent_other": "{{count}} agents",
-      "agent_worlds": "Mondes d'agents",
+      "agent_worlds": "Agent Worlds",
       "focus_popout": "Afficher la fenêtre détachée",
       "hide_controls": "Masquer les commandes",
       "open": "ouvert",

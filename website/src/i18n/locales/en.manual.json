@@ -4068,7 +4068,7 @@
         "category_subagent": "Subagent",
         "category_subagent_description": "Background subagent completions",
         "category_taskrunner": "Tasks",
-        "category_taskrunner_description": "Task runner completions",
+        "category_taskrunner_description": "Task Runner completions",
         "category_turn": "Agent replies",
         "category_turn_description": "When the agent finishes a turn in any chat",
         "channel_default": "Channel default",
