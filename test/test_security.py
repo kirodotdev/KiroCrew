@@ -3103,15 +3103,62 @@ class TestExfilExactHostExemption:
         assert secret not in result
         assert len(warnings) == 1
 
-    def test_composition_error_propagates_fail_closed(self) -> None:
-        """PlatformCompositionError from the adapter propagates (fail-closed),
-        never degrading to an empty set silently."""
+    def test_unbooted_path_does_no_context_resolution(self) -> None:
+        """The unbooted path must not RESOLVE a context -- not even once.
+
+        ``current_context()`` loads config and discovers plugin entry points
+        before it decides, and on a non-standalone profile it never memoizes its
+        fail-closed verdict, so a per-line caller (``_pump_stderr`` redacting
+        backend stderr) would re-pay that synchronous I/O for every single line
+        on the gateway event loop.  Pin that this lookup never reaches it: the
+        answer for "no context installed" is the same empty set the standalone
+        default would give, so resolving is pure cost.
+        """
+        import pytest as _pytest
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import context as context_mod
+        from kiro_crew.platform.context import reset_context
+        from kiro_crew.security import redact
+
+        calls: list[str] = []
+        real_current = context_mod.current_context
+        real_load = KiroCrewConfig.load
+
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setenv("KIROCREW_PROFILE", "enterprise")
+            reset_context()
+
+            def _spy_current():  # type: ignore[no-untyped-def]
+                calls.append("current_context")
+                return real_current()
+
+            def _spy_load(*a, **k):  # type: ignore[no-untyped-def]
+                calls.append("config_load")
+                return real_load(*a, **k)
+
+            mp.setattr(context_mod, "current_context", _spy_current)
+            mp.setattr(KiroCrewConfig, "load", _spy_load)
+            try:
+                # Redact many lines, as a stderr drain would.
+                for _ in range(25):
+                    redact("boot line https://example.com/mcp")
+                assert calls == [], f"unbooted path resolved a context: {calls}"
+            finally:
+                reset_context()
+
+    def test_composition_error_degrades_to_full_redaction(self) -> None:
+        """PlatformCompositionError from the adapter degrades to the empty set =
+        full redaction, and MUST NOT propagate: this lookup can only ever RELAX
+        the heuristics, so the empty set is already the strictest answer.
+        Propagation aborted the calling operation (issue #4561: every pooled MCP
+        backend spawn in gatewayd died building its own log line)."""
         import dataclasses
 
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.platform.bootstrap import build_default_context
         from kiro_crew.platform.context import PlatformCompositionError, set_context
-        from kiro_crew.security import scan_exfiltration_urls
+        from kiro_crew.security import redact_exfiltration_urls
 
         class _RaisingCredentialPolicy(self._StubCredentialPolicy):
             def exempt_exact_hosts(self) -> "frozenset[str]":
@@ -3119,8 +3166,51 @@ class TestExfilExactHostExemption:
 
         base = build_default_context(KiroCrewConfig())
         set_context(dataclasses.replace(base, credentials=_RaisingCredentialPolicy(frozenset())))
-        with pytest.raises(PlatformCompositionError):
-            scan_exfiltration_urls("https://contoso.sharepoint.com/doc?nav=eyJ" + "A" * 220)
+        url = self._long_nav_url("contoso.sharepoint.com")
+        result, warnings = redact_exfiltration_urls(f"Doc: {url}")
+        assert "[REDACTED" in result
+        assert len(warnings) == 1
+
+    def test_unbooted_nonstandalone_profile_still_redacts(self) -> None:
+        """Regression for issue #4561: ``redact()`` in an UNBOOTED worker under a
+        non-standalone profile must not raise.
+
+        ``gatewayd`` never installs a ``PlatformContext``; under
+        ``KIROCREW_PROFILE=enterprise`` ``current_context()`` fail-closes, and
+        the exempt-host lookup inside ``redact()`` used to propagate that error,
+        killing every pooled MCP backend spawn while it built the spawn log
+        line.  The lookup must degrade to the empty set (maximum redaction)
+        instead: the log line is still fully redacted, the operation survives.
+        """
+        import pytest as _pytest
+
+        from kiro_crew.platform.context import (
+            PlatformCompositionError,
+            current_context,
+            reset_context,
+        )
+        from kiro_crew.security import redact
+
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setenv("KIROCREW_PROFILE", "enterprise")
+            reset_context()
+            try:
+                # Precondition: the context itself still fail-closes (that
+                # contract is unchanged; only the exempt-host lookup degrades).
+                with _pytest.raises(PlatformCompositionError):
+                    current_context()
+                # The gatewayd spawn-log call shape: must not raise. Compare the
+                # WHOLE line rather than asking whether it contains the host --
+                # equality proves nothing was redacted away, and a bare host
+                # substring test is the incomplete-URL-sanitization pattern.
+                line = "cmd --flag https://example.com"
+                assert redact(line) == line
+                # Heuristic-tripping URL is still redacted (empty exempt set =
+                # maximum strictness, never fail-open).
+                url = self._long_nav_url("contoso.sharepoint.com")
+                assert "[REDACTED" in redact(f"Doc: {url}")
+            finally:
+                reset_context()
 
     def test_adapter_failure_degrades_to_full_redaction(self) -> None:
         """A transient (non-composition) adapter failure degrades to the empty

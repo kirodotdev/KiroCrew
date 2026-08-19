@@ -370,6 +370,24 @@ def set_context(ctx: PlatformContext) -> None:
     _ACTIVE = ctx
 
 
+def installed_context() -> Optional[PlatformContext]:
+    """The INSTALLED context, or ``None``. Never resolves, never raises, no I/O.
+
+    Unlike :func:`current_context` this is a bare attribute read: it does NOT
+    load config, does NOT discover plugin entry points, and does NOT compose the
+    standalone default. For a caller on a hot path whose answer for "no context"
+    is the same as its answer for "the default context", that resolution is pure
+    cost -- and on a NON-standalone profile it is unmemoized cost, because
+    ``current_context()`` deliberately never caches its fail-closed verdict, so
+    every call re-pays the config load before raising.
+
+    Use this ONLY where the no-context answer is already the conservative one.
+    A caller that must honour a companion's policy has to go through
+    ``current_context()`` and take the fail-closed error.
+    """
+    return _ACTIVE
+
+
 def current_context() -> PlatformContext:
     """Return the active context, lazily building the standalone default.
 

@@ -98,6 +98,14 @@ Core code reads adapters directly when it has the context, or via
 `current_context()` for module-level functions (e.g. `hooks.py` deny path).
 `current_context()` lazily builds the standalone default if boot has not run.
 
+`installed_context()` returns the INSTALLED context or `None` as a bare
+attribute read — it never resolves, never raises, and does no I/O. Use it ONLY
+where the answer for "no context" is already the conservative one (the
+exempt-host lookup below is the one such caller), because it skips the config
+load and entry-point discovery that `current_context()` performs on every call
+while unbooted. A caller that must honour a companion's policy has to go through
+`current_context()` and take the fail-closed `PlatformCompositionError`.
+
 ## Boot sequence
 
 ```python
@@ -382,12 +390,22 @@ delegates to that same global. Wired sites:
   `getattr(policy, "exempt_exact_hosts", None)` (a pre-method companion adapter
   degrades to the empty set) and is NEVER sourced from `config.json` — an
   agent-writable exemption would be a hole in the redaction ceiling, so the
-  companion adapter is the only supplier. Degrade semantics are INVERTED vs
-  `redact_via_context`'s baseline-redact fallback: a `PlatformCompositionError`
-  propagates fail-closed, but any other adapter failure degrades to
+  companion adapter is the only supplier. EVERY failure degrades to
   `frozenset()` — the empty set means MORE redaction (every host runs the
-  heuristics), the safe direction; NO logging on the degrade path (runs inside
-  the stdio MCP servers). **Deferred-import exception:** `security` reads the set
+  heuristics), the safe direction, and stricter than any companion-supplied list
+  could be; NO logging on the degrade path (runs inside the stdio MCP servers).
+  The set is read via `installed_context()`, so a process with no installed
+  context takes that same empty set WITHOUT resolving one: resolving would load
+  config and discover entry points per call, and on a non-standalone profile
+  `current_context()` never memoizes its fail-closed verdict, so a per-line
+  caller (`_pump_stderr` redacting backend stderr) would re-pay that synchronous
+  I/O for every line on the gateway event loop. This is deliberately INVERTED vs
+  `redact_via_context`, which must keep propagating: that seam SUBSTITUTES a
+  companion's redaction for the baseline, so a missing context there would fail
+  OPEN, whereas here it fails STRICTER. Because this lookup only ever RELAXES the
+  heuristics, it can never be the reason a credential reaches a log — the
+  credential pass (`redact_credentials`) is independent of it and unchanged by a
+  missing context. **Deferred-import exception:** `security` reads the set
   through a FUNCTION-LOCAL import of `kiro_crew.platform.context` (the `sel.py`
   pattern), so the CPP import-direction invariant holds — `platform/defaults.py`
   imports `security` at module load, and `security` never reaches `platform` at

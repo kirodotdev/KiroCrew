@@ -7044,19 +7044,41 @@ def _exempt_exact_hosts() -> frozenset[str]:
     CPP import-direction invariant (``platform/defaults.py`` imports ``security``
     at top level).
 
-    Degrade semantics (INVERTED vs ``redact_via_context``'s baseline-redact
-    fallback): ``PlatformCompositionError`` propagates fail-closed, but any other
-    adapter failure degrades to ``frozenset()`` — the empty set means MORE
-    redaction (every host runs the heuristics), the SAFE direction here.  A
-    pre-method companion adapter (no ``exempt_exact_hosts``) degrades to the empty
-    set via ``getattr`` rather than raising.  NO logging on the degrade path: this
-    runs inside the stdio MCP servers whose stray writes corrupt the JSON-RPC
-    stream.
+    Degrade semantics: EVERY failure degrades to ``frozenset()`` — the empty set
+    means MORE redaction (every host runs the heuristics), the SAFE direction
+    here, and it is stricter than any companion-supplied exemption list could
+    be.  This lookup can only ever RELAX the heuristics, so there is no
+    fail-closed to protect: propagating an error would convert "redact slightly
+    more aggressively" into "the calling operation aborts", which took down every
+    pooled MCP backend spawn in ``gatewayd`` (an unbooted worker that calls
+    ``redact()`` on the spawn-log and stderr-drain paths).  Deliberately INVERTED
+    vs ``redact_via_context``'s propagation: that seam substitutes a companion's
+    redaction for the baseline, so a missing context there must not fail open.
+
+    NO-CONTEXT FAST PATH: when no context is INSTALLED this returns the empty set
+    without resolving one, via ``installed_context()``.  That is not merely an
+    optimization, it is the only way to keep this off the event loop.  Resolving
+    would load config + discover plugin entry points, and on a non-standalone
+    profile ``current_context()`` never memoizes its fail-closed verdict, so a
+    per-line caller (``_pump_stderr`` redacting backend stderr) would re-pay that
+    synchronous I/O for every line.  The answer is unchanged either way: the
+    public ``DefaultCredentialPolicy`` exempts no hosts, so a lazily-composed
+    standalone default yields this same empty set, and an unbooted
+    non-standalone process must not be handed exemptions at all.
+
+    A pre-method companion adapter (no ``exempt_exact_hosts``) degrades to the
+    empty set via ``getattr`` rather than raising.  NO logging on the degrade
+    path: this runs inside the stdio MCP servers whose stray writes corrupt the
+    JSON-RPC stream.
     """
-    from kiro_crew.platform.context import PlatformCompositionError, current_context
+    from kiro_crew.platform.context import installed_context
+
+    ctx = installed_context()
+    if ctx is None:
+        return frozenset()
 
     try:
-        policy = current_context().credentials
+        policy = ctx.credentials
         getter = getattr(policy, "exempt_exact_hosts", None)
         if getter is None:
             return frozenset()
@@ -7068,8 +7090,6 @@ def _exempt_exact_hosts() -> frozenset[str]:
         # to maximum redaction. Keep only str members; anything malformed degrades
         # to the empty set (the SAFE direction — more redaction).
         return frozenset(h for h in raw if isinstance(h, str))
-    except PlatformCompositionError:
-        raise
     except Exception:
         return frozenset()
 
