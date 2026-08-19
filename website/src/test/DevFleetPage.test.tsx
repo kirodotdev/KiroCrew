@@ -730,6 +730,25 @@ describe('DevFleetPage', () => {
     expect(screen.queryByTestId('serving-install-warning')).toBeNull()
   })
 
+  // The notices share the content column with the stat cards and the Worktrees
+  // card below them, and neither of those is width-capped. A cap on the notices
+  // alone leaves them hugging the left edge of a wide window while everything
+  // under them runs full width, which reads as a half-rendered page.
+  it('lets the notices fill the content column instead of capping their width', async () => {
+    mockFleet({
+      serving_install_reason: 'served by an install outside the managed checkout.',
+      main_repo_inferred: true,
+      main_repo: '/Users/dev/kirocrew',
+      worktrees: [{ name: 'main', is_main: true, running: false, has_dist: true, behind: 0 }],
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByTestId('serving-install-warning')).toBeInTheDocument())
+    for (const id of ['serving-install-warning', 'inferred-main-checkout']) {
+      const capped = Array.from(screen.getByTestId(id).classList).filter((c) => c.startsWith('max-w-'))
+      expect(capped).toEqual([])
+    }
+  })
+
   it('explains WHY pods are unavailable instead of failing silently', async () => {
     mockFleet(FLEET_NO_PODS)
     renderPage()

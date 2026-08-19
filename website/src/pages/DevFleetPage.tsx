@@ -1810,7 +1810,7 @@ export default function DevFleetPage() {
             {/* The how-to describes row actions; with no readable fleet there are
                 no rows, and instructions for absent controls read as a broken page. */}
             {!noFleet && (
-            <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1 max-w-[860px]">
+            <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1">
               {i18nT('pages.devFleetPage.each_row_below_is_a_git_worktree_discovered_from')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span> {i18nT('pages.devFleetPage.on_the_main_row_to_fast_forward_it_from_origin_a')} <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span> {i18nT('pages.devFleetPage.boots_any_worktree_as_an_isolated_throwaway_gate')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
@@ -1821,7 +1821,7 @@ export default function DevFleetPage() {
               <div
                 role="note"
                 data-testid="inferred-main-checkout"
-                className="flex items-center gap-2 mt-2 max-w-[860px] text-[12px] leading-relaxed text-text-strong"
+                className="flex items-center gap-2 mt-2 text-[12px] leading-relaxed text-text-strong"
               >
                 <Info size={13} className="lucide-inline shrink-0" />
                 <span>{i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr')}:</span>
@@ -1832,7 +1832,7 @@ export default function DevFleetPage() {
               <div
                 role="alert"
                 data-testid="gateway-restart-error"
-                className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed text-danger"
+                className="flex items-start gap-2 rounded-md border border-danger/40 bg-danger-subtle px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-danger"
               >
                 <AlertTriangle size={14} className="lucide-inline shrink-0 mt-0.5" />
                 {/* select-text + break-words: the message can be a pair of
@@ -1852,7 +1852,7 @@ export default function DevFleetPage() {
               <div
                 role="alert"
                 data-testid="serving-install-warning"
-                className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn-subtle px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed text-warn"
+                className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn-subtle px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-warn"
               >
                 <AlertTriangle size={14} className="lucide-inline shrink-0 mt-0.5" />
                 <div className="min-w-0">
@@ -1865,7 +1865,7 @@ export default function DevFleetPage() {
             {!podsAvailable && (
               <div
                 role="note"
-                className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed"
+                className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed"
               >
                 <Info size={14} className="lucide-inline shrink-0 mt-0.5 text-muted" />
                 <div className="min-w-0">
@@ -1878,7 +1878,7 @@ export default function DevFleetPage() {
             {gatewayReason && (
               <div
                 role="note"
-                className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 max-w-[860px] text-[12.5px] leading-relaxed"
+                className="flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed"
               >
                 <Info size={14} className="lucide-inline shrink-0 mt-0.5 text-muted" />
                 <div className="min-w-0">
