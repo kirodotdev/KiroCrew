@@ -1203,7 +1203,7 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
   const used = new Set<number>()
   const result: M[] = []
   for (const item of incoming) {
-    if (item.role === 'assistant') {
+    if (item.role === 'assistant' || item.role === 'streaming') {
       const c = item.content.trimEnd()
       for (let p = 0; p < preserved.length; p++) {
         if (!used.has(p) && preserved[p].anchor === c) {
@@ -3609,6 +3609,10 @@ const chatSlice = createSlice({
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
         // bubbles first (a queue_push may have arrived during the fetch) so the
         // server queue set stays canonical and non-duplicated.
+        // Thinking blocks are client-only (never persisted server-side); re-insert
+        // them so a switchSlot refresh does not discard the collapsible reasoning
+        // trace. Without this, switching tabs and back drops all thinking blocks.
+        next = mergePreservedThinking(existing, next)
         next = hydrateQueuedBubbles(next, queue)
         // Switching back to an already-loaded slot re-fetches a history that is
         // usually identical; skipping the write keeps every existing reference.
