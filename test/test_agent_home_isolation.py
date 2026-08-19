@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.config.paths import kiro_agents_dir, kiro_home
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -175,7 +176,6 @@ def test_private_target_is_never_declined(monkeypatch, tmp_path):
     assert agent._decline_shared_agent_home() is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs elevation on Windows")
 def test_symlinked_shared_home_still_declines(monkeypatch, tmp_path):
     """A symlinked shared home must NOT be mistaken for a private target.
 
@@ -183,13 +183,17 @@ def test_symlinked_shared_home_still_declines(monkeypatch, tmp_path):
     (or a ``KIRO_HOME`` spelling the same directory differently) compared unequal
     to the default and waved the worktree through — overwriting exactly the specs
     the guard exists to protect.
+
+    The link is a DIRECTORY link, so on Windows it is a junction (no privilege
+    needed, and resolved by the same ``resolve()`` the guard relies on) — keeping
+    this regression exercised there via ``make_dir_link`` rather than skipped.
     """
     from kiro_crew import agent
 
     real = tmp_path / "real-kiro" / "agents"
     real.mkdir(parents=True)
     link = tmp_path / "linked-kiro"
-    link.symlink_to(tmp_path / "real-kiro", target_is_directory=True)
+    make_dir_link(link, tmp_path / "real-kiro")
 
     wt = _make_linked_worktree(tmp_path)
     monkeypatch.setattr(agent, "__file__", str(wt / "src" / "kiro_crew" / "agent.py"))

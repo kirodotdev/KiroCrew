@@ -696,13 +696,34 @@ def pytest_collection_modifyitems(config, items):
         text = listfile.read_text(encoding="utf-8")
     except OSError:  # pragma: no cover - list file absent in a partial checkout
         return
-    expected = {ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")}
+    expected = {
+        _base_nodeid(ln.strip())
+        for ln in text.splitlines()
+        if ln.strip() and not ln.startswith("#")
+    }
     marker = pytest.mark.skip(
         reason="known Windows gap -- tracked in test/windows-expected-failures.txt"
     )
     for item in items:
-        if item.nodeid.split("[")[0] in expected:
+        if _base_nodeid(item.nodeid) in expected:
             item.add_marker(marker)
+
+
+def _base_nodeid(nodeid: str) -> str:
+    """A node id reduced to file + class + function, with params and xdist group gone.
+
+    Under ``--dist loadgroup`` -- which ``setup.cfg`` supplies to EVERY run -- xdist
+    rewrites each item's nodeid to ``<nodeid>@<group>`` for anything carrying an
+    ``xdist_group`` mark. Splitting on ``[`` alone therefore compares different strings
+    in different invocations: a PARAMETRIZED id loses the suffix with its params, while
+    an UNPARAMETRIZED one keeps it. So a plain entry silently stopped matching the
+    grouped tests under the default invocation, and an entry written WITH the suffix to
+    compensate then stopped matching under ``-n0``, where xdist never adds it.
+
+    Stripping both parts makes one spelling -- the plain node id -- correct in every
+    mode, which is the only spelling the list file documents.
+    """
+    return nodeid.split("[")[0].split("@")[0]
 
 
 def platform_compat_or_none():

@@ -386,6 +386,15 @@ silently absent from the ~1490 in-package tests, which is how each was found.
   `skipif(not userns_available())` for the sandbox. `test_coverage_omit_contract.py`
   ratchets the rest: a returning `--deselect` fails it unless the coverage omit comes
   with it, because a file CI cannot run must not be charged to the denominator either.
+
+  Entries in `windows-expected-failures.txt` are **plain node ids** — file, class,
+  function, no `[params]` and no `@group` suffix. The rootdir `conftest.py` matcher
+  reduces both the list and each collected item to that base form before comparing
+  (`_base_nodeid`), which is load-bearing: under the default `--dist loadgroup`, xdist
+  rewrites a grouped test's nodeid to `<nodeid>@<group>`, so a matcher that only split
+  on `[` matched a *different* string for grouped vs ungrouped tests and for `-n0` vs
+  `loadgroup` runs. Never add the `@group` suffix to an entry — it makes the line match
+  in one invocation and silently miss in another.
 - Tests SHOULD be fast (< 1s each)
 - Async tests MUST use `@pytest.mark.asyncio`
 

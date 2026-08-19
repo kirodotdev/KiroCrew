@@ -33,6 +33,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import sandbox
 from kiro_crew.apps.builtins.papyrus.backend import gitops
 
@@ -1251,6 +1252,7 @@ class TestTheAttributesPinCannotBeNeutralized:
         assert "*.pdf binary" in content
         assert content.splitlines()[-1] == gitops._ATTRIBUTES_PIN.strip()
 
+    @requires_symlinks
     def test_a_symlinked_attributes_file_is_refused(self, tmp_path: Path) -> None:
         repo = self._repo(tmp_path)
         victim = tmp_path / "victim.txt"
@@ -1263,12 +1265,17 @@ class TestTheAttributesPinCannotBeNeutralized:
         assert victim.read_text(encoding="utf-8") == "original\n"
 
     def test_a_symlinked_info_directory_is_refused(self, tmp_path: Path) -> None:
-        """`mkdir(exist_ok=True)` is a no-op on a link, so the dir needs its own check."""
+        """`mkdir(exist_ok=True)` is a no-op on a link, so the dir needs its own check.
+
+        A DIRECTORY link, so on Windows it is a junction (no privilege, and the
+        reparse type `is_symlink()` misses) — kept exercised there via
+        `make_dir_link` rather than skipped.
+        """
         repo = tmp_path / "paper"
         (repo / ".git").mkdir(parents=True)
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        (repo / ".git" / "info").symlink_to(elsewhere, target_is_directory=True)
+        make_dir_link(repo / ".git" / "info", elsewhere)
 
         with pytest.raises(gitops.GitError, match="symlink"):
             gitops._pin_attributes_sync(repo)
@@ -1344,9 +1351,6 @@ class TestTheAttributesPinCannotBeNeutralized:
             with pytest.raises(gitops.GitError, match="symlink"):
                 gitops._pin_attributes_sync(repo)
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
-    )
     def test_a_linked_git_dir_is_refused(self, tmp_path: Path) -> None:
         """`.git` itself is the OUTERMOST name that must not be a link.
 
@@ -1355,6 +1359,11 @@ class TestTheAttributesPinCannotBeNeutralized:
         non-links *inside that repo*, so both checks pass and a `GET /git` status
         poll rewrites a different repository's attributes — outside this project
         entirely. The rule has to hold for every segment traversed by name.
+
+        `.git` is a DIRECTORY link, which on Windows is a junction (needs no
+        privilege and is the very reparse type `is_symlink()` misses) — so
+        `make_dir_link` keeps this exercised on the platform the guard was written
+        for, rather than skipping it there.
         """
         project = tmp_path / "paper"
         project.mkdir()
@@ -1362,16 +1371,13 @@ class TestTheAttributesPinCannotBeNeutralized:
         (victim / "info").mkdir(parents=True)
         original = "*.tex text eol=lf\n"
         (victim / "info" / "attributes").write_text(original, encoding="utf-8")
-        (project / ".git").symlink_to(victim, target_is_directory=True)
+        make_dir_link(project / ".git", victim)
 
         with pytest.raises(gitops.GitError, match="symlink"):
             gitops._pin_attributes_sync(project)
         # The other repository was not touched.
         assert (victim / "info" / "attributes").read_text(encoding="utf-8") == original
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
-    )
     def test_the_refusal_is_sel_audited(self, tmp_path: Path) -> None:
         """A security decision that leaves no record is indistinguishable from a
         no-op afterwards, and AUTOSDE requires a SEL event for every permission
@@ -1380,7 +1386,7 @@ class TestTheAttributesPinCannotBeNeutralized:
         project.mkdir()
         victim = tmp_path / "victim"
         (victim / "info").mkdir(parents=True)
-        (project / ".git").symlink_to(victim, target_is_directory=True)
+        make_dir_link(project / ".git", victim)
 
         with mock.patch.object(gitops, "_audit") as audit:
             with pytest.raises(gitops.GitError):

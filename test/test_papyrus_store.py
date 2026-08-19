@@ -33,6 +33,7 @@ from unittest import mock
 
 import pytest
 
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps.builtins.papyrus.backend import store
 
 
@@ -95,8 +96,7 @@ class TestSafeChild:
         with pytest.raises(store.PathRejected):
             store.safe_child(project, "a" * 2000)
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_rejects_a_symlink_escaping_the_project(self, project: Path) -> None:
         """A cloned repo can ship a symlink whose target is outside the project.
 
@@ -109,14 +109,12 @@ class TestSafeChild:
         with pytest.raises(store.PathRejected):
             store.safe_child(project, "evil-link.tex")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
     def test_rejects_a_path_through_a_symlinked_directory(self, project: Path) -> None:
         """The escape can also be a mid-path DIRECTORY link, not just a file one."""
         outside = project.parent / "outside-dir"
         outside.mkdir()
         (outside / "secret.tex").write_text("secret", encoding="utf-8")
-        os.symlink(outside, project / "linked")
+        make_dir_link(project / "linked", outside)
         with pytest.raises(store.PathRejected):
             store.safe_child(project, "linked/secret.tex")
 
@@ -245,8 +243,7 @@ class TestListFiles:
         assert not any(f.startswith(".") for f in listed)
         assert "main.tex" in listed
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_skips_symlinks_entirely(self, project: Path) -> None:
         """A tree walk that follows links is how containment leaks."""
         outside = project.parent / "outside.tex"
@@ -730,7 +727,7 @@ class TestASymlinkedProjectEntryIsRefused:
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "thesis").mkdir()
         (pdir / "thesis" / "main.tex").write_text("SECRET", encoding="utf-8")
-        (pdir / "pwn").symlink_to(".", target_is_directory=True)
+        make_dir_link(pdir / "pwn", pdir)
 
         with pytest.raises(store.PathRejected):
             store.safe_project_dir("pwn", tmp_path)
@@ -740,7 +737,7 @@ class TestASymlinkedProjectEntryIsRefused:
         pdir.mkdir(parents=True, exist_ok=True)
         outside = tmp_path / "outside"
         outside.mkdir()
-        (pdir / "escape").symlink_to(outside, target_is_directory=True)
+        make_dir_link(pdir / "escape", outside)
 
         with pytest.raises(store.PathRejected):
             store.safe_project_dir("escape", tmp_path)
@@ -750,7 +747,7 @@ class TestASymlinkedProjectEntryIsRefused:
         pdir = store.projects_dir(tmp_path)
         pdir.mkdir(parents=True, exist_ok=True)
         (pdir / "real").mkdir()
-        (pdir / "alias").symlink_to(pdir / "real", target_is_directory=True)
+        make_dir_link(pdir / "alias", pdir / "real")
 
         with pytest.raises(store.PathRejected):
             store.safe_project_dir("alias", tmp_path)
@@ -772,14 +769,17 @@ class TestReparseLinkCoversJunctions:
     drift apart on which link types they cover.
     """
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
-    )
-    def test_a_symlink_is_a_reparse_link(self, tmp_path: Path) -> None:
+    def test_a_directory_link_is_a_reparse_link(self, tmp_path: Path) -> None:
+        """A junction on Windows, a directory symlink on POSIX.
+
+        The junction leg is the whole point of this helper, so it must be the leg
+        exercised on Windows: `make_dir_link` needs no privilege there, while a
+        directory symlink would raise WinError 1314 in an unelevated shell.
+        """
         real = tmp_path / "real"
         real.mkdir()
         link = tmp_path / "link"
-        link.symlink_to(real, target_is_directory=True)
+        make_dir_link(link, real)
         assert store.is_reparse_link(link) is True
 
     def test_a_plain_directory_is_not(self, tmp_path: Path) -> None:
@@ -800,10 +800,11 @@ class TestReparseLinkCoversJunctions:
         real = tmp_path / "real"
         real.mkdir()
         link = tmp_path / "link"
-        link.symlink_to(real, target_is_directory=True)
+        make_dir_link(link, real)
 
         with mock.patch.object(store, "_ISJUNCTION", None):
-            # A symlink is still caught by the `is_symlink()` leg.
+            # Without `isjunction`, a POSIX symlink is still caught by the
+            # `is_symlink()` leg and a Windows junction by the stat-field fallback.
             assert store.is_reparse_link(link) is True
             assert store.is_reparse_link(plain) is False
 

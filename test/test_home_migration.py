@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import home_migration
 from kiro_crew.config import paths
 
@@ -547,6 +548,7 @@ class TestSweepUngatedArchiveLeftovers:
         assert result.is_dir()
         assert (result / paths.MIGRATION_MARKER_NAME).exists()
 
+    @requires_symlinks
     def test_symlinked_archive_is_not_followed_or_deleted_through(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -661,6 +663,7 @@ class TestMigrateHomeDirect:
         assert second == legacy  # NOT tmp_path/.kiro/crew
         assert paths._resolved_home == legacy
 
+    @requires_symlinks
     def test_symlinked_destination_is_skipped_not_followed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -688,6 +691,7 @@ class TestMigrateHomeDirect:
         # symlink itself already pointed at, and no exception was raised.
         assert (leak / "a.jsonl").exists()
 
+    @requires_symlinks
     def test_symlinked_source_dir_is_skipped_external_target_untouched(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -711,6 +715,7 @@ class TestMigrateHomeDirect:
         # The symlink itself was skipped, not reproduced or dereferenced.
         assert not (result / "linked").exists()
 
+    @requires_symlinks
     def test_dangling_symlink_does_not_abort_migration(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -858,6 +863,7 @@ class TestMigrateHomeDirect:
             encoding="utf-8"
         ) == "data"
 
+    @requires_symlinks
     def test_relative_intra_home_symlink_is_skipped(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -878,6 +884,7 @@ class TestMigrateHomeDirect:
         assert (result / "workspace" / "project" / "f.txt").read_text(encoding="utf-8") == "data"
         assert not (result / "workspace" / "current").exists()
 
+    @requires_symlinks
     def test_absolute_external_symlink_is_skipped(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -1291,6 +1298,7 @@ class TestFailSafeChecksContainmentNotExistence:
         monkeypatch.setattr(home_migration, "_resolved_prefix", lambda: None)
         assert home_migration._interpreter_is_preserved(tmp_path) is False
 
+    @requires_symlinks
     def test_symlinked_preserved_dir_still_protects_interpreter(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
