@@ -318,6 +318,11 @@ async def _generate_locked(
     # pair old records with the new mtime and store an incomplete summary that
     # the cache then serves as fresh.
     sig = await asyncio.to_thread(log.session_mtime, key)
+    # Captured WITH the signature, not at write time. A rewind / regenerate
+    # / rotation landing while the model call is in flight PRESERVES the
+    # mtime, so `sig` alone cannot see it; the content-identity generation
+    # can, and the write guard refuses the payload once it has moved.
+    generation = await asyncio.to_thread(log.rotation_generation, key)
     if sig is None:
         # No transcript on disk yet means nothing to key a cache entry on.
         return False
@@ -392,7 +397,7 @@ async def _generate_locked(
     payload["generated_at"] = time.time()
     payload["user_turns"] = user_turns
     payload["last_activity"] = last_activity_ts(turns)
-    stored = await asyncio.to_thread(log.set_cached_intent_summary, key, payload, sig)
+    stored = await asyncio.to_thread(log.set_cached_intent_summary, key, payload, sig, generation)
     if not stored:
         # The transcript was deleted or changed while the model call was in
         # flight; the write was refused so a permanent delete stays deleted.

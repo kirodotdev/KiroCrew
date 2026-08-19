@@ -2065,21 +2065,47 @@ class ConversationLog:
             return None
         summary = data.get("summary")
         sig = self.session_mtime(key)
-        if sig is not None and data.get("sig") == sig and isinstance(summary, str):
+        if (
+            sig is not None
+            and data.get("sig") == sig
+            and data.get("gen", 0) == self.rotation_generation(key)
+            and isinstance(summary, str)
+        ):
             return summary
         return None
 
-    def set_cached_summary(self, key: str, summary: str, sig: float) -> None:
+    def set_cached_summary(
+        self, key: str, summary: str, sig: float, generation: int | None = None
+    ) -> None:
         """Persist a derived one-line *summary* to the sidecar cache.
 
         Keyed by the session file's mtime *sig* so a later append invalidates
         it. Atomic and side-effect-free with respect to the session JSONL —
         no read-modify-write, hence no data-loss race with a concurrent
         :meth:`append`.
+
+        *generation* is :meth:`rotation_generation` captured at the same moment
+        as *sig*, and must come from the caller for the same reason *sig* does:
+        summary generation holds no lock while the model call is in flight, and
+        a rewrite landing in that window preserves the mtime while advancing the
+        generation. Reading the generation HERE would stamp the new content's
+        identity onto the old summary and bless it as fresh — the exact
+        staleness the generation was added to catch. ``None`` reads it at write
+        time, which is only safe when no snapshot preceded the call.
         """
         atomic_write(
             self._summary_cache_path(key),
-            json.dumps({"sig": sig, "summary": summary}),
+            json.dumps(
+                {
+                    "sig": sig,
+                    "gen": (
+                        self.rotation_generation(key)
+                        if generation is None
+                        else generation
+                    ),
+                    "summary": summary,
+                }
+            ),
         )
 
     def _intent_summary_cache_path(self, key: str) -> Path:
@@ -2110,6 +2136,8 @@ class ConversationLog:
         sig = self.session_mtime(key)
         if sig is None or data.get("sig") != sig:
             return None
+        if data.get("gen", 0) != self.rotation_generation(key):
+            return None
         return data
 
     def read_intent_summary(self, key: str) -> tuple[dict | None, bool]:
@@ -2130,9 +2158,16 @@ class ConversationLog:
         if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
             return None, False
         sig = self.session_mtime(key)
-        return data, not (sig is not None and data.get("sig") == sig)
+        fresh = (
+            sig is not None
+            and data.get("sig") == sig
+            and data.get("gen", 0) == self.rotation_generation(key)
+        )
+        return data, not fresh
 
-    def set_cached_intent_summary(self, key: str, payload: dict, sig: float) -> bool:
+    def set_cached_intent_summary(
+        self, key: str, payload: dict, sig: float, generation: int | None = None
+    ) -> bool:
         """Persist a derived intent summary *payload* to its sidecar cache.
 
         Writes only the sidecar, never the session JSONL, so generating a
@@ -2158,9 +2193,28 @@ class ConversationLog:
             with self._locked(key):
                 if _safe_mtime(self._path(key)) != sig:
                     return False
+                current_generation = self.rotation_generation(key)
+                if generation is not None and current_generation != generation:
+                    # A rewrite landed while the model call was in flight. It
+                    # PRESERVED the mtime, so the check above cannot see it —
+                    # the generation is the only signal that the summary now
+                    # describes replaced content. Refuse for the same reason a
+                    # changed mtime is refused: storing it would record a known
+                    # stale payload as the latest word.
+                    return False
                 atomic_write(
                     self._intent_summary_cache_path(key),
-                    json.dumps({**payload, "sig": sig}),
+                    json.dumps(
+                        {
+                            **payload,
+                            "sig": sig,
+                            "gen": (
+                                current_generation
+                                if generation is None
+                                else generation
+                            ),
+                        }
+                    ),
                 )
                 return True
         except HistoryLockTimeout:

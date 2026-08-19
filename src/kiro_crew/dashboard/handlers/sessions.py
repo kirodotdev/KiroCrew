@@ -1108,6 +1108,10 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     # (never the session JSONL) so summarizing an *active* session never rewrites
     # its log and cannot lose a concurrently-appended message.
     sig = await loop.run_in_executor(None, log.session_mtime, key)
+    # Captured WITH the signature: a rewrite during the model call below
+    # preserves the mtime while advancing this counter, and stamping the new
+    # content identity onto the older summary would bless it as fresh.
+    generation = await loop.run_in_executor(None, log.rotation_generation, key)
     cached = await loop.run_in_executor(None, log.get_cached_summary, key)
     if cached:
         return str(cached)
@@ -1141,7 +1145,9 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
         try:
             await loop.run_in_executor(
                 None,
-                functools.partial(log.set_cached_summary, key, summary, sig),
+                functools.partial(
+                    log.set_cached_summary, key, summary, sig, generation
+                ),
             )
         except Exception:
             logger.debug("Failed to persist summary cache for %s", key, exc_info=True)

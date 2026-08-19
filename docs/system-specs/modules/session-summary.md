@@ -26,10 +26,11 @@ to pay for, so the whole subsystem is inert until `session_summary.enabled`.
 ## Storage: a sidecar, never the transcript
 
 Summaries live in `~/.kiro/crew/sessions/.intents/<safe_key>.json`, keyed by the
-session's **transcript** key, with the payload shape below plus a `sig` field.
+session's **transcript** key, with the payload shape below plus the `sig` and
+`gen` fields that together identify the transcript it describes.
 
 ```json
-{"sig": 1760000000.5, "generated_at": 1760000123.1, "user_turns": 7,
+{"sig": 1760000000.5, "gen": 3, "generated_at": 1760000123.1, "user_turns": 7,
  "last_activity": "2026-08-10T10:00:00+00:00",
  "intents": [ … ], "constraints": [ … ]}
 ```
@@ -45,9 +46,24 @@ mtime for the same reason — see `history.md`. `test_session_summary_storage.py
 pins that writing and reading a summary leaves the transcript's bytes and mtime
 untouched.
 
-**`sig` is the session file's mtime.** Any real append advances it and invalidates
-the cache; a metadata-only rewrite does not. This makes staleness exact and free
-to check — one `stat`, no content comparison.
+**Identity is `sig` + `gen`, and freshness requires BOTH to match.** `sig` is the
+session file's mtime: any real append advances it, so it catches the ordinary
+case for one `stat`, with no content comparison. `gen` is
+`rotation_generation` — the transcript's content-identity counter.
+
+The second half is not redundant, because the first half has a blind spot the
+paragraph above creates. Housekeeping that CHANGES the messages — a rotation,
+the dashboard rewrite save (regenerate / rewind / fork), a channel transcript
+merge — deliberately restores the previous mtime so it does not reorder
+`list_sessions`. Against mtime alone those rewrites are invisible, and a summary
+describing the pre-rewrite conversation stayed valid indefinitely: unlike the
+in-process caches, a sidecar is a FILE, so the staleness survived a restart. All
+of them advance the content generation, which is what `gen` reads.
+
+Metadata-only rewrites do NOT invalidate. `mark_consolidated` rewrites the
+metadata line and never touches a message, so it moves neither signal — an
+LLM-generated summary is not discarded for bookkeeping that did not change what
+it describes.
 
 **The pass flushes the slot before it captures `sig`.** `_ChatSlot.append` marks a
 slot dirty and leaves the disk write to the 5s `_flush_loop`, and this pass is
@@ -67,7 +83,9 @@ generation-compare bookkeeping that makes the clear safe lives in one place.
 
 **It is a different file from the one-line summary.** `.summaries/<key>.json`
 holds the on-demand one-line description shown in the sessions list, written by
-`set_cached_summary`, which overwrites the whole file. The two artifacts have
+`set_cached_summary`, which overwrites the whole file. It carries the same
+`sig` + `gen` identity and is validated the same way — the blind spot above is
+a property of the transcript, not of either consumer. The two artifacts have
 independent writers and independent triggers, so sharing a file would have them
 clobbering each other — exactly the read-modify-write race the sidecar design
 exists to avoid.
@@ -84,6 +102,18 @@ started from; otherwise it refuses (returns `False`) and the generator discards
 the payload without pushing a WS update or advancing its turn mark. The same
 check drops a summary a mid-generation append has already made stale, rather
 than storing it as the latest word.
+
+**Both halves of the identity are snapshotted by the CALLER, before the model
+call.** The generation is captured next to `sig`, never read at write time, for
+the same reason the guard above exists: a content rewrite landing mid-generation
+preserves the mtime while advancing the generation, so reading it at write time
+would stamp the NEW content's identity onto the OLD summary and bless it as
+fresh — and with the mtime preserved, nothing downstream could ever catch it.
+`set_cached_intent_summary` refuses a payload whose generation moved, exactly as
+it refuses one whose mtime moved; `set_cached_summary` records the snapshot, so
+the entry it writes is already invalid on the next read. This mirrors
+`mark_consolidated`, which likewise takes the generation its caller snapshotted
+rather than sampling it after the slow call.
 
 ### Keyed on the transcript key, not the slot key
 

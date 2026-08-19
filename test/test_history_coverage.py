@@ -1406,3 +1406,180 @@ class TestIsIncognitoTranscript:
         write gate normalizes via its own allowlist and denies on None, so
         stripping here would silently change which callers fail closed."""
         assert H.is_incognito_transcript("incognito ") is False
+
+
+class TestSidecarSummariesSurviveMtimePreservingRewrites:
+    """Housekeeping that CHANGES the transcript must drop the summary sidecars.
+
+    ``get_cached_summary`` / ``get_cached_intent_summary`` validate their
+    sidecars against ``session_mtime`` — and ``session_mtime``'s docstring calls
+    that "a faithful 'has this conversation changed?' signal". It is not, for
+    housekeeping: ``_rewrite_session_locked`` and ``_maybe_rotate`` deliberately
+    restore the pre-write mtime (``_restore_mtime``) so they do not float stale
+    sessions to the top of ``list_sessions``.
+
+    So a compaction that drops half a transcript leaves the recorded signature
+    still matching, and the sidecar describing the PRE-rewrite conversation is
+    served as valid. Unlike the in-process caches #4293 guards with a generation
+    counter, these are files on disk: the staleness outlives the process and is
+    permanent until a genuine ``append`` lands.
+    """
+
+    def _seed(self, log, key: str) -> float:
+        log.append(key, "user", "first message")
+        log.append(key, "assistant", "first reply")
+        log.append(key, "user", "second message")
+        sig = log.session_mtime(key)
+        assert sig is not None
+        log.set_cached_summary(key, "describes the PRE-rewrite conversation", sig)
+        log.set_cached_intent_summary(key, {"intents": [{"text": "pre-rewrite"}]}, sig)
+        assert log.get_cached_summary(key) == "describes the PRE-rewrite conversation"
+        return sig
+
+    def test_an_advanced_content_generation_invalidates_both_sidecars(
+        self, tmp_path: Path
+    ) -> None:
+        """The general contract, independent of which writer moved the content.
+
+        ``rotation_generation`` is the module's content-identity counter: it is
+        advanced by every write that makes the transcript a DIFFERENT body of
+        content — a rotation, the dashboard rewrite save
+        (regenerate / rewind / fork, ``chat_persistence``) and a channel
+        transcript merge. Those are exactly the writers that also restore the
+        pre-write mtime, so the counter is the half of the signature that can
+        still tell the sidecars their subject changed.
+
+        Here the metadata is advanced the same way those writers advance it,
+        with the mtime restored, so the ONLY thing that moved is the content
+        identity.
+        """
+        log = _log(tmp_path)
+        sig = self._seed(log, "k")
+
+        path = log._path("k")
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        meta = json.loads(lines[0])
+        meta["rotation_generation"] = int(meta.get("rotation_generation", 0) or 0) + 1
+        lines[0] = json.dumps(meta) + chr(10)
+        path.write_text("".join(lines), encoding="utf-8")
+        H._restore_mtime(path, sig)
+        # Every real preserved-mtime writer invalidates inside its locked
+        # section; without that the in-process metadata cache would still
+        # serve the old generation and this would test nothing.
+        log._invalidate_cache("k")
+
+        assert log.session_mtime("k") == sig, (
+            "precondition: the mtime must be UNCHANGED — otherwise the old "
+            "signature would have caught this on its own and the test proves "
+            "nothing about the generation"
+        )
+        assert log.get_cached_summary("k") is None, (
+            "the summary describes a body of content that has been replaced"
+        )
+        assert log.get_cached_intent_summary("k") is None
+
+        # ...but the payload is still ON DISK and reported as STALE, not gone.
+        # ``read_intent_summary`` deliberately prefers a summary marked out of
+        # date over an empty panel ("an empty panel reads as 'this feature is
+        # broken'"), which is why the signature is widened rather than the
+        # sidecars being deleted outright.
+        payload, stale = log.read_intent_summary("k")
+        assert payload is not None and stale is True
+
+    def test_a_rotation_invalidates_both_sidecars(self, tmp_path: Path) -> None:
+        """Rotation archives the oldest messages — same class, same fix."""
+        log = _log(tmp_path)
+        self._seed(log, "k")
+
+        path = log._path("k")
+        prev_mtime = path.stat().st_mtime
+        with patch.object(H, "_SESSION_MAX_BYTES", 1):
+            log._maybe_rotate(path, "k")
+
+        assert log.get_cached_summary("k") is None
+        assert log.get_cached_intent_summary("k") is None
+        assert path.stat().st_mtime == prev_mtime
+
+    def test_a_metadata_only_write_keeps_them(self, tmp_path: Path) -> None:
+        """The deliberate exclusion, and the reason this is not "invalidate on
+        every preserved-mtime write".
+
+        ``mark_consolidated`` rewrites ``lines[0]`` only — the bookkeeping
+        offset — and never touches a message. The conversation the summary
+        describes is unchanged, so discarding an LLM-generated summary here
+        would be a pure cost with no correctness gain.
+        """
+        log = _log(tmp_path)
+        self._seed(log, "k")
+
+        log.mark_consolidated("k", 1)
+
+        assert log.get_cached_summary("k") == "describes the PRE-rewrite conversation"
+        assert log.get_cached_intent_summary("k") is not None
+
+    def _advance_generation(self, log, key: str, sig: float) -> None:
+        """A rewrite that replaces the content and RESTORES the mtime."""
+        path = log._path(key)
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        meta = json.loads(lines[0])
+        meta["rotation_generation"] = int(meta.get("rotation_generation", 0) or 0) + 1
+        lines[0] = json.dumps(meta) + chr(10)
+        path.write_text("".join(lines), encoding="utf-8")
+        H._restore_mtime(path, sig)
+        log._invalidate_cache(key)
+
+    def test_a_rewrite_during_generation_cannot_bless_a_stale_summary(
+        self, tmp_path: Path
+    ) -> None:
+        """The write side of the same hole.
+
+        Summary generation holds no lock while the model call is in flight, so
+        the caller captures the signature BEFORE reading the transcript. If the
+        setter read the generation at WRITE time, a rewrite landing in that
+        window would stamp the NEW content's identity onto the OLD summary — and
+        because the rewrite also preserves the mtime, nothing else would ever
+        catch it. The summary would then be served as fresh forever.
+
+        The generation therefore comes from the caller, captured with the
+        signature, exactly as ``mark_consolidated`` already takes the generation
+        its caller snapshotted.
+        """
+        log = _log(tmp_path)
+        sig = self._seed(log, "k")
+        generation = log.rotation_generation("k")
+
+        self._advance_generation(log, "k", sig)
+
+        log.set_cached_summary("k", "summarises the REPLACED content", sig, generation)
+
+        assert log.session_mtime("k") == sig, "precondition: the mtime was preserved"
+        assert log.get_cached_summary("k") is None, (
+            "a summary of superseded content must not be served as current"
+        )
+
+    def test_the_intent_setter_refuses_a_summary_the_rewrite_superseded(
+        self, tmp_path: Path
+    ) -> None:
+        """``set_cached_intent_summary`` already refuses on a changed mtime; a
+        preserved-mtime rewrite is the case that guard cannot see, so it refuses
+        on the generation too rather than storing a known-stale payload."""
+        log = _log(tmp_path)
+        sig = self._seed(log, "k")
+        generation = log.rotation_generation("k")
+
+        self._advance_generation(log, "k", sig)
+
+        stored = log.set_cached_intent_summary(
+            "k", {"intents": [{"text": "superseded"}]}, sig, generation
+        )
+
+        assert stored is False, "the payload describes content that was replaced"
+
+    def test_a_genuine_append_still_invalidates_by_signature(self, tmp_path: Path) -> None:
+        """Control: the existing mtime rule keeps working for ordinary writes."""
+        log = _log(tmp_path)
+        self._seed(log, "k")
+
+        log.append("k", "user", "a real new message")
+
+        assert log.get_cached_summary("k") is None
