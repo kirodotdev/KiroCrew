@@ -8205,7 +8205,16 @@
       "crew_mode": "Crew Mode — 多话题并行子会话",
       "crew": "Crew",
       "autopilot_desc": "一件事分步做完 —— 先给计划，你批准后逐阶段执行。",
-      "crew_desc": "多件事同时推进 —— 每个话题各跑一个子会话，完成一个就回一条。"
+      "crew_desc": "多件事同时推进 —— 每个话题各跑一个子会话，完成一个就回一条。",
+      "lane_needs_approval": "待审批",
+      "lane_waiting": "等你回应",
+      "lane_working": "进行中",
+      "lane_idle": "空闲",
+      "lane_derived_hint": "会话状态变化时会自动移入该栏",
+      "add_state_lanes": "添加自动栏",
+      "lane_seed_failed": "无法添加自动栏。",
+      "lane_seed_retry": "重试",
+      "lane_legacy_column_hint": "显示所有会话"
     },
     "connectionsPage": {
       "access": "访问权限",

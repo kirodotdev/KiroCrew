@@ -111,6 +111,8 @@ class TestNormalizeColumn:
             "name": "",
             "order": 0,
             "include_untagged": False,
+            "source": "tags",
+            "state_key": "",
         }
 
     def test_existing_values_preserved_when_keys_absent(self, tmp_path):

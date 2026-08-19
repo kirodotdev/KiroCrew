@@ -8205,7 +8205,16 @@
       "autopilot_desc": "1 つの作業を段階的に — まず計画を示し、承認後に段階ごとに実行します。",
       "crew_desc": "複数の作業を同時に — トピックごとに別のサブセッションで進み、終わり次第返答します。",
       "collapse_source_links": "表示を減らす",
-      "source_links_expand_failed": "残りを読み込めませんでした。クリックして再試行してください。"
+      "source_links_expand_failed": "残りを読み込めませんでした。クリックして再試行してください。",
+      "lane_needs_approval": "承認が必要",
+      "lane_waiting": "応答待ち",
+      "lane_working": "実行中",
+      "lane_idle": "待機中",
+      "lane_derived_hint": "セッションの状態が変わると、自動的にこのレーンへ移動します",
+      "add_state_lanes": "自動カラムを追加",
+      "lane_seed_failed": "自動カラムを追加できませんでした。",
+      "lane_seed_retry": "再試行",
+      "lane_legacy_column_hint": "すべてのセッションを表示"
     },
     "connectionsPage": {
       "access": "アクセス",

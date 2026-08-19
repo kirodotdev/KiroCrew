@@ -98,6 +98,8 @@ function makeMockBackend() {
           mode: body.mode || 'any',
           order: state.columns.length,
           include_untagged: !!body.include_untagged,
+          source: body.source || 'tags',
+          state_key: body.state_key || '',
         }
         state.columns.push(col)
         return HttpResponse.json(col, { status: 201 })
@@ -229,7 +231,7 @@ describe('ChatSidebar tag/column UI', () => {
     expect(within(screen.getByTestId('column-c2')).getAllByText('Done').length).toBeGreaterThan(0)
   })
 
-  it('clicking board-toggle menuitem in orphan state (enabled, no cols) creates default column', async () => {
+  it('clicking board-toggle menuitem in orphan state (enabled, no cols) seeds the state lanes', async () => {
     backend.state.columns = []
     localStorage.setItem('mc-chat-config', JSON.stringify({ tagColumnsEnabled: true }))
     const user = userEvent.setup()
@@ -238,10 +240,13 @@ describe('ChatSidebar tag/column UI', () => {
     // Orphan state (enabled but no columns) shows "Switch to board view"
     const menuitem = await screen.findByRole('menuitem', { name: /Switch to board view/ })
     await user.click(menuitem)
-    // Config stays enabled, but a default column is now created
+    // Config stays enabled, and the board is populated with the four derived
+    // lanes rather than one unnamed match-all column.
     const cfg = JSON.parse(localStorage.getItem('mc-chat-config') || '{}')
     expect(cfg.tagColumnsEnabled).toBe(true)
-    await waitFor(() => expect(backend.state.columns.length).toBe(1))
+    await waitFor(() => expect(backend.state.columns.length).toBe(4))
+    expect(backend.state.columns.map((c: { state_key?: string }) => c.state_key))
+      .toEqual(['needs_approval', 'waiting', 'working', 'idle'])
   })
 
   it('column header buttons all have aria-labels (icon-buttons-need-labels)', async () => {

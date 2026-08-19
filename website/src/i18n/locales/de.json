@@ -8315,7 +8315,16 @@
       "crew_mode": "Crew Mode — Themen laufen parallel in Untersitzungen",
       "crew": "Crew",
       "autopilot_desc": "Eine Aufgabe in Schritten — erst der Plan, dann deine Freigabe, dann Phase für Phase.",
-      "crew_desc": "Mehrere Aufgaben gleichzeitig — jedes Thema läuft in einer eigenen Untersitzung und antwortet, sobald es fertig ist."
+      "crew_desc": "Mehrere Aufgaben gleichzeitig — jedes Thema läuft in einer eigenen Untersitzung und antwortet, sobald es fertig ist.",
+      "lane_needs_approval": "Genehmigung nötig",
+      "lane_waiting": "Wartet auf dich",
+      "lane_working": "Arbeitet",
+      "lane_idle": "Untätig",
+      "lane_derived_hint": "Sitzungen wechseln von selbst in diese Spalte, wenn sich ihr Zustand ändert",
+      "add_state_lanes": "Automatische Spalten hinzufügen",
+      "lane_seed_failed": "Die automatischen Spalten konnten nicht angelegt werden.",
+      "lane_seed_retry": "Erneut versuchen",
+      "lane_legacy_column_hint": "zeigt alle Sitzungen"
     },
     "connectionsPage": {
       "access": "Zugriff",

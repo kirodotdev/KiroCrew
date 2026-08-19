@@ -2991,7 +2991,16 @@
       "sort_name_desc": "Z → A",
       "clear_named_filter": "Clear {{filter}} filter",
       "collapse_source_links": "Show fewer",
-      "source_links_expand_failed": "Could not load the rest. Click to retry."
+      "source_links_expand_failed": "Could not load the rest. Click to retry.",
+      "lane_needs_approval": "Needs approval",
+      "lane_waiting": "Waiting on you",
+      "lane_working": "Working",
+      "lane_idle": "Idle",
+      "lane_derived_hint": "Sessions move into this lane on their own as their state changes",
+      "add_state_lanes": "Add automatic columns",
+      "lane_seed_failed": "Could not add the automatic columns.",
+      "lane_seed_retry": "Try again",
+      "lane_legacy_column_hint": "shows every session"
     },
     "connectionsPage": {
       "access": "Access",

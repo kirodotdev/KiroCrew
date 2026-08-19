@@ -702,8 +702,19 @@ export interface ChatTag {
 
 export type TagColumnMode = 'any' | 'all' | 'none'
 
+/** Derived board lane a session can be in. Mirrors `_VALID_STATE_KEYS` in
+ *  `dashboard/chat_tags.py`, which refuses a column naming anything else. The
+ *  rules that map a slot onto one of these live in `pages/chat/sessionLane.ts`. */
+export type SessionLaneKey = 'needs_approval' | 'waiting' | 'working' | 'idle'
+
+/** A board column filters either by tags or by the session's live runtime lane.
+ *  `source` is absent on every column persisted before lanes existed, so a
+ *  missing value MUST be read as `'tags'`. A `'state'` column carries a
+ *  `state_key` and ignores `tag_ids`/`mode`/`include_untagged` entirely. */
 export interface TagColumn {
   id: string; name: string; tag_ids: string[]; mode: TagColumnMode; order: number; include_untagged?: boolean
+  source?: 'tags' | 'state'
+  state_key?: SessionLaneKey | ''
 }
 
 export interface ChatMessage {

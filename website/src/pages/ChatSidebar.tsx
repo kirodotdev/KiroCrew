@@ -45,6 +45,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { safeSetItem } from '../utils/safeStorage'
+import { LAYOUT } from '../components/layout'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import SessionActionsMenu from '../components/SessionActionsMenu'
@@ -55,6 +56,7 @@ import { collectFolderSubtreeIds } from '../utils/folderTree'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity, SessionLink } from '../types'
+import { SESSION_LANES, inferLane } from './chat/sessionLane'
 import { decideUnreadDrain } from './unreadDrain'
 import {
   type RecentUnit,
@@ -1207,6 +1209,34 @@ const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 1400
 const SIDEBAR_LS_KEY = 'mc-sidebar-width'
+/** The width the user had before a board auto-widen, so switching back to list
+ *  view restores it instead of stranding the automatic value. */
+const SIDEBAR_PRE_BOARD_LS_KEY = 'mc-sidebar-width-pre-board'
+
+/** Board column geometry, mirrored from the column strip's own classes:
+ *  `min-w-[220px]` per column, `gap-2` between them, `p-2` around the strip. */
+const BOARD_COL_MIN_W = 220
+const BOARD_COL_GAP = 8
+const BOARD_STRIP_PAD = 16
+/** Leave this much for the chat pane when widening the sidebar for a board, so
+ *  a wide board never squeezes the conversation out of the window. */
+const BOARD_CHAT_RESERVE = 520
+
+/** How wide the sidebar must be for `count` board columns to fit without
+ *  horizontal scrolling — clamped to the sidebar's own ceiling and to what the
+ *  viewport can spare once the nav rail and a usable chat pane are subtracted.
+ *  Returns the CURRENT width when nothing wider is available, so the caller can
+ *  only ever widen. On a narrow window the strip keeps a little horizontal
+ *  scroll rather than burying the conversation: four 220px lanes and a readable
+ *  chat pane genuinely do not both fit below roughly 1700px.
+ */
+export function boardSidebarWidth(count: number, current: number, viewport: number): number {
+  if (count <= 0) return current
+  const wanted = count * BOARD_COL_MIN_W + (count - 1) * BOARD_COL_GAP + BOARD_STRIP_PAD
+  const spare = viewport - LAYOUT.NAV_WIDTH - BOARD_CHAT_RESERVE
+  const ceiling = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, spare))
+  return Math.max(current, Math.min(wanted, ceiling))
+}
 /** Reveal-in-sidebar retry budget: ancestor expansion and filter resets land
  *  through mutations and re-renders, so the target row can enter the DOM
  *  several frames after the request is consumed. 20 × 100 ms ≈ 2 s, then the
@@ -1276,6 +1306,7 @@ function ChatSidebar({
   })
 
   // Sidebar-only state
+  const [seedError, setSeedError] = useState('')
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
   // Digest of session keys + titles (NOT status), fed to both searches as their
@@ -2080,10 +2111,6 @@ function ChatSidebar({
   }, [columnEditId, popoverPos])
 
 
-  const createColumnMutation = useMutation({
-    mutationFn: (body: { name?: string; tag_ids?: string[]; mode?: TagColumnMode }) => api.createTagColumn(body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
-  })
   const updateColumnMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: { name?: string; tag_ids?: string[]; mode?: TagColumnMode; order?: number; include_untagged?: boolean } }) => api.updateTagColumn(id, body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tag-columns'] }),
@@ -2121,8 +2148,94 @@ function ChatSidebar({
     mutationFn: ({ slot, columnId }: { slot: string; columnId: string }) => api.dropSlotToColumn(slot, columnId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-slots'] }),
   })
-  // Filter predicate for a single column
-  const columnMatches = useCallback((col: TagColumn, slotTags: string[]): boolean => {
+  /** Lanes the board does not have yet. Drives the seeding write and the menu
+   *  affordance, so the offer to add lanes appears exactly when there is
+   *  something to add — including after a partial failure left the set
+   *  incomplete, which is what makes "click again to finish" a real recovery
+   *  path rather than a claim.
+   *
+   *  This is an AFFORDANCE, not the uniqueness rule. It reads a cached column
+   *  list, so two dashboards can both compute the same missing lane; the backend
+   *  decides uniqueness by `state_key` under its write lock and returns the
+   *  existing lane instead of creating a second one. */
+  const missingLanes = useMemo(() => {
+    const present = new Set(rawColumns.filter(c => c.source === 'state').map(c => c.state_key))
+    return SESSION_LANES.filter(lane => !present.has(lane.key))
+  }, [rawColumns])
+
+  /** Add the four derived state lanes to the board.
+   *
+   *  Purely ADDITIVE and IDEMPOTENT: it creates only the lanes that are missing
+   *  and never deletes a column. That is the invariant, not an implementation
+   *  detail — an additive action that also disposes of persisted rows has to
+   *  guess which ones are disposable, and the unnamed match-all shape the view
+   *  toggle once created is byte-identical to a bare column the user added
+   *  themselves via "Add column after". No predicate can separate them, so the
+   *  only safe answer is to delete neither.
+   *
+   *  Consequences of the invariant, all of them deliberate:
+   *  - There is no two-write ordering to get wrong, so a mid-flight failure
+   *    leaves fewer lanes rather than a board stripped of its columns; clicking
+   *    again completes the set because creation is keyed on what is missing.
+   *  - A pre-existing bare column survives and sits beside the lanes, showing
+   *    every session. It is one click to remove and is not ours to delete.
+   *  - Re-running is harmless, which is what makes the pending-guard on the
+   *    menu items a second line of defence rather than the only one.
+   */
+  const seedStateLanesMutation = useMutation({
+    mutationFn: async () => {
+      for (const lane of missingLanes) {
+        await api.createTagColumn({ source: 'state', state_key: lane.key, tag_ids: [], mode: 'any' })
+      }
+      return rawColumns.length + missingLanes.length
+    },
+    onSuccess: (columnCount: number) => {
+      queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
+      // A board is a horizontal strip inside a 260px-default sidebar, so lanes
+      // that do not fit are reachable only by discovering the resize handle.
+      // Widen once to fit them; never shrink, so a width the user chose stands.
+      const next = boardSidebarWidth(columnCount, sidebarWidthRef.current, window.innerWidth)
+      if (next !== sidebarWidthRef.current) {
+        // Remember what the user had, so leaving board view can give it back.
+        // Persisting the automatic width without this destroys their chosen
+        // width permanently and strands a ~900px sidebar in list view.
+        safeSetItem(SIDEBAR_PRE_BOARD_LS_KEY, String(sidebarWidthRef.current))
+        setSidebarWidth(next)
+        onWidthChangeRef.current?.(next)
+        safeSetItem(SIDEBAR_LS_KEY, String(next))
+      }
+    },
+    onError: (err) => {
+      // Without this the toggle has already flipped to board view and nothing
+      // renders: no board, no message, no way to tell it failed from an empty
+      // one. Report it and hand back list view when nothing was created.
+      setSeedError(err instanceof Error ? err.message : String(err))
+      queryClient.invalidateQueries({ queryKey: ['tag-columns'] })
+    },
+  })
+  // Filter predicate for a single column. Takes the whole slot, not just its
+  // tags: a state column's membership is derived from live runtime fields, and
+  // a lane needs the same extras the row status chain uses (a parent whose
+  // sub-agent is blocked owes an approval even though the parent is idle).
+  const columnMatches = useCallback((col: TagColumn, slot: Slot): boolean => {
+    if (col.source === 'state') {
+      if (!col.state_key) return false
+      // Clamped against the running count exactly as the row status chain does:
+      // an approval count above the live agent count is stale, and unclamped it
+      // would pin an otherwise-idle session to Needs Approval indefinitely.
+      const running = subagentCounts[slot.key] || 0
+      // `slot` here is the raw payload, whose `running` covers only the slot's
+      // own turn. A dynamic workflow and a goal loop are both live work that
+      // outlive that flag, and the row status chain already reads them from the
+      // store — so the lane must too, or a session renders a workflow spinner
+      // while sitting in Idle.
+      return inferLane(slot, {
+        subagentAwaiting: Math.min(subagentApprovalCounts[slot.key] || 0, running),
+        backgroundWork: !!workflowActive[slot.key]
+          || Object.prototype.hasOwnProperty.call(goalLoops ?? {}, slot.key),
+      }) === col.state_key
+    }
+    const slotTags = slot.tags || []
     // "include untagged" OR'd on top of any tag filter
     if (col.include_untagged && slotTags.length === 0) return true
     if (!col.tag_ids || col.tag_ids.length === 0) return true
@@ -2130,7 +2243,7 @@ function ChatSidebar({
     if (col.mode === 'all') return col.tag_ids.every(t => set.has(t))
     if (col.mode === 'none') return !col.tag_ids.some(t => set.has(t))
     return col.tag_ids.some(t => set.has(t))  // 'any'
-  }, [])
+  }, [subagentApprovalCounts, subagentCounts, goalLoops, workflowActive])
 
   const slotFolders = useMemo(() => {
     const valid = new Set(folders.map(f => f.id))
@@ -3978,10 +4091,46 @@ function ChatSidebar({
               <button className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:border-border-strong hover:text-text transition-all" title={i18nT('pages.chatSidebar.more_options')} aria-label={i18nT('pages.chatSidebar.more_options')}><MoreVertical size={14} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[180px]">
-              <DropdownMenuItem onClick={() => { const isActive = tagColumnsEnabled && rawColumns.length > 0; const next = !isActive; const cfg = loadChatConfig(); saveChatConfig({ ...cfg, tagColumnsEnabled: next }); if (next && rawColumns.length === 0) { createColumnMutation.mutate({ name: '', tag_ids: [], mode: 'any' }) } }}>
+              <DropdownMenuItem disabled={seedStateLanesMutation.isPending} onClick={() => {
+                if (seedStateLanesMutation.isPending) return
+                const isActive = tagColumnsEnabled && rawColumns.length > 0
+                const next = !isActive
+                const cfg = loadChatConfig()
+                saveChatConfig({ ...cfg, tagColumnsEnabled: next })
+                setSeedError('')
+                if (!next) {
+                  // Leaving board view: give back the width the user chose before
+                  // the lanes were auto-widened, rather than stranding a ~900px
+                  // sidebar in list view.
+                  const prior = parseInt(localStorage.getItem(SIDEBAR_PRE_BOARD_LS_KEY) || '', 10)
+                  if (!isNaN(prior) && prior >= SIDEBAR_MIN && prior <= SIDEBAR_MAX) {
+                    setSidebarWidth(prior)
+                    onWidthChangeRef.current?.(prior)
+                    safeSetItem(SIDEBAR_LS_KEY, String(prior))
+                    safeSetItem(SIDEBAR_PRE_BOARD_LS_KEY, '')
+                  }
+                }
+                // Seed when the board has no lanes and nothing configured worth
+                // keeping. Seeding is additive and idempotent, so a repeat click
+                // cannot duplicate lanes; the pending guard above only stops a
+                // second request racing the first before the cache refreshes.
+                if (next && !rawColumns.some(c => c.source === 'state' || c.name || (c.tag_ids || []).length || c.include_untagged)) {
+                  seedStateLanesMutation.mutate()
+                }
+              }}>
                 <Columns3 size={14} className={tagColumnsEnabled && rawColumns.length > 0 ? 'text-accent' : 'text-muted'} />
                 {tagColumnsEnabled && rawColumns.length > 0 ? i18nT('pages.chatSidebar.switch_to_list_view') : i18nT('pages.chatSidebar.switch_to_board_view')}
               </DropdownMenuItem>
+              {tagColumnsEnabled && rawColumns.length > 0 && missingLanes.length > 0 && (
+                <DropdownMenuItem
+                  data-testid="add-state-lanes"
+                  disabled={seedStateLanesMutation.isPending}
+                  onClick={() => { if (!seedStateLanesMutation.isPending) seedStateLanesMutation.mutate() }}
+                >
+                  <Columns3 size={14} className="text-muted" />
+                  {i18nT('pages.chatSidebar.add_state_lanes')}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => { setCleanupOpen(!cleanupOpen); setCleanupExpanded(false); setCleanupError('') }}>
                 <BrushCleaning size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_sessions')}
@@ -4522,6 +4671,28 @@ function ChatSidebar({
           })}
         </div>
       )}
+      {seedError && (
+        /* Outside the layout branches on purpose. A TOTAL seed failure leaves
+         * zero columns, so the board branch never renders — a banner inside it
+         * would be invisible in exactly the case it exists for, while the
+         * toggle has already flipped and the user is looking at a list. */
+        <div
+          data-testid="lane-seed-error"
+          role="status"
+          className="mx-2 mt-2 px-2.5 py-1.5 rounded-md border text-[12px] shrink-0"
+          style={{ borderColor: 'var(--warn)', color: 'var(--warn)' }}
+        >
+          {i18nT('pages.chatSidebar.lane_seed_failed')}
+          <button
+            type="button"
+            className="ml-2 underline bg-transparent border-none cursor-pointer p-0"
+            style={{ color: 'var(--warn)' }}
+            onClick={() => { setSeedError(''); seedStateLanesMutation.mutate() }}
+          >
+            {i18nT('pages.chatSidebar.lane_seed_retry')}
+          </button>
+        </div>
+      )}
       <LayoutGroup id="chat-slots">
         {flatView && folders.length > 0 ? (
           // Flat view: every chat exploded out of its folder into one lane.
@@ -4663,11 +4834,15 @@ function ChatSidebar({
           </motion.div>
         ) : (
           // Trello-style horizontal column strip
+          <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-2 p-2" data-testid="column-strip">
             {orderedColumns.map((col, colIdx) => {
-              const colSlots = filteredSlots.filter(s => columnMatches(col, s.tags || []))
+              const colSlots = filteredSlots.filter(s => columnMatches(col, s))
               const colTags = col.tag_ids.map(tid => tagById[tid]).filter(Boolean) as ChatTag[]
-              const isStatusLane = colTags.length === 1 && !!colTags[0].status
+              const laneDef = col.source === 'state' ? SESSION_LANES.find(l => l.key === col.state_key) : undefined
+              // Only a single-status-tag column can accept a card: dropping onto a
+              // derived lane has nothing to write (the backend refuses it too).
+              const isStatusLane = !laneDef && colTags.length === 1 && !!colTags[0].status
               return (
                 // Board column is a drag-and-drop drop zone (column reorder + session
                 // card drop); mouse-only drag handlers, so scope-disable the rule.
@@ -4713,7 +4888,15 @@ function ChatSidebar({
                       <GripVertical size={12} />
                     </span>
                     <div className="flex flex-wrap gap-1 items-center flex-1 min-w-0">
-                      {colTags.length === 0 ? (
+                      {laneDef ? (
+                        // A lane's identity is its runtime state, so it shows a
+                        // fixed name and accent rather than tag chips — there is
+                        // no filter behind it for the user to edit.
+                        <span className="inline-flex items-center gap-1.5 min-w-0" title={i18nT('pages.chatSidebar.lane_derived_hint')}>
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: laneDef.color }} aria-hidden />
+                          <span className="text-[11px] font-semibold uppercase tracking-wider truncate" style={{ color: laneDef.color }}>{i18nT(laneDef.labelKey)}</span>
+                        </span>
+                      ) : colTags.length === 0 ? (
                         <span className="text-[11px] text-muted font-semibold uppercase tracking-wider">{col.name || (col.include_untagged ? i18nT('pages.chatSidebar.untagged_2') : i18nT('pages.chatSidebar.all_sessions'))}</span>
                       ) : (
                         <>
@@ -4723,11 +4906,22 @@ function ChatSidebar({
                           {col.include_untagged && <span className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium border border-dashed border-muted text-muted" title={i18nT('pages.chatSidebar.also_shows_untagged_sessions')}>{i18nT('pages.chatSidebar.untagged')}</span>}
                         </>
                       )}
-                      {col.name && colTags.length > 0 && <span className="text-[11px] text-muted ml-1">· {col.name}</span>}
+                      {col.name && !laneDef && colTags.length > 0 && <span className="text-[11px] text-muted ml-1">· {col.name}</span>}
+                      {/* A bare match-all column beside the lanes shows every
+                        * session again, so the counts stop summing and cards
+                        * appear twice. Seeding deliberately does not delete it
+                        * (it is indistinguishable from a column the user added),
+                        * so say what it is and let them decide. */}
+                      {!laneDef && colTags.length === 0 && !col.name && !col.include_untagged
+                        && orderedColumns.some(c => c.source === 'state') && (
+                        <span data-testid={`column-duplicates-hint-${col.id}`} className="text-[10px] text-muted ml-1 truncate">
+                          · {i18nT('pages.chatSidebar.lane_legacy_column_hint')}
+                        </span>
+                      )}
                     </div>
                     <span className="text-[11px] text-muted shrink-0">{colSlots.length}</span>
                     <button type="button" data-testid={`column-new-folder-${col.id}`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px]" title={i18nT('pages.chatSidebar.new_folder')} aria-label={i18nT('pages.chatSidebar.new_folder')} onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}><FolderPlus size={12} /></button>
-                    <button type="button" data-testid={`column-edit-${col.id}`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px]" title={i18nT('pages.chatSidebar.filter_manage_tags')} aria-label={i18nT('pages.chatSidebar.filter_manage_tags')} onClick={() => setColumnEditId(columnEditId === col.id ? null : col.id)}><TagIcon size={12} /></button>
+                    {!laneDef && <button type="button" data-testid={`column-edit-${col.id}`} className="text-muted hover:text-accent bg-transparent border-none cursor-pointer shrink-0 p-[2px]" title={i18nT('pages.chatSidebar.filter_manage_tags')} aria-label={i18nT('pages.chatSidebar.filter_manage_tags')} onClick={() => setColumnEditId(columnEditId === col.id ? null : col.id)}><TagIcon size={12} /></button>}
                     <button
                       type="button"
                       data-testid={`column-add-after-${col.id}`}
@@ -4856,6 +5050,7 @@ function ChatSidebar({
                 </div>
               )
             })}
+          </div>
           </div>
         )}
       </LayoutGroup>

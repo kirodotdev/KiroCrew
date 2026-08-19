@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => ({
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
   createTagColumn: vi.fn(),
+  deleteTagColumn: vi.fn(),
   updateChatFolder: vi.fn(),
   chatFolders: vi.fn(),
   chatTags: vi.fn(),
@@ -199,6 +200,7 @@ beforeEach(() => {
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
   mocks.createTagColumn.mockResolvedValue({ id: 'col-new' })
+  mocks.deleteTagColumn.mockResolvedValue({ ok: true })
   mocks.updateChatFolder.mockResolvedValue({ ok: true })
   mocks.chatFolders.mockResolvedValue([])
   mocks.chatTags.mockResolvedValue([])
@@ -337,12 +339,143 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
 })
 
 describe('ChatSidebar — header menu view + tag entries', () => {
-  it('turning on board view seeds a first column', async () => {
+  it('turning on board view seeds the four state lanes', async () => {
+    // An empty board is seeded with the derived state lanes rather than one
+    // unnamed match-all column, which renders as a single "All sessions" pile.
     renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
     openHeaderMenu()
     fireEvent.click(await screen.findByText('Switch to board view'))
     expect(cfg.saveChatConfig).toHaveBeenCalledWith(expect.objectContaining({ tagColumnsEnabled: true }))
-    await waitFor(() => expect(mocks.createTagColumn).toHaveBeenCalledWith({ name: '', tag_ids: [], mode: 'any' }))
+    await waitFor(() => expect(mocks.createTagColumn).toHaveBeenCalledTimes(4))
+    expect(mocks.createTagColumn.mock.calls.map(c => c[0].state_key))
+      .toEqual(['needs_approval', 'waiting', 'working', 'idle'])
+    expect(mocks.createTagColumn).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'state', state_key: 'working' }),
+    )
+  })
+
+  it('adding lanes never deletes a column, whatever the board holds', async () => {
+    // The invariant. "Add column after" produces the same unnamed/unfiltered
+    // shape the view toggle once created, so no predicate can tell a disposable
+    // placeholder from a bare column the user added. Seeding therefore deletes
+    // nothing at all -- including when the board is nothing BUT bare columns.
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue([
+      { id: 'c-bare-1', name: '', tag_ids: [], mode: 'any', order: 0 },
+      { id: 'c-bare-2', name: '', tag_ids: [], mode: 'any', order: 1 },
+    ])
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    openHeaderMenu()
+    fireEvent.click(await screen.findByTestId('add-state-lanes'))
+    await waitFor(() => expect(mocks.createTagColumn).toHaveBeenCalledTimes(4))
+    expect(mocks.deleteTagColumn).not.toHaveBeenCalled()
+  })
+
+  it('creates only the missing lanes, so an incomplete set is completable', async () => {
+    // Idempotence plus a real recovery path: with two lanes already present the
+    // menu still offers to add lanes, and doing so creates only the other two --
+    // never a duplicate set. This is what a partial failure recovers through.
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue([
+      { id: 'l-1', name: '', tag_ids: [], mode: 'any', order: 0, source: 'state', state_key: 'needs_approval' },
+      { id: 'l-2', name: '', tag_ids: [], mode: 'any', order: 1, source: 'state', state_key: 'working' },
+      { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 2 },
+    ])
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    openHeaderMenu()
+    fireEvent.click(await screen.findByTestId('add-state-lanes'))
+    await waitFor(() => expect(mocks.createTagColumn).toHaveBeenCalledTimes(2))
+    expect(mocks.createTagColumn.mock.calls.map(c => c[0].state_key).sort())
+      .toEqual(['idle', 'waiting'])
+    expect(mocks.deleteTagColumn).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failed seed instead of leaving an empty board', async () => {
+    // The toggle flips tagColumnsEnabled BEFORE the mutation runs, so a failure
+    // with no feedback looks identical to a board that is simply empty.
+    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue([])
+    mocks.createTagColumn.mockRejectedValue(new Error('persist failed'))
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    openHeaderMenu()
+    fireEvent.click(await screen.findByText('Switch to board view'))
+    const banner = await screen.findByTestId('lane-seed-error')
+    expect(banner.textContent).toContain('Could not add the automatic columns')
+    expect(banner.textContent).toContain('Try again')
+  })
+
+  it('gives back the pre-board width when switching to list view', async () => {
+    // Persisting the auto-widened value without remembering the old one destroys
+    // the width the user chose and strands a wide sidebar in list view.
+    localStorage.setItem('mc-sidebar-width', '300')
+    localStorage.setItem('mc-sidebar-width-pre-board', '300')
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue(
+      ['needs_approval', 'waiting', 'working', 'idle'].map((k, i) => (
+        { id: `l-${i}`, name: '', tag_ids: [], mode: 'any', order: i, source: 'state', state_key: k }
+      )),
+    )
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    openHeaderMenu()
+    fireEvent.click(await screen.findByText('Switch to list view'))
+    await waitFor(() => expect(localStorage.getItem('mc-sidebar-width')).toBe('300'))
+  })
+
+  it('labels a legacy bare column as showing every session once lanes exist', async () => {
+    // Seeding does not delete it (indistinguishable from a user's own column), so
+    // the duplicate-cards effect has to be named rather than left to be guessed.
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue([
+      { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 0 },
+      { id: 'l-0', name: '', tag_ids: [], mode: 'any', order: 1, source: 'state', state_key: 'idle' },
+    ])
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    const hint = await screen.findByTestId('column-duplicates-hint-c-bare')
+    expect(hint.textContent).toContain('shows every session')
+  })
+
+  it('does not label a bare column when there are no lanes', async () => {
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue([
+      { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 0 },
+    ])
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    await waitFor(() => expect(screen.getByTestId('column-c-bare')).toBeTruthy())
+    expect(screen.queryByTestId('column-duplicates-hint-c-bare')).toBeNull()
+  })
+
+  it('hides the add-lanes entry once all four lanes exist', async () => {
+    // The affordance is keyed on there being something to add, so a complete
+    // board does not offer a no-op action.
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue(
+      ['needs_approval', 'waiting', 'working', 'idle'].map((k, i) => (
+        { id: `l-${i}`, name: '', tag_ids: [], mode: 'any', order: i, source: 'state', state_key: k }
+      )),
+    )
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    openHeaderMenu()
+    await waitFor(() => expect(screen.queryByText('Switch to list view')).toBeTruthy())
+    expect(screen.queryByTestId('add-state-lanes')).toBeNull()
+  })
+
+  it('leaves the board recoverable when lane creation fails part-way', async () => {
+    // No rollback and no deletion: a partial failure just means fewer lanes.
+    // The bare column survives, so the board still renders and the next seed
+    // fills the gap rather than starting from an empty strip.
+    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
+    mocks.tagColumns.mockResolvedValue([
+      { id: 'c-bare', name: '', tag_ids: [], mode: 'any', order: 0 },
+    ])
+    mocks.createTagColumn
+      .mockResolvedValueOnce({ id: 'lane-1' })
+      .mockResolvedValueOnce({ id: 'lane-2' })
+      .mockRejectedValueOnce(new Error('persist failed'))
+    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    openHeaderMenu()
+    fireEvent.click(await screen.findByText('Switch to board view'))
+    await waitFor(() => expect(mocks.createTagColumn).toHaveBeenCalledTimes(3))
+    expect(mocks.deleteTagColumn).not.toHaveBeenCalled()
   })
 
   it('offers the way back to list view once board view is on', async () => {

@@ -8425,7 +8425,16 @@
       "crew_mode": "Crew Mode — les sujets avancent en sous-sessions parallèles",
       "crew": "Crew",
       "autopilot_desc": "Une tâche, par étapes — il planifie d'abord, vous validez, puis il exécute étape par étape.",
-      "crew_desc": "Plusieurs tâches à la fois — chaque sujet avance dans sa propre sous-session et répond dès qu'il aboutit."
+      "crew_desc": "Plusieurs tâches à la fois — chaque sujet avance dans sa propre sous-session et répond dès qu'il aboutit.",
+      "lane_needs_approval": "Approbation requise",
+      "lane_waiting": "Vous attend",
+      "lane_working": "En cours",
+      "lane_idle": "Inactive",
+      "lane_derived_hint": "Les sessions rejoignent cette colonne d'elles-mêmes lorsque leur état change",
+      "add_state_lanes": "Ajouter les colonnes automatiques",
+      "lane_seed_failed": "Impossible d'ajouter les colonnes automatiques.",
+      "lane_seed_retry": "Réessayer",
+      "lane_legacy_column_hint": "affiche toutes les sessions"
     },
     "connectionsPage": {
       "access": "Accès",
