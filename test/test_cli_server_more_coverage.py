@@ -962,6 +962,10 @@ def git_checkout(monkeypatch, tmp_path):
     """A KIROCREW_PROJECT_DIR that looks like a git checkout, with git stubbed out."""
     proj = tmp_path / "proj"
     (proj / ".git").mkdir(parents=True)
+    # ``.git/HEAD``, not just ``.git/``: the install shape is derived by asking
+    # git and falling back to the on-disk markers of a working tree's own root,
+    # and a bare ``.git`` directory is refused by both on purpose.
+    (proj / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.resolve_remote_url",
@@ -1099,7 +1103,10 @@ class TestUpdateWheelDispatch:
 
     def test_layout_is_built_from_the_distribution(self, monkeypatch, capsys) -> None:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-        monkeypatch.setattr("kiro_crew.beacon.distribution", lambda: "wheel")
+        # Both bindings: the capability derives WHO owns the update from the
+        # stamp, and cli_server names the layout kind from its own import.
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
+        monkeypatch.setattr("kiro_crew.cli_server.distribution", lambda: "wheel")
         seen: list[InstallLayout] = []
         monkeypatch.setattr(cli_server, "_update_wheel", lambda layout: seen.append(layout))
         cli_server._update()
@@ -1110,7 +1117,8 @@ class TestUpdateWheelDispatch:
 
     def test_unknown_distribution_defaults_to_wheel(self, monkeypatch) -> None:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-        monkeypatch.setattr("kiro_crew.beacon.distribution", lambda: "")
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "")
+        monkeypatch.setattr("kiro_crew.cli_server.distribution", lambda: "")
         seen: list[InstallLayout] = []
         monkeypatch.setattr(cli_server, "_update_wheel", lambda layout: seen.append(layout))
         cli_server._update()

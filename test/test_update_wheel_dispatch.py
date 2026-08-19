@@ -15,13 +15,24 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def _init_repo(path) -> None:
+    """Make *path* the top level of a real git working tree.
+
+    Detection asks git and anchors the answer to this exact directory, so a
+    fabricated ``.git`` entry does not stand in for a repository.
+    """
+    subprocess.run(
+        ["git", "init", "-q"], cwd=str(path), check=True, capture_output=True, timeout=30
+    )
+
+
 class TestDetectInstallLayout:
     """Tests for platform/update_layout.detect_install_layout."""
 
     def test_git_checkout_detected(self, monkeypatch, tmp_path) -> None:
         proj = tmp_path / "project"
         proj.mkdir()
-        (proj / ".git").mkdir()
+        _init_repo(proj)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
 
         from kiro_crew.platform.update_layout import detect_install_layout
@@ -32,11 +43,37 @@ class TestDetectInstallLayout:
         assert layout.is_externally_managed is False
         assert layout.proj == str(proj)
 
+    def test_an_externally_managed_stamp_beats_a_mounted_checkout(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The layout must not call a container a git install.
+
+        Operators do mount a checkout into a container. Classifying that as "git"
+        made the channel endpoint refuse a switch with "a git checkout follows its
+        git remote" instead of naming the surface that actually updates the install —
+        and it is the same inverted precedence the CLI dispatch had, in a second
+        consumer, which is exactly what deriving from one contract prevents.
+        """
+        proj = tmp_path / "project"
+        proj.mkdir()
+        _init_repo(proj)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "docker")
+        monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "docker")
+
+        from kiro_crew.platform.update_layout import detect_install_layout
+
+        layout = detect_install_layout()
+        assert layout.kind == "docker"
+        assert layout.is_git is False
+        assert layout.is_externally_managed is True
+        assert layout.guidance, "an externally managed layout must carry its guidance"
+
     def test_git_worktree_file_detected(self, monkeypatch, tmp_path) -> None:
         """A .git FILE (worktree/submodule) is still detected as git."""
         proj = tmp_path / "project"
         proj.mkdir()
-        (proj / ".git").write_text("gitdir: /somewhere/.git/worktrees/foo")
+        _init_repo(proj)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
 
         from kiro_crew.platform.update_layout import detect_install_layout
@@ -322,7 +359,11 @@ class TestUpdateDispatch:
     def test_externally_managed_prints_guidance(self, monkeypatch, capsys) -> None:
         """Desktop/Docker installs get guidance, not an error."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-        monkeypatch.setattr("kiro_crew.beacon.distribution", lambda: "dmg")
+        # Both readers are bound at import, so patching `beacon.distribution`
+        # alone would not reach them: the capability module decides the branch and
+        # cli_server only names the stamp in the message.
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "dmg")
+        monkeypatch.setattr("kiro_crew.cli_server.distribution", lambda: "dmg")
 
         import kiro_crew.cli_server as cs
 
@@ -330,11 +371,37 @@ class TestUpdateDispatch:
         out = capsys.readouterr().out
         assert "externally" in out.lower() or "desktop" in out.lower()
 
+    def test_an_externally_managed_stamp_wins_over_a_mounted_checkout(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """A container pointed at a real checkout must NOT take the git path.
+
+        The git path is fetch + reset, so treating the mount as this install's
+        source discards whatever the operator has in that tree — and the image,
+        not the checkout, is what updates a container.
+        """
+        _init_repo(tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "docker")
+        monkeypatch.setattr("kiro_crew.cli_server.distribution", lambda: "docker")
+
+        def _no_git(*_a, **_k):  # pragma: no cover - must not be called
+            raise AssertionError("the git update path must not run for a container")
+
+        monkeypatch.setattr("subprocess.run", _no_git)
+
+        import kiro_crew.cli_server as cs
+
+        cs._update()
+        out = capsys.readouterr().out.lower()
+        assert "managed externally" in out
+        assert "image" in out
+
     def test_git_checkout_still_works(self, monkeypatch, tmp_path) -> None:
         """Git installs still take the existing git fetch+reset path."""
         proj = tmp_path / "project"
         proj.mkdir()
-        (proj / ".git").mkdir()
+        _init_repo(proj)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
 
         import kiro_crew.cli_server as cs
@@ -346,7 +413,10 @@ class TestUpdateDispatch:
             calls.append(args)
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "main\n"
+            # The detection asks for the working tree's own root and compares it
+            # to the install root, so the fake has to answer with that root
+            # rather than a branch name.
+            result.stdout = f"{proj}\n" if "--show-toplevel" in args else "main\n"
             return result
 
         monkeypatch.setattr("subprocess.run", fake_run)

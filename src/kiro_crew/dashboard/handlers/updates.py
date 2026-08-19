@@ -18,7 +18,6 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
-from kiro_crew.beacon import distribution
 from kiro_crew.changelog import Release, build_release_list
 from kiro_crew.config.loader import (
     ConfigReadError,
@@ -27,16 +26,33 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.platform import update_layout
+from kiro_crew.platform.update_capability import (
+    CHECK_DEFERRED,
+    CHECK_FAILED,
+    CHECK_SUCCEEDED,
+    CHECK_UNCHECKED,
+    ERR_FEED_MALFORMED,
+    ERR_FEED_UNREACHABLE,
+    ERR_GIT_FETCH_FAILED,
+    ERR_GIT_READ_FAILED,
+    ERR_UNKNOWN,
+    ERR_VERSION_UNPARSEABLE,
+    EXTERNALLY_MANAGED_MESSAGES,
+    MANAGED_BY_GIT,
+    MODE_NONE,
+    UpdateCapability,
+    derive_capability,
+)
 from kiro_crew.platform.update_governance import (
     min_version,
     resolve_remote_url,
     update_blocked_reason,
     update_required,
 )
+from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases
 from kiro_crew.platform.update_layout import detect_install_layout
-from kiro_crew.platform.update_layout import release_channel as _release_channel_of_install
-from kiro_crew.platform.update_layout import set_release_channel
+from kiro_crew.platform.update_layout import release_channel as _release_channel
+from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -45,36 +61,48 @@ _SSE_INTERVAL_SECS = 5
 
 # ── Update ──
 
-# Cached update check result.
+# Cached update check result, in the capability contract's own vocabulary.
 #
-# ``checked`` is LOAD-BEARING, not decoration: the dashboard renders "you're on
-# the latest version" only when a real comparison completed. Before this was
-# enforced, a check that never ran (every wheel install — see
-# ``_do_update_check``) left this dict at its initial ``available: False`` and the
-# UI reported an out-of-date install as up to date.
+# ``check_status`` is LOAD-BEARING, not decoration, and ``update_available`` is
+# nullable BECAUSE of it: "up to date" means ``check_status == "succeeded" and
+# update_available is False``, and a consumer that reads a missing verdict as
+# "current" reproduces the defect this contract exists to prevent — a check that
+# never ran, rendered as a check that passed.
 _update_info: dict[str, object] = {
-    "available": False,
-    "changes": "",
-    "remote_version": "",
-    "checked": False,
-    "install_kind": "",
-    "self_updatable": False,
+    "supported": True,
+    "managed_by": "",
+    "mode": MODE_NONE,
+    "can_download": False,
+    "can_apply": False,
+    "requires_restart": True,
     "channel": "",
-    "update_command": "",
-    #: Did the RELEASE VERSION move? Reported separately from ``available``
-    #: because the two answer different questions and one consumer needs the
-    #: narrower one.
+    "latest_version": "",
+    "changes": "",
+    "check_status": CHECK_UNCHECKED,
+    "update_available": None,
+    #: Did the RELEASE VERSION move? Reported separately from
+    #: ``update_available`` because the two answer different questions and one
+    #: consumer needs the narrower one.
     #:
-    #: ``available`` is what the dashboard shows, and for a git checkout it is
-    #: true on commit distance alone. The unattended
+    #: ``update_available`` is what the dashboard shows, and for a git checkout it
+    #: is true on commit distance alone. The unattended
     #: ``GatewayOrchestrator._auto_apply_update`` applies `git reset --hard`, so
     #: it requires BOTH: acting on commit distance alone would reset a
     #: developer's checkout within 12 hours of any upstream commit, where before
     #: it only did so at a release. Requiring both keeps that path firing no more
     #: often than it did while the verdict was version-only.
     "version_newer": False,
-    "error": "",
+    "error_code": None,
+    "unavailable_reason": None,
+    "remediation": None,
 }
+#: Bumped whenever the thing a check is computed AGAINST changes (today: a channel
+#: switch). A check already talking to the OLD channel's feed cannot be cancelled,
+#: so without this it finishes afterwards and re-pins its stale verdict plus the
+#: 12-hourly clock — pinning a stale answer for half a day to a channel the
+#: install no longer follows.
+_check_generation = 0
+
 _UPDATE_CHECK_INTERVAL = 43200  # 12 hours
 _last_update_check: float = 0.0
 
@@ -87,16 +115,9 @@ _last_update_check: float = 0.0
 #: the rest no-op.
 _check_in_flight = False
 
-#: Bumped whenever the thing a check is computed AGAINST changes (today: a channel
-#: switch). :func:`_do_update_check` captures it on entry and DISCARDS its own
-#: result if the value moved while it ran.
-#:
-#: The in-flight guard above is not sufficient on its own. A check already running
-#: against the OLD channel's feed cannot be cancelled, so without this it finishes
-#: after the switch, writes that lane's verdict into the cache and stamps the
-#: 12-hourly clock -- pinning a stale answer for half a day to a channel the
-#: install no longer follows.
-_check_generation = 0
+#: Release channels the installer publishes. Anything else in the channel file (a
+#: hand-edit, junk, a lane this build predates) falls back to ``stable``.
+_RELEASE_CHANNELS = ("stable", "insider", "nightly")
 
 #: ``schema`` every CLI artifact manifest carries. A payload without it is not a
 #: manifest and must not be read as one.
@@ -110,52 +131,10 @@ _FEED_TIMEOUT_SECS = 15
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
 
-# Error codes for ``_update_info["error"]``. The dashboard maps these to
-# localized copy, so they are a contract: add, never silently repurpose.
-_ERR_FEED_UNREACHABLE = "feed_unreachable"
-_ERR_FEED_MALFORMED = "feed_malformed"
-_ERR_GIT_FETCH_FAILED = "git_fetch_failed"
-_ERR_GIT_READ_FAILED = "git_read_failed"
-_ERR_VERSION_UNPARSEABLE = "version_unparseable"
-_ERR_MANAGED_BY_APP = "managed_by_app"
-_ERR_MANAGED_BY_IMAGE = "managed_by_image"
-_ERR_UNKNOWN = "unknown"
-
-#: Distributions whose code is replaced by something OTHER than this gateway,
-#: mapped to the reason they report instead of a verdict.
-#:
-#: The desktop bundles embed this very backend (``packaging/build-desktop.sh``
-#: ships a PBS interpreter tree inside the .app / AppImage), so they DO run this
-#: code — and they must not answer with it. Their update surface is the Electron
-#: updater, which has its own feed (``latest-mac.yml`` / ``latest-linux.yml``),
-#: its own version stream and its own consent UI. Reading the CLI feed here would
-#: compare against the WRONG stream and then recommend an installer that does not
-#: apply to a DMG. It would also be user-visible: the Settings nav dot is
-#: ``status.update_available || desktopUpdateAvailable`` (``App.tsx``), so a
-#: false positive lights a badge whose destination says "you're on the latest
-#: version" — the desktop About branch, which is the only one rendered there.
-#:
-#: A container is likewise replaced by pulling a new image, never in place.
-#:
-#: Windows needs no entry: there is no Windows-native gateway. ``install.ps1``
-#: makes the Windows machine a thin client for a gateway running on EC2 Linux, so
-#: the backend answering this call is a Linux install that identifies itself
-#: correctly on its own.
-#: The one externally-managed distribution whose remedy is an image pull
-#: rather than the desktop app.
-_CONTAINER_DISTRIBUTION = "docker"
-
-#: DERIVED, not restated: ``update_layout.EXTERNALLY_MANAGED`` owns WHICH
-#: distributions are externally managed, and this module owns only the wording
-#: shown for them. The two lists were duplicated once, and the copy here fell
-#: behind when Linux gained deb and rpm -- a package install then reached
-#: ``_check_release_feed()`` and was compared against the CLI wheel channel,
-#: which is exactly the wrong-stream false positive described above. Deriving the
-#: key set makes that drift impossible: a format added there appears here.
-_EXTERNALLY_MANAGED = {
-    dist: _ERR_MANAGED_BY_IMAGE if dist == _CONTAINER_DISTRIBUTION else _ERR_MANAGED_BY_APP
-    for dist in update_layout.EXTERNALLY_MANAGED
-}
+# Error codes for ``_update_info["error_code"]``. The dashboard maps these to
+# localized copy, so they are a contract: add, never silently repurpose. Defined
+# in ``platform/update_capability`` so the CLI and the dashboard cannot disagree
+# about what a failure is called.
 
 
 def get_update_info() -> dict[str, object]:
@@ -163,22 +142,56 @@ def get_update_info() -> dict[str, object]:
     return dict(_update_info)
 
 
-async def api_update_check(request: web.Request) -> web.Response:
-    """GET /api/update/check — is a newer build available for this install?
+def remediation_command(info: dict[str, object]) -> str:
+    """The copyable command from a check result's ``remediation``, or ``""``.
 
-    Two install layouts, two sources of truth (see ``_do_update_check``): a git
-    checkout is compared against its remote, and a wheel install against the
-    release channel feed it was installed from.
+    Display/copy only: no caller executes it, and it is composed locally from
+    validated inputs rather than from any feed field.
+    """
+    remediation = info.get("remediation")
+    if isinstance(remediation, dict):
+        return str(remediation.get("command") or "")
+    return ""
+
+
+def status_update_fields() -> dict[str, object]:
+    """The update fields ``/api/status`` and the WebSocket push both carry.
+
+    One reader for both emitters: the hot path carries a deliberate SUBSET of the
+    contract (the full thing lives on ``GET /api/update/check``), and two
+    hand-rolled copies of that subset would drift the moment a field is added.
+
+    ``update_available`` is passed through unflattened — ``None`` means no
+    verdict, and coercing it to ``False`` here would hand the dashboard the
+    "never checked reads as current" bug at the last step.
+    """
+    available = _update_info.get("update_available")
+    return {
+        "update_available": available if isinstance(available, bool) else None,
+        "update_can_apply": bool(_update_info.get("can_apply")),
+        "update_check_status": str(_update_info.get("check_status") or CHECK_UNCHECKED),
+        "update_command": remediation_command(_update_info),
+        "update_channel": str(_update_info.get("channel") or ""),
+    }
+
+
+async def api_update_check(request: web.Request) -> web.Response:
+    """GET /api/update/check — the update capability contract for this install.
+
+    ``state`` and ``progress`` are absent on purpose: they describe an apply/drain
+    lifecycle that does not exist yet, and serving them as constants would
+    advertise transitions a consumer could poll for forever.
     """
     await _do_update_check()
     cfg = KiroCrewConfig.load()
     return web.json_response(
         {
             **_update_info,
+            "current_version": _local_version,
             "auto_update": cfg.auto_update,
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button.
-            "min_version": min_version(),
+            "minimum_version_enforced": min_version(),
             "update_required": update_required(_local_version),
         }
     )
@@ -303,136 +316,96 @@ def _is_newer(remote: str, local: str) -> bool | None:
     return remote_key[1:] > local_key[1:]
 
 
-def _cdn_bases() -> tuple[str, str]:
-    """``(feed base, artifact base)`` — mirrors ``cli.sh``'s two URL classes.
-
-    The feed host serves mutable pointers (``latest-cli.json``); the artifact host
-    serves bytes. ``KIROCREW_CDN_BASE`` overrides BOTH, exactly as the installer's
-    ``--cdn`` does, so a test or an alternate CDN moves the check and the install
-    it recommends together instead of splitting them across hosts.
-    """
-    override = (os.environ.get("KIROCREW_CDN_BASE") or "").strip().rstrip("/")
-    if override:
-        return override, override
-    return "https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"
-
-
-def _release_channel() -> str:
-    """The release channel this install follows, from ``$KIROCREW_HOME/channel``.
-
-    Thin alias for :func:`kiro_crew.platform.update_layout.release_channel`, which
-    owns the rule. Kept as a module-local name because the switcher endpoint
-    WRITES that same file: a second copy of the read path here could drift from
-    the writer's allowlist and silently move an install off its lane.
-
-    ``cli.sh`` writes this file on every install and never reads it back, which is
-    also why :func:`_wheel_update_command` always spells ``--channel``: a bare
-    re-run of the installer defaults to ``stable``.
-    """
-    return _release_channel_of_install()
-
-
-def _wheel_update_command(channel: str, artifact_base: str) -> str:
-    """The exact command that upgrades a wheel install on *channel*.
-
-    Composed LOCALLY from an already-validated channel name. Never assembled from
-    a feed field — see :func:`_check_release_feed` on why the manifest is treated
-    as untrusted display metadata.
-
-    ``--proto '=https'`` is not decoration: this string is copied into a shell and
-    runs an installer, and ``artifact_base`` is overridable via
-    ``KIROCREW_CDN_BASE``. Without the restriction, an ``http://`` override would
-    hand the user a command that fetches a script in plaintext and executes it, so
-    an on-path attacker could swap the installer. curl refuses any other scheme,
-    which is also exactly what ``cli.sh`` does for every fetch it makes itself.
-
-    Delegates to :func:`update_layout.wheel_update_command` rather than composing
-    a second copy: this string used to pipe curl into ``sh``, which reports only
-    the shell's status, so a failed download read as a successful update. Keeping
-    one builder is what stops the displayed command and the one the gateway runs
-    from drifting apart on that.
-    """
-    from kiro_crew.platform.update_layout import wheel_update_command
-
-    return wheel_update_command(channel)
-
-
 def _set_update_info(**fields: object) -> None:
     """Replace the cached result wholesale so no key survives from a prior run.
 
     Mutating selected keys would let a previous success leak into a later failure
-    (a stale ``remote_version`` beside a fresh ``error``), which is exactly the
-    class of half-truth this module is being fixed for.
+    (a stale ``latest_version`` beside a fresh ``error_code``), which is exactly
+    the class of half-truth this contract exists to prevent.
     """
     _update_info.clear()
     _update_info.update(
         {
-            "available": False,
-            "changes": "",
-            "remote_version": "",
-            "checked": False,
-            "install_kind": "",
-            "self_updatable": False,
+            "supported": True,
+            "managed_by": "",
+            "mode": MODE_NONE,
+            "can_download": False,
+            "can_apply": False,
+            "requires_restart": True,
             "channel": "",
-            "update_command": "",
+            "latest_version": "",
+            "changes": "",
+            "check_status": CHECK_UNCHECKED,
+            "update_available": None,
             "version_newer": False,
-            "error": "",
+            "error_code": None,
+            "unavailable_reason": None,
+            "remediation": None,
         }
     )
     _update_info.update(fields)
 
 
-def _invalidate_update_check() -> None:
+def _invalidate_update_check(channel: str) -> None:
     """Drop the cached verdict so a stale one cannot be read as current.
 
-    Called when the thing the verdict was computed AGAINST changes — today only
-    a channel switch. Resetting to ``checked: False`` rather than leaving the old
-    result is what keeps the module's contract intact if the follow-up check
-    no-ops (another check already in flight): the panel then says "not checked
-    yet" instead of presenting the previous channel's answer as this channel's.
+    Called when the thing the verdict was computed AGAINST changes — today only a
+    channel switch. Resetting to no verdict rather than leaving the old result is
+    what keeps the honesty pair intact if the follow-up check no-ops (another one
+    already in flight): the panel then says "not checked yet" instead of
+    presenting the previous channel's answer as this channel's.
 
     Bumping the generation is the other half, and the load-bearing one: a check
     ALREADY running against the previous channel's feed cannot be cancelled, so
     without a generation it finishes after this reset and re-pins its stale verdict
     plus the 12-hourly clock. :func:`_do_update_check` compares the generation on
     the way out and discards a superseded result.
+
+    ``channel`` is PASSED IN, never read here. The caller is on the event loop and
+    has just written and validated the value, so re-reading
+    ``$KIROCREW_HOME/channel`` would be both redundant and a synchronous read on a
+    data home the operator may have put on a network mount — the same stall that
+    freezes the liveness heartbeat. It is carried through the reset rather than
+    left blank so the status pushed between here and the check landing still names
+    the channel the user just chose.
     """
     global _last_update_check, _check_generation
     _check_generation += 1
-    _set_update_info()
     _last_update_check = 0.0
+    _set_update_info(channel=channel)
+
+
+def _capability_fields(capability: UpdateCapability) -> dict[str, object]:
+    """The capability half of a cache entry, shared by every check branch.
+
+    Delegates rather than re-listing the fields: two hand-rolled copies of one
+    shape drift the moment a field is added to the contract.
+    """
+    return capability.to_dict()
 
 
 async def _do_update_check() -> None:
     """Refresh ``_update_info``: is a newer build available for THIS install?
 
-    Three install layouts, three answers:
+    The install's capability — who owns its bytes, and whether this process can
+    apply an update at all — comes from
+    :func:`~kiro_crew.platform.update_capability.derive_capability`, the one
+    derivation every update surface shares. Three answers follow from it:
 
-    * **git checkout** — ``KIROCREW_PROJECT_DIR`` with a ``.git``. Fetch the
-      remote, then report an update when the checkout can be FAST-FORWARDED
-      (behind its upstream and not ahead of it) OR when the on-disk
-      ``__version__`` outranks the imported one. This is also the only layout
-      ``POST /api/update`` can act on.
-    * **externally managed** — a desktop bundle or a container
-      (:data:`_EXTERNALLY_MANAGED`). This gateway is NOT the update surface, so
-      it reports which surface is instead of guessing a verdict.
+    * **defers** — a desktop bundle or a container. This gateway is NOT the
+      update surface, so it reports which surface is, as a DEFERRAL rather than a
+      failure.
+    * **git checkout** — fetch the remote, then report an update when the
+      checkout can be FAST-FORWARDED (behind its upstream and not ahead of it) OR
+      when the remote ``src/kiro_crew/__init__.py`` ``__version__`` outranks the
+      imported one. This is also the only layout ``POST /api/update`` can act on.
     * **everything else** — the ``cli.sh`` managed venv, a cloud/EC2 source
       install. Compare against the release channel feed the installer pulled
-      from. This layout used to return early and leave the cache at its initial
-      ``available: False``, so the dashboard told an out-of-date install it was
-      up to date.
-
-    The layout is decided by :func:`beacon.distribution`, which reads the value
-    stamped into the package tree at packaging time. It is matched by EXCLUSION
-    (desktop and container are named; everything else is feed-checkable) on
-    purpose: wheels published before the stamp existed carry no ``_build_info``
-    and so report the ``source`` default, and an ``== "wheel"`` allowlist would
-    silently exclude every already-released CLI install — precisely the
-    population this check is being fixed for.
+      from.
 
     Every exit path writes the cache, failures included: a check that could not
-    run records an ``error`` code and leaves ``checked`` False, so no caller can
-    mistake a non-answer for a verdict.
+    run records an ``error_code`` and leaves ``check_status`` at ``failed``, so no
+    caller can mistake a non-answer for a verdict.
     """
     global _last_update_check, _check_in_flight
 
@@ -444,49 +417,79 @@ async def _do_update_check() -> None:
     # install no longer follows.
     generation = _check_generation
 
+    # A no-I/O seed, so the except path below always has something to report even
+    # when the derivation itself is what failed.
+    capability = UpdateCapability(
+        supported=True,
+        managed_by="",
+        mode=MODE_NONE,
+        can_download=False,
+        can_apply=False,
+        requires_restart=True,
+    )
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-    # exists() not isdir(): in linked worktrees and submodules ``.git`` is a FILE
-    # holding a ``gitdir:`` pointer, and git works fine there.
-    is_git = bool(proj) and os.path.exists(os.path.join(proj, ".git"))
-    dist = "git" if is_git else distribution()
     try:
-        if is_git:
-            await _check_git_checkout(proj)
-        elif dist in _EXTERNALLY_MANAGED:
+        # Offloaded INSIDE the guard's try: the derivation shells out to git, so
+        # it must not run on the event loop, and it must not run where a raise
+        # would skip the finally — a leaked single-flight flag stops every future
+        # check for the process's lifetime, which is a silently dead updater.
+        capability = await asyncio.get_running_loop().run_in_executor(None, derive_capability)
+        if capability.defers:
+            reason = capability.unavailable_reason or ""
             _set_update_info(
-                install_kind=dist,
-                self_updatable=False,
-                error=_EXTERNALLY_MANAGED[dist],
+                **_capability_fields(capability),
+                check_status=CHECK_DEFERRED,
             )
+            logger.debug("Update check deferred: %s", EXTERNALLY_MANAGED_MESSAGES.get(reason, ""))
+        elif capability.managed_by == MANAGED_BY_GIT:
+            await _check_git_checkout(proj, capability)
         else:
-            await _check_release_feed(dist)
+            await _check_release_feed(capability)
     except Exception:
         logger.debug("Update check failed", exc_info=True)
         _set_update_info(
-            install_kind=dist,
-            self_updatable=is_git,
-            error=_ERR_UNKNOWN,
+            **_capability_fields(capability),
+            check_status=CHECK_FAILED,
+            error_code=ERR_UNKNOWN,
         )
     finally:
-        _check_in_flight = False
-        if generation != _check_generation:
-            # A channel switch landed while this check was talking to the PREVIOUS
-            # channel's feed. Discard the verdict and leave the clock UNSTAMPED so
-            # the next poll re-checks the new lane immediately, instead of pinning
-            # a stale answer for the full 12-hour interval.
-            logger.debug("Discarding update check superseded by a channel switch")
-            _set_update_info(channel=_release_channel())
-        else:
-            # Stamped even on failure, so an offline host or a broken feed cannot
-            # turn the 12-hourly background poll into a hot retry loop. The
-            # dashboard's manual button calls this function directly and is never
-            # rate-limited.
-            _last_update_check = time.time()
+        # The guard stays HELD across the cleanup below, and the inner `finally`
+        # is what releases it. Both halves are load-bearing:
+        #
+        # * Releasing it first (as this did) lets a status poll start and FINISH a
+        #   fresh check while the awaited channel read is still in flight; this
+        #   coroutine then resumes and overwrites that newer verdict with the reset.
+        # * Not releasing it on the error path is worse: an exception here would
+        #   leave `_check_in_flight` stuck True and the updater would silently stop
+        #   checking for the life of the process — the one failure this whole
+        #   contract exists to prevent.
+        try:
+            if generation != _check_generation:
+                # A channel switch landed while this check was talking to the
+                # PREVIOUS channel's feed. Discard the verdict and leave the clock
+                # UNSTAMPED so the next poll re-checks the new lane immediately,
+                # instead of pinning a stale answer for the full 12-hour interval.
+                logger.debug("Discarding update check superseded by a channel switch")
+                # Offloaded: this reads $KIROCREW_HOME/channel, and the data home can
+                # be network-backed (NFS/SMB) where the read can stall long enough to
+                # freeze the loop and the liveness heartbeat. Read rather than carried
+                # in from the switch on purpose — the file is the authority on which
+                # lane the install now follows, so a switch whose write failed cannot
+                # leave the panel naming a channel that was never persisted.
+                _set_update_info(channel=await asyncio.to_thread(_release_channel))
+            else:
+                # Stamped even on failure, so an offline host or a broken feed cannot
+                # turn the 12-hourly background poll into a hot retry loop. The
+                # dashboard's manual button calls this function directly and is never
+                # rate-limited.
+                _last_update_check = time.time()
+        finally:
+            _check_in_flight = False
 
 
-async def _check_git_checkout(proj: str) -> None:
+async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     """Compare a git checkout in *proj* against its tracked remote."""
-    base: dict[str, object] = {"install_kind": "git", "self_updatable": True}
+    base: dict[str, object] = _capability_fields(capability)
 
     proc = await asyncio.create_subprocess_exec(
         "git",
@@ -505,7 +508,7 @@ async def _check_git_checkout(proj: str) -> None:
             pass
         await proc.communicate()
         logger.warning("git fetch timed out")
-        _set_update_info(**base, error=_ERR_GIT_FETCH_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
         return
     if proc.returncode != 0:
         logger.warning(
@@ -513,7 +516,7 @@ async def _check_git_checkout(proj: str) -> None:
             proc.returncode,
             (fetch_err or b"").decode(errors="replace").strip(),
         )
-        _set_update_info(**base, error=_ERR_GIT_FETCH_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
         return
 
     local = await asyncio.create_subprocess_exec(
@@ -532,7 +535,7 @@ async def _check_git_checkout(proj: str) -> None:
         except ProcessLookupError:
             pass
         await local.communicate()
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     remote = await asyncio.create_subprocess_exec(
         "git",
@@ -550,7 +553,7 @@ async def _check_git_checkout(proj: str) -> None:
         except ProcessLookupError:
             pass
         await remote.communicate()
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
 
     local_sha = local_out.decode(errors="replace").strip()
@@ -560,7 +563,7 @@ async def _check_git_checkout(proj: str) -> None:
         # There is nothing to compare against, which is a failed check and not
         # "you are on the latest version".
         logger.warning("Could not resolve HEAD and/or upstream in %s", proj)
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
 
     # How far the checkout is from its upstream, BOTH directions. This — not the
@@ -596,11 +599,11 @@ async def _check_git_checkout(proj: str) -> None:
         except ProcessLookupError:
             pass
         await count.communicate()
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     if count.returncode != 0:
         logger.warning("Could not count commits against upstream in %s", proj)
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     # ``--left-right`` with the three-dot range prints "<ahead>\t<behind>": left
     # is reachable from HEAD only, right from the upstream only.
@@ -609,7 +612,7 @@ async def _check_git_checkout(proj: str) -> None:
         ahead, behind = int(ahead_text), int(behind_text)
     except ValueError:
         logger.warning("Unparseable rev-list count in %s", proj)
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     # Fast-forwardable: behind, and carrying nothing of its own to lose.
     can_fast_forward = behind > 0 and ahead == 0
@@ -632,12 +635,12 @@ async def _check_git_checkout(proj: str) -> None:
         except ProcessLookupError:
             pass
         await show.communicate()
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     match = re.search(r'__version__\s*=\s*"(.+?)"', show_out.decode(errors="replace"))
     if not match:
         logger.warning("Could not read __version__ at %s", target_sha)
-        _set_update_info(**base, error=_ERR_GIT_READ_FAILED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     remote_version = match.group(1)
     # Two independent reasons a checkout is out of date, either one sufficient:
@@ -655,7 +658,12 @@ async def _check_git_checkout(proj: str) -> None:
             _local_version,
             remote_version,
         )
-        _set_update_info(**base, remote_version=remote_version, error=_ERR_VERSION_UNPARSEABLE)
+        _set_update_info(
+            **base,
+            latest_version=remote_version,
+            check_status=CHECK_FAILED,
+            error_code=ERR_VERSION_UNPARSEABLE,
+        )
         return
     # The version signal answers one question only: the pull already landed and
     # this process is still running the code from before it. That state IS
@@ -706,11 +714,11 @@ async def _check_git_checkout(proj: str) -> None:
 
     _set_update_info(
         **base,
-        available=available,
+        update_available=available,
         changes=changes,
-        remote_version=remote_version,
+        latest_version=remote_version,
         version_newer=bool(version_newer),
-        checked=True,
+        check_status=CHECK_SUCCEEDED,
     )
 
 
@@ -732,12 +740,14 @@ async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
             return resp.status, await resp.content.read(_FEED_MAX_BYTES + 1)
 
 
-async def _check_release_feed(install_kind: str) -> None:
+async def _check_release_feed(capability: UpdateCapability) -> None:
     """Compare a feed-checkable install against the release channel it came from.
 
-    *install_kind* is reported verbatim rather than hardcoded to ``"wheel"``: an
-    unstamped pre-``_build_info`` wheel reports ``source``, and flattening the two
-    would put a value on the wire that the install cannot back up.
+    Reached for every shape whose bytes this gateway could in principle replace
+    but whose ``managed_by`` is not ``git`` — the ``cli.sh`` managed venv, and an
+    unstamped pre-``_build_info`` wheel that reports the ``source`` default.
+    Matching by exclusion rather than an ``== "wheel"`` allowlist is deliberate:
+    an allowlist would skip every already-released CLI install.
 
     **Security posture — the manifest is UNTRUSTED display metadata.** This
     function deliberately does not verify its RSA signature: that check lives in
@@ -750,12 +760,14 @@ async def _check_release_feed(install_kind: str) -> None:
     if the gateway itself ever installs, which it does not.
     """
     channel = _release_channel()
-    feed_base, artifact_base = _cdn_bases()
+    feed_base, _artifact_base = _cdn_bases()
+    # `for_channel` keeps the pair honest: the channel reported here and the command
+    # offered alongside it are read at different moments, and a switch landing in
+    # between would otherwise publish one lane's name next to a command that moves
+    # the install to the other.
     base: dict[str, object] = {
-        "install_kind": install_kind,
-        "self_updatable": False,
+        **_capability_fields(capability.for_channel(channel)),
         "channel": channel,
-        "update_command": _wheel_update_command(channel, artifact_base),
     }
     url = f"{feed_base}/feed/{channel}/latest-cli.json"
 
@@ -763,36 +775,36 @@ async def _check_release_feed(install_kind: str) -> None:
         status, raw = await _fetch_feed_bytes(url)
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
         logger.debug("Release feed fetch failed: %s", url, exc_info=True)
-        _set_update_info(**base, error=_ERR_FEED_UNREACHABLE)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_UNREACHABLE)
         return
     if status != 200:
         logger.warning("Release feed %s returned HTTP %s", url, status)
-        _set_update_info(**base, error=_ERR_FEED_UNREACHABLE)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_UNREACHABLE)
         return
 
     if len(raw) > _FEED_MAX_BYTES:
         logger.warning("Release feed %s exceeded %d bytes", url, _FEED_MAX_BYTES)
-        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
         return
     try:
         manifest = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         logger.warning("Release feed %s is not valid JSON", url)
-        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
         return
     if not isinstance(manifest, dict):
-        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
         return
     # The channel assertion is what stops a mis-wired or swapped feed from
     # advertising another lane's build to this install.
     if manifest.get("schema") != _CLI_MANIFEST_SCHEMA or manifest.get("channel") != channel:
         logger.warning("Release feed %s is not a %s for %s", url, _CLI_MANIFEST_SCHEMA, channel)
-        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
         return
     remote_version = manifest.get("version")
     if not isinstance(remote_version, str) or not _VERSION_RE.match(remote_version):
         logger.warning("Release feed %s carries no usable version", url)
-        _set_update_info(**base, error=_ERR_FEED_MALFORMED)
+        _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_FEED_MALFORMED)
         return
 
     available = _is_newer(remote_version, _local_version)
@@ -802,26 +814,31 @@ async def _check_release_feed(install_kind: str) -> None:
             _local_version,
             remote_version,
         )
-        _set_update_info(**base, remote_version=remote_version, error=_ERR_VERSION_UNPARSEABLE)
+        _set_update_info(
+            **base,
+            latest_version=remote_version,
+            check_status=CHECK_FAILED,
+            error_code=ERR_VERSION_UNPARSEABLE,
+        )
         return
 
     extra: dict[str, object] = {}
     pub_date = manifest.get("pub_date")
     if isinstance(pub_date, str) and _PUB_DATE_RE.match(pub_date):
-        extra["remote_pub_date"] = pub_date
+        extra["latest_pub_date"] = pub_date
     # No ``changes``: the manifest carries no changelog, and the CHANGELOG.md
     # bundled into the wheel describes the version already INSTALLED, not the new
     # one. The dashboard's "view full changelog" disclosure covers the gap
     # rather than this function inventing a diff it cannot see.
     _set_update_info(
         **base,
-        available=available,
-        remote_version=remote_version,
+        update_available=available,
+        latest_version=remote_version,
         # For a feed-checkable install the verdict IS the version comparison, so
         # the two agree by construction. Reported anyway so the field means the
         # same thing on every layout and no consumer has to special-case one.
         version_newer=available,
-        checked=True,
+        check_status=CHECK_SUCCEEDED,
         **extra,
     )
 
@@ -1061,148 +1078,6 @@ async def _restart_gateway(state: DashboardState) -> None:
     os.execv(exe, [exe, "-m", "kiro_crew"] + sys.argv[1:])
 
 
-async def api_update_channel(request: web.Request) -> web.Response:
-    """POST /api/update/channel — move this install onto another release channel.
-
-    Only meaningful for a feed-checkable install (a ``cli.sh`` wheel, a cloud
-    source install). A git checkout tracks a git remote and a desktop bundle or
-    container is updated by something else entirely, so those layouts are
-    REFUSED rather than silently writing a file nothing reads — a switcher that
-    appears to work and changes nothing is worse than no switcher.
-
-    Switching does not install anything. It changes which feed the next check
-    compares against, and which ``--channel`` the recommended installer command
-    spells; the user still runs that command (or clicks Update on a
-    self-updatable layout). That keeps a channel change from ever being an
-    unattended, unconsented version jump.
-
-    **Not a governance bypass.** ``UpdatePins`` constrains the git ``source`` and
-    a ``min_version`` floor; it has no release-channel key, so there is no pin
-    for this to escape. Nor does the endpoint grant a new capability: the channel
-    file is an ordinary file in the data home that the operator can already
-    write. What it adds is an authenticated, allowlist-validated path to the same
-    write. Introducing an enterprise channel pin is a governance change in its
-    own right — the profile parser fails closed on unknown keys, so a new key has
-    to be rolled out before it can be set.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-
-    # A well-formed JSON ARRAY or scalar parses fine and then has no ``.get``, so
-    # the type check is separate from the parse guard above: without it, a body of
-    # ``[]`` from an authenticated caller raises AttributeError and answers 500
-    # where the honest answer is 400.
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
-        )
-
-    requested = body.get("channel")
-    if not isinstance(requested, str):
-        return web.json_response(
-            {"error": "channel must be a string", "code": "invalid_channel"}, status=400
-        )
-
-    layout = detect_install_layout()
-    if layout.is_git:
-        return web.json_response(
-            {
-                "error": "A git checkout follows its git remote, not a release channel.",
-                "code": "channel_not_applicable_git",
-            },
-            status=409,
-        )
-    if layout.is_externally_managed:
-        return web.json_response(
-            {"error": layout.guidance, "code": "channel_not_applicable_managed"},
-            status=409,
-        )
-
-    try:
-        # Offloaded: mkdir + write + os.replace are synchronous syscalls, and the
-        # data home can be network-backed (NFS/SMB), where even a ten-byte write
-        # can stall long enough to freeze the loop and the liveness heartbeat with
-        # it. Small does not mean non-blocking.
-        stored = await asyncio.to_thread(set_release_channel, requested)
-    except ValueError:
-        # The allowlist is the whole guard: `channel` becomes a path segment in
-        # every feed URL and an argument in a shell command, so an unknown value
-        # is rejected, never coerced.
-        return web.json_response(
-            {"error": "unknown release channel", "code": "invalid_channel"}, status=400
-        )
-    except OSError:
-        logger.exception("Failed to persist release channel")
-        return web.json_response(
-            {"error": "failed to write channel file", "code": "channel_write_failed"}, status=500
-        )
-
-    # Re-check immediately against the NEW feed. Without this the panel would
-    # keep showing the previous channel's verdict until the next 12-hourly poll,
-    # which reads as the switch having done nothing.
-    _invalidate_update_check()
-    await _do_update_check()
-    # Same reason as the write above: a config read is disk I/O on a path the
-    # operator may have put on a network mount.
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    _, artifact_base = _cdn_bases()
-    return web.json_response(
-        {
-            "ok": True,
-            **_update_info,
-            "auto_update": cfg.auto_update,
-            # AFTER the spread, deliberately. When a check was already in flight
-            # `_do_update_check` returns early and the cache still holds the
-            # invalidated ``channel: ""`` / ``update_command: ""``; letting those
-            # win would blank the switcher right after a successful switch, and --
-            # worse -- leave the client falling back to the PREVIOUS channel's
-            # command, so copy-pasting it would move the install straight back.
-            #
-            # Neither value needs the check: both are pure functions of the channel
-            # now on disk, so they are composed locally from the already-validated
-            # name (same helper, same https pin as the check's own path).
-            "channel": stored,
-            "update_command": _wheel_update_command(stored, artifact_base),
-        }
-    )
-
-
-async def api_gateway_restart(request: web.Request) -> web.Response:
-    """POST /api/restart — restart the gateway process without updating anything.
-
-    The missing half of the non-desktop update flow. A wheel install cannot
-    replace its own code, so the panel hands the user an installer command to
-    run in a terminal; once they have, the gateway is still executing the OLD
-    code with no in-app way to pick up the new one. Short of this endpoint the
-    only route was killing the process by hand.
-
-    Deliberately NOT part of ``POST /api/update``: that endpoint pulls, rebuilds
-    and reinstalls before restarting, and it refuses every layout that is not a
-    git checkout. Restart has no such precondition — it is valid on every
-    layout, including a desktop bundle's embedded gateway.
-    """
-    state: DashboardState = request.app["state"]
-
-    # Reply BEFORE restarting. os.execv replaces the process image, so a restart
-    # kicked off inline would tear down the connection mid-response and the
-    # client could not distinguish "restarting" from "the request failed".
-    async def _restart() -> None:
-        # Let the response flush before the process image is replaced.
-        await asyncio.sleep(0.25)
-        try:
-            await _restart_gateway(state)
-        except Exception:
-            logger.exception("Gateway restart failed")
-            state.push_update_progress("failed", "Restart failed — check logs")
-
-    task = asyncio.create_task(_restart())
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
-    return web.json_response({"ok": True, "status": "restarting"})
-
-
 async def api_update_apply(request: web.Request) -> web.Response:
     """POST /api/update — git pull, rebuild, restart gateway."""
     state: DashboardState = request.app["state"]
@@ -1235,10 +1110,13 @@ async def api_update_apply(request: web.Request) -> web.Response:
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     if not proj:
         return web.json_response({"error": "KIROCREW_PROJECT_DIR not set"}, status=400)
-    # Mirror the _do_update_check git guard: a tarball install (e.g. cloud/EC2)
-    # has no .git, so `git pull` cannot update it — fail with a clear message
-    # instead of a generic "git pull failed".
-    if not os.path.exists(os.path.join(proj, ".git")):
+    # Same derivation the check path uses, so this endpoint and the button the
+    # dashboard renders from ``can_apply`` cannot disagree. Offloaded: it shells
+    # out to git.
+    capability = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: derive_capability(install_root=proj)
+    )
+    if capability.managed_by != MANAGED_BY_GIT:
         return web.json_response(
             {"error": "Not a git checkout — update by redeploying (e.g. `kirocrew cloud launch`)"},
             status=409,
@@ -1659,7 +1537,13 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
 
             data = json.dumps(
                 {
-                    **state.status_snapshot(update_available=bool(_update_info.get("available"))),
+                    # The SSE stream is the THIRD status emitter, and it was reading
+                    # the cache directly on a key this contract renamed — so it
+                    # published `False` unconditionally, and flattened the tri-state
+                    # while doing it (a check that never ran is not "no update").
+                    # `status_update_fields()` is the one reader; /api/status and the
+                    # WebSocket push already go through it.
+                    **state.status_snapshot(**status_update_fields()),  # type: ignore[arg-type]
                     "version": _local_version,
                 }
             )
@@ -1675,3 +1559,150 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     finally:
         state.unregister_sse(client_q)
     return resp
+
+
+async def api_update_channel(request: web.Request) -> web.Response:
+    """POST /api/update/channel — move this install onto another release channel.
+
+    Only meaningful for a feed-checkable install (a ``cli.sh`` wheel, a cloud
+    source install). A git checkout tracks a git remote and a desktop bundle or
+    container is updated by something else entirely, so those layouts are
+    REFUSED rather than silently writing a file nothing reads — a switcher that
+    appears to work and changes nothing is worse than no switcher.
+
+    Switching does not install anything. It changes which feed the next check
+    compares against, and which ``--channel`` the recommended installer command
+    spells; the user still runs that command (or clicks Update on a
+    self-updatable layout). That keeps a channel change from ever being an
+    unattended, unconsented version jump.
+
+    **Not a governance bypass.** ``UpdatePins`` constrains the git ``source`` and
+    a ``min_version`` floor; it has no release-channel key, so there is no pin
+    for this to escape. Nor does the endpoint grant a new capability: the channel
+    file is an ordinary file in the data home that the operator can already
+    write. What it adds is an authenticated, allowlist-validated path to the same
+    write. Introducing an enterprise channel pin is a governance change in its
+    own right — the profile parser fails closed on unknown keys, so a new key has
+    to be rolled out before it can be set.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+
+    # A well-formed JSON ARRAY or scalar parses fine and then has no ``.get``, so
+    # the type check is separate from the parse guard above: without it, a body of
+    # ``[]`` from an authenticated caller raises AttributeError and answers 500
+    # where the honest answer is 400.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+
+    requested = body.get("channel")
+    if not isinstance(requested, str):
+        return web.json_response(
+            {"error": "channel must be a string", "code": "invalid_channel"}, status=400
+        )
+
+    # Offloaded: the layout derivation shells out to git, and this handler runs on
+    # the event loop — a synchronous probe here freezes every gateway task and the
+    # liveness heartbeat for as long as git takes to answer.
+    layout = await asyncio.to_thread(detect_install_layout)
+    if layout.is_git:
+        return web.json_response(
+            {
+                "error": "A git checkout follows its git remote, not a release channel.",
+                "code": "channel_not_applicable_git",
+            },
+            status=409,
+        )
+    if layout.is_externally_managed:
+        return web.json_response(
+            {"error": layout.guidance, "code": "channel_not_applicable_managed"},
+            status=409,
+        )
+
+    try:
+        # Offloaded: mkdir + write + os.replace are synchronous syscalls, and the
+        # data home can be network-backed (NFS/SMB), where even a ten-byte write
+        # can stall long enough to freeze the loop and the liveness heartbeat with
+        # it. Small does not mean non-blocking.
+        stored = await asyncio.to_thread(set_release_channel, requested)
+    except ValueError:
+        # The allowlist is the whole guard: `channel` becomes a path segment in
+        # every feed URL and an argument in a shell command, so an unknown value
+        # is rejected, never coerced.
+        return web.json_response(
+            {"error": "unknown release channel", "code": "invalid_channel"}, status=400
+        )
+    except OSError:
+        logger.exception("Failed to persist release channel")
+        return web.json_response(
+            {"error": "failed to write channel file", "code": "channel_write_failed"}, status=500
+        )
+
+    # Re-check immediately against the NEW feed. Without this the panel would
+    # keep showing the previous channel's verdict until the next 12-hourly poll,
+    # which reads as the switch having done nothing. `stored` is what the write
+    # above just validated and persisted, so the invalidation needs no read of
+    # its own.
+    _invalidate_update_check(stored)
+    await _do_update_check()
+    # Same reason as the write above: a config read is disk I/O on a path the
+    # operator may have put on a network mount.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    _, artifact_base = _cdn_bases()
+    return web.json_response(
+        {
+            "ok": True,
+            **_update_info,
+            "auto_update": cfg.auto_update,
+            # AFTER the spread, deliberately. When a check was already in flight
+            # `_do_update_check` returns early and the cache still holds the
+            # invalidated ``channel: ""`` / ``update_command: ""``; letting those
+            # win would blank the switcher right after a successful switch, and --
+            # worse -- leave the client falling back to the PREVIOUS channel's
+            # command, so copy-pasting it would move the install straight back.
+            #
+            # Neither value needs the check: both are pure functions of the channel
+            # now on disk, so they are composed locally from the already-validated
+            # name (same helper, same https pin as the check's own path).
+            "channel": stored,
+            "update_command": wheel_update_command(stored),
+        }
+    )
+
+
+async def api_gateway_restart(request: web.Request) -> web.Response:
+    """POST /api/restart — restart the gateway process without updating anything.
+
+    The missing half of the non-desktop update flow. A wheel install cannot
+    replace its own code, so the panel hands the user an installer command to
+    run in a terminal; once they have, the gateway is still executing the OLD
+    code with no in-app way to pick up the new one. Short of this endpoint the
+    only route was killing the process by hand.
+
+    Deliberately NOT part of ``POST /api/update``: that endpoint pulls, rebuilds
+    and reinstalls before restarting, and it refuses every layout that is not a
+    git checkout. Restart has no such precondition — it is valid on every
+    layout, including a desktop bundle's embedded gateway.
+    """
+    state: DashboardState = request.app["state"]
+
+    # Reply BEFORE restarting. os.execv replaces the process image, so a restart
+    # kicked off inline would tear down the connection mid-response and the
+    # client could not distinguish "restarting" from "the request failed".
+    async def _restart() -> None:
+        # Let the response flush before the process image is replaced.
+        await asyncio.sleep(0.25)
+        try:
+            await _restart_gateway(state)
+        except Exception:
+            logger.exception("Gateway restart failed")
+            state.push_update_progress("failed", "Restart failed — check logs")
+
+    task = asyncio.create_task(_restart())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    return web.json_response({"ok": True, "status": "restarting"})

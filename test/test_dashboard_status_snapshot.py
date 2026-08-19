@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import time
 from unittest.mock import MagicMock
 
@@ -131,37 +132,121 @@ class TestStatusSnapshot:
         state.lessons.load_all.assert_not_called()
 
     def test_update_available_passthrough(self, state: DashboardState) -> None:
-        assert state.status_snapshot()["update_available"] is False
+        # The default is None, not False: a snapshot taken before any check has run
+        # carries NO VERDICT, and defaulting to False is what let the dashboard
+        # render "you're on the latest version" for a check that never happened.
+        assert state.status_snapshot()["update_available"] is None
         assert state.status_snapshot(update_available=True)["update_available"] is True
+        assert state.status_snapshot(update_available=False)["update_available"] is False
 
 
-class TestAllStatusSnapshotCallersPassUpdateAvailable:
-    """Every call to status_snapshot() must pass update_available explicitly."""
+class TestAllStatusSnapshotCallersPassTheUpdateFields:
+    """Every status emitter must fill the update fields from the shared reader.
 
-    def test_ws_passes_update_available(self) -> None:
-        """Regression: ws.py must pass update_available to status_snapshot()."""
+    A caller that omits them gets ``update_available=None`` and a dark badge,
+    which hides a real update from that transport. One reader
+    (``status_update_fields``) is what keeps the two emitters from drifting, so
+    the contract is now "you call it", not "the literal kwarg appears".
+    """
+
+    def test_the_shared_reader_carries_every_update_field(self) -> None:
+        from kiro_crew.dashboard.handlers.updates import status_update_fields
+
+        assert set(status_update_fields()) == {
+            "update_available",
+            "update_can_apply",
+            "update_check_status",
+            "update_command",
+            "update_channel",
+        }
+
+    def test_the_shared_reader_never_flattens_a_missing_verdict(self) -> None:
+        from kiro_crew.dashboard.handlers import updates
+
+        original = dict(updates._update_info)
+        try:
+            updates._update_info.clear()
+            assert status_fields_of(updates)["update_available"] is None
+            updates._update_info.update({"update_available": False})
+            assert status_fields_of(updates)["update_available"] is False
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+
+    def test_ws_uses_the_shared_reader(self) -> None:
         import inspect
 
         from kiro_crew.dashboard import ws
         source = inspect.getsource(ws)
-        assert "update_available=" in source, (
-            "ws.py calls status_snapshot() without update_available — "
-            "it will default to False, hiding real update availability from WebSocket clients"
+        assert "status_update_fields()" in source, (
+            "ws.py calls status_snapshot() without the shared update fields — "
+            "they default to no-verdict, hiding real availability from WebSocket clients"
         )
 
-    def test_sse_handler_passes_update_available(self) -> None:
-        import inspect
-
-        from kiro_crew.dashboard import handlers
-        source = inspect.getsource(handlers)
-        assert "update_available=" in source
-
-    def test_system_api_passes_update_available(self) -> None:
+    def test_system_api_uses_the_shared_reader(self) -> None:
         import inspect
 
         from kiro_crew.dashboard import handlers_system
         source = inspect.getsource(handlers_system)
-        assert "update_available=" in source
+        assert "status_update_fields()" in source
+
+    def test_every_status_snapshot_call_site_uses_the_shared_reader(self) -> None:
+        """Named-module checks miss a NEW emitter, which is how one already slipped.
+
+        The SSE stream in ``handlers/updates.py`` read the cache directly, on a key
+        this contract had renamed — so it published a hardcoded ``False`` and no test
+        noticed, because the two assertions above only look at the two modules that
+        were known emitters when they were written. This walks the AST instead: every
+        ``status_snapshot(...)`` call anywhere in the package must take its update
+        fields from ``status_update_fields()``, so the guard covers emitters nobody
+        has written yet.
+        """
+        import ast
+        import pathlib
+
+        # Scoped to the dashboard package on purpose: `DashboardState.status_snapshot`
+        # lives here and so does every emitter, while `platform/interfaces.py` defines
+        # an UNRELATED `status_snapshot()` on the platform provider that a
+        # name-only match would flag.
+        root = pathlib.Path(inspect_module_root()) / "dashboard"
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            if "_vendor" in path.parts:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:  # pragma: no cover - not our syntax to fix
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name != "status_snapshot":
+                    continue
+                # The fields may arrive as `**status_update_fields()` or as an
+                # explicit `update_available=...`; only the shared reader is
+                # accepted, because hand-passing one field is how drift starts.
+                srcseg = ast.unparse(node)
+                if "status_update_fields()" not in srcseg:
+                    offenders.append(f"{path.name}:{node.lineno}: {srcseg[:90]}")
+
+        assert not offenders, (
+            "these status_snapshot() call sites bypass status_update_fields(), so "
+            "their transport reports a stale or missing update verdict:\n  "
+            + "\n  ".join(offenders)
+        )
+
+
+def inspect_module_root() -> str:
+    """The installed package root, so the walk follows the code under test."""
+    import kiro_crew
+
+    return str(pathlib.Path(kiro_crew.__file__).parent)
+
+
+def status_fields_of(updates_module) -> dict:
+    return updates_module.status_update_fields()
 
 
 class TestBuildInfoResolution:

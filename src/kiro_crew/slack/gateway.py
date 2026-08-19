@@ -54,6 +54,7 @@ from kiro_crew.autonudge import (
     is_channel_key,
     runtime_budget_exceeded,
 )
+from kiro_crew.beacon import distribution
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.channels import builtin_channel_descriptors
 from kiro_crew.config import KiroCrewConfig
@@ -99,6 +100,7 @@ from kiro_crew.dashboard.cron_inject import (
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
 from kiro_crew.dashboard.handlers.messaging import _rehydrate_slot_from_history
+from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
@@ -190,6 +192,11 @@ from kiro_crew.platform.governance_profiles import (
     HOST_SESSION_KEY,
     audit_governance_degraded,
     governance_permits,
+)
+from kiro_crew.platform.update_capability import (
+    CHECK_SUCCEEDED,
+    CHECK_UNCHECKED,
+    EXTERNALLY_MANAGED_STAMPS,
 )
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import safety_override
@@ -6905,19 +6912,25 @@ class GatewayOrchestrator:
         """Mirror a provider's verdict into the dashboard's authoritative status.
 
         The SSE snapshot renders the update badge from
-        ``dashboard/handlers/updates.py::_update_info["available"]``, which only
-        the LEGACY check writes. A provider carries its own
+        ``dashboard/handlers/updates.py::_update_info["update_available"]``, which
+        only the LEGACY check writes. A provider carries its own
         :class:`UpdateCheckResult`, so notifying without this leaves the badge
-        reading a stale (usually False) value and the operator never sees that a
+        reading a stale (usually null) value and the operator never sees that a
         policy-defined update is waiting.
+
+        Written in the capability contract's vocabulary, and ``check_status`` is
+        stamped alongside the verdict: under that contract "up to date" means
+        ``check_status == "succeeded" and update_available is False``, so writing
+        the verdict without the status would leave a provider's real answer
+        indistinguishable from a check that never ran.
         """
         from kiro_crew.dashboard.handlers.updates import _update_info
 
-        _update_info["available"] = bool(getattr(result, "available", False))
+        _update_info["update_available"] = bool(getattr(result, "available", False))
         remote = str(getattr(result, "remote_version", "") or "")
         if remote:
-            _update_info["remote_version"] = remote
-        _update_info["checked"] = True
+            _update_info["latest_version"] = remote
+        _update_info["check_status"] = CHECK_SUCCEEDED
 
     async def _check_for_updates_via_provider(self, provider: object) -> None:
         """Provider-delegated update check and apply."""
@@ -7035,22 +7048,35 @@ class GatewayOrchestrator:
             from kiro_crew.dashboard.handlers import _do_update_check, _update_info
 
             await _do_update_check()
+            # Snapshot: the branches below read several keys with awaits
+            # between them, and a dashboard-triggered check running
+            # concurrently replaces the cache wholesale.
+            info = dict(_update_info)
             from kiro_crew.platform.update_governance import min_version, update_required
 
+            # A policy-pinned minimum version makes the update MANDATORY: it
+            # overrides the user's auto_update=False, because user config sits
+            # under the enterprise ceiling and an operator opting out must not
+            # hold a fleet on a build the policy forbids.
+            #
+            # Checked BEFORE the `available` branch, and deliberately independent
+            # of it: the mandate is about whether THIS host satisfies the floor,
+            # not about whether a newer build was advertised. `_auto_apply_update`
+            # still applies the source pin and its own no-new-commits early
+            # return, so this cannot bypass the ceiling or loop.
             if update_required(_running_version):
                 # A mandatory floor is handled by layout, because "apply" means
                 # different things per install shape:
-                #   * git checkout (self_updatable) -> git fetch + reset applies.
-                #   * wheel/cli.sh (not self_updatable, but carries an installer
-                #     `update_command`) -> cannot self-apply unattended; warn and
-                #     light the dashboard badge so the operator runs `kirocrew
-                #     update`. Before this branch existed the path `return`ed
-                #     silently, leaving the host below the floor with no signal.
-                #   * externally managed (dmg/appimage/deb/rpm/docker: not self_updatable
-                #     AND no `update_command`) -> its own updater owns this; the
-                #     backend must not drive a git reset on a non-git tree nor
-                #     show an inapplicable CLI-update badge. Log and return.
-                if _update_info.get("self_updatable"):
+                #   * git checkout (`can_apply`) -> git fetch + reset applies.
+                #   * wheel/cli.sh (no `can_apply`, but carries an installer
+                #     command in `remediation`) -> the installer can apply it, so
+                #     a floor does drive it; a floor above the newest build
+                #     notifies instead of reinstalling the same bytes forever.
+                #   * externally managed (dmg/appimage/deb/rpm/docker: no
+                #     `can_apply` and no command) -> its own updater owns this; the
+                #     backend must not drive a git reset on a non-git tree nor show
+                #     an inapplicable CLI-update badge.
+                if info.get("can_apply"):
                     logger.warning(
                         "Version compliance: running %s is below the policy minimum %s — "
                         "applying a mandatory update (overrides auto_update)",
@@ -7059,16 +7085,20 @@ class GatewayOrchestrator:
                     )
                     await self._auto_apply_update()
                     return
-                if (
-                    _update_info.get("update_command")
-                    and _update_info.get("install_kind") == "wheel"
-                ):
+                # A wheel install cannot apply in-process, but the installer can,
+                # and a policy floor outranks auto_update. Restricted to the
+                # `wheel` stamp: a `source` install carries the same installer
+                # command, yet re-running it there builds a SEPARATE managed venv
+                # while this interpreter re-execs unchanged — an endless
+                # update->restart loop. The stamp is baked at build time, so
+                # reading it costs no I/O on the event loop.
+                if _remediation_command(info) and distribution() == "wheel":
                     # Only apply when a NEWER build is available; otherwise the
                     # installer reinstalls the same below-floor version and the
                     # execv-restart re-enters this branch forever (the git path's
                     # no-new-commits guard is the equivalent). A floor pinned
                     # above the latest build must notify, not loop.
-                    if not _update_info.get("available"):
+                    if not info.get("update_available"):
                         logger.warning(
                             "Version compliance: running %s is below the policy minimum %s, "
                             "but no newer build is available — notifying, not looping",
@@ -7086,61 +7116,116 @@ class GatewayOrchestrator:
                     )
                     await self._auto_apply_wheel_update()
                     return
-                logger.warning(
-                    "Version compliance: running %s is below the policy minimum %s, but this "
-                    "install (%s) is updated by its own updater — not applying from the backend",
-                    _running_version,
-                    min_version(),
-                    _update_info.get("install_kind") or "unknown",
-                )
+                # Everything below cannot apply here, so the operator has to act.
+                # Two of the three cases light the badge; the third deliberately
+                # does not, because a dmg/appimage/deb/rpm/docker install cannot
+                # act on a CLI-update badge and its own updater owns the upgrade.
+                #
+                # Where the badge IS lit, `check_status` and `error_code` are left
+                # exactly as the check left them. Stamping them "succeeded" would
+                # erase the only evidence that the check path itself is broken,
+                # which is worse than a payload carrying two independent facts: an
+                # update is mandated (a LOCAL determination against the policy pin,
+                # which does not need the feed) and the feed check did not complete.
+                if _remediation_command(info):
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s, "
+                        "but this install (%s) updates by re-running the installer — "
+                        "run `kirocrew update`",
+                        _running_version,
+                        min_version(),
+                        info.get("managed_by") or "unknown",
+                    )
+                    _badge = True
+                elif info.get("check_status") in ("unchecked", "checking"):
+                    # The check no-ops while another one is in flight, so the cache
+                    # can hold no verdict here — and with no verdict there is no
+                    # `managed_by` either. The baked distribution stamp answers the
+                    # one question the badge needs and costs no I/O, so an
+                    # externally managed install is not handed a CLI-update badge it
+                    # cannot act on.
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s, but no "
+                        "check has reached a verdict yet — the next cycle decides which surface "
+                        "owns the upgrade",
+                        _running_version,
+                        min_version(),
+                    )
+                    _badge = distribution() not in EXTERNALLY_MANAGED_STAMPS
+                else:
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s, but "
+                        "this install (%s) is updated by its own updater — not applying from "
+                        "the backend",
+                        _running_version,
+                        min_version(),
+                        info.get("managed_by") or "unknown",
+                    )
+                    _badge = False
+                if _badge:
+                    _update_info["update_available"] = True
+                    if self.dashboard_state:
+                        self.dashboard_state.push_refresh("update_available")
                 return
 
-            if _update_info.get("available"):
+            if info.get("update_available"):
                 logger.info("Updates available from remote")
                 from kiro_crew.config import KiroCrewConfig
 
                 cfg = KiroCrewConfig.load()
-                if (
-                    cfg.auto_update
-                    and _update_info.get("self_updatable")
-                    and _update_info.get("version_newer")
-                ):
-                    # A git checkout is applied by `git reset --hard`, so this
-                    # path needs more than "the dashboard would show a badge".
-                    # ``available`` is true on commit distance alone, which for a
-                    # source checkout means any upstream commit — acting on that
-                    # would reset a developer's tree within 12 hours of one,
-                    # where before it only happened at a release. Requiring the
-                    # version to have moved as well keeps this firing no more
-                    # often than it did while the verdict was version-only.
-                    # Commit distance without a version bump lights the badge
-                    # below instead, and the dashboard's own apply path (`git
-                    # pull`, dirty tree refused) is the non-destructive way in.
+                # `_auto_apply_update` replaces code with git fetch + reset, so it
+                # can only serve a GIT CHECKOUT (`can_apply`). A wheel install
+                # replaces itself by re-running the installer, which the branch
+                # below drives instead; without that half of the guard the wheel
+                # path in `_do_update_check` would drive a git reset in a tree
+                # that has no `.git`.
+                #
+                # `version_newer` is the other half, and it is not redundant:
+                # `update_available` is true on commit distance alone, which for a
+                # source checkout means any upstream commit — acting on that would
+                # `git reset --hard` a developer's tree within 12 hours of one,
+                # where before it only happened at a release. Commit distance
+                # without a version bump lights the badge below instead, and the
+                # dashboard's own apply path (`git pull`, dirty tree refused) is
+                # the non-destructive way in.
+                if cfg.auto_update and info.get("can_apply") and info.get("version_newer"):
                     logger.info("Auto-update enabled — applying update")
                     await self._auto_apply_update()
-                elif (
-                    cfg.auto_update
-                    and _update_info.get("update_command")
-                    and _update_info.get("install_kind") == "wheel"
-                ):
+                elif cfg.auto_update and _remediation_command(info) and distribution() == "wheel":
                     # Only a managed WHEEL install can be safely self-updated by
                     # re-running the cli.sh installer: it replaces the same venv
                     # the running interpreter lives in. A "source" install (cloud
-                    # tarball / EC2) also carries an update_command but the
+                    # tarball / EC2) carries the same installer command but the
                     # installer would create a SEPARATE managed venv while this
                     # source interpreter re-execs unchanged — an infinite
                     # update→restart loop. Those notify instead.
-                    logger.info(
-                        "Auto-update enabled for wheel install — running installer"
-                    )
+                    logger.info("Auto-update enabled for wheel install — running installer")
                     await self._auto_apply_wheel_update()
                 else:
+                    if cfg.auto_update:
+                        logger.warning(
+                            "Auto-update is on, but this install (%s) updates by "
+                            "re-running the installer, not by git — notifying instead",
+                            info.get("managed_by") or "unknown",
+                        )
                     if self.dashboard_state:
                         self.dashboard_state.push_refresh("update_available")
-            elif _update_info.get("error"):
-                logger.info("Update check did not complete (%s)", _update_info.get("error"))
-            else:
+            elif info.get("error_code"):
+                # A check that could not run is NOT "already on latest" — saying so
+                # is the exact false reassurance the honesty pair in
+                # `handlers/updates.py` exists to prevent.
+                logger.info("Update check did not complete (%s)", info.get("error_code"))
+            elif info.get("check_status") == CHECK_SUCCEEDED:
                 print("👻 Already on latest version")
+            else:
+                # DEFERRED (a desktop bundle whose own updater owns this), or a
+                # check that never ran. Neither carries an `error_code`, so keying
+                # only on that would fall through to the reassurance above and
+                # claim a verdict nothing produced.
+                logger.info(
+                    "No update verdict to report (check_status=%s)",
+                    info.get("check_status") or CHECK_UNCHECKED,
+                )
         except Exception:
             logger.debug("Update check failed", exc_info=True)
 
@@ -7415,23 +7500,30 @@ class GatewayOrchestrator:
         ``os.execv`` so the new code takes effect.
 
         Preconditions (checked by the caller):
-        * ``auto_update`` is True in config.
-        * ``_update_info["update_command"]`` is set (the feed check succeeded
-          and composed the installer command locally from validated inputs).
-        * The install is NOT self_updatable (not a git checkout) and NOT
-          externally managed (not a desktop app or container).
+        * ``auto_update`` is True in config, or a policy floor mandates the update.
+        * The capability's ``remediation`` carries the installer command (the feed
+          check succeeded and composed it locally from validated inputs).
+        * The install is NOT a git checkout (no ``can_apply``) and NOT externally
+          managed (not a desktop app or container).
 
-        The command is composed by :func:`_wheel_update_command` from a validated
-        channel name and a scheme-pinned artifact base URL (``--proto '=https'``),
-        never from feed data. A successful run replaces the venv in-place; a
-        failure leaves the existing install intact (cli.sh writes to a temp dir
-        and atomically replaces via ``ln -sf``).
+        The command is composed by
+        :func:`kiro_crew.platform.update_layout.wheel_update_command` from a
+        validated channel name and a scheme-pinned artifact base URL
+        (``--proto '=https'``), never from feed data. A successful run replaces the
+        venv in-place; a failure leaves the existing install intact (cli.sh writes
+        to a temp dir and atomically replaces via ``ln -sf``).
         """
         from kiro_crew.dashboard.handlers import _update_info
 
-        update_cmd = _update_info.get("update_command")
-        if not update_cmd or not isinstance(update_cmd, str):
-            logger.warning("Auto-update (wheel): no update_command available")
+        # Read the command through the SAME accessor the caller selected this
+        # branch with. Reading a bare `_update_info["update_command"]` here is
+        # what made this method a silent no-op: the capability contract carries the
+        # command inside `remediation`, so the old key is never populated, the
+        # branch was still entered, and a mandated update logged a warning instead
+        # of applying.
+        update_cmd = _remediation_command(_update_info)
+        if not update_cmd:
+            logger.warning("Auto-update (wheel): no installer command in the capability")
             return
 
         # Platform guard: cli.sh is POSIX shell. Windows wheel installs do not

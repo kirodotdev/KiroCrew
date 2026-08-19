@@ -106,9 +106,18 @@ export default function SettingsPage() {
   // An embedded instance pane can't manage remote instances (single-level by
   // design) — hide the Instances tab so a pane can't connect onward.
   const embedded = isEmbeddedPane()
-  // Update nudge: dot on the About entry while a desktop update is available
-  // (mirrored from Electron update-state by useUpdateSubscription).
-  const updateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
+  // Update nudge: dot on the About entry while an update is available. Two
+  // independent sources, because they cover different installs: the Electron
+  // updater's mirrored flag (desktop only) and the gateway's own verdict (every
+  // other shape). Keying on the desktop flag alone left the dot permanently dark
+  // on a wheel install, which is the majority of installs.
+  //
+  // `=== true` is required, not cosmetic: the gateway sends null for a check that
+  // never ran or failed, and a truthiness test would keep that dark while a
+  // `!== false` test would light it on no evidence.
+  const gatewayUpdateAvailable = useAppSelector(s => s.dashboard.status?.update_available)
+  const desktopUpdateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
+  const updateAvailable = gatewayUpdateAvailable === true || desktopUpdateAvailable
   // Inbound webhooks is preview-gated. The rail and the palette apply that gate
   // through `getAdvertisedSurfaces()`, but this tab is the surface's only
   // advertised home (it is `hiddenFromNav`), so the gate has to be applied here

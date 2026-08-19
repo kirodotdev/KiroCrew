@@ -14,6 +14,7 @@ import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/arti
 import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
+import { updateAffordance } from './utils/updateAffordance'
 import { fetchNotifications, ackNotification } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
@@ -895,7 +896,25 @@ export default function App() {
   // Gateway (web) update flag OR desktop updater availability (mirrored from
   // Electron update-state by useUpdateSubscription) -- both light the same
   // Settings nav dot below.
-  const updateAvailable = useAppSelector(s => s.dashboard.status?.update_available || s.dashboard.desktopUpdateAvailable)
+  //
+  // `=== true` because the gateway's verdict is NULLABLE: null means a check that
+  // never ran or failed, and a truthiness test on it would be fine while a
+  // `!== false` test would claim an update on no evidence. Availability alone
+  // never licenses an apply action -- see `canApplyUpdate`.
+  const updateAvailable = useAppSelector(
+    s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
+  )
+  // Can the GATEWAY replace its own code? False on a wheel install and on a
+  // desktop bundle, where `POST /api/update` answers 400/409.
+  const canApplyUpdate = useAppSelector(s => s.dashboard.status?.update_can_apply)
+  const updateCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
+  // Availability and capability are separate facts; `updateAffordance` is the one
+  // place that combines them, so the modal and the nav badge cannot disagree.
+  const affordance = updateAffordance({
+    updateAvailable: useAppSelector(s => s.dashboard.status?.update_available),
+    canApply: canApplyUpdate,
+    command: updateCommand,
+  })
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
@@ -2300,9 +2319,21 @@ export default function App() {
                     <div className="text-[13px] text-muted leading-relaxed">{i18nT('app.a_newer_version_is_available_no_changelog_entry')}</div>
                   </div>
                 )}
-                <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
-                  {i18nT('app.update_now')}
-                </button>
+                {affordance === 'apply' ? (
+                  <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
+                    {i18nT('app.update_now')}
+                  </button>
+                ) : affordance === 'command' ? (
+                  // This install cannot replace its own code from here: `POST
+                  // /api/update` is git fetch + reset, so a wheel install answers
+                  // 400/409 and a desktop bundle is owned by its own updater.
+                  // Settings > About carries the same command with an explanation
+                  // and a copy button.
+                  <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
+                    data-testid="modal-update-command">
+                    {updateCommand}
+                  </div>
+                ) : null}
               </>
             ) : (
               <div className="text-sm text-muted py-4 text-center"><CheckCircle className="lucide-inline" /> {i18nT('app.you_re_on_the_latest_version')}</div>

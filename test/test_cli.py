@@ -349,14 +349,14 @@ class TestSetupWorkspaceDir:
         assert "Default:" in output
 
 
-# Common patches for _update tests — simulate a source tree with a git pull that has changes
-_UPDATE_PATCHES = {
-    "KIROCREW_PROJECT_DIR": "/fake/proj",
-}
+# The _update tests simulate a source tree whose git calls are faked. The project
+# root has to be a REAL directory, because update detection resolves git's answer
+# to one — so each test takes it from its own tmp_path rather than a module-level
+# temp dir, which would be created at collection time and outlive the run.
 
 
 def _patch_path():
-    """Mock Path so .git check passes, .install-method is absent, and .brazil dir exists."""
+    """Mock Path so .install-method is absent and the .brazil dir exists."""
     mock_git_dir = MagicMock(
         is_dir=MagicMock(return_value=True), exists=MagicMock(return_value=True)
     )
@@ -378,6 +378,24 @@ def _patch_path():
     return patch("kiro_crew.cli_server.Path", return_value=mock_path_inst)
 
 
+@contextlib.contextmanager
+def _git_resolvable():
+    """Pin git's resolution so these tests do not depend on the host's layout.
+
+    The probe resolves git from fixed system directories rather than ``PATH``, and
+    on Windows git legitimately lives under ``C:\\Program Files\\Git`` — not in
+    System32 — so the real lookup declines and the probe never reaches the mocked
+    ``subprocess.run`` these tests drive detection through. That is correct product
+    behaviour (it degrades to the on-disk repository markers), but it makes the
+    test assert the host's git layout instead of the failure handling it is about.
+    """
+    with patch(
+        "kiro_crew.platform.update_capability.trusted_system_bin",
+        return_value="/usr/bin/git",
+    ):
+        yield
+
+
 class TestUpdateFailures:
     """Tests for _update build-step failure handling (public pip/git flow).
 
@@ -386,37 +404,45 @@ class TestUpdateFailures:
     A non-zero return code from a critical step exits with code 1.
     """
 
-    @patch.dict("os.environ", _UPDATE_PATCHES)
-    def test_git_fetch_failure_exits(self):
+    def test_git_fetch_failure_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+
         def _side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
             m = MagicMock()
             m.returncode = 0
             m.stdout = ""
             m.stderr = ""
-            if cmd and "rev-parse" in cmd:
+            if cmd and "--show-toplevel" in cmd:
+                m.stdout = str(tmp_path)
+            elif cmd and "rev-parse" in cmd:
                 m.stdout = "beta-braveheart"
             if cmd and "fetch" in cmd:
                 m.returncode = 1
                 m.stderr = "network error"
             return m
 
-        with _patch_path(), patch("subprocess.run", side_effect=_side_effect):
+        with _patch_path(), _git_resolvable(), patch(
+            "subprocess.run", side_effect=_side_effect
+        ):
             try:
                 _update()
                 assert False, "Expected SystemExit"
             except SystemExit as e:
                 assert e.code == 1
 
-    @patch.dict("os.environ", _UPDATE_PATCHES)
-    def test_pip_install_failure_exits(self):
+    def test_pip_install_failure_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+
         def _side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
             m = MagicMock()
             m.returncode = 0
             m.stdout = ""
             m.stderr = ""
-            if cmd and "rev-parse" in cmd:
+            if cmd and "--show-toplevel" in cmd:
+                m.stdout = str(tmp_path)
+            elif cmd and "rev-parse" in cmd:
                 m.stdout = "beta-braveheart"
             # git diff --quiet returns 1 when there ARE new commits
             if cmd and "diff" in cmd and "--quiet" in cmd:
@@ -429,6 +455,7 @@ class TestUpdateFailures:
 
         with (
             _patch_path(),
+            _git_resolvable(),
             patch("kiro_crew.cli_server.shutil.which", return_value=None),
             patch("kiro_crew.cli_server.build_frontend_sync"),
             patch("kiro_crew.cli._ensure_node"),

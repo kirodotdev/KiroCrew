@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
+
+
+def _init_repo(path) -> None:
+    """Make *path* the top level of a real git working tree.
+
+    Detection asks git and anchors the answer to this exact directory, so a
+    fabricated ``.git`` entry does not stand in for a repository.
+    """
+    subprocess.run(
+        ["git", "init", "-q"], cwd=str(path), check=True, capture_output=True, timeout=30
+    )
 
 
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
@@ -207,7 +219,7 @@ class TestUpdateEndpoints:
         """Update apply returns 409 when working tree is dirty."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
-        (tmp_path / ".git").mkdir()  # must be a git checkout to reach the dirty check
+        _init_repo(tmp_path)  # must be a git checkout to reach the dirty check
 
         from kiro_crew.dashboard.handlers import api_update_apply
 

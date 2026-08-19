@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -123,14 +124,177 @@ class TestChannelEndpoint:
         # lane's verdict as this lane's answer.
         assert len(checked) == 1
 
+    def test_the_switch_never_reads_the_channel_file_on_the_event_loop(
+        self, _isolated_channel_home
+    ):
+        """The invalidation must not re-read ``$KIROCREW_HOME/channel``.
+
+        The endpoint is a coroutine, and ``release_channel()`` is a synchronous
+        ``read_text`` on the data home — which the operator may have put on NFS or
+        SMB, where a read can stall long enough to freeze the event loop and the
+        liveness heartbeat with it. The validated channel is already in hand from
+        the write, so any read here is both a stall risk and redundant.
+        """
+        update_layout.set_release_channel("stable")
+
+        def _explode() -> str:  # pragma: no cover - must not be called
+            raise AssertionError("release_channel() must not be read on the event loop")
+
+        async def _fake_check() -> None:
+            return None
+
+        with (
+            patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
+            patch.object(updates, "_do_update_check", _fake_check),
+            patch.object(updates, "_release_channel", _explode),
+        ):
+            resp = asyncio.run(updates.api_update_channel(_request({"channel": "insider"})))
+
+        assert resp.status == 200
+        # The channel the user just chose still has to reach the client: carrying
+        # it through the reset is what keeps the switcher from blanking.
+        assert json.loads(resp.text)["channel"] == "insider"
+
+    def test_the_superseded_branch_never_reads_the_channel_on_the_loop(
+        self, _isolated_channel_home
+    ):
+        """The discard path must offload its channel read, not block the loop.
+
+        Same hazard as the invalidation: ``release_channel()`` is a synchronous
+        read of the data home, which can be an NFS/SMB mount. Here the value cannot
+        simply be passed in — the file is the authority on which lane the install
+        now follows — so it has to move off the loop instead.
+        """
+        update_layout.set_release_channel("stable")
+        reads: list[str] = []
+
+        def _tracked_read() -> str:
+            # Records the CALLING thread: the whole point is that this does not run
+            # on the loop's thread.
+            reads.append(threading.current_thread().name)
+            return "nightly"
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_feed_check(*_a, **_k):
+            started.set()
+            await release.wait()
+            return {"update_available": True, "latest_version": "9.9.9"}
+
+        async def _scenario() -> None:
+            loop_thread = threading.current_thread().name
+            with (
+                patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
+                patch.object(updates, "_check_release_feed", _slow_feed_check),
+                patch.object(updates, "_release_channel", _tracked_read),
+            ):
+                slow = asyncio.create_task(updates._do_update_check())
+                await started.wait()
+                updates._invalidate_update_check("nightly")
+                release.set()
+                await slow
+
+            assert reads, "the discard path must still resolve the current channel"
+            assert loop_thread not in reads, (
+                f"the channel read ran on the event loop thread: {reads}"
+            )
+
+        asyncio.run(_scenario())
+
+    def test_the_guard_is_held_across_the_awaited_cleanup(self, _isolated_channel_home):
+        """A newer verdict must not be erased by the check it superseded.
+
+        The discard path awaits a channel read. If the single-flight guard were
+        released BEFORE that await, a status poll could start and finish a fresh
+        check while this one is parked, and the reset would then land on top of the
+        newer answer.
+        """
+        update_layout.set_release_channel("stable")
+        seen: list[bool] = []
+
+        def _slow_read() -> str:
+            # Sampled from the worker thread while the coroutine is parked on it:
+            # this is exactly the window a second check could squeeze into.
+            seen.append(updates._check_in_flight)
+            return "nightly"
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_feed_check(*_a, **_k):
+            started.set()
+            await release.wait()
+            return {"update_available": True, "latest_version": "9.9.9"}
+
+        async def _scenario() -> None:
+            with (
+                patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
+                patch.object(updates, "_check_release_feed", _slow_feed_check),
+                patch.object(updates, "_release_channel", _slow_read),
+            ):
+                slow = asyncio.create_task(updates._do_update_check())
+                await started.wait()
+                updates._invalidate_update_check("nightly")
+                release.set()
+                await slow
+
+        asyncio.run(_scenario())
+        assert seen == [True], (
+            "the single-flight guard was already released during the awaited "
+            f"cleanup, so a concurrent check could interleave: {seen}"
+        )
+        # And it must not stay held afterwards — that leak stops every future check.
+        assert updates._check_in_flight is False
+
+    def test_a_failure_in_the_cleanup_still_releases_the_guard(self, _isolated_channel_home):
+        """The inverse hazard, and the worse one.
+
+        A raise inside the cleanup must not leave `_check_in_flight` stuck True:
+        that silently stops the updater checking for the life of the process.
+        """
+        update_layout.set_release_channel("stable")
+
+        def _explode() -> str:
+            raise OSError("channel file unreadable")
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_feed_check(*_a, **_k):
+            started.set()
+            await release.wait()
+            return {"update_available": False}
+
+        async def _scenario() -> None:
+            with (
+                patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
+                patch.object(updates, "_check_release_feed", _slow_feed_check),
+                patch.object(updates, "_release_channel", _explode),
+            ):
+                slow = asyncio.create_task(updates._do_update_check())
+                await started.wait()
+                updates._invalidate_update_check("nightly")
+                release.set()
+                with pytest.raises(OSError):
+                    await slow
+
+        asyncio.run(_scenario())
+        assert updates._check_in_flight is False, (
+            "the guard leaked on the error path — every future update check is now "
+            "a no-op and the updater has silently stopped"
+        )
+
     def test_stale_verdict_is_dropped_even_if_the_recheck_no_ops(self, _isolated_channel_home):
         """A check already in flight makes ``_do_update_check`` return early.
 
         The response must then say "not checked" rather than echo the old
-        channel's ``available``/``remote_version`` as though they applied here.
+        channel's verdict and ``latest_version`` as though they applied here.
         """
         update_layout.set_release_channel("stable")
-        updates._set_update_info(available=True, remote_version="9.9.9", checked=True)
+        updates._set_update_info(
+            update_available=True, latest_version="9.9.9", check_status="succeeded"
+        )
 
         with (
             patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
@@ -139,9 +303,9 @@ class TestChannelEndpoint:
             resp = asyncio.run(updates.api_update_channel(_request({"channel": "nightly"})))
 
         assert resp.status == 200
-        assert updates._update_info["checked"] is False
-        assert updates._update_info["available"] is False
-        assert updates._update_info["remote_version"] == ""
+        assert updates._update_info["check_status"] == "unchecked"
+        assert updates._update_info["update_available"] is None
+        assert updates._update_info["latest_version"] == ""
         # The switcher reads `channel` off this response. The invalidated cache
         # holds "" for it, so the stored value must win or a successful switch
         # blanks the control that just performed it.
@@ -196,16 +360,16 @@ class TestChannelEndpoint:
             started = asyncio.Event()
             release = asyncio.Event()
 
-            async def _slow_feed_check(install_kind: str) -> None:
+            async def _slow_feed_check(capability: object) -> None:
                 started.set()
                 await release.wait()
                 # The verdict the OLD channel's feed would have produced.
                 updates._set_update_info(
-                    install_kind=install_kind,
+                    managed_by="kirocrew",
                     channel="stable",
-                    available=True,
-                    remote_version="1.2.3",
-                    checked=True,
+                    update_available=True,
+                    latest_version="1.2.3",
+                    check_status="succeeded",
                 )
 
             with (
@@ -215,7 +379,7 @@ class TestChannelEndpoint:
                 slow = asyncio.create_task(updates._do_update_check())
                 await started.wait()
                 # Switch channels while that check is still talking to the old feed.
-                updates._invalidate_update_check()
+                updates._invalidate_update_check("nightly")
                 update_layout.set_release_channel("nightly")
                 release.set()
                 await slow
@@ -223,9 +387,9 @@ class TestChannelEndpoint:
         asyncio.run(_scenario())
 
         # The superseded verdict was discarded, not published.
-        assert updates._update_info["checked"] is False
-        assert updates._update_info["available"] is False
-        assert updates._update_info["remote_version"] == ""
+        assert updates._update_info["check_status"] == "unchecked"
+        assert updates._update_info["update_available"] is None
+        assert updates._update_info["latest_version"] == ""
         # And the clock stays unstamped so the next poll re-checks the NEW lane
         # immediately instead of waiting out the 12-hour interval.
         assert updates._last_update_check == 0.0

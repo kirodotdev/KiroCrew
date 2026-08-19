@@ -809,6 +809,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # name — which is read out of git config and COULD — is passed after
         # `--`. Must NOT be sandboxed: it reads the real checkout's git metadata.
         "platform/update_governance.py::_git",
+        # Read-only `git rev-parse --show-toplevel` deciding whether the install
+        # root IS a working tree. Fixed list-argv (no shell=True); the only
+        # variable is the path, which comes from KIROCREW_PROJECT_DIR — an
+        # operator environment value, never agent input — and is absolutized,
+        # NUL-rejected and dash-rejected before being passed to `-C`, so it cannot
+        # be read as an option. The environment is stripped of the GIT_DIR family
+        # so no inherited value can redirect the answer to another repository.
+        # Must NOT be sandboxed: the answer is about the real checkout's own
+        # metadata.
+        "platform/update_capability.py::_git_toplevel",
         "mcp_shared.py::_get_ppid",
         # File-manager launchers for the dashboard's reveal action. The
         # command is an absolute literal resolved in this module (never a bare

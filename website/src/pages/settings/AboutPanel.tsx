@@ -56,16 +56,6 @@ function gwCheckErrorText(code: string): string {
 }
 
 /**
- * Codes that mean "not my job", not "it broke".
- *
- * They still travel in the `error` field — it is the one channel that says why
- * there is no verdict — but rendering them under "Couldn't check for updates"
- * would be a lie: nothing failed, the update simply arrives through a different
- * surface. So they get a neutral line instead of the danger one.
- */
-const GATEWAY_CHECK_INFO_CODES = new Set(['managed_by_app', 'managed_by_image'])
-
-/**
  * User-facing copy for a failure class. `message` from the updater is raw
  * library text (multi-line HttpError dumps, digest comparisons), so it is only
  * used as a last-resort detail for an unclassified failure.
@@ -279,14 +269,18 @@ export function AboutPanel() {
   const gatewayVersion = useAppSelector(s => s.dashboard.status?.version) || ''
   const buildBranch = useAppSelector(s => s.dashboard.status?.branch) || ''
   const buildCommit = useAppSelector(s => s.dashboard.status?.commit) || ''
-  const updateAvailable = useAppSelector(s => s.dashboard.status?.update_available) || false
+  // `=== true` because the verdict is nullable: null means a check that never
+  // ran or one that failed, and neither may light an update affordance.
+  const updateAvailable = useAppSelector(s => s.dashboard.status?.update_available) === true
   // Undefined on a gateway that predates the field; `!== false` below is what
   // keeps that case behaving as before.
-  const statusSelfUpdatable = useAppSelector(s => s.dashboard.status?.update_self_updatable)
+  const statusSelfUpdatable = useAppSelector(s => s.dashboard.status?.update_can_apply)
   // The background check's own verdict + command, so the 12-hourly check that
   // lights the nav badge lands the user on something actionable instead of an
   // Update button that 409s.
-  const statusChecked = useAppSelector(s => s.dashboard.status?.update_checked) || false
+  const statusChecked = useAppSelector(
+    s => s.dashboard.status?.update_check_status
+  ) === 'succeeded'
   const statusCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   const queryClient = useQueryClient()
   const desktopApi = getUpdateApi()
@@ -527,6 +521,11 @@ export function AboutPanel() {
   // `checked` is the verdict, and `gwError` names why there is none.
   const [gwChecked, setGwChecked] = useState(false)
   const [gwError, setGwError] = useState('')
+  // Why there is no verdict when nothing FAILED: this gateway is not the update
+  // surface for the install it runs inside. Separate from `gwError` because
+  // rendering a deferral under "Couldn't check for updates" would be its own
+  // lie — nothing broke, the update arrives through a different surface.
+  const [gwUnavailableReason, setGwUnavailableReason] = useState('')
   // Null = not yet known from a check; the redux status flag below carries the
   // same fact for the pre-check case.
   const [gwSelfUpdatable, setGwSelfUpdatable] = useState<boolean | null>(null)
@@ -548,21 +547,29 @@ export function AboutPanel() {
     mutationFn: () => api.checkUpdate(),
     onSuccess: (d: any) => {
       setGwChanges(d?.changes || '')
-      // `remote_version` is the field the gateway actually emits; `version` is
+      // `latest_version` is the field the gateway actually emits; `version` is
       // read as a fallback only because it is what some older payloads carried.
-      const target = d?.remote_version || d?.version
+      const target = d?.latest_version || d?.version
       if (target) setGwTarget(String(target))
       // Derive availability from the check response itself, not only the redux
       // status flag (which refreshes on a slower WS status push). Otherwise a
       // check that finds an update could still show "You're on the latest
       // version" until the flag catches up.
-      setGwFound(!!d?.available)
-      setGwChecked(!!d?.checked)
-      setGwError(typeof d?.error === 'string' ? d.error : '')
+      setGwFound(d?.update_available === true)
+      setGwChecked(d?.check_status === 'succeeded')
+      // A DEFERRAL is not a failure: a desktop bundle reporting "the app
+      // updates itself" has not malfunctioned, and its reason has its own slot.
+      // Only `error_code` may render as an error.
+      setGwError(typeof d?.error_code === 'string' ? d.error_code : '')
+      setGwUnavailableReason(
+        typeof d?.unavailable_reason === 'string' ? d.unavailable_reason : ''
+      )
       setGwChannel(typeof d?.channel === 'string' ? d.channel : '')
-      setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
+      setGwCommand(
+        typeof d?.remediation?.command === 'string' ? d.remediation.command : ''
+      )
       setGwCommandCopied(false)
-      if (typeof d?.self_updatable === 'boolean') setGwSelfUpdatable(d.self_updatable)
+      if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
       if (typeof d?.auto_update === 'boolean') setAutoUpdate(d.auto_update)
     },
   })
@@ -612,14 +619,21 @@ export function AboutPanel() {
     onSuccess: (d: any) => {
       // The response is the re-run check against the new channel, so adopt it
       // wholesale rather than leaving the previous lane's verdict on screen.
+      //
+      // These MUST stay the same field names `gwCheck.onSuccess` reads: both
+      // handlers consume the same update-check contract, and when this one was
+      // left on the old names a successful switch that FOUND an update wrote
+      // `gwFound=false` / `gwChecked=false` and blanked the target — silently
+      // discarding the very verdict the switch was made to get.
       if (typeof d?.channel === 'string') setGwChannel(d.channel)
-      setGwFound(!!d?.available)
-      setGwChecked(!!d?.checked)
-      setGwError(typeof d?.error === 'string' ? d.error : '')
+      setGwFound(d?.update_available === true)
+      setGwChecked(d?.check_status === 'succeeded')
+      // Only `error_code` may render as an error; a deferral is not a failure.
+      setGwError(typeof d?.error_code === 'string' ? d.error_code : '')
       setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
       setGwCommandCopied(false)
-      setGwTarget(typeof d?.remote_version === 'string' ? d.remote_version : '')
-      if (typeof d?.self_updatable === 'boolean') setGwSelfUpdatable(d.self_updatable)
+      setGwTarget(typeof d?.latest_version === 'string' ? d.latest_version : '')
+      if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
     },
   })
   // Update is available if either the redux status flag or the latest check
@@ -1085,13 +1099,13 @@ export function AboutPanel() {
                     "you're on the latest version" while being two releases
                     behind. An unrecognised error code still lands here (in the
                     error branch), never in the success branch. */}
-                {gwCheck.isSuccess && gwChecked && !gwError && !showUpdate && (
+                {gwCheck.isSuccess && gwChecked && !gwError && !gwUnavailableReason && !showUpdate && (
                   <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
                 )}
-                {gwCheck.isSuccess && !!gwError && GATEWAY_CHECK_INFO_CODES.has(gwError) && (
-                  <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwError)}</span>
+                {gwCheck.isSuccess && !!gwUnavailableReason && (
+                  <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwUnavailableReason)}</span>
                 )}
-                {(gwCheck.isError || (gwCheck.isSuccess && !!gwError && !GATEWAY_CHECK_INFO_CODES.has(gwError))) && (
+                {(gwCheck.isError || (gwCheck.isSuccess && !!gwError)) && (
                   <span className="text-danger text-[13px] flex items-center gap-1.5" data-testid="check-failed"><AlertCircle size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}{gwError ? `: ${gwCheckErrorText(gwError)}` : ''}</span>
                 )}
               </>

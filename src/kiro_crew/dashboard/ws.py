@@ -13,6 +13,7 @@ from aiohttp import WSCloseCode, WSMsgType, web
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
+from kiro_crew.dashboard.handlers.updates import status_update_fields
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.state import DashboardState, _safe_folder_tree
 from kiro_crew.dashboard.ws_event_scope import (
@@ -266,7 +267,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
 
-    from kiro_crew.dashboard.handlers import _log_ring, _update_info
+    from kiro_crew.dashboard.handlers import _log_ring
 
     state: DashboardState = request.app["state"]
     from kiro_crew.dashboard.handlers.source_providers import (
@@ -425,11 +426,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                     **state.status_snapshot(
                         cron_jobs=_cached_crons,
                         lessons=_cached_lessons,
-                        update_available=bool(_update_info.get("available")),
-                        update_self_updatable=bool(_update_info.get("self_updatable")),
-                        update_checked=bool(_update_info.get("checked")),
-                        update_command=str(_update_info.get("update_command") or ""),
-                        update_channel=str(_update_info.get("channel") or ""),
+                        **status_update_fields(),  # type: ignore[arg-type]
                     ),
                     "version": _local_version,
                     "platform": sys.platform,

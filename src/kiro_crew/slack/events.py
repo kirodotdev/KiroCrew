@@ -1276,8 +1276,8 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         # ── Version ──
         version_text = f"📦 Kiro Crew v{__version__}"
         update_info = get_update_info()
-        remote_ver = update_info.get("remote_version")
-        if update_info.get("available") and remote_ver is not None:
+        remote_ver = update_info.get("latest_version")
+        if update_info.get("update_available") and remote_ver:
             version_text += f"  •  🆕 v{remote_ver} available — open Dashboard to update"
         version_text = redact_credentials(redact_exfiltration_urls(version_text)[0])[0]
         blocks.append({"type": "divider"})

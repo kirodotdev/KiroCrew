@@ -843,7 +843,7 @@ class TestCheckForUpdates:
             "kiro_crew.dashboard.handlers._do_update_check", new_callable=AsyncMock
         ):
             with patch(
-                "kiro_crew.dashboard.handlers._update_info", {"available": False}
+                "kiro_crew.dashboard.handlers._update_info", {"update_available": False}
             ):
                 await orch._check_for_updates()
 
@@ -860,7 +860,7 @@ class TestCheckForUpdates:
         fake_cfg = MagicMock()
         fake_cfg.auto_update = False
         try:
-            _h._update_info.update({"available": True, "version": "9.9.9"})
+            _h._update_info.update({"update_available": True, "version": "9.9.9"})
             with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
                 with patch("kiro_crew.config.KiroCrewConfig.load", return_value=fake_cfg):
                     with patch(
@@ -896,7 +896,7 @@ class TestCheckForUpdates:
         orig = _h._update_info.copy()
         try:
             _h._update_info.update(
-                {"available": True, "self_updatable": True, "version_newer": False}
+                {"update_available": True, "can_apply": True, "version_newer": False}
             )
             with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
                 with patch("kiro_crew.config.KiroCrewConfig.load", return_value=fake_cfg):
@@ -924,7 +924,7 @@ class TestCheckForUpdates:
         orig = _h._update_info.copy()
         try:
             _h._update_info.update(
-                {"available": True, "self_updatable": True, "version_newer": True}
+                {"update_available": True, "can_apply": True, "version_newer": True}
             )
             with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
                 with patch("kiro_crew.config.KiroCrewConfig.load", return_value=fake_cfg):
@@ -953,13 +953,13 @@ class TestCheckForUpdates:
 
         orig = _h._update_info.copy()
         try:
-            # A git checkout (self_updatable) below the floor: the git auto-apply
+            # A git checkout (`can_apply`) below the floor: the git auto-apply
             # is the correct mandatory action. `_do_update_check` sets this key
             # per layout in the real flow; it is mocked here, so the fixture
-            # states the layout explicitly. The wheel layout (self_updatable
+            # states the layout explicitly. The wheel layout (no `can_apply`
             # False) takes the notify path instead — see
             # TestMandatoryUpdateOnWheelInstall.
-            _h._update_info.update({"available": False, "self_updatable": True})
+            _h._update_info.update({"update_available": False, "can_apply": True})
             with patch.object(_h, "_do_update_check", new_callable=AsyncMock):
                 with patch(
                     "kiro_crew.platform.update_governance.update_required", return_value=True
@@ -6222,7 +6222,15 @@ class TestWheelInstallerRejectsUnsafeCdnBase:
         orch.dashboard_state = ds
 
         handlers._update_info.clear()
-        handlers._update_info.update({"update_command": "curl x | sh"})
+        handlers._update_info.update(
+            {
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "curl x | sh",
+                }
+            }
+        )
         monkeypatch.setattr(
             "kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: False
         )
@@ -6235,7 +6243,134 @@ class TestWheelInstallerRejectsUnsafeCdnBase:
         ds.push_refresh.assert_called_with("update_available")
 
 
-class TestProviderNotificationIsVisible:
+class TestWheelApplyReadsTheCapabilityCommand:
+    """``_auto_apply_wheel_update`` must read the command the CALLER selected it with.
+
+    The caller enters this branch on ``remediation_command(info)``, and the
+    capability contract carries the installer command inside ``remediation``. A
+    method reading a separate ``update_command`` key is entered and then no-ops,
+    so a mandated update logs a warning instead of applying — and every other test
+    here hides that by mocking this method out. This one does not mock it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_installer_is_spawned_from_the_remediation_command(self, monkeypatch):
+        import kiro_crew.dashboard.handlers as handlers
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "sh -c true",
+                }
+            }
+        )
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        # cli.sh is POSIX shell, so the method refuses before spawning on a host
+        # with no trusted `sh` — which is every Windows runner, and is why this
+        # test pins the platform AND the shell lookup. The point under test is the
+        # command SOURCE, which is platform-independent; the refusals themselves
+        # are pinned by the two tests below.
+        monkeypatch.setattr("kiro_crew.slack.gateway.sys.platform", "linux")
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.trusted_system_bin", lambda name: "/bin/sh"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_provider._trusted_path_env",
+            lambda: {"PATH": "/usr/bin:/bin"},
+        )
+
+        proc = MagicMock()
+        proc.returncode = 1  # a failed install: stops before the execv restart
+        # ``None`` streams drain to empty, which is all this assertion needs; the
+        # bounded reader awaits ``wait()`` afterwards.
+        proc.stdout = None
+        proc.stderr = None
+        proc.wait = AsyncMock(return_value=1)
+        spawn = AsyncMock(return_value=proc)
+        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+        await orch._auto_apply_wheel_update()
+
+        spawn.assert_awaited_once()
+        assert "sh -c true" in " ".join(str(a) for a in spawn.await_args.args)
+
+    @pytest.mark.asyncio
+    async def test_windows_refuses_before_spawning(self, monkeypatch):
+        """The installer is POSIX shell, so Windows must not reach the spawn."""
+        import kiro_crew.dashboard.handlers as handlers
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "sh -c true",
+                }
+            }
+        )
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        monkeypatch.setattr("kiro_crew.slack.gateway.sys.platform", "win32")
+        spawn = AsyncMock()
+        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+        await orch._auto_apply_wheel_update()
+
+        spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_trusted_shell_refuses_before_spawning(self, monkeypatch):
+        """`curl … | sh` needs a trusted shell; a bare name would reopen the hole."""
+        import kiro_crew.dashboard.handlers as handlers
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "sh -c true",
+                }
+            }
+        )
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        monkeypatch.setattr("kiro_crew.slack.gateway.sys.platform", "linux")
+        monkeypatch.setattr("kiro_crew.platform_compat.trusted_system_bin", lambda name: None)
+        spawn = AsyncMock()
+        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+        await orch._auto_apply_wheel_update()
+
+        spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_command_in_the_capability_does_not_spawn(self, monkeypatch):
+        import kiro_crew.dashboard.handlers as handlers
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        handlers._update_info.clear()
+        handlers._update_info.update({"remediation": None})
+        monkeypatch.setattr("kiro_crew.platform.update_layout.cdn_bases_are_safe", lambda: True)
+        spawn = AsyncMock()
+        monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+        await orch._auto_apply_wheel_update()
+
+        spawn.assert_not_awaited()
     """The SSE snapshot renders the update badge from _update_info["available"],
     which only the legacy check writes. A provider carries its own result, so
     notifying without publishing it left the badge reading a stale False and the
@@ -6252,7 +6387,7 @@ class TestProviderNotificationIsVisible:
         orch.dashboard_state = ds
 
         handlers._update_info.clear()
-        handlers._update_info.update({"available": False})
+        handlers._update_info.update({"update_available": False})
         monkeypatch.setattr(gov, "update_required", lambda _v: False)
 
         cfg = MagicMock()
@@ -6269,9 +6404,13 @@ class TestProviderNotificationIsVisible:
         with patch("kiro_crew.config.KiroCrewConfig.load", return_value=cfg):
             await orch._check_for_updates_via_provider(provider)
 
-        # The badge must be able to see it, not just the log.
-        assert handlers._update_info["available"] is True
-        assert handlers._update_info["remote_version"] == "9.9.9"
+        # The badge must be able to see it, not just the log. `check_status` is
+        # asserted too: under the capability contract a verdict without a status is
+        # indistinguishable from a check that never ran, so the badge would stay
+        # dark on a provider's real answer.
+        assert handlers._update_info["update_available"] is True
+        assert handlers._update_info["latest_version"] == "9.9.9"
+        assert handlers._update_info["check_status"] == "succeeded"
         ds.push_refresh.assert_called_with("update_available")
 
 
@@ -6294,23 +6433,31 @@ class TestMandatoryUpdateOnWheelInstall:
             return None
 
         # Wheel install below a policy floor with a NEWER build available: the
-        # mandatory update applies. (A mandatory floor with no newer build is
-        # covered by test_mandatory_wheel_no_newer_build_notifies below — that
-        # path must NOT apply, to avoid an infinite update→restart loop.)
+        # mandatory update applies through the installer. (The no-newer-build
+        # case is test_mandatory_wheel_no_newer_build_notifies below — that path
+        # must NOT apply, to avoid an infinite update→restart loop.)
         handlers._update_info.clear()
         handlers._update_info.update(
             {
-                "available": True,
-                "self_updatable": False,
-                "install_kind": "wheel",
+                "update_available": True,
+                "can_apply": False,
+                "managed_by": "kirocrew",
                 # A feed-checkable wheel carries an installer command; that is
                 # what distinguishes it from an externally-managed install.
-                "update_command": "curl -fsSL … | sh",
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "curl -fsSL … | sh",
+                },
             }
         )
         monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
         monkeypatch.setattr(gov, "update_required", lambda _v: True)
         monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+        # The installer may only be driven for the `wheel` stamp: a `source`
+        # install carries the same command but re-running it builds a separate
+        # venv and loops forever.
+        monkeypatch.setattr("kiro_crew.slack.gateway.distribution", lambda: "wheel")
 
         apply_called = AsyncMock()
         monkeypatch.setattr(orch, "_auto_apply_update", apply_called)
@@ -6342,15 +6489,20 @@ class TestMandatoryUpdateOnWheelInstall:
         handlers._update_info.clear()
         handlers._update_info.update(
             {
-                "available": False,  # floor pinned above the latest build
-                "self_updatable": False,
-                "install_kind": "wheel",
-                "update_command": "curl -fsSL … | sh",
+                "update_available": False,  # floor pinned above the latest build
+                "can_apply": False,
+                "managed_by": "kirocrew",
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "curl -fsSL … | sh",
+                },
             }
         )
         monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
         monkeypatch.setattr(gov, "update_required", lambda _v: True)
         monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+        monkeypatch.setattr("kiro_crew.slack.gateway.distribution", lambda: "wheel")
 
         wheel_apply_called = AsyncMock()
         monkeypatch.setattr(orch, "_auto_apply_update", AsyncMock())
@@ -6363,9 +6515,58 @@ class TestMandatoryUpdateOnWheelInstall:
         ds.push_refresh.assert_called_with("update_available")
 
     @pytest.mark.asyncio
+    async def test_mandatory_update_on_non_wheel_installer_badges(self, monkeypatch):
+        """An install that carries an installer command but is NOT the `wheel`
+        stamp (a cloud source tree) must notify rather than run the installer,
+        and the badge must light even when the check left `update_available`
+        False — a pre-release remote reads as not-newer while the floor still
+        mandates the update."""
+        import kiro_crew.dashboard.handlers as handlers
+        import kiro_crew.platform.update_governance as gov
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+
+        async def _noop_check():
+            return None
+
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "update_available": False,
+                "can_apply": False,
+                "managed_by": "kirocrew",
+                "remediation": {
+                    "kind": "command",
+                    "message": "Re-run the installer to upgrade.",
+                    "command": "curl -fsSL … | sh",
+                },
+            }
+        )
+        monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
+        monkeypatch.setattr(gov, "update_required", lambda _v: True)
+        monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+        monkeypatch.setattr("kiro_crew.slack.gateway.distribution", lambda: "source")
+
+        apply_called = AsyncMock()
+        wheel_apply_called = AsyncMock()
+        monkeypatch.setattr(orch, "_auto_apply_update", apply_called)
+        monkeypatch.setattr(orch, "_auto_apply_wheel_update", wheel_apply_called)
+
+        await orch._check_for_updates()
+
+        apply_called.assert_not_awaited()
+        wheel_apply_called.assert_not_awaited()
+        ds.push_refresh.assert_called_once_with("update_available")
+        # The dashboard badge reads _update_info["update_available"]; a mandatory
+        # update must light it even though the check left it False.
+        assert handlers._update_info.get("update_available") is True
+
+    @pytest.mark.asyncio
     async def test_mandatory_update_on_externally_managed_does_not_badge(self, monkeypatch):
-        """A dmg/appimage/docker install below the floor is not self_updatable
-        AND has no installer update_command — it updates via its own surface, so
+        """A dmg/appimage/docker install below the floor has no `can_apply`
+        AND no remediation command — it updates via its own surface, so
         the CLI 'run kirocrew update' badge must NOT light."""
         import kiro_crew.dashboard.handlers as handlers
         import kiro_crew.platform.update_governance as gov
@@ -6380,10 +6581,10 @@ class TestMandatoryUpdateOnWheelInstall:
         handlers._update_info.clear()
         handlers._update_info.update(
             {
-                "available": False,
-                "self_updatable": False,
-                "install_kind": "docker",
-                "update_command": "",  # externally managed: no CLI update path
+                "update_available": False,
+                "can_apply": False,
+                "managed_by": "container",
+                "remediation": None,  # externally managed: no CLI update path
             }
         )
         monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
@@ -6408,10 +6609,10 @@ class TestMandatoryUpdateOnWheelInstall:
         async def _noop_check():
             return None
 
-        # Git checkout: self_updatable True, so the mandatory git apply runs.
+        # Git checkout: `can_apply` True, so the mandatory git apply runs.
         handlers._update_info.clear()
         handlers._update_info.update(
-            {"available": True, "self_updatable": True, "install_kind": "git"}
+            {"update_available": True, "can_apply": True, "managed_by": "git"}
         )
         monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
         monkeypatch.setattr(gov, "update_required", lambda _v: True)

@@ -138,10 +138,37 @@ def _sequence_procs(monkeypatch, procs: list[_FakeProc]) -> list[tuple[str, ...]
 
 
 def _git_proj(tmp_path) -> str:
+    """A directory the capability derivation accepts as this install's checkout.
+
+    ``.git/HEAD`` is written, not just ``.git/``: the derivation asks git first
+    and falls back to the on-disk markers of a working tree's own root, and a
+    bare ``.git`` directory satisfies neither — a fabricated one is refused on
+    purpose.
+    """
     proj = tmp_path / "checkout"
     proj.mkdir()
     (proj / ".git").mkdir()
+    (proj / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     return str(proj)
+
+
+def _git_capability():
+    """The capability a git checkout derives, as ``_check_git_checkout`` receives it.
+
+    Built here rather than through ``derive_capability`` so the failure paths
+    under test do not also depend on a real git binary answering about this
+    host's own tree.
+    """
+    from kiro_crew.platform import update_capability
+
+    return update_capability.UpdateCapability(
+        supported=True,
+        managed_by=update_capability.MANAGED_BY_GIT,
+        mode=update_capability.MODE_NOTIFY,
+        can_download=True,
+        can_apply=True,
+        requires_restart=True,
+    )
 
 
 class TestUpdateCheckEndpoint:
@@ -160,7 +187,10 @@ class TestUpdateCheckEndpoint:
         async def _fake_check() -> None:
             checked.append(None)
             updates._set_update_info(
-                install_kind="wheel", remote_version="9.9.9", available=True, checked=True
+                managed_by="kirocrew",
+                latest_version="9.9.9",
+                update_available=True,
+                check_status="succeeded",
             )
 
         monkeypatch.setattr(updates, "_do_update_check", _fake_check)
@@ -172,9 +202,9 @@ class TestUpdateCheckEndpoint:
         assert resp.status == 200
         payload = json.loads(resp.body.decode())
         assert checked == [None]
-        assert payload["remote_version"] == "9.9.9"
-        assert payload["available"] is True
-        assert payload["min_version"] == "0.9.0"
+        assert payload["latest_version"] == "9.9.9"
+        assert payload["update_available"] is True
+        assert payload["minimum_version_enforced"] == "0.9.0"
         assert payload["update_required"] is True
         assert "auto_update" in payload
 
@@ -189,21 +219,21 @@ class TestGitCheckoutFailurePaths:
 
     async def _run(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
         argv = _sequence_procs(monkeypatch, procs)
-        await updates._check_git_checkout(_git_proj(tmp_path))
+        await updates._check_git_checkout(_git_proj(tmp_path), _git_capability())
         return argv
 
     def _assert_failed_check(self, error: str) -> None:
-        assert updates._update_info["error"] == error
-        assert updates._update_info["checked"] is False
-        assert updates._update_info["available"] is False
-        assert updates._update_info["install_kind"] == "git"
-        assert updates._update_info["self_updatable"] is True
+        assert updates._update_info["error_code"] == error
+        assert updates._update_info["check_status"] == updates.CHECK_FAILED
+        assert updates._update_info["update_available"] is None
+        assert updates._update_info["managed_by"] == updates.MANAGED_BY_GIT
+        assert updates._update_info["can_apply"] is True
 
     @pytest.mark.asyncio
     async def test_fetch_timeout_is_a_failed_check_not_a_verdict(self, monkeypatch, tmp_path):
         fetch = _FakeProc(time_out=True)
         await self._run(monkeypatch, tmp_path, [fetch])
-        self._assert_failed_check(updates._ERR_GIT_FETCH_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_FETCH_FAILED)
         # Killed and then reaped, so no zombie is left behind.
         assert fetch.killed is True
         assert fetch.communicate_calls == 2
@@ -213,7 +243,7 @@ class TestGitCheckoutFailurePaths:
         """``kill()`` races the process exiting; ProcessLookupError is expected."""
         fetch = _FakeProc(time_out=True, kill_raises=True)
         await self._run(monkeypatch, tmp_path, [fetch])
-        self._assert_failed_check(updates._ERR_GIT_FETCH_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_FETCH_FAILED)
 
     @pytest.mark.asyncio
     async def test_head_read_timeout(self, monkeypatch, tmp_path):
@@ -222,7 +252,7 @@ class TestGitCheckoutFailurePaths:
             tmp_path,
             [_FakeProc(), _FakeProc(time_out=True, kill_raises=True)],
         )
-        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
     async def test_upstream_read_timeout(self, monkeypatch, tmp_path):
@@ -231,7 +261,7 @@ class TestGitCheckoutFailurePaths:
             tmp_path,
             [_FakeProc(), _FakeProc(out=b"aaa111\n"), _FakeProc(time_out=True, kill_raises=True)],
         )
-        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
     async def test_behind_count_timeout(self, monkeypatch, tmp_path):
@@ -245,7 +275,7 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(time_out=True, kill_raises=True),
             ],
         )
-        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
     async def test_behind_count_that_is_not_a_number_is_a_failed_check(self, monkeypatch, tmp_path):
@@ -260,7 +290,7 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(out=b"not a number\n"),
             ],
         )
-        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
 
     @pytest.mark.asyncio
     async def test_version_read_timeout(self, monkeypatch, tmp_path):
@@ -275,7 +305,7 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(time_out=True, kill_raises=True),
             ],
         )
-        self._assert_failed_check(updates._ERR_GIT_READ_FAILED)
+        self._assert_failed_check(updates.ERR_GIT_READ_FAILED)
         # The version is read at the REMOTE sha when the two differ, not at HEAD:
         # comparing HEAD against itself can never detect an update.
         assert argv[-1] == ("git", "show", "bbb222:src/kiro_crew/__init__.py")
@@ -298,9 +328,9 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(out=b'__version__ = "not/a/version"\n'),
             ],
         )
-        self._assert_failed_check(updates._ERR_VERSION_UNPARSEABLE)
+        self._assert_failed_check(updates.ERR_VERSION_UNPARSEABLE)
         # The unusable value is still reported, so the panel can show what it saw.
-        assert updates._update_info["remote_version"] == "not/a/version"
+        assert updates._update_info["latest_version"] == "not/a/version"
 
     @pytest.mark.asyncio
     async def test_a_changelog_diff_timeout_still_reports_the_update(self, monkeypatch, tmp_path):
@@ -321,10 +351,10 @@ class TestGitCheckoutFailurePaths:
                 _FakeProc(time_out=True, kill_raises=True),
             ],
         )
-        assert updates._update_info["available"] is True
-        assert updates._update_info["checked"] is True
-        assert updates._update_info["remote_version"] == "999.0.0"
-        assert updates._update_info["error"] == ""
+        assert updates._update_info["update_available"] is True
+        assert updates._update_info["check_status"] == updates.CHECK_SUCCEEDED
+        assert updates._update_info["latest_version"] == "999.0.0"
+        assert updates._update_info["error_code"] is None
         assert updates._update_info["changes"] == ""
 
     @pytest.mark.asyncio
@@ -1212,33 +1242,47 @@ class TestUpdateInfoAccessors:
     """The cache is handed out as a COPY and reset wholesale."""
 
     def test_get_update_info_cannot_be_mutated_through_the_caller(self):
-        updates._set_update_info(install_kind="wheel", remote_version="1.2.3", checked=True)
+        updates._set_update_info(
+            managed_by="kirocrew", latest_version="1.2.3", check_status="succeeded"
+        )
         snapshot = updates.get_update_info()
-        snapshot["remote_version"] = "tampered"
-        assert updates._update_info["remote_version"] == "1.2.3"
+        snapshot["latest_version"] = "tampered"
+        assert updates._update_info["latest_version"] == "1.2.3"
 
     def test_a_new_result_never_inherits_a_key_from_the_previous_one(self):
-        """A stale ``remote_version`` beside a fresh ``error`` is a half-truth."""
+        """A stale ``latest_version`` beside a fresh ``error_code`` is a half-truth."""
         updates._set_update_info(
-            install_kind="git", available=True, remote_version="9.9.9", checked=True
+            managed_by="git",
+            update_available=True,
+            latest_version="9.9.9",
+            check_status="succeeded",
         )
-        updates._set_update_info(install_kind="git", error=updates._ERR_GIT_FETCH_FAILED)
-        assert updates._update_info["remote_version"] == ""
-        assert updates._update_info["available"] is False
-        assert updates._update_info["checked"] is False
+        updates._set_update_info(managed_by="git", error_code=updates.ERR_GIT_FETCH_FAILED)
+        assert updates._update_info["latest_version"] == ""
+        assert updates._update_info["update_available"] is None
+        assert updates._update_info["check_status"] == updates.CHECK_UNCHECKED
 
     def test_invalidation_bumps_the_generation_and_unstamps_the_clock(self):
         updates._last_update_check = 1234.0
         generation = updates._check_generation
-        updates._invalidate_update_check()
+        updates._invalidate_update_check("insider")
         assert updates._check_generation == generation + 1
         assert updates._last_update_check == 0.0
-        assert updates._update_info["checked"] is False
+        assert updates._update_info["check_status"] == updates.CHECK_UNCHECKED
 
     def test_an_externally_managed_install_names_its_real_update_surface(self):
-        assert updates._EXTERNALLY_MANAGED["dmg"] == updates._ERR_MANAGED_BY_APP
-        assert updates._EXTERNALLY_MANAGED["appimage"] == updates._ERR_MANAGED_BY_APP
-        assert updates._EXTERNALLY_MANAGED["docker"] == updates._ERR_MANAGED_BY_IMAGE
+        """The reason is DERIVED from the capability, not restated per surface.
+
+        A second copy of the list is the drift this contract removed: the
+        capability now answers for every stamp, including the Linux packages.
+        """
+        from kiro_crew.platform import update_capability
+
+        for stamp in ("dmg", "appimage", "deb", "rpm"):
+            capability = update_capability.derive_capability(install_root="", dist=stamp)
+            assert capability.unavailable_reason == update_capability.UNAVAILABLE_MANAGED_BY_APP
+        docker = update_capability.derive_capability(install_root="", dist="docker")
+        assert docker.unavailable_reason == update_capability.UNAVAILABLE_MANAGED_BY_IMAGE
 
     def test_a_cdn_override_moves_the_feed_and_the_artifact_together(self, monkeypatch):
         """Splitting them would check one host and recommend an install from another."""
@@ -1253,7 +1297,7 @@ class TestUpdateInfoAccessors:
         # the gateway's unattended path, so its shape may change (it stopped
         # piping curl into sh, which hid download failures) while these must hold.
         monkeypatch.setenv("KIROCREW_CDN_BASE", "https://download.example.invalid")
-        command = updates._wheel_update_command("insider", "https://download.example.invalid")
+        command = updates.wheel_update_command("insider")
         assert "--proto '=https'" in command, "must refuse a plaintext override"
         assert "https://download.example.invalid/cli.sh" in command
         assert "--channel insider" in command, "a bare re-run would default to stable"
@@ -1273,12 +1317,17 @@ class TestExternallyManagedCheck:
         Answering with a CLI verdict here would compare against the wrong version
         stream and then recommend an installer that does not apply to a bundle.
         """
-        monkeypatch.setattr(updates, "distribution", lambda: "dmg")
+        from kiro_crew.platform import update_capability
+
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "dmg")
         await updates._do_update_check()
-        assert updates._update_info["install_kind"] == "dmg"
-        assert updates._update_info["self_updatable"] is False
-        assert updates._update_info["error"] == updates._ERR_MANAGED_BY_APP
-        assert updates._update_info["checked"] is False
+        assert updates._update_info["managed_by"] == update_capability.MANAGED_BY_ELECTRON
+        assert updates._update_info["can_apply"] is False
+        assert (
+            updates._update_info["unavailable_reason"]
+            == update_capability.UNAVAILABLE_MANAGED_BY_APP
+        )
+        assert updates._update_info["check_status"] == updates.CHECK_DEFERRED
 
     @pytest.mark.asyncio
     async def test_an_unexpected_crash_records_an_error_rather_than_a_verdict(
@@ -1286,16 +1335,16 @@ class TestExternallyManagedCheck:
     ):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
 
-        async def _boom(_proj: str) -> None:
+        async def _boom(_proj: str, _capability) -> None:
             raise RuntimeError("git is not installed")
 
         monkeypatch.setattr(updates, "_check_git_checkout", _boom)
         await updates._do_update_check()
 
-        assert updates._update_info["error"] == updates._ERR_UNKNOWN
-        assert updates._update_info["install_kind"] == "git"
-        assert updates._update_info["self_updatable"] is True
-        assert updates._update_info["checked"] is False
+        assert updates._update_info["error_code"] == updates.ERR_UNKNOWN
+        assert updates._update_info["managed_by"] == updates.MANAGED_BY_GIT
+        assert updates._update_info["can_apply"] is True
+        assert updates._update_info["check_status"] == updates.CHECK_FAILED
         # Stamped even on failure, so a broken host cannot turn the 12-hourly
         # background poll into a hot retry loop.
         assert updates._last_update_check > 0
@@ -1304,14 +1353,14 @@ class TestExternallyManagedCheck:
     async def test_a_second_caller_no_ops_while_a_check_is_in_flight(self, monkeypatch):
         calls: list[str] = []
 
-        async def _count(kind: str) -> None:
-            calls.append(kind)
+        async def _count(capability) -> None:
+            calls.append(capability.managed_by)
 
-        monkeypatch.setattr(updates, "distribution", lambda: "wheel")
+        monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
         monkeypatch.setattr(updates, "_check_release_feed", _count)
         with patch.object(updates, "_check_in_flight", True):
             await updates._do_update_check()
         assert calls == []
 
         await updates._do_update_check()
-        assert calls == ["wheel"]
+        assert calls == ["kirocrew"]

@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
+
+
+def _init_repo(path) -> None:
+    """Make *path* the top level of a real git working tree.
+
+    Detection asks git and anchors the answer to this exact directory, so a
+    fabricated ``.git`` entry does not stand in for a repository.
+    """
+    subprocess.run(
+        ["git", "init", "-q"], cwd=str(path), check=True, capture_output=True, timeout=30
+    )
 
 
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
@@ -25,7 +37,7 @@ def _make_pip_proj(tmp_path):
     """Create a git-backed project layout for the pip update path."""
     proj = tmp_path / "project"
     proj.mkdir()
-    (proj / ".git").mkdir()
+    _init_repo(proj)
     return proj
 
 

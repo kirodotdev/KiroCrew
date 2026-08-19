@@ -6,17 +6,28 @@ export interface StatusData {
   cron_jobs: number
   subagents: number
   lessons: number
-  update_available?: boolean
   /**
-   * Can this install replace its own code? Only a git checkout can — a wheel
-   * install (the `cli.sh` managed venv) upgrades by re-running the installer, so
-   * `POST /api/update` would 409. Shipped with the availability flag so the UI
-   * can pick the right affordance without first running a check.
+   * Is a newer build available? `null`/absent means NO VERDICT — a check that
+   * never ran, or one that failed. Only `true` may light an update affordance,
+   * and only `false` alongside `update_check_status === 'succeeded'` may render
+   * "up to date". Treating a missing verdict as `false` is the bug this pair
+   * exists to prevent.
    */
-  update_self_updatable?: boolean
-  /** Did a check ever reach a verdict? Distinguishes "current" from "never checked". */
-  update_checked?: boolean
-  /** Upgrade command for an install that cannot replace itself ("" when it can). */
+  update_available?: boolean | null
+  /**
+   * Can the gateway apply an update in-process? Only a git checkout can — a wheel
+   * install (the `cli.sh` managed venv) upgrades by re-running the installer, and
+   * a desktop bundle is updated by its own updater, so `POST /api/update` would
+   * 400/409 on both. Shipped with the availability flag so the UI can pick the
+   * right affordance without first running a check.
+   */
+  update_can_apply?: boolean
+  /**
+   * How far the check itself got: `unchecked`, `checking`, `succeeded`, `failed`
+   * or `deferred` (another surface owns this install's updates).
+   */
+  update_check_status?: 'unchecked' | 'checking' | 'succeeded' | 'failed' | 'deferred'
+  /** Copyable upgrade command for an install that cannot apply in-process ("" when none). */
   update_command?: string
   /**
    * The release channel this INSTALL follows (the `channel` file `cli.sh` wrote).

@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 from kiro_crew.dashboard.handlers import updates
+
+
+def _init_repo(path) -> None:
+    """Make *path* the top level of a real git working tree.
+
+    Detection asks git and anchors the answer to this exact directory, so a
+    fabricated ``.git`` entry does not stand in for a repository.
+    """
+    subprocess.run(
+        ["git", "init", "-q"], cwd=str(path), check=True, capture_output=True, timeout=30
+    )
 
 
 class TestUpdateCheckGitGuard:
@@ -26,12 +38,12 @@ class TestUpdateCheckGitGuard:
 
     @staticmethod
     def _assert_took_the_feed_path():
-        # Asserted by BEHAVIOUR, not by the stamp value: `install_kind` echoes
-        # `beacon.distribution()`, which is `source` in a checkout and `wheel` in an
-        # installed artifact. `feed_malformed` proves the feed branch ran.
+        # Asserted by BEHAVIOUR, not by the stamp value: every feed-checkable
+        # shape reports one capability, and `feed_malformed` proves the feed
+        # branch is the one that ran.
         info = updates.get_update_info()
-        assert info["error"] == "feed_malformed"
-        assert info["install_kind"] in ("wheel", "source")
+        assert info["error_code"] == "feed_malformed"
+        assert info["managed_by"] == "kirocrew"
 
     def test_skips_git_when_no_dot_git(self, monkeypatch, tmp_path):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
@@ -75,7 +87,7 @@ class TestUpdateCheckGitGuard:
     def test_proceeds_when_dot_git_is_file(self, monkeypatch, tmp_path):
         # Linked git worktrees and submodules have .git as a *file* pointing at
         # the real git dir — update checks must still run there.
-        (tmp_path / ".git").write_text("gitdir: /somewhere/.git/worktrees/x\n")
+        _init_repo(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         called = {"n": 0}
 
@@ -94,7 +106,7 @@ class TestUpdateCheckGitGuard:
         assert called["n"] >= 1
 
     def test_proceeds_when_dot_git_present(self, monkeypatch, tmp_path):
-        (tmp_path / ".git").mkdir()
+        _init_repo(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         called = {"n": 0}
 

@@ -140,7 +140,12 @@ describe('AboutPanel gateway channel switcher', () => {
   })
 
   it('sends the picked channel to the backend', async () => {
-    const posts = stubFetch({ channelResponse: { ok: true, channel: 'insider', checked: true, available: false } })
+    const posts = stubFetch({ channelResponse: {
+      ok: true,
+      channel: 'insider',
+      check_status: 'succeeded',
+      update_available: false,
+    } })
     seedStatus({ update_channel: 'stable' })
     mountWeb()
 
@@ -152,6 +157,36 @@ describe('AboutPanel gateway channel switcher', () => {
       expect(call).toBeTruthy()
       expect(call!.body).toEqual({ channel: 'insider' })
     })
+  })
+
+  it('keeps the verdict a successful switch just found instead of discarding it', async () => {
+    // The switch response IS the re-run check against the new lane. This handler
+    // was left reading the pre-rename keys (`available` / `checked` /
+    // `remote_version` / `self_updatable`), so a switch that FOUND an update
+    // wrote false into both flags and blanked the target — throwing away the very
+    // answer the switch was made to get.
+    // The switcher offers stable ⇄ insider only: a nightly build reports
+    // channelSwitchable=false because it is a separate pinned install.
+    stubFetch({ channelResponse: {
+      ok: true,
+      channel: 'insider',
+      check_status: 'succeeded',
+      update_available: true,
+      latest_version: '0.9.9',
+      can_apply: false,
+      update_command: 'curl -fsSL https://example.invalid/cli.sh | sh',
+    } })
+    seedStatus({ update_channel: 'stable' })
+    mountWeb()
+
+    const switcher = await screen.findByTestId('gateway-channel-switcher')
+    fireEvent.click(within(switcher).getByTitle('Insider'))
+
+    // The found version reaches the panel...
+    expect(await screen.findByText(/0\.9\.9/)).toBeTruthy()
+    // ...and the install that cannot self-apply is given the command instead of
+    // a button the gateway would refuse.
+    expect(await screen.findByTestId('manual-update-command')).toBeTruthy()
   })
 
   it('does not re-send the channel already followed', async () => {
@@ -230,7 +265,7 @@ describe('AboutPanel gateway channel switcher', () => {
   it('withholds the switch note when there is no command for it to point at', async () => {
     // The sentence says "run the command below". With no command resolved (failed
     // check, offline host) it would dangle, the same way it did when it was gated
-    // on `available` alone.
+    // on `update_available` alone.
     stubFetch()
     seedStatus({ update_channel: 'insider', release_channel: 'stable', update_command: '' })
     mountWeb()
@@ -294,12 +329,12 @@ describe('AboutPanel gateway restart', () => {
 
   it('offers Restart beside the installer command a wheel install must run', async () => {
     const posts = stubFetch()
-    // available + !self_updatable is the manual-update path: the command is the
+    // update_available + !can_apply is the manual-update path: the command is the
     // only way forward, and restarting is the step that used to be missing.
     seedStatus({
       update_available: true,
-      update_checked: true,
-      update_self_updatable: false,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
       update_command: 'curl -fsSL https://example.test/cli.sh | sh -s -- --channel stable',
       update_channel: 'stable',
     })
@@ -323,7 +358,7 @@ describe('AboutPanel gateway restart', () => {
     // release, so gating the button on update_available hides it exactly when a
     // developer needs it.
     const posts = stubFetch()
-    seedStatus({ update_available: false, update_checked: true, update_channel: 'stable' })
+    seedStatus({ update_available: false, update_check_status: 'succeeded', update_channel: 'stable' })
     mountWeb()
 
     const row = await screen.findByTestId('gateway-restart-row')
@@ -341,7 +376,7 @@ describe('AboutPanel gateway restart', () => {
     vi.useFakeTimers()
     try {
       const posts = stubFetch()
-      seedStatus({ update_available: false, update_checked: true, update_channel: 'stable' })
+      seedStatus({ update_available: false, update_check_status: 'succeeded', update_channel: 'stable' })
       mountWeb()
       await vi.advanceTimersByTimeAsync(500)
 
@@ -361,15 +396,15 @@ describe('AboutPanel gateway restart', () => {
   })
 
   it('shows the installer command for a lane move even with no newer version', async () => {
-    // Switching from nightly back to stable is a DOWNGRADE: `available` is false,
+    // Switching from nightly back to stable is a DOWNGRADE: `update_available` is false,
     // yet the command is still the only thing that performs the move. Gating the
-    // command on `available` alone left the switcher's own note ("run the command
+    // command on `update_available` alone left the switcher's own note ("run the command
     // below") pointing at nothing in exactly that case.
     stubFetch()
     seedStatus({
       update_available: false,
-      update_checked: true,
-      update_self_updatable: false,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
       update_command: 'curl -fsSL https://example.test/cli.sh | sh -s -- --channel stable',
       update_channel: 'stable',
       release_channel: 'nightly',
@@ -388,8 +423,8 @@ describe('AboutPanel gateway restart', () => {
     stubFetch()
     seedStatus({
       update_available: true,
-      update_checked: true,
-      update_self_updatable: false,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
       update_command: 'curl -fsSL https://example.test/cli.sh | sh',
       update_channel: 'stable',
     })
@@ -415,8 +450,8 @@ describe('AboutPanel gateway restart', () => {
     }))
     seedStatus({
       update_available: true,
-      update_checked: true,
-      update_self_updatable: false,
+      update_check_status: 'succeeded',
+      update_can_apply: false,
       update_command: 'curl -fsSL https://example.test/cli.sh | sh',
       update_channel: 'stable',
     })

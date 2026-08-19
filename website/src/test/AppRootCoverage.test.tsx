@@ -79,7 +79,15 @@ import App from '../App'
 import { api } from '../api/client'
 
 /** Status payload the shell diffs `mc-last-version` against. */
-const STATUS = { uptime: '1h', sessions: 0, messages: 0, version: '0.4.0', update_available: true }
+// `update_can_apply` is what licenses the in-app "Update Now" path: availability
+// says a newer build EXISTS, capability says this install can replace its own
+// bytes from here. Only a git checkout can (`POST /api/update` is fetch + reset),
+// and these suites drive exactly that path — a wheel or desktop install is offered
+// the installer command instead, covered by App.changelogModalApply.test.tsx.
+const STATUS = {
+  uptime: '1h', sessions: 0, messages: 0, version: '0.4.0',
+  update_available: true, update_can_apply: true,
+}
 
 /** A two-release changelog: only the 0.4.0 section is newer than 0.3.0. */
 const CHANGELOG = '## [0.4.0]\n- adds the resource capsule\n\n## [0.3.0]\n- older entry line\n'

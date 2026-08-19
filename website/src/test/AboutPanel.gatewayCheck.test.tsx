@@ -6,9 +6,10 @@
 // so a check that did nothing told the user they were up to date while two
 // releases behind. `checked` is now the verdict and a 200 is only transport.
 //
-// - checked:false + an error code  -> failure line, and NEVER the success line
+// - check_status:'failed' + an error code -> failure line, NEVER the success line
 // - an UNRECOGNISED error code     -> generic reason, still not the success line
-// - checked:true + available:false -> the success line (the only case that earns it)
+// - check_status:'succeeded' + update_available:false -> the success line (the only
+//   case that earns it)
 // - available + !self_updatable    -> the installer command, and NO Update button
 // - available + self_updatable     -> the Update button, unchanged
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -75,7 +76,7 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('a check that could not run reports the failure, not "up to date"', async () => {
-    stubFetch({ checked: false, available: false, error: 'feed_unreachable', install_kind: 'wheel' })
+    stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable', managed_by: 'kirocrew' })
     mountWeb()
     await pressCheck()
 
@@ -87,7 +88,7 @@ describe('AboutPanel gateway update check', () => {
 
   it('an unrecognised error code falls back to the generic reason', async () => {
     // A newer gateway paired with this bundle must still say the check failed.
-    stubFetch({ checked: false, available: false, error: 'some_future_code' })
+    stubFetch({ check_status: 'failed', update_available: null, error_code: 'some_future_code' })
     mountWeb()
     await pressCheck()
 
@@ -97,7 +98,7 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('reports up to date only when a comparison actually completed', async () => {
-    stubFetch({ checked: true, available: false, error: '', install_kind: 'wheel' })
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null, managed_by: 'kirocrew' })
     mountWeb()
     await pressCheck()
 
@@ -109,14 +110,14 @@ describe('AboutPanel gateway update check', () => {
   it('offers the installer command instead of a broken Update button on a wheel install', async () => {
     const command = "curl -fsSL --proto '=https' https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider"
     stubFetch({
-      checked: true,
-      available: true,
-      error: '',
-      install_kind: 'wheel',
-      self_updatable: false,
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
       channel: 'insider',
-      remote_version: '0.1.3rc2',
-      update_command: command,
+      latest_version: '0.1.3rc2',
+      remediation: { kind: 'command', message: '', command },
     })
     mountWeb()
     await pressCheck()
@@ -136,12 +137,12 @@ describe('AboutPanel gateway update check', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
     stubFetch({
-      checked: true,
-      available: true,
-      install_kind: 'wheel',
-      self_updatable: false,
+      check_status: 'succeeded',
+      update_available: true,
+      managed_by: 'kirocrew',
+      can_apply: false,
       channel: 'stable',
-      update_command: command,
+      remediation: { kind: 'command', message: '', command },
     })
     mountWeb()
     await pressCheck()
@@ -158,7 +159,13 @@ describe('AboutPanel gateway update check', () => {
     // The desktop bundles embed this backend, so they reach the gateway check and
     // defer to the Electron updater. Nothing failed, so "Couldn't check for
     // updates" would be a lie — but "up to date" would be worse.
-    stubFetch({ checked: false, available: false, error: code, install_kind: 'dmg' })
+    stubFetch({
+      check_status: 'deferred',
+      update_available: null,
+      error_code: null,
+      unavailable_reason: code,
+      managed_by: 'electron',
+    })
     mountWeb()
     await pressCheck()
 
@@ -170,12 +177,12 @@ describe('AboutPanel gateway update check', () => {
 
   it('a git checkout still gets the Update button', async () => {
     stubFetch({
-      checked: true,
-      available: true,
-      error: '',
-      install_kind: 'git',
-      self_updatable: true,
-      remote_version: '0.1.3',
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'git',
+      can_apply: true,
+      latest_version: '0.1.3',
       changes: '### 0.1.3\n- thing',
     })
     mountWeb()
@@ -185,15 +192,15 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('manual-update-instructions')).toBeNull()
   })
 
-  it('names the target version from remote_version', async () => {
+  it('names the target version from latest_version', async () => {
     // The panel used to read `d.version`, which the gateway never emits — so the
     // "(vX)" suffix silently never appeared for a gateway install.
     stubFetch({
-      checked: true,
-      available: true,
-      install_kind: 'git',
-      self_updatable: true,
-      remote_version: '0.1.3rc2',
+      check_status: 'succeeded',
+      update_available: true,
+      managed_by: 'git',
+      can_apply: true,
+      latest_version: '0.1.3rc2',
     })
     mountWeb()
     await pressCheck()
@@ -218,8 +225,8 @@ describe('AboutPanel gateway update check', () => {
     stubFetch({})
     pushStatus({
       update_available: true,
-      update_self_updatable: false,
-      update_checked: true,
+      update_can_apply: false,
+      update_check_status: 'succeeded',
       update_command: command,
     })
     mountWeb()
@@ -230,10 +237,10 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('suppresses the Update button even when no command is known', async () => {
-    // Fail safe: `!self_updatable` alone must disarm the button. A gateway that
-    // predates `update_command` still must not offer a POST that answers 409.
+    // Fail safe: a false `can_apply` alone must disarm the button, with or
+    // without a command to offer in its place.
     stubFetch({})
-    pushStatus({ update_available: true, update_self_updatable: false, update_checked: true })
+    pushStatus({ update_available: true, update_can_apply: false, update_check_status: 'succeeded' })
     mountWeb()
 
     await screen.findByTestId('manual-update-instructions')
@@ -251,7 +258,7 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('the hero pill goes green once a check reports current', async () => {
-    stubFetch({ checked: true, available: false, error: '' })
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
     mountWeb()
     await pressCheck()
     await waitFor(() => expect(screen.getByTestId('hero-up-to-date')).toBeTruthy())
@@ -259,7 +266,7 @@ describe('AboutPanel gateway update check', () => {
   })
 
   it('a failed check does NOT turn the hero pill green', async () => {
-    stubFetch({ checked: false, available: false, error: 'feed_unreachable' })
+    stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable' })
     mountWeb()
     await pressCheck()
     await screen.findByTestId('check-failed')
@@ -269,7 +276,7 @@ describe('AboutPanel gateway update check', () => {
 
   it('the auto-apply toggle is reworded where the gateway cannot self-apply', async () => {
     stubFetch({})
-    pushStatus({ update_self_updatable: false, update_checked: true })
+    pushStatus({ update_can_apply: false, update_check_status: 'succeeded' })
     mountWeb()
 
     await waitFor(() =>
@@ -281,7 +288,7 @@ describe('AboutPanel gateway update check', () => {
 
   it('the auto-apply toggle keeps its promise on a git checkout', async () => {
     stubFetch({})
-    pushStatus({ update_self_updatable: true, update_checked: true })
+    pushStatus({ update_can_apply: true, update_check_status: 'succeeded' })
     mountWeb()
 
     await waitFor(() => expect(screen.getByText(/Auto-update on restart/)).toBeTruthy())
@@ -295,8 +302,8 @@ describe('AboutPanel gateway update check', () => {
     stubFetch({})
     pushStatus({
       update_available: true,
-      update_self_updatable: false,
-      update_checked: true,
+      update_can_apply: false,
+      update_check_status: 'succeeded',
       update_command: command,
     })
     mountWeb()
