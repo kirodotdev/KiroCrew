@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
+import secrets
 import time as _time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -1476,6 +1478,8 @@ class HistoryConsolidator:
         triggers: str,
         procedure_md: str,
         scripts: "list[dict] | None" = None,
+        scripts_supplied: bool = False,
+        allow_auto_apply: bool = True,
     ) -> None:
         """Stage a pending UPDATE candidate for an existing auto-skill.
 
@@ -1588,6 +1592,14 @@ class HistoryConsolidator:
         _live_description = _frontmatter_value(live_body, "description")
         _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
         _staged_description = description or _live_description
+        auto_apply = (
+            allow_auto_apply
+            and not self._approval_required
+            and not scripts
+            and not scripts_supplied
+        )
+        stage_token = secrets.token_hex(16) if auto_apply else None
+        unattended_binding: list[str] = []
         name = loader.stage_skill_candidate(
             _update_slug,
             description=_staged_description,
@@ -1598,6 +1610,10 @@ class HistoryConsolidator:
             kind="update",
             target=target_key,
             base_version=base_version,
+            notify=not auto_apply,
+            stage_token=stage_token,
+            base_content_hash=hashlib.sha256(live_body.encode("utf-8")).hexdigest(),
+            unattended_binding_out=unattended_binding if auto_apply else None,
         )
         if name:
             self._logger.info(
@@ -1618,6 +1634,14 @@ class HistoryConsolidator:
                     "merged": used_merge,
                 },
             )
+            if auto_apply and stage_token and unattended_binding:
+                self._auto_apply_staged_update(
+                    key=key,
+                    staged_name=name,
+                    target_key=target_key,
+                    stage_token=stage_token,
+                    candidate_binding=unattended_binding[0],
+                )
         else:
             self._logger.info("Skill update staging rejected for target '%s'", target_key)
             _facade_sel().log_tool_invocation(
@@ -1627,6 +1651,75 @@ class HistoryConsolidator:
                 outcome="rejected",
                 metadata={"slug": _update_slug, "reason": "creation_failed"},
             )
+
+    def _auto_apply_staged_update(
+        self,
+        *,
+        key: str,
+        staged_name: str,
+        target_key: str,
+        stage_token: str,
+        candidate_binding: str,
+    ) -> None:
+        loader = self._skills_loader
+        if loader is None:
+            return
+        slug = staged_name.split("/", 1)[-1]
+        applied: tuple[str, int] | None = None
+        try:
+            applied = loader.auto_apply_pending_update(
+                slug,
+                expected_stage_token=stage_token,
+                expected_candidate_binding=candidate_binding,
+            )
+        except Exception:
+            self._logger.warning(
+                "Auto-apply failed for %s; leaving it pending review",
+                staged_name,
+                exc_info=True,
+            )
+        if applied:
+            applied_name, new_version = applied
+            _facade_sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_applied_update",
+                metadata={
+                    "name": applied_name,
+                    "target": target_key,
+                    "new_version": new_version,
+                },
+            )
+            # Mirror the dashboard approve path: bound the live set now, with
+            # the just-updated skill exempted. An update carries the ORIGINAL
+            # created_at forward, so an old zero-hit target would otherwise be
+            # archived by the very next lifecycle pass — including _consolidate's
+            # own throttled pass moments after this apply. Advancing
+            # _last_lifecycle records that a full pass just ran. Best-effort;
+            # never fail the apply that already committed.
+            self._last_lifecycle = _time.time()
+            try:
+                loader.run_skill_lifecycle(
+                    max_auto_skills=self._max_auto_skills,
+                    stale_after_days=self._stale_after_days,
+                    archive_after_days=self._archive_after_days,
+                    exempt={applied_name},
+                )
+            except Exception:  # pragma: no cover - defensive
+                self._logger.debug("Skill lifecycle pass failed after auto-apply", exc_info=True)
+            return
+        _facade_sel().log_tool_invocation(
+            session_key=key,
+            tool_name="auto_skill_create",
+            tool_kind="skills",
+            outcome="auto_apply_failed",
+            metadata={
+                "name": staged_name,
+                "target": target_key,
+                "reason": "left_pending_for_review",
+            },
+        )
 
     def _process_auto_skills(self, result: dict, key: str) -> None:
         """Extract + write auto-generated skills from the consolidation result.
@@ -1750,6 +1843,8 @@ class HistoryConsolidator:
                         triggers=triggers,
                         procedure_md=procedure_md,
                         scripts=valid_scripts or None,
+                        scripts_supplied=scripts_supplied,
+                        allow_auto_apply=not self._auto_refine_enabled,
                     )
                 else:
                     provenance = AutoSkillProvenance(

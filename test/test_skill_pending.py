@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -11,8 +12,8 @@ from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    return SkillsLoader(install_builtins=False)
 
 
 def _prov(days_ago: float = 0) -> AutoSkillProvenance:
@@ -238,10 +239,14 @@ def test_failed_move_restores_meta(loader, monkeypatch):
     meta = loader._pending_root() / "movefail" / ".meta.json"
     orig_bytes = meta.read_bytes()
 
-    def _boom(*a, **k):
-        raise OSError("dest unwritable")
+    real_rename = S.platform_compat.rename_no_replace
 
-    monkeypatch.setattr(S.shutil, "move", _boom)
+    def _boom(src, dest):
+        if Path(dest) == loader._dir / "auto" / "movefail":
+            raise OSError("dest unwritable")
+        return real_rename(src, dest)
+
+    monkeypatch.setattr(S.platform_compat, "rename_no_replace", _boom)
     assert loader.approve_pending_skill("movefail") is None
     assert meta.exists() and meta.read_bytes() == orig_bytes
     assert not (loader._dir / "auto" / "movefail").exists()
