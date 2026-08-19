@@ -46,9 +46,33 @@ describe('trust pattern transform (shared with the dashboard)', () => {
   })
 
   it('truncates only the LABEL, never the pattern', () => {
-    const long = 'a'.repeat(60)
-    expect(truncateCommandLabel(long)).toHaveLength(31) // 30 + ellipsis
+    const long = 'a'.repeat(80)
+    expect(truncateCommandLabel(long)).toHaveLength(65) // 64 + ellipsis
     expect(trustBasePattern(long)).toBe(long + ' *')
+  })
+
+  it('matches the dashboard budget: leaves exactly-max untouched, truncates one past it', () => {
+    // 64 mirrors the budget PR #4393 introduces for the dashboard copy in
+    // website/src/utils/trustPatterns.ts (still 30 until that PR lands). The two
+    // must converge — a divergent constant re-creates the collision on one
+    // surface only (see #4462 / #4436).
+    const exactly64 = 'a'.repeat(64)
+    expect(truncateCommandLabel(exactly64)).toBe(exactly64)
+    expect(truncateCommandLabel('a'.repeat(65))).toBe(exactly64 + '…')
+  })
+
+  it('does not render two commands from the original report with the same label', () => {
+    // The label is the only thing the user reads before granting an exact-string
+    // match. These two differ only in the filename, past the old 30-char budget,
+    // and rendered identically before the fix. Asserting inequality (not just the
+    // new number) catches a build that reintroduces the collision at any length
+    // shorter than where these diverge.
+    const config = 'gh api repos/owner/some-repository/contents/config.json --jq .sha'
+    const secrets = 'gh api repos/owner/some-repository/contents/secrets.json --jq .sha'
+    expect(truncateCommandLabel(config)).not.toBe(truncateCommandLabel(secrets))
+    // ...and pin that the OLD budget is what made them collide, so this test
+    // fails if the budget is narrowed back.
+    expect(truncateCommandLabel(config, 30)).toBe(truncateCommandLabel(secrets, 30))
   })
 
   it('offers the family grant only when it differs from the exact command', () => {

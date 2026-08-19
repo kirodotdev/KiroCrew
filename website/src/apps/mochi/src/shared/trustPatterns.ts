@@ -39,8 +39,20 @@ export function trustBasePattern(baseCommand: string): string {
 /**
  * Shorten a command for a BUTTON LABEL only — never for the pattern itself.
  * Truncating a pattern would change the grant; this is display only.
+ *
+ * The budget is generous because this label is the only place INSIDE THE GRANT
+ * CONTROL that shows what is about to be trusted (the card renders toolInput
+ * above it when the gateway sent one, but the trust row must stand on its own),
+ * and a short one collides: commands that share a long prefix —
+ * `gh api repos/<owner>/<repo>/contents/config.json` and the same call for
+ * `secrets.json` — truncate to the same string, so the card offers to trust
+ * one of two commands the reader cannot tell apart. 64 mirrors the budget
+ * PR #4393 introduces for the dashboard copy in src/utils/trustPatterns.ts
+ * (still 30 until that PR lands); the two must stay equal — a divergent
+ * constant is this same defect in a new place. Callers pass the untruncated
+ * command as a `title` tooltip so a long command stays fully recoverable.
  */
-export function truncateCommandLabel(cmd: string, max = 30): string {
+export function truncateCommandLabel(cmd: string, max = 64): string {
   return cmd.length > max ? cmd.slice(0, max) + '…' : cmd
 }
 
