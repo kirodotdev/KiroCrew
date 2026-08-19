@@ -1481,6 +1481,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "이 이슈를 불러온 뒤 다른 곳에서 담당자가 변경되었습니다.",
         "these_settings_changed_elsewhere": "이 설정이 다른 곳에서 변경되었습니다."
       },
       "components": {
@@ -1501,6 +1502,14 @@
           "regenerate_ai_summary": "AI 요약 다시 생성",
           "regenerate_summary": "요약 다시 생성",
           "retry": "다시 시도"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "이 담당자들은 저장소 멤버가 아닙니다.",
+          "choose_assignees": "담당자 선택",
+          "filter_members": "멤버 필터…",
+          "no_members": "할당할 멤버가 없습니다 — 이 저장소에는 읽을 수 있는 명단이 없습니다.",
+          "not_a_member": "{{login}} 은(는) 이 저장소의 멤버가 아닙니다",
+          "this_is_you": "{{login}} (나)"
         },
         "detailOverflowMenu": {
           "more_actions": "추가 작업"
@@ -1534,6 +1543,7 @@
           "added_this_to_the": "이 항목을 다음에 추가함",
           "as_completed": "완료로",
           "as_not_planned": "계획 없음으로",
+          "assign_me": "나에게 할당",
           "assigned": "할당함",
           "assignees": "담당자",
           "by": "· 작성자",
@@ -1548,7 +1558,11 @@
           "couldn_t_load_activity": "활동을 불러오지 못했습니다:",
           "dates": "날짜",
           "done": "완료",
+          "done_editing_assignees": "담당자 편집 완료",
+          "done_editing_labels": "라벨 편집 완료",
           "edit": "편집",
+          "edit_assignees": "담당자 편집",
+          "edit_labels": "라벨 편집",
           "finding_suggestions": "제안을 찾는 중…",
           "in": "위치",
           "issue": "이슈",
@@ -1582,6 +1596,7 @@
           "self_assigned_this": "이 항목을 자신에게 할당함",
           "suggested": "제안",
           "timeline": "타임라인",
+          "unassign_me": "내 할당 해제",
           "unassigned": "할당 해제함",
           "updated": "업데이트"
         },

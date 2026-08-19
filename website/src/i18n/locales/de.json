@@ -1510,6 +1510,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "Die Zuständigen wurden anderswo geändert, seit Sie dieses Issue geladen haben.",
         "these_settings_changed_elsewhere": "Diese Einstellungen wurden an anderer Stelle geändert."
       },
       "components": {
@@ -1530,6 +1531,14 @@
           "regenerate_ai_summary": "KI-Zusammenfassung neu erstellen",
           "regenerate_summary": "Zusammenfassung neu erstellen",
           "retry": "Wiederholen"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "Diese Zuständigen sind keine Repository-Mitglieder.",
+          "choose_assignees": "Zuständige auswählen",
+          "filter_members": "Mitglieder filtern…",
+          "no_members": "Keine Mitglieder zum Zuweisen — dieses Repository hat keine lesbare Mitgliederliste.",
+          "not_a_member": "{{login}} ist kein Mitglied dieses Repositorys",
+          "this_is_you": "{{login}} (Sie)"
         },
         "detailOverflowMenu": {
           "more_actions": "Weitere Aktionen"
@@ -1563,6 +1572,7 @@
           "added_this_to_the": "hat dies hinzugefügt zu",
           "as_completed": "als erledigt",
           "as_not_planned": "als nicht geplant",
+          "assign_me": "Mir zuweisen",
           "assigned": "zugewiesen",
           "assignees": "Zugewiesene Personen",
           "by": "· von",
@@ -1577,7 +1587,11 @@
           "couldn_t_load_activity": "Aktivität konnte nicht geladen werden:",
           "dates": "Daten",
           "done": "Fertig",
+          "done_editing_assignees": "Bearbeiten der Zuständigen abschließen",
+          "done_editing_labels": "Bearbeiten der Labels abschließen",
           "edit": "Bearbeiten",
+          "edit_assignees": "Zuständige bearbeiten",
+          "edit_labels": "Labels bearbeiten",
           "finding_suggestions": "Vorschläge werden gesucht…",
           "in": "in",
           "issue": "Issue",
@@ -1611,6 +1625,7 @@
           "self_assigned_this": "hat dies sich selbst zugewiesen",
           "suggested": "Vorgeschlagen",
           "timeline": "Zeitleiste",
+          "unassign_me": "Zuweisung aufheben",
           "unassigned": "nicht zugewiesen",
           "updated": "Aktualisiert"
         },

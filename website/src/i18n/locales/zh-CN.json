@@ -1481,6 +1481,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "自你加载该 issue 后，指派者已在别处被修改。",
         "these_settings_changed_elsewhere": "这些设置已在别处更改。"
       },
       "components": {
@@ -1501,6 +1502,14 @@
           "regenerate_ai_summary": "重新生成 AI 摘要",
           "regenerate_summary": "重新生成摘要",
           "retry": "重试"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "这些指派者不是仓库成员。",
+          "choose_assignees": "选择指派者",
+          "filter_members": "筛选成员…",
+          "no_members": "没有可指派的成员 — 该仓库没有可读的成员名单。",
+          "not_a_member": "{{login}} 不是该仓库的成员",
+          "this_is_you": "{{login}}（你）"
         },
         "detailOverflowMenu": {
           "more_actions": "更多操作"
@@ -1534,6 +1543,7 @@
           "added_this_to_the": "将此加入",
           "as_completed": "标记为已完成",
           "as_not_planned": "标记为不予计划",
+          "assign_me": "指派给我",
           "assigned": "已分配",
           "assignees": "负责人",
           "by": "· 由",
@@ -1548,7 +1558,11 @@
           "couldn_t_load_activity": "无法加载动态：",
           "dates": "日期",
           "done": "已完成",
+          "done_editing_assignees": "完成编辑指派者",
+          "done_editing_labels": "完成编辑标签",
           "edit": "编辑",
+          "edit_assignees": "编辑指派者",
+          "edit_labels": "编辑标签",
           "finding_suggestions": "正在查找建议…",
           "in": "于",
           "issue": "Issue",
@@ -1582,6 +1596,7 @@
           "self_assigned_this": "自行接手了此项",
           "suggested": "建议",
           "timeline": "时间线",
+          "unassign_me": "取消指派给我",
           "unassigned": "取消分配",
           "updated": "更新时间"
         },

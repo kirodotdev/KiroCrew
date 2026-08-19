@@ -1539,6 +1539,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "Les assignés ont change ailleurs depuis que vous avez charge ce ticket.",
         "these_settings_changed_elsewhere": "Ces paramètres ont été modifiés ailleurs."
       },
       "components": {
@@ -1559,6 +1560,14 @@
           "regenerate_ai_summary": "Régénérer le résumé IA",
           "regenerate_summary": "Régénérer le résumé",
           "retry": "Réessayer"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "Ces assignés ne sont pas membres du dépôt.",
+          "choose_assignees": "Choisir les assignes",
+          "filter_members": "Filtrer les membres…",
+          "no_members": "Aucun membre à assigner — ce dépôt n'a pas de liste lisible.",
+          "not_a_member": "{{login}} n'est pas membre de ce depot",
+          "this_is_you": "{{login}} (vous)"
         },
         "detailOverflowMenu": {
           "more_actions": "Plus d'actions"
@@ -1592,6 +1601,7 @@
           "added_this_to_the": "a ajouté ceci au",
           "as_completed": "comme terminé",
           "as_not_planned": "comme non planifié",
+          "assign_me": "M'assigner",
           "assigned": "a assigné",
           "assignees": "Personnes assignées",
           "by": "· par",
@@ -1606,7 +1616,11 @@
           "couldn_t_load_activity": "Impossible de charger l'activité :",
           "dates": "Dates",
           "done": "Terminé",
+          "done_editing_assignees": "Terminer la modification des assignés",
+          "done_editing_labels": "Terminer la modification des libellés",
           "edit": "Modifier",
+          "edit_assignees": "Modifier les assignés",
+          "edit_labels": "Modifier les libellés",
           "finding_suggestions": "Recherche de suggestions…",
           "in": "dans",
           "issue": "Ticket",
@@ -1640,6 +1654,7 @@
           "self_assigned_this": "s'est assigné ceci",
           "suggested": "Suggéré",
           "timeline": "Chronologie",
+          "unassign_me": "Me désassigner",
           "unassigned": "a désassigné",
           "updated": "Mis à jour"
         },

@@ -40,12 +40,19 @@ import type {
 //  * Empty sidebar blocks say "No one assigned" / "None yet" / "No milestone"
 //    rather than rendering nothing, so an absent value is never mistaken for a
 //    value that was never fetched.
+//  * The ASSIGNEE editor REPLACES the whole set (never an add/remove delta) and
+//    renders the set the server returned rather than the one requested — the
+//    provider drops a login it will not assign. "Assign to me" is withheld when
+//    the current login could not be resolved, because it would otherwise send an
+//    empty login. Both edit toggles carry distinct accessible names ("Edit
+//    labels" / "Edit assignees"); a bare "Edit" on both reads as "Edit, Edit".
 
 const api = {
   issueDetail: vi.fn(),
   issueAi: vi.fn(),
   applyLabels: vi.fn(),
   setIssueState: vi.fn(),
+  setIssueAssignees: vi.fn(),
 }
 vi.mock('../apps/issue-radar/api', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -91,8 +98,28 @@ vi.mock('../apps/issue-radar/components/LabelPicker', () => ({
     </div>
   ),
 }))
+vi.mock('../apps/issue-radar/components/AssigneePicker', () => ({
+  default: ({ members, selected, onToggle, me, atCap }: {
+    members: string[]; selected: string[]; onToggle: (n: string) => void
+    me?: string | null; atCap?: boolean
+  }) => (
+    <div>
+      <span data-testid="assignee-selected">{selected.join(',') || 'none'}</span>
+      <span data-testid="assignee-members">{members.join(',') || 'none'}</span>
+      <span data-testid="assignee-me">{me ?? 'no-me'}</span>
+      <span data-testid="assignee-atcap">{atCap ? 'at-cap' : 'room'}</span>
+      {members.map((m) => (
+        <button key={m} type="button" onClick={() => onToggle(m)}>{`assign:${m}`}</button>
+      ))}
+    </div>
+  ),
+}))
 
 const IssueDetail = (await import('../apps/issue-radar/components/IssueDetail')).default
+// Imported AFTER the vi.mock hoist, like IssueDetail above: a static import of the
+// api module runs before the mock factory and trips its `api` closure. The real
+// class survives the mock because the factory spreads importOriginal().
+const { AssigneesConflictError } = await import('../apps/issue-radar/api')
 
 const REF = { owner: 'kirodotdev', repo: 'Kiro' }
 const SCOPE = 'github:github.com:kirodotdev/Kiro'
@@ -212,7 +239,7 @@ beforeEach(() => {
   ctx.value = {
     active: REF,
     colorByName: new Map([['bug', 'ff0000'], ['needs-info', '00ff00']]),
-    memberRoleByLogin: new Map([['alice', 'admin']]),
+    memberRoleByLogin: new Map([['alice', 'admin'], ['dave', 'write'], ['erin', 'triage']]),
     repoLabels: [
       { name: 'bug', color: 'ff0000', description: '' },
       { name: 'needs-info', color: '00ff00', description: '' },
@@ -220,6 +247,7 @@ beforeEach(() => {
     countByLabel: new Map([['bug', 4]]),
     canWrite: true,
     stateFilter: 'open',
+    me: 'alice',
     refreshPrefs: { detailPollMs: 30_000, pollInBackground: false },
     // The panes render their own narrow Back control now, inside their sticky
     // header, so they read the drill-down state directly. Desktop here, which is
@@ -499,7 +527,7 @@ describe('IssueDetail — labels sidebar', () => {
     ctx.value = { ...ctx.value, repoLabels: [] }
     const { sidebar } = renderPane()
     await waitFor(() => expect(within(sidebar()).getByText('bug')).toBeTruthy())
-    expect(within(sidebar()).queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(within(sidebar()).queryByRole('button', { name: 'Edit labels' })).toBeNull()
   })
 
   it('toggles a label on and off through the picker and patches both caches', async () => {
@@ -517,7 +545,7 @@ describe('IssueDetail — labels sidebar', () => {
       { owner: REF.owner, repo: REF.repo, issues: [{ ...ROW }], from_cache: false },
     )
 
-    await user.click(within(sidebar()).getByRole('button', { name: 'Edit' }))
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit labels' }))
     expect(screen.getByTestId('picker-selected').textContent).toBe('bug')
 
     // An unapplied label ADDS…
@@ -535,7 +563,7 @@ describe('IssueDetail — labels sidebar', () => {
     await waitFor(() => expect(screen.getByTestId('picker-selected').textContent).toBe('needs-info'))
 
     // Leaving edit mode returns to the read-only chips.
-    await user.click(within(sidebar()).getByRole('button', { name: 'Done' }))
+    await user.click(within(sidebar()).getByRole('button', { name: 'Done editing labels' }))
     expect(screen.queryByTestId('picker-selected')).toBeNull()
   })
 
@@ -545,7 +573,7 @@ describe('IssueDetail — labels sidebar', () => {
     const { sidebar } = renderPane()
     await waitFor(() => expect(within(sidebar()).getByText('bug')).toBeTruthy())
 
-    await user.click(within(sidebar()).getByRole('button', { name: 'Edit' }))
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit labels' }))
     await user.click(screen.getByRole('button', { name: 'pick:needs-info' }))
     expect(await screen.findByText('label write refused')).toBeTruthy()
   })
@@ -604,6 +632,219 @@ describe('IssueDetail — labels sidebar', () => {
   })
 })
 
+describe('IssueDetail — assignees sidebar', () => {
+  it('replaces the whole set rather than sending a delta', async () => {
+    // The route's contract is "here is the final set". Sending an add/remove
+    // delta would reintroduce the ordering race the label path has to guard.
+    api.setIssueAssignees.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo, number: 11, assignees: ['dave', 'erin'],
+    })
+    const user = userEvent.setup()
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    await user.click(screen.getByRole('button', { name: 'assign:erin' }))
+
+    expect(api.setIssueAssignees).toHaveBeenCalledWith(REF, 11, ['dave', 'erin'], ['dave'])
+  })
+
+  it('unassigning sends the remaining set, not a removal', async () => {
+    api.setIssueAssignees.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo, number: 11, assignees: [],
+    })
+    const user = userEvent.setup()
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    await user.click(screen.getByRole('button', { name: 'assign:dave' }))
+
+    expect(api.setIssueAssignees).toHaveBeenCalledWith(REF, 11, [], ['dave'])
+  })
+
+  it('"Assign to me" adds the current user and flips to "Unassign me"', async () => {
+    api.setIssueAssignees.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo, number: 11, assignees: ['dave', 'alice'],
+    })
+    const user = userEvent.setup()
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Assign to me' }))
+    expect(api.setIssueAssignees).toHaveBeenCalledWith(REF, 11, ['dave', 'alice'], ['dave'])
+
+    // The control reads the AUTHORITATIVE set back, so it now offers the inverse.
+    await waitFor(() =>
+      expect(within(sidebar()).getByRole('button', { name: 'Unassign me' })).toBeTruthy())
+  })
+
+  it('"Unassign me" removes only the current user', async () => {
+    api.issueDetail.mockResolvedValue(response({
+      detail: detailData({ assignees: ['dave', 'alice'] }),
+    }))
+    api.setIssueAssignees.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo, number: 11, assignees: ['dave'],
+    })
+    const user = userEvent.setup()
+    const { sidebar } = renderPane({ ...ROW, assignees: ['dave', 'alice'] })
+    await waitFor(() =>
+      expect(within(sidebar()).getByRole('button', { name: 'Unassign me' })).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Unassign me' }))
+    expect(api.setIssueAssignees).toHaveBeenCalledWith(REF, 11, ['dave'], ['dave', 'alice'])
+  })
+
+  it('renders the set the SERVER returned, not the set that was requested', async () => {
+    // The provider drops a login it will not assign. Rendering the request would
+    // show an assignee the issue does not actually carry.
+    api.setIssueAssignees.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo, number: 11, assignees: ['dave'],
+    })
+    const user = userEvent.setup()
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    await user.click(screen.getByRole('button', { name: 'assign:erin' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('assignee-selected').textContent).toBe('dave'))
+  })
+
+  it('patches the issues-list cache for THIS repo only', async () => {
+    // An unscoped patch would rewrite another repo's issue sharing the number.
+    api.setIssueAssignees.mockResolvedValue({
+      owner: REF.owner, repo: REF.repo, number: 11, assignees: ['erin'],
+    })
+    const user = userEvent.setup()
+    const { sidebar, qc } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    qc.setQueryData<IssuesResponse>(
+      ['issue-radar', 'issues', SCOPE, 'open'],
+      { owner: REF.owner, repo: REF.repo, issues: [{ ...ROW }], from_cache: false },
+    )
+    qc.setQueryData<IssuesResponse>(
+      ['issue-radar', 'issues', OTHER_SCOPE, 'open'],
+      { owner: REF.owner, repo: 'Other', issues: [{ ...ROW }], from_cache: false },
+    )
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    await user.click(screen.getByRole('button', { name: 'assign:erin' }))
+
+    await waitFor(() => {
+      const mine = qc.getQueryData<IssuesResponse>(['issue-radar', 'issues', SCOPE, 'open'])
+      expect(mine?.issues[0].assignees).toEqual(['erin'])
+    })
+    const other = qc.getQueryData<IssuesResponse>(['issue-radar', 'issues', OTHER_SCOPE, 'open'])
+    expect(other?.issues[0].assignees).toEqual(['dave'])
+  })
+
+  it('withholds both controls on a read-only repo', async () => {
+    ctx.value = { ...ctx.value, canWrite: false }
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+    expect(within(sidebar()).queryByRole('button', { name: 'Edit assignees' })).toBeNull()
+    expect(within(sidebar()).queryByRole('button', { name: 'Assign to me' })).toBeNull()
+  })
+
+  it('hides the self-assign control when the login could not be resolved', async () => {
+    // `me` is null when the provider CLI could not answer. Offering "Assign to
+    // me" would then send an empty login and fail on the provider.
+    ctx.value = { ...ctx.value, me: null }
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+    expect(within(sidebar()).queryByRole('button', { name: 'Assign to me' })).toBeNull()
+    // The full editor is still available — it does not depend on knowing "me".
+    expect(within(sidebar()).getByRole('button', { name: 'Edit assignees' })).toBeTruthy()
+  })
+
+  it('hands the picker the member roster and the current login', async () => {
+    const user = userEvent.setup()
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    expect(screen.getByTestId('assignee-members').textContent).toBe('alice,dave,erin')
+    expect(screen.getByTestId('assignee-me').textContent).toBe('alice')
+    expect(screen.getByTestId('assignee-atcap').textContent).toBe('room')
+  })
+
+  it('tells the picker when the assignee cap is reached', async () => {
+    const full = Array.from({ length: 10 }, (_, n) => `u${n}`)
+    api.issueDetail.mockResolvedValue(response({ detail: detailData({ assignees: full }) }))
+    const user = userEvent.setup()
+    const { sidebar } = renderPane({ ...ROW, assignees: full })
+    await waitFor(() => expect(within(sidebar()).getByText('u0')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    expect(screen.getByTestId('assignee-atcap').textContent).toBe('at-cap')
+  })
+
+  it('surfaces a failed assignee write in the sidebar', async () => {
+    api.setIssueAssignees.mockRejectedValue(new Error('assignee write refused'))
+    const user = userEvent.setup()
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    await user.click(screen.getByRole('button', { name: 'assign:erin' }))
+    expect(await screen.findByText('assignee write refused')).toBeTruthy()
+  })
+
+  it('adopts the forge set in BOTH caches when the write is refused as stale (409)', async () => {
+    // A concurrent edit means nothing was written. The pane must stop showing the
+    // set the write was rejected against -- and the LIST row too, or the
+    // "assigned to me" filter and the Overview counts keep reading stale
+    // assignees while the sidebar shows the truth.
+    api.setIssueAssignees.mockRejectedValue(
+      new AssigneesConflictError('The assignees changed elsewhere.', ['erin']),
+    )
+    const user = userEvent.setup()
+    const { sidebar, qc } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+
+    qc.setQueryData<IssuesResponse>(
+      ['issue-radar', 'issues', SCOPE, 'open'],
+      { owner: REF.owner, repo: REF.repo, issues: [{ ...ROW }], from_cache: false },
+    )
+    qc.setQueryData<IssuesResponse>(
+      ['issue-radar', 'issues', OTHER_SCOPE, 'open'],
+      { owner: REF.owner, repo: 'Other', issues: [{ ...ROW }], from_cache: false },
+    )
+
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    await user.click(screen.getByRole('button', { name: 'assign:erin' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('assignee-selected').textContent).toBe('erin'))
+    await waitFor(() => {
+      const mine = qc.getQueryData<IssuesResponse>(['issue-radar', 'issues', SCOPE, 'open'])
+      expect(mine?.issues[0].assignees).toEqual(['erin'])
+    })
+    // Still repo-scoped: another repo's row sharing the number is untouched.
+    const other = qc.getQueryData<IssuesResponse>(['issue-radar', 'issues', OTHER_SCOPE, 'open'])
+    expect(other?.issues[0].assignees).toEqual(['dave'])
+    expect(await screen.findByText('The assignees changed elsewhere.')).toBeTruthy()
+  })
+
+  it('leaves the editor closed when the pane switches issue', async () => {
+    const user = userEvent.setup()
+    const { sidebar, rerender, qc } = renderPane()
+    await waitFor(() => expect(within(sidebar()).getByText('dave')).toBeTruthy())
+    await user.click(within(sidebar()).getByRole('button', { name: 'Edit assignees' }))
+    expect(screen.getByTestId('assignee-selected')).toBeTruthy()
+
+    rerender(
+      <QueryClientProvider client={qc}>
+        <IssueDetail issue={{ ...ROW, number: 12 }} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.queryByTestId('assignee-selected')).toBeNull())
+  })
+})
+
 describe('IssueDetail — sidebar metadata', () => {
   it('renders every populated block', async () => {
     const { sidebar } = renderPane()
@@ -629,6 +870,7 @@ describe('IssueDetail — sidebar metadata', () => {
     expect(within(sidebar()).getByText('None yet')).toBeTruthy()
     expect(within(sidebar()).getByText('No milestone')).toBeTruthy()
   })
+
 
   it('shows the reaction strip only for emoji that actually have a count', async () => {
     const { main } = renderPane()

@@ -36,6 +36,7 @@ import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailS
 import AiSummaryCard from './AiSummaryCard'
 import LabelChip from './LabelChip'
 import LabelPicker from './LabelPicker'
+import AssigneePicker from './AssigneePicker'
 import MemberBadge from './MemberBadge'
 import DetailHeader from './DetailHeader'
 import DetailOverflowMenu from './DetailOverflowMenu'
@@ -49,6 +50,7 @@ import { useTitleScrolledOut } from '../lib/useTitleScrolledOut'
 import { relativeTimeOrDate, hexToRgba, asArray, detailPollMs } from '../lib/format'
 import {
   issueRadarApi,
+  AssigneesConflictError,
   type Issue, type Reactions, type TimelineEvent, type DetailLabel,
   type SuggestedLabel, type IssueDetailResponse, type IssuesResponse,
   type RepoRef,
@@ -451,7 +453,7 @@ function Section({
 export default function IssueDetail({ issue }: { issue: Issue }) {
   const {
     active, colorByName, memberRoleByLogin, repoLabels, countByLabel, canWrite, stateFilter,
-    refreshPrefs, listDetail, refStack,
+    me, refreshPrefs, listDetail, refStack,
   } = useIssueRadar()
   const { owner, repo } = active
   const scopeKey = repoScopeKey(active)
@@ -464,6 +466,9 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // switches to a different issue (the component instance is reused).
   const [editingLabels, setEditingLabels] = useState(false)
   useEffect(() => { setEditingLabels(false) }, [issue.number])
+  // Assignee edit mode — same reset-on-switch discipline as the label editor.
+  const [editingAssignees, setEditingAssignees] = useState(false)
+  useEffect(() => { setEditingAssignees(false) }, [issue.number])
 
   // Copy-link affordance (the #number links out to GitHub; this copies the URL
   // to the clipboard). Brief check-mark feedback, then reverts. Reads the URL off
@@ -676,6 +681,74 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     },
   })
 
+  // ── assignees: replace the whole set ──
+  // Like the label write, this patches the detail cache and the open/closed list
+  // caches so the sidebar and the row stay in step without a full re-fetch. The
+  // server is authoritative about what stuck (it drops non-assignable logins and
+  // caps the count), so the response set — not the requested set — is written.
+  const assigneesMutation = useMutation({
+    // `expected` is the set this pane RENDERED. The server refuses the write if the
+    // forge has moved since, so a concurrent edit is a 409 rather than a silent
+    // overwrite of someone else's addition.
+    mutationFn: (next: string[]) =>
+      issueRadarApi.setIssueAssignees(active, issue.number, next, assignees),
+    onSuccess: (res) => {
+      queryClient.setQueryData<IssueDetailResponse>(detailKey, (old) =>
+        old ? { ...old, detail: { ...old.detail, assignees: res.assignees } } : old)
+      for (const sf of ['open', 'closed'] as const) {
+        queryClient.setQueryData<IssuesResponse>(
+          ['issue-radar', 'issues', scopeKey, sf],
+          (old) => old
+            ? { ...old, issues: old.issues.map((i) => i.number === issue.number ? { ...i, assignees: res.assignees } : i) }
+            : old,
+        )
+      }
+    },
+    onError: (err) => {
+      // A stale precondition is recoverable and NOT the user's mistake: adopt the
+      // set the forge actually holds so the sidebar stops showing a view the write
+      // was rejected against, and let them redo the edit on current state.
+      //
+      // Both caches, exactly as the success path does. Patching only the detail
+      // left the list row stale, so the "assigned to me" filter and the Overview
+      // counts kept reading the pre-conflict assignees.
+      if (err instanceof AssigneesConflictError) {
+        queryClient.setQueryData<IssueDetailResponse>(detailKey, (old) =>
+          old ? { ...old, detail: { ...old.detail, assignees: err.current } } : old)
+        for (const sf of ['open', 'closed'] as const) {
+          queryClient.setQueryData<IssuesResponse>(
+            ['issue-radar', 'issues', scopeKey, sf],
+            (old) => old
+              ? { ...old, issues: old.issues.map((i) => i.number === issue.number ? { ...i, assignees: err.current } : i) }
+              : old,
+          )
+        }
+      }
+    },
+  })
+  // GitHub caps an issue at 10 assignees; mirror the backend cap so the picker
+  // stops offering more (the backend rejects an 11th regardless).
+  const MAX_ASSIGNEES = 10
+  const isAssigned = (login: string) => assignees.some((a) => a.toLowerCase() === login.toLowerCase())
+  const toggleAssignee = (login: string) => {
+    if (!canWrite || assigneesMutation.isPending) return
+    const next = isAssigned(login)
+      ? assignees.filter((a) => a.toLowerCase() !== login.toLowerCase())
+      : [...assignees, login]
+    if (next.length > MAX_ASSIGNEES) return
+    assigneesMutation.mutate(next)
+  }
+  // "Assign to me" / "Unassign me" — the one-click quick action. `me` is the
+  // current user's login on the active provider (null when it could not be
+  // resolved, which hides the affordance).
+  const assignedToMe = !!me && isAssigned(me)
+  const toggleSelf = () => {
+    if (!me) return
+    toggleAssignee(me)
+  }
+  // The member roster's logins drive the picker.
+  const memberLogins = Array.from(memberRoleByLogin.keys())
+
   // The row handed to the child ACTIONS (investigate) — the live title/body when
   // they have arrived. A pane opened from a cross-reference starts from a
   // placeholder row, and the seed prompt names the issue it is about.
@@ -874,8 +947,45 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
           {/* Sidebar — most triage-useful GitHub metadata. */}
           <aside className="w-full sm:w-[236px] shrink-0 sm:overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
-            <Section title={i18nT('apps.issueRadar.components.issueDetail.assignees')} icon={<Users size={12} />}>
-              {assignees.length > 0 ? (
+            <Section
+              title={i18nT('apps.issueRadar.components.issueDetail.assignees')}
+              icon={<Users size={12} />}
+              action={canWrite ? (
+                <div className="flex items-center gap-2">
+                  {me && !editingAssignees && (
+                    <button
+                      onClick={toggleSelf}
+                      disabled={assigneesMutation.isPending}
+                      className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent disabled:opacity-50"
+                    >
+                      {assignedToMe
+                        ? <><UserMinus size={11} /> {i18nT('apps.issueRadar.components.issueDetail.unassign_me')}</>
+                        : <><UserPlus size={11} /> {i18nT('apps.issueRadar.components.issueDetail.assign_me')}</>}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setEditingAssignees((v) => !v)}
+                    aria-label={editingAssignees
+                      ? i18nT('apps.issueRadar.components.issueDetail.done_editing_assignees')
+                      : i18nT('apps.issueRadar.components.issueDetail.edit_assignees')}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent"
+                  >
+                    {editingAssignees ? <>{i18nT('apps.issueRadar.components.issueDetail.done')}</> : <><Pencil size={11} /> {i18nT('apps.issueRadar.components.issueDetail.edit')}</>}
+                  </button>
+                </div>
+              ) : undefined}
+            >
+              {editingAssignees && canWrite ? (
+                <div className={assigneesMutation.isPending ? 'opacity-60 pointer-events-none' : ''}>
+                  <AssigneePicker
+                    members={memberLogins}
+                    selected={assignees}
+                    onToggle={toggleAssignee}
+                    me={me}
+                    atCap={assignees.length >= MAX_ASSIGNEES}
+                  />
+                </div>
+              ) : assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">
                   {assignees.map((a) => (
                     <a key={a} href={userUrlFor(active, a)} target="_blank" rel="noreferrer" className="text-text hover:text-accent hover:underline truncate">
@@ -886,6 +996,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               ) : (
                 <span className="text-muted">{i18nT('apps.issueRadar.components.issueDetail.no_one_assigned')}</span>
               )}
+
+              {assigneesMutation.isError && (
+                <div className="mt-2 text-[11px] text-danger">{(assigneesMutation.error as Error).message}</div>
+              )}
             </Section>
 
             <Section
@@ -894,6 +1008,13 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               action={canWrite && repoLabels.length > 0 ? (
                 <button
                   onClick={() => setEditingLabels((v) => !v)}
+                  // An explicit accessible name: the sidebar now has TWO edit
+                  // toggles (labels and assignees), and a bare "Edit" on both
+                  // reads as "Edit, Edit" to a screen reader with no way to tell
+                  // which block it acts on. The visible text stays short.
+                  aria-label={editingLabels
+                    ? i18nT('apps.issueRadar.components.issueDetail.done_editing_labels')
+                    : i18nT('apps.issueRadar.components.issueDetail.edit_labels')}
                   className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent"
                 >
                   {editingLabels ? <>{i18nT('apps.issueRadar.components.issueDetail.done')}</> : <><Pencil size={11} /> {i18nT('apps.issueRadar.components.issueDetail.edit')}</>}

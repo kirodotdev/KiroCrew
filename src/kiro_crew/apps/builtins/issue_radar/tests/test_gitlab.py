@@ -970,6 +970,101 @@ class TestMergeRequestSearchState(unittest.TestCase):
         self.assertEqual(len(out), gitlab_client.PR_SEARCH_MAX + 1)
 
 
+class TestGitlabAssignees(unittest.TestCase):
+    """GitLab addresses assignees by numeric id, so the editor's usernames have to
+    be resolved against the project roster before the write."""
+
+    MEMBERS = [
+        {"username": "alice", "id": 11, "access_level": 30},
+        {"username": "Bob", "id": 22, "access_level": 40},
+    ]
+
+    def test_resolves_usernames_to_ids_and_sends_assignee_ids(self):
+        calls = []
+
+        def fake(path, **kw):
+            calls.append((path, kw))
+            if "members" in path:
+                return list(self.MEMBERS)
+            return {"assignees": [{"username": "alice"}]}
+
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake):
+            out = gitlab_client.set_issue_assignees("g", "p", 7, ["alice"], host="gitlab.com")
+
+        write = [c for c in calls if c[1].get("method") == "PUT"][0]
+        self.assertEqual(write[1]["body"], {"assignee_ids": [11]})
+        self.assertEqual(out, ["alice"])
+
+    def test_username_match_is_case_insensitive(self):
+        """The roster spells a username with its own case ("Bob") and the picker
+        passes back exactly what it rendered, while the lookup table is keyed
+        lowercase -- so the LOOKUP side must fold case too. Without that, a real
+        member is refused as a non-member. Both the roster's own casing and a
+        lowercased variant must resolve to the same id."""
+        def fake(path, **kw):
+            if "members" in path:
+                return list(self.MEMBERS)
+            return {"assignees": [{"username": "Bob"}]}
+
+        for spelling in ("Bob", "bob", "BOB"):
+            with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake) as m:
+                gitlab_client.set_issue_assignees(
+                    "g", "p", 7, [spelling], host="gitlab.com"
+                )
+            body = [
+                c.kwargs["body"]
+                for c in m.call_args_list
+                if c.kwargs.get("method") == "PUT"
+            ][0]
+            self.assertEqual(body, {"assignee_ids": [22]}, spelling)
+
+    def test_non_member_is_refused_not_silently_dropped(self):
+        """GitLab does NOT validate assignee_ids the way GitHub validates logins: it
+        ignores an id it will not honour and answers 200. So an unresolvable
+        username must fail before the write -- otherwise the call reports success
+        for an assignment that never happened. It raises the same invalid-input
+        class GitHub's 422 maps to, so the route answers 400 on both providers."""
+        def fake(path, **kw):
+            if "members" in path:
+                return list(self.MEMBERS)
+            return {"assignees": []}
+
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake) as m:
+            with self.assertRaises(gitlab_client.ProviderInvalidInputError) as ctx:
+                gitlab_client.set_issue_assignees(
+                    "g", "p", 7, ["alice", "stranger"], host="gitlab.com"
+                )
+        self.assertIn("stranger", str(ctx.exception))
+        self.assertEqual(ctx.exception.values, ["stranger"])
+        # Refused BEFORE the write: no PUT was issued, so nothing changed.
+        self.assertEqual([c for c in m.call_args_list if c.kwargs.get("method") == "PUT"], [])
+
+    def test_clearing_skips_the_roster_read_and_sends_empty(self):
+        """Clearing needs no ids, so it must not pay a paginated roster fetch --
+        and it must still SEND the empty list, which is how GitLab unassigns."""
+        with mock.patch.object(
+            gitlab_client, "_glab_api", return_value={"assignees": []}
+        ) as m:
+            out = gitlab_client.set_issue_assignees("g", "p", 7, [], host="gitlab.com")
+        self.assertEqual(len(m.call_args_list), 1)  # no members call
+        self.assertEqual(m.call_args.kwargs["body"], {"assignee_ids": []})
+        self.assertEqual(out, [])
+
+    def test_returns_what_stuck(self):
+        """GitLab Free keeps only the first of several assignees, so the result is
+        read from the response rather than echoed from the request."""
+        def fake(path, **kw):
+            if "members" in path:
+                return list(self.MEMBERS)
+            return {"assignees": [{"username": "alice"}]}
+
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake):
+            out = gitlab_client.set_issue_assignees(
+                "g", "p", 7, ["alice", "Bob"], host="gitlab.com"
+            )
+        self.assertEqual(out, ["alice"])
+
+
 class TestProviderDispatch(unittest.TestCase):
     def test_client_for_selects_the_right_module(self):
         self.assertIs(provider.client_for(provider.RepoKey(provider="github")), github_client)
@@ -1029,7 +1124,7 @@ class TestClientParity(unittest.TestCase):
         "list_open_pulls_first_page", "list_closed_pulls",
         "get_pr_detail", "list_pr_checks", "summarize_checks", "enrich_pulls",
         "enrich_pulls_by_number", "enrichment_complete", "search_pulls", "add_issue_labels",
-        "remove_issue_label", "set_issue_state", "create_label", "probe_open_list",
+        "remove_issue_label", "set_issue_state", "set_issue_assignees", "create_label", "probe_open_list",
         "build_pr_search_query", "get_ref_summary",
         # Pull-request actions.
         "set_pr_state", "submit_pr_review", "add_issue_comment", "add_pr_comment",

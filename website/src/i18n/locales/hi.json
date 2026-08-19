@@ -1510,6 +1510,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "इस इश्यू को लोड करने के बाद असाइनी कहीं और बदल गए हैं।",
         "these_settings_changed_elsewhere": "ये सेटिंग्स कहीं और बदली गई हैं।"
       },
       "components": {
@@ -1530,6 +1531,14 @@
           "regenerate_ai_summary": "AI सारांश फिर से तैयार करें",
           "regenerate_summary": "सारांश फिर से तैयार करें",
           "retry": "पुनः प्रयास करें"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "ये असाइनी रिपो के सदस्य नहीं हैं।",
+          "choose_assignees": "असाइनी चुनें",
+          "filter_members": "सदस्य फ़िल्टर करें…",
+          "no_members": "असाइन करने के लिए कोई सदस्य नहीं — इस रिपो में कोई पढ़ने योग्य सूची नहीं है।",
+          "not_a_member": "{{login}} इस रिपो का सदस्य नहीं है",
+          "this_is_you": "{{login}} (स्वयं)"
         },
         "detailOverflowMenu": {
           "more_actions": "और कार्रवाइयां"
@@ -1563,6 +1572,7 @@
           "added_this_to_the": "ने इसे जोड़ा",
           "as_completed": "पूर्ण के रूप में",
           "as_not_planned": "अनियोजित के रूप में",
+          "assign_me": "मुझे असाइन करें",
           "assigned": "ने असाइन किया",
           "assignees": "असाइनी",
           "by": "· द्वारा",
@@ -1577,7 +1587,11 @@
           "couldn_t_load_activity": "गतिविधि लोड नहीं हो सकी:",
           "dates": "तिथियाँ",
           "done": "पूर्ण",
+          "done_editing_assignees": "असाइनी संपादन पूर्ण",
+          "done_editing_labels": "लेबल संपादन पूर्ण",
           "edit": "संपादित करें",
+          "edit_assignees": "असाइनी संपादित करें",
+          "edit_labels": "लेबल संपादित करें",
           "finding_suggestions": "सुझाव खोजे जा रहे हैं…",
           "in": "में",
           "issue": "इश्यू",
@@ -1611,6 +1625,7 @@
           "self_assigned_this": "ने इसे स्वयं को असाइन किया",
           "suggested": "सुझाए गए",
           "timeline": "टाइमलाइन",
+          "unassign_me": "मेरी असाइनमेंट हटाएं",
           "unassigned": "ने असाइनमेंट हटाया:",
           "updated": "अपडेट किया गया"
         },

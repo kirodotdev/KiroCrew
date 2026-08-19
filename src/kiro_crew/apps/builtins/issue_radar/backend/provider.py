@@ -239,6 +239,14 @@ class ProviderClient(Protocol):
         self, owner: str, repo: str, number: int, state: str, state_reason: str | None = ..., **kwargs: object
     ) -> dict: ...
 
+    # Assignees are REPLACED wholesale (not add/remove), so the editor supplies
+    # the final set and both clients read the authoritative result back: GitHub
+    # drops non-assignable logins and caps at 10, GitLab Free keeps only the
+    # first. The return is the usernames that actually stuck.
+    def set_issue_assignees(
+        self, owner: str, repo: str, number: int, assignees: list[str], **kwargs: object
+    ) -> list[str]: ...
+
     def create_label(
         self, owner: str, repo: str, name: str, color: str = ..., description: str = ..., **kwargs: object
     ) -> dict: ...

@@ -1539,6 +1539,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "Os responsaveis mudaram em outro lugar desde que voce carregou esta issue.",
         "these_settings_changed_elsewhere": "Estas configurações foram alteradas em outro lugar."
       },
       "components": {
@@ -1559,6 +1560,14 @@
           "regenerate_ai_summary": "Gerar novamente o resumo por IA",
           "regenerate_summary": "Gerar resumo novamente",
           "retry": "Tentar novamente"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "Estes responsáveis não são membros do repositório.",
+          "choose_assignees": "Escolher responsaveis",
+          "filter_members": "Filtrar membros…",
+          "no_members": "Nenhum membro para atribuir — este repositório não tem uma lista legível.",
+          "not_a_member": "{{login}} nao e membro deste repositorio",
+          "this_is_you": "{{login}} (você)"
         },
         "detailOverflowMenu": {
           "more_actions": "Mais ações"
@@ -1592,6 +1601,7 @@
           "added_this_to_the": "adicionou isto ao",
           "as_completed": "como concluída",
           "as_not_planned": "como não planejada",
+          "assign_me": "Atribuir a mim",
           "assigned": "atribuiu",
           "assignees": "Responsáveis",
           "by": "· por",
@@ -1606,7 +1616,11 @@
           "couldn_t_load_activity": "Não foi possível carregar a atividade:",
           "dates": "Datas",
           "done": "Concluir",
+          "done_editing_assignees": "Concluir edição de responsáveis",
+          "done_editing_labels": "Concluir edição de etiquetas",
           "edit": "Editar",
+          "edit_assignees": "Editar responsáveis",
+          "edit_labels": "Editar etiquetas",
           "finding_suggestions": "Buscando sugestões…",
           "in": "em",
           "issue": "Issue",
@@ -1640,6 +1654,7 @@
           "self_assigned_this": "atribuiu isto a si",
           "suggested": "Sugeridos",
           "timeline": "Linha do tempo",
+          "unassign_me": "Remover minha atribuição",
           "unassigned": "removeu a atribuição",
           "updated": "Atualizada"
         },

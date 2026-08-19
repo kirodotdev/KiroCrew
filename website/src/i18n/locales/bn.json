@@ -1510,6 +1510,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "আপনি এই ইস্যুটি লোড করার পর অন্য কোথাও অ্যাসাইনি পরিবর্তন হয়েছে।",
         "these_settings_changed_elsewhere": "এই সেটিংস অন্য কোথাও বদলে গেছে।"
       },
       "components": {
@@ -1530,6 +1531,14 @@
           "regenerate_ai_summary": "AI সারসংক্ষেপ আবার তৈরি করুন",
           "regenerate_summary": "সারসংক্ষেপ আবার তৈরি করুন",
           "retry": "আবার চেষ্টা করুন"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "এই অ্যাসাইনিরা রিপোর সদস্য নন।",
+          "choose_assignees": "অ্যাসাইনি বাছুন",
+          "filter_members": "সদস্য ফিল্টার করুন…",
+          "no_members": "অ্যাসাইন করার জন্য কোনো সদস্য নেই — এই রিপোর কোনো পঠনযোগ্য তালিকা নেই।",
+          "not_a_member": "{{login}} এই রিপোর সদস্য নন",
+          "this_is_you": "{{login}} (আপনি)"
         },
         "detailOverflowMenu": {
           "more_actions": "আরও অ্যাকশন"
@@ -1563,6 +1572,7 @@
           "added_this_to_the": "এটি যোগ করেছেন",
           "as_completed": "সম্পন্ন হিসেবে",
           "as_not_planned": "পরিকল্পনার বাইরে হিসেবে",
+          "assign_me": "আমাকে অ্যাসাইন করুন",
           "assigned": "অ্যাসাইন করেছেন",
           "assignees": "অ্যাসাইনি",
           "by": "· লেখক",
@@ -1577,7 +1587,11 @@
           "couldn_t_load_activity": "অ্যাক্টিভিটি লোড করা যায়নি:",
           "dates": "তারিখ",
           "done": "সম্পন্ন",
+          "done_editing_assignees": "অ্যাসাইনি সম্পাদনা সম্পন্ন",
+          "done_editing_labels": "লেবেল সম্পাদনা সম্পন্ন",
           "edit": "সম্পাদনা",
+          "edit_assignees": "অ্যাসাইনি সম্পাদনা করুন",
+          "edit_labels": "লেবেল সম্পাদনা করুন",
           "finding_suggestions": "পরামর্শ খোঁজা হচ্ছে…",
           "in": "মধ্যে",
           "issue": "ইস্যু",
@@ -1611,6 +1625,7 @@
           "self_assigned_this": "এটি নিজেকে অ্যাসাইন করেছেন",
           "suggested": "প্রস্তাবিত",
           "timeline": "টাইমলাইন",
+          "unassign_me": "আমার অ্যাসাইনমেন্ট সরান",
           "unassigned": "অ্যাসাইন বাতিল করেছেন",
           "updated": "আপডেট হয়েছে"
         },

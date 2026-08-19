@@ -1479,6 +1479,44 @@ def apply_state_change_to_caches(
                 atomic_write(path, json.dumps(data, indent=2))
 
 
+def apply_assignees_change_to_caches(
+    owner: str, repo: str, number: int, assignees: list[str], *, root: Path | None = None
+) -> None:
+    """Patch an issue's assignees in the detail cache + whichever list cache
+    holds it, so the sidebar and the row reflect the change without a refetch.
+
+    ``assignees`` is the authoritative full set of logins returned by the write.
+    Both the detail payload and the list row store assignees as a bare login
+    list, so the same value writes to both."""
+    logins = [a for a in assignees if a]
+
+    dpath = issue_detail_cache_path(owner, repo, number, root)
+    if dpath.is_file():
+        try:
+            d = json.loads(dpath.read_text(encoding="utf-8"))
+            if isinstance(d.get("detail"), dict):
+                d["detail"]["assignees"] = logins
+                atomic_write(dpath, json.dumps(d, indent=2))
+        except json.JSONDecodeError:
+            pass
+
+    for st in ("open", "closed"):
+        # Hold the lock across read AND write, matching the label patch: a
+        # concurrent full refresh would otherwise land between them and be
+        # clobbered by this stale copy.
+        with issues_cache_lock(owner, repo, root, st):
+            data, path = _load_list_cache(owner, repo, root, st)
+            if not data:
+                continue
+            changed = False
+            for iss in data.get("issues", []):
+                if iss.get("number") == int(number):
+                    iss["assignees"] = logins
+                    changed = True
+            if changed:
+                atomic_write(path, json.dumps(data, indent=2))
+
+
 # ── investigation records (the "Investigate" button) ─────────────────────────
 #
 # Clicking "Investigate" on an issue opens a KiroCrew chat session, seeds it

@@ -28,6 +28,7 @@ from kiro_crew import github_runner
 
 from .errors import (
     ProviderCliError,
+    ProviderInvalidInputError,
     ProviderPermissionError,
     ProviderSetupError,
     PrSearchError,
@@ -51,13 +52,18 @@ from .errors import (
 #                        so the connect dialog offers instructions, not a raw error
 #   GhPermissionError -- HTTP 403 for want of a permission, so the members path can
 #                        fall back to the derived roster and writes can map to 403
+#   GhInvalidInputError -- the provider REJECTED a value in the request (e.g. an
+#                        unassignable login, GitHub 422); maps to 400, not 502,
+#                        because the forge is fine and the input is not
 #   RepoUrlError      -- the URL is not a well-formed repo link (maps to 400)
 GhCliError = ProviderCliError
 GhSetupError = ProviderSetupError
 GhPermissionError = ProviderPermissionError
+GhInvalidInputError = ProviderInvalidInputError
 
 __all__ = [
     "GhCliError",
+    "GhInvalidInputError",
     "GhPermissionError",
     "GhSetupError",
     "PrSearchError",
@@ -1032,6 +1038,64 @@ def set_issue_state(
     if isinstance(data, dict):
         return {"state": data.get("state", state), "state_reason": data.get("state_reason")}
     return {"state": state, "state_reason": payload.get("state_reason")}
+
+
+def set_issue_assignees(
+    owner: str, repo: str, number: int, assignees: list[str], *, timeout: float = GH_TIMEOUT_SEC
+) -> list[str]:
+    """REPLACE an issue's assignees with ``assignees`` (``PATCH .../issues/{n}``).
+
+    The set is REPLACED, not merged: GitHub's ``PATCH`` with an ``assignees``
+    array makes the given list authoritative (an empty list clears every
+    assignee), which is exactly what a "pick the final set" editor wants and
+    avoids the add/remove ordering races the labels path has to guard against.
+
+    An unassignable login is REJECTED, not ignored. Verified against the live API:
+    a login with no access to the repo -- whether it names no GitHub account at all
+    or a real account that simply is not a collaborator -- answers HTTP 422 and
+    applies NONE of the request, including the logins that were valid. That is
+    raised as :class:`GhInvalidInputError` carrying the refused logins so the route
+    can answer 400 and name them; reporting it as a 502 would blame the forge for
+    the user's choice, and reporting success would show an assignee the issue does
+    not carry.
+
+    The resulting set is still read back from the RESPONSE rather than echoed from
+    the request, because a successful write is not required to be an exact echo
+    (GitLab Free silently keeps only the first assignee -- see
+    gitlab_client.set_issue_assignees) and the response is the only authority on
+    what the issue now carries.
+
+    ``assignees`` ride in a JSON stdin body (never argv). Returns the issue's
+    authoritative assignee logins after the change."""
+    try:
+        data = _run_gh_write(
+            "PATCH", f"repos/{owner}/{repo}/issues/{int(number)}",
+            {"assignees": list(assignees)}, timeout=timeout,
+        )
+    except GhPermissionError:
+        raise  # 403 -> the route's permission branch, not an input problem
+    except GhCliError as exc:
+        # A 422 from THIS call can only be about the assignees, because the request
+        # body carries exactly one field. That matters because the field name is not
+        # reliably available to match on: gh's stderr tail often keeps only its own
+        # summary line ("gh: Validation Failed (HTTP 422)") and drops the API body
+        # that named ``"field":"assignees"``. Keying on the status alone is therefore
+        # both sufficient and necessary here. Verified live: an unassignable login
+        # produces exactly this message.
+        if "422" in str(exc):
+            raise GhInvalidInputError(
+                "GitHub will not assign: "
+                + ", ".join(assignees)
+                + " -- an assignee must have access to the repository.",
+                values=list(assignees),
+            ) from exc
+        raise
+    if isinstance(data, dict):
+        return [
+            a["login"] for a in data.get("assignees", [])
+            if isinstance(a, dict) and a.get("login")
+        ]
+    return []
 
 
 def create_label(

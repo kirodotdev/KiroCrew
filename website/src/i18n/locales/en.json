@@ -903,6 +903,14 @@
           "regenerate_summary": "Regenerate summary",
           "retry": "Retry"
         },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "These assignees are not repo members.",
+          "choose_assignees": "Choose assignees",
+          "filter_members": "Filter members…",
+          "no_members": "No members to assign — this repo has no readable roster.",
+          "not_a_member": "{{login}} is not a member of this repo",
+          "this_is_you": "{{login}} (you)"
+        },
         "detailOverflowMenu": {
           "more_actions": "More actions"
         },
@@ -922,6 +930,7 @@
         "issueDetail": {
           "added_the": "added the",
           "added_this_to_the": "added this to the",
+          "assign_me": "Assign to me",
           "assigned": "assigned",
           "assignees": "Assignees",
           "by": "· by",
@@ -935,7 +944,11 @@
           "couldn_t_load_activity": "Couldn't load activity:",
           "dates": "Dates",
           "done": "Done",
+          "done_editing_assignees": "Done editing assignees",
+          "done_editing_labels": "Done editing labels",
           "edit": "Edit",
+          "edit_assignees": "Edit assignees",
+          "edit_labels": "Edit labels",
           "finding_suggestions": "Finding suggestions…",
           "in": "in",
           "issues": "& issues",
@@ -965,6 +978,7 @@
           "self_assigned_this": "self-assigned this",
           "suggested": "Suggested",
           "timeline": "Timeline",
+          "unassign_me": "Unassign me",
           "unassigned": "unassigned",
           "updated": "Updated"
         },
@@ -1359,6 +1373,9 @@
         "select_a": "Select a",
         "select_an_issue_to_see_its_details": "Select an issue to see its details.",
         "to_see_its_details": "to see its details."
+      },
+      "api": {
+        "assignees_changed_elsewhere": "The assignees changed elsewhere since you loaded this issue."
       }
     },
     "mdNotebook": {

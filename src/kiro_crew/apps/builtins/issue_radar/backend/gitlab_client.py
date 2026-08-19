@@ -60,6 +60,7 @@ from kiro_crew.sel import sel
 
 from .errors import (
     ProviderCliError,
+    ProviderInvalidInputError,
     ProviderPermissionError,
     ProviderSetupError,
     PrSearchError,
@@ -1338,6 +1339,86 @@ def set_issue_state(
         )
     )
     return {"state": _norm_state(data.get("state")) or state, "state_reason": None}
+
+
+def _resolve_assignee_ids(
+    owner: str, repo: str, usernames: list[str], *, host: str, timeout: float
+) -> list[int]:
+    """Resolve project-member usernames to the numeric ids GitLab's issue-update
+    API requires (``assignee_ids``).
+
+    GitLab addresses assignees by numeric user id, not username, so the editor's
+    logins have to be translated. The project MEMBER roster is the right source:
+    GitLab refuses to assign a non-member and would silently drop an unknown id
+    while still answering 200, so an unassignable login is rejected HERE (as
+    :class:`ProviderInvalidInputError`) rather than vanishing from the write. One
+    roster read covers every username in the request.
+    """
+    if not usernames:
+        return []
+    members = _rows(
+        _glab_api(
+            f"projects/{project_path(owner, repo)}/members/all",
+            host=host, timeout=timeout, paginate=True,
+        )
+    )
+    by_name = {
+        str(m.get("username")).lower(): m.get("id")
+        for m in members
+        if m.get("username") and isinstance(m.get("id"), int)
+    }
+    ids: list[int] = []
+    missing: list[str] = []
+    for name in usernames:
+        uid = by_name.get(name.lower())
+        if isinstance(uid, int):
+            ids.append(uid)
+        else:
+            missing.append(name)
+    if missing:
+        raise ProviderInvalidInputError(
+            "GitLab will not assign: "
+            + ", ".join(missing)
+            + " -- an assignee must be a member of the project.",
+            values=missing,
+        )
+    return ids
+
+
+def set_issue_assignees(
+    owner: str, repo: str, number: int, assignees: list[str], *, host: str = "", timeout: float = GL_TIMEOUT_SEC
+) -> list[str]:
+    """REPLACE an issue's assignees with ``assignees`` (usernames).
+
+    Parity with github_client.set_issue_assignees: the set is REPLACED, not
+    merged, and an empty list clears every assignee. GitLab addresses assignees
+    by numeric ``assignee_ids``, so the usernames are resolved against the
+    project members first (an empty list stays empty and skips the lookup), and
+    an unresolvable username raises :class:`ProviderInvalidInputError` -- the same
+    class GitHub's 422 maps to -- so the route answers 400 either way.
+
+    Resolving BEFORE the write is what makes the two providers agree. GitLab does
+    not validate ``assignee_ids`` the way GitHub validates logins: it ignores an id
+    it will not honour and answers 200, so sending an unresolved name would report
+    success for an assignment that never happened.
+
+    GitLab Free caps an issue at ONE assignee and silently keeps only the first of
+    a longer list, so the returned set is read back from the response rather than
+    echoing the request.
+
+    Returns the issue's authoritative assignee usernames after the change."""
+    ids = _resolve_assignee_ids(owner, repo, assignees, host=host, timeout=timeout)
+    # ``assignee_ids: []`` is how GitLab clears assignees; send it explicitly.
+    data = _obj(
+        _glab_api(
+            f"projects/{project_path(owner, repo)}/issues/{int(number)}",
+            host=host,
+            timeout=timeout,
+            method="PUT",
+            body={"assignee_ids": ids},
+        )
+    )
+    return _usernames(data.get("assignees"))
 
 
 def create_label(

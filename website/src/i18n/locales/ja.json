@@ -1481,6 +1481,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "この課題を読み込んだ後、担当者が別の場所で変更されました。",
         "these_settings_changed_elsewhere": "これらの設定は別の場所で変更されました。"
       },
       "components": {
@@ -1501,6 +1502,14 @@
           "regenerate_ai_summary": "AI要約を再生成",
           "regenerate_summary": "要約を再生成",
           "retry": "再試行"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "これらの担当者はリポジトリのメンバーではありません。",
+          "choose_assignees": "担当者を選択",
+          "filter_members": "メンバーを絞り込む…",
+          "no_members": "割り当てられるメンバーがいません — このリポジトリには読み取り可能な名簿がありません。",
+          "not_a_member": "{{login}} はこのリポジトリのメンバーではありません",
+          "this_is_you": "{{login}}（あなた）"
         },
         "detailOverflowMenu": {
           "more_actions": "その他の操作"
@@ -1534,6 +1543,7 @@
           "added_this_to_the": "これを追加した",
           "as_completed": "完了として",
           "as_not_planned": "計画外として",
+          "assign_me": "自分に割り当てる",
           "assigned": "割り当て",
           "assignees": "担当者",
           "by": "· 者",
@@ -1548,7 +1558,11 @@
           "couldn_t_load_activity": "アクティビティを読み込めませんでした：",
           "dates": "日付",
           "done": "完了",
+          "done_editing_assignees": "担当者の編集を完了",
+          "done_editing_labels": "ラベルの編集を完了",
           "edit": "編集",
+          "edit_assignees": "担当者を編集",
+          "edit_labels": "ラベルを編集",
           "finding_suggestions": "提案を検索中…",
           "in": "の中",
           "issue": "Issue",
@@ -1582,6 +1596,7 @@
           "self_assigned_this": "自分に割り当てた",
           "suggested": "提案",
           "timeline": "タイムライン",
+          "unassign_me": "自分の割り当てを解除",
           "unassigned": "未割り当て",
           "updated": "更新"
         },

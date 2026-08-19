@@ -1568,6 +1568,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "Исполнители были изменены в другом месте после загрузки этой задачи.",
         "these_settings_changed_elsewhere": "Эти настройки изменены в другом месте."
       },
       "components": {
@@ -1588,6 +1589,14 @@
           "regenerate_ai_summary": "Пересоздать ИИ-сводку",
           "regenerate_summary": "Пересоздать сводку",
           "retry": "Повторить"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "Эти исполнители не являются участниками репозитория.",
+          "choose_assignees": "Выбрать исполнителей",
+          "filter_members": "Фильтр участников…",
+          "no_members": "Нет участников для назначения — у этого репозитория нет читаемого списка.",
+          "not_a_member": "{{login}} не является участником этого репозитория",
+          "this_is_you": "{{login}} (вы)"
         },
         "detailOverflowMenu": {
           "more_actions": "Другие действия"
@@ -1621,6 +1630,7 @@
           "added_this_to_the": "добавил это в",
           "as_completed": "как выполненную",
           "as_not_planned": "как не запланированную",
+          "assign_me": "Назначить мне",
           "assigned": "назначил",
           "assignees": "Исполнители",
           "by": "· автор",
@@ -1635,7 +1645,11 @@
           "couldn_t_load_activity": "Не удалось загрузить активность:",
           "dates": "Даты",
           "done": "Готово",
+          "done_editing_assignees": "Завершить изменение исполнителей",
+          "done_editing_labels": "Завершить изменение меток",
           "edit": "Изменить",
+          "edit_assignees": "Изменить исполнителей",
+          "edit_labels": "Изменить метки",
           "finding_suggestions": "Поиск предложений…",
           "in": "в",
           "issue": "Задача",
@@ -1669,6 +1683,7 @@
           "self_assigned_this": "назначил это себе",
           "suggested": "Предложено",
           "timeline": "Хронология",
+          "unassign_me": "Снять с меня",
           "unassigned": "снял назначение",
           "updated": "Обновлено"
         },

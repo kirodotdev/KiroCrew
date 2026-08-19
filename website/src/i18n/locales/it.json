@@ -1539,6 +1539,7 @@
     },
     "issueRadar": {
       "api": {
+        "assignees_changed_elsewhere": "Gli assegnatari sono cambiati altrove da quando hai caricato questo problema.",
         "these_settings_changed_elsewhere": "Queste impostazioni sono state modificate altrove."
       },
       "components": {
@@ -1559,6 +1560,14 @@
           "regenerate_ai_summary": "Rigenera il riepilogo IA",
           "regenerate_summary": "Rigenera il riepilogo",
           "retry": "Riprova"
+        },
+        "assigneePicker": {
+          "assigned_but_not_a_member": "Questi assegnatari non sono membri del repository.",
+          "choose_assignees": "Scegli assegnatari",
+          "filter_members": "Filtra membri…",
+          "no_members": "Nessun membro da assegnare: questo repository non ha un elenco leggibile.",
+          "not_a_member": "{{login}} non e membro di questo repository",
+          "this_is_you": "{{login}} (tu)"
         },
         "detailOverflowMenu": {
           "more_actions": "Altre azioni"
@@ -1592,6 +1601,7 @@
           "added_this_to_the": "ha aggiunto questo a",
           "as_completed": "come completata",
           "as_not_planned": "come non pianificata",
+          "assign_me": "Assegna a me",
           "assigned": "assegnato",
           "assignees": "Assegnatari",
           "by": "· di",
@@ -1606,7 +1616,11 @@
           "couldn_t_load_activity": "Impossibile caricare l'attività:",
           "dates": "Date",
           "done": "Fatto",
+          "done_editing_assignees": "Termina la modifica degli assegnatari",
+          "done_editing_labels": "Termina la modifica delle etichette",
           "edit": "Modifica",
+          "edit_assignees": "Modifica assegnatari",
+          "edit_labels": "Modifica etichette",
           "finding_suggestions": "Ricerca di suggerimenti…",
           "in": "in",
           "issue": "Issue",
@@ -1640,6 +1654,7 @@
           "self_assigned_this": "si è assegnato questa",
           "suggested": "Suggerito",
           "timeline": "Cronologia",
+          "unassign_me": "Rimuovi la mia assegnazione",
           "unassigned": "non assegnato",
           "updated": "Aggiornato"
         },

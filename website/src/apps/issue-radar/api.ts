@@ -400,6 +400,28 @@ export interface IssueStateResponse {
   state_reason: string | null
 }
 
+/** Thrown by `setIssueAssignees` on a 409: somebody else changed the assignees
+ * between the read this client rendered and the write. Carries the set the forge
+ * actually holds so the caller can re-render instead of retrying blindly. */
+export class AssigneesConflictError extends Error {
+  current: string[]
+  constructor(message: string, current: string[]) {
+    super(message)
+    this.name = 'AssigneesConflictError'
+    this.current = current
+  }
+}
+
+/** Response to an assignee edit — the issue's authoritative assignee logins
+ * after the replace. Read back from the provider (not the request), because a
+ * success is not required to be an exact echo (GitLab Free keeps only one). */
+export interface IssueAssigneesResponse {
+  owner: string
+  repo: string
+  number: number
+  assignees: string[]
+}
+
 /** The pull-request actions the UI can invoke on ONE PR.
  *
  * Merging comes in two forms and neither can land code the repo's rules have not
@@ -1316,6 +1338,46 @@ export const issueRadarApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...repoBody(ref), number, state, state_reason: stateReason }),
     })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** REPLACE an issue's assignees with `assignees` (the FINAL set of logins, not
+   * an add/remove delta). Requires triage/push access (403 otherwise). An empty
+   * array clears all assignees; a junk entry is a 400, never a silent clear.
+   *
+   * `expected` is the set you last READ and is REQUIRED: the write only lands if
+   * the forge still holds it. That is what stops replace semantics from silently
+   * erasing a concurrent edit — two people who each add one name would otherwise
+   * have the later write overwrite the earlier addition. A stale `expected` throws
+   * {@link AssigneesConflictError} carrying the current set; re-render from it and
+   * let the user redo the edit rather than retrying the same body.
+   *
+   * A login the forge will not assign is a 400 whose `error` sentence names the
+   * refused logins (the body also carries `invalid_assignees`), and NOTHING is
+   * applied — GitHub answers 422 for the whole request and GitLab is pre-checked
+   * against the project roster. Rendering the thrown message is therefore already
+   * actionable; it is not an upstream failure to retry.
+   *
+   * On success the returned `assignees` is read back from the write rather than
+   * echoed from the request, because a success is not required to be an exact echo
+   * (GitLab Free keeps only the first assignee) — render THAT. */
+  setIssueAssignees: async (
+    ref: RepoRef, number: number, assignees: string[], expected: string[],
+  ): Promise<IssueAssigneesResponse> => {
+    const r = await fetch(`${API}/issue/assignees`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), number, assignees, expected }),
+    })
+    if (r.status === 409) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string; assignees?: string[] }
+      throw new AssigneesConflictError(
+        body.error || i18nT('apps.issueRadar.api.assignees_changed_elsewhere'),
+        body.assignees ?? [],
+      )
+    }
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },

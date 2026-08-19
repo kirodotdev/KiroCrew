@@ -497,6 +497,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Same classification as the other ``asyncio.run`` sites in this list
         # (cli_doctor.py::_doctor, cli_commands.py::_cleanup_app_crons_from_scheduler).
         "apps/builtins/issue_radar/tests/test_pr_actions.py::_await",
+        # Same construct, same classification, for the assignee-route tests: an
+        # ``asyncio.run`` that drives one in-process aiohttp handler coroutine to
+        # completion. No child process, and every payload is a literal in the test
+        # file.
+        "apps/builtins/issue_radar/tests/test_assignees.py::_await",
         # md-notebook shells out to the real git binary rather than a pure-Python
         # implementation, because a server refuses a push from the shallow clone
         # isomorphic-git produces. The command is the literal "git"; the remote
