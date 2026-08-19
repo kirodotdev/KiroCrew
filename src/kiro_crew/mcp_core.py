@@ -125,9 +125,10 @@ _STABLE_PORT_SOURCES = frozenset({"cli", "env", "bound", "config"})
 # Deliberately NOT computed at import: resolution reads config and the
 # gateway's live run-marker, both of which can change between process start
 # and the first gateway call — an import-time snapshot froze a wrong guess
-# for the whole process lifetime. The URL and the socket path both derive
-# from the single ``_API_PORT`` resolution, so the two transports can never
-# name different gateways.
+# for the whole process lifetime. A REQUEST derives its URL and socket path
+# from one resolution (``_resolve_api_target``), so the two transports of an
+# attempt can never name different gateways; these caches hold that pair only
+# for the stable sources that are safe to pin.
 _API_PORT: int | None = None
 _API: str | None = None
 _API_UNIX_SOCKET: str | None = None
@@ -196,9 +197,8 @@ def _api_unix_socket() -> str:
     """
     global _API_UNIX_SOCKET
     if _API_UNIX_SOCKET is None:
-        try:
-            path = str(dashboard_socket_path(_api_port()))
-        except Exception:
+        path = _socket_path_for(_api_port())
+        if not path:
             _API_UNIX_SOCKET = ""
             return _API_UNIX_SOCKET
         if _API_PORT is None:
@@ -208,9 +208,81 @@ def _api_unix_socket() -> str:
     return _API_UNIX_SOCKET
 
 
-def _api_urlopen(req: urllib.request.Request | str, timeout: float):
-    """``loopback_urlopen`` against the API base with the unix-socket preference."""
-    return loopback_urlopen(req, timeout=timeout, unix_socket_path=_api_unix_socket() or None)
+def _socket_path_for(port: int) -> str:
+    """Unix-socket path for *port*, or ``""`` when one cannot be derived.
+
+    Split out of :func:`_api_unix_socket` so a caller that already holds a
+    resolved port can derive the socket from THAT port instead of re-running
+    the discovery chain to find one.
+    """
+    try:
+        return str(dashboard_socket_path(port))
+    except Exception:
+        return ""
+
+
+def _resolve_api_target() -> tuple[str, str]:
+    """The ``(base, socket_path)`` pair for ONE request attempt, from ONE resolution.
+
+    ``_api_base`` and ``_api_unix_socket`` are correct for callers that want one
+    of the two, but a request needs BOTH, and on a marker-discovered port
+    neither is cached — so asking each of them ran the discovery chain twice
+    for a single attempt. Two forks of ``lsof`` per gateway call is the cost;
+    the correctness half is that the two answers are independent, and the
+    marker rule exists precisely because the answer can change between them. A
+    gateway that exits and is replaced mid-attempt would leave the TCP base
+    naming one gateway and the unix socket another — and ``loopback_urlopen``
+    PREFERS the socket, so the component actually carrying the request is the
+    one ``_send``'s replay guard never inspected.
+
+    Resolving once and deriving both halves from that single port restores the
+    "both transports derive from one resolution" invariant the cache comment
+    and :func:`_invalidate_api_base` already claim.
+
+    This does NOT weaken the ownership proof. The proof is per ATTEMPT, not per
+    process: a marker resolution is still never pinned, every attempt still
+    re-runs the chain, and the replay in :func:`_send` resolves a FRESH pair
+    rather than reusing the refused one. What changes is that one attempt now
+    proves ownership once instead of twice.
+    """
+    global _API, _API_UNIX_SOCKET
+    if _API is not None and _API_UNIX_SOCKET is not None:
+        # Both memos populated: hand back exactly what the standalone getters
+        # would answer. The condition is deliberately NOT also `_API_PORT is not
+        # None`. `_api_base` / `_api_unix_socket` return a populated memo
+        # whatever the port cache holds, and tests pre-seed these two directly
+        # (the cache comment above documents that) -- requiring the port here
+        # made this resolver discard a seeded pair and re-resolve, which is the
+        # very drift between `_send` and the getters this function exists to
+        # remove. In production the two are written together and
+        # `_invalidate_api_base` clears them together, so they stay consistent.
+        return _API, _API_UNIX_SOCKET
+    port = _api_port()
+    base = f"http://127.0.0.1:{port}"
+    sock = _socket_path_for(port)
+    if _API_PORT is not None:
+        # Stable source (env / bound / config): pin exactly as the individual
+        # getters do. A marker or default resolution is left unpinned.
+        _API = base
+        _API_UNIX_SOCKET = sock
+    return base, sock
+
+
+def _api_urlopen(
+    req: urllib.request.Request | str,
+    timeout: float,
+    *,
+    unix_socket_path: str | None = None,
+):
+    """``loopback_urlopen`` against the API base with the unix-socket preference.
+
+    *unix_socket_path* lets a caller that already resolved a target supply the
+    socket belonging to THAT resolution (see :func:`_resolve_api_target`); the
+    default keeps the standalone behavior for callers holding only a base.
+    """
+    if unix_socket_path is None:
+        unix_socket_path = _api_unix_socket()
+    return loopback_urlopen(req, timeout=timeout, unix_socket_path=unix_socket_path or None)
 
 
 def _invalidate_api_base() -> None:
@@ -979,15 +1051,18 @@ def _send(
     was wrong.
     """
 
-    def _once(base: str) -> dict:
+    def _once(target: tuple[str, str]) -> dict:
+        base, socket_path = target
         req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_api_base(): 127.0.0.1 plus a port from config/env or a run-marker whose ownership is re-verified per request) + a fixed internal path; never user-controlled  # noqa: E501
-        with _api_urlopen(req, timeout=timeout) as resp:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_resolve_api_target(): 127.0.0.1 plus a port from config/env or a run-marker whose ownership is re-verified per request) + a fixed internal path; never user-controlled  # noqa: E501
+        with _api_urlopen(req, timeout=timeout, unix_socket_path=socket_path) as resp:
             return json.loads(resp.read())
 
-    base = _api_base()
+    # ONE resolution for this attempt; both transports derive from it.
+    target = _resolve_api_target()
+    base = target[0]
     try:
-        return _once(base)
+        return _once(target)
     except urllib.error.HTTPError as e:
         # urlopen raises HTTPError on 4xx/5xx; str(e) is only "HTTP Error 400:
         # Bad Request" — the structured {"error": ...} body lives in e.read().
@@ -1006,16 +1081,20 @@ def _send(
             # request payload; the replay exists to chase POSITIVE evidence
             # of a moved gateway, so a no-evidence fall-through ends here.
             return {"error": str(e)}
-        # Build the base from the very resolution whose source was just
-        # checked (same shape as _api_base) — re-resolving again could race a
-        # marker disappearing between the check and the dial.
-        retry_base = f"http://127.0.0.1:{retry_port}"
+        # Build BOTH halves from the very resolution whose source was just
+        # checked (same shape as _resolve_api_target) — re-resolving again
+        # could race a marker disappearing between the check and the dial, and
+        # deriving the socket separately let the replay's two transports name
+        # different gateways. This is a FRESH pair, never the refused one: the
+        # ownership proof is per attempt.
+        retry_target = (f"http://127.0.0.1:{retry_port}", _socket_path_for(retry_port))
+        retry_base = retry_target[0]
         if retry_base == base:
             # Nothing was ever handed to a live gateway, so this is a definite
             # rejection: no transport ambiguity to report.
             return {"error": str(e)}
         try:
-            return _once(retry_base)
+            return _once(retry_target)
         except urllib.error.HTTPError as retry_exc:
             return _http_error_body(retry_exc)
         except urllib.error.URLError as retry_exc:
