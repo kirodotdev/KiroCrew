@@ -18,6 +18,7 @@
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
 
 // Initialise i18next exactly as main.tsx does. Importing the module only DEFINES
 // initI18n -- without calling it, i18next.t() returns empty strings and every
@@ -124,14 +125,20 @@ qc.setQueryData(['update-state'], SCENES[scene] ?? SCENES.found)
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={qc}>
-      <div
-        style={{ background: 'var(--bg)', color: 'var(--text)', padding: 24, minHeight: '100vh' }}
-        data-capture-root
-      >
-        <div style={{ maxWidth: 720 }}>
-          <AboutPanel />
+      {/* AboutPanel renders a react-router <Link> (the Releases panel link), so
+          the mount needs a router in the tree: outside one, the Link throws
+          during render and every scene captures blank. Same wrapper the
+          webhooks-settings capture entry uses. */}
+      <MemoryRouter>
+        <div
+          style={{ background: 'var(--bg)', color: 'var(--text)', padding: 24, minHeight: '100vh' }}
+          data-capture-root
+        >
+          <div style={{ maxWidth: 720 }}>
+            <AboutPanel />
+          </div>
         </div>
-      </div>
+      </MemoryRouter>
     </QueryClientProvider>
   </Provider>,
 )
