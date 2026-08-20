@@ -509,10 +509,10 @@ describe('WebPreviewPanel', () => {
     }
   })
 
-  it('broadcasts preview-focus true/false as the expand button toggles', () => {
+  it('broadcasts preview-expand true/false as the expand button toggles', () => {
     const seen: boolean[] = []
-    const handler = (e: Event) => seen.push(!!(e as CustomEvent<{ focused?: boolean }>).detail?.focused)
-    window.addEventListener('kirocrew-preview-focus', handler)
+    const handler = (e: Event) => seen.push(!!(e as CustomEvent<{ expanded?: boolean }>).detail?.expanded)
+    window.addEventListener('kirocrew-preview-expand', handler)
     try {
       renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
       fireEvent.click(screen.getByLabelText('Expand preview'))
@@ -520,7 +520,7 @@ describe('WebPreviewPanel', () => {
       fireEvent.click(screen.getByLabelText('Collapse'))
       expect(seen).toContain(false)
     } finally {
-      window.removeEventListener('kirocrew-preview-focus', handler)
+      window.removeEventListener('kirocrew-preview-expand', handler)
     }
   })
 })

@@ -691,7 +691,7 @@ interface ChatState {
   activityTabRequest: number
   /** Pending "reveal in sidebar" request from the session header menu, or
    *  null. State, not a window event, on purpose: the sidebar is unmounted
-   *  while the drawer is collapsed (and under preview focus / on mobile), and
+   *  while the drawer is collapsed (and under preview expand mode / on mobile), and
    *  a one-shot CustomEvent dispatched before the listener mounts is silently
    *  dropped — there is no replay. Held here, the request survives until the
    *  sidebar consumes and clears it in an effect that also runs on mount

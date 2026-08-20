@@ -137,7 +137,7 @@ import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { groupDisplayItems, applyRunningState } from './chat/groupDisplayItems'
-import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
+import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
@@ -5097,8 +5097,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // Always-available collapse. Only guard is no-sessions (the sidebar is
       // force-open then anyway, so there is nothing to collapse).
       if (filteredSlotsRef.current.length === 0) return
-      // Explicit user intent outranks the preview-focus auto-hide, so exiting
-      // focus mode leaves this choice alone.
+      // Explicit user intent outranks the preview-expand auto-hide, so exiting
+      // expand mode leaves this choice alone.
       sidebarAutoHidden.current = null
       setSidebarPinned(p => {
         const next = !p
@@ -6100,7 +6100,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (isMobile) setMobileSessions(false)
     return true
   }, [dispatch, isMobile, selectSource])
-  // Web Preview "focus" (expand) mode — broadcast by the Web Preview tab's
+  // Web Preview expand mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list and maximize the side panel
   // (passed to SidePanel), so the preview gets max room and chat shrinks to its
   // minimum. App collapses the left nav off the same event.
@@ -6108,7 +6108,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Hiding the list drives `sidebarPinned` directly instead of overriding
   // `sidebarOpen`: an override leaves the sessions toggle visibly present but
   // inert. Driving the real state keeps that toggle working normally inside
-  // focus mode. `sidebarAutoHidden` holds the pre-focus state to restore on
+  // expand mode. `sidebarAutoHidden` holds the pre-expand state to restore on
   // exit, and is cleared once the user toggles the list themselves. Neither
   // transition persists `mc-sidebar-pinned` — only a user toggle does.
   //
@@ -6120,12 +6120,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The mobile drawer is a separate state, so it is closed outright rather than
   // suppressed — a swipe or a tap still reopens it, which an override would not
   // allow.
-  const [previewFocused, setPreviewFocused] = useState(false)
+  const [previewExpanded, setPreviewExpanded] = useState(false)
   useEffect(() => {
-    const onFocus = (e: Event) => {
-      const focused = !!(e as CustomEvent<{ focused?: boolean }>).detail?.focused
-      setPreviewFocused(focused)
-      if (focused) {
+    const onPreviewExpand = (e: Event) => {
+      const expanded = !!(e as CustomEvent<{ expanded?: boolean }>).detail?.expanded
+      setPreviewExpanded(expanded)
+      if (expanded) {
         setMobileSessions(false)
         if (sidebarAutoHidden.current === null) sidebarAutoHidden.current = sidebarPinnedRef.current
         setSidebarPinned(false)
@@ -6135,15 +6135,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       sidebarAutoHidden.current = null
       if (prior !== null) setSidebarPinned(prior)
     }
-    window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
-    return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
+    window.addEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
+    return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
-  // The no-sessions force-open yields to focus mode: with an empty list no
+  // The no-sessions force-open yields to expand mode: with an empty list no
   // sessions toggle is rendered, so suppressing it makes nothing inert, and the
   // preview would otherwise stay covered by a list that cannot be dismissed.
   const sidebarOpen = isMobile
     ? mobileSessions
-    : (sidebarPinned || (filteredSlots.length === 0 && !previewFocused))
+    : (sidebarPinned || (filteredSlots.length === 0 && !previewExpanded))
 
   // ── Collapsed-sidebar hover flyout ──────────────────────────────────────
   // Hovering the toggle while collapsed opens a recents list over the chat, so
@@ -6200,16 +6200,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [dispatch, defaultAgent, mode, flyout])
 
   // Force the list open when there is nothing in it, so a user with no sessions
-  // still has the surface that creates one. Skipped while focus mode owns the
+  // still has the surface that creates one. Skipped while expand mode owns the
   // hidden state: re-pinning there would fight the auto-hide and, worse, persist
   // 'true' over the user's stored preference, which the restore on exit then
   // contradicts in the live state.
   useEffect(() => {
-    if (filteredSlots.length === 0 && !sidebarPinned && !previewFocused) {
+    if (filteredSlots.length === 0 && !sidebarPinned && !previewExpanded) {
       setSidebarPinned(true)
       safeSetItem('mc-sidebar-pinned', 'true')
     }
-  }, [filteredSlots.length, sidebarPinned, previewFocused])
+  }, [filteredSlots.length, sidebarPinned, previewExpanded])
 
   // Horizontal space (px) the detail panel must keep clear so it never grows
   // past its flex row and collapses the chat pane: the open sidebar's width
@@ -6220,10 +6220,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The panel takes its maximum only while the session list is actually hidden.
   // That maximum is measured against the header's reserve, which knows nothing
   // about the session list's width — so keeping it while the user reopens the
-  // list inside focus mode pushes the chat pane below CHAT_PANE_MIN and clips
+  // list inside expand mode pushes the chat pane below CHAT_PANE_MIN and clips
   // its content. Reverting to the normal width maths there costs the preview a
   // few hundred px in a state the user asked for by reopening the list.
-  const panelMaximized = previewFocused && !sidebarOpen
+  const panelMaximized = previewExpanded && !sidebarOpen
 
   // FILL vs BESIDE for the activity panel, decided from the width left for the
   // CHAT once the shell's hideable chrome is subtracted — the nav rail track and

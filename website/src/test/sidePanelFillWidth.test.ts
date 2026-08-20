@@ -95,7 +95,7 @@ describe('sidePanelEffectiveWidth', () => {
     expect(sidePanelEffectiveWidth({ ...base, width: 460, maxW: 100 })).toBe(SIDE_PANEL_MIN_W)
   })
 
-  it('takes the maximum in preview-focus (expanded) mode', () => {
+  it('takes the maximum in preview-expand mode', () => {
     expect(sidePanelEffectiveWidth({ ...base, expanded: true, maxW: 800 })).toBe(800)
     expect(sidePanelEffectiveWidth({ ...base, expanded: true, maxW: 100 })).toBe(SIDE_PANEL_MIN_W)
   })

@@ -46,13 +46,13 @@ const PREVIEW_URL_EVENT = 'kirocrew-web-preview-url'
  *  navigated) — the click-to-load counterpart of PREVIEW_URL_EVENT. */
 const PREVIEW_PENDING_EVENT = 'kirocrew-web-preview-pending'
 /**
- * Window event: enter/leave preview "focus" (expand) mode. App collapses the
+ * Window event: enter/leave the preview expand mode. App collapses the
  * left nav and ChatPage hides the session list + maximizes the side panel, so
  * the preview gets maximum room and the chat pane shrinks to its minimum. A
  * plain window event (not prop-drilling) keeps this leaf panel decoupled from
  * the two ancestors that own that layout.
  */
-export const PREVIEW_FOCUS_EVENT = 'kirocrew-preview-focus'
+export const PREVIEW_EXPAND_EVENT = 'kirocrew-preview-expand'
 /**
  * Window event: request an area screenshot into the chat input. ChatPage owns
  * the capture pipeline (getDisplayMedia in the browser / the same path routed
@@ -387,7 +387,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // browser could answer from cache, which is no reload at all for a static
   // server with no HMR. 0 = the initial mount-restored load, kept pristine.
   const [reloadKey, setReloadKey] = useState(0)
-  // Preview "focus" (expand) mode — reflected in the toggle icon; broadcast to
+  // Preview expand mode — reflected in the toggle icon; broadcast to
   // App/ChatPage which collapse the surrounding chrome.
   const [expanded, setExpanded] = useState(false)
   // Viewport preset (responsive desktop vs a fixed device size).
@@ -621,18 +621,18 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
 
   const reload = useCallback(() => setReloadKey(k => k + 1), [])
 
-  const broadcastFocus = useCallback((focused: boolean) => {
-    window.dispatchEvent(new CustomEvent(PREVIEW_FOCUS_EVENT, { detail: { focused } }))
+  const broadcastExpanded = useCallback((expanded: boolean) => {
+    window.dispatchEvent(new CustomEvent(PREVIEW_EXPAND_EVENT, { detail: { expanded } }))
   }, [])
   const toggleExpand = useCallback(() => {
-    setExpanded(v => { broadcastFocus(!v); return !v })
-  }, [broadcastFocus])
-  // Leaving the preview (tab switched away or panel/tab closed) drops focus mode
+    setExpanded(v => { broadcastExpanded(!v); return !v })
+  }, [broadcastExpanded])
+  // Leaving the preview (tab switched away or panel/tab closed) drops expand mode
   // so the chrome isn't left collapsed with the toggle out of reach.
   useEffect(() => {
-    if (!active && expanded) { setExpanded(false); broadcastFocus(false) }
-  }, [active, expanded, broadcastFocus])
-  useEffect(() => () => { broadcastFocus(false) }, [broadcastFocus])
+    if (!active && expanded) { setExpanded(false); broadcastExpanded(false) }
+  }, [active, expanded, broadcastExpanded])
+  useEffect(() => () => { broadcastExpanded(false) }, [broadcastExpanded])
 
   // What the iframe actually loads: the nav URL, varied per reload so a remount
   // is a real request. `url` itself stays pristine everywhere it's user-visible

@@ -40,7 +40,7 @@ import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
 import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
-import { PREVIEW_FOCUS_EVENT } from './components/WebPreviewPanel'
+import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import { usePersistedBool } from './hooks/usePersistedBool'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
@@ -1124,10 +1124,10 @@ export default function App() {
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed
-  // Preview focus (expand) mode from the Web Preview tab collapses the left nav
+  // Preview expand mode from the Web Preview tab collapses the left nav
   // as a STARTING layout, not a lock — the brand toggle keeps its standard
-  // behavior while focus mode is on, so the rail can be brought back without
-  // leaving the preview. This ref holds the pre-focus state to restore on exit,
+  // behavior while expand mode is on, so the rail can be brought back without
+  // leaving the preview. This ref holds the pre-expand state to restore on exit,
   // and is cleared the moment the user toggles the rail themselves so their
   // choice is not undone. `navCollapsed` is driven directly rather than ORed
   // with a transient flag, because an OR makes the toggle look broken.
@@ -1138,9 +1138,9 @@ export default function App() {
   // already-cleared ref and lose the restore value.
   const navAutoCollapsed = useRef<boolean | null>(null)
   useEffect(() => {
-    const onFocus = (e: Event) => {
-      const focused = !!(e as CustomEvent<{ focused?: boolean }>).detail?.focused
-      if (focused) {
+    const onPreviewExpand = (e: Event) => {
+      const expanded = !!(e as CustomEvent<{ expanded?: boolean }>).detail?.expanded
+      if (expanded) {
         if (navAutoCollapsed.current === null) navAutoCollapsed.current = navCollapsedRef.current
         setNavCollapsed(true)
         return
@@ -1149,8 +1149,8 @@ export default function App() {
       navAutoCollapsed.current = null
       if (prior !== null) setNavCollapsed(prior)
     }
-    window.addEventListener(PREVIEW_FOCUS_EVENT, onFocus)
-    return () => window.removeEventListener(PREVIEW_FOCUS_EVENT, onFocus)
+    window.addEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
+    return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
   const [sidePanelDock] = useSidePanelDock()
@@ -1809,8 +1809,8 @@ export default function App() {
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }
     else {
-      // The user has taken ownership of the rail: leaving preview focus mode
-      // must not overwrite this with the pre-focus state.
+      // The user has taken ownership of the rail: leaving preview expand mode
+      // must not overwrite this with the pre-expand state.
       navAutoCollapsed.current = null
       setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
     }

@@ -1,10 +1,10 @@
 /**
- * Preview "focus" (expand) mode must not disable the sessions toggle.
+ * Preview expand mode must not disable the sessions toggle.
  *
- * Entering focus mode (the Browser panel's expand button) hides the session
+ * Entering expand mode (the Browser panel's expand button) hides the session
  * list to give the preview room, but that is a starting layout, not a lock:
- * the sessions toggle stays mounted and keeps working, and leaving focus mode
- * restores the pre-focus state only when the user did not override it.
+ * the sessions toggle stays mounted and keeps working, and leaving expand mode
+ * restores the pre-expand state only when the user did not override it.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { StrictMode } from 'react'
@@ -87,8 +87,8 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import ChatPage from '../pages/ChatPage'
 
-const setFocus = (focused: boolean) => act(() => {
-  window.dispatchEvent(new CustomEvent('kirocrew-preview-focus', { detail: { focused } }))
+const setExpanded = (expanded: boolean) => act(() => {
+  window.dispatchEvent(new CustomEvent('kirocrew-preview-expand', { detail: { expanded } }))
 })
 
 function renderChat({ slots = 1, strict = false }: { slots?: number; strict?: boolean } = {}) {
@@ -115,37 +115,37 @@ function renderChat({ slots = 1, strict = false }: { slots?: number; strict?: bo
   return store
 }
 
-describe('ChatPage — sessions toggle inside preview focus mode', () => {
+describe('ChatPage — sessions toggle inside preview expand mode', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1400 })
     localStorage.clear()
     __resetPanelTabs()
   })
 
-  it('keeps the toggle mounted and working while focus mode is active', () => {
+  it('keeps the toggle mounted and working while expand mode is active', () => {
     renderChat()
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
 
-    setFocus(true)
-    // Focus mode hides the list, but the toggle is still there to bring it back.
+    setExpanded(true)
+    // Expand mode hides the list, but the toggle is still there to bring it back.
     const toggle = screen.getByRole('button', { name: 'Show sessions sidebar' })
 
     fireEvent.click(toggle)
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
 
-    // Leaving focus mode must not undo that explicit choice.
-    setFocus(false)
+    // Leaving expand mode must not undo that explicit choice.
+    setExpanded(false)
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
   })
 
-  it('restores the pre-focus session list when focus mode ends untouched', () => {
+  it('restores the pre-expand session list when expand mode ends untouched', () => {
     renderChat()
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
 
-    setFocus(true)
+    setExpanded(true)
     expect(screen.getByRole('button', { name: 'Show sessions sidebar' })).toBeInTheDocument()
 
-    setFocus(false)
+    setExpanded(false)
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
     // The auto-hide is transient: only a user toggle writes the preference.
     expect(localStorage.getItem('mc-sidebar-pinned')).toBeNull()
@@ -158,36 +158,36 @@ describe('ChatPage — sessions toggle inside preview focus mode', () => {
     renderChat({ strict: true })
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
 
-    setFocus(true)
+    setExpanded(true)
     expect(screen.getByRole('button', { name: 'Show sessions sidebar' })).toBeInTheDocument()
 
-    setFocus(false)
+    setExpanded(false)
     expect(screen.getByRole('button', { name: 'Hide sessions sidebar' })).toBeInTheDocument()
   })
 
-  it('keeps the hover recents flyout available while focus mode hides the list', () => {
+  it('keeps the hover recents flyout available while expand mode hides the list', () => {
     renderChat()
-    setFocus(true)
-    // aria-haspopup mirrors flyoutEligible, which focus mode no longer suppresses.
+    setExpanded(true)
+    // aria-haspopup mirrors flyoutEligible, which expand mode no longer suppresses.
     expect(screen.getByRole('button', { name: 'Show sessions sidebar' }))
       .toHaveAttribute('aria-haspopup', 'menu')
   })
 
-  it('does not let focus mode overwrite the stored preference when the list drains to empty', () => {
+  it('does not let expand mode overwrite the stored preference when the list drains to empty', () => {
     // The force-open rule persists 'true' whenever the list is empty and
-    // unpinned. Focus mode also unpins, so without the guard, draining the list
-    // to zero inside focus mode would write 'true' over a user who chose
+    // unpinned. Expand mode also unpins, so without the guard, draining the list
+    // to zero inside expand mode would write 'true' over a user who chose
     // hidden — and the restore on exit would then contradict it in the live state.
     const store = renderChat()
     fireEvent.click(screen.getByRole('button', { name: 'Hide sessions sidebar' }))
     expect(localStorage.getItem('mc-sidebar-pinned')).toBe('false')
 
-    setFocus(true)
+    setExpanded(true)
     act(() => { store.dispatch(sseSlots([])) })
     expect(localStorage.getItem('mc-sidebar-pinned')).toBe('false')
 
-    setFocus(false)
-    // Out of focus mode the empty list is the force-open rule's business again.
+    setExpanded(false)
+    // Out of expand mode the empty list is the force-open rule's business again.
     expect(localStorage.getItem('mc-sidebar-pinned')).toBe('true')
   })
 
@@ -199,7 +199,7 @@ describe('ChatPage — sessions toggle inside preview focus mode', () => {
     act(() => { store.dispatch(toggleActivity()) })
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-expanded', 'false')
 
-    setFocus(true)
+    setExpanded(true)
     expect(screen.getByTestId('side-panel')).toHaveAttribute('data-expanded', 'true')
 
     // The session list is the only term: the nav rail is narrow enough that the
@@ -214,21 +214,21 @@ describe('ChatPage — sessions toggle inside preview focus mode', () => {
     expect(screen.queryByRole('button', { name: /sessions sidebar/ })).not.toBeInTheDocument()
   })
 
-  it('closes the list in focus mode even with an empty session list', () => {
+  it('closes the list in expand mode even with an empty session list', () => {
     // The toggle is unrendered either way here, so assert the list itself: the
     // force-open rule must not leave the preview covered by an undismissable list.
     renderChat({ slots: 0 })
     expect(screen.getByTestId('sessions-drawer')).toBeInTheDocument()
 
-    setFocus(true)
+    setExpanded(true)
     expect(screen.queryByTestId('sessions-drawer')).not.toBeInTheDocument()
 
-    setFocus(false)
+    setExpanded(false)
     expect(screen.getByTestId('sessions-drawer')).toBeInTheDocument()
   })
 })
 
-describe('ChatPage — mobile session drawer inside preview focus mode', () => {
+describe('ChatPage — mobile session drawer inside preview expand mode', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 420 })
     localStorage.clear()
@@ -239,14 +239,14 @@ describe('ChatPage — mobile session drawer inside preview focus mode', () => {
 
   it('closes the open drawer on entry and leaves it reopenable', () => {
     // Mobile has its own state (`mobileSessions`) and no sessions toggle, so
-    // focus mode closes the drawer outright instead of suppressing it.
+    // expand mode closes the drawer outright instead of suppressing it.
     const openDrawer = () =>
       fireEvent.click(screen.getAllByRole('button', { name: 'Toggle sessions' })[0])
     renderChat()
     openDrawer()
     expect(screen.getByTestId('sessions-drawer')).toBeInTheDocument()
 
-    setFocus(true)
+    setExpanded(true)
     expect(screen.queryByTestId('sessions-drawer')).not.toBeInTheDocument()
 
     // Still reachable — an override would have made this button do nothing.
