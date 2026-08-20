@@ -6,6 +6,7 @@ via the dashboard UI (Artifact Deploy page) by a cookie-authenticated human.
 Storage: ``~/.kiro/crew/deploy/pending-deploys.json`` — same atomic-write
 pattern as profiles.py registry.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -18,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import file_lock
 
@@ -55,7 +57,21 @@ def _save_raw(entries: list[dict[str, Any]]) -> None:
         tmp.flush()
         os.fsync(tmp.fileno())
         tmp.close()
-        os.replace(tmp.name, str(p))
+        # `replace_with_retry`, not a bare `os.replace`: on Windows the rename
+        # raises `PermissionError` while any other handle is open on either
+        # path -- an indexer, an AV scanner, or a concurrent reader of this
+        # store -- and that transient is the only thing standing between a
+        # fully-durable write (fsync'd temp, above) and the entry landing.
+        # Every writer here funnels through this one call, so a faulted rename
+        # aborts whichever of add/claim/remove was in flight: a preview that
+        # cannot record its pending confirmation, a human confirm whose atomic
+        # claim cannot be persisted, or a dismiss that does not take.
+        #
+        # The retry only helps where it is allowed to sleep, and it is: the
+        # dashboard drives every one of these through `asyncio.to_thread`
+        # (`deploy/handlers.py`), so the helper's off-the-event-loop gate leaves
+        # it enabled on that path.
+        replace_with_retry(tmp.name, p)
     except BaseException:
         tmp.close()
         with contextlib.suppress(OSError):
