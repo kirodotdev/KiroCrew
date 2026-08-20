@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { AlertTriangle, ExternalLink, Gauge, ListChecks, RefreshCw, Server as ServerIcon } from 'lucide-react'
 import {
   api,
+  ApiError,
   type McpManagedServer,
   type McpMeasureProgress,
   type McpShareRecommendation,
@@ -668,13 +669,42 @@ export function McpManagement() {
         return
       }
       const ready = res.ready?.length ?? 0
+      // `ready === 0` has two causes that must NOT read the same. Everything was
+      // already fresh (nothing to do), or every install failed -- a registry
+      // outage, a rejected token. Reporting the second as "nothing needed" tells
+      // someone who just pressed this button that launches now skip the network
+      // when not one of them does. The per-package outcome is already in the
+      // response; count it rather than inferring from `ready` alone.
+      const failed = Object.values(res.resolved ?? {}).filter(state => state === 'error').length
+      if (failed > 0) {
+        setResolveNotice(
+          ready > 0
+            ? i18nT('pages.mcpManagement.resolve_partly_ready', {
+                ready: String(ready),
+                failed: String(failed),
+              })
+            : i18nT('pages.mcpManagement.resolve_all_failed', { failed: String(failed) }),
+        )
+        return
+      }
       setResolveNotice(
         ready > 0
           ? i18nT('pages.mcpManagement.resolve_ready', { ready: String(ready) })
           : i18nT('pages.mcpManagement.resolve_none_ready'),
       )
     },
-    onError: onApplyError('pages.mcpManagement.resolve_failed'),
+    onError: err => {
+      invalidate()
+      // 409 is the endpoint reporting an in-flight pass, which it deliberately
+      // encodes as information rather than a failure to retry. Painting it as
+      // "could not pre-resolve" contradicts the state the response carries: the
+      // pass the second tab is being told about is running fine.
+      if (err instanceof ApiError && err.status === 409) {
+        setResolveNotice(i18nT('pages.mcpManagement.resolve_already_running'))
+        return
+      }
+      setError(i18nT('pages.mcpManagement.resolve_failed'))
+    },
   })
 
   const busy = setStub.isPending || setSharing.isPending
