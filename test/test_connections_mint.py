@@ -1093,10 +1093,25 @@ async def test_the_watcher_reads_a_real_grant_off_the_loop(
     assert entry["state"] == "waiting"
 
     # After the spawn, so the short-circuit above does not consume the grant and
-    # the recorder only sees the watcher's own reads.
-    _write_paired_grant_artifacts(_URL)
+    # the recorder only sees the watcher's own reads -- and the recorder BEFORE
+    # the grant becomes visible, so no poll issued after this point can read the
+    # grant through the un-instrumented predicate.
+    unwrapped = mint.grant_present
     seen: list[int] = []
     monkeypatch.setattr(mint, "grant_present", _grant_reads_recorded(seen))
+    # Ordering guard: the recorder is live while the grant is still invisible.
+    # Probes through the ORIGINAL predicate so this thread never enters ``seen``.
+    assert not unwrapped(_URL)
+    # Barrier for the in-flight tail: ``_grant_observed`` freezes the predicate
+    # object at ``to_thread`` submission, so a poll submitted before the setattr
+    # above can still complete after the write below. The watcher polls
+    # sequentially, so once one recorded (necessarily negative) read has landed,
+    # no un-instrumented poll remains in flight and the grant may become visible.
+    deadline = time.monotonic() + 5
+    while not seen and time.monotonic() < deadline:
+        await asyncio.sleep(0.001)
+    assert seen, "no recorded watcher poll arrived before the deadline"
+    _write_paired_grant_artifacts(_URL)
 
     await asyncio.wait_for(entry["watcher"], timeout=5)
 
