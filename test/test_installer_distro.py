@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -358,3 +359,102 @@ def test_cli_never_drives_the_system_package_manager() -> None:
                 assert stripped.startswith("err ") or "|| err " in stripped, (
                     f"cli.sh:{lineno} drives the system package manager: {line!r}"
                 )
+
+
+def test_cli_relinks_the_interpreter_when_rebuilding_a_venv(tmp_path: Path) -> None:
+    """Re-running the installer over an existing managed venv must recreate the
+    interpreter links, not inherit them -- WITHOUT destroying the install.
+
+    ``python -m venv`` on an existing venv rewrites pyvenv.cfg but LEAVES an
+    existing bin/python* symlink in place: switching an existing install to
+    --managed-python would produce a hybrid venv that claims the new
+    interpreter while its shebangs still resolve to the old system one, dying
+    the day that interpreter is removed. The fix removes ONLY the interpreter
+    links before the rebuild -- never ``venv --clear``, which would empty
+    site-packages and the entrypoint too, so a failed wheel download in the
+    step after would leave NO working install. This locks both halves: the
+    link is recreated against the new interpreter, and non-link venv content
+    survives.
+    """
+    a_dir = tmp_path / "old-interp"
+    a_dir.mkdir()
+    ver = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    a_python = a_dir / f"python{ver}"
+    a_python.symlink_to(sys.executable)
+
+    venv_dir = tmp_path / "crew-venv"
+    subprocess.run(
+        [str(a_python), "-m", "venv", "--without-pip", str(venv_dir)],
+        check=True,
+        cwd=tmp_path,
+    )
+    link = venv_dir / "bin" / f"python{ver}"
+    assert link.is_symlink()
+    # Site content that a `venv --clear` would have destroyed.
+    survivor = venv_dir / "lib" / f"python{ver}" / "site-packages" / "keepme.txt"
+    survivor.parent.mkdir(parents=True, exist_ok=True)
+    survivor.write_text("installed package data")
+
+    # Rebuild with the same real python by its own path, through the exact
+    # guarded shape cli.sh runs (pyvenv.cfg present, not a symlink root ->
+    # drop the interpreter links, then a plain venv rebuild).
+    guard = (
+        f'if [ -f "{venv_dir}/pyvenv.cfg" ] && [ ! -L "{venv_dir}" ]; then '
+        f'rm -f "{venv_dir}/bin/python" "{venv_dir}/bin/python3" '
+        f'"{venv_dir}/bin"/python3.* 2>/dev/null || true; fi; '
+        f'"{sys.executable}" -m venv --without-pip "{venv_dir}"'
+    )
+    subprocess.run(["sh", "-c", guard], check=True, cwd=tmp_path)
+
+    # The link was recreated: routing through the old scratch dir is the
+    # stale-symlink hybrid this test exists to prevent.
+    assert str(a_dir) not in os.readlink(venv_dir / "bin" / f"python{ver}"), (
+        "venv rebuild kept the previous interpreter symlink -- the link "
+        "removal in cli.sh has been lost"
+    )
+    # And the install's data survived (a --clear would have deleted it).
+    assert survivor.read_text() == "installed package data"
+    text = CLI_SH.read_text()
+    assert "-m venv --clear" not in text, (
+        "cli.sh uses venv --clear again: a wheel-download failure after the "
+        "clear would leave the user with no working install"
+    )
+    assert 'rm -f "$VENV/bin/python"' in text
+
+
+def test_cli_link_removal_never_reaches_a_symlinked_venv(tmp_path: Path) -> None:
+    """The pre-rebuild link removal must not run against a SYMLINKED venv
+    root: the venv module refuses a symlink root anyway, so removing links
+    inside its target first would break the linked venv and then abort. The
+    guard strips a trailing slash so `-L` tests the link itself (a trailing
+    slash makes the shell follow it)."""
+    real = tmp_path / "real-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(real)],
+        check=True,
+        cwd=tmp_path,
+    )
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    ver = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    interp_link = real / "bin" / f"python{ver}"
+    assert interp_link.exists()
+
+    # The exact guarded shape cli.sh runs, against the symlink WITH a trailing
+    # slash (the spelling that defeats a naive -L test).
+    venv_arg = f"{link}/"
+    stripped = str(link)
+    guard = (
+        f'V="{venv_arg}"; '
+        f'if [ -f "$V/pyvenv.cfg" ] && [ ! -L "{stripped}" ]; then '
+        f'rm -f "$V/bin/python" "$V/bin/python3" "$V/bin"/python3.* '
+        f"2>/dev/null || true; fi"
+    )
+    subprocess.run(["sh", "-c", guard], check=True, cwd=tmp_path)
+
+    assert interp_link.exists(), (
+        "the symlink guard is gone: the link removal ran through a symlinked "
+        "venv root and broke its target"
+    )
+    # And the trailing-slash-stripped guard must still be present in cli.sh.
+    assert '[ ! -L "${VENV%/}" ]' in CLI_SH.read_text()
