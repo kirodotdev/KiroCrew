@@ -4571,6 +4571,39 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 
+# ── kiro-cli agent-spec directory (~/.kiro/agents) ──
+# The user-level directory kiro-cli reads its ``--agent <name>`` specs from
+# (config.paths.kiro_agents_dir()). Each spec's ``mcpServers.<name>.command``
+# is materialised by the MCP-gateway rewriter into a
+# ``KIROCREW_MCP_TARGET_<SERVER>`` env value the gateway resolves and EXECS, and
+# a stubbed server can be routed to a pooled backend that gatewayd spawns
+# OUTSIDE the per-session sandbox, as the user. A prompt-injected agent that
+# could WRITE a spec here — under any filename, so the whole DIRECTORY is fenced,
+# not one leaf — would plant an attacker-chosen command that the gateway runs
+# unsandboxed on the next start and re-arms on every restart. So the agent's
+# file-edit tool must not be able to author or modify anything under it.
+#
+# WRITE-protection, NOT read+write sensitive: Kiro Crew and kiro-cli both
+# legitimately READ specs (agent_discovery, session mtime scan, the dashboard MCP
+# rows, kiro-cli's own ``--agent`` resolution), so this stays OFF
+# ``_SENSITIVE_HOME_DIRS`` and reads are unaffected — only the write side is
+# refused. Every INTERNAL writer (agent.rebuild_agent_config,
+# apps.bridges._register_agents, the rewriter, the dashboard PUT handlers,
+# connections/mint) opens these paths directly with ``os``/``Path`` and does NOT
+# route through this gate, so managed-spec generation keeps working; only the
+# agent's own file-edit/bash tools hit it.
+#
+# Kept as a literal (mirroring ``.data-home-ready`` below) to avoid a
+# config->security import cycle; a drift guard in the tests pins it to
+# ``kiro_agents_dir()``'s tail. The default lives under the real home
+# (``~/.kiro/agents``) and is anchored there like every other entry;
+# ``KIRO_HOME`` (kiro-cli's own home override, which ``kiro_agents_dir()``
+# honours) is re-anchored in ``_home_dir_targets_uncached`` so an instance that
+# relocates its agents dir is covered the same way ``KIROCREW_HOME`` re-anchors
+# the crew secrets.
+_KIRO_AGENTS_DIR = ".kiro/agents"
+_WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
+
 # ── Bash-layer protection for write-protected leaves ──
 # Leaf files under the crew home that a bash command must not be able to
 # CREATE/MODIFY/DELETE. The file-edit tool gate already blocks tool writes to
@@ -4877,6 +4910,56 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"{win_home_alts}{win_gsep}(?:{win_wp_prefixes}){win_gsep}"
         rf"(?:{win_wp_leaves})(?:{win_sep}|\s|$|['\"])"
     )
+    # ── ~/.kiro/agents WRITE-protection (a whole DIRECTORY, not a leaf) ──
+    # A spec under this dir becomes a KIROCREW_MCP_TARGET_<SERVER> command the
+    # gateway execs — pooled backends run OUTSIDE the per-session sandbox — so an
+    # agent-planted spec is a persistent, unsandboxed command run as the user. The
+    # tool-path gate (``is_sensitive_write_path``) is the primary control and
+    # keeps READS allowed there (the dir is on the write-only tier, not in
+    # ``_SENSITIVE_HOME_DIRS``); this branch closes the shell write path.
+    #
+    # Matched verb-INDEPENDENTLY, exactly like the sensitive dirs and the
+    # write-protected leaves — NOT with a write-verb allowlist. An enumerated verb
+    # set is inherently bypassable: ``curl -o`` / ``wget -O`` output-file writers,
+    # ``python -c "open(...,'w')"``, ``dd``, ``install`` or any novel write verb
+    # slip past it (found in review). Naming the dir is the signal. This
+    # incidentally blocks bash READS of the dir too, which is harmless for the same
+    # reason it is for the write-protected leaves: a spec carries no secret and
+    # every legitimate reader (the rewriter, agent_discovery, kiro-cli itself) uses
+    # Python/direct file I/O, not bash. Tool-path reads (file viewer, knowledge
+    # indexing, ``is_sensitive_path``) are unaffected. The trailing class matches
+    # the dir itself and anything beneath it.
+    #
+    # Anchored on the home forms AND on a literal ``$KIRO_HOME`` reference:
+    # ``KIRO_HOME`` (honoured by ``kiro_agents_dir()``) relocates the dir to
+    # ``$KIRO_HOME/agents``, so ``tee $KIRO_HOME/agents/x`` must be caught too
+    # (found in review). An already-expanded absolute override path carries no
+    # anchor and is the accepted residual — the same limit the crew leaves have —
+    # but the tool gate resolves and covers it. ``_KIRO_HOME_LEAF`` is the segment
+    # under the override (``agents``), sliced from the same literal so the two
+    # spellings cannot drift.
+    _KIRO_HOME_LEAF = _KIRO_AGENTS_DIR.split("/", 1)[1]
+    agents_dir_alt = re.escape(_KIRO_AGENTS_DIR)
+    agents_leaf_alt = re.escape(_KIRO_HOME_LEAF)
+    kiro_home_var = r"(?:\$KIRO_HOME|\$\{KIRO_HOME\})"
+    agents_write_path = (
+        rf"(?:{home_alts}/(?:{agents_dir_alt})"
+        rf"|{kiro_home_var}/(?:{agents_leaf_alt}))(?:/|\s|$|['\"])"
+    )
+    win_agents_dir_alt = win_gsep.join(
+        re.escape(part) for part in _KIRO_AGENTS_DIR.split("/")
+    )
+    # cmd.exe ``%KIRO_HOME%`` (with expansion modifiers) and the two PowerShell
+    # spellings, mirroring ``userprofile``/``appdata_var`` above.
+    win_kiro_home_var = (
+        r"(?:%KIRO_HOME(?::[^%\s]*)?%"
+        rf"|{re.escape('$env:KIRO_HOME')}"
+        rf"|{re.escape('${env:KIRO_HOME}')})"
+    )
+    win_agents_write_path = (
+        rf"(?:{win_home_alts}{win_gsep}(?:{win_agents_dir_alt})"
+        rf"|{win_kiro_home_var}{win_gsep}(?:{agents_leaf_alt}))(?:{win_sep}|\s|$|['\"])"
+    )
     # Bare path-SEGMENT match for the globally distinctive leaves. Both branches
     # above require a home anchor and a crew prefix, so both are defeated by a
     # single ``cd``; this one requires neither, which is the whole point — the
@@ -4922,6 +5005,15 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"|(?:^|.*[\s'\"=:,;]){win_sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){win_write_protected_path}"
+        # (8) ~/.kiro/agents (POSIX and Windows-native spelling, plus the
+        # ``$KIRO_HOME`` override), matched verb-INDEPENDENTLY with the same token
+        # anchor as (2)/(3): naming the dir is the signal, so ``curl -o``/``wget
+        # -O`` output-file writers, ``python -c "open(...,'w')"`` and any novel
+        # write verb are caught, not just an enumerated allowlist. Bash reads of
+        # the dir are blocked incidentally (harmless — no secret, Python readers
+        # only); tool-path reads stay allowed.
+        rf"|(?:^|.*[\s'\"=:,;]){agents_write_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){win_agents_write_path}"
         rf"|{bare_protected_path})",
         re.IGNORECASE,
     )
@@ -4984,13 +5076,13 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
 
 def _home_dir_targets_uncached(
     home_dirs: list[str],
-    roots: tuple[str, str | None] | None = None,
+    roots: tuple[str, str | None, str | None] | None = None,
 ) -> set[str]:
     """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
     on-disk targets.
 
-    *roots* optionally supplies the ``(home, crew_home)`` anchors already
-    resolved by the caller. The TTL cache in :func:`_home_dir_targets` MUST pass
+    *roots* optionally supplies the ``(home, crew_home, kiro_home)`` anchors
+    already resolved by the caller. The TTL cache in :func:`_home_dir_targets` MUST pass
     it: resolving the roots here as well would read the filesystem a second
     time, and a root symlink repointed between the two reads would file this
     set under a key naming the OTHER root — caching one root's targets against
@@ -5012,9 +5104,9 @@ def _home_dir_targets_uncached(
     this is a no-op there.
     """
     if roots is not None:
-        home, crew_home = roots
+        home, crew_home, kiro_home_override = roots
     else:
-        home, crew_home = _resolved_root_key()
+        home, crew_home, kiro_home_override = _resolved_root_key()
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *d.split("/")).casefold()
@@ -5050,6 +5142,26 @@ def _home_dir_targets_uncached(
                     except (OSError, ValueError):
                         pass
                     break
+    # The agents dir (``~/.kiro/agents``) follows ``KIRO_HOME`` — kiro-cli's own
+    # home override, honoured by ``kiro_agents_dir()``. When it is set, the specs
+    # the gateway execs live at ``<KIRO_HOME>/agents``, NOT under the real home,
+    # so the ``.kiro/agents`` entry anchored above misses them and an agent write
+    # there would bypass the gate. Re-anchor the leaf under the override, mirroring
+    # the ``KIROCREW_HOME`` expansion directly above (the ~/-rooted default form
+    # stays, so both locations are always covered). Only added when the agents dir
+    # is actually in *home_dirs* — it is on the write-only tier
+    # (``_WRITE_PROTECTED_HOME_PATHS``) and NOT in ``_SENSITIVE_HOME_DIRS``, so
+    # this must not leak an agents target into the read gate. No validity check on
+    # the override: an unsafe ``KIRO_HOME`` falls back to ``~/.kiro`` in
+    # ``kiro_home()`` (already covered by the default form), so an extra target
+    # under a bogus value is harmless and fail-safe.
+    if kiro_home_override and _KIRO_AGENTS_DIR in home_dirs:
+        agents_full = os.path.join(kiro_home_override, "agents")
+        sensitive_targets.add(agents_full.casefold())
+        try:
+            sensitive_targets.add(os.path.realpath(agents_full).casefold())
+        except (OSError, ValueError):
+            pass
     return sensitive_targets
 
 
@@ -5098,25 +5210,41 @@ _HOME_TARGETS_TTL_SECS = 0.1
 _home_targets_cache: dict[tuple[object, ...], tuple[float, set[str]]] = {}
 
 
-def _resolved_root_key() -> tuple[str, str | None]:
-    """Return the (home, crew_home) roots the target set is anchored on.
+def _resolved_root_key() -> tuple[str, str | None, str | None]:
+    """Return the (home, crew_home, kiro_home) roots the target set is anchored on.
 
     Mirrors how :func:`_home_dir_targets_uncached` derives its anchors, so the
     cache key changes exactly when the anchors would. Falls back to the
     unresolved form on OSError/ValueError the same way the builder does.
+
+    ``kiro_home`` is the resolved ``KIRO_HOME`` override (kiro-cli's own home
+    override, honoured by ``kiro_agents_dir()``), or ``None`` when unset — it
+    re-anchors the ``~/.kiro/agents`` write-protection, so a changed ``KIRO_HOME``
+    must invalidate the cache. No validity check here (an unsafe value falls back
+    to ``~/.kiro`` in ``kiro_home()``, already covered by the default form); it is
+    resolved only so a symlinked override keys and anchors identically.
     """
     try:
         home = str(Path.home().resolve())
     except (OSError, ValueError):
         home = str(Path.home())
     crew_env = os.environ.get("KIROCREW_HOME")
-    if not crew_env:
-        return home, None
-    try:
-        crew = str(Path(crew_env).expanduser().resolve())
-    except (OSError, ValueError):
-        crew = os.path.abspath(os.path.expanduser(crew_env))
-    return home, crew
+    if crew_env:
+        try:
+            crew: str | None = str(Path(crew_env).expanduser().resolve())
+        except (OSError, ValueError):
+            crew = os.path.abspath(os.path.expanduser(crew_env))
+    else:
+        crew = None
+    kiro_env = os.environ.get("KIRO_HOME")
+    if kiro_env:
+        try:
+            kiro: str | None = str(Path(kiro_env).expanduser().resolve())
+        except (OSError, ValueError):
+            kiro = os.path.abspath(os.path.expanduser(kiro_env))
+    else:
+        kiro = None
+    return home, crew, kiro
 
 
 def _home_dir_targets(home_dirs: list[str]) -> set[str]:
