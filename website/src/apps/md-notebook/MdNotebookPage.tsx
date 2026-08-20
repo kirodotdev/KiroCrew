@@ -403,6 +403,37 @@ export default function MdNotebookPage() {
     dirtyRef.current = dirty
   }, [dirty])
 
+  // Cancel the autosave debounce on unmount (#2984). Without this the
+  // `window.setTimeout` armed in `edit` (below) outlives the component:
+  // React Router navigation (or, in tests, testing-library's unmount)
+  // removes this page but the timer keeps running, and its callback
+  // — `flushSave`, which calls `setDirty`/`setError`/`setFileConflict` — fires
+  // later against a component that no longer exists. In production that is a
+  // silent no-op write attempt racing whatever page replaced this one; in the
+  // test suite it is a cross-test `saveNote` call landing in whichever
+  // unrelated test happens to be running ~1s later.
+  //
+  // Clearing the timer alone would silently drop a still-unsaved edit made
+  // just before navigating away — the same edit `beforeunload` above warns
+  // about for a tab close. So on unmount, cancel the pending timer and, if
+  // there is a dirty note, fire one best-effort save directly at the API
+  // (never through `flushSave`, which sets state that can no longer safely
+  // be set here) using the current vault/path/content/mtime refs. Errors are
+  // swallowed: there is no component left to show them to, and retrying is
+  // not this effect's job — the note simply stays dirty for whichever
+  // surface opens it next to pick up.
+  useEffect(() => () => {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    if (dirtyRef.current && pathRef.current) {
+      void notesApi
+        .saveNote(vaultRef.current, pathRef.current, contentRef.current, mtimeRef.current ?? undefined)
+        .catch(() => {})
+    }
+  }, [])
+
   // Warn on reload/close while an edit is still pending: the save is debounced,
   // so a reload within the debounce window would destroy the timer and lose the
   // latest content before it reaches disk.

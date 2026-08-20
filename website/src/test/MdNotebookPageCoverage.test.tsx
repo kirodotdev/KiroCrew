@@ -742,6 +742,50 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     expect(api.saveNote).not.toHaveBeenCalled()
   })
 
+  // ── autosave debounce vs. unmount (#2984) ─────────────────────────────────
+
+  it('flushes a pending edit on unmount instead of losing it', async () => {
+    api.saveNote.mockResolvedValue({ mtime: 99 })
+    const { unmount } = await mountWithNote()
+    await userEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
+    // Fake timers only AFTER the userEvent interactions above: userEvent's own
+    // input simulation relies on real timers internally and hangs under fake
+    // ones (the established pattern a few tests up does the same).
+    vi.useFakeTimers()
+    fireEvent.change(rawEditor(), { target: { value: 'edited just before navigating away' } })
+    // Unmount well BEFORE the debounce would have fired on its own — this is
+    // the edit-loss case a bare clearTimeout (without a flush) would create.
+    unmount()
+    expect(api.saveNote).toHaveBeenCalledWith(
+      'v1', 'One.md', 'edited just before navigating away', expect.anything(),
+    )
+  })
+
+  it('does not leak the debounce timer past unmount', async () => {
+    api.saveNote.mockResolvedValue({ mtime: 99 })
+    const { unmount } = await mountWithNote()
+    await userEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
+    vi.useFakeTimers()
+    fireEvent.change(rawEditor(), { target: { value: 'edited just before navigating away' } })
+    unmount()
+    expect(api.saveNote).toHaveBeenCalledTimes(1)
+    // The ORIGINAL 1000ms debounce timer, if it survived unmount, would fire
+    // here — landing a second saveNote call against an unmounted page (or, in
+    // production, racing whatever page replaced it). This is the leak #2984
+    // reports: the callback firing later, during a DIFFERENT test/page.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+    })
+    expect(api.saveNote).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not attempt a save on unmount when there is nothing dirty', async () => {
+    const { unmount } = await mountWithNote()
+    vi.useFakeTimers()
+    unmount()
+    expect(api.saveNote).not.toHaveBeenCalled()
+  })
+
   it('does not arm the reload warning for a block edit made mid-delete', async () => {
     api.deleteNote.mockReturnValue(pending())
     await mountWithNote()

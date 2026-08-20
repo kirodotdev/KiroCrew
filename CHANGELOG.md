@@ -3,6 +3,17 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The Notes app's autosave debounce no longer outlives the page.** Editing
+  a note arms a 1000ms `window.setTimeout` that flushes the pending save;
+  nothing cancelled it on unmount, so navigating away (or, in tests,
+  unmounting) left the timer running. In production its callback could later
+  fire against an unmounted component; in the test suite the leaked callback
+  landed a `saveNote` call inside whichever unrelated test happened to be
+  running ~1s later, an intermittent cross-test failure. Unmount now cancels
+  the pending timer and, if there is a dirty edit, fires one best-effort save
+  directly (bypassing the state-setting flush path, which can no longer
+  safely run) — so a still-unsaved edit made just before navigating away is
+  preserved instead of silently lost. (#2984)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
