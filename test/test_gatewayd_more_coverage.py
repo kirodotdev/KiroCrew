@@ -904,14 +904,19 @@ class TestDisconnectTeardown:
 class TestRunGatewaydLifecycle:
     @pytest.mark.asyncio
     async def test_prewarm_count_is_clamped_and_persisted_hot_keys_are_warmed(
-        self, tmp_path, monkeypatch
+        self, tmp_path, short_sock_dir, monkeypatch
     ):
         """``prewarm_count >= max_backends`` would pin the whole pool, so it is
         clamped to leave one reclaimable slot -- and only the clamped number of
         persisted hot keys is warmed."""
-        socket_path = tmp_path / "gw.sock"
+        # The endpoint must bind under a short root (sun_path cap). The daemon
+        # derives its hot-keys store as a sibling of the socket
+        # (``default_hot_keys_path``), so the seed file has to live in the same
+        # short dir. The credential watch path is passed explicitly, so it can
+        # stay on tmp_path.
+        socket_path = short_sock_dir / "gw.sock"
         socket_path.parent.mkdir(parents=True, exist_ok=True)
-        hot_keys_path = tmp_path / "hot-keys.json"
+        hot_keys_path = short_sock_dir / "hot-keys.json"
         now = time.time()
         hot_keys_path.write_text(
             json.dumps(
@@ -977,9 +982,9 @@ class TestRunGatewaydLifecycle:
 
     @pytest.mark.asyncio
     async def test_a_crashing_connection_handler_is_logged_and_the_daemon_keeps_serving(
-        self, tmp_path, monkeypatch, caplog
+        self, short_sock_dir, monkeypatch, caplog
     ):
-        socket_path = tmp_path / "gw-crash.sock"
+        socket_path = short_sock_dir / "gw-crash.sock"
         handled = asyncio.Event()
 
         async def _explode(*args, **kwargs):

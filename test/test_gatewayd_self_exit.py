@@ -148,10 +148,10 @@ class TestSocketLivenessSweeper:
 class TestRunGatewaydSelfExit:
     @pytest.mark.asyncio
     async def test_daemon_self_exits_when_socket_is_unlinked(
-        self, tmp_path: Path
+        self, short_sock_dir: Path
     ) -> None:
         """End to end: bind a real endpoint, unlink it, daemon exits cleanly."""
-        socket_path = tmp_path / "gw-selfexit.sock"
+        socket_path = short_sock_dir / "gw-selfexit.sock"
         stop_event = asyncio.Event()
 
         def _resolver(pool_key):  # never invoked — no stub connects
@@ -184,13 +184,13 @@ class TestRunGatewaydSelfExit:
 
     @pytest.mark.asyncio
     async def test_windows_never_arms_the_liveness_sweeper(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, short_sock_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With IS_WINDOWS=True the sweeper is not created: unlinking the
         endpoint path must NOT terminate the daemon (named pipes have no
         directory entry, so the probe would be meaningless there)."""
         monkeypatch.setattr(gw, "IS_WINDOWS", True)
-        socket_path = tmp_path / "gw-win.sock"
+        socket_path = short_sock_dir / "gw-win.sock"
         stop_event = asyncio.Event()
 
         def _resolver(pool_key):

@@ -263,16 +263,20 @@ class TestDrainOversizeLine:
 
 @_POSIX_ONLY
 class TestResolveSshAuthSock:
-    def test_live_socket_is_kept(self, tmp_path):
-        sock_path = tmp_path / "live.sock"
+    def test_live_socket_is_kept(self, short_sock_dir):
+        sock_path = short_sock_dir / "live.sock"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
             srv.bind(str(sock_path))
             env = {"SSH_AUTH_SOCK": str(sock_path)}
             _resolve_ssh_auth_sock(env)
         assert env["SSH_AUTH_SOCK"] == str(sock_path)
 
-    def test_stale_pointer_is_repaired_to_newest_socket(self, tmp_path, monkeypatch):
-        old, new = tmp_path / "agent.1", tmp_path / "agent.2"
+    def test_stale_pointer_is_repaired_to_newest_socket(
+        self, tmp_path, short_sock_dir, monkeypatch
+    ):
+        # Bound endpoints must live under a short root (sun_path cap); the
+        # "gone.sock" pointer below never binds, so it can stay on tmp_path.
+        old, new = short_sock_dir / "agent.1", short_sock_dir / "agent.2"
         socks = []
         for path in (old, new):
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
