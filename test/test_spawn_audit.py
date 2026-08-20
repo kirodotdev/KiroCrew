@@ -256,7 +256,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # recorded, rendered through ``str()``. Nothing here is agent-influenced.
         "platform_compat.py::process_start_time",
         "apps/backend.py::_resolve_nvm_path",
-        "apps/backend.py::stop_app_backend",
         # py-spy attach for `kirocrew perf sample --pid`: fixed list-argv (no
         # shell=True), binary resolved via shutil.which rather than from input,
         # and every value is either a range-validated int (pid/seconds/rate) or a

@@ -3,6 +3,20 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **App-backend adoption works on Windows.** Taking over a healthy instance
+  already listening on an app's fixed port recorded the owning PIDs by shelling
+  out to a bare `lsof`, which does not exist there: `subprocess.run` raised
+  `FileNotFoundError`, the PID list stayed empty, and adoption was refused on
+  every call — logging "cannot record PIDs (lsof unavailable?)" as though it
+  were a diagnosable local gap. Only the exec / shell-launcher branch is
+  POSIX-gated, so Python and Node app backends run on Windows normally and hit
+  this. Both the adoption and adopted-stop paths now route through the module's
+  own `_listening_pids` wrapper, which `platform_compat` already backs with
+  `lsof` on POSIX and `netstat -ano` on Windows. The stop path's PID-recycling
+  guard keeps its three-way behaviour explicitly: the port→PID helper collapses
+  "tool absent" and "nothing is listening" into one empty list, and those call
+  for opposite actions — fall back to the adopted set for the first, kill
+  nothing for the second. (#3876)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

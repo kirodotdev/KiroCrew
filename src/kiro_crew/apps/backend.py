@@ -135,7 +135,8 @@ def _survived_spawn(proc: Any, port: int | None = None) -> bool:
     established at all (no port to observe, or no port->PID tool on the host), it
     degrades to polling the full budget exactly as before.
 
-    The ownership probe shells out to lsof (~150ms), so it is gated behind a cheap
+    The ownership probe shells out to the port->PID tool (lsof on POSIX, netstat
+    on Windows; ~150ms), so it is gated behind a cheap
     loopback connect and is not run on every poll: the deadline below stays honest
     about wall-clock rather than adding the probe's cost to each interval, which
     would otherwise make the failure path take LONGER than the original budget.
@@ -630,24 +631,18 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     )
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
-                # Record PIDs listening on this port at adoption time
-                adopted_pids: list[int] = []
-                try:
-                    lsof_result = subprocess.run(
-                        ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if lsof_result.returncode == 0 and lsof_result.stdout.strip():
-                        for pid_str in lsof_result.stdout.strip().split("\n"):
-                            try:
-                                adopted_pids.append(int(pid_str.strip()))
-                            except ValueError:
-                                pass
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                # Record PIDs listening on this port at adoption time. Routed
+                # through this module's own port->PID wrapper rather than a bare
+                # `lsof`, which does not exist on Windows: subprocess.run raised
+                # FileNotFoundError there, adopted_pids stayed empty, and
+                # adoption was refused on EVERY call, logging "lsof
+                # unavailable?" as though it were a diagnosable local gap
+                # (#3876). App backends do run on Windows — only the exec /
+                # shell-launcher branch is POSIX-gated.
+                adopted_pids = _listening_pids(port)
                 if not adopted_pids:
                     logger.warning(
-                        "App %s: cannot record PIDs on port %d (lsof unavailable?) — skipping adoption",
+                        "App %s: cannot record PIDs on port %d — skipping adoption",
                         app_name, port,
                     )
                     return None
@@ -664,7 +659,8 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 # If the gateway dies, the external instance keeps running and is
                 # simply re-probed and re-adopted on the next start — so reaping it
                 # would kill a healthy service we would immediately re-adopt. stop's
-                # adopted path kills only the lsof-revalidated PIDs for this reason.
+                # adopted path kills only the PIDs still revalidated as holding
+                # this port, for this reason.
                 with _lock:
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
@@ -1105,25 +1101,25 @@ def stop_app_backend(app_name: str) -> bool:
             target_pids: set[int] = set(ap.adopted_pids)
 
             # Verify adopted PIDs still belong to this port (guards against
-            # PID recycling between adoption and stop).
-            try:
-                lsof_result = subprocess.run(
-                    ["lsof", "-ti", f":{ap.port}", "-sTCP:LISTEN"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if lsof_result.returncode == 0 and lsof_result.stdout.strip():
-                    current_pids: set[int] = set()
-                    for pid_str in lsof_result.stdout.strip().split("\n"):
-                        try:
-                            current_pids.add(int(pid_str.strip()))
-                        except ValueError:
-                            pass
-                    # Only kill PIDs that are both adopted AND still on this port
-                    target_pids = target_pids & current_pids
-            except (OSError, subprocess.TimeoutExpired):
-                # lsof unavailable at stop time — proceed with adopted PIDs
-                # (they were validated at adoption time)
-                pass
+            # PID recycling between adoption and stop). Same wrapper as the
+            # adoption side, so this no longer depends on a bare `lsof` that
+            # Windows does not have (#3876).
+            #
+            # The three-way distinction the old code got from lsof's exit status
+            # has to be preserved explicitly, because find_listening_pids
+            # collapses "tool absent" and "nothing is listening" into the same
+            # empty list, and they call for OPPOSITE actions here:
+            #   * tool absent      -> proceed with the adopted PIDs, which were
+            #                         validated at adoption time (the old
+            #                         `except OSError: pass` branch);
+            #   * genuinely empty  -> intersect to the empty set and kill
+            #                         nothing, because a PID that no longer
+            #                         holds this port may have been recycled
+            #                         onto an unrelated process. Killing it is
+            #                         the exact hazard this guard exists for.
+            if platform_compat.listening_pid_tool_available():
+                # Only kill PIDs that are both adopted AND still on this port.
+                target_pids = target_pids & set(_listening_pids(ap.port))
 
             pids: list[int] = []
             for pid in target_pids:
