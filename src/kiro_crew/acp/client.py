@@ -3460,8 +3460,28 @@ class AcpClient:
 
     async def shutdown(self) -> None:
         """Gracefully stop the ACP process."""
-        await self._kill_process(force=True)
-        self._reset_state()  # untracks all PIDs (root + children)
+        # `_reset_state` in a `finally`, because `_kill_process` can leave
+        # through several doors: it awaits four `run_in_executor` calls (child
+        # scan, record capture, escaped-child sweep) that are not individually
+        # guarded, `subprocess_executor()` refuses new work once the loop is
+        # tearing down, and `asyncio.CancelledError` is a `BaseException` --
+        # shutdown being exactly when cancellation arrives.
+        #
+        # Nothing retries. Every caller treats this as terminal and drops the
+        # client immediately afterwards (`AcpWorker` and `_shutdown_quietly`
+        # both `except Exception: log` and then set their reference to None), so
+        # a skipped reset is permanent: the pipes stay open, the sandbox temp
+        # files stay on disk, and for the claude backend
+        # `.claude/settings.local.json` -- written to hold `bypassPermissions`
+        # for the session -- survives the process it belonged to.
+        #
+        # Running it after a failed kill is safe by construction: `_reset_state`
+        # untracks only PIDs it confirms dead and deliberately RETAINS tracking
+        # for survivors so the orphan sweep still reaps them.
+        try:
+            await self._kill_process(force=True)
+        finally:
+            self._reset_state()  # untracks all PIDs (root + children)
 
     # ── JSON-RPC Transport ──
 
