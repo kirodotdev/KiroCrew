@@ -30,7 +30,22 @@ def _store(tmp_path: Path, dim: int = 8) -> VectorMemoryStore:
 
 
 def _fixed_embed(dim: int = 8):
-    return lambda text: [0.5] * dim
+    """One stable vector per text, orthogonal across texts.
+
+    write_episodic rejects a write whose vector scores above the similarity
+    dedupe threshold against one already indexed, so a text-independent constant
+    collapses every memory seeded after the first into it and the row counts
+    below can never reach 2. Basis vectors keep seeded rows distinct while
+    repeating the same text still reproduces its original vector, which is what
+    the re-embed assertions rely on.
+    """
+    slots: dict[str, int] = {}
+
+    def embed(text: str) -> list[float]:
+        slot = slots.setdefault(text, len(slots) % dim)
+        return [1.0 if i == slot else 0.0 for i in range(dim)]
+
+    return embed
 
 
 def _episodic_with_vectors(store: VectorMemoryStore) -> int:

@@ -1150,12 +1150,28 @@ def _store(tmp_path: Path, dim: int = 8) -> VectorMemoryStore:
     return s
 
 
+def _basis_embed(dim: int = 8):
+    """One stable vector per text, orthogonal across texts.
+
+    A text-independent constant makes every write after the first score as a
+    duplicate against the indexed vector, so a loop seeding N memories leaves
+    one row behind and the progress denominator below reads 1 instead of N.
+    """
+    slots: dict[str, int] = {}
+
+    def embed(text: str) -> list[float]:
+        slot = slots.setdefault(text, len(slots) % dim)
+        return [1.0 if i == slot else 0.0 for i in range(dim)]
+
+    return embed
+
+
 class TestBackfillProgressReporting:
     """Without a denominator the indicator can only spin."""
 
     def test_reports_total_up_front(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
-        store.embed_fn = lambda t: [0.5] * 8
+        store.embed_fn = _basis_embed()
         for i in range(3):
             store.write_episodic(f"memory number {i} long enough to be stored here")
         store.db.execute("UPDATE episodic_memories SET embedding = NULL")
@@ -1170,7 +1186,7 @@ class TestBackfillProgressReporting:
 
     def test_progress_is_monotonic(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
-        store.embed_fn = lambda t: [0.5] * 8
+        store.embed_fn = _basis_embed()
         for i in range(4):
             store.write_episodic(f"memory number {i} long enough to be stored here")
         store.db.execute("UPDATE episodic_memories SET embedding = NULL")
