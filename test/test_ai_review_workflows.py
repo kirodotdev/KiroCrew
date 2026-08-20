@@ -1005,6 +1005,66 @@ class TestFirstPrinciplesScopeGateBehavior:
         assert (out.stdout == "true") is want, f"{lane}: {touched!r} -> {out.stdout!r}"
 
 
+FORK_FINALIZE_LANES = (
+    "fork-opus-review.yml",
+    "fork-gpt-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+)
+
+
+class TestForkLaneFinalizeRetries:
+    """#3447 defect 1: the fork lanes finalized their check-run with a bare
+    `PATCH … || true`.
+
+    One transient API failure there leaves the run `in_progress` forever, and
+    pr-readiness counts ANY non-completed check-run of that name as pending --
+    including after a successful re-run -- so the PR sits at
+    `readiness: checking` with no event able to clear it. `|| true` also
+    swallowed the failure, so nothing in the log said why.
+
+    fork-first-principles-review.yml already carries the retry helper this
+    pins; these tests keep the other four from drifting back.
+    """
+
+    @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
+    def test_the_finalize_patch_retries_before_giving_up(self, lane: str) -> None:
+        flat = _flat(_workflow(lane))
+        assert "complete() {" in flat, f"{lane}: no complete() helper"
+        assert "for attempt in 1 2; do" in flat, (
+            f"{lane}: finalize does not retry, so one transient 5xx strands the run"
+        )
+
+    @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
+    def test_a_permanent_finalize_failure_is_announced(self, lane: str) -> None:
+        """`|| true` alone made a stranded run silent. A wedged PR must at
+        least say so in the job log."""
+        flat = _flat(_workflow(lane))
+        assert "could not complete check-run" in flat, (
+            f"{lane}: a failed finalize leaves no trace in the log"
+        )
+
+    @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
+    def test_the_bare_unretried_patch_is_gone(self, lane: str) -> None:
+        """Shape guard: the defect is the un-retried form, so pin its absence
+        rather than only the presence of the replacement."""
+        flat = _flat(_workflow(lane))
+        assert 'check-runs/$CHECK_ID" -f status="completed"' not in flat or (
+            "complete() {" in flat
+        ), f"{lane}: bare un-retried finalize PATCH is back"
+
+    def test_the_helper_matches_the_reference_lane(self) -> None:
+        """The first-principles lane is where this helper was introduced; the
+        ported copies should not diverge from its retry shape."""
+        ref = _flat(_workflow("fork-first-principles-review.yml"))
+        assert "for attempt in 1 2; do" in ref
+        assert "could not complete check-run" in ref
+        for lane in FORK_FINALIZE_LANES:
+            flat = _flat(_workflow(lane))
+            assert "for attempt in 1 2; do" in flat, lane
+            assert "sleep 5" in flat, f"{lane}: retry has no backoff"
+
+
 class TestPreparePrPreSubmitReview:
     def test_two_read_only_reviewers_run_before_the_first_push(self) -> None:
         skill = _prepare_pr_skill()
