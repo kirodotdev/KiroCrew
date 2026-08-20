@@ -3772,7 +3772,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Folder suggestion",
-      "move_to_folder_question": "Move this session to {{folder}}?",
+      "move_to_folder_question": "Move this session into folder “{{folder}}”?",
       "no_thanks": "Not now",
       "yes_move_it": "Move it"
     },

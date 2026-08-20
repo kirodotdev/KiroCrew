@@ -5042,7 +5042,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "[Ƒøĺðèŕ şùğğèşţìøñ ···············]",
-      "move_to_folder_question": "[Ṁøṽè ţĥìş şèşşìøñ ţø {{folder}}? ···············]",
+      "move_to_folder_question": "[Ṁøṽè ţĥìş şèşşìøñ ìñţø ƒøĺðèŕ “{{folder}}”? ·················]",
       "no_thanks": "[Ñøţ ñøẁ ···········]",
       "yes_move_it": "[Ṁøṽè ìţ ···········]"
     },

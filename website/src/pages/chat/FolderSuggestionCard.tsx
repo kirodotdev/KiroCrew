@@ -55,10 +55,21 @@ export default function FolderSuggestionCard({ folderName, breadcrumb, onAccept,
       <FolderInput size={14} className="shrink-0" aria-hidden="true" style={{ color: 'var(--accent)' }} />
 
       <div className="min-w-0 flex-1">
-        {/* One interpolated string, not a concatenation of "Move this session to"
-            + name + "?": a split sentence cannot be reordered by a translator,
-            and several locales need the folder name somewhere other than last. */}
-        <span className="block text-[12px] leading-tight truncate" style={{ color: 'var(--text)' }}>
+        {/* One interpolated string, not a concatenation of "Move this session
+            into folder" + name + "?": a split sentence cannot be reordered by a
+            translator, and several locales need the folder name somewhere other
+            than last. The name is quoted so a folder called "trash" or "later"
+            reads as a destination rather than as part of the question.
+            `title` mirrors the parentPath line below: this span truncates, and
+            for a ROOT folder the breadcrumb is suppressed, so the question is
+            the only place the name appears — without the tooltip a long name
+            clipped mid-word would leave no way to confirm the destination
+            before pressing a button that does not name it either. */}
+        <span
+          className="block text-[12px] leading-tight truncate"
+          style={{ color: 'var(--text)' }}
+          title={i18nT('components.folderSuggestionCard.move_to_folder_question', { folder: folderName })}
+        >
           {i18nT('components.folderSuggestionCard.move_to_folder_question', { folder: folderName })}
         </span>
         {parentPath && (

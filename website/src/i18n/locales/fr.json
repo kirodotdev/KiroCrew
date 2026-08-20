@@ -5323,7 +5323,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Suggestion de dossier",
-      "move_to_folder_question": "Déplacer cette session vers {{folder}} ?",
+      "move_to_folder_question": "Déplacer cette session vers le dossier « {{folder}} » ?",
       "no_thanks": "Pas maintenant",
       "yes_move_it": "Déplacer"
     },

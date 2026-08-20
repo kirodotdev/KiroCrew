@@ -5165,7 +5165,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "文件夹建议",
-      "move_to_folder_question": "将此会话移动到 {{folder}}？",
+      "move_to_folder_question": "将此会话移动到“{{folder}}”文件夹？",
       "no_thanks": "暂不",
       "yes_move_it": "移动"
     },

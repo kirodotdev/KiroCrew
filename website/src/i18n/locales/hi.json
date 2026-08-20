@@ -5244,7 +5244,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "फ़ोल्डर सुझाव",
-      "move_to_folder_question": "इस सत्र को {{folder}} में ले जाएँ?",
+      "move_to_folder_question": "इस सत्र को “{{folder}}” फ़ोल्डर में ले जाएँ?",
       "no_thanks": "अभी नहीं",
       "yes_move_it": "ले जाएँ"
     },

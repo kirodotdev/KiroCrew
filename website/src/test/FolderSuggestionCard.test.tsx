@@ -8,7 +8,7 @@ import reducer, { setFolderSuggestion, clearFolderSuggestion } from '../store/ch
 vi.mock('../i18n/t', () => ({
   i18nT: (key: string, vars?: Record<string, unknown>) =>
     key === 'components.folderSuggestionCard.move_to_folder_question'
-      ? `Move this session to ${vars?.folder}?`
+      ? `Move this session into folder \u201c${vars?.folder}\u201d?`
       : key.split('.').pop() ?? key,
 }))
 
@@ -30,7 +30,7 @@ function renderCard(over: Partial<React.ComponentProps<typeof FolderSuggestionCa
 describe('FolderSuggestionCard', () => {
   it('asks about the suggested folder with the name interpolated, not concatenated', () => {
     renderCard()
-    expect(screen.getByText('Move this session to feature?')).toBeInTheDocument()
+    expect(screen.getByText('Move this session into folder \u201cfeature\u201d?')).toBeInTheDocument()
   })
 
   it('shows the breadcrumb as ancestry context when the folder is nested', () => {
@@ -41,8 +41,17 @@ describe('FolderSuggestionCard', () => {
   it('hides the breadcrumb for a root folder, where it only repeats the name', () => {
     renderCard({ folderName: 'Errands', breadcrumb: 'Errands' })
     // The question still renders the name; the redundant second line does not.
-    expect(screen.getByText('Move this session to Errands?')).toBeInTheDocument()
+    expect(screen.getByText('Move this session into folder \u201cErrands\u201d?')).toBeInTheDocument()
     expect(screen.queryByTitle('Errands')).not.toBeInTheDocument()
+  })
+
+  it('keeps the whole question reachable on hover, since the line truncates', () => {
+    // The question line is single-line `truncate`, and for a ROOT folder the
+    // breadcrumb is suppressed — so this tooltip is the only way to recover a
+    // folder name that got clipped.
+    renderCard({ folderName: 'Errands', breadcrumb: 'Errands' })
+    const question = screen.getByText('Move this session into folder \u201cErrands\u201d?')
+    expect(question.getAttribute('title')).toBe('Move this session into folder \u201cErrands\u201d?')
   })
 
   it('calls onAccept once for the move button', async () => {

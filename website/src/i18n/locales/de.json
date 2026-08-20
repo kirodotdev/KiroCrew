@@ -5244,7 +5244,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "Ordnervorschlag",
-      "move_to_folder_question": "Diese Sitzung nach {{folder}} verschieben?",
+      "move_to_folder_question": "Diese Sitzung in den Ordner „{{folder}}“ verschieben?",
       "no_thanks": "Nicht jetzt",
       "yes_move_it": "Verschieben"
     },

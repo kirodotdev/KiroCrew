@@ -5165,7 +5165,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "フォルダーの提案",
-      "move_to_folder_question": "このセッションを {{folder}} に移動しますか？",
+      "move_to_folder_question": "このセッションを「{{folder}}」フォルダーに移動しますか？",
       "no_thanks": "今はしない",
       "yes_move_it": "移動"
     },

@@ -5165,7 +5165,7 @@
     },
     "folderSuggestionCard": {
       "folder_suggestion": "폴더 제안",
-      "move_to_folder_question": "이 세션을 {{folder}}(으)로 이동할까요?",
+      "move_to_folder_question": "이 세션을 ‘{{folder}}’ 폴더로 이동할까요?",
       "no_thanks": "나중에",
       "yes_move_it": "이동"
     },
