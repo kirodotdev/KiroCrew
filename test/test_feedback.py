@@ -95,6 +95,11 @@ def _allow(monkeypatch: pytest.MonkeyPatch, identity: str = _TEST_IDENTITY) -> N
     exercises the Aperture path rather than the consent gate."""
     monkeypatch.setattr(feedback, "_telemetry_permitted", lambda *a, **k: True)
     monkeypatch.setattr(feedback, "_survey_identity", lambda: identity)
+    # Established user: past the new-user session window, so route tests reach
+    # the Aperture path rather than being short-circuited by the window gate.
+    monkeypatch.setattr(
+        feedback, "get_user_session_count", lambda: feedback.NEW_USER_SESSION_THRESHOLD
+    )
 
 
 def _deny_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,6 +226,57 @@ class TestConsentGate:
         resp = await feedback.api_feedback_submit(_dashboard_req("POST", "/api/feedback/submit"))
         assert resp.status == 403
         assert json.loads(resp.body) == {"code": "telemetry_disabled"}
+
+
+class TestNewUserSessionWindow:
+    """The survey stays hidden until the install has >= NEW_USER_SESSION_THRESHOLD
+    genuine user sessions, and that gate short-circuits before Aperture."""
+
+    def _req(self) -> web.Request:
+        return _dashboard_req("GET", "/api/feedback/eligible")
+
+    @pytest.mark.asyncio
+    async def test_under_threshold_not_eligible_even_if_aperture_would_say_yes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _allow(monkeypatch)
+        # One short of the window.
+        monkeypatch.setattr(
+            feedback, "get_user_session_count", lambda: feedback.NEW_USER_SESSION_THRESHOLD - 1
+        )
+        # Aperture WOULD return eligible; if the gate is working we never reach it.
+        _install_fake_session(monkeypatch, _FakeResp(200, json_body={"prompt": "x"}))
+        resp = await feedback.api_feedback_eligible(self._req())
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"eligible": False}
+
+    @pytest.mark.asyncio
+    async def test_at_threshold_reaches_aperture(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _allow(monkeypatch)
+        monkeypatch.setattr(
+            feedback, "get_user_session_count", lambda: feedback.NEW_USER_SESSION_THRESHOLD
+        )
+        _install_fake_session(monkeypatch, _FakeResp(200, json_body={"prompt": "x"}))
+        resp = await feedback.api_feedback_eligible(self._req())
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"eligible": True}
+
+    @pytest.mark.asyncio
+    async def test_past_window_but_server_dedup_not_due_stays_not_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The session+cooldown combo at the server layer: the new-user window is
+        # cleared (count == threshold), but Aperture's own per-user dedup says
+        # "not due yet" (null body) -- the server-side analog of the 30-day
+        # cooldown. Clearing the session window must NOT override it; both gates
+        # are independent, so the survey stays not-eligible. (The browser's
+        # 30-day localStorage cooldown is a separate client gate, proven in
+        # SessionPulseSurveyCard.test.tsx; the backend never sees it.)
+        _allow(monkeypatch)  # session count == NEW_USER_SESSION_THRESHOLD
+        _install_fake_session(monkeypatch, _FakeResp(200, json_body=None))
+        resp = await feedback.api_feedback_eligible(self._req())
+        assert resp.status == 200
+        assert json.loads(resp.body) == {"eligible": False}
 
 
 class TestCustomerResponses:

@@ -54,6 +54,10 @@ from kiro_crew import beacon
 from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.session_pulse_counter import (
+    NEW_USER_SESSION_THRESHOLD,
+    get_user_session_count,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -350,6 +354,13 @@ async def api_feedback_eligible(request: web.Request) -> web.Response:
     # Egress consent gate: an opted-out install must not even reach Aperture.
     # Off the event loop (config I/O + SEL audit record).
     if not await asyncio.to_thread(_telemetry_permitted, "feedback_eligible"):
+        return web.json_response({"eligible": False})
+
+    # New-user window: never surface the survey until this install has started
+    # at least NEW_USER_SESSION_THRESHOLD genuine user chats. The count is kept
+    # durably server-side (session_pulse_counter), so a fresh install fails
+    # closed here. Off the event loop: it reads a small state file.
+    if await asyncio.to_thread(get_user_session_count) < NEW_USER_SESSION_THRESHOLD:
         return web.json_response({"eligible": False})
 
     # Off the event loop: install_id() may create/permission the id file.

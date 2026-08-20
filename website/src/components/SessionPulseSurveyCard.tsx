@@ -52,8 +52,10 @@ const CONFIRMATION_DISPLAY_MS = 3000
 // whichever check is stricter wins.
 const COOLDOWN_KEY = 'kirocrew_survey_last_shown'
 const COOLDOWN_DAYS = 30
-// Minimum live (post-baseline) assistant turns before the survey is eligible.
-const MIN_LIVE_TURNS = 3
+// Minimum live (post-baseline) completed back-and-forth turns before the survey
+// is eligible. A "turn" here is one user message answered by an assistant reply
+// (counted in ChatPage as completedTurnCount), not a raw assistant message.
+const MIN_LIVE_TURNS = 10
 
 function localCooldownElapsed(): boolean {
   const lastShown = safeGetItem(COOLDOWN_KEY)
@@ -145,14 +147,15 @@ export default function SessionPulseSurveyCard({
   const [submitError, setSubmitError] = useState(false)
   // Baseline captured once per session mount (this component remounts on
   // session switch via `key={activeSlot}`). turnCount includes every
-  // assistant turn already loaded from history, so without a baseline,
-  // reopening any session with >=3 prior turns would pop the survey on every
-  // visit — merely re-reading old messages, not a fresh interaction. Only
-  // turns completed live past this baseline count toward eligibility.
+  // completed turn already loaded from history, so without a baseline,
+  // reopening any session with prior turns past the threshold would pop the
+  // survey on every visit — merely re-reading old messages, not a fresh
+  // interaction. Only turns completed live past this baseline count toward
+  // eligibility.
   const [baselineTurnCount] = useState(turnCount)
   const liveTurnCount = turnCount - baselineTurnCount
-  // Without this guard, crossing the turn-3 threshold re-fires the query on
-  // every subsequent turn (4th, 5th, ...) as long as the card stays hidden —
+  // Without this guard, crossing the turn threshold re-fires the query on
+  // every subsequent turn as long as the card stays hidden —
   // each one re-hitting /api/feedback/eligible for an answer that cannot
   // change mid-session. `enabled` covers that (React Query only fetches once
   // while the gate stays true and the result is cached), so no separate

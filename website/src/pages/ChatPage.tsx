@@ -99,7 +99,7 @@ import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
 import { isEmbeddedPane } from '../lib/embedded'
-import { isSystemNoticeKind } from '../lib/systemNotice'
+import { countCompletedTurns } from '../lib/completedTurns'
 import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
@@ -870,19 +870,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const messagesRef = useRef(messages)
   messagesRef.current = messages
   const kiroCrewVersion = useAppSelector(s => s.dashboard.status?.version) || ''
-  const assistantTurnCount = useMemo(
-    () =>
-      messages.filter(
-        m =>
-          m.role === 'assistant' &&
-          // Skip ALL assistant-role system notices (compaction, session_reload,
-          // and any future kind), not just compaction — otherwise a reload
-          // notice or stage separator counts as a completed assistant turn and
-          // can trip the survey's 3-turn threshold with no real interaction.
-          !isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined)),
-      ).length,
-    [messages],
-  )
+  // Count COMPLETED back-and-forths (one user message answered by an assistant
+  // reply), not raw assistant-role messages — see countCompletedTurns for why a
+  // plain assistant-message tally over-counts. Extracted to a pure helper so the
+  // counting rule is unit-tested directly (completedTurns.test.ts).
+  const completedTurnCount = useMemo(() => countCompletedTurns(messages), [messages])
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
@@ -6804,7 +6796,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     key={activeSlot}
                     sessionId={activeSlot}
                     kiroCrewVersion={kiroCrewVersion}
-                    turnCount={assistantTurnCount}
+                    turnCount={completedTurnCount}
                     slotOrigin={currentSlot?.origin}
                     onLayoutChange={handleSurveyLayoutChange}
                   />

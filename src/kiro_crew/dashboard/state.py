@@ -31,6 +31,7 @@ from kiro_crew.constants import (
     SUBAGENT_COMPLETION_PREFIX,
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
+from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
@@ -4864,6 +4865,12 @@ class DashboardState:
                     f"Slot {name!r} already exists with memory_mode={existing.memory_mode!r}"
                 )
             return existing
+        # A brand-new chat arrives with no name and is auto-minted here; restore
+        # and rehydrate always pass the persisted key as ``name`` (and
+        # get-existing returns above). Only the mint path is a genuine new
+        # user-initiated chat, so only it may count toward the survey's session
+        # window -- otherwise every restart re-counts each restored user slot.
+        minted_new = not name
         if not name:
             self._slot_counter += 1
             ts = int(time.time())
@@ -4906,6 +4913,15 @@ class DashboardState:
         # SlotOrigin.USER), so a caller that forgets to declare loses
         # visibility instead of leaking — the direction this has to fail in.
         slot._origin = origin or (SlotOrigin.APP if app else "")
+        if minted_new and slot._origin == SlotOrigin.USER:
+            # Count only genuine, newly-minted user chats toward the survey's
+            # "new user" window (session_pulse_counter). `minted_new` excludes
+            # restore/rehydrate (which passes the persisted key as name) and
+            # get-existing, so a restart never re-counts already-seen sessions;
+            # only the request layer ever supplies origin=USER. Best-effort:
+            # the helper swallows its own I/O errors and never raises into
+            # slot creation.
+            increment_user_session_count()
         if memory_mode and memory_mode != "persistent":
             self._restricted_keys.add(f"dashboard:{name}")
         if ephemeral:

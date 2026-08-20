@@ -58,9 +58,9 @@ function renderCard(onLayoutChange = vi.fn()) {
   return { ...utils, rerenderWithTurnCount, onLayoutChange }
 }
 
-/** Crosses the turn-3 eligibility threshold and waits for the card to show. */
+/** Crosses the 10-turn eligibility threshold and waits for the card to show. */
 async function showCard(rerenderWithTurnCount: (n: number) => void) {
-  rerenderWithTurnCount(3)
+  rerenderWithTurnCount(10)
   await waitFor(() => {
     expect(screen.getByText(RATING_QUESTION)).toBeInTheDocument()
   })
@@ -119,9 +119,30 @@ describe('SessionPulseSurveyCard (collapsed disclosure)', () => {
 
     // A later turn arriving must not re-trigger the reopen-loop bug this
     // redesign sits on top of.
-    rerenderWithTurnCount(4)
+    rerenderWithTurnCount(11)
     await new Promise((r) => setTimeout(r, 50))
     expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
+  })
+
+  it('does NOT re-show within 30 days of a prior show, even past the turn threshold', async () => {
+    // Simulate a browser that already saw the survey in a prior build: a fresh
+    // cooldown stamp is present. Even with eligibility true (beforeEach) and
+    // the turn gate crossed, the 30-day cooldown must keep the card hidden --
+    // this is what stops anyone who already answered from being re-surveyed.
+    const { rerenderWithTurnCount } = renderCard()
+    localStorage.setItem('kirocrew_survey_last_shown', new Date().toISOString())
+    rerenderWithTurnCount(10)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
+  })
+
+  it('shows again once the 30-day cooldown has elapsed', async () => {
+    // The flip side: a stamp older than 30 days no longer blocks, so the pulse
+    // remains periodic rather than one-and-done.
+    const { rerenderWithTurnCount } = renderCard()
+    const thirtyOneDaysAgoMs = Date.now() - 31 * 24 * 60 * 60 * 1000
+    localStorage.setItem('kirocrew_survey_last_shown', new Date(thirtyOneDaysAgoMs).toISOString())
+    await showCard(rerenderWithTurnCount)
   })
 
   it('submitting collapses to a one-line thank-you row (not the full form) and auto-hides', async () => {
@@ -208,7 +229,7 @@ describe('SessionPulseSurveyCard (origin-based surface gate)', () => {
     ['system', 'a gateway-internal session'],
     [undefined, 'an untagged / still-loading session'],
   ])(
-    'never shows for origin=%s (%s), even on a chat-<n>-<ts> key past turn 3',
+    'never shows for origin=%s (%s), even on a chat-<n>-<ts> key past turn 10',
     async (origin) => {
       // Deliberately uses the ORDINARY chat-key shape: the gate is the slot
       // ORIGIN, not the key. A non-user origin must be excluded even when the
@@ -219,7 +240,7 @@ describe('SessionPulseSurveyCard (origin-based surface gate)', () => {
         'chat-1-1786589233',
         origin as string | undefined,
       )
-      rerenderWithTurnCount(3)
+      rerenderWithTurnCount(10)
       // Give any (incorrectly) enabled query a chance to resolve and the show
       // effect a chance to fire, so this isn't just "we didn't wait long enough".
       await new Promise((r) => setTimeout(r, 100))
@@ -260,9 +281,9 @@ describe('SessionPulseSurveyCard (cooldown re-checked at show time)', () => {
       </QueryClientProvider>
     )
 
-    // First mount: cross turn 3 so the card shows and writes the cooldown stamp.
+    // First mount: cross turn 10 so the card shows and writes the cooldown stamp.
     const first = render(tree(0))
-    first.rerender(tree(3))
+    first.rerender(tree(10))
     await waitFor(() => {
       expect(screen.getByText(RATING_QUESTION)).toBeInTheDocument()
     })
@@ -272,7 +293,7 @@ describe('SessionPulseSurveyCard (cooldown re-checked at show time)', () => {
     // cached `true`, `handled` has reset, but the 30-day cooldown is now active.
     first.unmount()
     const second = render(tree(0))
-    second.rerender(tree(3))
+    second.rerender(tree(10))
 
     // The card must stay closed: the show effect re-checks the cooldown via
     // eligibilityGate, so a stale cached `true` can no longer reopen it and
@@ -386,7 +407,7 @@ describe('SessionPulseSurveyCard (eligibility fails closed)', () => {
       http.post('/api/feedback/submit', () => HttpResponse.json({ ok: true })),
     )
     const { rerenderWithTurnCount } = renderCard()
-    rerenderWithTurnCount(3)
+    rerenderWithTurnCount(10)
     // Give the (now failing) eligibility query time to resolve so this isn't
     // just "we didn't wait long enough".
     await new Promise((r) => setTimeout(r, 100))
@@ -399,8 +420,49 @@ describe('SessionPulseSurveyCard (eligibility fails closed)', () => {
       http.post('/api/feedback/submit', () => HttpResponse.json({ ok: true })),
     )
     const { rerenderWithTurnCount } = renderCard()
-    rerenderWithTurnCount(3)
+    rerenderWithTurnCount(10)
     await new Promise((r) => setTimeout(r, 100))
     expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionPulseSurveyCard (turn baseline / reopened chat)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    server.use(
+      http.get('/api/feedback/eligible', () => HttpResponse.json({ eligible: true })),
+      http.post('/api/feedback/submit', () => HttpResponse.json({ ok: true })),
+    )
+  })
+
+  it('ignores an old chat\u2019s prior history: needs 10 NEW back-and-forths past the mount baseline', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const tree = (turnCount: number) => (
+      <QueryClientProvider client={qc}>
+        <SessionPulseSurveyCard
+          sessionId="chat-9-1786950000"
+          kiroCrewVersion="1.0.0"
+          turnCount={turnCount}
+          slotOrigin="user"
+        />
+      </QueryClientProvider>
+    )
+
+    // Reopen a chat that already has 40 back-and-forths of history: the card
+    // captures 40 as its baseline at mount, so those prior turns must NOT count.
+    const { rerender } = render(tree(40))
+
+    // 9 NEW back-and-forths (turnCount 49) is still one short of the live
+    // threshold -- the survey stays hidden even though the absolute count (49)
+    // is far past 10.
+    rerender(tree(49))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(screen.queryByText(RATING_QUESTION)).not.toBeInTheDocument()
+
+    // The 10th NEW back-and-forth (turnCount 50) crosses the live threshold.
+    rerender(tree(50))
+    await waitFor(() => {
+      expect(screen.getByText(RATING_QUESTION)).toBeInTheDocument()
+    })
   })
 })
