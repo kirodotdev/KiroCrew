@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -1003,6 +1004,108 @@ class TestFirstPrinciplesScopeGateBehavior:
         )
         assert out.returncode == 0, out.stderr
         assert (out.stdout == "true") is want, f"{lane}: {touched!r} -> {out.stdout!r}"
+
+
+UX_LANES = ("ux-review.yml", "fork-ux-review.yml")
+
+
+class TestUxScopeGateSurvivesAWideDiff:
+    """Execute the ACTUAL UI-detection shell from both UX lanes against a diff
+    big enough to expose the pipe-timing bug (#3447, defect 3).
+
+    Under ``pipefail``, ``printf … | grep -q`` reports 141 when the match is
+    found early enough that ``grep`` exits while ``printf`` is still writing:
+    ``printf`` dies on SIGPIPE and the pipeline's status becomes the writer's.
+    The gate then reads a MATCHING diff as "not UI-relevant" and the reviewer
+    skips green -- a silent, invisible loss rather than a visible failure.
+
+    Parameterized on the size of the non-matching tail because the defect is
+    latent at small sizes (printf finishes before grep exits, status 0) and
+    only appears once the write blocks -- which is exactly why it survived
+    review and only bites on wide diffs.
+    """
+
+    def _gate(self, name: str) -> str:
+        script = _step_script(_workflow(name), "Detect UI-relevant changes")
+        start = script.index("if grep -qE")
+        end = script.index("fi", start)
+        return script[start:end] + "fi"
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    @pytest.mark.parametrize("tail_files", [1, 200_000])
+    def test_a_ui_change_is_detected_regardless_of_diff_width(
+        self, lane: str, tail_files: int
+    ) -> None:
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("the scope gate runs only under Bash")
+        # The UI file comes FIRST so `grep -q` can answer immediately -- the
+        # worst case for the writer, and the one that manufactured 141.
+        touched = "website/src/App.tsx\n" + "\n".join(
+            f"src/kiro_crew/module_{i}.py" for i in range(tail_files)
+        )
+        # Via a FILE, not the environment: a 200k-line value blows past the
+        # execve argument/environment limit (E2BIG) long before it reaches the
+        # gate, and the test would fail on the harness rather than the defect.
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+            fh.write(touched)
+            listing = fh.name
+        try:
+            script = (
+                "set -euo pipefail\n"
+                'changed="$(cat "$TOUCHED_FILE")"\n'
+                'GITHUB_OUTPUT="$(mktemp)"\n'
+                + self._gate(lane)
+                + '\ncat "$GITHUB_OUTPUT"'
+            )
+            out = subprocess.run(
+                [bash, "-c", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "TOUCHED_FILE": listing},
+            )
+        finally:
+            os.unlink(listing)
+        assert out.returncode == 0, f"{lane}: gate exited {out.returncode}: {out.stderr}"
+        assert "ui=true" in out.stdout, (
+            f"{lane}: a diff touching website/ was classified as not-UI-relevant "
+            f"with a {tail_files}-file tail -- the UX review would skip green"
+        )
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    def test_a_non_ui_diff_still_skips(self, lane: str) -> None:
+        """The fix must not turn the gate into an always-true: a backend-only
+        diff still has to skip, or every PR pays for a UX review."""
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("the scope gate runs only under Bash")
+        touched = "src/kiro_crew/session.py\ndocs/ci/ci-and-reviews.md"
+        script = (
+            "set -euo pipefail\n"
+            'changed="$TOUCHED"\n'
+            'GITHUB_OUTPUT="$(mktemp)"\n'
+            + self._gate(lane)
+            + '\ncat "$GITHUB_OUTPUT"'
+        )
+        out = subprocess.run(
+            [bash, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "TOUCHED": touched},
+        )
+        assert out.returncode == 0, out.stderr
+        assert "ui=false" in out.stdout, f"{lane}: backend-only diff was read as UI"
+
+    @pytest.mark.parametrize("lane", UX_LANES)
+    def test_the_gate_keeps_the_writer_out_of_the_pipeline(self, lane: str) -> None:
+        """Pin the SHAPE, not just the behaviour: the behavioural test above
+        needs a 200k-line diff to fail, so a revert to the piped form would
+        pass every small-input check and only regress in production."""
+        gate = self._gate(lane)
+        assert "<<<" in gate, f"{lane}: expected a here-string feeding grep"
+        assert "printf" not in gate, f"{lane}: writer is back in the pipeline"
 
 
 class TestPreparePrPreSubmitReview:
