@@ -294,7 +294,12 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
           <ChevronRight size={16} />
         </button>
       )}
-      <div ref={setScroller} className="flex gap-1.5 overflow-x-auto items-center" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+      {/* Chips are bottom-aligned, not centred: a long label clamps onto two
+          lines and makes its chip taller than the rest, and centring floats
+          every single-line chip into the middle of that taller row. The shared
+          edge is the BOTTOM one because the strip sits directly above the
+          composer, so that is the edge the row is read against. */}
+      <div ref={setScroller} className="flex gap-1.5 overflow-x-auto items-end" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {options.map(o => {
           const isPicked = picked.has(o)
           return (
@@ -318,7 +323,10 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
 
 function MultilineLayout({ options, picked, onSelect, onSend, quickSend }: Omit<FollowUpBarProps, 'layout'>) {
   return (
-    <div className="flex gap-1.5 flex-wrap pt-1 items-center">
+    // Bottom-aligned for the same reason as the scroll layout: a two-line
+    // clamped chip must not float its single-line neighbours onto its own
+    // centre line, and the edge shared with the composer below is the bottom.
+    <div className="flex gap-1.5 flex-wrap pt-1 items-end">
       {options.map(o => {
         const isPicked = picked.has(o)
         return (

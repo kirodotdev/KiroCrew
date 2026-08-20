@@ -322,6 +322,38 @@ describe('FollowUpBar', () => {
       expect(screen.getByRole('button', { name: LONG }).getAttribute('title')).toBe(LONG)
     })
 
+    // A clamped label makes its own chip two lines tall. Centring the row then
+    // floats every single-line chip to that chip's middle; the row is read
+    // against the composer directly below it, so the shared edge is the bottom.
+    it('bottom-aligns the chips in the scroll layout so a two-line chip does not float its neighbours', () => {
+      const { container } = render(<FollowUpBar options={['Go', LONG]} picked={new Set()} onSelect={() => {}} layout="scroll" />)
+      const strip = screen.getByRole('button', { name: 'Go' }).parentElement
+      expect(strip?.className).toContain('items-end')
+      expect(strip?.className).not.toContain('items-center')
+      expect(strip?.className).not.toContain('items-start')
+      // Pin the queried node as the scrolling strip, so the assertion cannot
+      // pass by having landed on some other ancestor.
+      expect(strip?.className).toContain('overflow-x-auto')
+      expect(container.querySelector('.items-center.overflow-x-auto')).toBeNull()
+    })
+
+    it('bottom-aligns the chips in the multiline layout', () => {
+      render(<FollowUpBar options={['Go', LONG]} picked={new Set()} onSelect={() => {}} />)
+      const row = screen.getByRole('button', { name: 'Go' }).parentElement
+      expect(row?.className).toContain('flex-wrap')
+      expect(row?.className).toContain('items-end')
+      expect(row?.className).not.toContain('items-center')
+      expect(row?.className).not.toContain('items-start')
+    })
+
+    // The send segment still centres its arrow against the full chip height —
+    // aligning the row on one edge must not collapse the segment to one line.
+    it('keeps the send segment stretched to the chip height', () => {
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} onSend={() => {}} layout="scroll" />)
+      const wrapper = screen.getByRole('button', { name: LONG }).parentElement
+      expect(wrapper?.className).toContain('items-stretch')
+    })
+
     it('leaves a short label tooltip as the gesture hint alone', () => {
       render(<FollowUpBar options={['Merge it now']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
       const title = screen.getByRole('button', { name: 'Merge it now' }).getAttribute('title') ?? ''
