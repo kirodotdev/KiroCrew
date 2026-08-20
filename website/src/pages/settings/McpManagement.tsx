@@ -581,6 +581,10 @@ export function McpManagement() {
   // `notice` below, which is that control's own inline hint rather than a
   // page-level statement about the gateway.
   const [restartNotice, setRestartNotice] = useState<string | null>(null)
+  // A third state rather than a reuse of either sibling above: `notice` reports a
+  // stub-set change and `restartNotice` reports a pending restart, and one banner
+  // shared by unrelated actions would let either overwrite the other's result.
+  const [resolveNotice, setResolveNotice] = useState<string | null>(null)
 
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
@@ -645,6 +649,32 @@ export function McpManagement() {
       }
     },
     onError: onApplyError('pages.mcpManagement.sharing_failed'),
+  })
+
+  // Pre-resolving an npm-launcher server lets its launch exec the installed
+  // tree, so session start does no dependency resolution. The timed pass keeps
+  // an unpinned spec current on its own; this is the operator asking to check
+  // upstream now, so it reports what the pass produced rather than only that it
+  // ran. A 409 means a pass is already in flight, which is information, not a
+  // failure to retry.
+  const resolveRefresh = useMutation({
+    mutationFn: () => api.mcpResolveRefresh(),
+    onSuccess: res => {
+      invalidate()
+      if (!res.ok) {
+        // Not an error: the operator has nothing routed, which is the same class
+        // of fact the sharing card states as plain text rather than as an alarm.
+        setResolveNotice(i18nT('pages.mcpManagement.resolve_no_targets'))
+        return
+      }
+      const ready = res.ready?.length ?? 0
+      setResolveNotice(
+        ready > 0
+          ? i18nT('pages.mcpManagement.resolve_ready', { ready: String(ready) })
+          : i18nT('pages.mcpManagement.resolve_none_ready'),
+      )
+    },
+    onError: onApplyError('pages.mcpManagement.resolve_failed'),
   })
 
   const busy = setStub.isPending || setSharing.isPending
@@ -940,6 +970,52 @@ export function McpManagement() {
               else setSharing.mutate(false)
             }}
           />
+        </div>
+      </section>
+
+      {/* Global: pre-resolve npm-launcher servers so launches skip resolution. */}
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
+        <div className="flex items-start gap-5">
+          <div className="flex-1">
+            <div className="text-[15px] font-semibold text-[var(--text)]">
+              {i18nT('pages.mcpManagement.resolve_label')}
+            </div>
+            <p
+              id="mcp-resolve-desc"
+              className="mt-1.5 max-w-[64ch] text-[13px] leading-relaxed text-[var(--muted)]"
+            >
+              {i18nT('pages.mcpManagement.resolve_description')}
+            </p>
+            {/* A control that can do nothing has to say so BEFORE it is pressed.
+                Pre-resolving acts on the routed set, and routing is what a stub
+                creates, so with nothing stubbed there is nothing to resolve --
+                the same gate the sharing card states in plain text above. */}
+            {stubCount === 0 && (
+              <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+                {i18nT('pages.mcpManagement.resolve_needs_a_stub')}
+              </p>
+            )}
+            {resolveNotice && (
+              <p className="mt-2 text-[12.5px] text-[var(--text)]" role="status">
+                {resolveNotice}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-describedby="mcp-resolve-desc"
+            disabled={resolveRefresh.isPending}
+            onClick={() => {
+              setError(null)
+              setResolveNotice(null)
+              resolveRefresh.mutate()
+            }}
+            className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {resolveRefresh.isPending
+              ? i18nT('pages.mcpManagement.resolve_updating')
+              : i18nT('pages.mcpManagement.resolve_update_now')}
+          </button>
         </div>
       </section>
 

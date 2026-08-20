@@ -4398,6 +4398,21 @@ class McpGatewayConfig:
         default=300,
         metadata=_meta("Idle Timeout", "Seconds a refcount=0 MCP backend is kept before drain."),
     )
+    resolve_once_refresh_hours: int = field(
+        default=24,
+        metadata=_meta(
+            "Pre-resolve Refresh",
+            "Hours before an UNPINNED npm-launcher MCP server (an npx spec at "
+            "@latest, a range, or no version) is re-resolved from the registry. "
+            "Pre-resolving lets a launch exec the installed tree directly, so "
+            "session start does no dependency resolution and needs no network; "
+            "this is how often that resolution is refreshed so such a spec still "
+            "tracks upstream. A spec pinned to an exact version ignores this -- "
+            "re-asking about an exact version cannot change the answer. 0 "
+            "re-resolves on every prefetch pass; a server with no resolution yet "
+            "simply launches the way it does today.",
+        ),
+    )
     max_backends: int = field(
         default=64,
         metadata=_meta(
@@ -6720,6 +6735,11 @@ class KiroCrewConfig:
                 overlay_dir=str(mcp_gateway_data.get("overlay_dir", "")),
                 idle_timeout_secs=max(
                     10, _safe_int(mcp_gateway_data.get("idle_timeout_secs", 300), 300)
+                ),
+                # 0 is meaningful (re-resolve every pass), so the floor is 0 and
+                # not the usual "at least something" clamp.
+                resolve_once_refresh_hours=max(
+                    0, _safe_int(mcp_gateway_data.get("resolve_once_refresh_hours", 24), 24)
                 ),
                 max_backends=max(1, _safe_int(mcp_gateway_data.get("max_backends", 64), 64)),
                 poolable_servers=[

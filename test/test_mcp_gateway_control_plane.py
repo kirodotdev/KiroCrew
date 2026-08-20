@@ -38,16 +38,89 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
         _mcp_gateway_manager="MGR",
         _apply_mcp_gateway_enabled="ENABLE_CB",
         _apply_mcp_stub="POOLABLE_CB",
+        _refresh_mcp_resolutions="RESOLVE_CB",
     )
     GatewayOrchestrator._wire_mcp_gateway_dashboard(orch)  # type: ignore[arg-type]
     assert ds._mcp_gateway_manager == "MGR"
     assert ds._mcp_gateway_apply == "ENABLE_CB"
     assert ds._mcp_gateway_apply_stub == "POOLABLE_CB"
+    # The pre-resolve refresh is wired the same way: the handler reads it off
+    # DashboardState, so leaving it on the orchestrator makes the endpoint 503.
+    assert ds._mcp_resolve_refresh == "RESOLVE_CB"
 
 
 def test_wire_is_noop_when_dashboard_absent() -> None:
     orch = SimpleNamespace(dashboard_state=None)
     GatewayOrchestrator._wire_mcp_gateway_dashboard(orch)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_pre_resolve_pass_runs_on_a_clock_not_only_at_boot(monkeypatch) -> None:
+    """``resolve_once_refresh_hours`` needs something to tick it.
+
+    Staleness is consulted only when a pass runs, and the launch path ignores it
+    by design, so a single startup pass would freeze an unpinned ``@latest`` spec
+    at whatever it resolved to on boot -- on a gateway that stays up for weeks,
+    the config key would silently mean nothing.
+    """
+    import asyncio as _asyncio
+
+    passes: list[dict[str, str]] = []
+    slept: list[float] = []
+
+    async def fake_pass(target_env):
+        passes.append(target_env)
+        return {}
+
+    class _Stop(Exception):
+        pass
+
+    async def fake_sleep(secs):
+        slept.append(secs)
+        if len(slept) >= 3:
+            raise _Stop
+        return None
+
+    monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+    orch = SimpleNamespace(
+        _cfg=SimpleNamespace(mcp_gateway=SimpleNamespace(resolve_once_refresh_hours=24)),
+        _prefetch_mcp_resolutions=fake_pass,
+        _MCP_RESOLVE_MIN_SLEEP_SECS=GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS,
+    )
+    with pytest.raises(_Stop):
+        await GatewayOrchestrator._mcp_resolve_prefetch_loop(orch, {"A": "b"})  # type: ignore[arg-type]
+    # More than once is the whole point; one pass is the bug being fixed.
+    assert len(passes) == 3
+    assert slept == [86400.0, 86400.0, 86400.0]
+
+
+@pytest.mark.asyncio
+async def test_a_zero_refresh_window_does_not_spin_the_pre_resolve_loop(monkeypatch) -> None:
+    """``0`` legitimately means "always stale" -- but must not mean "reinstall forever"."""
+    import asyncio as _asyncio
+
+    slept: list[float] = []
+
+    async def fake_pass(_target_env):
+        return {}
+
+    class _Stop(Exception):
+        pass
+
+    async def fake_sleep(secs):
+        slept.append(secs)
+        raise _Stop
+
+    monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
+    orch = SimpleNamespace(
+        _cfg=SimpleNamespace(mcp_gateway=SimpleNamespace(resolve_once_refresh_hours=0)),
+        _prefetch_mcp_resolutions=fake_pass,
+        _MCP_RESOLVE_MIN_SLEEP_SECS=GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS,
+    )
+    with pytest.raises(_Stop):
+        await GatewayOrchestrator._mcp_resolve_prefetch_loop(orch, {})  # type: ignore[arg-type]
+    assert slept == [GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS]
+    assert slept[0] > 0
 
 
 @pytest.mark.asyncio

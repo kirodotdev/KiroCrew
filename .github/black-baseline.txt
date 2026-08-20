@@ -206,7 +206,6 @@ src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli.py
 src/kiro_crew/cli_bench.py
 src/kiro_crew/cli_cloud.py
-src/kiro_crew/cli_commands.py
 src/kiro_crew/cli_desktop.py
 src/kiro_crew/cli_doctor.py
 src/kiro_crew/cli_server.py
@@ -391,7 +390,6 @@ src/kiro_crew/mcp_gateway/backend.py
 src/kiro_crew/mcp_gateway/breaker.py
 src/kiro_crew/mcp_gateway/claim.py
 src/kiro_crew/mcp_gateway/evaluate.py
-src/kiro_crew/mcp_gateway/gatewayd.py
 src/kiro_crew/mcp_gateway/hazards.py
 src/kiro_crew/mcp_gateway/image_budget.py
 src/kiro_crew/mcp_gateway/manager.py
@@ -415,7 +413,6 @@ src/kiro_crew/mcp_tools/skills.py
 src/kiro_crew/mcp_tools/spawn.py
 src/kiro_crew/mcp_tools/workflows.py
 src/kiro_crew/mcp_utils.py
-src/kiro_crew/memory.py
 src/kiro_crew/messaging/attachments.py
 src/kiro_crew/messaging/driver.py
 src/kiro_crew/messaging/link.py
@@ -447,7 +444,6 @@ src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/safety_override.py
-src/kiro_crew/sandbox.py
 src/kiro_crew/security.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py
