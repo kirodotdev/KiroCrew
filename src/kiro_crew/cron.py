@@ -52,7 +52,7 @@ from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.resource_status import admission_check
-from kiro_crew.validation import MAX_CRON_MESSAGE
+from kiro_crew.validation import MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
 
@@ -1400,6 +1400,17 @@ class CronService:
             raise ValueError("message must be a string")
         if len(message) > MAX_CRON_MESSAGE:
             raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
+        # Same chokepoint argument for the name. The dashboard POST handler
+        # caps it at MAX_SHORT_STRING via validate_string_field, but the other
+        # create surfaces (MCP cron_add, the apps SDK, the CLI) reach this
+        # constructor directly, so the cap has to live here to actually bind
+        # them. Type first: len() succeeds on a list, which would then be
+        # persisted into crons.json and only surface as a render/log failure
+        # somewhere far from the request that wrote it.
+        if not isinstance(name, str):
+            raise ValueError("name must be a string")
+        if len(name) > MAX_SHORT_STRING:
+            raise ValueError(f"name exceeds max length {MAX_SHORT_STRING}")
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -1612,6 +1623,15 @@ class CronService:
                     if kwargs["approval_mode"] not in valid_approval_modes:
                         raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
                 # Validate before any mutations
+                if "name" in kwargs and kwargs["name"]:
+                    # Mirrors the message check below and _build_job's create-side
+                    # cap: PATCH /api/crons/{id} copied `name` into kwargs raw, so
+                    # a non-string or oversize name was persisted verbatim while
+                    # POST rejected the identical value (#3831).
+                    if not isinstance(kwargs["name"], str):
+                        raise ValueError("name must be a string")
+                    if len(kwargs["name"]) > MAX_SHORT_STRING:
+                        raise ValueError(f"name exceeds max length {MAX_SHORT_STRING}")
                 if "message" in kwargs and kwargs["message"]:
                     # Same chokepoint rationale as _build_job: every update
                     # surface (MCP, dashboard PATCH, CLI) funnels here. Type

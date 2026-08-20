@@ -3,6 +3,19 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **`PATCH /api/crons/{id}` no longer persists a cron `name` that `POST
+  /api/crons` would reject.** The PATCH handler copied `name` straight out of
+  the request body into kwargs, and the mutation site guarded it with nothing
+  but truthiness (`if kwargs["name"]:`) — so a non-string (a JSON list is
+  truthy) or a name past the `MAX_SHORT_STRING` cap was written verbatim into
+  `crons.json`, to surface later far from the request that wrote it. Same
+  surface-divergence class fixed for `message` in #3829. `name` now routes
+  through `validate_string_field` on PATCH, matching create's sanitization and
+  typed error code, and the type+length check is also enforced at the
+  persistence owner (`_build_job` / `_update_job_locked`) so the non-REST
+  create and update paths — MCP `cron_add`/`cron_update`, the CLI, the apps
+  SDK — are bound by the same cap instead of each surface deciding for
+  itself. (#3831)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
