@@ -2422,6 +2422,100 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _detect_installed_probe(
+    entries: list[dict[str, Any]],
+    installed_map: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Run each entry's ``detectInstalled`` probe; return the names that report installed.
+
+    Names already known to the app manager (present in *installed_map*) are
+    skipped, as are names whose execution policy denies the probe. A probe
+    timeout or ``OSError`` is swallowed and treated as not-installed. Shared by
+    ``list_registry`` (offline path) and ``_append_external_registry_apps``
+    (online path) so both probe identically -- an app installed OUTSIDE the app
+    manager reads installed on either path.
+    """
+    detected: set[str] = set()
+    for entry in entries:
+        name = entry.get("name", "")
+        if name in installed_map:
+            continue  # already known, skip detection
+        detect_cmd = entry.get("detectInstalled", "")
+        if not detect_cmd:
+            continue
+        denied = app_execution_denied(name, action="registry_detect_installed", caller="registry")
+        if denied:
+            logger.debug("Skipping registry detectInstalled for %s: %s", name, denied)
+            continue
+        try:
+
+            base_cmd = ["/bin/sh", "-c", detect_cmd]
+            sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
+            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+            proc = await create_subprocess_limited(
+                *sandboxed_cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            )
+            await _communicate_with_timeout(proc, timeout=5)
+            if proc.returncode == 0:
+                detected.add(name)
+                logger.info("Detected external install: %s", name)
+        except (asyncio.TimeoutError, OSError):
+            pass  # detection failed, treat as not installed
+    return detected
+
+
+async def _append_external_registry_apps(
+    rows: list[dict[str, Any]],
+    reserved_names: set[Any],
+    installed_map: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Append user-configured external-registry apps to *rows*; return ``(rows, detected)``.
+
+    The SINGLE site where external registries merge into a store listing, called
+    by both ``list_registry`` (offline fallback) and ``list_catalog_apps`` (online
+    catalog path) so the two paths cannot drift. External rows:
+
+    - load via ``_load_external_registries`` (each server-tagged ``_registry``);
+    - deduplicate by ``name`` against *reserved_names* AND each other, so a
+      catalog/seed/builtin row always wins a collision and an external row only
+      ADDS a name no reserved source claims (mirrors ``list_registry``'s original
+      ``seen_names`` precedence). The caller reserves EVERY name the catalog and
+      seed declare -- including a catalog ``git`` name it filtered out as
+      not-yet-installable -- so an external row can never shadow a name install
+      resolves by, which would point install-by-name at the wrong repository;
+    - resolve display copy from the app's own ``app.json`` via ``_resolve_manifest``
+      (the per-app fetch external rows pay today; catalog/seed rows do not pay it);
+    - are probed with ``detectInstalled`` via ``_detect_installed_probe``.
+
+    ``_index_author`` is deliberately NOT snapshotted here: every external row
+    carries ``_registry``, so ``_apply_trust_fields`` takes its external branch,
+    which drops ``_index_author`` and never derives the verified mark from it.
+    """
+    external = await _load_external_registries()
+    seen = set(reserved_names)
+    kept: list[dict[str, Any]] = []
+    for entry in external:
+        name = entry.get("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        kept.append(entry)
+    if not kept:
+        return rows, set()
+    resolved = await asyncio.gather(
+        *[_resolve_manifest(e) for e in kept],
+        return_exceptions=True,
+    )
+    kept = [r if isinstance(r, dict) else kept[i] for i, r in enumerate(resolved)]
+    detected = await _detect_installed_probe(kept, installed_map)
+    rows.extend(kept)
+    return rows, detected
+
+
 async def list_registry() -> list[dict[str, Any]]:
     """Return all registry apps with display info and install status.
 
@@ -2491,14 +2585,6 @@ async def list_registry() -> list[dict[str, Any]]:
         logger.warning("no official catalog inventory this listing", exc_info=True)
 
     # Load external registries from config, deduplicating against core and each other
-    external_entries = await _load_external_registries()
-    seen_names = {e.get("name") for e in entries}
-    for e in external_entries:
-        name = e.get("name")
-        if name not in seen_names:
-            seen_names.add(name)
-            entries.append(e)
-
     installed = await asyncio.to_thread(list_installed_apps)
     installed_map = {a["name"]: a for a in installed}
     # Snapshot the INDEX-declared author before the manifest merge below
@@ -2507,7 +2593,10 @@ async def list_registry() -> list[dict[str, Any]]:
     # the bundled/edition index is trusted content, the fetched manifest is
     # the app author's — a repo publishing ``"author": "kirocrew"`` in its
     # app.json must not mint the badge. Unconditional assignment also
-    # neutralizes an index that pre-seeds the key itself.
+    # neutralizes an index that pre-seeds the key itself. External rows are
+    # appended AFTER this by ``_append_external_registry_apps`` and always carry
+    # ``_registry``, so ``_apply_trust_fields`` drops ``_index_author`` for them
+    # and never reads it — which is why the helper does not snapshot it.
     for entry in entries:
         entry["_index_author"] = entry.get("author")
 
@@ -2525,37 +2614,15 @@ async def list_registry() -> list[dict[str, Any]]:
     )
     entries = [r if isinstance(r, dict) else entries[i] for i, r in enumerate(resolved)]
 
-    # Run detectInstalled commands for apps not already in installed_map
-    detected: set[str] = set()
-    for entry in entries:
-        name = entry.get("name", "")
-        if name in installed_map:
-            continue  # already known, skip detection
-        detect_cmd = entry.get("detectInstalled", "")
-        if not detect_cmd:
-            continue
-        denied = app_execution_denied(name, action="registry_detect_installed", caller="registry")
-        if denied:
-            logger.debug("Skipping registry detectInstalled for %s: %s", name, denied)
-            continue
-        try:
-
-            base_cmd = ["/bin/sh", "-c", detect_cmd]
-            sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
-            sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-            proc = await create_subprocess_limited(
-                *sandboxed_cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=platform_compat.IS_POSIX,
-                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            )
-            await _communicate_with_timeout(proc, timeout=5)
-            if proc.returncode == 0:
-                detected.add(name)
-                logger.info("Detected external install: %s", name)
-        except (asyncio.TimeoutError, OSError):
-            pass  # detection failed, treat as not installed
+    # Probe the seed/catalog rows, then append external registries at the single
+    # shared merge site. Reserving every seed/catalog name means an external row
+    # can only ADD a name none of them claim — the precedence the inline dedup
+    # here used to enforce.
+    detected = await _detect_installed_probe(entries, installed_map)
+    entries, external_detected = await _append_external_registry_apps(
+        entries, {e.get("name") for e in entries}, installed_map
+    )
+    detected |= external_detected
 
     # Overlay the official catalog's curated fields LAST among the content
     # sources, so they win over a fetched manifest -- that is what curation
@@ -2611,6 +2678,17 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     installable. ``verified`` stays ``False`` for non-builtin rows until the
     catalog signature is checked, so this path never mints the first-party badge
     from a document trusted only as far as TLS.
+
+    User-configured external registries (``config.registries``) are appended here
+    too, through the same ``_append_external_registry_apps`` merge site
+    ``list_registry`` uses, so they surface whether or not the catalog is
+    reachable and are enriched, probed, and trust-stamped identically on both
+    paths. A catalog/seed/builtin row WINS a name collision — external rows only
+    ADD apps no catalog or seed name claims — and only external rows pay the
+    per-app manifest fetch. The reserved names include EVERY catalog row name,
+    snapshotted before the ``git``-installability filter below drops a
+    not-yet-installable ``git`` row, so an external row can never shadow a name
+    install resolves by (which would point install-by-name at the wrong repo).
     """
     # Off the event loop: the first call after a cache expiry does network I/O.
     rows = await asyncio.to_thread(official_catalog.list_catalog_rows)
@@ -2618,14 +2696,21 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         return []
     installable = await asyncio.to_thread(_load_registry_file)
     installable_names = {e.get("name") for e in installable if isinstance(e, dict)}
+    # Reserve every catalog name BEFORE the git filter, plus every seed name, so
+    # an external row can never shadow a catalog/seed name — including a catalog
+    # `git` row filtered out here for not being installable yet, whose name
+    # install still resolves by.
+    reserved_names: set[Any] = {row.get("name") for row in rows} | installable_names
     rows = [
         row
         for row in rows
         if row.get("source", {}).get("type") != "git" or row.get("name") in installable_names
     ]
+
     installed = await asyncio.to_thread(list_installed_apps)
     installed_map = {a["name"]: a for a in installed}
-    return _apply_trust_fields(_enrich_with_install_status(rows, installed_map))
+    rows, detected = await _append_external_registry_apps(rows, reserved_names, installed_map)
+    return _apply_trust_fields(_enrich_with_install_status(rows, installed_map, detected))
 
 
 def get_server_platform() -> dict[str, str]:

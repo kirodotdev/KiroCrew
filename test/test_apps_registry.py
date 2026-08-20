@@ -1383,6 +1383,144 @@ class TestApplyTrustFields:
         assert "featured" not in rows["ext-app"]
         # The internal snapshot key never leaks into the API payload.
         assert all("_index_author" not in r for r in rows.values())
+
+
+# ---------------------------------------------------------------------------
+# External registries must surface on the ONLINE catalog path.
+#
+# Regression: handle_registry prefers list_catalog_apps when the published
+# catalog is reachable and only falls back to list_registry (the sole path that
+# merged external registries) when the catalog is empty. So a configured
+# external app was silently dropped from the store the moment the catalog came
+# online. list_catalog_apps now appends external-registry rows itself.
+# ---------------------------------------------------------------------------
+class TestCatalogAppsIncludesExternalRegistries:
+    @pytest.mark.asyncio
+    async def test_external_registry_app_appears_when_catalog_is_online(self, monkeypatch):
+        """With a NON-EMPTY catalog (so the catalog path is taken), a configured
+        external app still shows up — tagged external, not-installed — and a
+        same-named catalog row wins the dedup."""
+        # Catalog is reachable and non-empty: this forces the list_catalog_apps
+        # path rather than the offline list_registry fallback.
+        catalog_rows = [
+            {"name": "catalog-app", "displayName": "Catalog App"},
+            # Collision: the catalog also lists a name an external registry uses.
+            {"name": "shared-app", "displayName": "Official Shared App"},
+        ]
+        monkeypatch.setattr(
+            registry.official_catalog, "list_catalog_rows", lambda: catalog_rows
+        )
+        # Seed only matters for the git-row installable filter; keep it empty.
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        external_rows = [
+            {"name": "labs-app", "repo": "x", "_registry": "labs"},
+            # Same name as a catalog row — the catalog row must win.
+            {"name": "shared-app", "repo": "y", "_registry": "labs"},
+        ]
+
+        async def _fake_external():
+            return external_rows
+
+        async def _fake_resolve(entry):
+            # Manifests already present in the index fixture; return as-is.
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+
+        # The external-only app is present, tagged external, and not installed.
+        assert "labs-app" in rows
+        assert rows["labs-app"]["_registry"] == "labs"
+        assert rows["labs-app"]["provenance"] == "external"
+        assert rows["labs-app"]["verified"] is False
+        assert rows["labs-app"]["installed"] is False
+        # The collision resolves to the catalog row (official), not the external one.
+        assert rows["shared-app"]["displayName"] == "Official Shared App"
+        assert rows["shared-app"]["provenance"] != "external"
+        # The plain catalog app is untouched.
+        assert "catalog-app" in rows
+        # The internal snapshot key never leaks into the API payload.
+        assert all("_index_author" not in r for r in rows.values())
+
+    @pytest.mark.asyncio
+    async def test_detect_installed_only_external_app_reads_installed_on_catalog_path(
+        self, monkeypatch
+    ):
+        """Install-status PARITY with the offline path: an external app known ONLY
+        via its detectInstalled probe (absent from installed_map) must read
+        installed=True on the ONLINE catalog path too, because that path now runs
+        the same probe and passes the resulting `detected` into enrichment."""
+        monkeypatch.setattr(
+            registry.official_catalog,
+            "list_catalog_rows",
+            lambda: [{"name": "catalog-app", "displayName": "Catalog App"}],
+        )
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        async def _fake_external():
+            return [
+                {
+                    "name": "detect-app",
+                    "repo": "z",
+                    "_registry": "labs",
+                    "detectInstalled": "true",
+                }
+            ]
+
+        async def _fake_resolve(entry):
+            return entry
+
+        # Stand in for the real subprocess probe: report installed the same way
+        # _detect_installed_probe would for a returncode-0 command.
+        async def _fake_probe(entries, installed_map):
+            return {e["name"] for e in entries if e.get("detectInstalled")}
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+        monkeypatch.setattr(registry, "_detect_installed_probe", _fake_probe)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert rows["detect-app"]["installed"] is True
+
+    @pytest.mark.asyncio
+    async def test_external_row_cannot_shadow_filtered_catalog_git_name(self, monkeypatch):
+        """GPT BLOCK regression: a catalog `git` row dropped by the installability
+        filter must still RESERVE its name, so an external row with the same name
+        is deduped away and can never become the row install-by-name resolves."""
+        catalog_rows = [
+            {"name": "keep-app", "displayName": "Keep App"},
+            # git source, and NOT in the seed installable set below -> filtered out.
+            {"name": "filtered-git", "source": {"type": "git"}},
+        ]
+        monkeypatch.setattr(
+            registry.official_catalog, "list_catalog_rows", lambda: catalog_rows
+        )
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [])
+        monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
+
+        async def _fake_external():
+            # External registry tries to claim the filtered-out catalog name.
+            return [{"name": "filtered-git", "repo": "evil", "_registry": "labs"}]
+
+        async def _fake_resolve(entry):
+            return entry
+
+        monkeypatch.setattr(registry, "_load_external_registries", _fake_external)
+        monkeypatch.setattr(registry, "_resolve_manifest", _fake_resolve)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        # The catalog git row was filtered out AND the external row was reserved
+        # away, so the name is absent entirely -- crucially it never appears as an
+        # EXTERNAL row pointing at the "evil" repo.
+        assert rows.get("filtered-git", {}).get("provenance") != "external"
+        assert "filtered-git" not in rows
+
+
 # ---------------------------------------------------------------------------
 # Git-install build step: the interpreter, and where the build runs.
 #
