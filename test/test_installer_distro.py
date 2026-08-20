@@ -458,3 +458,212 @@ def test_cli_link_removal_never_reaches_a_symlinked_venv(tmp_path: Path) -> None
     )
     # And the trailing-slash-stripped guard must still be present in cli.sh.
     assert '[ ! -L "${VENV%/}" ]' in CLI_SH.read_text()
+
+
+def test_cli_reuses_a_recorded_managed_python_choice(tmp_path: Path) -> None:
+    """A completed --managed-python install records its mode; a later run
+    WITHOUT the flag must reuse it -- most importantly the re-run that
+    `kirocrew update` performs, which passes only --channel. Without the
+    marker read, every update would silently flip a managed install back onto
+    whatever system interpreter it finds."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    (data_home / "python-mode").write_text("managed\n")
+
+    result, markers = _run_cli_with_fake_env(
+        tmp_path,
+        # A perfectly usable system python that the recorded choice must skip.
+        interpreters={
+            "python3.12": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    assert (markers / "curl").exists(), result.stderr
+    assert "astral-sh/uv/releases/download" in (markers / "curl").read_text()
+    combined = result.stdout + result.stderr
+    assert "Reusing the recorded managed-python choice" in combined
+
+
+def test_cli_system_python_flag_overrides_the_recorded_choice(tmp_path: Path) -> None:
+    """--system-python is the opt-out: with a 'managed' marker on disk it must
+    use the system interpreter and never reach for uv."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    (data_home / "python-mode").write_text("managed\n")
+
+    result, markers = _run_cli_with_fake_env(
+        tmp_path,
+        extra_args=["--system-python"],
+        interpreters={
+            "python3.12": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Reusing the recorded managed-python choice" not in combined
+    assert "Python >=3.10 is required" not in combined, combined
+    curl_marker = markers / "curl"
+    if curl_marker.exists():
+        assert "astral-sh/uv" not in curl_marker.read_text()
+
+
+def _run_marker_write_shape(data_home: Path, tmp_path: Path) -> subprocess.CompletedProcess[bytes]:
+    """Run the exact guarded marker-write shape cli.sh uses, targeting
+    ``python-mode`` with value ``managed``. Contained under tmp_path."""
+    shape = (
+        f'd="{data_home}/python-mode"; '
+        f'if [ -L "$d" ]; then rm -f "$d"; fi; '
+        f'if [ -d "$d" ]; then echo "refusing: directory" >&2; exit 1; fi; '
+        f't="$(mktemp "{data_home}/.marker.XXXXXX")"; '
+        f'printf \'%s\\n\' managed > "$t"; '
+        f'mv -f "$t" "$d"'
+    )
+    return subprocess.run(
+        ["sh", "-c", shape], check=False, capture_output=True, cwd=tmp_path
+    )
+
+
+def test_cli_marker_write_replaces_a_planted_symlink(tmp_path: Path) -> None:
+    """The channel / python-mode marker writes must be symlink-proof: the data
+    home is agent-writable, so a pre-planted `ln -sf ~/.bashrc .../python-mode`
+    would turn a plain `>` redirection into an arbitrary-file overwrite on the
+    next install run. The guarded shape removes the symlink and renames a
+    fresh regular file into place -- never writing through the link."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    victim = tmp_path / "victim-bashrc"
+    victim.write_text("precious shell profile\n")
+    (data_home / "python-mode").symlink_to(victim)
+
+    result = _run_marker_write_shape(data_home, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert victim.read_text() == "precious shell profile\n", (
+        "the marker write followed the planted symlink and overwrote the "
+        "victim file -- the guarded write shape in cli.sh has been lost"
+    )
+    marker = data_home / "python-mode"
+    assert not marker.is_symlink()
+    assert marker.read_text() == "managed\n"
+
+
+def test_cli_marker_write_survives_a_symlink_to_a_directory(tmp_path: Path) -> None:
+    """A planted symlink can also point at a DIRECTORY -- `mv` onto a
+    symlink-to-directory moves the temp file INSIDE the target instead of
+    replacing the link, silently landing the marker outside its path. The
+    symlink is removed before the rename regardless of what it points at."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    victim_dir = tmp_path / "victim-dir"
+    victim_dir.mkdir()
+    (data_home / "python-mode").symlink_to(victim_dir)
+
+    result = _run_marker_write_shape(data_home, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert list(victim_dir.iterdir()) == [], (
+        "the marker rename landed inside the symlinked directory target"
+    )
+    marker = data_home / "python-mode"
+    assert not marker.is_symlink()
+    assert marker.read_text() == "managed\n"
+
+
+def test_cli_marker_write_refuses_a_directory_target(tmp_path: Path) -> None:
+    """A real directory occupying the marker path is corrupt state: `mv` would
+    move the temp file inside it and every later read would silently miss the
+    marker (an update would quietly fall back to defaults). The write must
+    refuse loudly instead."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    (data_home / "python-mode").mkdir()
+
+    result = _run_marker_write_shape(data_home, tmp_path)
+
+    assert result.returncode != 0
+    assert (data_home / "python-mode").is_dir()
+    assert list((data_home / "python-mode").iterdir()) == [], (
+        "the marker temp file was moved inside the directory target"
+    )
+    # And the guards must still be present in cli.sh.
+    text = CLI_SH.read_text()
+    assert "_write_marker" in text
+    assert 'mktemp "$_DATA_HOME/.marker.XXXXXX"' in text
+    assert '[ -d "$_marker_dest" ]' in text
+    assert '[ -L "$_marker_dest" ]' in text
+
+
+def test_cli_marker_read_ignores_a_planted_symlink(tmp_path: Path) -> None:
+    """The marker READ is guarded like the write: a planted symlink at
+    python-mode (e.g. to /dev/zero, which would wedge an unbounded cat, or to
+    an attacker file spoofing 'managed') must be ignored -- the run proceeds
+    on the system interpreter as if no marker existed."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    spoof = tmp_path / "spoof"
+    spoof.write_text("managed\n")
+    (data_home / "python-mode").symlink_to(spoof)
+
+    result, markers = _run_cli_with_fake_env(
+        tmp_path,
+        interpreters={
+            "python3.12": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Reusing the recorded managed-python choice" not in combined
+    curl_marker = markers / "curl"
+    if curl_marker.exists():
+        assert "astral-sh/uv" not in curl_marker.read_text()
+    # And the read guards must still be present in cli.sh.
+    text = CLI_SH.read_text()
+    assert '[ ! -L "$_py_mode_file" ]' in text
+    assert 'head -c 16 "$_py_mode_file"' in text
+
+
+def test_cli_marker_read_never_opens_a_fifo(tmp_path: Path) -> None:
+    """A FIFO planted at python-mode would block a reader forever; the -f
+    regular-file guard must skip it without ever opening it (this test hangs
+    at the harness timeout if the guard is lost)."""
+    data_home = tmp_path / "data-home"
+    data_home.mkdir()
+    os.mkfifo(data_home / "python-mode")
+
+    result, _markers = _run_cli_with_fake_env(
+        tmp_path,
+        interpreters={
+            "python3.12": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Reusing the recorded managed-python choice" not in combined

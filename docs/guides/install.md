@@ -158,11 +158,14 @@ manager, no sudo, and the prebuilt interpreter runs on old-glibc distros
 (CentOS 7) whose base repos never reach 3.10. Pass `--managed-python` (or set
 `KIROCREW_MANAGED_PYTHON=1`) to always use the uv-provisioned interpreter and
 skip the system ones entirely — useful when the system Python is fragile or
-version-managed. The signed installer never pipes an unsigned third-party
-script into a shell: uv is fetched as a tarball and verified against pinned
-digests, exactly like the wheel itself. When it finishes it prints the next
-step: `kirocrew gateway` to start now, or `kirocrew service install` to run it
-as a service.
+version-managed. The choice is sticky: it is recorded in the data home
+(`python-mode`, next to `channel`), so later installer runs — including the
+re-run `kirocrew update` performs — keep it without the flag; opt back out
+with `--system-python`. The signed installer never pipes an unsigned
+third-party script into a shell: uv is fetched as a tarball and verified
+against pinned digests, exactly like the wheel itself. When it finishes it
+prints the next step: `kirocrew gateway` to start now, or `kirocrew service
+install` to run it as a service.
 
 ### b. From source (development)
 

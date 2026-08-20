@@ -156,6 +156,19 @@ Pin an exact version:
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
+**Experimental** — run on a fully managed Python instead of the system one.
+The installer fetches a SHA-256-pinned [uv](https://docs.astral.sh/uv/) and
+provisions a self-contained CPython 3.12 into `~/.kiro/crew-python`, so the
+install never depends on (or breaks with) the system interpreter:
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --managed-python
+```
+
+The choice is sticky: it is recorded next to the channel, so later re-runs of
+the installer — including the one `kirocrew update` performs — keep using the
+managed interpreter without the flag. Opt back out with `--system-python`.
+
 Open `http://localhost:5476` and start a conversation. The web dashboard works
 without messaging credentials. Add a messaging channel —
 [Slack](docs/guides/slack-setup.md),
