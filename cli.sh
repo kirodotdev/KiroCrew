@@ -12,11 +12,19 @@
 # venv). No unsigned/checksum-only fallback exists. Unlike install.sh (which
 # builds from a git clone), this pulls the published wheel.
 #
+# Python: uses the system interpreter (>=3.10) when one exists; otherwise — or
+# always, with --managed-python — provisions a python-build-standalone CPython
+# via a SHA-256-pinned uv into a user-owned directory. No package manager, no
+# sudo, works on old-glibc distros (CentOS 7).
+#
 # Options / env:
 #   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
 #   --version <X.Y.Z>                    pin an exact version, verified against
 #                                        its immutable signed CLI manifest
 #   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
+#   --managed-python                     skip the system interpreters and run on
+#                                        a uv-provisioned Python instead
+#                                        (env KIROCREW_MANAGED_PYTHON=1)
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -35,6 +43,23 @@ FEED_BASE="${KIROCREW_CDN_BASE:-https://updates.crew.kiro.dev}"
 ARTIFACT_BASE="${KIROCREW_CDN_BASE:-https://download.crew.kiro.dev}"
 CHANNEL="${KIROCREW_CHANNEL:-stable}"
 PIN_VERSION=""
+MANAGED_PYTHON="${KIROCREW_MANAGED_PYTHON:-0}"
+
+# Pinned uv release used to provision a managed Python interpreter when the
+# system has none (or when --managed-python asks for one). uv is only ever
+# fetched as a tarball and verified against these SHA-256 digests — the
+# astral.sh install script is never piped into a shell, keeping the signed
+# installer's no-unsigned-third-party-script invariant. Bump the version and
+# all four digests together (each uv release publishes <asset>.tar.gz.sha256
+# files beside the tarballs). Linux pins the musl builds: they are fully
+# static, so they run on any glibc age — old distros are the whole point of
+# this path.
+UV_VERSION="0.10.11"
+UV_PYTHON_SERIES="cpython-3.12"
+UV_SHA_LINUX_X64="d78246139dc6cf3ed6d03c84da762686bced7ad1de67977ee372a45b95a1f6d0"
+UV_SHA_LINUX_ARM64="5d80a7f6343d2676dfde1e5126582070a2bbc62df6f60d5527a169be3788532a"
+UV_SHA_MACOS_X64="ff90020b554cf02ef8008535c9aab6ef27bb7be6b075359300dec79c361df897"
+UV_SHA_MACOS_ARM64="437a7d498dd6564d5bf986074249ba1fc600e73da55ae04d7bd4c24d5f149b95"
 
 # Offline trust root for CLI artifact manifests. These two values are replaced
 # together during the operational KMS-key enablement documented in
@@ -55,6 +80,7 @@ while [ $# -gt 0 ]; do
     --version=*) PIN_VERSION="${1#*=}"; shift ;;
     --cdn) FEED_BASE="${2:?--cdn needs a value}"; ARTIFACT_BASE="$2"; shift 2 ;;
     --cdn=*) FEED_BASE="${1#*=}"; ARTIFACT_BASE="${1#*=}"; shift ;;
+    --managed-python) MANAGED_PYTHON=1; shift ;;
     -h|--help)
       cat <<'EOF'
 KiroCrew CLI installer (channel / wheel based).
@@ -74,7 +100,13 @@ Options / env:
   --version <X.Y.Z>                    pin an exact version, verified against
                                        its immutable signed CLI manifest
   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
+  --managed-python                     skip the system interpreters and run on a
+                                       uv-provisioned Python instead
+                                       (env KIROCREW_MANAGED_PYTHON=1)
   KIROCREW_VENV                        override the managed venv location
+  KIROCREW_PYTHON_DIR                  override where uv-provisioned interpreters
+                                       are stored (default: beside the data home,
+                                       ~/.kiro/crew-python)
 EOF
       exit 0 ;;
     *) echo "kirocrew-install: unknown argument '$1'" >&2; exit 2 ;;
@@ -123,6 +155,13 @@ _is_within() {
 
 command -v curl    >/dev/null 2>&1 || err "curl is required"
 command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
+if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
+elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
+else err "need sha256sum or shasum to verify the download"; fi
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
 # KiroCrew needs Python >=3.10 at runtime (contextlib.aclosing, etc.) even
 # though older published wheels' METADATA claimed >=3.9 -- pip would install
 # fine on 3.9 and then crash on first run. Prefer the newest interpreter the
@@ -188,76 +227,84 @@ _resolve_python() {
   return 1
 }
 
-# Privilege prefix for a package-manager install: empty when already root or
-# when no sudo exists; otherwise `sudo`. Two sudo shapes by context:
-#   - A real terminal on stdin (`sh cli.sh` run interactively): use a normal
-#     `sudo`, which may prompt for a password the user can actually type. A
-#     non-interactive `sudo -n` here would fail on any password-protected sudo
-#     and drop the whole distro-install path (a fresh Ubuntu never installs
-#     python3-venv, then the venv step aborts).
-#   - No controlling TTY (the documented `curl ... | sh` pipe): only a
-#     passwordless `sudo -n` can work, so gate on it and otherwise leave SUDO
-#     empty and let the install attempt fail through to the guidance below.
-SUDO=""
-if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
-  # A terminal on EITHER stdin or stderr means a password prompt can be shown
-  # and answered -- true for `sh cli.sh` and also for `curl ... | sh` in a normal
-  # shell, where stdin is the pipe but stderr is still the tty. Only when
-  # neither is a terminal (cron, CI, fully redirected) do we require a
-  # passwordless `sudo -n` and otherwise leave SUDO empty.
-  if [ -t 0 ] || [ -t 2 ]; then
-    SUDO="sudo"
-  elif sudo -n true 2>/dev/null; then
-    SUDO="sudo -n"
+# ── Managed-Python provisioning (uv + python-build-standalone) ──────────────
+# Provision a CPython interpreter without touching the system: uv is a static,
+# dependency-free binary, and the interpreters it installs are prebuilt
+# python-build-standalone archives that unpack into a user-owned directory —
+# no package manager, no sudo, and they run on old-glibc distros (CentOS 7)
+# whose base repos never reach 3.10. An installed `uv` on PATH is used as-is
+# (the user already made that trust decision); otherwise the pinned uv release
+# is downloaded and verified against the SHA-256 digests above before it runs.
+# Sets PY on success. Network/platform failures return 1 so the caller can
+# print guidance; a digest mismatch is a security stop and errs immediately.
+_provision_python_via_uv() {
+  _uv_bin=""
+  if command -v uv >/dev/null 2>&1; then
+    _uv_bin="$(command -v uv)"
+    echo "Using installed uv ($_uv_bin) to provision Python ($UV_PYTHON_SERIES) ..."
+  else
+    # GNU tar's -z shells out to gzip, so both must exist before downloading.
+    for _uv_tool in tar gzip; do
+      if ! command -v "$_uv_tool" >/dev/null 2>&1; then
+        echo "kirocrew-install: $_uv_tool is required to unpack uv" >&2
+        return 1
+      fi
+    done
+    case "$(uname -s)/$(uname -m)" in
+      Linux/x86_64)              _uv_target="x86_64-unknown-linux-musl";  _uv_sha="$UV_SHA_LINUX_X64" ;;
+      Linux/aarch64|Linux/arm64) _uv_target="aarch64-unknown-linux-musl"; _uv_sha="$UV_SHA_LINUX_ARM64" ;;
+      Darwin/x86_64)             _uv_target="x86_64-apple-darwin";        _uv_sha="$UV_SHA_MACOS_X64" ;;
+      Darwin/arm64)              _uv_target="aarch64-apple-darwin";       _uv_sha="$UV_SHA_MACOS_ARM64" ;;
+      *)
+        echo "kirocrew-install: no pinned uv build for $(uname -s)/$(uname -m)" >&2
+        return 1 ;;
+    esac
+    echo "Downloading uv $UV_VERSION ($_uv_target) ..."
+    # -L: GitHub release assets redirect to a storage host; --proto-redir keeps
+    # every hop on HTTPS (curl's redirect default would also allow plain http).
+    curl -fsSL --proto '=https' --proto-redir '=https' \
+      "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$_uv_target.tar.gz" \
+      -o "$TMP/uv.tar.gz" || return 1
+    _uv_got="$($SHA_CMD "$TMP/uv.tar.gz" | awk '{print $1}')"
+    [ "$_uv_got" = "$_uv_sha" ] \
+      || err "uv download SHA-256 mismatch (expected $_uv_sha, got $_uv_got) — refusing to continue"
+    ( cd "$TMP" && tar -xzf uv.tar.gz ) || return 1
+    _uv_bin="$TMP/uv-$_uv_target/uv"
+    [ -x "$_uv_bin" ] || return 1
   fi
-fi
+  # The interpreter store lives BESIDE the data home, like the managed venv and
+  # for the same blast-radius reason: no data-home-wide operation may ever
+  # reach the interpreter that the venv's shebangs point at.
+  _uv_data_home="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+  _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
+  UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
+    || return 1
+  # only-managed: resolve the interpreter just installed, never a system one
+  # that happens to satisfy the series (matters under --managed-python, where
+  # a usable system 3.12 may exist but was explicitly opted out of).
+  _cand="$(UV_PYTHON_INSTALL_DIR="$_uv_py_dir" UV_PYTHON_PREFERENCE=only-managed \
+    "$_uv_bin" python find "$UV_PYTHON_SERIES" 2>/dev/null || true)"
+  if [ -n "$_cand" ] && _py_usable "$_cand"; then
+    PY="$_cand"
+    echo "Provisioned managed Python: $_cand"
+    return 0
+  fi
+  return 1
+}
 
 PY=""
-_resolve_python || true
-if [ -z "$PY" ]; then
-  # No system Python >=3.10. Try the distro package manager first, then re-probe.
-  # Covers Debian/Ubuntu (apt), Amazon Linux 2023 / RHEL 8+ / CentOS Stream
-  # (dnf), and RHEL/CentOS 7 (yum). The apt branch also pulls python3-venv, which
-  # Debian splits out of the base interpreter (see the venv step below).
-  if command -v apt-get >/dev/null 2>&1; then
-    echo "No Python >=3.10 found; attempting: apt-get install python3 python3-venv python3-pip ..."
-    $SUDO apt-get update -qq >/dev/null 2>&1 || true
-    $SUDO apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1 || true
-  elif command -v dnf >/dev/null 2>&1; then
-    echo "No Python >=3.10 found; attempting: dnf install python3.11 ..."
-    $SUDO dnf install -y -q python3.11 python3.11-pip >/dev/null 2>&1 || true
-  elif command -v yum >/dev/null 2>&1; then
-    echo "No Python >=3.10 found; attempting: yum install python3 ..."
-    $SUDO yum install -y -q python3 python3-pip >/dev/null 2>&1 || true
-  fi
+if [ "$MANAGED_PYTHON" = "1" ]; then
+  echo "--managed-python: skipping system interpreters."
+  _provision_python_via_uv \
+    || err "could not provision a managed Python via uv. Check the network connection, or install Python >=3.10 yourself and re-run without --managed-python."
+else
   _resolve_python || true
-fi
-if [ -z "$PY" ]; then
-  # The distro packages could not supply >=3.10: RHEL/CentOS 7 ships 3.6 and
-  # older Ubuntu 3.8, and neither has a >=3.10 package in its base repos. If the
-  # operator has ALREADY installed mise (its python-build-standalone runs on old
-  # glibc and bundles venv/pip), use it. This installer never bootstraps mise
-  # itself: piping an unsigned third-party script into `sh` would break the
-  # whole point of a signed installer (pinned key + SHA-256-verified wheel, no
-  # unsigned fallback). A source build MAY provision mise -- see
-  # ensure-python.sh -- but that is an explicit, non-piped path, not this
-  # published one-liner.
-  MISE="$HOME/.local/bin/mise"
-  [ -x "$MISE" ] || MISE="$(command -v mise 2>/dev/null || true)"
-  if [ -n "$MISE" ] && [ -x "$MISE" ]; then
-    echo "No system Python >=3.10; using your installed mise to provision one ..."
-    "$MISE" use -g "python@3.12" >/dev/null 2>&1 || true
-    _cand="$("$MISE" which python 2>/dev/null || true)"
-    if _py_usable "$_cand"; then PY="$_cand"; fi
+  if [ -z "$PY" ]; then
+    echo "No system Python >=3.10 found; provisioning one via uv ..."
+    _provision_python_via_uv || true
   fi
 fi
-[ -n "$PY" ] || err "Python >=3.10 is required and could not be found. Install it (Debian/Ubuntu: 'sudo apt-get install python3 python3-venv python3-pip'; RHEL/CentOS 8+/Amazon Linux: 'sudo dnf install python3.11'; CentOS 7: install a newer Python via SCL or mise, e.g. 'curl https://mise.run | sh && mise use -g python@3.12'), then re-run."
-if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
-elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
-else err "need sha256sum or shasum to verify the download"; fi
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+[ -n "$PY" ] || err "Python >=3.10 is required and could not be found or provisioned. Install Python 3.10+ yourself (your distro's packages, or https://www.python.org/downloads/), then re-run."
 
 # Materialize and self-check the embedded trust root. The key id is the SHA-256
 # fingerprint of SubjectPublicKeyInfo DER, so an accidental edit to either
@@ -437,22 +484,14 @@ else
   # Debian/Ubuntu ship the base `python3` WITHOUT the venv/ensurepip module (it
   # lives in the separate `python3-venv` / `python3.X-venv` package), so
   # `python3 -m venv` there dies with "ensurepip is not available" and, under
-  # `set -eu`, aborts the whole install with a raw stack trace. Probe the
-  # capability first; if it is missing, try to apt-install the version-matched
-  # venv package, then re-probe. A minimal RHEL/CentOS python bundles venv, so
-  # this only bites apt systems.
+  # `set -eu`, aborts the whole install with a raw stack trace. Rather than
+  # driving the system package manager with sudo, fall back to a managed
+  # interpreter: python-build-standalone bundles venv and pip, so the re-probe
+  # always passes on it.
   if ! "$PY" -c 'import ensurepip, venv' >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      # e.g. "3.12" -> python3.12-venv; also install the generic python3-venv so
-      # a bare `python3` interpreter is covered too.
-      _pyminor="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-      echo "Installing the venv module (python3-venv) ..."
-      $SUDO apt-get update -qq >/dev/null 2>&1 || true
-      $SUDO apt-get install -y "python${_pyminor}-venv" python3-venv >/dev/null 2>&1 \
-        || $SUDO apt-get install -y python3-venv >/dev/null 2>&1 || true
-    fi
-    "$PY" -c 'import ensurepip, venv' >/dev/null 2>&1 \
-      || err "$PY cannot create a virtual environment (the venv/ensurepip module is missing). On Debian/Ubuntu install it with 'sudo apt-get install python3-venv' (or 'python${_pyminor:-3}-venv'), then re-run."
+    echo "$PY cannot create a virtual environment (venv/ensurepip missing); provisioning a managed Python via uv instead ..."
+    _provision_python_via_uv \
+      || err "$PY cannot create a virtual environment (the venv/ensurepip module is missing) and a managed Python could not be provisioned. On Debian/Ubuntu install the module with 'sudo apt-get install python3-venv', then re-run."
   fi
   "$PY" -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true

@@ -1,17 +1,13 @@
-"""Distro-bootstrap coverage for the shell installers.
+"""Managed-Python (uv) bootstrap coverage for the shell installers.
 
 The published one-liner ``curl … cli.sh | sh`` must bring up a runnable gateway
-on Ubuntu (apt, and the split ``python3-venv`` package), RHEL/CentOS 7 (yum,
-Python 3.6 baseline), and RHEL/CentOS 8+/Amazon Linux (dnf). Before this
-coverage existed cli.sh had ONLY a dnf branch, so Ubuntu and CentOS 7 hard-
-failed at the "Python >=3.10 is required" gate, and no test ever entered the
-Python-resolution block (the signing harness leaks the host ``python3``).
-
-These tests run the real ``cli.sh`` under a fabricated ``PATH`` that contains NO
-usable ``python3`` plus fake package managers, so the script is forced through
-its distro-detection ladder. Each fake records that it ran; the assertion is
-which manager cli.sh reached for on which distro. POSIX-only scripts, so the
-suite skips on native Windows.
+even when the host has no usable Python 3.10+. cli.sh does this WITHOUT the
+system package manager: it fetches a SHA-256-pinned uv tarball (or uses an
+already-installed ``uv``) and provisions a python-build-standalone CPython into
+a user-owned directory. These tests run the real ``cli.sh`` under a fabricated
+``PATH`` that contains NO usable ``python3``, with a recording ``curl`` stub,
+so the script is forced through the managed-Python path. POSIX-only scripts,
+so the suite skips on native Windows.
 """
 
 from __future__ import annotations
@@ -46,21 +42,21 @@ def test_shell_installers_parse() -> None:
 def _run_cli_with_fake_env(
     tmp_path: Path,
     *,
-    managers: list[str],
     interpreters: dict[str, str] | None = None,
     with_timeout: bool = True,
+    with_uv: str | None = None,
+    curl_stub: str | None = None,
+    extra_args: list[str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
-    """Run cli.sh with a PATH that has NO python3 and only the named package
-    managers (each a stub that records its name and args). Returns the process
-    result plus the marker directory the stubs wrote to.
-
-    The stubs deliberately do NOT install a working python, so cli.sh proceeds
-    through every branch and then errs at the final "Python >=3.10 is required"
-    guard — by which point the marker proves which manager it tried.
+    """Run cli.sh with a PATH that has NO usable python3 and a recording
+    ``curl`` stub. Returns the process result plus the marker directory the
+    stubs wrote to.
 
     ``interpreters`` replaces the default too-old stub for the named
     interpreters, which is how a scenario expresses a usable or a wedged
-    candidate.
+    candidate. ``with_uv`` plants an executable ``uv`` stub with the given
+    body. ``curl_stub`` replaces the default recording curl (which exits 22,
+    modelling a failed download).
     """
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -69,10 +65,7 @@ def _run_cli_with_fake_env(
 
     # The PATH is ISOLATED to `tools` plus symlinks to the specific real
     # coreutils cli.sh needs. It deliberately does NOT include /usr/bin etc.,
-    # because `command -v <mgr>` skips a non-executable shadow and finds the
-    # host's real binary beneath it (CI's Ubuntu runner HAS a real apt-get) —
-    # so a distro is "absent" here simply by NOT creating its stub, not by
-    # shadowing. Only managers this scenario declares present exist on PATH.
+    # so no real curl, uv, or interpreter can leak into the ladder.
     def _link_real(name: str) -> None:
         real = shutil.which(name)
         if real:
@@ -81,6 +74,7 @@ def _run_cli_with_fake_env(
     for _util in ("sh", "env", "id", "awk", "sed", "mktemp", "rm", "rmdir",
                   "mkdir", "cat", "printf", "chmod", "ln", "date", "grep",
                   "tr", "head", "cut", "dirname", "basename", "uname", "sleep",
+                  "tar", "gzip", "sha256sum",
                   # cli.sh bounds its interpreter probe with `timeout` when one
                   # exists, so the isolated PATH must expose it for that guard
                   # to be exercised here at all. ``with_timeout=False`` models a
@@ -89,46 +83,37 @@ def _run_cli_with_fake_env(
                   *(("timeout",) if with_timeout else ())):
         _link_real(_util)
 
-    # A manager "under test" is an EXECUTABLE stub that records its args. The
-    # marker path is baked in absolutely: cli.sh does not EXPORT its variables,
-    # so a child stub would not inherit an env var.
-    for name in ("apt-get", "dnf", "yum"):
-        if name in managers:
-            marker = markers / name
-            stub = tools / name
-            stub.write_text(
-                "#!/bin/sh\n"
-                f'printf "%s\\n" "$*" >> "{marker}"\n'
-                "exit 0\n"
-            )
-            stub.chmod(0o755)
-    # mise, pipx are simply absent (never created) so the fallback finds none.
-
-    # Fake `sudo`: strip a leading `-n` / option flags and exec the rest through
-    # the SAME isolated PATH. Without this the test is not hermetic — a CI
-    # runner with passwordless sudo makes cli.sh pick `sudo -n`, and the real
-    # `sudo` resets PATH via secure_path so `sudo -n apt-get` would run the
-    # host's real apt-get instead of our recording stub. `exec env PATH=... "$@"`
-    # re-imposes the isolated PATH the way real sudo would impose secure_path.
-    sudo_stub = tools / "sudo"
-    sudo_stub.write_text(
-        "#!/bin/sh\n"
-        'while [ "$#" -gt 0 ]; do\n'
-        '  case "$1" in\n'
-        "    -n|-E|-H) shift ;;\n"
-        "    -*) shift ;;\n"
-        "    *) break ;;\n"
-        "  esac\n"
-        "done\n"
-        f'exec env "PATH={tools}" "$@"\n'
+    # Recording curl: the marker path is baked in absolutely because cli.sh
+    # does not EXPORT its variables, so a child stub would not inherit an env
+    # var. The default stub records the request and fails (exit 22, curl's
+    # HTTP-error code), which is how a scenario proves WHICH URL cli.sh
+    # reached for without any network.
+    curl_marker = markers / "curl"
+    curl = tools / "curl"
+    curl.write_text(
+        curl_stub
+        if curl_stub is not None
+        else (
+            "#!/bin/sh\n"
+            f'printf "%s\\n" "$*" >> "{curl_marker}"\n'
+            "exit 22\n"
+        )
     )
-    sudo_stub.chmod(0o755)
+    curl.chmod(0o755)
+
+    if with_uv is not None:
+        uv = tools / "uv"
+        uv.write_text(with_uv)
+        uv.chmod(0o755)
 
     # Every interpreter cli.sh probes for is an executable stub reporting an
     # OLD (<3.10) version, so the isolated PATH guarantees the "no usable
     # python" branch. The stub answers cli.sh's version check (exit 1) and
-    # `--version`.
-    for name in ("python3.13", "python3.12", "python3.11", "python3.10", "python3", "python"):
+    # `--version`. Extra names in ``interpreters`` (e.g. the fake interpreter a
+    # uv stub claims to have installed) are created too.
+    default_names = ("python3.13", "python3.12", "python3.11",
+                     "python3.10", "python3", "python")
+    for name in {*default_names, *(interpreters or {})}:
         stub = tools / name
         stub.write_text(
             interpreters.get(name)
@@ -144,22 +129,22 @@ def _run_cli_with_fake_env(
         )
         stub.chmod(0o755)
 
-    # curl/openssl/sha256sum need to exist so cli.sh's tool preflight passes and
-    # it reaches the Python block; they are never actually called before the
-    # python gate fails, but `command -v` must find them.
-    for name in ("curl", "openssl", "sha256sum"):
-        stub = tools / name
-        stub.write_text("#!/bin/sh\nexit 0\n")
-        stub.chmod(0o755)
+    # openssl needs to exist so cli.sh's tool preflight passes and it reaches
+    # the Python block; it is never actually reached in these scenarios, but
+    # `command -v` must find it.
+    openssl = tools / "openssl"
+    openssl.write_text("#!/bin/sh\nexit 0\n")
+    openssl.chmod(0o755)
 
     env = {
         # Isolated: ONLY the fake tools dir. No system bin dirs, so no real
-        # package manager or interpreter can leak into cli.sh's ladder.
+        # curl, uv, or interpreter can leak into cli.sh's ladder.
         "PATH": str(tools),
         "HOME": str(tmp_path / "home"),
         "KIROCREW_HOME": str(tmp_path / "data-home"),
     }
-    result = run_bounded([str(tools / "sh"), str(CLI_SH)], env)
+    argv = [str(tools / "sh"), str(CLI_SH), *(extra_args or [])]
+    result = run_bounded(argv, env)
     return result, markers
 
 
@@ -172,7 +157,6 @@ def test_cli_fails_over_from_a_wedged_interpreter_candidate(tmp_path: Path) -> N
     """
     result, _markers = _run_cli_with_fake_env(
         tmp_path,
-        managers=["apt-get"],
         interpreters={
             "python3.12": "#!/bin/sh\nexec sleep 300\n",
             "python3": (
@@ -200,7 +184,6 @@ def test_cli_bounds_wedged_interpreter_without_timeout_binary(tmp_path: Path) ->
     """
     result, _markers = _run_cli_with_fake_env(
         tmp_path,
-        managers=["apt-get"],
         with_timeout=False,
         interpreters={
             "python3.12": "#!/bin/sh\nexec sleep 300\n",
@@ -224,69 +207,154 @@ def test_cli_watchdog_path_still_rejects_too_old_interpreters(tmp_path: Path) ->
 
     With `timeout` absent, every candidate is the default too-old stub (exits 1
     at the version gate). If the watchdog path swallowed that status, cli.sh
-    would accept Python 3.6 as usable and skip the distro-install branch; the
-    apt-get marker proves the "no usable python" path was taken instead.
+    would accept Python 3.6 as usable and skip the managed-Python branch; the
+    curl marker reaching for the uv tarball proves the "no usable python" path
+    was taken instead.
     """
+    result, markers = _run_cli_with_fake_env(tmp_path, with_timeout=False)
+
+    assert (markers / "curl").exists(), result.stderr
+    assert "astral-sh/uv/releases/download" in (markers / "curl").read_text()
+
+
+def test_cli_falls_back_to_pinned_uv_when_no_python(tmp_path: Path) -> None:
+    """With no usable interpreter anywhere, cli.sh must reach for the PINNED uv
+    release tarball over HTTPS — not a package manager, not the astral install
+    script — and fail with actionable guidance when that download fails."""
+    result, markers = _run_cli_with_fake_env(tmp_path)
+
+    assert result.returncode != 0
+    recorded = (markers / "curl").read_text()
+    assert "https://github.com/astral-sh/uv/releases/download/" in recorded
+    assert ".tar.gz" in recorded
+    # The failure guidance must tell the user what to do next, without
+    # hardcoding one distro's package manager as the answer.
+    combined = result.stdout + result.stderr
+    assert "Python >=3.10 is required and could not be found or provisioned" in combined
+
+
+def test_cli_uses_installed_uv_before_downloading_one(tmp_path: Path) -> None:
+    """An already-present `uv` on PATH is the user's own trust decision — the
+    installer must drive IT (python install + python find) instead of
+    downloading another copy."""
+    uv_marker = tmp_path / "markers" / "uv"
+    fake_python = tmp_path / "tools" / "uv-python"
+    uv_stub = (
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{uv_marker}"\n'
+        'case "$*" in\n'
+        f'  *"python find"*) echo "{fake_python}" ;;\n'
+        "esac\n"
+        "exit 0\n"
+    )
     result, markers = _run_cli_with_fake_env(
-        tmp_path, managers=["apt-get"], with_timeout=False
+        tmp_path,
+        with_uv=uv_stub,
+        # The provisioned interpreter must satisfy the same >=3.10 usability
+        # probe as a system one; this stub models the PBS python uv installed.
+        interpreters={
+            "uv-python": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
     )
 
-    assert (markers / "apt-get").exists(), result.stderr
+    recorded = (markers / "uv").read_text()
+    assert "python install cpython-3.12" in recorded
+    assert "python find cpython-3.12" in recorded
+    # No uv tarball download happened: the only curl traffic (if any) is the
+    # manifest fetch that comes AFTER the python gate passed.
+    curl_marker = markers / "curl"
+    if curl_marker.exists():
+        assert "astral-sh/uv" not in curl_marker.read_text()
+    # The run got PAST the python gate: whatever it fails on later (this
+    # hermetic env cannot satisfy the trust-root/manifest steps), it must not
+    # be the interpreter requirement.
+    combined = result.stdout + result.stderr
+    assert "Python >=3.10 is required" not in combined, combined
+    assert "could not provision a managed Python" not in combined, combined
 
 
-def test_cli_uses_apt_on_debian_ubuntu(tmp_path: Path) -> None:
-    result, markers = _run_cli_with_fake_env(tmp_path, managers=["apt-get"])
-    # No python was produced, so the run fails at the python gate — but it must
-    # have reached for apt-get first (the Ubuntu path that did not exist before).
-    assert (markers / "apt-get").exists(), result.stderr
-    assert "install" in (markers / "apt-get").read_text()
-    assert "python3-venv" in (markers / "apt-get").read_text()
+def test_cli_managed_python_flag_skips_system_interpreters(tmp_path: Path) -> None:
+    """--managed-python must go straight to uv even when a usable system
+    interpreter exists — that is the flag's whole contract."""
+    result, markers = _run_cli_with_fake_env(
+        tmp_path,
+        extra_args=["--managed-python"],
+        interpreters={
+            "python3.12": (
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                "  *version_info*) exit 0 ;;\n"  # usable — and must be skipped
+                "  *--version*) echo 'Python 3.12.0' ;;\n"
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            ),
+        },
+    )
+
+    # It reached for the uv tarball despite the usable python3.12 on PATH.
+    assert (markers / "curl").exists(), result.stderr
+    assert "astral-sh/uv/releases/download" in (markers / "curl").read_text()
+    assert result.returncode != 0  # recording curl fails the download
+    combined = result.stdout + result.stderr
+    assert "could not provision a managed Python via uv" in combined
 
 
-def test_cli_uses_yum_on_centos7(tmp_path: Path) -> None:
-    # CentOS 7 has yum but not dnf and no >=3.10 in base repos: the pre-fix
-    # script had no yum branch and died with dnf-only advice.
-    result, markers = _run_cli_with_fake_env(tmp_path, managers=["yum"])
-    assert (markers / "yum").exists(), result.stderr
-    assert "install" in (markers / "yum").read_text()
+def test_cli_rejects_a_tampered_uv_download(tmp_path: Path) -> None:
+    """A uv tarball whose digest does not match the pinned SHA-256 must stop the
+    install as a security failure — never be extracted or executed."""
+    # This curl "succeeds" and writes attacker-controlled bytes to -o <file>.
+    curl_stub = (
+        "#!/bin/sh\n"
+        "out=''\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  case "$1" in\n'
+        "    -o) out=\"$2\"; shift 2 ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        '[ -n "$out" ] && printf "not-really-uv" > "$out"\n'
+        "exit 0\n"
+    )
+    result, _markers = _run_cli_with_fake_env(tmp_path, curl_stub=curl_stub)
 
-
-def test_cli_uses_dnf_on_modern_rhel(tmp_path: Path) -> None:
-    result, markers = _run_cli_with_fake_env(tmp_path, managers=["dnf"])
-    assert (markers / "dnf").exists(), result.stderr
-    assert "python3.11" in (markers / "dnf").read_text()
-
-
-def test_cli_prefers_apt_over_a_present_yum(tmp_path: Path) -> None:
-    # Debian derivatives can carry a yum-alike; the apt branch must win so a
-    # Debian box never drives an rpm manager.
-    _result, markers = _run_cli_with_fake_env(tmp_path, managers=["apt-get", "yum"])
-    assert (markers / "apt-get").exists()
-    assert not (markers / "yum").exists()
-
-
-def test_cli_error_message_is_distro_neutral_when_no_manager(tmp_path: Path) -> None:
-    # With no package manager AND no mise reachable, the final error must not
-    # hardcode Amazon-Linux/dnf advice (the pre-fix message did): it names the
-    # Debian/Ubuntu and RHEL-family paths so a user on any target distro gets a
-    # command that applies to them.
-    result, _markers = _run_cli_with_fake_env(tmp_path, managers=[])
     assert result.returncode != 0
     combined = result.stdout + result.stderr
-    assert "apt-get" in combined and "dnf" in combined and "CentOS 7" in combined
+    assert "uv download SHA-256 mismatch" in combined
+    assert "refusing to continue" in combined
 
 
 def test_cli_does_not_pipe_an_unsigned_installer_into_a_shell() -> None:
-    # The signed installer must never fetch-and-execute a third-party script: a
-    # `curl … mise.run | sh` bootstrap was removed for exactly this reason. It
-    # may USE an already-installed mise, but never install one itself. Any
-    # remaining `mise.run` reference must live INSIDE the final `err "…"`
-    # guidance string — text the user chooses to run, not a line the installer
-    # executes.
+    # The signed installer must never fetch-and-execute a third-party script:
+    # `curl … mise.run | sh` and `curl … astral.sh | sh` bootstraps are the
+    # exact pattern this invariant exists to prevent. uv arrives as a tarball
+    # verified against a pinned digest, never as a piped script.
+    text = CLI_SH.read_text()
+    for needle in ("mise.run", "astral.sh"):
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if needle in line and "| sh" in line:
+                raise AssertionError(
+                    f"cli.sh:{lineno} pipes a third-party script into a shell: {line!r}"
+                )
+
+
+def test_cli_never_drives_the_system_package_manager() -> None:
+    # Provisioning Python is a user-directory download, never a system
+    # mutation: no branch of the installer may invoke a package manager or
+    # sudo. (Package-manager names inside err() guidance strings are fine —
+    # text the user chooses to run themselves.)
     for lineno, line in enumerate(CLI_SH.read_text().splitlines(), start=1):
-        if "mise.run" not in line:
-            continue
         stripped = line.lstrip()
-        assert stripped.startswith("[ -n \"$PY\" ] || err ") or stripped.startswith("err "), (
-            f"cli.sh:{lineno} references mise.run outside the err() guidance string: {line!r}"
-        )
+        if stripped.startswith("#"):
+            continue
+        for needle in ("sudo ", "apt-get ", "dnf ", "yum "):
+            if needle in stripped:
+                assert stripped.startswith("err ") or "|| err " in stripped, (
+                    f"cli.sh:{lineno} drives the system package manager: {line!r}"
+                )

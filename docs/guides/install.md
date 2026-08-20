@@ -148,17 +148,21 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
-If the host has no Python 3.10+, the installer installs one from your distro:
-`apt` on Debian/Ubuntu (including the split `python3-venv` package), `dnf` on
-Amazon Linux / RHEL / CentOS Stream, and `yum` on CentOS 7. Where no base-repo
-package supplies 3.10+ (CentOS 7 ships 3.6, older Ubuntu 3.8) it uses an
-**already-installed** [mise](https://mise.jdx.dev/) python-build-standalone
-interpreter if you have one (it runs on the older glibc those releases carry);
-otherwise it prints how to get a newer Python and stops. The signed installer
-never pipes an unsigned third-party script into a shell — to use the mise path,
-install mise yourself first (`curl https://mise.run | sh`). When it finishes it
-prints the next step: `kirocrew gateway` to start now, or `kirocrew service
-install` to run it as a service.
+If the host has no Python 3.10+, the installer provisions one itself instead of
+touching the system: it downloads a SHA-256-pinned [uv](https://docs.astral.sh/uv/)
+binary (or uses an already-installed `uv` on `PATH`), then installs a
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+CPython 3.12 into a user-owned directory beside the data home
+(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`). No package
+manager, no sudo, and the prebuilt interpreter runs on old-glibc distros
+(CentOS 7) whose base repos never reach 3.10. Pass `--managed-python` (or set
+`KIROCREW_MANAGED_PYTHON=1`) to always use the uv-provisioned interpreter and
+skip the system ones entirely — useful when the system Python is fragile or
+version-managed. The signed installer never pipes an unsigned third-party
+script into a shell: uv is fetched as a tarball and verified against pinned
+digests, exactly like the wheel itself. When it finishes it prints the next
+step: `kirocrew gateway` to start now, or `kirocrew service install` to run it
+as a service.
 
 ### b. From source (development)
 
