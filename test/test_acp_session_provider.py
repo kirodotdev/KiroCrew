@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -190,6 +191,22 @@ class TestAcpSessionProviderLifecycle:
         provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
 
         await provider.shutdown()
+        handle.destroy.assert_awaited_once()
+        runtime.kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_destroys_handle_even_if_cancel_is_interrupted(self):
+        # asyncio.CancelledError is a BaseException, so it is not caught by the
+        # `except Exception` around the cancel wait. destroy() must still run
+        # (it's the only RSS reclaim on this shared-runtime path, and it deletes
+        # the session transcript) before the cancellation propagates.
+        handle = _make_handle(is_turn_active=True)
+        handle.cancel = AsyncMock(side_effect=asyncio.CancelledError())
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
+
+        with pytest.raises(asyncio.CancelledError):
+            await provider.shutdown()
         handle.destroy.assert_awaited_once()
         runtime.kill.assert_not_called()
 
