@@ -1738,6 +1738,28 @@ def test_a_node_that_does_not_run_here_leaves_the_previous_one_in_place(
     )
 
 
+def _signal_installer_group(pid: int, sig: int) -> None:
+    """Signal the installer's whole process group, tolerating the macOS EPERM
+    that ``killpg`` raises when it cannot signal every group member.
+
+    The installer is spawned with ``start_new_session=True``, so ``pid`` is the
+    group leader and ``killpg(pid, ...)`` targets the bootstrap's ``curl``/``tar``
+    children too. On macOS, BSD ``kill(2)`` returns EPERM for a group signal when
+    any member is in a state it cannot signal (e.g. a child mid-``exec`` or a
+    reaped group leader) -- a documented divergence from Linux, where the same
+    call succeeds. The intent here is only to interrupt the bootstrap, so on
+    EPERM fall back to signaling the group leader (``sh``) directly: it forwards
+    the signal or dies, and the EXIT trap still runs the restore the test
+    asserts on. A group that has already exited is a no-op.
+    """
+    try:
+        os.killpg(pid, sig)
+    except PermissionError:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
 @posix_only
 def test_an_interrupted_rebootstrap_restores_the_previous_node(
     tmp_path: Path, stubs: Path, node_mirror: Path
@@ -1791,11 +1813,11 @@ def test_an_interrupted_rebootstrap_restores_the_previous_node(
     try:
         # Long enough to be inside the bootstrap, short enough to be mid-unpack.
         time.sleep(2.5)
-        os.killpg(proc.pid, signal.SIGINT)
+        _signal_installer_group(proc.pid, signal.SIGINT)
         proc.communicate(timeout=60)
     finally:
         if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGKILL)
+            _signal_installer_group(proc.pid, signal.SIGKILL)
             proc.communicate()
 
     # Whatever stage it died in, a Node must be present and it must be the old one
