@@ -10,9 +10,15 @@ import { resolveLegacyHighlightId } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 
 describe('resolveLegacyHighlightId', () => {
-  it('maps slack.* ids to channels.* (nav regroup tab collapse)', () => {
-    expect(resolveLegacyHighlightId('slack.slash-command')).toBe('channels.slash-command')
-    expect(resolveLegacyHighlightId('slack.owner-slack-member-id')).toBe('channels.owner-slack-member-id')
+  it('maps slack.* ids to the suffixed channels.* forms (tab collapse + label suffix)', () => {
+    expect(resolveLegacyHighlightId('slack.slash-command')).toBe('channels.slash-command-slack')
+    expect(resolveLegacyHighlightId('slack.owner-slack-member-id')).toBe('channels.owner-slack-member-id-slack')
+  })
+
+  it('maps pre-suffix channels.* ids (all SlackPanel rows) to the -slack forms', () => {
+    expect(resolveLegacyHighlightId('channels.slash-command')).toBe('channels.slash-command-slack')
+    // A suffixed (current) id passes through untouched.
+    expect(resolveLegacyHighlightId('channels.folder-name-teams')).toBe('channels.folder-name-teams')
   })
 
   it('maps the four positional voice AWS ids to their qualified forms', () => {

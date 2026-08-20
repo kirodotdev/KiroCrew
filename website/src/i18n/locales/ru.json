@@ -11914,6 +11914,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "Поиск в настройках",
+        "no_results": "Нет подходящих настроек",
+        "placeholder": "Поиск в настройках…"
+      },
       "settings": "Настройки"
     },
     "systemPage": {

@@ -11664,6 +11664,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "সেটিংস খুঁজুন",
+        "no_results": "মিলে যাওয়া কোনো সেটিংস নেই",
+        "placeholder": "সেটিংস খুঁজুন…"
+      },
       "settings": "সেটিংস"
     },
     "systemPage": {

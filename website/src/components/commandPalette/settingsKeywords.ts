@@ -41,6 +41,12 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'computer-use.enable-computer-use': ['accessibility', 'desktop', 'click', 'keyboard', 'screenshot', 'a11y', 'automation', 'gui'],
   'computer-use.attach-screenshots': ['screen capture', 'screenshot', 'pixels', 'window image'],
 
+  // Security (manual entries — settingsManual.ts)
+  'security.how-long-auto-approve-stays-on': ['yolo', 'auto-approve', 'auto approve', 'skip permissions', 'dangerously skip permissions', 'permissions', 'ttl', 'duration', 'expiry', 'until shutdown'],
+  'security.trust-this-machine-s-tailnet-name': ['lan', 'network', 'remote', 'expose', 'tailscale', 'origin'],
+  'security.denied-commands': ['deny', 'denylist', 'blocklist', 'blocked commands', 'command rules'],
+  'security.trust-every-third-party-app': ['apps', 'third party', 'auto approve apps', 'trust'],
+
   // General navigation
   'chat.split-view-session-grid': ['split pane', 'multi session', 'grid view'],
 }

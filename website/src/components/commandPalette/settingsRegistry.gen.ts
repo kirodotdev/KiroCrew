@@ -15,9 +15,60 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.use_builtin_browser"
   },
   {
-    "id": "channels.file-sessions-in-a-folder",
-    "label": "File sessions in a folder",
+    "id": "channels.enable-teams-channel-teams",
+    "label": "Enable Teams channel (Teams)",
+    "labelKey": "pages.settings.teamsPanel.enable_teams_channel",
+    "labelSuffix": "Teams",
+    "description": "Start the channel at gateway boot when the App ID + password are set.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    }
+  },
+  {
+    "id": "channels.enable-the-wechat-channel-wechat",
+    "label": "Enable the WeChat channel (WeChat)",
+    "labelKey": "pages.settings.weixinPanel.enable_the_wechat_channel",
+    "labelSuffix": "WeChat",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "weixin"
+    }
+  },
+  {
+    "id": "channels.enable-webex-channel-webex",
+    "label": "Enable Webex channel (Webex)",
+    "labelKey": "pages.settings.webexPanel.enable_webex_channel",
+    "labelSuffix": "Webex",
+    "description": "Start the channel at gateway boot when a token is set.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-discord",
+    "label": "File sessions in a folder (Discord)",
     "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Discord",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-slack",
+    "label": "File sessions in a folder (Slack)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Slack",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -26,9 +77,71 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "channels.folder-name",
-    "label": "Folder name",
+    "id": "channels.file-sessions-in-a-folder-teams",
+    "label": "File sessions in a folder (Teams)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Teams",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-telegram",
+    "label": "File sessions in a folder (Telegram)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Telegram",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "telegram"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-webex",
+    "label": "File sessions in a folder (Webex)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Webex",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-wecom",
+    "label": "File sessions in a folder (WeCom)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "WeCom",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "wecom"
+    }
+  },
+  {
+    "id": "channels.folder-name-discord",
+    "label": "Folder name (Discord)",
     "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Discord",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.folder-name-slack",
+    "label": "Folder name (Slack)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Slack",
     "description": "Created for you when you save these settings, if it does not exist yet.",
     "tab": "channels",
     "type": "input",
@@ -38,9 +151,75 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "channels.owner-slack-member-id",
-    "label": "Owner Slack member ID",
+    "id": "channels.folder-name-teams",
+    "label": "Folder name (Teams)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Teams",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    }
+  },
+  {
+    "id": "channels.folder-name-telegram",
+    "label": "Folder name (Telegram)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Telegram",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "telegram"
+    }
+  },
+  {
+    "id": "channels.folder-name-webex",
+    "label": "Folder name (Webex)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Webex",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "webex"
+    }
+  },
+  {
+    "id": "channels.folder-name-wechat",
+    "label": "Folder name (WeChat)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "WeChat",
+    "description": "Created for you when you turn this on, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "weixin"
+    }
+  },
+  {
+    "id": "channels.folder-name-wecom",
+    "label": "Folder name (WeCom)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "WeCom",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "wecom"
+    }
+  },
+  {
+    "id": "channels.owner-slack-member-id-slack",
+    "label": "Owner Slack member ID (Slack)",
     "labelKey": "pages.settings.slackPanel.owner_slack_member_id",
+    "labelSuffix": "Slack",
     "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W.",
     "tab": "channels",
     "type": "input",
@@ -50,9 +229,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "channels.phase-reactions",
-    "label": "Phase reactions",
+    "id": "channels.phase-reactions-slack",
+    "label": "Phase reactions (Slack)",
     "labelKey": "pages.settings.slackPanel.phase_reactions",
+    "labelSuffix": "Slack",
     "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages.",
     "tab": "channels",
     "type": "toggle",
@@ -62,9 +242,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "channels.show-thinking",
-    "label": "Show thinking",
+    "id": "channels.show-thinking-slack",
+    "label": "Show thinking (Slack)",
     "labelKey": "pages.settings.slackPanel.show_thinking",
+    "labelSuffix": "Slack",
     "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise.",
     "tab": "channels",
     "type": "toggle",
@@ -74,15 +255,52 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "channels.slash-command",
-    "label": "Slash command",
+    "id": "channels.slash-command-slack",
+    "label": "Slash command (Slack)",
     "labelKey": "pages.settings.slackPanel.slash_command",
+    "labelSuffix": "Slack",
     "description": "Trigger word for the Slack slash command (without the leading /).",
     "tab": "channels",
     "type": "input",
     "occurrence": 1,
     "params": {
       "channel": "slack"
+    }
+  },
+  {
+    "id": "channels.soft-context-threshold-discord",
+    "label": "Soft context threshold % (Discord)",
+    "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
+    "labelSuffix": "Discord",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.soft-context-threshold-telegram",
+    "label": "Soft context threshold % (Telegram)",
+    "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
+    "labelSuffix": "Telegram",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "telegram"
+    }
+  },
+  {
+    "id": "channels.soft-context-threshold-wecom",
+    "label": "Soft context threshold % (WeCom)",
+    "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
+    "labelSuffix": "WeCom",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "wecom"
     }
   },
   {
@@ -653,11 +871,95 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "telemetry.enabled"
   },
   {
-    "id": "security.trust-every-third-party-app",
-    "label": "Trust every third-party app",
-    "labelKey": "pages.settings.securityPanel.trustedApps.allow_all_label",
-    "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first.",
+    "id": "security.denied-commands",
+    "labelKey": "pages.settings.securityPanel.denied_commands",
     "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "rules"
+    },
+    "label": "Denied Commands"
+  },
+  {
+    "id": "security.governance-policy",
+    "labelKey": "pages.settings.securityPanel.governance_policy",
+    "tab": "security",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "section": "governance"
+    },
+    "label": "Governance Policy"
+  },
+  {
+    "id": "security.how-long-auto-approve-stays-on",
+    "labelKey": "pages.settings.securityPanel.yolo_duration_title",
+    "tab": "security",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "section": "approval"
+    },
+    "configKey": "agent.yolo_duration",
+    "label": "How long auto-approve stays on"
+  },
+  {
+    "id": "security.live-security-posture",
+    "labelKey": "pages.settings.securityPanel.live_security_posture",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "posture"
+    },
+    "label": "Live Security Posture"
+  },
+  {
+    "id": "security.trust-every-third-party-app",
+    "labelKey": "pages.settings.securityPanel.trustedApps.allow_all_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "apps"
+    },
+    "label": "Trust every third-party app",
+    "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first."
+  },
+  {
+    "id": "security.trust-this-machine-s-tailnet-name",
+    "labelKey": "pages.settings.securityPanel.tailnet_title",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "tailnet"
+    },
+    "label": "Trust this machine's tailnet name"
+  },
+  {
+    "id": "shortcuts.enable-shortcuts",
+    "label": "Enable shortcuts",
+    "labelKey": "pages.settings.shortcutsPanel.enable_shortcuts",
+    "tab": "shortcuts",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "shortcuts.search-everywhere",
+    "label": "Search Everywhere",
+    "labelKey": "components.shortcutsModal.search_everywhere",
+    "tab": "shortcuts",
+    "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
+    "id": "shortcuts.use-ctrl-not-option-for-chat-1-9",
+    "label": "Use ⌃ Ctrl (not ⌥ Option) for chat 1–9",
+    "labelKey": "pages.settings.shortcutsPanel.use_ctrl_not_option_for_chat_1_9",
+    "description": "Bind chat-tab switching to Ctrl+digit instead of Option+digit",
+    "tab": "shortcuts",
     "type": "toggle",
     "occurrence": 1
   },
