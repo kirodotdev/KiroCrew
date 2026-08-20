@@ -735,13 +735,20 @@ def _handle_app(args: argparse.Namespace) -> None:
         include_backend = getattr(args, "backend", False)
         include_ui = getattr(args, "ui", False)
         include_cron = getattr(args, "cron", False)
-        app_dir = scaffold_app(
-            output,
-            args.name,
-            include_backend=include_backend,
-            include_ui=include_ui,
-            include_cron=include_cron,
-        )
+        try:
+            app_dir = scaffold_app(
+                output,
+                args.name,
+                include_backend=include_backend,
+                include_ui=include_ui,
+                include_cron=include_cron,
+            )
+        except ValueError as exc:
+            # scaffold_app raises when a write path escapes the app directory
+            # (traversal in the name, a symlink in the tree). Match the clean
+            # error contract of the sibling app actions, not a raw traceback.
+            print(f"❌ {exc}", file=sys.stderr)
+            sys.exit(1)
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
         if include_ui:
