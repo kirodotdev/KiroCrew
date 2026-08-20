@@ -3,6 +3,20 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The stalled subagent row is now fully translated, and its idle figure can no
+  longer be truncated away.** The warning sentence was assembled in JSX from
+  three i18n fragments glued together with a hardcoded English `" at "`, so a
+  Japanese user read
+  `停止している可能性があります at Running: sleep 600 — 117秒間アクティビティなし`
+  — mixed-language copy on a warning they are being asked to judge — and no
+  locale could reorder a sentence whose fragment order was pinned in JSX. It is
+  now ONE interpolated catalog entry per variant (tool present or not, idle
+  span present or not), so every locale orders it itself. The tool name keeps
+  its monospace styling: `{{tool}}` is interpolated with a sentinel and the
+  resolved string split on it, which a plain interpolated string could not do.
+  Only the tool name truncates now rather than the whole sentence, so a long
+  tool name can no longer clip off the idle figure that justifies the warning.
+  (#3934)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

@@ -229,8 +229,12 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
     store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true }))
     const { container } = renderBar(store)
 
+    // The tool name is now its OWN span, interpolated into a single translated
+    // sentence rather than glued together with a hardcoded English " at " --
+    // so the fragment holds the bare value, not the value plus its preposition.
+    // The requirement being guarded is unchanged: this value renders mono.
     const toolFragment = [...container.querySelectorAll('span')]
-      .find(s => s.textContent === ' at npx vitest run')
+      .find(s => s.textContent === 'npx vitest run')
     expect(toolFragment).toBeTruthy()
     expect(toolFragment!.className).toContain('font-mono')
 

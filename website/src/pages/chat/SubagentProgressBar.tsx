@@ -20,6 +20,76 @@ const CHIP_MAX_ROWS = 8
  *  would otherwise push the composer down. Choice survives across sessions. */
 const COLLAPSE_KEY = 'mc.subagentChip.collapsed'
 
+/**
+ * Placeholder marker for the tool name inside a translated stall sentence.
+ *
+ * The stalled row used to be assembled in JSX from three fragments glued
+ * together with a hardcoded English `" at "`, which stayed English in all 11
+ * non-English locales (a Japanese user read
+ * `停止している可能性があります at Running: sleep 600 — 117秒間アクティビティなし`)
+ * and pinned the word order, so a locale whose grammar puts the tool elsewhere
+ * could not express it. The sentence is now ONE interpolated catalog entry per
+ * variant, so each locale orders it itself.
+ *
+ * The tool name still has to carry `font-mono` — it is the same value the
+ * non-stalled `→ lastTool` row renders, and a plain interpolated string cannot
+ * style a substring. So `{{tool}}` is interpolated with this sentinel and the
+ * result split on it, which keeps BOTH properties: full translatability and the
+ * monospace styling (and its regression test). U+0000 cannot occur in catalog
+ * copy or in a sanitized tool name, so the split is unambiguous.
+ */
+const TOOL_SLOT = '\u0000'
+
+/**
+ * The four stall sentences, one per (tool present?) x (idle span present?).
+ *
+ * Full literal keys in an `as const` map rather than a template-built key, so
+ * the i18n key gate can resolve every one statically and verify it exists --
+ * a key that gate cannot resolve is exempt from every catalog check it runs.
+ *
+ * Four entries rather than one string with optional clauses, because a catalog
+ * value cannot express "omit this clause": gluing the optional halves on
+ * outside the translate call is exactly the defect being fixed here. The
+ * no-span variants stay reachable -- a gateway too old to send `idle_secs`
+ * still renders a complete, translated sentence.
+ */
+const STALL_KEYS = {
+  tool_secs: 'pages.chat.subagentProgressBar.possibly_stalled_at_tool_for_secs',
+  tool: 'pages.chat.subagentProgressBar.possibly_stalled_at_tool',
+  secs: 'pages.chat.subagentProgressBar.possibly_stalled_for_secs',
+  plain: 'pages.chat.subagentProgressBar.possibly_stalled_no_activity',
+} as const
+
+/**
+ * Render a translated stall sentence, monospacing the tool name in place.
+ *
+ * Only the tool span is `truncate`. Previously the whole sentence truncated, so
+ * a long tool name could clip off the idle figure — the very number that
+ * justifies the warning — right off the end of the row.
+ */
+function StallText({ tool, idleSecs }: { tool: string; idleSecs?: number }) {
+  const hasSecs = typeof idleSecs === 'number'
+  // The key expression is inlined into the call, not bound to a local first, so
+  // the i18n key gate can resolve every branch of it statically.
+  const sentence = i18nT(
+    tool
+      ? (hasSecs ? STALL_KEYS.tool_secs : STALL_KEYS.tool)
+      : (hasSecs ? STALL_KEYS.secs : STALL_KEYS.plain),
+    { tool: TOOL_SLOT, secs: idleSecs },
+  )
+  const [before, after] = sentence.split(TOOL_SLOT)
+  // No slot in the resolved string (the no-tool variants, or a catalog value
+  // that dropped the placeholder) — render it whole rather than half.
+  if (after === undefined) return <span className="min-w-0">{before}</span>
+  return (
+    <>
+      {before && <span className="shrink-0 whitespace-pre">{before}</span>}
+      <span className="min-w-0 truncate font-mono">{tool}</span>
+      {after && <span className="shrink-0 whitespace-pre">{after}</span>}
+    </>
+  )
+}
+
 /** Minimal shape of the `/api/spawn` list response consumed for reconciliation. */
 interface SpawnListAgent {
   id: string
@@ -235,12 +305,11 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                             here; `elapsed` already sits on the row above and the
                             two are different numbers. The tool name carries the
                             same mono as the non-stalled `→ lastTool` line. */}
-                        <span className="truncate">
-                          {i18nT('pages.chat.subagentProgressBar.possibly_stalled')}
-                          {a.lastTool ? <span className="font-mono">{` at ${sanitizeLlmOutput(a.lastTool)}`}</span> : ''}
-                          {typeof idleShown === 'number'
-                            ? ` — ${i18nT('pages.chat.subagentProgressBar.no_activity_for', { secs: idleShown })}`
-                            : ` ${i18nT('pages.chat.subagentProgressBar.no_activity')}`}
+                        <span className="min-w-0 flex items-baseline">
+                          <StallText
+                            tool={a.lastTool ? sanitizeLlmOutput(a.lastTool) : ''}
+                            idleSecs={idleShown}
+                          />
                         </span>
                       </span>
                     ) : (a.lastTool && <span className="block font-mono text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
