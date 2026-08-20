@@ -6402,6 +6402,11 @@
       "split_right_d": "Разделить вправо (⌘D)",
       "terminal_pane_coming_in_phase_2": "Панель терминала — появится на этапе 2"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "Перемещено в",
+      "undo": "Отменить",
+      "removed_from_folder": "Убрано из папки"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "Закрыть опрос",
       "email_disclosure": "Мы можем связаться с вами по поводу вашего отзыва. Ваша оценка и комментарии отправляются команде {{productName}}.",

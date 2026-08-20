@@ -6138,6 +6138,11 @@
       "split_right_d": "向右分屏（⌘D）",
       "terminal_pane_coming_in_phase_2": "终端窗格 — 将在第二阶段推出"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "已移到",
+      "undo": "撤销",
+      "removed_from_folder": "已移出文件夹"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "关闭调查",
       "email_disclosure": "我们可能会就你的反馈与你联系。你的评分和反馈将发送给 {{productName}} 团队。",

@@ -6226,6 +6226,11 @@
       "split_right_d": "Nach rechts teilen (⌘D)",
       "terminal_pane_coming_in_phase_2": "Terminal-Bereich — kommt in Phase 2"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "Verschoben nach",
+      "undo": "Rückgängig",
+      "removed_from_folder": "Aus Ordner entfernt"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "Umfrage schließen",
       "email_disclosure": "Wir möchten Sie möglicherweise zu Ihrem Feedback kontaktieren. Ihre Bewertung und jegliches Feedback werden an das {{productName}}-Team gesendet.",

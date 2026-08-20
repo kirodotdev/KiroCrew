@@ -4292,6 +4292,11 @@
       "split_right_d": "Split right (⌘D)",
       "terminal_pane_coming_in_phase_2": "Terminal pane — coming in Phase 2"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "Moved to",
+      "undo": "Undo",
+      "removed_from_folder": "Removed from folder"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "Dismiss survey",
       "email_disclosure": "We may want to contact you about your feedback. Your rating and any feedback are sent to the {{productName}} team.",

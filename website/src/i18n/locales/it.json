@@ -6314,6 +6314,11 @@
       "split_right_d": "Dividi a destra (⌘D)",
       "terminal_pane_coming_in_phase_2": "Riquadro del terminale — disponibile nella fase 2"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "Spostato in",
+      "undo": "Annulla",
+      "removed_from_folder": "Rimosso dalla cartella"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "Ignora il sondaggio",
       "email_disclosure": "Potremmo volerti contattare riguardo al tuo feedback. La tua valutazione e gli eventuali commenti vengono inviati al team di {{productName}}.",

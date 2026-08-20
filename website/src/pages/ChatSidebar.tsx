@@ -50,6 +50,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { LAYOUT } from '../components/layout'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
+import SessionMoveUndoBar, { MOVE_UNDO_MS, type MovedSession } from '../components/SessionMoveUndoBar'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import TagManagerList from '../components/TagManagerList'
@@ -2920,6 +2921,147 @@ function ChatSidebar({
   // drag-to-folder) — single source of truth for slot→folder assignment. Both
   // the menu "Move to folder" submenus and drag-to-folder route through this.
   const assignToFolder = useMoveSlotToFolder()
+  // ── Drag-move undo ────────────────────────────────────────────────────────
+  // A drag is the one folder move the user can make WITHOUT naming the
+  // destination: drop a session a row off and it disappears into a folder they
+  // never chose, with nothing on screen saying where it went. So every
+  // DRAG-initiated move parks its inverse here and the bar below the lanes
+  // offers it back. Menu moves ("Move to folder…") pick the destination by name
+  // and do not arm it.
+  //
+  // `live` is the offer's ONE-WAY lifecycle. It flips true only once the SERVER
+  // has acknowledged the drag move, and once true the offer is DROPPED — never
+  // re-validated — the moment live state stops matching.
+  //
+  // Waiting for the acknowledgement is load-bearing, not caution: the move is
+  // optimistic, so the store shows the destination immediately, and an offer that
+  // went live on that would let the user undo while the original PATCH is still
+  // in flight. Undo's compare-and-set would be refused (the server still has the
+  // old folder) and the original write would then land — silently reversing the
+  // undo the user just asked for.
+  //
+  // Dropping rather than re-validating matters too: deriving the bar's visibility
+  // from live state let a dropped offer come back (drag A→B, then move B→C→B from
+  // a row menu, and the old A inverse matched again and would have overwritten
+  // the newer, intentional move).
+  const [dragMove, setDragMove] = useState<(MovedSession & { id: number; live: boolean; superseded: boolean }) | null>(null)
+  const moveByDrag = useCallback((slotKey: string, folderId: string | null) => {
+    const slot = slots.find(s => s.key === slotKey)
+    const from = slot?.folder_id || null
+    const to = folderId || null
+    // A drop back onto the folder the session already sits in is not a move —
+    // arming undo for it would offer to undo nothing.
+    if (from === to) return
+    const dest = to ? folders.find(f => f.id === to) : undefined
+    const id = Date.now()
+    setDragMove({
+      id,
+      live: false,
+      superseded: false,
+      slotKey,
+      fromFolderId: from,
+      toFolderId: to,
+      toFolderName: dest?.name ?? null,
+      toFolderColor: dest?.color,
+      sessionTitle: slot?.title || slotKey,
+    })
+    // No failure branch is needed: a move that never lands never acknowledges,
+    // so the offer never goes live and the deadline clears the record. There is
+    // no path from "failed" back to a visible bar.
+    assignToFolder(slotKey, to, {
+      onCommitted: () => setDragMove(m => (
+        m && m.id === id
+          // A mismatch latched during the pending window means someone else's
+          // move landed inside it, so this inverse is already stale — drop the
+          // offer instead of arming it on an ack that is no longer the last word.
+          ? (m.superseded ? null : { ...m, live: true })
+          : m
+      )),
+    })
+  }, [slots, folders, assignToFolder])
+  // Read through a ref, not the closure: AnimatePresence keeps the retired bar
+  // mounted for its 150ms exit, and that instance still holds the props (and the
+  // captured state) it had while live. A click or ⌘Z in that window would fire a
+  // stale undo and overwrite the newer placement, so the offer's identity is
+  // re-checked against CURRENT state at invocation time.
+  const dragMoveRef = useRef(dragMove)
+  dragMoveRef.current = dragMove
+  const undoDragMove = useCallback((offerId: number) => {
+    const dragMove = dragMoveRef.current
+    if (!dragMove || dragMove.id !== offerId) return
+    // Unconditional write, matching every other folder move in the product (the
+    // row menus, the session header, the drag itself). The offer's own lifecycle
+    // is what keeps it honest: it arms only on the server's acknowledgement, the
+    // pending window latches any placement it did not make, and an armed offer is
+    // dropped the moment live state stops matching its destination. What remains
+    // is a move this client has not been told about yet — the same broadcast gap
+    // every other write here lives with, where a wrong undo is visible on screen
+    // and re-correctable.
+    //
+    // A `fromFolderId` whose folder was DELETED meanwhile is degraded to unfiled
+    // rather than replayed: the endpoint rejects an unknown id with 400, and the
+    // sidebar already renders an unknown folder as unfiled, so posting it would
+    // leave Undo doing nothing at all.
+    const origin = dragMove.fromFolderId && folders.some(f => f.id === dragMove.fromFolderId)
+      ? dragMove.fromFolderId
+      : null
+    assignToFolder(dragMove.slotKey, origin)
+    setDragMove(null)
+  }, [folders, assignToFolder])
+  // The deadline lives HERE, not in the bar: an offer whose optimistic move
+  // never became visible (the request failed and rolled back) has no bar to run
+  // a timer, and must still die on the same clock rather than linger where a
+  // later, unrelated move could make it match again.
+  // Suspended while the pointer is over the bar or focus is inside it: the
+  // deadline must not expire under a hand that is already reaching for Undo,
+  // which would take the affordance away from exactly the slower reader it
+  // exists for — and the footer shifts up into the spot the button just left.
+  // The hold and the remainder are both keyed to the OFFER they belong to, and
+  // an id that does not match the live offer reads as "full, running". A new
+  // drag therefore cannot inherit a suspended clock (the pointer never leaves a
+  // bar that is REPLACED, so nothing else would clear the hold) or a part-spent
+  // window — by construction, rather than by a reset a later edit could forget.
+  // That cross-offer case carries no test: a second drag needs a board drop
+  // zone, and the zones unmount once the first move lands. Hence the shape above
+  // over an explicit reset — there is no branch left to get wrong.
+  const [heldOffer, setHeldOffer] = useState<number | null>(null)
+  const [spent, setSpent] = useState<{ id: number; remaining: number } | null>(null)
+  const undoHeld = dragMove != null && heldOffer === dragMove.id
+  const undoRemaining = dragMove && spent?.id === dragMove.id ? spent.remaining : MOVE_UNDO_MS
+  const undoDeadlineRef = useRef(0)
+  useEffect(() => {
+    if (!dragMove) return
+    if (undoHeld) {
+      setSpent({ id: dragMove.id, remaining: Math.max(0, undoDeadlineRef.current - Date.now()) })
+      return
+    }
+    undoDeadlineRef.current = Date.now() + undoRemaining
+    const timer = setTimeout(() => setDragMove(null), undoRemaining)
+    return () => clearTimeout(timer)
+    // Keyed on the offer's id and the hold ALONE: flipping `live` must not
+    // restart the clock, and neither must the remainder this effect writes when
+    // it freezes — that write is the input to the NEXT resume, not a new window.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragMove?.id, undoHeld])
+  useEffect(() => {
+    if (!dragMove) return
+    const slot = slots.find(s => s.key === dragMove.slotKey)
+    if (!slot) { setDragMove(null); return }   // session closed — nothing to put back
+    const here = slot.folder_id || null
+    if (dragMove.live) {
+      if (here !== dragMove.toFolderId) setDragMove(null)
+      return
+    }
+    // Still PENDING the server's acknowledgement. Two placements are legitimate
+    // here: the ORIGIN (our optimistic write has not been applied or was rolled
+    // back) and the DESTINATION (it has). Any third value is another client's
+    // move landing inside our window, and it must not be forgotten just because
+    // the offer is not armed yet: the ack that follows would otherwise arm an
+    // inverse that now overwrites that newer placement. Latch it instead.
+    if (here !== dragMove.fromFolderId && here !== dragMove.toFolderId && !dragMove.superseded) {
+      setDragMove(m => (m && m.id === dragMove.id ? { ...m, superseded: true } : m))
+    }
+  }, [dragMove, slots])
   // Surface-agnostic session actions (duplicate/read/pin/copy/move/close) shared
   // by all three row menus AND the row's non-menu buttons (Duplicate/Close) so
   // each behaviour has one definition. Rename + Tags stay local (they drive this
@@ -2980,10 +3122,10 @@ function ChatSidebar({
         })
         return
       }
-      if (o?.type === 'folder-drop') assignToFolder(a.key, o.folderId ?? null)
-      else if (o?.type === 'folder') assignToFolder(a.key, over.id as string)
+      if (o?.type === 'folder-drop') moveByDrag(a.key, o.folderId ?? null)
+      else if (o?.type === 'folder') moveByDrag(a.key, over.id as string)
     }
-  }, [reorderFolders, assignToFolder, moveFolderTo, slots, activeSlot, onDropSessionRef])
+  }, [reorderFolders, moveByDrag, moveFolderTo, slots, activeSlot, onDropSessionRef])
   const handleSidebarDragCancel = useCallback(() => { setActiveDrag(null); setDragFrozen(false); if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current.timer); dragExpandTimer.current = null } }, [])
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -3197,7 +3339,7 @@ function ChatSidebar({
           e.preventDefault(); e.stopPropagation()
           e.currentTarget.classList.remove('ring-1', 'ring-accent')
           const k = e.dataTransfer.getData('text/plain')
-          if (k) assignToFolder(k, folder.id)
+          if (k) moveByDrag(k, folder.id)
         }}
       >
         <div
@@ -5285,6 +5427,23 @@ function ChatSidebar({
           </div>
         )}
       </LayoutGroup>
+
+      {/* Drag-move confirmation + undo. Deliberately a SIBLING of the lanes and
+          a sibling ABOVE the separator, so it never covers the row that just
+          moved and never covers the persistent "Older Sessions" control — the
+          footer shifts down by its height while it is up. */}
+      <AnimatePresence initial={false}>
+        {dragMove?.live && (
+          <SessionMoveUndoBar key={dragMove.id} moved={dragMove}
+            onUndo={() => undoDragMove(dragMove.id)}
+            onHoldChange={held => { setHeldOffer(held ? dragMove.id : null) }}
+            remainingMs={undoRemaining}
+            paused={undoHeld}
+            /* Same width ladder as the header's compact/tiny steps: below this the
+               prefix + shortcut would eat the row and truncate the destination. */
+            compact={sidebarWidth < 220} />
+        )}
+      </AnimatePresence>
 
       {/* When expanded: doubles as the resize handle (accent on hover, drag to resize, dbl-click to collapse).
           When collapsed: just a static 1px divider between sessions and the Older Sessions footer. */}

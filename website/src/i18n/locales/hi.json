@@ -6226,6 +6226,11 @@
       "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
       "terminal_pane_coming_in_phase_2": "टर्मिनल पैन — चरण 2 में आ रहा है"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "ले जाया गया",
+      "undo": "पूर्ववत करें",
+      "removed_from_folder": "फ़ोल्डर से हटाया गया"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "सर्वेक्षण खारिज करें",
       "email_disclosure": "हम तुमसे तुम्हारी प्रतिक्रिया के बारे में संपर्क कर सकते हैं। तुम्हारी रेटिंग और कोई भी फ़ीडबैक {{productName}} टीम को भेजी जाती है।",

@@ -6138,6 +6138,11 @@
       "split_right_d": "右に分割 (⌘D)",
       "terminal_pane_coming_in_phase_2": "ターミナルペイン — フェーズ 2 で提供予定"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "移動先",
+      "undo": "取り消し",
+      "removed_from_folder": "フォルダーから移動"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "アンケートを閉じる",
       "email_disclosure": "フィードバックについてご連絡する場合があります。評価とフィードバックは {{productName}} チームに送信されます。",

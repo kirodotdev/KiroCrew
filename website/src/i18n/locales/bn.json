@@ -6226,6 +6226,11 @@
       "split_right_d": "ডানে স্প্লিট করুন (⌘D)",
       "terminal_pane_coming_in_phase_2": "টার্মিনাল প্যান — ফেজ 2-এ আসছে"
     },
+    "sessionMoveUndoBar": {
+      "moved_to": "সরানো হয়েছে",
+      "undo": "আনডু",
+      "removed_from_folder": "ফোল্ডার থেকে সরানো হয়েছে"
+    },
     "sessionPulseSurveyCard": {
       "dismiss": "সমীক্ষা খারিজ করুন",
       "email_disclosure": "আমরা আপনার মতামত সম্পর্কে আপনার সাথে যোগাযোগ করতে চাইতে পারি। আপনার রেটিং এবং যেকোনো মতামত {{productName}} টিমে পাঠানো হয়।",
