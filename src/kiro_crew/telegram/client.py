@@ -722,8 +722,10 @@ class TelegramClient:
         # handler it spawns races SessionManager._closing and may be refused,
         # exactly as a plain message arriving at shutdown already is today. It
         # costs nothing, sometimes wins, and drains the buffer either way.
-        self._flush_all_albums()
+        # Session close in a `finally` -- see DiscordClient.close() for why the
+        # steps above it can raise and what leaking the session costs.
         try:
+            self._flush_all_albums()
             if self._task:
                 self._task.cancel()
                 try:

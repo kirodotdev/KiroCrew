@@ -600,13 +600,25 @@ class DiscordClient:
         rather than as a shutdown.
         """
         self._closed = True
-        self._stop_heartbeat()
-        if self._ws is not None and not self._ws.closed:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
+        # The session close is the LAST thing this method must do and the one
+        # thing it must not skip, so it lives in a `finally`. Every step above it
+        # can raise: `task.cancel()` on a task that ALREADY died with an error
+        # is a no-op, and the following `await self._task` then re-raises that
+        # error -- `except asyncio.CancelledError` does not catch it. A shutdown
+        # while this coroutine is itself being cancelled does the same, since
+        # `CancelledError` is a `BaseException`.
+        #
+        # Leaking the `ClientSession` leaves its connector and open sockets
+        # behind for the process lifetime (aiohttp reports it as "Unclosed
+        # client session" at GC), and `self._session` stays non-None, so a
+        # later close finds a session it believes is already handled.
         try:
+            self._stop_heartbeat()
+            if self._ws is not None and not self._ws.closed:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
             if self._task:
                 self._task.cancel()
                 try:
@@ -616,17 +628,22 @@ class DiscordClient:
                 finally:
                     self._task = None
         finally:
-            # Snapshot first: a cancelled handler's done-callback mutates the set.
-            handlers = list(self._handler_tasks)
-            for handler in handlers:
-                handler.cancel()
-            if handlers:
-                # return_exceptions so one handler raising during unwind cannot
-                # abandon the others or skip the session close below.
-                await asyncio.gather(*handlers, return_exceptions=True)
-            if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
+            # The drain below awaits, so a cancellation landing DURING it would
+            # exit this finally before the session close -- the nested finally
+            # keeps the close unconditional either way.
+            try:
+                # Snapshot first: a cancelled handler's done-callback mutates the set.
+                handlers = list(self._handler_tasks)
+                for handler in handlers:
+                    handler.cancel()
+                if handlers:
+                    # return_exceptions so one handler raising during unwind cannot
+                    # abandon the others or skip the session close below.
+                    await asyncio.gather(*handlers, return_exceptions=True)
+            finally:
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                    self._session = None
 
     def set_message_handler(self, on_message: Callable[[DiscordInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.

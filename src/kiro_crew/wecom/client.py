@@ -246,12 +246,17 @@ class WeComClient:
         invariant; ``TeamsClient.close`` owns the same one.
         """
         self._closed = True
-        if self._ws and not self._ws.closed:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
+        # Session close in a `finally` -- see DiscordClient.close() for why the
+        # steps above it can raise and what leaking the session costs.
         try:
+            if self._ws and not self._ws.closed:
+                # Guarded like DiscordClient.close(): closing a websocket whose
+                # transport is already broken raises, and this one is on the way out
+                # either way.
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
             if self._task:
                 self._task.cancel()
                 try:
@@ -264,14 +269,20 @@ class WeComClient:
             # Fail any push still waiting on an ACK: the socket is going away, so the
             # answer is "not delivered", and leaving the future pending would hang the
             # caller until its timeout for no reason.
-            for waiter in list(self._pending_acks.values()):
-                if not waiter.done():
-                    waiter.set_result(-1)
-            self._pending_acks.clear()
-            await self._drain_handler_tasks()
-            if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
+            #
+            # The drain below awaits, so a cancellation landing DURING it would
+            # exit this finally before the session close -- the nested finally
+            # keeps the close unconditional either way.
+            try:
+                for waiter in list(self._pending_acks.values()):
+                    if not waiter.done():
+                        waiter.set_result(-1)
+                self._pending_acks.clear()
+                await self._drain_handler_tasks()
+            finally:
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                    self._session = None
 
     async def _drain_handler_tasks(self) -> None:
         """Cancel and await the in-flight turn tasks.
