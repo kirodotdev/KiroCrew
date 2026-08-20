@@ -55,11 +55,16 @@ from kiro_crew.computer_use.types import (
     CURVE_C2_OFFSET_RATIO,
     CURVE_DISTANCE_RATIO,
     DEFAULT_CURVE_SCALE,
+    DEFAULT_DRAG_PATH,
+    DEFAULT_DRAG_STEPS,
     DEFAULT_PATH_SAMPLES,
+    DRAG_PATH_CURVED,
     FULL_SPEED_DISTANCE,
     MAX_CURVE_SCALE,
+    MAX_DRAG_STEPS,
     MAX_MOVE_DURATION_MS,
     MAX_PATH_SAMPLES,
+    MIN_DRAG_STEPS,
     MIN_MOTION_DISTANCE,
     MIN_MOVE_DURATION_MS,
     MIN_PATH_SAMPLES,
@@ -83,6 +88,7 @@ __all__ = [
     "MotionPlan",
     "SpringConfig",
     "build_path",
+    "drag_points",
     "plan_motion",
     "sample_path",
     "settle_time",
@@ -381,6 +387,78 @@ def sample_path(
         out.append(path.point_at(curve[min(idx, last)]))
     out[0] = path.start
     out[-1] = path.end
+    return tuple(out)
+
+
+def drag_points(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    steps: int = DEFAULT_DRAG_STEPS,
+    path: str = DEFAULT_DRAG_PATH,
+) -> tuple[tuple[float, float], ...]:
+    """The points a DRAG visits, from *start* to *end* inclusive.
+
+    Shares this module with the cosmetic overlay for one reason: the overlay's
+    ``curved`` shape is the shape a hand-drawn stroke has, and computing it twice
+    would let the drawn gesture and the drawn cursor diverge. But the two differ in
+    what they are eased by, and that difference is load-bearing:
+
+    * :func:`sample_path` spaces its samples evenly in **time** through the progress
+      spring, because a renderer draws them at a constant frame rate and the uneven
+      spacing IS the ease-in/ease-out;
+    * a drag's samples are spaced evenly in **parameter**, because these points are
+      delivered as pointer positions rather than drawn. Spring-easing them would
+      cluster most of the stroke's positions at its two ends and leave the middle
+      spanned by a few long jumps — visible as a straight chord through the middle
+      of a curve, which is the exact defect multi-point dragging exists to fix.
+
+    ``steps`` counts SEGMENTS, so the result has ``steps + 1`` points and
+    ``steps=1`` yields exactly ``(start, end)`` — the plain two-point drag,
+    which is why that is the default and why no existing caller changes shape.
+
+    Both endpoints are returned EXACTLY, never evaluated: a drag's release point is
+    where a drop lands, and it is also what the confinement check authorized, so it
+    must not drift by a float epsilon.
+
+    Clamped rather than validated: this is geometry, and the callers that take model
+    input (``tools._build_drag_request``, the MCP schema) refuse an out-of-range
+    value with a legible message before reaching here. An unknown *path* falls back
+    to straight, so a future spelling degrades to the safe shape.
+    """
+    count = min(max(int(steps), MIN_DRAG_STEPS), MAX_DRAG_STEPS)
+    sx, sy = float(start[0]), float(start[1])
+    ex, ey = float(end[0]), float(end[1])
+    if count <= 1:
+        return ((sx, sy), (ex, ey))
+    distance = math.hypot(ex - sx, ey - sy)
+    # A SHORT gesture is drawn straight, the same rule and the same threshold
+    # :func:`plan_motion` applies to the cosmetic glide — and here it is correctness
+    # rather than looks. ``curve_amount`` floors the arc at ``CURVE_AMOUNT_MIN`` (28px)
+    # regardless of how short the move is, so a 2px "curved" drag bowed 16px off the
+    # chord: eight times the length of the gesture the caller asked for. Two
+    # consequences, and the second is the one that matters:
+    #
+    # * the drawn stroke does not resemble the request, and on a canvas that is a wrong
+    #   drawing rather than a slightly worse one;
+    # * every point of the path is confined (both drivers), so a short curved stroke
+    #   near a window edge is REFUSED for a point the model never asked to visit — and
+    #   the refusal names coordinates it did not send, which is the un-actionable retry
+    #   loop ``_ERR_POINT_NOT_OWNED`` exists to keep out of the model's way.
+    #
+    # Applying the same guard is also what makes the shared-geometry justification true:
+    # without it the drag bows while the overlay glide over the same two points is
+    # straight, which is exactly the divergence sharing the module was meant to prevent.
+    shaped = path == DRAG_PATH_CURVED and distance >= STRAIGHT_MOVE_DISTANCE
+    if shaped:
+        curve = build_path((sx, sy), (ex, ey))
+        out = [curve.point_at(i / count) for i in range(count + 1)]
+    else:
+        out = [
+            (sx + (ex - sx) * (i / count), sy + (ey - sy) * (i / count)) for i in range(count + 1)
+        ]
+    out[0] = (sx, sy)
+    out[-1] = (ex, ey)
     return tuple(out)
 
 

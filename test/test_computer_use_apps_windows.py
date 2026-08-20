@@ -47,6 +47,162 @@ def _info(
     )
 
 
+class TestTransientPopupsAreNotApplications:
+    """A WinUI popup is its app's own tooltip, not an addressable surface.
+
+    Found by driving the real desktop: MS Paint publishes a 97x52 ``PopupHost``
+    (class ``Microsoft.UI.Content.PopupWindowSiteBridge``) alongside its real
+    1536x960 document window. It carries Paint's image name and passes every other
+    filter, so it became a second ``list_apps`` entry indistinguishable by name — and
+    ``resolve_app`` returns the FIRST match.
+    """
+
+    @staticmethod
+    def _paint_pair(monkeypatch, popup_first: bool):
+        popup = _info(
+            hwnd=0x33807C8,
+            pid=900,
+            title="PopupHost",
+            cls="Microsoft.UI.Content.PopupWindowSiteBridge",
+            exe="mspaint.exe",
+            bounds=(478.0, 161.0, 97.0, 52.0),
+        )
+        document = _info(
+            hwnd=0x3950136,
+            pid=900,
+            title="Untitled - Paint",
+            cls="MSPaintApp",
+            exe="mspaint.exe",
+            bounds=(191.0, 119.0, 1536.0, 960.0),
+        )
+        order = (popup, document) if popup_first else (document, popup)
+        monkeypatch.setattr(ffi, "window_list", lambda: order)
+
+    def test_the_popup_is_not_listed_as_an_application(self, monkeypatch) -> None:
+        self._paint_pair(monkeypatch, popup_first=True)
+        apps = apps_windows.list_apps()
+        assert [app.window_title for app in apps] == ["Untitled - Paint"]
+
+    def test_resolve_app_reaches_the_DOCUMENT_window_whatever_the_z_order(
+        self, monkeypatch
+    ) -> None:
+        """The consequence, and the reason this is a defect rather than a tidy-up.
+
+        With the popup listed, a coordinate gesture aimed at the document was refused
+        by ``hwnd_owns_point`` — CORRECTLY, since the point really was outside the
+        97x52 rect it had resolved to — and the refusal told the model to re-read
+        bounds that would never change. That is a retry loop with no exit.
+
+        Both orderings are asserted because ``window_list`` returns front-to-back
+        z-order, so which one comes first depends on whether a tooltip happens to be
+        showing.
+        """
+        for popup_first in (True, False):
+            self._paint_pair(monkeypatch, popup_first=popup_first)
+            resolved = apps_windows.resolve_app("mspaint")
+            assert resolved.window_id == 0x3950136, f"popup_first={popup_first}"
+            assert resolved.window_title == "Untitled - Paint"
+
+    def test_a_real_window_whose_class_merely_CONTAINS_popup_is_kept(self, monkeypatch) -> None:
+        # The exclusion is a PREFIX test, so an ordinary application that happens to
+        # have "Popup" somewhere in its class name is not silently unreachable.
+        monkeypatch.setattr(
+            ffi,
+            "window_list",
+            lambda: (_info(hwnd=5, title="Real", cls="MyAppPopupEditor", exe="app.exe"),),
+        )
+        assert [app.window_title for app in apps_windows.list_apps()] == ["Real"]
+
+    def test_a_DENIED_popup_is_still_listed_so_it_can_be_refused(self, monkeypatch) -> None:
+        """The popup filter must not drop a window the denylist wants to refuse.
+
+        Dropping a window before it claims its handle slot lets an innocuous
+        same-handle sibling occupy it — the exact overwrite ``list_apps``' guard forbids
+        ("a denied window is never overwritten by an innocuous sibling, so the refusal
+        cannot be dodged"). A window that is not listed cannot be refused.
+        """
+        denied = _info(
+            hwnd=7,
+            pid=901,
+            title="Kiro Crew",
+            cls="Microsoft.UI.Content.PopupWindowSiteBridge",
+            exe="chrome.exe",
+        )
+        sibling = _info(
+            hwnd=7, pid=901, title="Innocuous", cls="Chrome_WidgetWin_1", exe="chrome.exe"
+        )
+        monkeypatch.setattr(ffi, "window_list", lambda: (denied, sibling))
+        apps = apps_windows.list_apps()
+        assert [app.window_title for app in apps] == ["Kiro Crew"]
+        assert policy.check_app(apps[0], PolicyConfig()) is not None
+
+
+class TestFindWindowFor:
+    """The launch verb's non-raising lookup, on both of its questions."""
+
+    def test_it_sees_a_HOSTED_window_by_its_title(self, monkeypatch) -> None:
+        """A packaged app's identity IS its title, so a stem-only lookup misses it.
+
+        ``_app_ref`` deliberately replaces both ``name`` and ``bundle_id`` with the
+        window title for a window fronted by ``ApplicationFrameHost``, because the
+        host's image name identifies no application. The launch catalog resolves an
+        executable STEM, so for a packaged app the two never agree — and both of the
+        launch verb's questions then answer wrongly: the already-running pre-check does
+        not fire (so the model opens a SECOND copy) and the post-launch poll burns its
+        whole timeout reporting "no window appeared" for a window that is on screen.
+        """
+        monkeypatch.setattr(
+            ffi,
+            "window_list",
+            lambda: (
+                _info(
+                    hwnd=11,
+                    pid=902,
+                    title="Microsoft Store",
+                    cls="ApplicationFrameWindow",
+                    exe="ApplicationFrameHost.exe",
+                ),
+            ),
+        )
+        hosted = apps_windows.list_apps()[0]
+        # The frame-host substitution: neither policy-matched field carries the stem.
+        assert hosted.name == hosted.bundle_id == "Microsoft Store"
+        assert apps_windows.find_window_for("Microsoft Store") is not None
+        # And the stem the catalog resolves ('store') reaches it through the title.
+        assert apps_windows.find_window_for("store") is not None
+
+    def test_it_prefers_an_EXACT_stem_over_a_title_substring(self, monkeypatch) -> None:
+        # The title tier is a substring, so it runs only after the exact forms — the
+        # ordering ``resolve_app`` uses, for the reason it gives: otherwise asking for
+        # ``chrome`` could resolve to a window whose title merely contains the word.
+        monkeypatch.setattr(
+            ffi,
+            "window_list",
+            lambda: (
+                _info(hwnd=1, pid=1, title="notes about chrome", exe="editor.exe"),
+                _info(hwnd=2, pid=2, title="New Tab", exe="chrome.exe"),
+            ),
+        )
+        found = apps_windows.find_window_for("chrome")
+        assert found is not None
+        assert found.bundle_id == "chrome.exe"
+
+    def test_an_absent_app_is_None_not_an_exception(self, monkeypatch) -> None:
+        # Not-running is the case a launch exists to FIX, so it must be an ordinary
+        # negative rather than the error path.
+        monkeypatch.setattr(ffi, "window_list", lambda: ())
+        assert apps_windows.find_window_for("anything") is None
+
+    def test_an_enumeration_failure_is_None_not_an_exception(self, monkeypatch) -> None:
+        # During a launch poll a transient failure is indistinguishable from "not there
+        # yet", and the poll's own timeout is the bound.
+        def boom():
+            raise ComputerUseError("enumeration failed")
+
+        monkeypatch.setattr(ffi, "window_list", boom)
+        assert apps_windows.find_window_for("anything") is None
+
+
 class TestListApps:
     def test_one_entry_per_WINDOW_not_per_process(self, monkeypatch) -> None:
         """A pid is not an app identity here.

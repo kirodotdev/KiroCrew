@@ -50,6 +50,31 @@ _SHELL_CLASSES: frozenset[str] = frozenset(
     }
 )
 
+#: Class-name PREFIXES of a modern app's own transient popups — a tooltip, a flyout, a
+#: menu surface. Prefixes rather than exact names because WinUI spells them
+#: ``Microsoft.UI.Content.PopupWindowSiteBridge`` and the family keeps growing;
+#: matching the stem covers a sibling without another edit.
+#:
+#: These are NOT shell furniture: they belong to the target application, carry its
+#: image name, and pass every filter above. MS Paint was measured publishing a 97x52
+#: ``PopupHost`` alongside its real 1536x960 document window — and because
+#: :func:`resolve_app` returns the FIRST match by name, ``resolve_app("mspaint")``
+#: resolved to the popup. Every coordinate gesture aimed at the document was then
+#: refused by ``hwnd_owns_point`` (correctly: the point really was not inside the 97x52
+#: rect), and the refusal points at bounds that never change — a retry loop with no
+#: exit, which is the failure ``_ERR_POINT_NOT_OWNED``'s wording exists to keep the
+#: model out of.
+_TRANSIENT_CLASS_PREFIXES: tuple[str, ...] = (
+    "Microsoft.UI.Content.Popup",
+    "Windows.UI.Popups",
+)
+
+
+def _is_transient(class_name: str) -> bool:
+    """Whether this window is one of its app's own popups rather than a surface."""
+    return any(class_name.startswith(prefix) for prefix in _TRANSIENT_CLASS_PREFIXES)
+
+
 _ERR_NO_MATCH = (
     "no application matching {query!r} is on screen. Call computer_list_apps to see "
     "what is available"
@@ -154,6 +179,15 @@ def list_apps() -> tuple[AppRef, ...]:
 
     Shell furniture is dropped: the tray, the desktop, thumbnail helpers and XAML
     islands all pass ``IsWindowVisible`` and are not application windows.
+
+    **An application's own transient popups are dropped too**, and that one is not
+    cosmetic. A WinUI tooltip or flyout carries the app's image name and passes every
+    other filter, so it becomes a second entry indistinguishable from the real window
+    by name — and :func:`resolve_app` returns the first match. Measured on MS Paint: a
+    97x52 ``PopupHost`` was listed beside the real 1536x960 document window, so
+    ``resolve_app("mspaint")`` resolved to the popup and every coordinate gesture
+    aimed at the document was refused by ``hwnd_owns_point`` for a point that
+    genuinely was outside the resolved window. See :data:`_TRANSIENT_CLASS_PREFIXES`.
     """
     # An enumeration failure PROPAGATES: the driver's _guarded seam turns it into
     # DriverResult(ok=False, reason), matching apps_macos. Catching it and
@@ -163,6 +197,14 @@ def list_apps() -> tuple[AppRef, ...]:
     seen: dict[int, AppRef] = {}
     for info in windows_ffi.window_list():
         if info.class_name in _SHELL_CLASSES:
+            continue
+        # A popup is dropped UNLESS its title is denied. The exception is not a
+        # nicety: dropping a window before it can claim its handle slot lets an
+        # innocuous same-handle sibling occupy it, which is exactly the overwrite the
+        # ``_denied_title`` guard below forbids ("a denied window is never overwritten
+        # by an innocuous sibling"). A denylist rule matching this window's title means
+        # this window must be refused, and it cannot be refused if it was never listed.
+        if _is_transient(info.class_name) and not _denied_title(info.title):
             continue
         if info.pid <= 0:
             continue
@@ -208,6 +250,61 @@ def resolve_app(query: str) -> AppRef:
         if wanted in app.window_title.lower():
             return app
     raise ComputerUseError(_ERR_NO_MATCH.format(query=query))
+
+
+def find_window_for(name: str) -> "AppRef | None":
+    """The on-screen window of the app *name* identifies, or ``None``.
+
+    A NON-raising counterpart to :func:`resolve_app`, for the launch verb's two
+    questions — "is it already running?" before spawning, and "has it appeared yet?"
+    while polling. Both are ordinary-negative: not-running is the case a launch
+    exists to fix, so an exception would make the normal path the error path.
+
+    Matched on the executable STEM first, and that is what makes it usable for a
+    launch: the catalog names an executable (``mspaint.exe``) while a freshly-launched
+    window's title is whatever document it opened (``Untitled - Paint``), so a
+    title-only match would miss the window we just started.
+
+    **A HOSTED window needs the title too**, and the reason is a deliberate decision
+    made elsewhere in this module: :func:`_app_ref` replaces BOTH ``name`` and
+    ``bundle_id`` with the window title for a window fronted by
+    ``ApplicationFrameHost``, because the host's image name identifies no application
+    (see :data:`_WINDOW_HOST_PROCESSES`). So for a packaged app the executable stem the
+    catalog resolved and the identity this module publishes never agree, and a stem-only
+    lookup answers ``None`` for a window that is plainly on screen. Both of the launch
+    verb's questions then answer wrongly: the already-running pre-check does not fire,
+    so the model gets a SECOND copy, and the post-launch poll burns its whole timeout
+    and reports "no window appeared" for an app that opened one.
+
+    The title match is a SUBSTRING and is tried only after the exact forms, so an exact
+    stem still wins — the ordering :func:`resolve_app` uses, for the reason it gives
+    there: without it, asking for ``chrome`` could resolve to a window whose title merely
+    contains the word.
+
+    An enumeration failure resolves to ``None`` rather than propagating: during a
+    launch poll a transient failure is indistinguishable from "not there yet", and
+    the poll's own timeout is the bound.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return None
+    try:
+        apps = list_apps()
+    except Exception:
+        logger.debug("window lookup failed while matching %r", name, exc_info=True)
+        return None
+    for app in apps:
+        stem = app.bundle_id.lower()
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        if wanted in (app.name.lower(), app.bundle_id.lower(), stem):
+            return app
+    # Only now the title, and only as a substring: a hosted window's identity IS its
+    # title, so this is the sole form that can match a packaged app.
+    for app in apps:
+        if wanted in app.window_title.lower():
+            return app
+    return None
 
 
 def window_bounds(app: AppRef) -> "tuple[float, float, float, float] | None":
@@ -272,6 +369,7 @@ def hwnd_owns_point(app: AppRef, x: float, y: float) -> bool:
 
 
 __all__ = [
+    "find_window_for",
     "hwnd_owns_point",
     "list_apps",
     "resolve_app",

@@ -24,7 +24,7 @@ its MCP twin (``computer_list_apps``), so neither brushes the rule.
 capability and it adds no tool: it is a *harness* over the existing ten, for a
 human reproducing a failure at a terminal. The rule exists so the model gets a
 structured tool rather than being told to shell out — and the model already has
-all ten as MCP tools. ``call`` deliberately has no MCP twin, because a tool that
+all eleven as MCP tools. ``call`` deliberately has no MCP twin, because a tool that
 runs other tools would let a model launder a per-call gate decision through one
 approved invocation.
 

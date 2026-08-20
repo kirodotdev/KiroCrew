@@ -194,8 +194,21 @@ def check_app(app: AppRef, cfg: PolicyConfig) -> str | None:
 
     bundle = (app.bundle_id or "").strip().lower()
     name = (app.name or "").strip().lower()
+    title = (app.window_title or "").strip().lower()
     for pattern in cfg.extra_denied_apps:
-        if _matches_operator_pattern(pattern, bundle, name):
+        # The TITLE is matched for a DENY only, never for the allow-list below. Deliberately
+        # asymmetric, for the same reason the built-in floor reads ``title_substrings``:
+        # a packaged app fronted by ``ApplicationFrameHost`` is named by its window title and
+        # by nothing else an operator can see, so a deny that ignored the title could not
+        # express "not the Store". Broadening a DENY fails safe.
+        #
+        # The allow-list must NOT read it. A window title is chosen by the application (and
+        # often by the document it opened), so allowing on a title would let any app satisfy
+        # an allow-list by naming itself after a permitted one — widening the one control an
+        # operator uses to narrow. The known cost is the mirror of the built-in title rule's:
+        # an unrelated window whose title happens to contain a denied pattern is refused,
+        # which is visible and recoverable, where the reverse is neither.
+        if _matches_operator_pattern(pattern, bundle, name, title):
             return REFUSAL_DENIED_APP.format(
                 app=app.bundle_id or app.name,
                 reason="added to the blocked list by the operator",
@@ -423,15 +436,23 @@ def redact_result(text: str) -> str:
     return redact_via_context(text)
 
 
-def _matches_operator_pattern(pattern: str, bundle: str, name: str) -> bool:
-    """Substring match of an operator-supplied pattern against both identifiers.
+def _matches_operator_pattern(pattern: str, bundle: str, name: str, title: str = "") -> bool:
+    """Substring match of an operator-supplied pattern against the given identifiers.
 
     Substring rather than glob so an operator typing ``terminal`` or
     ``com.apple.`` gets the intuitive (broader) result. Broadening an operator's
     *deny* entry is safe; for the allow-list it is the operator's own explicit
     choice, and the built-in floor is evaluated first regardless.
+
+    *title* is the window title and defaults to ``""`` — supplied by the DENY path and
+    deliberately not by the allow-list, because a title is chosen by the application. See
+    :func:`check_app` for why that asymmetry is the safe direction.
     """
     pat = pattern.strip().lower()
     if not pat:
         return False
-    return (bool(bundle) and pat in bundle) or (bool(name) and pat in name)
+    return (
+        (bool(bundle) and pat in bundle)
+        or (bool(name) and pat in name)
+        or (bool(title) and pat in title)
+    )

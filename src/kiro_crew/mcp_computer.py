@@ -66,11 +66,16 @@ from kiro_crew.computer_use.types import (
     CLICK_METHOD_AUTO,
     CLICK_METHOD_GLOBAL,
     CLICK_METHODS,
+    DRAG_PATH_CURVED,
+    DRAG_PATH_STRAIGHT,
+    DRAG_PATHS,
     ERROR_PREFIX,
     MAX_ACTION_LEN,
     MAX_CLICK_COUNT,
+    MAX_DRAG_STEPS,
     MAX_ELEMENT_INDEX,
     MAX_KEY_LEN,
+    MAX_LAUNCH_QUERY_LEN,
     MAX_SCREEN_COORD,
     MAX_SCROLL_PAGES,
     MAX_TEXT_LIMIT,
@@ -78,6 +83,7 @@ from kiro_crew.computer_use.types import (
     MAX_TREE_NODES_LIMIT,
     MAX_TYPE_TEXT_LEN,
     MIN_CLICK_COUNT,
+    MIN_DRAG_STEPS,
     MIN_SCREEN_COORD,
     MIN_SCROLL_PAGES,
     MOUSE_BUTTONS,
@@ -87,6 +93,7 @@ from kiro_crew.computer_use.types import (
     TOOL_DRAG,
     TOOL_END_TURN,
     TOOL_GET_STATE,
+    TOOL_LAUNCH_APP,
     TOOL_LIST_APPS,
     TOOL_PERFORM_ACTION,
     TOOL_PRESS_KEY,
@@ -212,7 +219,7 @@ def _coord_prop(description: str) -> dict[str, Any]:
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    """The ten tool definitions.
+    """The eleven tool definitions.
 
     Bounds mirror ``validation.MCP_COMPUTER_SCHEMAS`` (which is the enforcement
     point — this is advertisement, so a mismatch would only produce a confusing
@@ -253,6 +260,35 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "you do not already know how the user names the app."
             ),
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": TOOL_LAUNCH_APP,
+            "description": (
+                "Open an installed application that is not running yet, so the "
+                "other tools have a window to drive. Give the app's NAME as the "
+                "operating system knows it ('Paint', 'Notepad', 'Preview') — a "
+                "filesystem path, a command line and a document are all refused, "
+                "because this opens an application and nothing else. Returns the "
+                "new window's element tree, so you can act on it without a "
+                f"separate {TOOL_GET_STATE} call. If the app already has a window "
+                f"this is refused: call {TOOL_GET_STATE} instead of opening a "
+                "second copy. A cold start can take ten seconds; the result says "
+                "how long it took, so do NOT call this twice for one app."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "app": {
+                        "type": "string",
+                        "maxLength": MAX_LAUNCH_QUERY_LEN,
+                        "description": (
+                            "The application's name, as it appears in the Start "
+                            "menu or Applications folder. Not a path."
+                        ),
+                    },
+                },
+                "required": ["app"],
+            },
         },
         {
             "name": TOOL_GET_STATE,
@@ -384,6 +420,30 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "to_x": _coord_prop("End X screen coordinate."),
                     "to_y": _coord_prop("End Y screen coordinate."),
                     "mouse_button": button_prop,
+                    "steps": {
+                        "type": "integer",
+                        "minimum": MIN_DRAG_STEPS,
+                        "maximum": MAX_DRAG_STEPS,
+                        "description": (
+                            "How many segments the path is divided into. 1 (the "
+                            "default) is a plain two-point sweep — correct for a "
+                            "slider, a range selection or a reorder. TO DRAW a "
+                            "stroke you need many: an app samples the pointer as "
+                            "it moves, so a 1-step drag can only ever produce a "
+                            "straight line. 32-64 draws a smooth curve."
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "enum": list(DRAG_PATHS),
+                        "description": (
+                            f"The shape between the two points. "
+                            f"'{DRAG_PATH_STRAIGHT}' (default) interpolates the "
+                            f"straight line; '{DRAG_PATH_CURVED}' bows it sideways, "
+                            "which is what a hand-drawn stroke looks like. Only "
+                            "meaningful with steps > 1."
+                        ),
+                    },
                     "click_method": {
                         "type": "string",
                         "enum": list(CLICK_METHODS),

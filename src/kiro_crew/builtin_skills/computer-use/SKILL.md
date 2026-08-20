@@ -38,6 +38,27 @@ Skip this if the user named an app you can pass straight through — `app` accep
 display name (`"Finder"`, `"Preview"`) or a bundle id
 (`"com.apple.finder"`), matched case-insensitively.
 
+**If the app you need is not running, open it:**
+
+```
+computer_launch_app(app="Paint")
+```
+
+Give the app's NAME as the OS knows it — the name in the Start menu or the
+Applications folder. **A filesystem path, a command line and a document are all
+refused**, because this opens an application and nothing else; if you find yourself
+wanting to pass a path, the answer is to launch the app and then use the tools below
+to open the file from inside it.
+
+It returns the new window's element tree, so you can act immediately without a
+separate `computer_get_state`. Two things to remember:
+
+- **A cold start can take ten seconds.** The result says how long it took. Do NOT
+  call it twice for one app — a second call is how you end up with two copies and two
+  unsaved documents.
+- **If the app already has a window it is refused**, naming that window. That is not
+  a failure: call `computer_get_state` on it instead.
+
 **2. Snapshot the window. Do this FIRST, every turn — with a screenshot.**
 
 ```
@@ -113,7 +134,8 @@ that it exists.
 | `computer_scroll(app, element_index, direction, pages?)` | scroll a scrollable area (`up`/`down`/`left`/`right`) |
 | `computer_perform_action(app, element_index, action)` | run one of the element's own advertised actions when nothing above fits |
 | `computer_click(app, x, y)` | click a point when the target has no element — see below |
-| `computer_drag(app, from_x, from_y, to_x, to_y)` | a canvas stroke, a slider sweep, a range selection, a reorder |
+| `computer_drag(app, from_x, from_y, to_x, to_y)` | a slider sweep, a range selection, a reorder — and, with `steps`, a canvas stroke |
+| `computer_launch_app(app)` | open an app that is not running yet. Name only, never a path |
 
 **Every one of these needs an `element_index`, and the keyboard tools are the ones
 to remember.** There is no "type into whatever is focused" form: an unnamed target
@@ -187,6 +209,57 @@ between two points — and it takes the same `mouse_button` / `click_method` opt
 **On Windows a drag always moves the operator's real cursor**, so it must be asked
 for by name: pass `click_method: "global"`, because the default is the macOS
 app-scoped route and is refused rather than quietly substituted.
+
+### Drawing: a drag needs `steps` to be a stroke
+
+A drag's default shape is a plain two-point sweep. That is correct for a slider, a
+range selection or a reorder — and it **cannot draw**, because an application samples
+the pointer as it moves, so a two-point drag can only ever produce a straight line no
+matter what you meant.
+
+To draw, say how many points the path visits:
+
+```
+computer_drag(app="Paint", from_x=500, from_y=400, to_x=800, to_y=400,
+              steps=48, path="curved", click_method="global")
+```
+
+- **`steps`** (1-512, default 1) — segments the path is divided into. 32-64 draws a
+  smooth curve. More is not better: each point costs real time with the mouse button
+  held down.
+- **`path`** — `"straight"` (default) interpolates the line; `"curved"` bows it
+  sideways, which is what a hand-drawn stroke looks like. Only meaningful with
+  `steps > 1`. An unknown value is refused rather than straightened, because a
+  straightened stroke is a wrong drawing.
+
+Two things that will cost you a turn otherwise:
+
+- **Select the tool by `element_index` first, not by clicking pixels.** A drawing
+  app's pencil/brush/shape buttons are ordinary addressable controls, so
+  `computer_click(app=…, element_index=…)` selects them with no pointer movement at
+  all. Only the canvas itself needs coordinates.
+- **A curved stroke near a window edge can be refused.** The bow travels away from
+  the straight line between your two points, and every point of the path has to be
+  inside the target window — so a stroke that starts and ends inside can still be
+  refused if the curve would leave it. Use `path: "straight"`, or move the endpoints
+  inward.
+
+### Clicking inside a canvas: converting image pixels
+
+When a surface has no addressable element — a canvas, a map, a chart — the screenshot
+note carries the conversion you need:
+
+```
+Image-pixel to screen-point conversion: screen_x = 200 + image_x / 0.500,
+screen_y = 100 + image_y / 0.500 (the image is 0.500x the window's 1600x900 pixels).
+```
+
+Read a position off the image, apply that, and you have a screen point for
+`computer_click(x=…, y=…)` or `computer_drag`. Use it **only** when there is no
+element to address: an element's own frame is exact, while this is a measurement off a
+downscaled image and carries its rounding. If the line is absent, the window's
+geometry could not be read — fall back to element frames rather than guessing a
+ratio.
 
 **4. Release when you are finished with the app.**
 
@@ -305,6 +378,11 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `a right-button click cannot be delivered to element N …` | a non-left button on the element path, where UIA has no context-menu pattern | name `click_method: "global"` with coordinates, or address the menu command directly if `computer_get_state` already lists it |
 | `moving the real mouse pointer is switched off for this caller` | you asked for `click_method: "global"` on a leg that refuses it | use an element index — it moves no pointer on either platform. (`app_post` also avoids the pointer, but only on macOS; it is refused on Windows) |
 | `give either element_index or both x and y, not both forms` | you supplied two different targets in one call | pick one — the element index if the outline has the control |
+| `no installed application matches 'X'` | `computer_launch_app` resolves names against the OS's own list of installed apps | try the name as it appears in the Start menu / Applications folder. Do NOT retry with a path — a path is never accepted |
+| `'X' already has a window on screen` | the app you asked to launch is already running | call `computer_get_state` on it; launching again would open a second copy |
+| `launched X, but no window appeared within 30s` | this is a SUCCESS — the process started and may still be loading | call `computer_list_apps` to check. Do **not** launch it again |
+| `'X' matches N installed applications` | an ambiguous name | name one exactly; launching the wrong app is not undoable |
+| `unknown drag path 'X'` | a `path` value that is neither `straight` nor `curved` | use one of those — the value is refused rather than straightened, because a straightened stroke is a wrong drawing |
 
 ## When the tree is lying to you
 

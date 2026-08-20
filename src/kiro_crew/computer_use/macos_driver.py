@@ -44,13 +44,15 @@ from typing import Callable, Iterator
 from kiro_crew.computer_use import (
     apps_macos,
     capture_macos,
+    cursor_motion,
     keymap,
+    launch_macos,
     macos_ffi,
     macos_skylight,
     permissions,
     snapshot_macos,
 )
-from kiro_crew.computer_use.backend import ComputerUseBackend
+from kiro_crew.computer_use.backend import ComputerUseBackend, run_launch
 from kiro_crew.computer_use.types import (
     AX_MENU_LADDER,
     AX_PRESS_ACTION,
@@ -60,6 +62,8 @@ from kiro_crew.computer_use.types import (
     CLICK_METHOD_APP_POST,
     CLICK_METHOD_GLOBAL,
     CLICK_METHOD_SKY_CLICK,
+    DEFAULT_DRAG_PATH,
+    DEFAULT_DRAG_STEPS,
     ERR_ACTION_FAILED,
     ERR_POINT_NOT_OWNED,
     ERR_POINT_REQUIRED,
@@ -82,6 +86,7 @@ from kiro_crew.computer_use.types import (
     DragRequest,
     DriverResult,
     ElementRec,
+    LaunchIdentity,
     PermissionProbe,
     SnapshotRequest,
 )
@@ -195,6 +200,35 @@ class MacOSBackend(ComputerUseBackend):
 
         return _guarded("resolve_app", run)
 
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        """Start an installed application through ``open -a``, then await its window.
+
+        The flow is :func:`backend.run_launch`, shared with the Windows driver so the
+        refusals cannot drift between platforms. macOS supplies only its own three
+        pieces: :mod:`launch_macos` resolves a ``.app`` bundle under the conventional
+        roots, ``_running_app`` answers from the on-screen window list, and the launcher
+        is a pinned ``/usr/bin/open -a``.
+        """
+
+        def run() -> DriverResult:
+            return run_launch(
+                query,
+                resolve=launch_macos.resolve_target,
+                find=_running_app,
+                spawn=launch_macos.spawn_detached,
+                permit=permit,
+                identity=launch_macos.target_identity,
+                refuse_launched=refuse_launched,
+            )
+
+        return _guarded("launch_app", run)
+
     def snapshot(self, app: AppRef, req: SnapshotRequest) -> DriverResult:
         def run() -> DriverResult:
             snap = snapshot_macos.build_snapshot(app, req)
@@ -290,14 +324,47 @@ class MacOSBackend(ComputerUseBackend):
         return _guarded("click", run)
 
     def drag(self, app: AppRef, req: DragRequest) -> DriverResult:
-        """Drag between two screen points, app-scoped unless *req* moves the pointer."""
+        """Drag between two screen points, app-scoped unless *req* moves the pointer.
+
+        ``req.steps`` / ``req.path`` shape the motion — a straight sweep for a slider
+        or a range selection, a bowed one for a hand-drawn stroke. Only the
+        pointer-moving path confines them, and only because it is the one that leaves
+        the target application: ``app_post`` delivers to ``app.pid`` by construction,
+        so where the path travels cannot reach another process.
+
+        **The FFI's own interpolation is the FLOOR, and a caller's path only replaces
+        it when it is denser.** macOS synthesizes ``macos_ffi.DRAG_STEPS`` intermediate
+        ``MouseDragged`` events, tuned live against TextEdit — which registered no
+        selection at all without them — so a path with FEWER points than that is not a
+        refinement, it is a downgrade that stops the gesture being recognised as a drag.
+
+        Two shapes make that concrete, and both are things a model will send:
+        ``path: "curved"`` with no ``steps`` is a 2-point path (``steps`` defaults to 1),
+        and ``steps: 3`` is a 4-point one. Passing either straight through would deliver
+        0 and 2 dragged events where the platform has always sent 5. So the caller's
+        ``steps`` is raised to the FFI's floor before the path is built: a model asking
+        for a shape gets at least the fidelity it would have got by asking for nothing.
+        """
 
         def run() -> DriverResult:
+            # ``max`` rather than a boolean "did the caller ask for a shape": the
+            # question is whether the caller's path is at least as dense as the
+            # platform's own, and only ``steps`` answers that.
+            steps = max(req.steps, macos_ffi.DRAG_STEPS)
+            shaped = steps > DEFAULT_DRAG_STEPS or req.path != DEFAULT_DRAG_PATH
+            points = (
+                cursor_motion.drag_points(req.start, req.end, steps=steps, path=req.path)
+                if shaped
+                else None
+            )
             if req.method == CLICK_METHOD_GLOBAL:
-                # BOTH endpoints, for the same reason as the click above: a sweep
-                # that starts inside the authorized window and ends over a denied
-                # app would otherwise release the button there.
-                for point in (req.start, req.end):
+                # EVERY point, not just the endpoints. Two authorized endpoints were
+                # sufficient while a drag was a straight chord — a segment between two
+                # points inside one rectangle stays inside it — but a ``curved`` path
+                # bows AWAY from the chord by up to 110px, so a stroke near an edge can
+                # travel over the window beside it with the button held. A default
+                # request has no path, so its two endpoints are the whole gesture.
+                for point in points or (req.start, req.end):
                     if not apps_macos.pid_owns_point(app.pid, point[0], point[1]):
                         return DriverResult(
                             ok=False,
@@ -305,9 +372,13 @@ class MacOSBackend(ComputerUseBackend):
                                 app=app.name, x=int(point[0]), y=int(point[1])
                             ),
                         )
-                macos_ffi.post_mouse_drag_global(req.start, req.end, button=req.button)
+                macos_ffi.post_mouse_drag_global(
+                    req.start, req.end, button=req.button, points=points
+                )
             elif req.method == CLICK_METHOD_APP_POST:
-                macos_ffi.post_mouse_drag(app.pid, req.start, req.end, button=req.button)
+                macos_ffi.post_mouse_drag(
+                    app.pid, req.start, req.end, button=req.button, points=points
+                )
             else:
                 # ``accessibility`` has no drag form at all — no AX action expresses
                 # a sweep between two points — so an unusable method is refused
@@ -642,6 +713,35 @@ def _area(frame: tuple[float, float, float, float]) -> float:
     everything" and wave the ancestor guard through.
     """
     return max(0.0, frame[2]) * max(0.0, frame[3])
+
+
+def _running_app(name: str) -> "AppRef | None":
+    """The on-screen app whose identity matches *name*, or ``None``.
+
+    A NON-raising counterpart to ``apps_macos.resolve_app`` for the launch verb's two
+    questions — "is it already running?" before launching, and "has it appeared yet?"
+    while polling. Both are ordinary-negative: not-running is the case a launch exists
+    to fix, so an exception would make the normal path the error path.
+
+    Matched on the app's own name rather than its window title, because a
+    freshly-launched window's title is whatever document it opened (``Untitled``)
+    while the bundle name is what the catalog resolved.
+
+    An enumeration failure resolves to ``None``: during a launch poll a transient
+    failure is indistinguishable from "not there yet", and the poll's timeout bounds it.
+    """
+    wanted = (name or "").strip().casefold()
+    if not wanted:
+        return None
+    try:
+        apps = apps_macos.list_apps()
+    except Exception:
+        logger.debug("app lookup failed while matching %r", name, exc_info=True)
+        return None
+    for app in apps:
+        if wanted in (app.name.casefold(), app.bundle_id.casefold()):
+            return app
+    return None
 
 
 def _same_identity(found: ElementRec, expected: ElementRec) -> bool:

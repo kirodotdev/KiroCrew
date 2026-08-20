@@ -1936,8 +1936,8 @@ def _send(records: "Sequence[INPUT]") -> int:
 _RELEASE_ATTEMPTS = 3
 
 
-def _send_release(records: "Sequence[INPUT]") -> None:
-    """Submit RELEASE records, retrying the tail, and raise if any stays unreleased.
+def _send_release(records: "Sequence[INPUT]", *, atomic: bool = False) -> None:
+    """Submit RELEASE records, retrying, and raise if any stays unreleased.
 
     **A release is the one batch whose acceptance cannot be assumed.** ``SendInput``
     returns how many records it accepted and can stop early — a lower-level hook, or
@@ -1946,22 +1946,32 @@ def _send_release(records: "Sequence[INPUT]") -> None:
     stuck Ctrl alters every keystroke they type next, and a stuck mouse button turns
     every motion of their hand into a drag, which on a file manager moves their files.
 
-    So the count is checked and the UNACCEPTED TAIL is resubmitted. ``SendInput``
-    accepts a prefix, so the tail is exactly ``records[accepted:]`` — resending the
-    whole batch would re-release keys already up, which is harmless but muddies what
+    So the count is checked and the unaccepted records are resubmitted. ``SendInput``
+    accepts a prefix, so by default the retry is exactly ``records[accepted:]`` — resending
+    the whole batch would re-release keys already up, which is harmless but muddies what
     failed. Retrying is worth it here precisely because the alternative is not "the
     action failed" but "the operator's hardware is now wrong".
+
+    **``atomic=True`` resends the WHOLE batch instead**, and a drag's release requires it.
+    That batch is ``[move(end), button_up]``: the records are not independent, because the
+    move is what AIMS the release. A tail-only retry after a partial acceptance resends the
+    bare ``button_up``, which carries no coordinate and therefore releases wherever the
+    cursor happens to be by then — the drop lands outside the window
+    ``hwnd_owns_point`` authorized, which is precisely the defect the aimed release exists
+    to prevent. Re-sending the move first is idempotent (a cursor position is state, not an
+    edge), so the only cost is one redundant record.
 
     Raises :class:`ComputerUseUnsupported` when a record is still unreleased after
     :data:`_RELEASE_ATTEMPTS`. The caller must NOT swallow that: reporting success
     over a stuck modifier is what turns a failed keystroke into corrupted input.
     """
-    pending = list(records)
+    batch = list(records)
+    pending = batch
     for _ in range(_RELEASE_ATTEMPTS):
         if not pending:
             return
         accepted = _send(pending)
-        pending = pending[accepted:]
+        pending = batch if (atomic and accepted < len(pending)) else pending[accepted:]
     if pending:
         raise ComputerUseUnsupported(
             f"{len(pending)} release record(s) were rejected after {_RELEASE_ATTEMPTS} "
@@ -2253,48 +2263,108 @@ def post_mouse_click(x: float, y: float, *, button: str, count: int) -> None:
 
 
 def post_mouse_drag(
-    start: "tuple[float, float]", end: "tuple[float, float]", *, button: str
+    start: "tuple[float, float]",
+    end: "tuple[float, float]",
+    *,
+    button: str,
+    points: "Sequence[tuple[float, float]] | None" = None,
 ) -> None:
-    """Press at *start*, move to *end*, release — with the REAL cursor.
+    """Press at *start*, travel through *points*, release at the end — REAL cursor.
 
-    The intermediate move matters: a press-then-release at two points with no
-    motion between them is not a drag to most applications, which start their drag
-    on the first ``WM_MOUSEMOVE`` after a button-down.
+    *points* is the whole path including both endpoints; ``None`` means the
+    two-point form ``(start, end)``. ``start`` and ``end`` are still taken
+    separately, and are what the press and release are aimed at, so a caller that
+    passes a path cannot accidentally press somewhere the confinement check did not
+    authorize.
 
-    The release is submitted even if the press batch was rejected, for the same
-    reason the keyboard releases unconditionally — a mouse button left down is a
-    stuck button on the operator's real mouse, and every subsequent motion becomes
-    a drag.
+    **Each path point is submitted as its OWN ``SendInput`` call, and that is the
+    difference between drawing a curve and drawing a polyline.** It looks like the
+    opposite of what :func:`_send`'s docstring asks for, so the measurement is worth
+    stating: 65 move records in one batch drew a visibly corner-y polyline, while the
+    same 65 points as 65 separate calls drew a smooth curve. A ``WH_MOUSE_LL`` hook
+    counted 65 of 65 events reaching the queue in BOTH shapes, so nothing is dropped
+    — Windows synthesizes ``WM_MOUSEMOVE`` from queue *state* when the target's
+    message pump asks, rather than queueing one message per injected event, so a
+    single batch mutates the cursor position many times before the target samples it
+    even once. Separate calls yield between them, which is what lets the pump observe
+    the intermediate positions. An inter-call *sleep* was measured to add nothing (0ms,
+    2ms and 8ms drew identically), so there is none: it would only cost wall-clock
+    while the operator's mouse button is held.
 
-    The ``finally`` covers an EXCEPTION; the accepted count covers the quieter case
-    of a batch ``SendInput`` truncated mid-way (a lower-level hook, or UIPI), which
-    returns normally. Both end with the button released, and a truncated drag is
-    reported rather than passed off as done — a drag that pressed and moved but never
-    released is exactly the stuck-button state, and reporting success would leave the
-    caller believing the drop landed.
+    **The press and the release are each AIMED, in one batch with their own move.** The
+    press is ``[move(start), down]`` and the release is ``[move(end), up]``, and the
+    aimed release is not decoration: a bare ``up`` record carries no coordinate, so it
+    releases wherever the cursor happens to be when the OS processes it. With the path
+    now submitted as N separate calls there are N yield points where the old single
+    batch had one, so a foreign mouse move — the operator's own hand, another injector —
+    can land between the last path point and the release. Since a release is where a
+    DROP lands, and ``start``/``end`` are the two points ``hwnd_owns_point``
+    authorized, re-aiming immediately before the ``up`` is what keeps the drop inside
+    the window that was checked. It costs one extra record.
+
+    The release is submitted even if the press or any move was rejected, for the same
+    reason the keyboard releases unconditionally: a mouse button left down is a stuck
+    button on the operator's real mouse, and every subsequent motion of their own hand
+    becomes a drag, which on a file manager moves their files. The ``finally`` covers
+    an exception; the accepted counts cover the quieter case of a ``SendInput``
+    truncated mid-way (a lower-level hook, or UIPI), which returns NORMALLY. Both end
+    with the button released, and a short delivery is reported rather than passed off
+    as done — a drag that pressed and moved but never released is exactly the
+    stuck-button state, and reporting success would leave the caller believing the drop
+    landed.
+
+    The release batch is built BEFORE the travel loop, so the ``finally`` cannot fail
+    while constructing it: ``_move_to`` normalizes against the virtual screen and can
+    raise, and a release that raised on the way to being sent would leave the button
+    held — the one outcome this whole discipline exists to prevent.
     """
     flags = _MOUSE_FLAGS.get(button)
     if flags is None:
         raise ComputerUseUnsupported(f"unknown mouse button {button!r}")
     down, up = flags
-    records = [
-        _move_to(*start),
-        _mouse_event(down),
-        _move_to(*end),
-    ]
-    # The release runs in ``finally`` so it happens on every path, but a FAILED
-    # release raises from there and would replace whatever the press raised. That
-    # precedence is deliberate — a held button is worse than a failed drag, and it is
-    # the condition the operator has to act on — so the press's own error is chained
-    # rather than lost, and the release error is the one that surfaces.
+    path = list(points) if points else [start, end]
+    # The endpoints are the caller's, not the path's: they are the two points
+    # ``hwnd_owns_point`` authorized for the press and the release specifically, so a
+    # path whose own ends drifted by a float epsilon must not move them.
+    path[0], path[-1] = start, end
+
+    # Built BEFORE the travel, so the ``finally`` below cannot fail while CONSTRUCTING
+    # the release: ``_move_to`` normalizes against the virtual screen and raises on a
+    # zero extent, and a release that raised on its way to being sent would leave the
+    # button held — the one outcome the whole release discipline exists to prevent.
+    release = [_move_to(*path[-1]), _mouse_event(up)]
+
+    # The aim and the press in one batch (see _send: nothing may interleave between
+    # them), then one call per remaining point, then the aimed release.
+    submitted = 0
     accepted = 0
     try:
-        accepted = _send(records)
+        first = [_move_to(*path[0]), _mouse_event(down)]
+        submitted += len(first)
+        accepted += _send(first)
+        for point in path[1:]:
+            submitted += 1
+            accepted += _send([_move_to(*point)])
     finally:
-        _send_release([_mouse_event(up)])
-    if accepted < len(records):
+        # Unconditional AND verified: ``_send_release`` retries the unaccepted tail
+        # and RAISES rather than letting a held button pass silently. A failed release
+        # raising from ``finally`` replaces whatever the travel raised, and that
+        # precedence is deliberate — a held button is worse than a failed drag and is
+        # the condition the operator has to act on.
+        #
+        # AIMED at ``end``, not a bare ``up``: a button-up record carries no coordinate,
+        # so it releases wherever the cursor is when the OS processes it. The path now
+        # goes out as N separate calls, so there are N yield points where a foreign
+        # mouse move can land — and a release is where a DROP lands, at a point
+        # ``hwnd_owns_point`` authorized.
+        #
+        # ``atomic`` because the two records are not independent: the move is what aims the
+        # up. A tail-only retry after a partial acceptance would resend the bare ``up`` and
+        # give back exactly the unaimed release this batch exists to prevent.
+        _send_release(release, atomic=True)
+    if accepted < submitted:
         raise ComputerUseUnsupported(
-            f"the drag was only partly delivered ({accepted} of {len(records)} input "
+            f"the drag was only partly delivered ({accepted} of {submitted} input "
             "records accepted, likely a lower-level hook or UIPI); the button was "
             "released so the pointer is not stuck"
         )

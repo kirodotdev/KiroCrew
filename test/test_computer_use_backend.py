@@ -230,6 +230,7 @@ class TestAbcContract:
             "probe_permissions",
             "list_apps",
             "resolve_app",
+            "launch_app",
             "snapshot",
             "click",
             "drag",
@@ -387,6 +388,11 @@ class TestPlatformSelection:
           flag it may read is the one its libraries belong to — that is still a
           local bail-out rather than a competing selector, because it answers "can I
           load" and never "which backend should exist";
+        * ``launch_windows.py`` guards its file-OWNER lookup, which calls ``advapi32``
+          through ``ctypes.WinDLL``. Same shape as the two native guards above: it asks
+          "can I make this call here", and answers ``None`` — "ownership unknown", which
+          the caller treats as untrusted — rather than raising on a Linux CI runner where
+          the module is imported but never used;
         * ``permissions.py`` is reached directly by the dashboard's ``doctor --json``
           probe, whose whole point is learning the TCC state WITHOUT loading a
           driver, so it must answer ``unsupported`` on its own;
@@ -439,6 +445,7 @@ class TestPlatformSelection:
             "overlay.py": {"IS_MACOS"},
             "overlay_proc.py": {"IS_MACOS"},
             "windows_ffi.py": {"IS_WINDOWS"},
+            "launch_windows.py": {"IS_WINDOWS"},
         }
         assert set(readers) <= {"backend.py"} | set(guards), readers
         # The selector must read all three (it is the exhaustive branch).

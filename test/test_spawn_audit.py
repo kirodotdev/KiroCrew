@@ -709,6 +709,34 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # imports none of the AX/capture modules (asserted in
         # test_computer_use_overlay.py::test_the_renderer_never_reaches_into_the_ax_or_capture_surface).
         "computer_use/overlay.py::_spawn",
+        # ``computer_launch_app``: opening an application IS creating a process, so
+        # this verb cannot exist without a spawn. Listed here rather than routed
+        # through ``sandboxed_spawn_argv`` for the same reason as the overlay above —
+        # the child's whole purpose is to appear on the operator's real desktop, which
+        # a sandbox that rewrites the process identity would deny — and the argv is
+        # bounded by verification rather than by the sandbox:
+        #
+        #  * the argv is exactly ``[executable]`` (Windows) or
+        #    ``[/usr/bin/open, -a, <bundle>]`` (macOS), with NO agent-supplied element:
+        #    no document, no flag, no URL. Pinned structurally by
+        #    test_computer_use_unsupported.py::
+        #    test_a_launch_spawn_interpolates_nothing_into_its_argv;
+        #  * the target is a NAME resolved against an OS catalog, never a path the
+        #    caller supplied — the MCP schema has one ``app`` field and no others
+        #    (pinned by test_computer_use_launch.py::
+        #    test_the_schema_accepts_no_path_or_argument_field);
+        #  * on Windows the resolved executable must sit under an install root this
+        #    user cannot write AND be named after the catalog key that found it, which
+        #    is what neutralises the measured fact that ``HKCU``'s ``App Paths`` and
+        #    ``%LOCALAPPDATA%\Microsoft\WindowsApps`` (on PATH) are both agent-writable.
+        #
+        # The honest residual, stated rather than discovered: this DOES let the agent
+        # start an installed application the operator did not ask for, and the built-in
+        # denylist is the only thing narrowing which. That is the same posture the rest
+        # of computer use takes once the operator enables it (see
+        # computer-use.md § Known limitations) — not a new plane.
+        "computer_use/launch_windows.py::spawn_detached",
+        "computer_use/launch_macos.py::spawn_detached",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run``
         # (attribute ``run`` on base ``asyncio``). Both sites drive an in-process
         # coroutine from the loop-less CLI entry point; the network I/O is

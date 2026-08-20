@@ -37,6 +37,7 @@ import tempfile
 import threading
 import time
 from dataclasses import replace
+from typing import Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.computer_use import index as snapshot_index
@@ -65,6 +66,7 @@ from kiro_crew.computer_use.types import (
     DragRequest,
     DriverResult,
     ElementRec,
+    LaunchIdentity,
     PermissionProbe,
     Snapshot,
     SnapshotRequest,
@@ -156,6 +158,29 @@ class ComputerUseService:
             # later address the wrong process.
             raise ComputerUseError(f"the driver resolved '{query}' to no application")
         return result.app
+
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> "tuple[str, AppRef | None]":
+        """Start the installed application *query* names. Returns ``(text, app)``.
+
+        Both halves are returned rather than just the confirmation text, because a
+        successful launch has TWO outcomes the caller must distinguish: an app whose
+        window is on screen (so the dispatcher can snapshot it in the same turn) and
+        one whose process started but showed nothing yet. ``None`` is the second case
+        and is NOT an error — see the seam contract on
+        :meth:`~backend.ComputerUseBackend.launch_app`.
+
+        No snapshot is cached here. An element index only means something relative to
+        the walk that produced it, and this method produces none.
+        """
+        result = self.backend.launch_app(query, permit=permit, refuse_launched=refuse_launched)
+        self._require_ok(result)
+        return result.text, result.app
 
     def snapshot(self, app: AppRef, req: SnapshotRequest, *, session_key: str) -> Snapshot:
         """Walk *app*'s focused window, persist any pixels, and cache the result.

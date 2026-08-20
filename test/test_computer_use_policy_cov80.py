@@ -119,6 +119,41 @@ class TestOperatorPatterns:
         assert "allowed-apps list" not in refusal
         assert "added to the blocked list" not in refusal
 
+    def test_extra_denied_matches_the_WINDOW_TITLE(self) -> None:
+        """Without this an app can be undeniable — it has no other spelling.
+
+        A packaged app fronted by ``ApplicationFrameHost`` is named by its window title and
+        by nothing else the operator can see, and one that reports its own executable
+        (``SnippingTool.exe``) carries a different title ("Snipping Tool") that no
+        identifier repeats. Matching only ``name`` and ``bundle_id`` left the operator with
+        no pattern that could refuse it: only the built-in floor read the title.
+        """
+        app = AppRef(
+            name="SnippingTool", pid=1, bundle_id="SnippingTool.exe", window_title="Snipping Tool"
+        )
+        cfg = PolicyConfig(extra_denied_apps=("Snipping Tool",))
+        refusal = policy.check_app(app, cfg)
+        assert refusal is not None
+        assert "added to the blocked list by the operator" in refusal
+
+    def test_the_ALLOW_list_does_NOT_match_the_window_title(self) -> None:
+        """The asymmetry, and the reason for it.
+
+        A window title is chosen by the application — often by the document it opened — so
+        allowing on a title would let any app satisfy an allow-list by naming itself after a
+        permitted one, widening the one control an operator has for NARROWING. A broadened
+        deny refuses something recoverable; a broadened allow does not.
+        """
+        liar = AppRef(name="Evil", pid=1, bundle_id="evil.exe", window_title="Microsoft Paint")
+        refusal = policy.check_app(liar, PolicyConfig(allowed_apps=("Paint",)))
+        assert refusal is not None
+        assert "not in the operator's allowed-apps list" in refusal
+        # The control: the app the operator actually named is still permitted.
+        real = AppRef(
+            name="mspaint", pid=1, bundle_id="mspaint.exe", window_title="Untitled - Paint"
+        )
+        assert policy.check_app(real, PolicyConfig(allowed_apps=("mspaint",))) is None
+
 
 class TestCheckInputTarget:
     def test_a_secure_field_is_refused(self) -> None:

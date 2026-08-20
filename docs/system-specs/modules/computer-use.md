@@ -255,7 +255,7 @@ flipping one flag.
 
 ---
 
-## The 10-tool contract
+## The 11-tool contract
 
 Server `kirocrew-computer` (slash-free: kiro-cli splits an agent `@server`
 reference on `/`). All tools prefixed `computer_` so the GUI plane is
@@ -264,9 +264,10 @@ namespace-distinct from every other server's tools.
 | Tool | Required | Optional | Class |
 |---|---|---|---|
 | `computer_list_apps` | — | — | observe |
+| `computer_launch_app` | `app` (≤128) | — | mutate |
 | `computer_get_state` | `app` | `text_limit` (1..20000, d=500), `max_tree_nodes` (1..5000, d=1200), `max_tree_depth` (1..128, d=64), `screenshot` (bool, d from config) | observe |
 | `computer_click` | `app` + **exactly one of** (`element_index` \| `x`+`y`) | `click_count` (1..3, d=1), `mouse_button` (`left`\|`right`\|`middle`, d=left), `click_method` (`auto`\|`accessibility`\|`app_post`\|`sky_click`\|`global`, d=auto) | mutate, pointer |
-| `computer_drag` | `app`, `from_x`, `from_y`, `to_x`, `to_y` | `mouse_button`, `click_method` | mutate, pointer |
+| `computer_drag` | `app`, `from_x`, `from_y`, `to_x`, `to_y` | `mouse_button`, `click_method`, `steps` (1..512, d=1), `path` (`straight`\|`curved`, d=straight) | mutate, pointer |
 | `computer_type_text` | `app`, `text` (≤10000), `element_index` | — | mutate, keyboard, text_entry |
 | `computer_press_key` | `app`, `key` (≤64), `element_index` | — | mutate, keyboard |
 | `computer_set_value` | `app`, `element_index`, `value` (≤10000) | — | mutate, text_entry |
@@ -607,6 +608,326 @@ recorded (`gate._audit_allowed`), every refusal is recorded (`tools._refusal` /
 (`computer_use_pointer`) so "did the agent ever take control of my mouse?" is one
 filter over the log rather than a parse of every row.
 
+## Launching an application (`computer_launch_app`)
+
+The tool set drove windows that already existed, so the desktop the agent could
+reach was whatever the operator happened to have open. `computer_launch_app` opens
+one. It is the **only verb in this package that creates a process**, which is why
+its target resolution is the narrowest thing here.
+
+### The catalog is untrusted input; the verified target is the guarantee
+
+The obvious design — "ask the OS what this app is, then run it" — is unsafe on
+Windows, and the reason is four measurements rather than a theory:
+
+| Resolution input | Writable by the agent's own user? |
+|---|---|
+| `HKCU\…\CurrentVersion\App Paths` | **yes** (verified: created a key aimed at another binary) |
+| `%LOCALAPPDATA%\Microsoft\WindowsApps` — **and it is on `PATH`** | **yes** (34 execution aliases live there) |
+| per-user Start Menu (`%APPDATA%\…\Start Menu`) | **yes** |
+| `%ProgramFiles%` / `%SystemRoot%` — the *variables*, not the directories | **yes**, trivially: they are ordinary environment variables |
+| `HKLM\…\App Paths`, `HKLM\…\CurrentVersion`, `C:\Windows`, `C:\Program Files`, `C:\Program Files\WindowsApps`, `%ProgramData%\…\AppRepository` | no |
+
+So `shutil.which("mspaint")` resolves to
+`%LOCALAPPDATA%\Microsoft\WindowsApps\mspaint.EXE` — an **agent-writable path**. A
+launch verb resolving a name that way would run whatever the agent planted, and
+because computer use is deliberately not governance-gated that binary would also
+skip the `BUILTIN_DENIED_RULES` floor every `bash` call passes.
+
+A "trusted catalog only" design does not work either: **no fully-protected source
+enumerates a packaged app's AUMID.** `C:\Program Files\WindowsApps` is protected but
+*not listable* (`os.listdir` → `WinError 5`), the machine-wide
+`Windows.Launch\PackageId` key holds only system components, and the
+`StateRepository` database is unreadable. Paint — the canonical drawing target — is
+a packaged app, so a protected-catalog-only resolver reaches nothing worth reaching.
+
+`launch_windows` therefore reads **every** catalog including the writable ones, and
+then verifies what came back:
+
+1. **the resolved executable must sit under a root this user cannot write, AND its own
+   containing directory must not be writable either**, tested after
+   `os.path.realpath` so a junction cannot borrow a protected prefix.
+
+   The second half is not redundant, and the reason is measured: **an unwritable root
+   can contain writable descendants.** On one host `C:\Windows\Temp`,
+   `C:\Windows\Tasks`, `C:\Windows\System32\spool\drivers\color` and
+   `C:\Windows\System32\Microsoft\Crypto\RSA\MachineKeys` are all writable by an
+   unprivileged user while their parents are not — so a prefix test accepted a planted
+   `C:\Windows\Temp\Evil.exe`, named by an `App Paths` entry in the writable `HKCU`
+   hive. `C:\Windows` is consequently not a root at all (`System32` comes from
+   `platform_compat._windows_system_dirs()`, which names it specifically), and the
+   file's directory is probed with a real create-and-delete rather than an ACL
+   computation — an effective-permissions model has to account for group membership,
+   inherited denies and elevation, and a subtly wrong one fails OPEN. The
+   reverse move — a junction *under* a protected root aimed at agent-writable
+   content — was attempted and refused by the OS (`mklink /J` under
+   `C:\Program Files` → "Access is denied"), which is what makes the prefix test
+   meaningful in both directions.
+
+   **The root LIST is read from `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion`, never
+   from `os.environ`**, and that is the single most load-bearing line in the module. An
+   earlier draft read `%ProgramFiles%`, which is an ordinary environment variable — so
+   anyone able to set it could nominate a directory they can *write* as a "protected"
+   root, and the verification then accepted a planted binary. Confirmed against that
+   draft end to end: pointing `ProgramFiles` at a temp directory made
+   `_under_protected()` answer True for a file written there, defeating checks 2 and 3
+   below at the same time. `platform_compat._windows_system_dirs` already declines to
+   trust `%SystemRoot%` for the same reason (it prefers `GetSystemDirectoryW`), and
+   `System32` still comes from there. `test_the_protected_roots_do_NOT_come_from_the_environment`
+   poisons all four candidate variables at once, so any one of them regaining influence
+   is a red test;
+2. **the basename must match the catalog key that found it.** An agent that rewrites
+   a writable `App Paths` value can then only aim it at a file that already exists
+   under a protected root *and* is named what the key claims — which reduces the
+   rewrite to "start an app that is already installed under its own name". Measured
+   over every real entry on one host: 46 of 47 resolvable entries satisfy it, the
+   single exception being a deliberate Microsoft alias (`IEDIAG.EXE` →
+   `IEDIAGCMD.EXE`), which is refused rather than special-cased;
+3. **the argv is exactly `[executable]`.** No document, no flag, no URL — the MCP
+   schema has one `app` field and nothing else. Any of those would turn "open an
+   application" into "run a program with attacker-chosen input".
+
+macOS needs less of this: an application is a `.app` bundle in a small set of
+conventional directories and there is no `App Paths` analogue, so `launch_macos`
+lists those roots and hands the verified bundle PATH to `/usr/bin/open -a` (pinned
+absolute, never resolved from `PATH`). The path, not the name: `open -a <name>` asks
+LaunchServices to resolve it again from its own database, which indexes bundles this
+module deliberately excludes, so the bundle that was checked and the bundle that runs
+need not be the same one.
+
+macOS verifies its resolved bundle the same way, with the conditions that fit its
+filesystem. The bundle must sit under one of the enumerated roots, and **`~/Applications`
+is not one of them** — it is writable by the same user the agent runs as, so including
+it would let a planted `~/Applications/Anything.app` be launched by name.
+
+Then **every directory on the path to the code that will run is probed for writability**
+(`_writable_component`): the bundle's parent, the bundle itself, `Contents`, and
+`Contents/MacOS`. The parent alone was not enough, and the gap it left is the common case
+rather than a corner. `/Applications` is root-owned and unwritable, but a bundle installed
+there by any user-space installer — every drag-install, every Homebrew cask — is owned by
+the installing user, so `Foo.app/Contents/MacOS/Foo` can be replaced without
+`/Applications` ever being writable. A parent-only probe passed that bundle and launched
+agent-authored native code. The parent probe still runs, which also catches an
+`/Applications` that is group-writable on a machine whose admin group has been widened.
+
+**Every level, not just the endpoints.** Write access to any single directory on that path
+is enough to control what executes, and `Contents` is the one an endpoints-only check
+misses: its writability is independent of both neighbours, and owning it allows
+`mv Contents/MacOS Contents/MacOS.bak && mkdir Contents/MacOS`, which yields an agent-owned
+executable directory that every other probe then reports as unwritable. It also holds the
+`Info.plist`, so the same access rewrites `CFBundleIdentifier` and defeats the pre-spawn
+identity deny above.
+
+**Two permissions, so two tests — on BOTH platforms.** Directory writability governs create,
+unlink and rename; rewriting an existing file's bytes needs write on the file itself and no
+directory permission at all. A create-probe therefore answers "unwritable" for the *ordinary*
+drag-install and Homebrew-cask shape — root-owned directories that deny creates, holding an
+executable owned by the installing user — while `open(exe, "r+b")` replaces the binary in
+place. A target has to fail both questions to be trusted:
+
+**Every directory up to the protected root is probed on both platforms, not just the
+immediate parent.** Write access to any single level is enough to substitute the code that
+runs: an agent owning an intermediate `C:\Program Files\Vendor` renames its `App` child aside
+and recreates it with its own binary inside, and a parent-only probe then reports the leaf it
+just created as unwritable. `_any_directory_is_writable` walks from the executable's directory
+up to and including the root and stops there — everything above is off the caller's path by
+construction, since the prefix test already placed the target inside it. `launch_macos`'
+`_writable_component` does the same for a bundle's four levels.
+
+**And the VERIFIED path is what gets spawned.** `resolve_target` resolves once and returns that
+`realpath`, not the raw catalog value: the two differ in the last component whenever a link or
+an 8.3 alias is involved, so returning the raw one would hand `spawn_detached` a string whose
+final component the verification never examined. `launch_macos` returns its verified bundle
+path for the same reason.
+
+**Ownership is the durable question on both platforms, and the current permission is not.**
+A mode or an ACL that denies write today can be revised by the file's owner tomorrow, with no
+privilege — so "write is refused right now" says nothing about whether it will be refused a
+moment later, while "someone else owns this" does, because taking ownership needs a privilege
+an ordinary agent lacks. Both platforms therefore ask ownership first and treat an
+unobtainable answer as owned, so an unverifiable target refuses:
+
+- macOS `_any_executable_is_writable` checks every file under `Contents/MacOS`, not just the
+  one `CFBundleExecutable` names (that value is inside the bundle, so it cannot say which file
+  matters), and rejects on **`st_uid == geteuid()`**. The owner may `chmod` at will, so a
+  read-only mode on a file this user owns is a fact the same user undoes between the check and
+  the `exec`. The mode is still checked, for a file owned by someone else that is group- or
+  world-writable.
+- Windows `_file_is_replaceable` is the same second condition in `_under_protected`. The owner
+  of a Windows object holds `WRITE_DAC` implicitly, so an agent that plants a binary and then
+  denies itself write can revoke that deny ACE again — measured, `icacls /deny` then
+  `icacls /remove:d`, both unprivileged. `_owned_by_current_user` compares the file's owner SID
+  against the process token's with two read-only Win32 calls, and its `ctypes` import is
+  deferred into the function exactly as `winreg`'s is, so the module still imports on a Linux
+  runner. This still admits the real catalog — `System32` binaries are owned by
+  `NT SERVICE\TrustedInstaller`, and 44 of the 47 resolvable entries on the measured host
+  still resolve (the three refusals being the shells and the `IEDIAG` alias).
+  For a file owned by someone else it then uses **`os.open(.., O_RDWR)`**, never
+  `os.access(.., W_OK)`: on Windows `os.access` reports the read-only *attribute* and never
+  consults the ACL, so it answers True for every `System32` binary and would refuse the whole
+  catalog — measured from an unelevated shell, `os.access` says writable for
+  `System32\notepad.exe` while opening it for write is denied.
+
+On macOS the **`Info.plist` is checked the same way**, because it is a launch *input* rather
+than description: it supplies the `CFBundleIdentifier` that `target_identity` hands the policy,
+so a plist this user can rewrite means a forged bundle id passes the pre-spawn deny under a
+name the operator never blocked — and the post-launch check re-reads the same forged string.
+An unwritable `Contents` does not protect it, by the same create-versus-replace argument one
+file over.
+
+Neither probe modifies anything (no `O_TRUNC`, no write, metadata reads only), because both
+run on a target the launch is about to ALLOW and must not damage a real installed application.
+Both fail closed: a file that cannot be examined counts as writable.
+
+Those three locations are **fixed, never read from the bundle**. Asking the bundle's own
+`Info.plist` where its executable lives is the obvious refinement and it is the wrong one:
+`CFBundleExecutable` sits inside the very directory whose trustworthiness is in question,
+and an absolute or traversing value aims the probe outside the bundle (`/tmp/x` probes
+`/tmp`; `../../..` walks up out of it), letting the target choose which directory gets
+judged. `Contents/MacOS` is the location the OS itself requires, and any deeper nesting
+sits under a directory already being probed.
+
+The cost is real and is the right trade: an application installed only for the current
+user cannot be launched by name. The refusal says so and names the remedy (move the
+bundle under `/Applications`, or open it by hand), which is recoverable — where a launch
+verb that runs whatever the agent wrote is not.
+
+A **command interpreter is refused by name** on both platforms (`cmd`, `powershell`,
+`wt`, `Terminal.app`, …). That list is explicitly *not* a security boundary and does
+not claim completeness — an IDE with an embedded terminal defeats it. It exists
+because a shell is the one target the no-arguments rule cannot bound: it takes its
+work from a subsequent keystroke, so launching one and then using
+`computer_type_text` would reach a shell with none of the command-deny floor.
+
+### A launch is confirmed by finding the WINDOW
+
+`backend.await_launched_window` polls the on-screen window list; it does **not** read
+the spawned process's exit status. That is not defensiveness — a launcher exits
+before the application it started has a window. Measured on Windows,
+`explorer.exe shell:AppsFolder\<AUMID>` returned `rc=1` after 2.9s while MS Paint's
+window appeared at **9.9s**; `/usr/bin/open` returns as soon as LaunchServices accepts
+the request. Either exit status read as the outcome would report a successful cold
+start as a failure.
+
+Three outcomes, and the third is the one that matters:
+
+- **window found** → success, and the dispatcher **snapshots it in the same turn**. A
+  fresh window has no cached indices, so without that snapshot the model's only
+  possible next call is `computer_get_state` on the app it just launched;
+- **already running** → *refused*, naming the window and pointing at
+  `computer_get_state`. A second copy of an editor is a second unsaved document, and
+  the model's actual goal is already met;
+- **no window inside 30s** → **success with a caveat**, not a failure. The process
+  really did start. Reporting failure is what makes a model launch again, and the
+  second attempt is what produces two copies of the application.
+
+### The policy is checked TWICE, and the second one is the real gate
+
+`tools._dispatch` checks the caller's raw string before touching the catalog, and that
+alone is not sufficient — **because a name resolves.** A prefix query reaches a different
+application than the string that was checked: an operator who denied `notepad` was
+bypassed by a request for `note`, since no rule matches `note` and the resolver then
+returned Notepad. Verified end to end.
+
+So the same predicate is handed to the driver as `permit=` and re-applied to the
+**resolved** identity inside `backend.run_launch`, still before `spawn`. Two properties
+make that the right shape rather than a patch:
+
+- it is where the resolved identity first exists AND the last point before a process does,
+  and a detached spawn cannot be undone;
+- it fixes the defect without narrowing the resolver. Prefix matching is what makes the
+  verb usable (`paint` → `mspaint`); the bug was never that a prefix resolves, it was that
+  the policy was evaluated against a different string from the one that got launched.
+
+Both checks build their `AppRef` through one helper (`tools._launch_probe`), because if
+the two descriptions diverged a rule could fire on one and not the other — which is the
+bypass again.
+
+**The resolved check carries every spelling, not just the display name**, which is the
+second half of the same defect. A launch is requested by display name (`notepad`) while
+the identity the OS reports — and therefore the spelling every other computer-use refusal
+prints, and the one an operator copies into `extra_denied_apps` — is `notepad.exe` or
+`com.apple.TextEdit`. A check that knew only the display name matched neither, so
+`extra_denied_apps: ["notepad.exe"]` let Notepad start and refused it only once it was
+running. Each platform's resolver therefore supplies a `LaunchIdentity` (`launch_windows.
+target_identity` → the verified executable's basename; `launch_macos.target_identity` →
+`CFBundleIdentifier`), and `LaunchIdentity.as_app_ref()` puts both names in the fields
+`check_app` reads them from.
+
+The Windows key is the basename of the **resolved** path, never the raw catalog value. An
+8.3 short name (present by default on the system volume) otherwise renames the target out of
+the operator's rule: an agent-written `App Paths` value naming `…\SOMEVE~1.EXE` resolves and
+is accepted — the basename rule compares `basename(realpath(…))` against the key — but
+reporting the raw basename hands the policy `SOMEVE~1.EXE`, which `someverylongname.exe` does
+not match. A file symlink does the same where one can be created.
+
+`run_launch`'s `identity=` parameter defaults to `None`, and that default degrades to the
+display-name-only check, so a driver that omits it silently restores the vulnerability with
+nothing going red — measured: deleting it from both drivers left the whole launch suite
+green, because every dispatch-level test runs through the fake, which supplies its own.
+`test_EVERY_driver_forwards_its_platform_identity_supplier` pins both.
+
+### A hosted app cannot be denied before it starts, only before it is driven
+
+There is a third check — `run_launch`'s `refuse_launched`, applied to the `AppRef` the window
+list reports once a window exists — and it covers what the pre-spawn one **structurally
+cannot**. A packaged app's window is fronted by `ApplicationFrameHost`, so
+`apps_windows._app_ref` publishes the window TITLE as both name and bundle id, because the
+broker's image name identifies no application. That title is therefore the only spelling an
+operator can write a rule against, and it does not exist until a window does: before the
+spawn the catalog offers `store.exe` and nothing else. Measured on a real host,
+`extra_denied_apps: ["Microsoft Store"]` matched neither pre-spawn identity.
+
+The residual is stated rather than hidden: **a denied hosted app can be made to start once.**
+What the check prevents is the launch reporting success — the driver returns a refusal
+instead of an `AppRef`, so nothing snapshots or drives the window, and every subsequent verb
+resolves the same title and refuses too. Closing it fully would need a pre-spawn map from
+executable to package display name, and no protected source on the measured host enumerates
+one (see `launch_windows`' module docstring on `WindowsApps` being unlistable).
+
+**An operator's DENY pattern is matched against the window title too**, not only `name` and
+`bundle_id` — `check_app` passes it and `_matches_operator_pattern` takes it as a fourth
+argument. Without that, an app reporting its own executable while carrying a different title
+(Snipping Tool → `SnippingTool.exe`) could not be denied at all: only the built-in floor read
+`title_substrings`, so the operator had no spelling that matched. **The allow-list
+deliberately does NOT read it.** A title is chosen by the application, and often by the
+document it opened, so allowing on a title would let any app satisfy an allow-list by naming
+itself after a permitted one — widening the one control an operator has for narrowing. The
+asymmetry is the safe direction: a broadened deny refuses something recoverable, a broadened
+allow does not.
+
+Two limits remain, both worth knowing before relying on this:
+
+- **it needs a window.** The no-window branch is a success with no `AppRef`, so there is
+  nothing to check — a process that starts and shows nothing within the timeout is reported
+  as started, whatever it turns out to be;
+- **the pre-spawn check still only knows the catalog's spellings.** `extra_denied_apps:
+  ["SnippingTool"]` refuses before any process exists; `["Snipping Tool"]`, with the space
+  that only the *window* title carries, refuses after the window appears. Both refuse; they
+  differ in whether a process was created first.
+
+That is **one** `AppRef` rather than a check per name, and the allow-list is why: a
+non-empty `allowed_apps` refuses any name absent from it, so refusing on each individual
+miss would mean an operator who allow-listed one spelling was defeated by the other
+failing the same list. Carrying both in one ref gives union-deny and either-matches-allow,
+exactly as a running app is already evaluated.
+
+### The denylist check is weaker here, and the spec says so
+
+Every other verb resolves an `AppRef` from the window list first, so `policy.check_app`
+sees a bundle id, a process name and a window title. A launch has only the name the
+caller typed, so `tools._dispatch` synthesizes an `AppRef` from it. The self-target
+rule — the one that keeps the agent out of Kiro Crew's own Settings — matches on name
+**substrings**, so it does fire on a name-only ref; a hypothetical denylist entry
+naming only a bundle prefix would not. What closes the rest is a **second**
+`check_app` after the launch, against the identity the OS actually reported: an app
+that got launched still cannot be read or driven.
+
+The residual, stated rather than discovered: this lets the agent start an installed
+application the operator did not ask for. That is the same posture as the rest of
+computer use once the operator enables it (see [Known
+limitations](#known-limitations)) — one opt-in, then the desktop — not a new plane.
+
 ## Coordinate clicking, drag and the real-pointer path
 
 Element addressing is the preferred path and stays the default: `AXPress` activates
@@ -615,6 +936,81 @@ picks whenever an `element_index` is present. But some UI has no addressable
 element — canvases, maps, timelines, custom-drawn controls — and some gestures have
 no accessibility form at all. Hence a coordinate `computer_click` and a
 `computer_drag`.
+
+### Multi-point dragging: one `SendInput` call PER POINT
+
+A drag used to send `[move(start), down, move(end)]` — exactly one intermediate
+point — so it could express a slider sweep and a range selection but only ever drew a
+**straight line**. `steps` (segments, d=1) and `path` (`straight` | `curved`) make a
+stroke expressible; `cursor_motion.drag_points` computes the geometry, reusing the
+Bezier + perpendicular arc the cosmetic overlay already uses so the drawn gesture and
+the drawn cursor cannot diverge.
+
+**On Windows, fidelity depends on the number of `SendInput` CALLS, not on the number
+of records submitted.** Measured against MS Paint:
+
+| Submission shape | Result |
+|---|---|
+| 65 move records in ONE `SendInput` batch | a coarse polyline, visibly flat-topped |
+| 65 points as 65 separate `SendInput` calls | a smooth curve |
+| the same, with 2ms / 8ms of inter-call sleep | identical to 0ms |
+
+A `WH_MOUSE_LL` hook counted **65 of 65** `WM_MOUSEMOVE` in *every* shape, so nothing
+is dropped at the queue. Windows synthesizes `WM_MOUSEMOVE` from queue **state** when
+the target's message pump asks, rather than delivering one message per injected event
+— so a single batch mutates the cursor position many times before the target samples
+it once, while separate calls yield in between. There is deliberately **no sleep**: it
+buys nothing measurable and costs wall-clock with the operator's mouse button held
+(batched 0.046s, 0ms-paced 0.105s, 8ms-paced 0.656s for the same arc).
+
+This reads as a contradiction of `windows_ffi._send`'s own docstring, which explains
+why input is batched, so `test_each_path_POINT_is_its_own_SendInput_call` pins it: the
+regression is invisible in code review because it produces a drag that still works and
+no longer draws.
+
+**macOS keeps its own interpolation for a default request.** `macos_ffi` already
+synthesizes `DRAG_STEPS` (6) intermediate `MouseDragged` events, tuned live against
+TextEdit — which needed them before it registered a selection at all. So the driver
+passes a path only when the caller actually asked for one (`steps > 1` or a non-default
+`path`); handing the FFI a two-point path unconditionally would have silently stopped
+every existing macOS drag being recognised as a drag.
+
+**Confinement widened with the path, and it had to.** Two authorized endpoints were
+sufficient while a drag was a straight chord — a segment between two points inside one
+rectangle stays inside it. A `curved` path bows AWAY from the chord by up to
+`CURVE_AMOUNT_MAX` (110px), so a stroke between two authorized points near a window
+edge can travel *with the button held* over the window beside it. Both drivers now
+confine **every** point of the path.
+
+### Image pixels to screen points
+
+`SCREENSHOT_NOTE` says the image is downscaled and that coordinates must come from an
+element's own frame. That is the right rule and it is unusable for the surface that
+most needs pixels: a canvas, a map or a chart is a single element (or none), so no
+frame names the point the model wants *inside* it. Without a conversion, "click the
+middle of that shape" is inexpressible — which is what made drawing impossible rather
+than merely awkward.
+
+`render._render_scale_note` therefore publishes the arithmetic:
+
+```
+Image-pixel to screen-point conversion: screen_x = 200 + image_x / 0.500,
+screen_y = 100 + image_y / 0.500 (the image is 0.500x the window's 1600x900 pixels).
+```
+
+Stated as a recipe rather than a bare ratio, because a model handed "scale 0.66" still
+has to be told which direction to apply it and that the window origin is added
+afterwards — getting either backwards puts the click on the wrong half of the screen.
+Three decimals, because a rounded 0.66 against a 1920px window is a ~7px error at the
+far edge. One scale rather than one per axis: the encoder preserves aspect ratio (it
+scales by the long edge), and the ratio is taken from the WIDTH because a window's
+height includes its title bar while there is no such ambiguity horizontally.
+
+Emitted **only** when the window bounds, the encoded width and the window width are
+all present and positive. A wrong conversion is worse than none: a model applying a
+bad ratio clicks confidently in the wrong place, where a model given nothing falls
+back to an element frame. A secure window publishes neither the image nor the
+conversion — otherwise the suppression would leak the geometry it was suppressing.
 
 ### The click methods
 
@@ -1115,9 +1511,14 @@ Capture and encode are **100% in-process ctypes** —
 `CGWindowListCreateImage` → ImageIO `CGImageDestinationCreateWithData` /
 `AddImage` / `Finalize` with exactly two option keys
 (`kCGImageDestinationImageMaxPixelSize`, `kCGImageDestinationLossyCompressionQuality`).
-No subprocess anywhere in the package, and therefore no Pillow dependency
-(Pillow is declared in neither `setup.cfg` nor `pyproject.toml`, and a subprocess
-node would need a `test_spawn_audit.py::BENIGN_SPAWNS` entry). All of
+No subprocess on the observation or input path, and therefore no Pillow
+dependency (Pillow is declared in neither `setup.cfg` nor `pyproject.toml`). The
+package has exactly three spawn sites, each with a `test_spawn_audit.py::BENIGN_SPAWNS`
+entry and each structurally bounded: `overlay.py` launches the cursor renderer
+(`sys.executable -m <module>`, no agent-supplied argument), and the two
+`launch_*.py::spawn_detached` sites are `computer_launch_app`'s whole purpose —
+opening an application IS creating a process. None of the three carries an
+agent-supplied argv; `test_computer_use_unsupported.py` pins that by source. All of
 `img`/`data`/`dest`/`opts` and every CFNumber/CFString are released in a
 `finally`, including when `Finalize` returns `False` (which degrades to a
 tree-only result rather than raising).
@@ -1400,7 +1801,10 @@ incidental. Each was measured on Windows 11:
   therefore requires `GetAncestor(WindowFromPoint(p), GA_ROOT)` to equal the
   app's own top-level handle, and `list_apps` emits one entry per WINDOW so two
   frame-host siblings cannot share a grant. Every pointer gesture calls it — the
-  `global` click and both endpoints of a drag — before any event is sent.
+  `global` click and EVERY point of a drag's path — before any event is sent. Every
+  point rather than the two endpoints, because a `curved` path bows away from the chord
+  (see § Multi-point dragging) and a stroke between two authorized points near an edge
+  can otherwise travel over the window beside it with the button held.
 
   `window_list()` raises rather than returning a short list. CPython cannot raise out
   of a ctypes callback — it prints "Exception ignored" to stderr and returns 0 — so an
@@ -1691,6 +2095,14 @@ Every asymmetry below follows from that:
     permanently-blocking hook. All four release sites — the chord, the click's two
     paths, and the drag — route through it.
 
+    The drag passes **`atomic=True`**, and must. Its release batch is
+    `[move(end), button_up]`, whose records are not independent: the move is what AIMS the
+    up. A tail-only retry after a partial acceptance resends the bare `button_up`, which
+    carries no coordinate and so releases wherever the cursor has got to — the drop lands
+    outside the window `hwnd_owns_point` authorized, which is the exact defect the aimed
+    release exists to prevent. `atomic` resends the whole batch instead; re-sending the move
+    is idempotent, because a cursor position is state rather than an edge.
+
   In the drag the release runs in `finally`, so a failed release raises from there and
   supersedes whatever the press raised. That precedence is deliberate: a held button is
   worse than a failed drag and is the condition the operator has to act on.
@@ -1751,6 +2163,31 @@ tree is still returned — the UIA tree of a minimized window reads perfectly we
 permission rows — a short-lived subprocess, deliberately NOT an in-gateway ctypes
 call, so a native fault cannot take the gateway (and with it cron, Slack and the
 dashboard WS) down.
+
+### An app's own popups are not addressable surfaces
+
+A modern Windows app publishes transient popups — a tooltip, a flyout, a menu surface —
+as top-level windows carrying its own image name (WinUI spells them
+`Microsoft.UI.Content.PopupWindowSiteBridge`). They pass every other filter, so they
+become a second `list_apps` entry indistinguishable by name from the real window, and
+`resolve_app` returns the first match.
+
+Measured on MS Paint: a 97x52 `PopupHost` was listed beside the real 1536x960 document
+window, so `resolve_app("mspaint")` resolved to the popup. Every coordinate gesture
+aimed at the document was then refused by `hwnd_owns_point` — correctly, since the point
+really was outside the 97x52 rect it had resolved to — and the refusal points at bounds
+that never change, so the retry cannot terminate. `_TRANSIENT_CLASS_PREFIXES` drops
+them, with one exception: **a popup whose title trips the denylist is still listed**, so
+it can be refused. Dropping it earlier would let an innocuous same-handle sibling take
+its slot, which is the overwrite the denied-title guard exists to prevent.
+
+`find_window_for` — the launch verb's lookup — matches the executable stem first and the
+window TITLE second, and the second tier is not redundant: `_app_ref` deliberately puts
+the title in both `name` and `bundle_id` for a window fronted by `ApplicationFrameHost`,
+so for a packaged app the catalog's stem and the published identity never agree. Without
+the title tier the already-running check never fires (the model opens a second copy) and
+the post-launch poll burns its whole timeout reporting "no window appeared" for a window
+that is on screen.
 
 ### Permission probes are ADVISORY, never a gate
 
@@ -1897,7 +2334,7 @@ reply carries the `Error: ` prefix.
 
 `call` has **no MCP twin**, and that is the MCP-first rule being followed rather
 than bent: the rule exists so the model gets a structured tool instead of being
-told to shell out, and the model already has all ten tools. A tool that runs other
+told to shell out, and the model already has all eleven tools. A tool that runs other
 tools would let a model launder one per-call gate decision into many.
 
 ### Deliberately not ported from the reference implementation
@@ -2098,16 +2535,18 @@ unexplained session reset reads as a crash. Pinned by
 | `computer_use/service.py` | The single dispatch chokepoint (`act()`), synchronous |
 | `computer_use/windows_driver.py` | `WindowsBackend`: observation + all seven input verbs — the UIA pattern ladder, pointer confinement, verified focus, and the closed `perform_action` vocabulary |
 | `computer_use/windows_ffi.py` | The ONLY module touching Windows-native code: the UIA COM client, the one vtable-slot table, VARIANT/BSTR marshalling, the fail-closed secure read, the bounded walk, the DPI scope, `window_render_scale`, window enumeration |
-| `computer_use/apps_windows.py` | Window-list app enumeration keyed on the top-level HWND (a pid fronts many apps) + `hwnd_owns_point`, the confinement predicate |
+| `computer_use/apps_windows.py` | Window-list app enumeration keyed on the top-level HWND (a pid fronts many apps), the transient-popup filter, `find_window_for` (the launch verb's non-raising lookup) + `hwnd_owns_point`, the confinement predicate |
 | `computer_use/snapshot_windows.py` | Iterative bounded UIA walk, UIA role vocabulary, window-local frames, truncation flags |
 | `computer_use/capture_windows.py` | `PW_RENDERFULLCONTENT` into a 32bpp DIB sized to what the window renders + GDI+ JPEG encode, with pixel validation because a blank capture reports success. No `BitBlt` fallback: it reads the screen |
+| `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
+| `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
 | `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
 | `computer_use/macos_ffi.py` | The ONLY module touching ctypes: `_FN_SPECS`, structs, binder, CF hygiene, key/scroll/mouse event synthesis |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
 | `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` retry, secure detection |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |
 | `computer_use/screencast.py` | Live-view (PiP) relay: `frame_scope`, the three suppressions, `build_frame_payload`, the loopback POST |
-| `computer_use/cursor_motion.py` | Cursor Motion PATH MODEL — pure geometry (Bezier + arc + progress spring). No ctypes, no AppKit, no config |
+| `computer_use/cursor_motion.py` | Cursor Motion PATH MODEL — pure geometry (Bezier + arc + progress spring), plus `drag_points` for a multi-point drag. No ctypes, no AppKit, no config |
 | `computer_use/overlay.py` | Gateway-side overlay SUPERVISOR: the `cursor_motion` opt-in, child lifecycle, motion commands. Never raises, never blocks the loop |
 | `computer_use/overlay_proc.py` | The AppKit overlay CHILD (`python -m …overlay_proc`). Its OWN ctypes surface — out of process on purpose; `NSWindowSharingNone` keeps it out of screenshots |
 | `computer_use/permissions.py` | Advisory TCC probe + `responsible_hint` |

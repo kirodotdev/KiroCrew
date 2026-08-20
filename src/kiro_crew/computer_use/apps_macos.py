@@ -306,7 +306,38 @@ def _bundle_metadata(executable: str) -> tuple[str, str]:
     bundle = _enclosing_bundle(executable)
     if not bundle:
         return "", ""
-    info = _read_info_plist(os.path.join(bundle, BUNDLE_INFO_RELPATH))
+    return bundle_identity_at(bundle)
+
+
+def read_bundle_plist(bundle: str) -> dict:
+    """*bundle*'s parsed ``Info.plist``, or ``{}``. Never raises.
+
+    The bundle-path entry point to :func:`_read_info_plist`, so a caller holding a
+    ``.app`` path does not have to know the ``Contents/Info.plist`` layout — and, more
+    to the point, cannot accidentally reach the plist through a plain ``open`` that skips
+    the hardened, size-capped, ``O_NOFOLLOW`` read this one performs.
+
+    Exists because :mod:`launch_macos` needs ``CFBundleExecutable`` from a bundle that is
+    not running yet, to decide whether the binary it is about to launch sits in a
+    directory this user could rewrite.
+    """
+    return _read_info_plist(os.path.join(bundle, BUNDLE_INFO_RELPATH))
+
+
+def bundle_identity_at(bundle: str) -> tuple[str, str]:
+    """``(bundle_id, display_name)`` read from *bundle*'s own ``Info.plist``.
+
+    The bundle-path entry point, where :func:`_bundle_metadata` is the executable-path
+    one. Shared so the identity of an application about to be LAUNCHED
+    (:func:`launch_macos.target_identity`, which has the bundle and no pid) is read the
+    same way as that of one already running — including the hardened, size-capped,
+    ``O_NOFOLLOW`` read. A pre-spawn policy check is only meaningful if it sees the
+    string the post-launch check will see, and two readers would be two chances to
+    disagree.
+
+    Returns ``("", "")`` for anything unreadable or not a bundle. Never raises.
+    """
+    info = read_bundle_plist(bundle)
     if not info:
         return "", ""
     bundle_id = info.get(PLIST_BUNDLE_ID_KEY)
@@ -476,9 +507,11 @@ __all__ = [
     "AppIdentity",
     "IDENTITY_CACHE_TTL_SECS",
     "MAX_INFO_PLIST_BYTES",
+    "bundle_identity_at",
     "identity_for",
     "list_apps",
     "pid_owns_point",
+    "read_bundle_plist",
     "reset_identity_cache",
     "resolve_app",
     "resolve_identity",

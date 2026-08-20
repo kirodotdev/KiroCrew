@@ -1047,6 +1047,17 @@ def _windows_system_dirs() -> tuple[str, ...]:
     unexpected case where the API call fails. PowerShell ships in a versioned
     directory beside the system binaries, not inside it, so it is appended per
     root rather than assumed to sit alongside ``taskkill``.
+
+    **The early ``return`` below is what makes "fallback" mean fallback**, and it is
+    load-bearing rather than tidy. Appending the environment-derived path alongside a
+    successful API read reintroduces the input this function exists to avoid: it carries
+    a different casefold from what ``GetSystemDirectoryW`` reports, so the dedupe does
+    not collapse the two, and any caller treating the result as "directories the user
+    cannot write" then trusts a path the user names. Measured: with ``SystemRoot``
+    pointed at a temp directory, ``<temp>\\System32`` appears in this tuple while the API
+    answers normally, and ``computer_use.launch_windows`` accepts a binary planted there
+    as system-installed. ``HKCU\\Environment`` is writable without elevation, so a
+    restarted process inherits such a value.
     """
 
     dirs: list[str] = []
@@ -1059,11 +1070,15 @@ def _windows_system_dirs() -> tuple[str, ...]:
             dirs.append(buf.value)
     except Exception:
         pass
+    if dirs:
+        # The API answered. Adding an environment-derived sibling here would buy
+        # nothing (the real directory is already in hand) and would cost the
+        # guarantee every caller of this function relies on.
+        return tuple(dirs) + tuple(os.path.join(d, "WindowsPowerShell", "v1.0") for d in dirs)
     root = os.environ.get("SystemRoot") or r"C:\Windows"
-    # Case-insensitive dedupe: GetSystemDirectoryW reports the on-disk casing
-    # ("C:\Windows\system32"), which names the same directory as the
-    # conventionally-cased fallback and must not be probed twice.
-    seen = {d.casefold() for d in dirs}
+    # Case-insensitive dedupe: the conventionally-cased fallback can name the same
+    # directory as the environment-derived one and must not be probed twice.
+    seen: set[str] = set()
     for fallback in (os.path.join(root, "System32"), r"C:\Windows\System32"):
         if fallback.casefold() not in seen:
             seen.add(fallback.casefold())

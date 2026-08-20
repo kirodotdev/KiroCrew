@@ -25,6 +25,7 @@ from kiro_crew.computer_use.types import (
     FOCUS_NOTE,
     NO_APPS_NOTE,
     SCREENSHOT_NOTE,
+    SCREENSHOT_SCALE_NOTE,
     SECURE_PLACEHOLDER,
     SECURE_WINDOW_NOTE,
     SELECTION_NOTE,
@@ -296,11 +297,52 @@ def _render_image_note(snap: Snapshot) -> str:
         return TRUNCATED_WINDOW_NOTE
     if not snap.image_path:
         return ""
-    return SCREENSHOT_NOTE.format(
+    note = SCREENSHOT_NOTE.format(
         path=snap.image_path,
         width=snap.image_width,
         height=snap.image_height,
         size=_human_bytes(len(snap.image_jpeg)),
+    )
+    scale_note = _render_scale_note(snap)
+    return f"{note}\n{scale_note}" if scale_note else note
+
+
+def _render_scale_note(snap: Snapshot) -> str:
+    """The image-pixel to screen-point conversion, or ``""`` when it is unknowable.
+
+    Emitted only when all four inputs are present and sane, because a WRONG
+    conversion is worse than none: a model that applies a bad ratio clicks
+    confidently in the wrong place, where a model given nothing falls back to an
+    element frame. So every one of these is required —
+
+    * ``window_bounds`` — the origin the conversion adds, and the window size it is
+      relative to. ``None`` whenever the window rect could not be read;
+    * a positive encoded width AND window width — the ratio's two terms;
+
+    — and a single scale is published rather than one per axis. The encoder preserves
+    aspect ratio (it scales by the LONG edge, see ``capture_*._encode_jpeg``), so the
+    two ratios agree to within a rounding step, and printing two numbers that are
+    always equal would invite a reader to believe they can differ.
+
+    The ratio is taken from the WIDTH because that is the axis whose window value is
+    unambiguous. A window's height includes its title bar on Windows and its
+    ``PrintWindow`` render may exclude a shadow, so a height-derived ratio can
+    disagree with the width by a pixel or two; there is no such ambiguity horizontally.
+    """
+    if snap.window_bounds is None:
+        return ""
+    x, y, win_width, win_height = snap.window_bounds
+    if win_width <= 0 or snap.image_width <= 0:
+        return ""
+    scale = snap.image_width / float(win_width)
+    if scale <= 0:
+        return ""
+    return SCREENSHOT_SCALE_NOTE.format(
+        x=round(x),
+        y=round(y),
+        scale=scale,
+        win_width=round(win_width),
+        win_height=round(win_height),
     )
 
 

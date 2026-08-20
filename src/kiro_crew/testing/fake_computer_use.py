@@ -37,22 +37,29 @@ from __future__ import annotations
 import base64
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 
+from kiro_crew.computer_use import cursor_motion
 from kiro_crew.computer_use.backend import ComputerUseBackend
 from kiro_crew.computer_use.types import (
     AX_PRESS_ACTION,
     CLICK_METHOD_ACCESSIBILITY,
     CLICK_METHOD_APP_POST,
     CLICK_METHOD_GLOBAL,
+    DRAG_SHAPE_NOTE,
     ERR_ACTION_FAILED,
     ERR_APP_NOT_FOUND,
+    ERR_LAUNCH_ALREADY_RUNNING,
+    ERR_LAUNCH_NOT_INSTALLED,
     ERR_POINT_REQUIRED,
     ERR_UNKNOWN_CLICK_METHOD,
+    LAUNCH_RESULT,
+    LAUNCH_RESULT_NO_WINDOW,
     PERMISSION_GRANTED,
     PLATFORM_FAKE,
     REFUSAL_ACCESSIBILITY_NEEDS_INDEX,
     SECURE_SUBROLE,
+    TOOL_GET_STATE,
     TOOL_LIST_APPS,
     TRAIT_EDITABLE,
     AppRef,
@@ -61,6 +68,7 @@ from kiro_crew.computer_use.types import (
     DragRequest,
     DriverResult,
     ElementRec,
+    LaunchIdentity,
     PermissionProbe,
     Snapshot,
     SnapshotRequest,
@@ -129,6 +137,24 @@ FAKE_TERMINAL_APP = AppRef(
     window_title="bash — 80x24",
 )
 FAKE_APPS: tuple[AppRef, ...] = (FAKE_FILES_APP, FAKE_LOGIN_APP, FAKE_TERMINAL_APP)
+
+# ── Launch catalog: INSTALLED but not running ──
+# Deliberately disjoint from ``FAKE_APPS``, because that disjointness is what makes
+# the launch verb's three outcomes distinguishable: a name here and not there is a
+# successful launch, a name there is the already-running refusal, and a name in
+# neither is not-installed. A single shared list could not express the first.
+FAKE_DRAW_APP = AppRef(
+    name="Fake Draw",
+    pid=4104,
+    bundle_id="dev.kirocrew.fake.draw",
+    window_id=8804,
+    window_title="Untitled",
+)
+FAKE_LAUNCHABLE: tuple[AppRef, ...] = (FAKE_DRAW_APP,)
+#: What the fake reports for "how long the launch took". A fixed number, never a
+#: clock read: a fake backend that measured real time would make every result
+#: string that quotes it unassertable.
+_FAKE_LAUNCH_SECS = 0.5
 
 
 @dataclass(frozen=True)
@@ -243,10 +269,27 @@ _TERMINAL_TREE = FakeNode(
     children=(FakeNode(role="AXTextArea", title="shell", value="$ cat ~/.aws/credentials"),),
 )
 
+# The tree the launch fixture's app exposes once it is running. A canvas-shaped
+# window on purpose: the surface a launch is most often FOR is a drawing app, and its
+# canvas is exactly the case where the tree names one big element and a model needs
+# the screenshot's coordinate mapping to act inside it.
+_DRAW_TREE = FakeNode(
+    role="AXWindow",
+    title="Untitled",
+    children=(
+        FakeNode(role="AXButton", title="Pencil", actions=("AXPress",)),
+        FakeNode(role="AXGroup", title="Canvas"),
+    ),
+)
+
 FAKE_TREES: dict[str, FakeNode] = {
     FAKE_FILES_APP.key: _FILES_TREE,
     FAKE_LOGIN_APP.key: _LOGIN_TREE,
     FAKE_TERMINAL_APP.key: _TERMINAL_TREE,
+    # Present from the start even though the app is NOT in ``FAKE_APPS``: a launch
+    # makes it running, and the dispatcher snapshots it in the same turn — so a tree
+    # staged only on launch would make the fake's own bookkeeping order load-bearing.
+    FAKE_DRAW_APP.key: _DRAW_TREE,
 }
 
 
@@ -271,6 +314,13 @@ class FakeComputerUseBackend(ComputerUseBackend):
         # UI changing between two walks and trip fingerprint drift).
         self.trees: dict[str, FakeNode] = dict(FAKE_TREES)
         self.apps: tuple[AppRef, ...] = FAKE_APPS
+        #: Installed-but-not-running apps, for :meth:`launch_app`.
+        self.launchable: tuple[AppRef, ...] = FAKE_LAUNCHABLE
+        #: Whether a launch produces a window. ``False`` drives the third real
+        #: outcome — the process started but showed nothing inside the timeout —
+        #: which is a SUCCESS with no ``app`` and is the branch that keeps a model
+        #: from launching a second copy.
+        self.launched_with_window: bool = True
 
     # ── bookkeeping ──
 
@@ -290,6 +340,8 @@ class FakeComputerUseBackend(ComputerUseBackend):
         self.force_error = ""
         self.trees = dict(FAKE_TREES)
         self.apps = FAKE_APPS
+        self.launchable = FAKE_LAUNCHABLE
+        self.launched_with_window = True
 
     # ── identity / status ──
 
@@ -325,6 +377,91 @@ class FakeComputerUseBackend(ComputerUseBackend):
                 return DriverResult(ok=True, app=app)
         return DriverResult(
             ok=False, text=ERR_APP_NOT_FOUND.format(query=query, tool=TOOL_LIST_APPS)
+        )
+
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        """Pretend to start an app: succeed for a catalog entry, refuse otherwise.
+
+        The catalog is :attr:`launchable` — deliberately DISJOINT from
+        :attr:`apps` — because the interesting states are exactly the ones where
+        those two lists disagree:
+
+        * a name in ``launchable`` but not ``apps`` is the successful launch, and it
+          MOVES the app into ``apps`` so a follow-up ``computer_get_state`` finds the
+          window that was just opened. Without that move a test could not tell a
+          launch that worked from one that reported success and produced nothing;
+        * a name already in ``apps`` is the already-running refusal;
+        * a name in neither is the not-installed refusal.
+
+        ``launched_with_window`` lets a test drive the third real outcome — the
+        process started but showed no window inside the timeout — which is a SUCCESS
+        carrying no ``app`` and is the branch that stops a model launching twice.
+        """
+        self._record("launch_app", query=query)
+        forced = self._forced()
+        if forced is not None:
+            return forced
+        needle = (query or "").strip().lower()
+        if not needle:
+            return DriverResult(
+                ok=False, text=ERR_LAUNCH_NOT_INSTALLED.format(query=query, tool=TOOL_LIST_APPS)
+            )
+        for app in self.apps:
+            if needle in app.name.lower() or needle in app.bundle_id.lower():
+                return DriverResult(
+                    ok=False,
+                    text=ERR_LAUNCH_ALREADY_RUNNING.format(
+                        app=app.name, title=app.window_title, tool=TOOL_GET_STATE
+                    ),
+                )
+        match = next((ref for ref in self.launchable if needle in ref.name.lower()), None)
+        if match is not None and permit is not None:
+            # The RESOLVED identity, mirroring ``backend.run_launch``: the fake exists so
+            # a downstream suite can exercise the real dispatch shape, and a fake that
+            # skipped this check would make the prefix-alias bypass untestable.
+            #
+            # BOTH spellings, from the ``AppRef`` the catalog entry already carries. A
+            # real platform resolves a display name to an OS identity that differs from
+            # it (``notepad`` -> ``notepad.exe``), and a fake that passed only the name
+            # would leave the second half of the check — the one an operator's deny rule
+            # actually matches — with no coverage anywhere.
+            refusal = permit(LaunchIdentity(display=match.name, key=match.bundle_id))
+            if refusal:
+                return DriverResult(ok=False, text=refusal)
+        if match is None:
+            return DriverResult(
+                ok=False, text=ERR_LAUNCH_NOT_INSTALLED.format(query=query, tool=TOOL_LIST_APPS)
+            )
+        if not self.launched_with_window:
+            return DriverResult(
+                ok=True,
+                text=LAUNCH_RESULT_NO_WINDOW.format(
+                    app=match.name, secs=_FAKE_LAUNCH_SECS, tool=TOOL_LIST_APPS
+                ),
+            )
+        # The published identity, once a window exists — the check that covers what the
+        # pre-spawn one cannot see, because a packaged app's name is its WINDOW TITLE and
+        # that does not exist until the window does. Modelled here so the dispatch-level
+        # suite can observe it at all.
+        if refuse_launched is not None:
+            refusal = refuse_launched(match)
+            if refusal:
+                return DriverResult(ok=False, text=refusal)
+        # The launched app joins the running list, so the snapshot the dispatcher
+        # takes next resolves against a window that now exists.
+        self.apps = self.apps + (match,)
+        return DriverResult(
+            ok=True,
+            app=match,
+            text=LAUNCH_RESULT.format(
+                app=match.name, title=match.window_title, secs=_FAKE_LAUNCH_SECS
+            ),
         )
 
     def snapshot(self, app: AppRef, req: SnapshotRequest) -> DriverResult:
@@ -432,6 +569,13 @@ class FakeComputerUseBackend(ComputerUseBackend):
         )
 
     def drag(self, app: AppRef, req: DragRequest) -> DriverResult:
+        # ``points`` is journalled, not just ``steps``/``path``: the whole reason
+        # multi-point dragging exists is the SHAPE that reaches the target, so a
+        # downstream suite has to be able to assert the resolved path rather than the
+        # arguments that were supposed to produce it. Computed through the same
+        # ``cursor_motion.drag_points`` both real drivers call, so a fake assertion is
+        # about the real geometry.
+        points = cursor_motion.drag_points(req.start, req.end, steps=req.steps, path=req.path)
         self._record(
             "drag",
             app=app.key,
@@ -440,6 +584,9 @@ class FakeComputerUseBackend(ComputerUseBackend):
             method=req.method,
             button=req.button,
             moves_pointer=req.moves_pointer,
+            steps=req.steps,
+            path=req.path,
+            points=points,
         )
         forced = self._forced()
         if forced is not None:
@@ -448,12 +595,14 @@ class FakeComputerUseBackend(ComputerUseBackend):
             # Mirrors the real driver: there is no accessibility action that
             # expresses a sweep between two points.
             return DriverResult(ok=False, text=ERR_UNKNOWN_CLICK_METHOD.format(method=req.method))
+        shape = "" if len(points) <= 2 else DRAG_SHAPE_NOTE.format(count=len(points), path=req.path)
         return DriverResult(
             ok=True,
             text=(
                 f"dragged with the {req.button} button from "
                 f"({req.start[0]:.0f}, {req.start[1]:.0f}) to "
-                f"({req.end[0]:.0f}, {req.end[1]:.0f}) in '{app.name}' ({req.method})"
+                f"({req.end[0]:.0f}, {req.end[1]:.0f}){shape} in '{app.name}' "
+                f"({req.method})"
             ),
             app=app,
         )

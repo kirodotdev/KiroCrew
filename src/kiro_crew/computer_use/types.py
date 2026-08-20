@@ -30,6 +30,7 @@ PLATFORM_UNSUPPORTED = "unsupported"
 # All prefixed ``computer_`` so a browser tool can never collide with one of
 # these in a shared allowlist.
 TOOL_LIST_APPS = "computer_list_apps"
+TOOL_LAUNCH_APP = "computer_launch_app"
 TOOL_GET_STATE = "computer_get_state"
 TOOL_CLICK = "computer_click"
 TOOL_DRAG = "computer_drag"
@@ -42,11 +43,21 @@ TOOL_END_TURN = "computer_end_turn"
 
 # Read-only tools: observation only, no input synthesis. ``computer_end_turn``
 # is control-plane (it drops cached snapshots) and is neither read nor mutate.
+#
+# ``computer_launch_app`` is deliberately NOT here: it starts a process, which is
+# the most consequential thing in this tool set and the opposite of read-only.
 READ_ONLY_TOOLS: frozenset[str] = frozenset({TOOL_LIST_APPS, TOOL_GET_STATE})
 # Every tool that synthesizes input into another application's window. These
 # are the ones the PreToolUse gate must NEVER auto-approve.
+#
+# ``computer_launch_app`` is in this set even though it synthesizes no input, and
+# the reason is the classification's PURPOSE rather than its name: this is the set
+# of verbs that change the world outside Kiro Crew, and starting a process is the
+# largest such change the tool set can make. Leaving it out would have put the one
+# verb that creates a process on the same footing as reading a tree.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {
+        TOOL_LAUNCH_APP,
         TOOL_CLICK,
         TOOL_DRAG,
         TOOL_TYPE_TEXT,
@@ -58,6 +69,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
 )
 ALL_TOOLS: tuple[str, ...] = (
     TOOL_LIST_APPS,
+    TOOL_LAUNCH_APP,
     TOOL_GET_STATE,
     TOOL_CLICK,
     TOOL_DRAG,
@@ -138,6 +150,89 @@ MOUSE_BUTTONS: tuple[str, ...] = (
 )
 DEFAULT_MOUSE_BUTTON = MOUSE_BUTTON_LEFT
 
+# ── Launching an application ──
+# ``computer_launch_app`` opens an app that is not running yet, so the rest of the
+# tool set has a window to drive. It is the only verb here that starts a PROCESS,
+# and that is why its target resolution is the narrowest thing in this package.
+#
+# **The catalog is the security boundary, not the argument.** A launch resolves the
+# caller's string against an OS-owned catalog of installed applications and refuses
+# anything it cannot find there — it never accepts a path, an argument vector, or a
+# name it resolves through ``PATH``. Two measurements on Windows 11 are why:
+#
+# * ``HKCU\...\App Paths`` is writable by the same unprivileged user the agent runs
+#   as (verified by creating a key and pointing it at another binary);
+# * ``%LOCALAPPDATA%\Microsoft\WindowsApps`` is **on PATH** and writable, and it is
+#   what ``shutil.which("mspaint")`` resolves to.
+#
+# So the two obvious "ask the OS what this app is" inputs are both agent-writable.
+# Resolving through either would turn this verb into "run an arbitrary binary" —
+# and because computer use is deliberately NOT governance-gated, that binary would
+# also skip the ``BUILTIN_DENIED_RULES`` floor every bash call passes. The catalog
+# each driver builds must therefore come from a root the agent cannot write.
+MAX_LAUNCH_QUERY_LEN = 128
+#: How many application names a refusal lists — for an ambiguous query and for the
+#: "did you mean" suggestions on a miss. One owner because BOTH resolvers use it in
+#: both places (four call sites across two modules that are required to agree on what
+#: a refusal looks like), and because it is a presentation bound rather than a
+#: security one: a model handed thirty names cannot act on the list, and the list is
+#: what makes the refusal recoverable at all.
+MAX_LAUNCH_SUGGESTIONS = 6
+#: How long to wait for a launched app to put a window on screen, and how often to
+#: look. Measured: a cold packaged-app start (MS Paint, first launch of the session)
+#: took 9.9s from spawn to a titled top-level window, and the launcher process itself
+#: exits IMMEDIATELY — so a launch cannot be confirmed by the child's exit status and
+#: has to be confirmed by finding the window. 30s is triple the measured cold start,
+#: which is the margin a loaded machine needs; 250ms keeps the poll cheap while
+#: reporting a warm start promptly.
+LAUNCH_WINDOW_TIMEOUT_SECS = 30.0
+LAUNCH_POLL_INTERVAL_SECS = 0.25
+#: Result prose. The window is reported when one appeared, because the model's next
+#: call needs the name to address — and the ABSENCE of a window is reported as a
+#: SUCCESS with a caveat rather than a failure: the process really did start, and a
+#: splash screen that has not finished is not an error the model should retry into a
+#: second copy of the application.
+LAUNCH_RESULT = "launched {app}; its window '{title}' is on screen after {secs:.1f}s"
+LAUNCH_RESULT_NO_WINDOW = (
+    "launched {app}, but no window appeared within {secs:.0f}s. The process did "
+    "start — it may still be loading, or it may open no window of its own. Call "
+    "{tool} to see what is on screen; do NOT launch it again"
+)
+#: Refusals. The catalog miss NAMES the catalog so the model learns the rule rather
+#: than retrying with a path, which is the one shape that can never be served.
+ERR_LAUNCH_NOT_INSTALLED = (
+    "no installed application matches '{query}'. Launching resolves names against "
+    "the operating system's own list of installed applications — a filesystem path "
+    "or a command line is never accepted — so try the name as it appears in the "
+    "Start menu / Applications folder, or call {tool} if the app is already running"
+)
+#: The same miss, WITH near misses. Resolution is prefix-only (a substring match on a
+#: short query is a coincidence rather than an intent — asking for ``cmd`` matched an
+#: unrelated ``IEDIAGCMD`` on a real host and launched it), so a model typing a
+#: fragment of a real name would otherwise get a dead end. The suggestions make the
+#: refusal recoverable without loosening what may actually be launched.
+ERR_LAUNCH_NOT_INSTALLED_NEAR = (
+    "no installed application is named '{query}'. Did you mean: {near}? Launching "
+    "matches the START of an application's name against the operating system's own "
+    "list of installed applications — a filesystem path or a command line is never "
+    "accepted"
+)
+ERR_LAUNCH_AMBIGUOUS = (
+    "'{query}' matches {count} installed applications ({names}). Name one exactly — "
+    "launching the wrong application is not something you can undo"
+)
+ERR_LAUNCH_ALREADY_RUNNING = (
+    "'{app}' already has a window on screen ('{title}'), so it was NOT launched "
+    "again. Call {tool} to read it"
+)
+ERR_LAUNCH_FAILED = "could not launch '{app}': {detail}"
+# A denied launch TARGET deliberately has no string of its own: it reuses
+# ``REFUSAL_DENIED_APP`` via ``policy.check_app``, which is the same function and the
+# same sentence every other verb's refusal comes from. A separate spelling here would
+# only be reachable from a branch calling the built-in floor directly — which is exactly
+# the shape that exempts the operator's allow/deny lists from the one verb that starts a
+# process, so its absence is what keeps that branch from being written.
+
 # ── Coordinate click / drag bounds ──
 # Coordinates are SCREEN points in the top-left convention every other part of
 # this package uses. The ceiling is generous rather than display-derived: a
@@ -150,6 +245,46 @@ MIN_SCREEN_COORD = -32768.0
 # 3 because macOS itself only reports up to a triple click as a distinct gesture.
 DEFAULT_CLICK_COUNT = 1
 MIN_CLICK_COUNT = 1
+
+# ── Drag path shape ──
+# A drag is the only gesture whose MEANING is the path rather than the endpoints, so
+# how many intermediate points it visits decides whether it can draw at all.
+#
+# ``straight`` interpolates the chord; ``curved`` bows it with the same Bezier +
+# perpendicular arc ``cursor_motion`` already computes for the overlay, because a
+# hand-drawn stroke is not a line segment and reusing that geometry means the shape
+# is defined in exactly one tested place.
+DRAG_PATH_STRAIGHT = "straight"
+DRAG_PATH_CURVED = "curved"
+DRAG_PATHS: tuple[str, ...] = (DRAG_PATH_STRAIGHT, DRAG_PATH_CURVED)
+DEFAULT_DRAG_PATH = DRAG_PATH_STRAIGHT
+#: Intermediate points a drag visits between its endpoints.
+#:
+#: The default is 1 — the endpoints and nothing between them — because that is what
+#: a slider sweep, a range selection and a reorder need, and every one of those is
+#: a straight gesture whose intermediate points would only cost wall-clock. A model
+#: drawing a stroke asks for more.
+#:
+#: The ceiling is a wall-clock bound rather than a fidelity one, and the two platforms
+#: pay very different rates for it:
+#:
+#: * Windows submits each point as its own ``SendInput`` call (see
+#:   ``windows_ffi.post_mouse_drag`` for why one batch cannot work), measured at ~1.6ms
+#:   per point — so 512 points is ~0.8s of held mouse button;
+#: * macOS additionally sleeps ``macos_ffi.DRAG_STEP_DELAY_SECS`` (20ms) after EVERY
+#:   event, because without it AppKit's recognizer coalesces the whole sequence into one
+#:   motion — so the same 512 points is ~10s there, and that sleep is not removable.
+#:
+#: The bound is therefore set by the cheaper platform and is generous on the more
+#: expensive one. It is left shared rather than split per platform because a model
+#: asking for a drawn stroke wants a shape, not a step count: a realistic stroke is
+#: 24-64 points (~0.1s on Windows, ~1s on macOS), and the ceiling exists to stop a
+#: pathological request rather than to tune the common one. ``dispatch_tool`` is
+#: blocking on a bounded executor, so a caller that genuinely wants 512 points on macOS
+#: should know it will hold a worker for about ten seconds.
+DEFAULT_DRAG_STEPS = 1
+MIN_DRAG_STEPS = 1
+MAX_DRAG_STEPS = 512
 # ``MAX_CLICK_COUNT`` is defined in the Cursor Motion block below and is the
 # same number for the same reason; a separate constant here would let the two
 # drift so that the overlay drew fewer pulses than the driver posted clicks.
@@ -427,6 +562,27 @@ SCREENSHOT_NOTE = (
     "element's own frame. Read the file with the fs_read tool only if the tree is "
     "insufficient."
 )
+#: The CONVERSION, appended after ``SCREENSHOT_NOTE`` when the scale is known.
+#:
+#: "Take coordinates from an element's own frame" is the right instruction and it is
+#: unusable for the one surface that most needs pixels: a drawing canvas, a map or a
+#: chart is a single element (or none at all), so there is no frame naming the point
+#: the model wants to click INSIDE it. Without a conversion the honest answer to
+#: "click the middle of this shape" is that it cannot be expressed, which is what made
+#: drawing impossible rather than merely awkward.
+#:
+#: Stated as an explicit arithmetic recipe rather than a bare ratio: a model handed
+#: "scale 0.66" still has to be told which direction to apply it in and that the
+#: window origin is added afterwards, and getting either backwards puts the click on
+#: the wrong half of the screen. The divisor is printed to three decimals because a
+#: rounded 0.66 against a 1920px window is a ~7px error at the far edge.
+SCREENSHOT_SCALE_NOTE = (
+    "  Image-pixel to screen-point conversion: screen_x = {x} + image_x / {scale:.3f}, "
+    "screen_y = {y} + image_y / {scale:.3f} (the image is {scale:.3f}x the window's "
+    "{win_width}x{win_height} pixels). Use this ONLY for a surface with no addressable "
+    "element — a canvas, a map, a chart. An element's own frame is exact; this is a "
+    "measurement off a downscaled image and carries its rounding."
+)
 SECURE_WINDOW_NOTE = (
     "Screenshot suppressed: this window contains a secure (password) field, so "
     "its pixels are not captured."
@@ -546,6 +702,18 @@ ERR_POINT_NOT_OWNED = (
     "which deliver to '{app}' directly."
 )
 ERR_UNKNOWN_MOUSE_BUTTON = "unknown mouse_button '{button}'."
+#: An unknown drag ``path``. Refused rather than defaulted to straight, for the same
+#: reason an unknown mouse button is refused: a substituted shape draws a DIFFERENT
+#: gesture than the one requested, and on a canvas that is a wrong drawing rather
+#: than a slightly worse one.
+ERR_UNKNOWN_DRAG_PATH = "unknown drag path '{path}'. Supported: {supported}"
+#: The shape annotation on a multi-point drag's confirmation. Owned here because the
+#: real driver and the SHIPPED fake both emit it, and the fake exists so a downstream
+#: suite can assert on the real result shape — so a second copy of this string would
+#: diverge silently, in the one place designed to be depended on. A two-point drag
+#: omits it entirely: annotating "via 2 straight points" on every slider sweep would
+#: describe the historical gesture as if it were a new one.
+DRAG_SHAPE_NOTE = " via {count} {path} points"
 # ``app_post`` / ``global`` need a point. ``auto`` resolving to ``app_post``
 # already has one by construction (that branch is only taken when x/y were
 # given), so this only fires for an explicitly-named method.
@@ -786,6 +954,44 @@ class StaleIndex(ComputerUseError):
     """A cached snapshot is missing, expired, or its element indices drifted."""
 
 
+class NoSuchLaunchTarget(ComputerUseError):
+    """No installed application matched a ``computer_launch_app`` query.
+
+    Its own type so a driver can distinguish "not installed" — where naming the
+    catalog rule is the useful reply — from "installed but refused", where the
+    specific rule is, without matching on prose.
+
+    ``near`` carries substring matches as SUGGESTIONS. They are never launch targets
+    (resolution is prefix-only, because a short fragment matching inside a long name is
+    a coincidence rather than an intent), but a model that typed ``paint`` against an
+    installed ``mspaint`` needs the real name to recover — and inventing one is the
+    retry that cannot work.
+
+    Lives HERE rather than in either resolver because both need it and the two must
+    agree: the drivers branch on the TYPE to choose between two refusal strings, so a
+    per-module copy would make a Windows driver blind to a macOS resolver's raise (and
+    vice versa) the moment either module were reused.
+    """
+
+    def __init__(self, near: str = "") -> None:
+        super().__init__(near)
+        self.near = near
+
+
+class AmbiguousLaunchTarget(ComputerUseError):
+    """Several installed applications matched one ``computer_launch_app`` query.
+
+    Raised rather than resolved to the first match: launching the wrong application is
+    not something the model can undo. Shares :class:`NoSuchLaunchTarget`'s home for the
+    same reason.
+    """
+
+    def __init__(self, names: str, count: int) -> None:
+        super().__init__(names)
+        self.names = names
+        self.count = count
+
+
 # ── Frozen data containers ──
 
 
@@ -839,6 +1045,57 @@ class AppRef:
     def label(self) -> str:
         """Human/model-facing identity, e.g. ``com.apple.finder (pid 1041)``."""
         return f"{self.bundle_id or self.name} (pid {self.pid})"
+
+
+@dataclass(frozen=True)
+class LaunchIdentity:
+    """What a launch target is called, BEFORE any process exists.
+
+    The pre-spawn counterpart of :class:`AppRef`, and it exists because a launch and a
+    running application are not named the same way. A launch is requested by DISPLAY
+    name (``notepad``), while the identity the OS reports once the process exists —
+    ``notepad.exe`` on Windows, ``com.apple.TextEdit`` on macOS — is what every other
+    computer-use refusal shows an operator, and therefore the spelling their
+    ``extra_denied_apps`` entry naturally carries.
+
+    So a pre-spawn check that knows only the display name silently fails to match the
+    operator's own rule, and the deny takes effect one step too late: after the process
+    is running. The resolver already knows the other spelling (the catalog key is what
+    it matched), so it is carried here rather than rediscovered.
+
+    ``key`` is that OS identity, empty when the platform has no second spelling.
+    :meth:`as_app_ref` is how it reaches the policy.
+    """
+
+    display: str
+    key: str = ""
+
+    def as_app_ref(self) -> "AppRef":
+        """The :class:`AppRef` ``policy.check_app`` should be asked about.
+
+        Both names are carried, in the fields the policy reads them from: ``name`` is
+        the display name and ``bundle_id`` the OS identity, exactly as a RUNNING
+        application presents them. That is what makes one ``check_app`` call give the
+        right answer on both halves of the policy, and it is why this is one ref rather
+        than a check per name:
+
+        * a DENY matches either field, so denying either spelling refuses the launch —
+          the union, which is the bug this type exists to fix;
+        * an ALLOW-list passes when either field matches, so an operator who
+          allow-listed one spelling is not defeated by the other failing the same list.
+          Checking each name separately and refusing on any refusal would have made a
+          non-empty ``allowed_apps`` naming ``mspaint.exe`` refuse ``mspaint``.
+
+        ``window_title`` carries the display name so the self-target title rule (which
+        is a substring test, and the only reason the field is consulted) can still fire
+        on a launch. ``pid`` is 0 because there is no process yet.
+        """
+        return AppRef(
+            name=self.display,
+            pid=0,
+            bundle_id=self.key or self.display,
+            window_title=self.display,
+        )
 
 
 @dataclass(frozen=True)
@@ -1055,11 +1312,17 @@ class ClickRequest:
 
 @dataclass(frozen=True)
 class DragRequest:
-    """One drag: a start point, an end point and a button, all resolved.
+    """One drag: two endpoints, a button, and the SHAPE of the path between them.
 
     Coordinate-only by construction — there is no element form of a drag, because
     a drag's meaning IS the path between two points (a canvas stroke, a slider
     sweep, a range selection) and no accessibility action expresses it.
+
+    ``steps`` and ``path`` are what make a STROKE expressible rather than only a
+    line: an application samples the pointer as it moves, so a drag that visits one
+    intermediate point can only ever draw a straight segment no matter what the
+    caller meant. They default to the straight single-step form, which is what a
+    slider sweep and a range selection want and what every existing caller gets.
 
     Both points are TOP-LEFT screen coordinates. ``moves_pointer`` mirrors
     :attr:`ClickRequest.moves_pointer` so the gate can treat the two uniformly.
@@ -1069,6 +1332,11 @@ class DragRequest:
     end: tuple[float, float]
     method: str = CLICK_METHOD_APP_POST
     button: str = DEFAULT_MOUSE_BUTTON
+    #: How many segments the path is divided into. ``1`` means the endpoints only.
+    steps: int = DEFAULT_DRAG_STEPS
+    #: ``straight`` (interpolate the chord) or ``curved`` (bow it, see
+    #: ``cursor_motion.build_path``).
+    path: str = DEFAULT_DRAG_PATH
 
     @property
     def moves_pointer(self) -> bool:

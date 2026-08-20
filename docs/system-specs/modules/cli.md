@@ -956,7 +956,7 @@ governance model.
 All three are **human-facing**. `apps` has an MCP twin (`computer_list_apps`) per
 the MCP-first rule; `doctor` is a permission diagnostic rather than a capability,
 so the rule does not bind it; and `call` adds no capability at all — it is a
-harness over the ten existing MCP tools, and deliberately has **no** MCP twin,
+harness over the eleven existing MCP tools, and deliberately has **no** MCP twin,
 because a tool that runs other tools would let a model launder one per-call gate
 decision into many. There is deliberately **no** `kirocrew computer state <app>` —
 that would be a second, CLI-shaped spelling of an LLM-facing capability and would

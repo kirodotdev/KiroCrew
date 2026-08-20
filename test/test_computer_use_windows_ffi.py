@@ -22,6 +22,7 @@ Two properties are pinned here:
 from __future__ import annotations
 
 import ctypes
+import inspect
 from contextlib import contextmanager
 
 import pytest
@@ -1214,6 +1215,36 @@ class TestReleaseBatchesAreVERIFIED:
         ffi._send_release(ups)
         assert seen == [3, 2], "the retry must carry only the unaccepted tail"
 
+    def test_an_ATOMIC_release_resubmits_the_WHOLE_batch(self, monkeypatch) -> None:
+        """A drag's release is ``[move(end), up]`` and the two records are not independent.
+
+        The move is what AIMS the up. A tail-only retry after a partial acceptance resends
+        the bare ``up``, which carries no coordinate and therefore releases wherever the
+        cursor happens to be — the drop lands outside the window ``hwnd_owns_point``
+        authorized, which is exactly the defect the aimed release exists to prevent.
+        Resending the move first is idempotent (a cursor position is state, not an edge).
+        """
+        seen = self._spy(monkeypatch, [1, None])
+        # Opaque stand-ins rather than real records: ``_move_to`` normalizes against the
+        # virtual screen through user32, which does not exist on a Linux shard, and
+        # ``_send_release`` never inspects a record's contents.
+        release = ["move(end)", "button_up"]
+        ffi._send_release(release, atomic=True)
+        assert seen == [2, 2], "the retry must carry the AIMING move, not just the button up"
+
+    def test_a_NON_atomic_release_still_sends_only_the_tail(self, monkeypatch) -> None:
+        # The default is unchanged: for independent key-ups, resending an already-released
+        # key is harmless but muddies which record failed.
+        seen = self._spy(monkeypatch, [1, None])
+        ffi._send_release(["key_up_a", "key_up_shift"])
+        assert seen == [2, 1]
+
+    def test_the_DRAG_release_is_sent_atomically(self, monkeypatch) -> None:
+        # The wiring, pinned. ``atomic`` defaults to False, so a drag that forgot to pass it
+        # would silently keep the unaimed-retry defect with nothing going red.
+        source = inspect.getsource(ffi.post_mouse_drag)
+        assert "_send_release(release, atomic=True)" in source
+
     def test_a_release_that_never_lands_RAISES(self, monkeypatch) -> None:
         """Reporting success over a stuck modifier is what turns a failed keystroke
         into corrupted input, so this must not pass silently."""
@@ -1256,12 +1287,20 @@ class TestTheMouseRecords:
     """Every function here moves the operator's REAL cursor."""
 
     @staticmethod
-    def _spy(monkeypatch, *, accept=None, raises=None) -> list:
-        """Record every batch. *accept* truncates the FIRST batch's accepted count.
+    def _spy(monkeypatch, *, accept=None, raises=None, on_call=1) -> list:
+        """Record every batch. *accept* truncates the *on_call*-th batch's count.
 
         ``SendInput`` returning fewer than it was given is the case that leaves the
         operator's real mouse button held, and it returns NORMALLY — so a spy that
         always reports full acceptance cannot exercise it.
+
+        *on_call* exists because a drag is no longer one batch. It submits
+        ``[move, down]``, then one call per path point, then ``[move, up]`` — so the
+        state where the button is PHYSICALLY HELD is a truncation on an intermediate
+        MOVE batch (call 2+), not on the press. Truncating call 1 only means the press
+        never landed, which strands nothing. A spy pinned to the first batch could no
+        longer reach the hazard at all, which is how a truncation test can keep passing
+        while testing nothing.
         """
         batches: list = []
         calls = {"n": 0}
@@ -1269,7 +1308,7 @@ class TestTheMouseRecords:
         def send(records):
             batches.append([(r.type, r.u.mi.dwFlags, r.u.mi.dx, r.u.mi.dy) for r in records])
             calls["n"] += 1
-            if calls["n"] == 1:
+            if calls["n"] == on_call:
                 if raises is not None:
                     raise raises
                 if accept is not None:
@@ -1360,30 +1399,131 @@ class TestTheMouseRecords:
         """A drag that pressed and moved but never released IS the stuck-button state,
         and reporting success would leave the caller believing the drop landed.
 
-        The existing ``finally`` covers an exception; this covers the quieter
-        truncation, which returns normally.
+        The ``finally`` covers an exception; this covers the quieter truncation, which
+        returns normally.
+
+        **The truncation has to land on an INTERMEDIATE move**, which is why this uses
+        ``on_call=2``: the press batch is ``[move, down]``, so a short accept there means
+        the down never landed and no button is held. The dangerous state — button
+        physically down, remaining motion dropped — is reachable only after the press
+        succeeded. A version of this test that truncated the first batch was passing
+        while exercising nothing.
         """
-        batches = self._spy(monkeypatch, accept=2)
+        batches = self._spy(monkeypatch, accept=0, on_call=2)
+        with pytest.raises(ffi.ComputerUseUnsupported, match="partly delivered"):
+            ffi.post_mouse_drag(
+                (1.0, 2.0),
+                (30.0, 40.0),
+                button="left",
+                points=[(1.0, 2.0), (15.0, 20.0), (30.0, 40.0)],
+            )
+        # The press DID land, so a button really was held when the truncation happened.
+        pressed = [rec for batch in batches for rec in batch if rec[1] == ffi.MOUSEEVENTF_LEFTDOWN]
+        assert pressed, "the press never landed, so this did not exercise a held button"
+        assert batches[-1][-1] == (ffi.INPUT_MOUSE, ffi.MOUSEEVENTF_LEFTUP, 0, 0)
+
+    def test_a_truncated_PRESS_batch_is_also_reported(self, monkeypatch) -> None:
+        # The other half: a short accept on the press means nothing was pressed, so
+        # there is no held button — but the caller must still not be told the drag
+        # landed, because the drop did not happen either.
+        batches = self._spy(monkeypatch, accept=1, on_call=1)
         with pytest.raises(ffi.ComputerUseUnsupported, match="partly delivered"):
             ffi.post_mouse_drag((1.0, 2.0), (30.0, 40.0), button="left")
-        assert batches[-1] == [(ffi.INPUT_MOUSE, ffi.MOUSEEVENTF_LEFTUP, 0, 0)]
+        assert batches[-1][-1] == (ffi.INPUT_MOUSE, ffi.MOUSEEVENTF_LEFTUP, 0, 0)
 
     def test_a_FULLY_accepted_drag_still_releases_exactly_once(self, monkeypatch) -> None:
         batches = self._spy(monkeypatch)
         ffi.post_mouse_drag((1.0, 2.0), (30.0, 40.0), button="left")
-        assert len(batches) == 2
-        assert batches[1] == [(ffi.INPUT_MOUSE, ffi.MOUSEEVENTF_LEFTUP, 0, 0)]
+        # Asserted on the RELEASE rather than on the batch count, because the number
+        # of batches is now a function of the path length (one call per point) and
+        # pinning it here would make every path-shape change edit this test.
+        assert batches[-1][-1] == (ffi.INPUT_MOUSE, ffi.MOUSEEVENTF_LEFTUP, 0, 0)
+        ups = [rec for batch in batches for rec in batch if rec[1] == ffi.MOUSEEVENTF_LEFTUP]
+        assert len(ups) == 1, "the button was released more than once"
+
+    def test_the_RELEASE_is_AIMED_at_the_end_point(self, monkeypatch) -> None:
+        """A bare ``up`` releases wherever the cursor IS, not where it was aimed.
+
+        The button-up record carries no coordinate. That was harmless while the whole
+        drag went out as one batch — nothing could interleave — but the path is now
+        submitted as one ``SendInput`` per point, so there are N yield points where a
+        foreign mouse move (the operator's own hand, another injector) can land between
+        the last path point and the release.
+
+        A release is where a DROP lands, and ``end`` is one of the two points
+        ``hwnd_owns_point`` authorized, so the release is re-aimed immediately before
+        the ``up`` — in the SAME batch, which is what makes the pair uninterruptible.
+        """
+        batches = self._spy(monkeypatch)
+        ffi.post_mouse_drag((1.0, 2.0), (300.0, 400.0), button="left")
+        release = batches[-1]
+        assert len(release) == 2, release
+        assert release[0][1] & ffi.MOUSEEVENTF_MOVE
+        assert (release[0][2], release[0][3]) == ffi._normalized(300.0, 400.0)
+        assert release[1] == (ffi.INPUT_MOUSE, ffi.MOUSEEVENTF_LEFTUP, 0, 0)
+
+    def test_the_release_batch_is_built_BEFORE_the_travel(self, monkeypatch) -> None:
+        """``_move_to`` can raise, and a release that raises is a HELD button.
+
+        ``_normalized`` raises on a zero-extent virtual screen. If the release batch
+        were constructed inside the ``finally``, that raise would happen on the way to
+        sending the release rather than before the press — leaving the operator's
+        button down, which is the one outcome the whole discipline exists to prevent.
+
+        Driven by making construction fail: with a zero extent NOTHING is submitted, so
+        the press never happens either and there is no button to strand.
+        """
+        batches: list = []
+        monkeypatch.setattr(
+            ffi, "_send", lambda records: batches.append(list(records)) or len(records)
+        )
+        monkeypatch.setattr(ffi, "_virtual_screen", lambda: (0, 0, 0, 0))
+        with pytest.raises(ffi.ComputerUseUnsupported, match="zero extent"):
+            ffi.post_mouse_drag((1.0, 2.0), (30.0, 40.0), button="left")
+        assert batches == [], "a batch was submitted despite an unbuildable release"
 
     def test_a_drag_MOVES_between_press_and_release(self, monkeypatch) -> None:
         """A press and release at two points with no motion between is not a drag to
-        most applications: they start the drag on the first move after button-down."""
+        most applications: they start the drag on the first move after button-down.
+
+        The aim and the press stay in ONE batch — nothing may interleave between
+        aiming and pressing — and the motion follows.
+        """
         batches = self._spy(monkeypatch)
         ffi.post_mouse_drag((10.0, 10.0), (90.0, 90.0), button="left")
         press = batches[0]
         assert press[0][1] & ffi.MOUSEEVENTF_MOVE
         assert press[1][1] == ffi.MOUSEEVENTF_LEFTDOWN
-        assert press[2][1] & ffi.MOUSEEVENTF_MOVE
-        assert batches[1][0][1] == ffi.MOUSEEVENTF_LEFTUP
+        flat = [rec for batch in batches for rec in batch]
+        down_at = next(i for i, rec in enumerate(flat) if rec[1] == ffi.MOUSEEVENTF_LEFTDOWN)
+        up_at = next(i for i, rec in enumerate(flat) if rec[1] == ffi.MOUSEEVENTF_LEFTUP)
+        moved_between = [rec for rec in flat[down_at + 1 : up_at] if rec[1] & ffi.MOUSEEVENTF_MOVE]
+        assert moved_between, "no motion between the press and the release"
+
+    def test_each_path_POINT_is_its_own_SendInput_call(self, monkeypatch) -> None:
+        """THE fidelity invariant, and it looks backwards without the measurement.
+
+        Every other input path in this module batches deliberately (``_send``'s own
+        docstring explains why: nothing may interleave inside a chord). A drag path is
+        the exception: 65 move records in ONE batch drew a visibly corner-y polyline,
+        while the same 65 points as 65 separate calls drew a smooth curve. A
+        ``WH_MOUSE_LL`` hook counted 65 of 65 events reaching the queue in BOTH shapes,
+        so nothing is dropped — Windows synthesizes ``WM_MOUSEMOVE`` from queue STATE
+        when the target's pump asks, so one batch mutates the position many times
+        before the target samples it once.
+
+        Pinned because a reviewer reading ``_send``'s docstring would reasonably
+        "fix" this back into a single batch, and the regression is invisible in code:
+        it produces a drag that still works and no longer draws.
+        """
+        batches = self._spy(monkeypatch)
+        points = [(float(i * 10), 0.0) for i in range(6)]
+        ffi.post_mouse_drag(points[0], points[-1], button="left", points=points)
+        # One batch for (aim + press), then one per remaining point, then the release.
+        assert len(batches) == 1 + (len(points) - 1) + 1
+        for batch in batches[1:-1]:
+            assert len(batch) == 1, "an intermediate move shared a batch"
+            assert batch[0][1] & ffi.MOUSEEVENTF_MOVE
 
     def test_a_drag_RELEASES_even_when_the_press_batch_fails(self, monkeypatch) -> None:
         """A button left down is a stuck mouse button, and every later motion becomes an
@@ -1403,8 +1543,34 @@ class TestTheMouseRecords:
         monkeypatch.setattr(ffi, "_virtual_screen", lambda: (0, 0, 1920, 1200))
         with pytest.raises(ffi.ComputerUseUnsupported, match="partly delivered"):
             ffi.post_mouse_drag((1.0, 1.0), (2.0, 2.0), button="left")
-        assert len(batches) == 2
-        assert ffi.MOUSEEVENTF_LEFTUP in batches[1]
+        assert ffi.MOUSEEVENTF_LEFTUP in batches[-1]
+
+    def test_a_drag_PRESSES_and_RELEASES_at_the_callers_endpoints(self, monkeypatch) -> None:
+        """The path's own ends must not move the press or the release.
+
+        Those two points are what the confinement check authorized, and a release is
+        where a drop lands — so a path whose endpoints drifted by a float epsilon (or
+        a caller that passed a path with different ends) must not relocate either.
+        """
+        batches = self._spy(monkeypatch)
+        # A path deliberately disagreeing with the endpoints at BOTH ends.
+        ffi.post_mouse_drag(
+            (100.0, 100.0),
+            (400.0, 400.0),
+            button="left",
+            points=[(1.0, 1.0), (250.0, 250.0), (999.0, 999.0)],
+        )
+        flat = [rec for batch in batches for rec in batch]
+        aim = flat[0]
+        release_batch = batches[-1]
+        assert aim[1] & ffi.MOUSEEVENTF_MOVE
+        assert (aim[2], aim[3]) == ffi._normalized(100.0, 100.0)
+        assert release_batch[-1][1] == ffi.MOUSEEVENTF_LEFTUP
+        # The last MOVE is the caller's end point, not the path's 999,999 — and it is
+        # the one paired with the release, so the drop lands at the authorized point.
+        moves = [rec for rec in flat if rec[1] & ffi.MOUSEEVENTF_MOVE]
+        assert (moves[-1][2], moves[-1][3]) == ffi._normalized(400.0, 400.0)
+        assert (release_batch[0][2], release_batch[0][3]) == ffi._normalized(400.0, 400.0)
 
     def test_an_unknown_drag_button_RAISES(self, monkeypatch) -> None:
         self._spy(monkeypatch)

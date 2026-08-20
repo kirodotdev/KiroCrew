@@ -1,4 +1,4 @@
-"""The ten computer-use tools and the single in-gateway dispatch chokepoint.
+"""The eleven computer-use tools and the single in-gateway dispatch chokepoint.
 
 **Everything in this module runs in the GATEWAY process**, never in the stdio MCP
 sidecar. :mod:`kiro_crew.mcp_computer` is a thin shim that resolves the caller's
@@ -40,7 +40,14 @@ and capture work, and all audit happen here. That split is not stylistic:
    ``accessibility`` or ``app_post`` click never reaches it at all;
 5. **the always-on target policy (``policy.check_app``) — the real refusal.** The
    built-in denylist floor, which an operator's allow-list can narrow but never
-   widen. This is what stops the agent driving KiroCrew's own window;
+   widen. This is what stops the agent driving Kiro Crew's own window.
+   ``computer_launch_app`` is the one verb whose target is not resolved in step 2 —
+   it has no window yet, which is the point of it — so it runs the SAME
+   ``check_app`` inside its own branch, against an ``AppRef`` synthesized from the
+   requested name, BEFORE creating a process. It must be ``check_app`` and not the
+   built-in floor alone: the spawn is detached, so a refusal afterwards does not
+   un-launch anything, and calling only the floor exempted the operator's own
+   ``extra_denied_apps`` / ``allowed_apps`` from the only verb that starts programs;
 6. the deferred snapshot-freshness refusal (TTL / missing state);
 7. fingerprint drift verification against a fresh walk;
 8. the input-target policy (secure-field refusal + the sensitive-text scan);
@@ -101,9 +108,13 @@ from kiro_crew.computer_use.types import (
     CLICK_METHODS,
     DEFAULT_CLICK_COUNT,
     DEFAULT_CLICK_METHOD,
+    DEFAULT_DRAG_PATH,
+    DEFAULT_DRAG_STEPS,
     DEFAULT_MOUSE_BUTTON,
     DEFAULT_SCROLL_PAGES,
+    DRAG_PATHS,
     ERR_UNKNOWN_CLICK_METHOD,
+    ERR_UNKNOWN_DRAG_PATH,
     ERR_UNKNOWN_KEY,
     ERROR_PREFIX,
     GOVERNED_VALUE_PLACEHOLDER,
@@ -120,6 +131,7 @@ from kiro_crew.computer_use.types import (
     TOOL_DRAG,
     TOOL_END_TURN,
     TOOL_GET_STATE,
+    TOOL_LAUNCH_APP,
     TOOL_LIST_APPS,
     TOOL_PERFORM_ACTION,
     TOOL_PRESS_KEY,
@@ -132,6 +144,7 @@ from kiro_crew.computer_use.types import (
     DragRequest,
     ElementRec,
     KeyParseError,
+    LaunchIdentity,
     PolicyConfig,
     PolicyStateError,
     Snapshot,
@@ -170,6 +183,8 @@ ARG_FROM_X = "from_x"
 ARG_FROM_Y = "from_y"
 ARG_TO_X = "to_x"
 ARG_TO_Y = "to_y"
+ARG_DRAG_STEPS = "steps"
+ARG_DRAG_PATH = "path"
 
 # ── Result prose ──
 END_TURN_TEXT = "Released every cached window state. Call {tool} again before acting."
@@ -548,6 +563,75 @@ def _run(
         svc.end_turn(session_key=session_key)
         return END_TURN_TEXT.format(tool=TOOL_GET_STATE)
 
+    if tool_name == TOOL_LAUNCH_APP:
+        # (5) THE FULL TARGET POLICY, before the process is created — ``policy.check_app``
+        # and not just the built-in floor, because for the one verb that CREATES a
+        # process the pre-launch decision is the only one that can decide anything: the
+        # spawn is detached, so a refusal afterwards does not un-launch it.
+        #
+        # ``denied_rule_for`` is NOT sufficient here: it is the built-in denylist alone,
+        # so it exempts the operator's own two lists from the only verb that starts
+        # programs. Measured: with ``extra_denied_apps: ["outlook"]`` the floor answers
+        # None and Outlook launches, and with an ``allowed_apps`` allow-list every app
+        # outside it launches too. ``check_app`` refuses both on exactly the same
+        # ``AppRef``, which is why it is the function to call.
+        #
+        # The check is still WEAKER than a running app's, and the reason is inherent
+        # rather than a shortcut: ``check_app`` matches a bundle id, a process name and
+        # a window title, while a not-yet-running app has only the name the caller
+        # typed — so the synthesized ref repeats that name into all three fields. Every
+        # rule that matches on any of them therefore fires; a rule that could only
+        # match a resolved bundle id could not.
+        #
+        # **And this check alone is not sufficient, because a name RESOLVES.** A prefix
+        # query reaches a different application than the string checked here: an
+        # operator who denied ``notepad`` was bypassed by a request for ``note``, since
+        # no rule matches ``note`` and the resolver then returned Notepad. Verified end
+        # to end. So the same predicate is handed to the driver as ``permit`` and
+        # re-applied to every RESOLVED identity, still before any process exists — see
+        # ``backend.run_launch``. This early check is kept as well: it refuses the
+        # obvious case without touching the catalog at all.
+        requested = str(clean.get(ARG_APP) or "")
+        refusal = policy.check_app(_launch_probe(requested), cfg)
+        if refusal:
+            return _refusal(
+                refusal, session_key=session_key, agent=agent, app=app, tool_name=tool_name
+            )
+        text, launched = svc.launch_app(
+            requested,
+            permit=lambda who: _launch_refusal(who, cfg),
+            refuse_launched=lambda ref: policy.check_app(ref, cfg),
+        )
+        if launched is None:
+            # The process started but has no window yet, so there is nothing to
+            # snapshot. Reported as prose rather than as a failure — see the seam
+            # contract; a failure here is what makes a model launch a second copy.
+            return policy.redact_result(text)
+        # Audited with the identity the OS actually reported. ``_audit_allowed`` already
+        # ran upstream with no target (there was none yet), so without this the SEL row
+        # for the one process-creating verb would carry an empty ``resources`` field —
+        # the operator's record of what the agent did to their desktop is the whole
+        # point of the trail, and "a launch happened, of something" is not a record.
+        _audit_allowed(session_key, agent, tool_name, launched)
+        # No third ``check_app`` here: ``refuse_launched`` above already applied it to this
+        # exact ``AppRef``, inside the driver and before the launch reported success, so a
+        # denied window never reaches this line. Re-running it would be a second copy of the
+        # same decision — the kind that drifts.
+        #
+        # A fresh window has no cached indices, so without this the model's only
+        # possible next call is ``computer_get_state`` on the app it just launched.
+        # Snapshotting here turns "it opened" into "here is what you can click".
+        # Budgets come from config: this tool takes none of its own.
+        launch_req = service.snapshot_request()
+        body = _render_snapshot(
+            svc.snapshot(launched, launch_req, session_key=session_key),
+            launch_req,
+            session_key=session_key,
+            agent=agent,
+            app=app,
+        )
+        return f"{ACTION_RESULT_HEADER.format(detail=policy.redact_result(text))}\n{body}"
+
     if tool_name == TOOL_LIST_APPS:
         # Filtered through the SAME denylist every other verb passes. Listing is not
         # a harmless read: an ``AppRef`` carries the window TITLE, and a terminal can
@@ -801,11 +885,17 @@ def _build_click_request(clean: Mapping[str, Any]) -> "ClickRequest | str":
 def _build_drag_request(clean: Mapping[str, Any]) -> "DragRequest | str":
     """Resolve a validated ``computer_drag`` payload, or return a refusal string.
 
-    All four coordinates are schema-required, so the only shapes left to police are
-    the button and the method. ``auto`` resolves to ``app_post`` — the app-scoped
-    mouse path — because a drag is coordinate-only and ``resolve_click_method``'s
-    accessibility preference cannot apply; the same invariant holds as for a click:
-    **``auto`` never resolves to the pointer-moving method.**
+    All four coordinates are schema-required, so the shapes left to police are the
+    button, the method, and the path. ``auto`` resolves to ``app_post`` — the
+    app-scoped mouse path — because a drag is coordinate-only and
+    ``resolve_click_method``'s accessibility preference cannot apply; the same
+    invariant holds as for a click: **``auto`` never resolves to the pointer-moving
+    method.**
+
+    ``steps`` / ``path`` shape the motion. An unknown ``path`` is REFUSED rather than
+    defaulted to straight, for the reason ``check_mouse_button`` refuses an unknown
+    button: a substituted shape performs a different gesture than the one asked for,
+    and a straightened stroke is a wrong drawing rather than a slightly worse one.
     """
     button = str(clean.get(ARG_MOUSE_BUTTON) or DEFAULT_MOUSE_BUTTON)
     refusal = policy.check_mouse_button(button)
@@ -827,7 +917,18 @@ def _build_drag_request(clean: Mapping[str, Any]) -> "DragRequest | str":
         # caller did not ask for.
         return ERR_UNKNOWN_CLICK_METHOD.format(method=method)
     resolved = CLICK_METHOD_APP_POST if method == CLICK_METHOD_AUTO else method
-    return DragRequest(start=start, end=end, method=resolved, button=button)
+    shape = str(clean.get(ARG_DRAG_PATH) or DEFAULT_DRAG_PATH)
+    if shape not in DRAG_PATHS:
+        return ERR_UNKNOWN_DRAG_PATH.format(path=shape, supported=", ".join(DRAG_PATHS))
+    steps = _opt_int(clean, ARG_DRAG_STEPS)
+    return DragRequest(
+        start=start,
+        end=end,
+        method=resolved,
+        button=button,
+        steps=DEFAULT_DRAG_STEPS if steps is None else steps,
+        path=shape,
+    )
 
 
 def _opt_point(args: Mapping[str, Any], x_name: str, y_name: str) -> "tuple[float, float] | None":
@@ -852,6 +953,35 @@ def _opt_point(args: Mapping[str, Any], x_name: str, y_name: str) -> "tuple[floa
 
 
 # ── Response shaping ──
+
+
+def _launch_probe(name: str) -> AppRef:
+    """An :class:`AppRef` standing in for an app that is not running yet.
+
+    ``policy.check_app`` matches a bundle id, a process name and a window title, and a
+    not-yet-launched application has only a NAME — so the name is repeated into all
+    three fields. Every rule that matches on any of them therefore fires; a rule that
+    could only match a resolved bundle id cannot, which is the residue the post-launch
+    re-check covers.
+
+    One function rather than two literals because it is built for the caller's raw
+    string and again for each RESOLVED identity, and those have to describe the target
+    identically. If they diverged, a rule could fire on one and not the other, which is
+    exactly the prefix-alias bypass the second check exists to close.
+    """
+    return AppRef(name=name, pid=0, bundle_id=name, window_title=name)
+
+
+def _launch_refusal(who: LaunchIdentity, cfg: PolicyConfig) -> str | None:
+    """Refuse a RESOLVED launch target, or ``None`` to allow it.
+
+    Handed to the driver as ``permit`` so it runs where the resolved identity is known
+    and before any process exists. The reason it takes a :class:`LaunchIdentity` rather
+    than a name is that the resolution produces two spellings and the policy must see
+    both — see :meth:`LaunchIdentity.as_app_ref`, which puts each in the field
+    ``check_app`` reads it from.
+    """
+    return policy.check_app(who.as_app_ref(), cfg)
 
 
 def _refusal(

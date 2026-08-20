@@ -30,23 +30,38 @@ from __future__ import annotations
 import abc
 import logging
 import threading
+import time
 from typing import Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.computer_use import index
 from kiro_crew.computer_use.types import (
+    ERR_LAUNCH_ALREADY_RUNNING,
+    ERR_LAUNCH_AMBIGUOUS,
+    ERR_LAUNCH_FAILED,
+    ERR_LAUNCH_NOT_INSTALLED,
+    ERR_LAUNCH_NOT_INSTALLED_NEAR,
+    LAUNCH_POLL_INTERVAL_SECS,
+    LAUNCH_RESULT,
+    LAUNCH_RESULT_NO_WINDOW,
+    LAUNCH_WINDOW_TIMEOUT_SECS,
     PERMISSION_UNSUPPORTED,
     PLATFORM_LINUX,
     PLATFORM_MACOS,
     PLATFORM_UNSUPPORTED,
     PLATFORM_WINDOWS,
     REFUSAL_UNSUPPORTED,
+    TOOL_GET_STATE,
+    TOOL_LIST_APPS,
+    AmbiguousLaunchTarget,
     AppRef,
     BackendStatus,
     ClickRequest,
     DragRequest,
     DriverResult,
     ElementRec,
+    LaunchIdentity,
+    NoSuchLaunchTarget,
     PermissionProbe,
     Snapshot,
     SnapshotRequest,
@@ -128,6 +143,47 @@ class ComputerUseBackend(abc.ABC):
         MUST resolve from the on-screen window list, never from a process-name
         search: a ``pgrep``-style match returns short-lived helper processes
         whose accessibility trees are empty.
+        """
+
+    @abc.abstractmethod
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        """Start the installed application *query* names, so it HAS a window.
+
+        *permit* is the caller's policy predicate, and an implementation MUST apply it
+        to the RESOLVED :class:`LaunchIdentity` before spawning — with every identifier
+        the resolution produced, not only the display name. The caller cannot do this
+        itself: it has only the raw query, which a prefix resolves away from, and which
+        carries none of the spellings (executable key, bundle id) an operator's deny
+        rule is written against.
+
+        The one method here that creates a process rather than observing or driving
+        one, which puts three requirements on every implementation:
+
+        * **Resolve through an OS-owned catalog, and refuse a path.** *query* is a
+          NAME, never a filesystem path, argument vector or URL. Accepting any of
+          those would make this "run an arbitrary program with attacker-chosen
+          input" rather than "open an application" — and because computer use is
+          deliberately not governance-gated, that program would also bypass the
+          ``BUILTIN_DENIED_RULES`` floor every ``bash`` call passes.
+        * **Verify what the catalog returned.** A catalog can be agent-writable (on
+          Windows, ``HKCU``'s ``App Paths`` and the per-user Start Menu both are), so
+          the implementation must bound the RESOLVED executable rather than trusting
+          the lookup. See :mod:`launch_windows` for the measurements and the
+          protected-root check they produced.
+        * **Confirm by finding the WINDOW, not by the launcher's exit status.** A
+          packaged-app launcher exits immediately and hands off; a launch that
+          reported the launcher's own result would call a successful start a failure.
+
+        Returns ``ok=True`` with the resolved :class:`AppRef` once a window exists,
+        and ``ok=True`` WITHOUT one when the process started but showed nothing
+        within the timeout — the process really did start, so reporting failure would
+        invite the model to launch a second copy.
         """
 
     @abc.abstractmethod
@@ -238,6 +294,15 @@ class UnsupportedBackend(ComputerUseBackend):
     def resolve_app(self, query: str) -> DriverResult:
         return self._refuse()
 
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        return self._refuse()
+
     def snapshot(self, app: AppRef, req: SnapshotRequest) -> DriverResult:
         return self._refuse()
 
@@ -269,6 +334,192 @@ class UnsupportedBackend(ComputerUseBackend):
 
     def close(self) -> None:
         """Nothing to release."""
+
+
+def await_launched_window(
+    find: "Callable[[], AppRef | None]",
+    *,
+    timeout: float = LAUNCH_WINDOW_TIMEOUT_SECS,
+    interval: float = LAUNCH_POLL_INTERVAL_SECS,
+) -> "tuple[AppRef | None, float]":
+    """Poll *find* until it reports a window. Returns ``(app_or_None, secs_waited)``.
+
+    Lives at the seam rather than in either ``apps_*`` module because it is the
+    ``launch_app`` contract's third requirement — *confirm by finding the window, not
+    by the launcher's exit status* — and that requirement is identical on both
+    platforms while the finder is not. Written twice it would drift; a driver would
+    end up with a different timeout from the one the contract documents.
+
+    Why polling at all, rather than reading the spawned process's result: a launcher
+    exits before the application it started has a window. Measured on Windows,
+    ``explorer.exe`` returned ``rc=1`` after 2.9s while MS Paint's window appeared at
+    9.9s; ``/usr/bin/open`` on macOS returns as soon as LaunchServices accepts the
+    request. Either exit status read as the outcome would report a successful cold
+    start as a failure.
+
+    ``time.monotonic``, never wall clock, so a clock adjustment during a slow cold
+    start can neither end the wait early nor extend it indefinitely.
+
+    The elapsed time is RETURNED rather than logged because it belongs in the result
+    the model reads: a 10s launch and a 0.3s one are the same outcome but very
+    different information about what the machine is doing.
+    """
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        found = find()
+        if found is not None:
+            return found, time.monotonic() - started
+        if time.monotonic() >= deadline:
+            return None, time.monotonic() - started
+        time.sleep(interval)
+
+
+def run_launch(
+    query: str,
+    *,
+    resolve: "Callable[[str], tuple[str, str]]",
+    find: "Callable[[str], AppRef | None]",
+    spawn: "Callable[[str], None]",
+    permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+    identity: "Callable[[str, str], LaunchIdentity] | None" = None,
+    refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+) -> DriverResult:
+    """The whole ``launch_app`` flow, once, for every platform to reuse.
+
+    The flow — resolve, refuse, check already-running, spawn, await the window — is
+    identical on both platforms; only the three injected functions differ (which catalog
+    resolves a name, which enumeration finds a window, which launcher starts a process).
+    Written per driver it was ~45 duplicated lines, and the drift that invites is not
+    hypothetical: each of the four refusals below encodes a decision (near-miss
+    suggestions, already-running rather than a second copy, no-window as a SUCCESS) that
+    has to hold on both platforms or the model learns a different contract depending on
+    the OS it is running under. That is the same reason
+    :func:`await_launched_window` lives here rather than in either ``apps_*`` module.
+
+    *resolve* raises :class:`NoSuchLaunchTarget` or :class:`AmbiguousLaunchTarget`; both
+    are caught here so the refusal prose is composed in exactly one place. Every other
+    exception propagates to the driver's own ``_guarded`` seam, which is what keeps the
+    "no exception crosses the seam" contract a driver-level guarantee rather than
+    something this function has to re-implement.
+
+    *identity* names the resolved target for *permit*, given the resolved
+    ``(target, display_name)``. A platform supplies it to add the identifiers the OS
+    will report once the process exists — the executable key, the bundle id — because
+    those are what an operator's deny rule is written against and the display name
+    alone matches neither. Omitting it checks the display name only, which is what a
+    platform with no second spelling should do.
+
+    *refuse_launched* is the same policy applied to the ``AppRef`` the window list reports
+    once a window exists, and it is a SEPARATE parameter from *permit* because it takes a
+    different argument: a real ``AppRef``, whose ``window_title`` is the only place a
+    packaged app's name appears. See the comment at the call site for why that cannot be
+    folded into the pre-spawn check.
+    """
+    try:
+        target, name = resolve(query)
+    except AmbiguousLaunchTarget as exc:
+        return DriverResult(
+            ok=False,
+            text=ERR_LAUNCH_AMBIGUOUS.format(query=query, count=exc.count, names=exc.names),
+        )
+    except NoSuchLaunchTarget as exc:
+        # Near misses turn a dead end into a recoverable refusal: resolution is
+        # prefix-only, so a model that typed a fragment of a real name needs to be told
+        # the real one rather than left to invent a path — the one retry that can never
+        # be served.
+        if exc.near:
+            return DriverResult(
+                ok=False, text=ERR_LAUNCH_NOT_INSTALLED_NEAR.format(query=query, near=exc.near)
+            )
+        return DriverResult(
+            ok=False, text=ERR_LAUNCH_NOT_INSTALLED.format(query=query, tool=TOOL_LIST_APPS)
+        )
+
+    # THE POLICY RE-CHECK, on EVERY resolved identity and before any process exists.
+    #
+    # The dispatcher already checked the caller's raw string, and that is not enough for
+    # two independent reasons — both measured, both ending with a denied application
+    # running:
+    #
+    # * a prefix resolves, so an operator who denied ``notepad`` is bypassed by a request
+    #   for ``note``: the raw-name check sees a string no rule matches, and the resolver
+    #   then returns the denied application;
+    # * the identifiers differ. A launch is requested by DISPLAY name (``notepad``) while
+    #   every other computer-use refusal names the OS identity (``notepad.exe``), so that
+    #   is the spelling an operator's ``extra_denied_apps`` entry naturally carries — and
+    #   a check that knows only the display name matches neither it nor a bundle-id rule.
+    #
+    # Re-checking here rather than tightening the resolver is deliberate: prefix matching
+    # is what makes the verb usable ("paint" for "mspaint"), and the defect is not that
+    # a prefix resolves — it is that the policy was evaluated against a different string
+    # from the one that got launched. So the check moves to where the resolved identity is
+    # known, and is applied to ALL of its spellings, which is also the last point before
+    # ``spawn``. A detached spawn cannot be undone, so this must precede it.
+    if permit is not None:
+        who = identity(target, name) if identity is not None else LaunchIdentity(display=name)
+        refusal = permit(who)
+        if refusal:
+            return DriverResult(ok=False, text=refusal)
+
+    existing = find(name)
+    if existing is not None:
+        # Refused rather than re-launched: a second copy of an editor is a second
+        # unsaved document, and the model's actual goal — a window to drive — is
+        # already met, so the useful reply names the window and points at the reader.
+        return DriverResult(
+            ok=False,
+            text=ERR_LAUNCH_ALREADY_RUNNING.format(
+                app=name, title=existing.window_title, tool=TOOL_GET_STATE
+            ),
+        )
+
+    try:
+        spawn(target)
+    except OSError as exc:
+        return DriverResult(
+            ok=False, text=ERR_LAUNCH_FAILED.format(app=name, detail=exc.strerror or exc)
+        )
+
+    appeared, waited = await_launched_window(lambda: find(name))
+    if appeared is None:
+        # A SUCCESS with a caveat, not a failure. The process did start; reporting
+        # failure is what makes a model launch again, and the second attempt is what
+        # produces two copies of the application.
+        return DriverResult(
+            ok=True, text=LAUNCH_RESULT_NO_WINDOW.format(app=name, secs=waited, tool=TOOL_LIST_APPS)
+        )
+    # The THIRD check, on the identity the OS actually published, and the one that covers
+    # what the pre-spawn check structurally cannot: the WINDOW TITLE.
+    #
+    # A packaged app is named by its title and by nothing the catalog knows. Sometimes the
+    # title IS the identity — ``apps_windows`` publishes it as both name and bundle id for a
+    # window fronted by ``ApplicationFrameHost``, because the broker's image name identifies
+    # no application — and sometimes it is only ``window_title`` (measured: Snipping Tool
+    # reports its own ``SnippingTool.exe`` and carries "Snipping Tool" as the title alone).
+    # Either way the title does not exist until a window does: before the spawn the catalog
+    # offers ``SnippingTool.exe`` and nothing else, so an operator's ``Snipping Tool`` rule
+    # matches no pre-spawn identity.
+    #
+    # ``appeared`` is passed WHOLE rather than rebuilt from two of its fields, so the title
+    # rule — which is a substring test on ``window_title``, and the reason
+    # ``policy.denied_rule_for`` reads that field at all — sees what it needs. Rebuilding
+    # dropped it and the refusal did not fire on a real host.
+    #
+    # This cannot prevent the process starting, and does not claim to. What it prevents is
+    # the launch REPORTING success: the driver returns a refusal instead of an ``AppRef``, so
+    # nothing downstream snapshots or drives the window, and every later verb re-resolves the
+    # same title and refuses too. The residual — a denied packaged app can be made to start
+    # once, then does nothing — is stated in the spec.
+    if refuse_launched is not None:
+        refusal = refuse_launched(appeared)
+        if refusal:
+            return DriverResult(ok=False, text=refusal)
+    return DriverResult(
+        ok=True,
+        app=appeared,
+        text=LAUNCH_RESULT.format(app=name, title=appeared.window_title, secs=waited),
+    )
 
 
 def unsupported_snapshot(app: AppRef) -> Snapshot:

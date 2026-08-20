@@ -76,11 +76,13 @@ from typing import Any, Callable
 from kiro_crew.computer_use import (
     apps_windows,
     capture_windows,
+    cursor_motion,
     keymap,
+    launch_windows,
     snapshot_windows,
     windows_ffi,
 )
-from kiro_crew.computer_use.backend import ComputerUseBackend
+from kiro_crew.computer_use.backend import ComputerUseBackend, run_launch
 from kiro_crew.computer_use.types import (
     CLICK_METHOD_ACCESSIBILITY,
     CLICK_METHOD_APP_POST,
@@ -88,6 +90,7 @@ from kiro_crew.computer_use.types import (
     CLICK_METHOD_GLOBAL,
     CLICK_METHOD_SKY_CLICK,
     DEFAULT_TEXT_LIMIT,
+    DRAG_SHAPE_NOTE,
     ERR_POINT_REQUIRED,
     ERR_UNKNOWN_CLICK_METHOD,
     MAX_TREE_DEPTH_LIMIT,
@@ -110,6 +113,7 @@ from kiro_crew.computer_use.types import (
     DragRequest,
     DriverResult,
     ElementRec,
+    LaunchIdentity,
     PermissionProbe,
     SnapshotRequest,
 )
@@ -324,6 +328,37 @@ class WindowsBackend(ComputerUseBackend):
             return DriverResult(ok=True, app=apps_windows.resolve_app(query))
 
         return _guarded("resolve_app", run)
+
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        """Start an installed application, then wait for its window to appear.
+
+        The flow is :func:`backend.run_launch` — shared with macOS, because the four
+        refusals it encodes (near-miss suggestions, already-running rather than a second
+        copy, no-window as a success) have to hold identically or the model learns a
+        different contract per OS. What is Windows-specific is only WHICH functions it
+        is handed: :mod:`launch_windows` resolves the catalog and verifies the target
+        (see that module for the measurements), and ``find_window_for`` answers from the
+        same on-screen window list every other verb resolves through.
+        """
+
+        def run() -> DriverResult:
+            return run_launch(
+                query,
+                resolve=launch_windows.resolve_target,
+                find=apps_windows.find_window_for,
+                spawn=launch_windows.spawn_detached,
+                permit=permit,
+                identity=launch_windows.target_identity,
+                refuse_launched=refuse_launched,
+            )
+
+        return _guarded("launch_app", run)
 
     def snapshot(self, app: AppRef, req: SnapshotRequest) -> DriverResult:
         def run() -> DriverResult:
@@ -590,16 +625,23 @@ class WindowsBackend(ComputerUseBackend):
         ``moves_pointer`` a true statement about what actually happens, which is what
         every gate upstream reads.
 
-        BOTH endpoints are then confined, not just the start: a sweep that begins
-        inside the authorized window and ends over a denied app would otherwise
-        RELEASE the button there, which is where a drop lands.
+        **EVERY point of the path is confined, not just the endpoints.** The endpoints
+        alone were sufficient while a drag was a straight two-point gesture, because a
+        chord between two points inside one rectangle stays inside it. A ``curved``
+        path does not: its arc bows AWAY from the chord (up to 110px, see
+        ``types.CURVE_AMOUNT_MAX``), so a stroke between two authorized points near an
+        edge can bow out over the window beside it — and a pointer travelling with the
+        button held across another application is a drag through that application.
+        Confining the whole path is what keeps "a drag stays inside the authorized
+        window" true for the shape that made it false.
         """
 
         def run() -> DriverResult:
             if req.method != CLICK_METHOD_GLOBAL:
                 return DriverResult(ok=False, text=_REFUSE_DRAG_METHOD.format(method=req.method))
+            points = cursor_motion.drag_points(req.start, req.end, steps=req.steps, path=req.path)
             with windows_ffi.dpi_awareness_scope():
-                for point in (req.start, req.end):
+                for point in points:
                     if not apps_windows.hwnd_owns_point(app, point[0], point[1]):
                         return DriverResult(
                             ok=False,
@@ -609,12 +651,16 @@ class WindowsBackend(ComputerUseBackend):
                                 y=int(point[1]),
                             ),
                         )
-                windows_ffi.post_mouse_drag(req.start, req.end, button=req.button)
+                windows_ffi.post_mouse_drag(req.start, req.end, button=req.button, points=points)
+            shape = (
+                "" if len(points) <= 2 else DRAG_SHAPE_NOTE.format(count=len(points), path=req.path)
+            )
             return DriverResult(
                 ok=True,
                 text=(
                     f"dragged from ({int(req.start[0])}, {int(req.start[1])}) to "
-                    f"({int(req.end[0])}, {int(req.end[1])}) — the real cursor moved"
+                    f"({int(req.end[0])}, {int(req.end[1])}){shape} — the real cursor "
+                    "moved"
                 ),
                 app=app,
             )

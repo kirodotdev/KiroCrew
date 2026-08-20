@@ -491,7 +491,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 |--------|---------|-------|
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
-| `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
+| `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
 | `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_move_session` |
 
 CLI commands and their MCP twins:
@@ -710,11 +710,11 @@ a half-registered server fails the suite rather than shipping.
 ### The one deliberate exception
 
 `kirocrew computer call <tool>` has **no MCP twin, on purpose.** It is not a
-capability; it is a human debug and repro harness that runs the ten existing
+capability; it is a human debug and repro harness that runs the eleven existing
 `computer_*` tools through the same gated chokepoint (optionally a JSON array of
 them in one process, so `element_index` values stay resolvable across calls). The
 MCP-first rule exists so the model gets a structured tool instead of shelling
-out, and the model already has all ten. A tool that runs other tools would let a
+out, and the model already has all eleven. A tool that runs other tools would let a
 model launder one per-call gate decision into many, so do NOT add
 `computer_call`.
 

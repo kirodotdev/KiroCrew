@@ -1715,6 +1715,46 @@ def post_mouse_click(
             time.sleep(CLICK_PAIR_DELAY_SECS)
 
 
+def _drag_plan(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    down_type: int,
+    up_type: int,
+    dragged_type: int,
+    steps: int,
+    points: "Sequence[tuple[float, float]] | None",
+) -> "list[tuple[int, float, float]]":
+    """The event plan both drag functions post: down, the motion, up.
+
+    Shared so the two paths cannot disagree about the shape of a gesture — the only
+    thing that differs between them is WHERE each event is delivered, and a plan
+    built twice is a plan that drifts.
+
+    *points* is a caller-supplied path INCLUDING both endpoints (from
+    ``cursor_motion.drag_points``); when it is ``None`` the endpoints are interpolated
+    into *steps* straight segments, which is what a slider sweep or a range
+    selection wants.
+
+    The endpoints come from *start* and *end* rather than from the path's own ends:
+    those two points are what the confinement check authorized for the press and the
+    release, and a release lands a drop.
+    """
+    x0, y0 = float(start[0]), float(start[1])
+    x1, y1 = float(end[0]), float(end[1])
+    if points:
+        motion = [(float(px), float(py)) for px, py in points[1:-1]]
+    else:
+        total = max(1, int(steps))
+        motion = [
+            (x0 + (x1 - x0) * (index / total), y0 + (y1 - y0) * (index / total))
+            for index in range(1, total)
+        ]
+    plan: list[tuple[int, float, float]] = [(down_type, x0, y0)]
+    plan.extend((dragged_type, px, py) for px, py in motion)
+    plan.append((up_type, x1, y1))
+    return plan
+
+
 def post_mouse_drag(
     pid: int,
     start: tuple[float, float],
@@ -1722,29 +1762,28 @@ def post_mouse_drag(
     *,
     button: str = MOUSE_BUTTON_LEFT,
     steps: int = DRAG_STEPS,
+    points: "Sequence[tuple[float, float]] | None" = None,
 ) -> None:
     """Drag from *start* to *end* inside *pid*. **The pointer does NOT move.**
 
-    Down at the start, :data:`DRAG_STEPS` interpolated ``MouseDragged`` events, up
-    at the end — all app-targeted. The intermediate events are NOT padding: a bare
-    down/up pair is not a drag to most applications, because the gesture is
-    recognized from the motion between the endpoints (a canvas records two
-    isolated points and a text view selects nothing). Verified against TextEdit,
-    which needed the interpolation before it registered a selection.
+    Down at the start, interpolated ``MouseDragged`` events, up at the end — all
+    app-targeted. The intermediate events are NOT padding: a bare down/up pair is
+    not a drag to most applications, because the gesture is recognized from the
+    motion between the endpoints (a canvas records two isolated points and a text
+    view selects nothing). Verified against TextEdit, which needed the interpolation
+    before it registered a selection.
 
-    The per-step sleep matters for the same reason: identical timestamps let
-    AppKit's recognizer coalesce the whole sequence into one motion.
+    *points* supplies the whole path when the caller wants a specific SHAPE (a curved
+    stroke); otherwise :data:`DRAG_STEPS` straight segments are interpolated, which is
+    what a slider sweep and a range selection need.
+
+    The per-step sleep matters for the same reason the intermediate events do:
+    identical timestamps let AppKit's recognizer coalesce the whole sequence into one
+    motion.
     """
     libs = _frameworks()
     button_number, down_type, up_type, dragged_type = mouse_button_codes(button)
-    x0, y0 = float(start[0]), float(start[1])
-    x1, y1 = float(end[0]), float(end[1])
-    total = max(1, int(steps))
-    plan: list[tuple[int, float, float]] = [(down_type, x0, y0)]
-    for index in range(1, total):
-        ratio = index / total
-        plan.append((dragged_type, x0 + (x1 - x0) * ratio, y0 + (y1 - y0) * ratio))
-    plan.append((up_type, x1, y1))
+    plan = _drag_plan(start, end, down_type, up_type, dragged_type, steps, points)
     for event_type, px, py in plan:
         event = _mouse_event(libs, event_type, px, py, button_number)
         if event is None:
@@ -1814,26 +1853,20 @@ def post_mouse_drag_global(
     *,
     button: str = MOUSE_BUTTON_LEFT,
     steps: int = DRAG_STEPS,
+    points: "Sequence[tuple[float, float]] | None" = None,
 ) -> None:
     """MOVE THE OPERATOR'S REAL POINTER along a drag from *start* to *end*.
 
     The pointer-moving counterpart of :func:`post_mouse_drag`, subject to the
-    identical two permits (see :func:`post_mouse_global`). The cursor is warped
-    before EVERY event, not only the first: a global drag is only coherent if the
-    physical cursor tracks the synthesized motion, and warping once would leave
-    the OS delivering the intermediate events to whatever sat under the start
-    point.
+    identical two permits (see :func:`post_mouse_global`) and taking the same
+    optional *points* path. The cursor is warped before EVERY event, not only the
+    first: a global drag is only coherent if the physical cursor tracks the
+    synthesized motion, and warping once would leave the OS delivering the
+    intermediate events to whatever sat under the start point.
     """
     libs = _frameworks()
     button_number, down_type, up_type, dragged_type = mouse_button_codes(button)
-    x0, y0 = float(start[0]), float(start[1])
-    x1, y1 = float(end[0]), float(end[1])
-    total = max(1, int(steps))
-    plan: list[tuple[int, float, float]] = [(down_type, x0, y0)]
-    for index in range(1, total):
-        ratio = index / total
-        plan.append((dragged_type, x0 + (x1 - x0) * ratio, y0 + (y1 - y0) * ratio))
-    plan.append((up_type, x1, y1))
+    plan = _drag_plan(start, end, down_type, up_type, dragged_type, steps, points)
     for event_type, px, py in plan:
         libs.cg.CGWarpMouseCursorPosition(CGPoint(px, py))
         event = _mouse_event(libs, event_type, px, py, button_number)

@@ -2651,6 +2651,16 @@ _CU_OPTIONAL_ELEMENT_FIELD = FieldSpec(
 )
 _CU_CLICK_METHODS = frozenset(_cu_types.CLICK_METHODS)
 _CU_MOUSE_BUTTONS = frozenset(_cu_types.MOUSE_BUTTONS)
+_CU_DRAG_PATHS = frozenset(_cu_types.DRAG_PATHS)
+# ``computer_launch_app``'s target is a NAME, and this field is where that is
+# enforced on the wire. Deliberately the same bounded single-line string shape as
+# ``app`` — there is no path field and no argument field, because a launch that
+# accepted either would be "run an arbitrary program with attacker-chosen input"
+# rather than "open an application". The drivers narrow it much further (a resolved
+# executable must sit under a protected install root); this is only the outer bound.
+_CU_LAUNCH_APP_FIELD = FieldSpec(
+    "app", str, required=True, max_len=_cu_types.MAX_LAUNCH_QUERY_LEN
+)
 
 
 def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
@@ -2691,6 +2701,16 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
     _cu_types.TOOL_LIST_APPS: ToolSchema(tool_name=_cu_types.TOOL_LIST_APPS, fields=[]),
+    _cu_types.TOOL_LAUNCH_APP: ToolSchema(
+        tool_name=_cu_types.TOOL_LAUNCH_APP,
+        # ONE field, and the absence of the others is the point. No ``path``, no
+        # ``args``, no ``url``: the target is a name resolved against the OS's own
+        # catalog of installed applications, and each of those fields would turn this
+        # into a way to run an arbitrary program with attacker-chosen input — which,
+        # because computer use is deliberately not governance-gated, would also skip
+        # the ``BUILTIN_DENIED_RULES`` floor every ``bash`` call passes.
+        fields=[_CU_LAUNCH_APP_FIELD],
+    ),
     _cu_types.TOOL_GET_STATE: ToolSchema(
         tool_name=_cu_types.TOOL_GET_STATE,
         fields=[
@@ -2743,6 +2763,17 @@ MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {
             # for a drag — enumerating a smaller set here would put the same rule
             # in two places and let them drift.
             FieldSpec("click_method", str, max_len=16, allowed=_CU_CLICK_METHODS),
+            # The PATH shape. ``steps`` has no default here: absent means the
+            # dispatcher's ``DEFAULT_DRAG_STEPS`` (the two-point form), and putting a
+            # default in the schema as well would make one of the two authoritative
+            # by accident.
+            FieldSpec(
+                "steps",
+                int,
+                min_val=_cu_types.MIN_DRAG_STEPS,
+                max_val=_cu_types.MAX_DRAG_STEPS,
+            ),
+            FieldSpec("path", str, max_len=16, allowed=_CU_DRAG_PATHS),
         ],
     ),
     _cu_types.TOOL_TYPE_TEXT: ToolSchema(
