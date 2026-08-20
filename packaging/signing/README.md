@@ -27,6 +27,14 @@ trigger macOS Gatekeeper warnings).
   DMG layout template with the signed/stapled app, then shrinks and recompresses
   the image before the DMG signing and notarization stages.
 
+  The mounted-volume phase races Spotlight and XProtect, which start reading
+  the freshly-copied app and can hold the volume against ejection ("Resource
+  busy") — the same transient class electron-builder retries on. The script
+  layers its defenses: `-nobrowse` keeps the volume out of Finder, and the
+  eject gets bounded retries with a synced force fallback. hdiutil calls run without `-quiet`, because
+  that flag suppresses stderr too and previously reduced failures of this
+  script to bare exit codes.
+
   The branded background is a **volume-bound alias recorded inside `.DS_Store`**,
   which is why the image is reused rather than rebuilt from a folder: recreating
   it drops the layout. The script fingerprints the template's `.DS_Store` before

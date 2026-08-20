@@ -31,14 +31,47 @@ read_write_image="$scratch_dir/layout-rw.dmg"
 mounted=0
 cleanup() {
   if [ "$mounted" -eq 1 ]; then
-    hdiutil detach "$mount_dir" -force -quiet >/dev/null 2>&1 || true
+    hdiutil detach "$mount_dir" -force >/dev/null 2>&1 || true
   fi
   rm -rf -- "$scratch_dir"
 }
 trap cleanup EXIT
 
+# Spotlight (mds) and XProtect race this script: the moment the app bundle
+# lands on the mounted volume they start reading it, and a volume with open
+# files refuses to eject ("Resource busy"). Whether the eject wins is purely
+# load-dependent -- the step has failed nightly runs on exactly this race.
+# Ejecting on a multitasking OS is inherently cooperative, so the mitigation
+# is layered rather than absolute: keep the volume out of Finder (-nobrowse
+# at both attach sites) and give the eject bounded retries with a force
+# fallback. electron-builder classifies hdiutil's "Resource busy" as
+# transient-retry for the same reason.
+detach_mount() {
+  # Flush first so a force-detach on the final attempt cannot lose writes.
+  # Force is acceptable here because every write we issued has completed and
+  # synced, and the resize/convert/verification stages that follow re-read the
+  # image and fail loudly on a damaged filesystem.
+  sync
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if hdiutil detach "$mount_dir"; then
+      mounted=0
+      return 0
+    fi
+    echo "WARN: detach of $mount_dir failed (attempt ${attempt}/5); retrying" >&2
+    sleep $((attempt * 3))
+  done
+  echo "WARN: detach still busy after 5 attempts; forcing" >&2
+  hdiutil detach "$mount_dir" -force
+  mounted=0
+}
+
 mkdir -p "$mount_dir" "$(dirname "$output_path")"
-hdiutil convert "$template_path" -format UDRW -o "$read_write_image" -quiet
+# hdiutil's -quiet is NOT used anywhere on this path: unlike most tools' quiet
+# flags it closes stderr as well as stdout, which turned three nightly failures
+# of this script into zero-diagnostic exits. Progress spew goes to stdout, so
+# redirecting stdout alone keeps the log clean while errors still surface.
+hdiutil convert "$template_path" -format UDRW -o "$read_write_image" >/dev/null
 
 # Code signatures and staple tickets make the final app slightly larger than
 # its unsigned template. Add 256 MiB of temporary workspace, then shrink the
@@ -65,10 +98,10 @@ expanded_sectors=$((current_sectors + 524288))
 if [ "$expanded_sectors" -gt "$maximum_sectors" ]; then
   expanded_sectors="$maximum_sectors"
 fi
-hdiutil resize -sectors "$expanded_sectors" "$read_write_image" -quiet
+hdiutil resize -sectors "$expanded_sectors" "$read_write_image" >/dev/null
 
-hdiutil attach -readwrite -noverify -noautoopen \
-  -mountpoint "$mount_dir" "$read_write_image" -quiet
+hdiutil attach -readwrite -noverify -noautoopen -nobrowse \
+  -mountpoint "$mount_dir" "$read_write_image" >/dev/null
 mounted=1
 
 # The background is a volume-bound alias recorded INSIDE .DS_Store, so that file
@@ -97,10 +130,9 @@ fi
 rm -rf -- "${template_apps[0]}"
 /usr/bin/ditto "$app_path" "$mount_dir/$(basename "$app_path")"
 
-hdiutil detach "$mount_dir" -quiet
-mounted=0
-hdiutil resize -size min "$read_write_image" -quiet
-hdiutil convert "$read_write_image" -format UDZO -o "$output_path" -ov -quiet
+detach_mount
+hdiutil resize -size min "$read_write_image" >/dev/null
+hdiutil convert "$read_write_image" -format UDZO -o "$output_path" -ov >/dev/null
 
 # The whole point of reusing the template is that Finder's background survives as
 # a volume-bound alias in .DS_Store. That survival is not guaranteed by anything
@@ -116,8 +148,8 @@ hdiutil convert "$read_write_image" -format UDZO -o "$output_path" -ov -quiet
 # available on a runner re-renders the window, so the definitive check is the
 # first real signing run -- see README.md, which also names the plan-B that
 # removes this question entirely.
-hdiutil attach -readonly -noverify -noautoopen \
-  -mountpoint "$mount_dir" "$output_path" -quiet
+hdiutil attach -readonly -noverify -noautoopen -nobrowse \
+  -mountpoint "$mount_dir" "$output_path" >/dev/null
 mounted=1
 missing=()
 [ -f "$mount_dir/.DS_Store" ] || missing+=(".DS_Store (Finder icon placement)")
@@ -137,6 +169,5 @@ if [ "$final_layout_digest" != "$template_layout_digest" ]; then
   echo "       shipping .DS_Store: $final_layout_digest" >&2
   exit 1
 fi
-hdiutil detach "$mount_dir" -quiet
-mounted=0
+detach_mount
 echo "Branded layout verified on $output_path (layout record $template_layout_digest)"
