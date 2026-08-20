@@ -417,7 +417,19 @@ def _build_recorder() -> _Build:
             # and ungated, so this log is the only record that metrics began
             # leaving the machine.
             logger.info("telemetry OTLP export active; metrics leave this machine")
-        return _Build(MetricsRecorder(provider.get_meter(_SCOPE)), provider, consent)
+        meter = provider.get_meter(_SCOPE)
+        # Process-resource gauges (threads/fds/gc/rss/cpu) ride the same consent
+        # gate: registered only on this live path, and their observable
+        # callbacks run solely when a reader collects. Best-effort — a failure
+        # (including an import failure in a broken install) loses these gauges,
+        # never telemetry as a whole, so it must not reach the outer except.
+        try:
+            from kiro_crew.metrics.process_gauges import register_process_gauges
+
+            register_process_gauges(meter)
+        except Exception:
+            logger.warning("process gauges unavailable", exc_info=True)
+        return _Build(MetricsRecorder(meter), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: with

@@ -11,7 +11,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
-import { compareText, fmtDateNumeric, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
+import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 // ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
 type Stat = {
@@ -73,6 +73,10 @@ type Other = {
   other_generations?: number
   total_count?: number
   total?: number
+  // Present on gauge instruments only: the newest point-in-time sample.
+  // Summing a gauge across export cycles would misreport process state, so
+  // the API keeps the latest value and the panel must read THIS field.
+  latest?: number
   by_attr?: Record<string, number>
   // Per-attribute sub-histograms, present only for the attribute keys the
   // backend splits on (_OTHER_SPLIT_ATTRS). Keyed "attr=value", e.g. "warm=false".
@@ -1026,7 +1030,15 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
   const hist = other
     .filter(o => o.p50_ms != null && o.max_ms != null)
     .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
-  const counters = other.filter(o => o.p50_ms == null)
+  // Gauges are point-in-time readings (thread count, RSS): their number is
+  // `latest`, and folding them under Counters would render the one field a
+  // gauge never carries.
+  // A raw 4,402,341,888 forces the reader to count digits to learn it is
+  // ~4.4 GB; byte-unit gauges get human units (exact value stays in `title`).
+  const fmtGaugeValue = (name: string, v: number): string =>
+    name.endsWith('_bytes') ? fmtBytes(v) : fmtNumber(v)
+  const gauges = other.filter(o => o.p50_ms == null && o.kind === 'gauge')
+  const counters = other.filter(o => o.p50_ms == null && o.kind !== 'gauge')
 
   return (
     <Card className="mb-4">
@@ -1038,7 +1050,7 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
         </span>
       </CardTitle>
 
-      {hist.length === 0 && counters.length === 0 ? (
+      {hist.length === 0 && counters.length === 0 && gauges.length === 0 ? (
         <EmptyState
           icon={<Activity className="lucide-inline" />}
           title={i18nT('pages.telemetryPanel.no_instruments_recorded')}
@@ -1116,6 +1128,54 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
                     <span className="shrink-0 font-mono tabular-nums">
                       {fmtNumber(o.count ?? o.total ?? 0)}
                     </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {gauges.length > 0 && (
+            <div className="mt-4 border-t border-border pt-3">
+              <div className="flex items-baseline justify-between mb-1.5">
+                <div className="text-[10px] text-muted uppercase tracking-wide">
+                  {i18nT('pages.telemetryPanel.gauges')}
+                </div>
+                {/* Gauges are instantaneous samples; without this cue they read
+                    as 14-day figures under the card's window label. */}
+                <div className="text-[10px] text-muted">
+                  {i18nT('pages.telemetryPanel.gauges_latest')}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                {gauges.map(o => (
+                  <div key={o.name}>
+                    <div className="flex items-center gap-3 text-[11.5px]">
+                      <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={o.name}>
+                        {o.name}
+                      </span>
+                      <span
+                        className="shrink-0 font-mono tabular-nums"
+                        title={String(o.latest ?? 0)}
+                      >
+                        {fmtGaugeValue(o.name, o.latest ?? 0)}
+                      </span>
+                    </div>
+                    {/* Multi-process shards: the API keys samples per PID so no
+                        process masquerades as another — surface that breakdown
+                        instead of only the newest process's headline. */}
+                    {o.by_attr && Object.keys(o.by_attr).length > 1 && (
+                      <div className="ml-4 flex flex-col gap-0.5">
+                        {Object.entries(o.by_attr).map(([sig, v]) => (
+                          <div key={sig} className="flex items-center gap-3 text-[10.5px] text-muted">
+                            <span className="min-w-0 flex-1 truncate font-mono text-[10px]" title={sig}>
+                              {sig}
+                            </span>
+                            <span className="shrink-0 font-mono tabular-nums" title={String(v)}>
+                              {fmtGaugeValue(o.name, v)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

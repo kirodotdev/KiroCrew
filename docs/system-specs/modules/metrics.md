@@ -19,7 +19,7 @@ Source: `src/kiro_crew/metrics/` — `schema.py`, `recorder.py`, `provider.py`,
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
 | `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. `get_recorder()` serves a memoized recorder and re-resolves the `telemetry.enabled` consent value every `_CONSENT_RECHECK_SECS` (30s), rebuilding when it moved — see "Recorder lifecycle & threading" below. Public consent surface: `env_pin()` / `TELEMETRY_ENV_VAR`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `_HISTOGRAM_BUCKETS_MS`, each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
-| `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs. |
+| `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs. Observable counters are deliberately NOT mapped and export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild; the aggregator instead reduces cumulative streams window-relative (time-ordered reset detection + first-in-window baseline), which is rebuild-idempotent. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
 
 ## Recorder lifecycle & threading
@@ -265,6 +265,18 @@ presence without the endpoint string),
 | `kirocrew.gateway.boot.duration` | histogram (ms) | `server` (`dashboard` / `api`), `outcome` (`ready`) | `dashboard/server.py::start_dashboard` / `start_api_server` — boot-to-ready: wall-clock from the server's `start_time` until full init completes and it is about to accept traffic. Emitted via `metrics/http_metrics.py::record_boot_to_ready`. Best-effort; never blocks startup. |
 | `kirocrew.gateway.request.duration` | histogram (ms) | `method` (fixed HTTP-verb allowlist, else `OTHER`), `route_template` (matched aiohttp canonical TEMPLATE, e.g. `/api/artifacts/{slug}`, else `__unknown__`), `status_class` (`1xx`..`5xx` / `other`) | `metrics/http_metrics.py::make_route_latency_middleware` — outermost gateway middleware on BOTH `start_dashboard` and `start_api_server`. Times full in-gateway HTTP handling; upgraded WebSocket connections and `text/event-stream` SSE responses are excluded so connection/turn lifetime cannot pollute request latency. **Bounded cardinality** (see below). |
 
+| `kirocrew.process.threads.python` | gauge | — | `metrics/process_gauges.py::register_process_gauges`, callbacks run only at reader collection (no polling threads). `threading.active_count()`. |
+| `kirocrew.process.threads.os` | gauge | — | Same module; `platform_compat.process_thread_count(os.getpid())` — OS-level count that catches native pools (ggml, grpc) invisible to `threading`. Linux-only; None elsewhere (gap, not zero). |
+| `kirocrew.process.open_fds` | gauge | — | Same module; `/proc/self/fd` or `/dev/fd` entry count minus the enumeration fd. |
+| `kirocrew.process.memory.rss_bytes` / `.peak_rss_bytes` | gauge (By) | — | Same module; delegate to `platform_compat.proc_rss_bytes` (current) / `proc_peak_rss_bytes` (high-water mark), both cross-platform. A 0 return maps to None: gap, never a fake zero sample. |
+| `kirocrew.process.cpu.seconds` | counter (s) | — | Same module; `platform_compat.proc_cpu_seconds` cumulative user+system CPU, exported CUMULATIVE (rebuild-idempotent; see exporter row). |
+| `kirocrew.process.gc.collections` / `.collected` / `.uncollectable` | counter | `generation` (`0`/`1`/`2`) | Same module; `gc.get_stats()` per generation. Rules GC in/out of a leak diagnosis (rising uncollectable = reference cycles; flat collected with rising RSS = native leak). |
+
+All nine registrations are wired in `provider.py::_build_recorder` (live path only)
+and wrapped so a gauge failure can never disable telemetry as a whole; each
+reader callback is individually guarded — a failing probe yields a gap for that
+cycle, never an exporter error.
+
 ### Histogram bucket boundaries: per instrument, not shared
 
 Boundaries live in `metrics/provider.py::_HISTOGRAM_BUCKETS_MS`, a metric-name →
@@ -386,7 +398,27 @@ via `asyncio.to_thread`), aggregates the startup histogram into p50/p90 split by
 cold/warm (`spawned` attr) + outcome + daily series, the turn histogram into a
 `turn` block (stats + outcome counts + `fault_rate`), and generically surfaces
 every other `kirocrew.*` metric (`other` list) so new emit call-sites appear
-without a handler change. Percentiles are interpolated from bucket counts (made
+without a handler change. Scalar (non-histogram) metrics in `other` are
+classified by the SDK's own JSON markers — a Sum's `data` block carries
+`aggregation_temporality`/`is_monotonic`, a Gauge's carries neither. DELTA sums
+keep summing across cycles/PIDs; CUMULATIVE sums (observable counters) buffer
+samples per (PID, attrs) stream and reduce them time-ordered after the scan
+(shard iteration order is not chronological): counter-RESET detection — a
+snapshot below the stream's own maximum marks a process boundary (PID reuse,
+restart) and banks the finished segment, while re-emitted snapshots at/above the
+maximum are no-ops — keeps provider rebuilds idempotent AND a reused PID from
+overwriting an earlier process's total, and the stream's first in-window sample
+is subtracted as a baseline so a process older than the window reports only
+in-window activity, never its lifetime total (stream total = banked + live
+segment - baseline; add across streams). Non-finite
+scalars (json's Infinity/NaN literals) are rejected per point via one shared
+coercion helper; gauges emit `kind: "gauge"` with `latest` (the newest sample,
+never a sum). Gauge samples are keyed per exporting shard PID so
+concurrent processes (gateway + MCP daemons) never collapse into one series: a
+single-PID window keeps the plain shape, a multi-PID window reports the newest
+process's reading as `latest` and a `pid=`-keyed `by_attr` breakdown. Malformed
+shard records degrade per-point (a garbage value skips that point, a garbage
+timestamp sorts oldest) rather than failing the endpoint. Percentiles are interpolated from bucket counts (made
 meaningful by the DELTA temporality + explicit-bucket View). Security: the
 user-configurable `telemetry.local_dir` and each shard pass `validate_file_path`
 (sensitive-path check) before any read. Cross-process: metrics are emitted by

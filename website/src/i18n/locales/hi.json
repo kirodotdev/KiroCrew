@@ -12168,7 +12168,9 @@
       "was_value": "पहले {{value}}",
       "window_last": "OTEL अनुभाग · विंडो: पिछले",
       "window_tokens_col": "विंडो (टोकन)",
-      "off_body": "<settingRef/> से सक्रिय करें। मेट्रिक्स स्थानीय रहती हैं (<metricsDir/>) — इस मशीन से कुछ भी बाहर नहीं जाता।"
+      "off_body": "<settingRef/> से सक्रिय करें। मेट्रिक्स स्थानीय रहती हैं (<metricsDir/>) — इस मशीन से कुछ भी बाहर नहीं जाता।",
+      "gauges": "गेज",
+      "gauges_latest": "नवीनतम नमूना"
     },
     "terminalPopoutFrame": {
       "return": "डॉक पर वापस जाएँ",

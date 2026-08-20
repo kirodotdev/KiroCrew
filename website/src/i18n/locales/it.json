@@ -12300,7 +12300,9 @@
       "was_value": "prima {{value}}",
       "window_last": "Sezioni OTEL · intervallo: ultimi",
       "window_tokens_col": "Finestra (token)",
-      "off_body": "Attiva con <settingRef/>. Le metriche restano locali (<metricsDir/>) — nulla esce da questa macchina."
+      "off_body": "Attiva con <settingRef/>. Le metriche restano locali (<metricsDir/>) — nulla esce da questa macchina.",
+      "gauges": "Indicatori",
+      "gauges_latest": "ultimo campione"
     },
     "terminalPopoutFrame": {
       "return": "Torna al dock",

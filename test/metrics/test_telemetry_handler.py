@@ -4,6 +4,7 @@ These exercise production code paths in dashboard/handlers/telemetry.py
 (``_pct_from_buckets``, ``_Hist``, ``_aggregate``) rather than replicating the
 logic, so a regression in the shard parser or percentile math fails the test.
 """
+
 import json
 from pathlib import Path
 
@@ -31,8 +32,12 @@ def test_pct_from_buckets_overflow_bucket_returns_lower_bound():
 def test_hist_merges_data_points():
     h = _Hist()
     dp = {
-        "count": 2, "sum": 30.0, "min": 10.0, "max": 20.0,
-        "bucket_counts": [0, 1, 1, 0, 0, 0], "explicit_bounds": _BOUNDS,
+        "count": 2,
+        "sum": 30.0,
+        "min": 10.0,
+        "max": 20.0,
+        "bucket_counts": [0, 1, 1, 0, 0, 0],
+        "explicit_bounds": _BOUNDS,
     }
     h.add(dp)
     h.add(dp)
@@ -72,12 +77,17 @@ def test_aggregate_counts_only_the_end_to_end_startup_point(tmp_path: Path):
     four unrelated latency distributions into one set of buckets.
     """
     ready = {"outcome": "ready", "backend": "kiro", "spawned": True}
-    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
-        _startup_dp({**ready, "phase": "total"}, bucket=4),
-        _startup_dp({**ready, "phase": "spawn_init"}, bucket=2),
-        _startup_dp({**ready, "phase": "session_new"}, bucket=3),
-        _startup_dp({**ready, "phase": "set_model"}, bucket=0),
-    ]}}
+    startup = {
+        "name": "kirocrew.session.startup.duration",
+        "data": {
+            "data_points": [
+                _startup_dp({**ready, "phase": "total"}, bucket=4),
+                _startup_dp({**ready, "phase": "spawn_init"}, bucket=2),
+                _startup_dp({**ready, "phase": "session_new"}, bucket=3),
+                _startup_dp({**ready, "phase": "set_model"}, bucket=0),
+            ]
+        },
+    }
 
     s = _aggregate([_write_shard(tmp_path, [startup])])["startup"]
 
@@ -98,9 +108,16 @@ def test_aggregate_kiro_startup_counts_as_cold(tmp_path: Path):
     Regression guard: the kiro emit previously carried no ``spawned`` attribute,
     so bool(None) filed every cold start as warm and cold read as empty forever.
     """
-    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
-        _startup_dp({"outcome": "ready", "backend": "kiro", "phase": "total", "spawned": True}),
-    ]}}
+    startup = {
+        "name": "kirocrew.session.startup.duration",
+        "data": {
+            "data_points": [
+                _startup_dp(
+                    {"outcome": "ready", "backend": "kiro", "phase": "total", "spawned": True}
+                ),
+            ]
+        },
+    }
     s = _aggregate([_write_shard(tmp_path, [startup])])["startup"]
     assert s["cold"]["count"] == 1
     assert s["warm"]["count"] == 0
@@ -108,9 +125,14 @@ def test_aggregate_kiro_startup_counts_as_cold(tmp_path: Path):
 
 def test_aggregate_treats_missing_phase_as_the_total(tmp_path: Path):
     """The claude path emits no phase attribute at all — still one startup."""
-    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
-        _startup_dp({"outcome": "ready", "spawned": False}),
-    ]}}
+    startup = {
+        "name": "kirocrew.session.startup.duration",
+        "data": {
+            "data_points": [
+                _startup_dp({"outcome": "ready", "spawned": False}),
+            ]
+        },
+    }
     s = _aggregate([_write_shard(tmp_path, [startup])])["startup"]
     assert s["overall"]["count"] == 1
     assert s["warm"]["count"] == 1
@@ -118,20 +140,61 @@ def test_aggregate_treats_missing_phase_as_the_total(tmp_path: Path):
 
 
 def test_aggregate_startup_turn_and_other(tmp_path: Path):
-    startup = {"name": "kirocrew.session.startup.duration", "data": {"data_points": [
-        {"attributes": {"outcome": "ready", "spawned": True}, "count": 3, "sum": 45.0,
-         "min": 10.0, "max": 25.0, "bucket_counts": [0, 1, 1, 1, 0, 0], "explicit_bounds": _BOUNDS},
-    ]}}
-    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
-        {"attributes": {"outcome": "ok"}, "count": 3, "sum": 30.0, "min": 5.0, "max": 15.0,
-         "bucket_counts": [1, 1, 1, 0, 0, 0], "explicit_bounds": _BOUNDS},
-        {"attributes": {"outcome": "error"}, "count": 1, "sum": 45.0, "min": 45.0, "max": 45.0,
-         "bucket_counts": [0, 0, 0, 0, 1, 0], "explicit_bounds": _BOUNDS},
-    ]}}
-    warm = {"name": "kirocrew.mcp.warm_pool.acquire", "data": {"data_points": [
-        {"attributes": {"result": "hit"}, "value": 3},
-        {"attributes": {"result": "miss"}, "value": 1},
-    ]}}
+    startup = {
+        "name": "kirocrew.session.startup.duration",
+        "data": {
+            "data_points": [
+                {
+                    "attributes": {"outcome": "ready", "spawned": True},
+                    "count": 3,
+                    "sum": 45.0,
+                    "min": 10.0,
+                    "max": 25.0,
+                    "bucket_counts": [0, 1, 1, 1, 0, 0],
+                    "explicit_bounds": _BOUNDS,
+                },
+            ]
+        },
+    }
+    turn = {
+        "name": "kirocrew.turn.duration",
+        "data": {
+            "data_points": [
+                {
+                    "attributes": {"outcome": "ok"},
+                    "count": 3,
+                    "sum": 30.0,
+                    "min": 5.0,
+                    "max": 15.0,
+                    "bucket_counts": [1, 1, 1, 0, 0, 0],
+                    "explicit_bounds": _BOUNDS,
+                },
+                {
+                    "attributes": {"outcome": "error"},
+                    "count": 1,
+                    "sum": 45.0,
+                    "min": 45.0,
+                    "max": 45.0,
+                    "bucket_counts": [0, 0, 0, 0, 1, 0],
+                    "explicit_bounds": _BOUNDS,
+                },
+            ]
+        },
+    }
+    warm = {
+        "name": "kirocrew.mcp.warm_pool.acquire",
+        "data": {
+            # Real SDK shards always mark a Sum with aggregation_temporality /
+            # is_monotonic (a Gauge's data block carries neither) — the aggregator
+            # classifies on that, so the fixture must carry it too.
+            "aggregation_temporality": 1,
+            "is_monotonic": True,
+            "data_points": [
+                {"attributes": {"result": "hit"}, "value": 3},
+                {"attributes": {"result": "miss"}, "value": 1},
+            ],
+        },
+    }
 
     result = _aggregate([_write_shard(tmp_path, [startup, turn, warm])])
 
@@ -151,6 +214,308 @@ def test_aggregate_startup_turn_and_other(tmp_path: Path):
     assert warm_rows[0]["total"] == 4.0
     assert warm_rows[0]["by_attr"]["result=hit"] == 3.0
     assert warm_rows[0]["by_attr"]["result=miss"] == 1.0
+
+
+def test_aggregate_cumulative_sums_are_window_relative_and_add_across_pids(tmp_path: Path):
+    """CUMULATIVE sums: window-relative delta per PID stream; PIDs add together.
+
+    Observable counters (CPU seconds, GC stats) export a lifetime snapshot
+    every cycle (temporality 2). Within one process the stream's first
+    in-window sample is the baseline and re-emissions after a telemetry off/on
+    provider rebuild are idempotent no-ops — so each PID contributes only the
+    activity accrued inside the window (150-100 and 30-10), and the
+    cross-process total is the sum of those deltas, never 100+150+10+30 and
+    never the raw lifetime snapshots.
+    """
+
+    def cpu(v1: float, v2: float) -> dict:
+        return {
+            "name": "kirocrew.process.cpu.seconds",
+            "data": {
+                "aggregation_temporality": 2,
+                "is_monotonic": True,
+                "data_points": [
+                    {"attributes": {}, "value": v1, "time_unix_nano": 100},
+                    {"attributes": {}, "value": v2, "time_unix_nano": 200},
+                ],
+            },
+        }
+
+    p1 = tmp_path / "metrics-2026-08-21-1000.jsonl"
+    p1.write_text(
+        json.dumps({"resource_metrics": [{"scope_metrics": [{"metrics": [cpu(100.0, 150.0)]}]}]})
+        + "\n",
+        encoding="utf-8",
+    )
+    p2 = tmp_path / "metrics-2026-08-21-2000.jsonl"
+    p2.write_text(
+        json.dumps({"resource_metrics": [{"scope_metrics": [{"metrics": [cpu(10.0, 30.0)]}]}]})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = _aggregate([p1, p2])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["kind"] == "counter"
+    # In-window delta per PID ((150-100) + (30-10)), summed across PIDs.
+    assert rows[0]["total"] == 70.0
+
+
+def test_aggregate_cumulative_detects_counter_reset_on_pid_reuse(tmp_path: Path):
+    """A cumulative stream dropping below its own max is a process boundary.
+
+    PID reuse within the shard window makes two processes share a (pid, attr)
+    stream key. Reset detection banks the finished segment when the value
+    drops, so the later process is never credited against the earlier one's
+    counter: the first process's only sample (100) is the stream baseline
+    (its pre-sample activity is unattributable), and the restarted process —
+    whose in-window start is proven by the reset — contributes its full 30.
+    """
+    metric = {
+        "name": "kirocrew.process.cpu.seconds",
+        "data": {
+            "aggregation_temporality": 2,
+            "is_monotonic": True,
+            "data_points": [
+                {"attributes": {}, "value": 100.0, "time_unix_nano": 100},
+                {"attributes": {}, "value": 10.0, "time_unix_nano": 200},
+                {"attributes": {}, "value": 30.0, "time_unix_nano": 300},
+            ],
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric])])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 30.0
+
+
+def test_aggregate_cumulative_totals_are_shard_order_independent(tmp_path: Path):
+    """Reset detection runs on time-ordered samples, not shard file order.
+
+    A per-PID stream spans one shard per day (plus rotations). Processing a
+    newer shard first must not make the older day's smaller value look like a
+    counter reset — that banked the newer segment and inflated the total
+    (160+140=300 for a monotonic 100→160 stream).
+    """
+
+    def cpu(points: list[tuple[int, float]]) -> dict:
+        return {
+            "name": "kirocrew.process.cpu.seconds",
+            "data": {
+                "aggregation_temporality": 2,
+                "is_monotonic": True,
+                "data_points": [
+                    {"attributes": {}, "value": v, "time_unix_nano": ts} for ts, v in points
+                ],
+            },
+        }
+
+    older = tmp_path / "metrics-2026-08-20-1234.jsonl"
+    older.write_text(
+        json.dumps(
+            {
+                "resource_metrics": [
+                    {"scope_metrics": [{"metrics": [cpu([(100, 100.0), (200, 140.0)])]}]}
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    newer = tmp_path / "metrics-2026-08-21-1234.jsonl"
+    newer.write_text(
+        json.dumps(
+            {
+                "resource_metrics": [
+                    {"scope_metrics": [{"metrics": [cpu([(300, 150.0), (400, 160.0)])]}]}
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    for order in ([older, newer], [newer, older]):
+        result = _aggregate(order)
+        rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+        # One monotonic stream 100→160: in-window activity 60, in either order.
+        assert rows and rows[0]["total"] == 60.0
+
+
+def test_aggregate_cumulative_reports_window_activity_not_lifetime(tmp_path: Path):
+    """A process older than the window reports in-window activity only.
+
+    The first in-window snapshot of a long-lived process already carries its
+    lifetime total (e.g. 5000 CPU seconds); keeping the stream maximum would
+    present that lifetime as the "Last 14d" total. The stream's first
+    in-window sample is the baseline, so only the delta accrued inside the
+    window (5010 - 5000) is reported.
+    """
+    metric = {
+        "name": "kirocrew.process.cpu.seconds",
+        "data": {
+            "aggregation_temporality": 2,
+            "is_monotonic": True,
+            "data_points": [
+                {"attributes": {}, "value": 5000.0, "time_unix_nano": 100},
+                {"attributes": {}, "value": 5010.0, "time_unix_nano": 200},
+            ],
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric])])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.cpu.seconds"]
+    assert rows and rows[0]["total"] == 10.0
+
+
+def test_aggregate_rejects_non_finite_scalars(tmp_path: Path):
+    """Infinity/NaN in a shard record degrades that point, never the endpoint.
+
+    Python's json module parses the Infinity/NaN literals, so a poisoned
+    shard would otherwise raise OverflowError in timestamp conversion or
+    poison sums with inf.
+    """
+    metric = {
+        "name": "kirocrew.process.threads.os",
+        "data": {
+            "data_points": [
+                {"attributes": {}, "value": float("inf"), "time_unix_nano": 5},
+                {"attributes": {}, "value": 96.0, "time_unix_nano": float("inf")},
+                {"attributes": {}, "value": 97.0, "time_unix_nano": 9},
+            ]
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric])])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.threads.os"]
+    assert rows and rows[0]["kind"] == "gauge"
+    # inf value skipped; inf timestamp coerces the point to ts=0 (sorts
+    # oldest), so ts=9 wins.
+    assert rows[0]["latest"] == 97.0
+
+
+def test_aggregate_gauges_keep_latest_not_sum(tmp_path: Path):
+    """Point-in-time gauges (no Sum markers in the data block) must report the
+    NEWEST sample, never a total that grows with export-cycle count."""
+
+    def gauge_metric(ts: int, value: float, attrs: dict | None = None) -> dict:
+        return {
+            "name": "kirocrew.process.threads.os",
+            "data": {
+                "data_points": [
+                    {"attributes": attrs or {}, "value": value, "time_unix_nano": ts},
+                ]
+            },
+        }
+
+    shard = _write_shard(
+        tmp_path,
+        [gauge_metric(100, 70.0), gauge_metric(300, 72.0), gauge_metric(200, 71.0)],
+    )
+    result = _aggregate([shard])
+
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.threads.os"]
+    assert rows and rows[0]["kind"] == "gauge"
+    # Three cycles observed 70/72/71 threads: the report is the newest sample
+    # (72, ts=300), not 213.
+    assert rows[0]["latest"] == 72.0
+
+
+def test_aggregate_gauge_attr_sets_are_independent(tmp_path: Path):
+    """Attributed gauge samples keep the newest value PER attribute set."""
+    metric = {
+        "name": "kirocrew.process.memory.rss_bytes",
+        "data": {
+            "data_points": [
+                {"attributes": {"estimate": "current"}, "value": 100.0, "time_unix_nano": 1},
+                {"attributes": {"estimate": "current"}, "value": 90.0, "time_unix_nano": 2},
+            ]
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric])])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.memory.rss_bytes"]
+    assert rows and rows[0]["kind"] == "gauge"
+    # A gauge that went DOWN reports the newer, lower value — a sum (190) or a
+    # max (100) would both misreport reclaimed memory.
+    assert rows[0]["by_attr"]["estimate=current"] == 90.0
+
+
+def test_aggregate_gauges_do_not_collapse_across_pids(tmp_path: Path):
+    """Concurrent processes exporting the same gauge stay distinguishable.
+
+    Shards are per-PID (metrics-YYYY-MM-DD-<pid>.jsonl). The gateway and an MCP
+    daemon both export kirocrew.process.threads.os; timestamp-newest-wins
+    across processes would display an arbitrary process as gateway state.
+    """
+
+    def shard(pid: int, ts: int, value: float) -> Path:
+        metric = {
+            "name": "kirocrew.process.threads.os",
+            "data": {
+                "data_points": [
+                    {"attributes": {}, "value": value, "time_unix_nano": ts},
+                ]
+            },
+        }
+        p = tmp_path / f"metrics-2026-08-21-{pid}.jsonl"
+        rm = {"resource_metrics": [{"scope_metrics": [{"metrics": [metric]}]}]}
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rm) + "\n")
+        return p
+
+    gateway = shard(pid=100, ts=50, value=96.0)  # older sample, the gateway
+    daemon = shard(pid=200, ts=99, value=8.0)  # newer sample, a small daemon
+
+    result = _aggregate([gateway, daemon])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.threads.os"]
+    assert rows and rows[0]["kind"] == "gauge"
+    # Both processes keep their own newest sample, keyed by pid.
+    assert rows[0]["by_attr"]["pid=100"] == 96.0
+    assert rows[0]["by_attr"]["pid=200"] == 8.0
+    # Headline is the newest process's reading (the daemon exported last).
+    assert rows[0]["latest"] == 8.0
+
+
+def test_single_pid_gauge_keeps_simple_shape(tmp_path: Path):
+    """One process in the window: no pid= keys appear in by_attr."""
+    metric = {
+        "name": "kirocrew.process.open_fds",
+        "data": {
+            "data_points": [
+                {"attributes": {}, "value": 144.0, "time_unix_nano": 7},
+            ]
+        },
+    }
+    p = tmp_path / "metrics-2026-08-21-4242.jsonl"
+    rm = {"resource_metrics": [{"scope_metrics": [{"metrics": [metric]}]}]}
+    p.write_text(json.dumps(rm) + "\n", encoding="utf-8")
+    result = _aggregate([p])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.open_fds"]
+    assert rows and rows[0]["latest"] == 144.0
+    assert not any(k.startswith("pid=") for k in rows[0]["by_attr"])
+
+
+def test_malformed_scalar_records_never_crash_aggregate(tmp_path: Path):
+    """Garbage in one shard record degrades that point, never the endpoint.
+
+    Shards are external input: a non-numeric timestamp sorts oldest, a
+    non-numeric value skips only that data point, and well-formed records in
+    the same shard still aggregate. An uncaught ValueError here is an HTTP 500
+    for /api/telemetry/startup.
+    """
+    metric = {
+        "name": "kirocrew.process.threads.os",
+        "data": {
+            "data_points": [
+                {"attributes": {}, "value": 96.0, "time_unix_nano": "not-a-number"},
+                {"attributes": {}, "value": "garbage", "time_unix_nano": 5},
+                {"attributes": {}, "value": 97.0, "time_unix_nano": 9},
+            ]
+        },
+    }
+    result = _aggregate([_write_shard(tmp_path, [metric])])
+    rows = [o for o in result["other"] if o["name"] == "kirocrew.process.threads.os"]
+    assert rows and rows[0]["kind"] == "gauge"
+    # ts=9 beats the ts=0-coerced garbage-timestamp point; the garbage-value
+    # point is skipped entirely.
+    assert rows[0]["latest"] == 97.0
 
 
 def _turn_dp(attrs: dict, count: int = 1) -> dict:
@@ -177,22 +542,32 @@ def test_fault_rate_excludes_watchdog_recovery_outcomes(tmp_path: Path):
     'unknown' IS included because pre-labelling metric shards use it for
     unclassified non-ok outcomes; excluding it would silently inflate the
     denominator without matching the numerator on the 14-day lookback."""
-    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
-        _turn_dp({"outcome": "ok"}, count=4),
-        _turn_dp({"outcome": "error"}, count=1),      # terminal fault
-        _turn_dp({"outcome": "timeout"}, count=1),    # terminal fault
-        _turn_dp({"outcome": "unknown"}, count=1),    # legacy shard — terminal fault
-        _turn_dp({"outcome": "tool_stall"}, count=3),     # watchdog recovery — NOT a fault
-        _turn_dp({"outcome": "stale_recover"}, count=2),  # watchdog recovery — NOT a fault
-    ]}}
+    turn = {
+        "name": "kirocrew.turn.duration",
+        "data": {
+            "data_points": [
+                _turn_dp({"outcome": "ok"}, count=4),
+                _turn_dp({"outcome": "error"}, count=1),  # terminal fault
+                _turn_dp({"outcome": "timeout"}, count=1),  # terminal fault
+                _turn_dp({"outcome": "unknown"}, count=1),  # legacy shard — terminal fault
+                _turn_dp({"outcome": "tool_stall"}, count=3),  # watchdog recovery — NOT a fault
+                _turn_dp({"outcome": "stale_recover"}, count=2),  # watchdog recovery — NOT a fault
+            ]
+        },
+    }
     result = _aggregate([_write_shard(tmp_path, [turn])])
 
     total = 4 + 1 + 1 + 1 + 3 + 2  # = 12
-    true_faults = 1 + 1 + 1          # error + timeout + unknown
+    true_faults = 1 + 1 + 1  # error + timeout + unknown
     expected_rate = round(true_faults / total, 4)
 
     assert result["turn"]["outcome"] == {
-        "ok": 4, "error": 1, "timeout": 1, "unknown": 1, "tool_stall": 3, "stale_recover": 2,
+        "ok": 4,
+        "error": 1,
+        "timeout": 1,
+        "unknown": 1,
+        "tool_stall": 3,
+        "stale_recover": 2,
     }
     assert result["turn"]["fault_rate"] == expected_rate  # = 0.25
 
@@ -200,10 +575,15 @@ def test_fault_rate_excludes_watchdog_recovery_outcomes(tmp_path: Path):
     # excluded by an overly aggressive allowlist).
     sub = tmp_path / "sub"
     sub.mkdir(exist_ok=True)
-    error_only_turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
-        _turn_dp({"outcome": "ok"}, count=3),
-        _turn_dp({"outcome": "error"}, count=1),
-    ]}}
+    error_only_turn = {
+        "name": "kirocrew.turn.duration",
+        "data": {
+            "data_points": [
+                _turn_dp({"outcome": "ok"}, count=3),
+                _turn_dp({"outcome": "error"}, count=1),
+            ]
+        },
+    }
     result2 = _aggregate([_write_shard(sub, [error_only_turn])])
     assert result2["turn"]["fault_rate"] == 0.25  # 1 error / 4 — unchanged
 
@@ -216,20 +596,42 @@ def test_fault_rate_counts_exhausted_stall_turns_as_faults(tmp_path: Path):
     "start a new chat" labels stall_exhausted at the emit site, which the
     aggregator's allowlist counts as a terminal fault. Recovered stalls stay
     excluded; dead sessions count; fault_rate remains single-series."""
-    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
-        _turn_dp({"outcome": "ok"}, count=5),
-        _turn_dp({"outcome": "tool_stall"}, count=3),        # retries — NOT faults
-        _turn_dp({"outcome": "stale_recover"}, count=1),     # recovered — NOT a fault
-        _turn_dp({"outcome": "stall_exhausted"}, count=1),   # dead session — fault
-    ]}}
+    turn = {
+        "name": "kirocrew.turn.duration",
+        "data": {
+            "data_points": [
+                _turn_dp({"outcome": "ok"}, count=5),
+                _turn_dp({"outcome": "tool_stall"}, count=3),  # retries — NOT faults
+                _turn_dp({"outcome": "stale_recover"}, count=1),  # recovered — NOT a fault
+                _turn_dp({"outcome": "stall_exhausted"}, count=1),  # dead session — fault
+            ]
+        },
+    }
     # The recovery counter is pure mechanism telemetry: it must NOT feed
     # fault_rate (the exhausted turn above already carries the fault).
-    recovery = {"name": "kirocrew.watchdog.recovery.outcome", "data": {"data_points": [
-        {"attributes": {"mechanism": "tool_stall", "outcome": "exhausted",
-                        "attempt_bucket": 3}, "value": 1},
-        {"attributes": {"mechanism": "stale_recover", "outcome": "recovered",
-                        "attempt_bucket": 1}, "value": 1},
-    ]}}
+    recovery = {
+        "name": "kirocrew.watchdog.recovery.outcome",
+        "data": {
+            "data_points": [
+                {
+                    "attributes": {
+                        "mechanism": "tool_stall",
+                        "outcome": "exhausted",
+                        "attempt_bucket": 3,
+                    },
+                    "value": 1,
+                },
+                {
+                    "attributes": {
+                        "mechanism": "stale_recover",
+                        "outcome": "recovered",
+                        "attempt_bucket": 1,
+                    },
+                    "value": 1,
+                },
+            ]
+        },
+    }
     result = _aggregate([_write_shard(tmp_path, [turn, recovery])])
 
     # 1 exhausted turn / 10 turns; recovery-counter points change nothing.
@@ -337,7 +739,7 @@ def test_stats_carries_other_generations_even_when_empty():
     assert empty["total_count"] == 0
 
     h = _Hist()
-    h.add(_hist_dp({}, ns=2))                      # newest generation
+    h.add(_hist_dp({}, ns=2))  # newest generation
     h.add(_hist_dp({}, bounds=_OLD_BOUNDS, ns=1))  # older, dropped
     s = h.stats()
     assert s["count"] == 1, "only the newest generation is reported"
@@ -352,9 +754,9 @@ def test_total_count_is_the_full_population_not_the_group_count():
     reported ``count`` and to a counter shown beside it.
     """
     h = _Hist()
-    h.add(_hist_dp({}, count=3, ns=30))                              # reported
-    h.add(_hist_dp({}, count=7, bounds=_OLD_BOUNDS, ns=20))          # dropped
-    h.add(_hist_dp({}, count=5, bounds=[2, 4, 6, 8, 10], ns=10))     # dropped
+    h.add(_hist_dp({}, count=3, ns=30))  # reported
+    h.add(_hist_dp({}, count=7, bounds=_OLD_BOUNDS, ns=20))  # dropped
+    h.add(_hist_dp({}, count=5, bounds=[2, 4, 6, 8, 10], ns=10))  # dropped
     s = h.stats()
     assert s["count"] == 3
     assert s["other_generations"] == 2
@@ -363,15 +765,18 @@ def test_total_count_is_the_full_population_not_the_group_count():
 
 def test_other_histograms_report_dropped_generations(tmp_path: Path):
     """Regression: the ``other`` surface used to omit other_generations."""
-    acquire = {"name": "kirocrew.mcp.backend.acquire.duration", "data": {
-        "data_points": [
-            _hist_dp({"warm": True}, count=4, ns=20),
-            _hist_dp({"warm": True}, count=7, bounds=_OLD_BOUNDS, ns=10),
-        ]}}
+    acquire = {
+        "name": "kirocrew.mcp.backend.acquire.duration",
+        "data": {
+            "data_points": [
+                _hist_dp({"warm": True}, count=4, ns=20),
+                _hist_dp({"warm": True}, count=7, bounds=_OLD_BOUNDS, ns=10),
+            ]
+        },
+    }
 
     result = _aggregate([_write_shard(tmp_path, [acquire])])
-    row = next(o for o in result["other"]
-               if o["name"] == "kirocrew.mcp.backend.acquire.duration")
+    row = next(o for o in result["other"] if o["name"] == "kirocrew.mcp.backend.acquire.duration")
 
     assert row["count"] == 4, "newest generation only"
     assert row["other_generations"] == 1, "and it says so"
@@ -380,15 +785,18 @@ def test_other_histograms_report_dropped_generations(tmp_path: Path):
 
 def test_acquire_splits_expose_the_cold_side(tmp_path: Path):
     """The cold-spawn card is fed by the ``warm=false`` half of acquire."""
-    acquire = {"name": "kirocrew.mcp.backend.acquire.duration", "data": {
-        "data_points": [
-            _hist_dp({"warm": True}, count=9, each_ms=15.0),
-            _hist_dp({"warm": False}, count=2, bucket=4, each_ms=45.0),
-        ]}}
+    acquire = {
+        "name": "kirocrew.mcp.backend.acquire.duration",
+        "data": {
+            "data_points": [
+                _hist_dp({"warm": True}, count=9, each_ms=15.0),
+                _hist_dp({"warm": False}, count=2, bucket=4, each_ms=45.0),
+            ]
+        },
+    }
 
     result = _aggregate([_write_shard(tmp_path, [acquire])])
-    row = next(o for o in result["other"]
-               if o["name"] == "kirocrew.mcp.backend.acquire.duration")
+    row = next(o for o in result["other"] if o["name"] == "kirocrew.mcp.backend.acquire.duration")
 
     assert row["count"] == 11
     assert set(row["splits"]) == {"warm=true", "warm=false"}
@@ -402,13 +810,19 @@ def test_acquire_splits_expose_the_cold_side(tmp_path: Path):
 
 def test_splits_are_restricted_to_named_low_cardinality_attrs(tmp_path: Path):
     """method/route must NOT spawn a sub-histogram per endpoint."""
-    req = {"name": "kirocrew.gateway.request.duration", "data": {
-        "data_points": [
-            _hist_dp({"method": "GET", "route": "/api/a"}),
-            _hist_dp({"method": "POST", "route": "/api/b"}),
-        ]}}
-    skill = {"name": "kirocrew.skill.lazy_load.duration", "data": {
-        "data_points": [_hist_dp({"transport": "stdio"})]}}
+    req = {
+        "name": "kirocrew.gateway.request.duration",
+        "data": {
+            "data_points": [
+                _hist_dp({"method": "GET", "route": "/api/a"}),
+                _hist_dp({"method": "POST", "route": "/api/b"}),
+            ]
+        },
+    }
+    skill = {
+        "name": "kirocrew.skill.lazy_load.duration",
+        "data": {"data_points": [_hist_dp({"transport": "stdio"})]},
+    }
 
     result = _aggregate([_write_shard(tmp_path, [req, skill])])
     by_name = {o["name"]: o for o in result["other"]}
@@ -419,17 +833,25 @@ def test_splits_are_restricted_to_named_low_cardinality_attrs(tmp_path: Path):
 
 def test_turn_and_startup_generation_count_comes_from_stats(tmp_path: Path):
     """Single source: the field arrives with the stats, not as a sibling."""
-    turn = {"name": "kirocrew.turn.duration", "data": {"data_points": [
-        _hist_dp({"outcome": "ok"}, count=3, ns=20),
-        _hist_dp({"outcome": "ok"}, count=5, bounds=_OLD_BOUNDS, ns=10),
-    ]}}
-    ready = {"outcome": "ready", "backend": "kiro", "spawned": True,
-             "phase": "total"}
-    startup = {"name": "kirocrew.session.startup.duration", "data": {
-        "data_points": [
-            _hist_dp(ready, count=2, ns=20),
-            _hist_dp(ready, count=6, bounds=_OLD_BOUNDS, ns=10),
-        ]}}
+    turn = {
+        "name": "kirocrew.turn.duration",
+        "data": {
+            "data_points": [
+                _hist_dp({"outcome": "ok"}, count=3, ns=20),
+                _hist_dp({"outcome": "ok"}, count=5, bounds=_OLD_BOUNDS, ns=10),
+            ]
+        },
+    }
+    ready = {"outcome": "ready", "backend": "kiro", "spawned": True, "phase": "total"}
+    startup = {
+        "name": "kirocrew.session.startup.duration",
+        "data": {
+            "data_points": [
+                _hist_dp(ready, count=2, ns=20),
+                _hist_dp(ready, count=6, bounds=_OLD_BOUNDS, ns=10),
+            ]
+        },
+    }
 
     result = _aggregate([_write_shard(tmp_path, [turn, startup])])
 
