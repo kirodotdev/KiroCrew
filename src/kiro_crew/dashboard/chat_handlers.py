@@ -666,25 +666,30 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     resp.headers["X-Accel-Buffering"] = "no"
     await resp.prepare(request)
 
-    try:
-        while True:
-            pending = slot.drain()
-            for msg in pending:
-                if msg["cls"] == "done":
-                    await resp.write(b"data: [DONE]\n\n")
-                    slot._has_reader = False
-                    return resp
-                chunk = _build_stream_chunk(msg)
-                await resp.write(f"data: {chunk}\n\n".encode())
-            try:
-                await asyncio.wait_for(slot.event.wait(), timeout=30)
-            except asyncio.TimeoutError:
-                await resp.write(b": keepalive\n\n")
-    except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
-        pass
-    finally:
-        slot.drain()
-        slot._has_reader = False
+    # Declare this reader as the owner of `slot._pending` for as long as it is
+    # draining. A turn-end chunk release must not run while an SSE reader still
+    # has undelivered tokens queued, and `_has_reader` alone cannot carry that:
+    # the `done` branch below clears it before this scope ends.
+    with slot.pending_consumer():
+        try:
+            while True:
+                pending = slot.drain()
+                for msg in pending:
+                    if msg["cls"] == "done":
+                        await resp.write(b"data: [DONE]\n\n")
+                        slot._has_reader = False
+                        return resp
+                    chunk = _build_stream_chunk(msg)
+                    await resp.write(f"data: {chunk}\n\n".encode())
+                try:
+                    await asyncio.wait_for(slot.event.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    await resp.write(b": keepalive\n\n")
+        except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            slot.drain()
+            slot._has_reader = False
     return resp
 
 

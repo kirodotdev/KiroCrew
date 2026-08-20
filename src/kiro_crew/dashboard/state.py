@@ -1358,6 +1358,8 @@ class _ChatSlot:
         "task",
         "event",
         "_pending",
+        "_pending_consumers",
+        "_pending_release_deferred",
         "_queue",
         "_last_enqueue_ts",
         "_approval_futures",
@@ -1383,7 +1385,7 @@ class _ChatSlot:
         "_todo",
         "_on_message",
         "_on_question_retired",
-        "_has_reader",
+        "_has_reader_flag",
         "_stop_state_raw",
         "_stop_generation",
         "_stop_event_id",
@@ -1501,6 +1503,15 @@ class _ChatSlot:
         self.task: asyncio.Task | None = None  # type: ignore[type-arg]
         self.event = asyncio.Event()
         self._pending: list[dict[str, str]] = []
+        # Number of readers currently treating ``_pending`` as their delivery
+        # queue -- see ``pending_consumer``. Zero means a row left in the queue
+        # can never reach a client, which is what makes releasing it safe.
+        self._pending_consumers: int = 0
+        # Set when a release was ASKED FOR and refused because a consumer held
+        # the queue. Without it the refusal is silent and final: the turn-end
+        # purge never runs again for that slot, so the rows it declined to drop
+        # outlive every consumer and the leak survives its own fix.
+        self._pending_release_deferred: bool = False
         self._queue: list[dict[str, str]] = []  # [{"id": uuid, "content": str}, ...]
         # Newest enqueue instant, read only while ``_queue`` is non-empty — see
         # ``_note_enqueue``.
@@ -1599,7 +1610,7 @@ class _ChatSlot:
         # is invisible to a second window, and to a /pending response already in
         # flight — either would re-render a card whose answer has been sent.
         self._on_question_retired: object | None = None
-        self._has_reader: bool = False  # True when HTTP SSE stream is draining
+        self._has_reader_flag: bool = False  # True when HTTP SSE stream is draining
         self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         # Monotonic count of stop INITIATIONS (idle → active edges of
         # _stop_state). Teardown resets _stop_state back to "idle" but never
@@ -2239,6 +2250,122 @@ class _ChatSlot:
         self._pending.clear()
         self.event.clear()
         return out
+
+    @property
+    def pending_has_consumer(self) -> bool:
+        """True while something can still deliver rows out of ``_pending``.
+
+        The queue serves two unrelated roles. For a WebSocket client it is dead
+        weight: every row it holds was already broadcast, and nothing reads the
+        queue again until the slot's next turn discards it. For an HTTP SSE
+        reader (``/api/chat``) or an OpenAI-compatible reader
+        (``/v1/chat/completions``) it IS the delivery queue -- a row still in it
+        has NOT reached the client, so dropping one truncates the answer.
+
+        So a release may only drop rows while no consumer is attached, and the
+        answer needs two signals because they arm at different moments:
+        ``_has_reader`` is set before the SSE turn is dispatched (covering the
+        window before the reader loop runs its first iteration), and
+        ``_pending_consumers`` is held for the span of each reader loop. The
+        OpenAI-compatible paths deliberately do not set ``_has_reader`` -- that
+        flag also suppresses the global message broadcast, which those slots
+        still want -- so the counter is the only thing that sees them.
+        """
+        return self._pending_consumers > 0 or self._has_reader
+
+    @property
+    def _has_reader(self) -> bool:
+        """True while an HTTP SSE stream is draining this slot.
+
+        A property, not a plain field, because clearing it LIFTS the release
+        guard: the SSE reader sets it before the turn is dispatched and clears
+        it on ``done`` or on the way out, and a deferred release has to be
+        retried at that moment or never. Routing every write through the setter
+        means a future assignment site inherits the retry instead of silently
+        reopening the leak -- the same reason ``pending_consumer`` retries in its
+        ``finally`` rather than trusting its callers to remember.
+        """
+        return self._has_reader_flag
+
+    @_has_reader.setter
+    def _has_reader(self, value: bool) -> None:
+        was = self._has_reader_flag
+        self._has_reader_flag = bool(value)
+        if was and not self._has_reader_flag:
+            self._retry_deferred_release()
+
+    def _retry_deferred_release(self) -> int:
+        """Re-attempt a release that a consumer previously refused. Returns rows freed.
+
+        Called at each point the guard can lift -- the last consumer detaching
+        and ``_has_reader`` clearing. A no-op unless a release was actually
+        deferred, so an ordinary reader that drained its queue cleanly costs one
+        boolean test and changes nothing.
+        """
+        if not self._pending_release_deferred:
+            return 0
+        return self.release_pending_chunks()
+
+    @contextlib.contextmanager
+    def pending_consumer(self) -> Iterator[None]:
+        """Hold ``_pending`` as an attached delivery queue for the block.
+
+        Counted rather than boolean: nothing forbids two readers on one slot,
+        and a boolean would let the first to finish declare the queue unowned
+        while the second is still mid-stream.
+        """
+        self._pending_consumers += 1
+        try:
+            yield
+        finally:
+            self._pending_consumers = max(0, self._pending_consumers - 1)
+            # The detaching consumer may have been the only thing holding the
+            # queue. A consumer that drained cleanly leaves nothing to free; one
+            # that went away mid-stream (client hung up, exception) leaves the
+            # rows the turn-end purge already tried to drop, and this is the only
+            # moment anything looks at them again.
+            self._retry_deferred_release()
+
+    def release_pending_chunks(self) -> int:
+        """Drop undelivered ``chunk`` rows from ``_pending``; return how many.
+
+        ``append`` puts each streamed token row in BOTH ``messages`` and
+        ``_pending`` -- the same dict object in two lists -- so rewriting
+        ``messages`` alone frees nothing: the queue still holds a reference to
+        every chunk dict. On the WebSocket transport no reader ever drains, so
+        those references live until the slot takes another turn, and a slot
+        abandoned after a long streamed turn holds its whole token stream for
+        the process lifetime. Releasing here is what makes a window rewrite
+        actually reclaim the stream.
+
+        A no-op while a consumer is attached (see ``pending_has_consumer``):
+        there those rows are undelivered output, not garbage. The refusal is
+        RECORDED rather than forgotten, and retried when the guard lifts -- a
+        refusal that is silent and final would leave the OpenAI-compatible and
+        SSE transports leaking exactly as before, since their turn-end purge
+        lands while their reader is still attached and never runs again.
+        """
+        if self.pending_has_consumer:
+            self._pending_release_deferred = True
+            return 0
+        self._pending_release_deferred = False
+        before = len(self._pending)
+        if not before:
+            return 0
+        self._pending = [m for m in self._pending if m.get("role") != "chunk"]
+        return before - len(self._pending)
+
+    def purge_chunks(self) -> int:
+        """Drop every ``chunk`` row from the window and release the queue.
+
+        The single owner of "this turn's streamed tokens are now represented by
+        a finalized assistant message, so the raw chunk rows are dead". Callers
+        that rewrite ``messages`` themselves must still call
+        ``release_pending_chunks`` -- a window rewrite on its own leaves the
+        queue as the sole owner of every chunk dict.
+        """
+        self.messages = [m for m in self.messages if m.get("role") != "chunk"]
+        return self.release_pending_chunks()
 
     def mark_permission_resolved(self, approval_id: str, decision: str = "approved") -> None:
         """Update stored permission message cls JSON with resolved flag."""

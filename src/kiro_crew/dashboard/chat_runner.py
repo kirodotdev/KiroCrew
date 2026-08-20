@@ -2751,6 +2751,12 @@ def _flush_segment(
     slot.messages = (
         head  # drops chunks AND trailing stop_events; tail.non-chunk-non-stop stays in head
     )
+    # The window rewrite above is only half the release: append put each chunk
+    # row in `_pending` as well, as the SAME dict, so the queue still owns every
+    # token of this segment. This is the SUCCESS path — the one a long streamed
+    # turn normally takes — so skipping it leaks the whole stream on any slot
+    # that is not asked for another turn.
+    slot.release_pending_chunks()
     # Redact the accumulated text
     redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
     for w in exfil_warnings:
@@ -6889,7 +6895,7 @@ async def _run_chat(
         if first_word == "/compact" and not saw_compaction:
             # Clear streamed "Compacting conversation..." text from kiro-cli
             # (claude-agent-acp doesn't stream that, but the cleanup is harmless).
-            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.purge_chunks()
             assistant_text = ""
             _wsred.reset()
             _produced_visible_output = True
@@ -7458,7 +7464,7 @@ async def _run_chat(
             await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
         if assistant_text:
-            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.purge_chunks()
             slot.append(
                 "assistant",
                 redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
@@ -7477,7 +7483,7 @@ async def _run_chat(
         _auth_required = True
         needs_session_reset = True
         if assistant_text:
-            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.purge_chunks()
             slot.append(
                 "assistant",
                 redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
@@ -7491,7 +7497,7 @@ async def _run_chat(
         logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
         needs_session_reset = True
         if assistant_text:
-            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.purge_chunks()
             slot.append(
                 "assistant",
                 redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
@@ -7531,7 +7537,7 @@ async def _run_chat(
         logger.info("Prompt busy exhausted in slot %s — resetting session", slot.key)
         needs_session_reset = True  # checked in finally block
         if assistant_text:
-            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.purge_chunks()
             slot.append(
                 "assistant",
                 redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0],
@@ -7609,7 +7615,7 @@ async def _run_chat(
             if assistant_text:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
                 _safe, _ = redact_credentials(_safe)
-                slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+                slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
             # Option Y: pipe-death ("process exited"/"not running") shares the
             # _acp_pipe_death_retries counter with the AcpProcessDied handler;
@@ -7701,7 +7707,7 @@ async def _run_chat(
             )
             # No tokens streamed (guarded above), so no chunk message exists;
             # strip defensively before re-queue all the same.
-            slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+            slot.purge_chunks()
             if _should_suppress_requeue(slot):
                 pass
             elif _prompt_depth == 0:
@@ -7781,7 +7787,7 @@ async def _run_chat(
             if assistant_text:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
                 _safe, _ = redact_credentials(_safe)
-                slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+                slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
             # Surface a brief recovery notice (one append).
             slot.append("error", "⟳ Backend hiccup — recovering…", "msg msg-err")
@@ -7815,7 +7821,7 @@ async def _run_chat(
             if assistant_text:
                 _safe, _ = redact_exfiltration_urls(assistant_text)
                 _safe, _ = redact_credentials(_safe)
-                slot.messages = [m for m in slot.messages if m.get("role") != "chunk"]
+                slot.purge_chunks()
                 slot.append("assistant", _safe, "msg msg-a")
             # ── Poisoned-conversation escalation ────────────────────────────
             # A transient-classified error that reaches this terminal branch
