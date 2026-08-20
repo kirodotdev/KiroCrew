@@ -1,12 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SlidersHorizontal } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import { api, ApiError } from '../../api/client'
 import { Card, CardTitle } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
+import { SettingRef } from '../../components/settingRef/SettingRef'
 import {
+  NOT_SENDING_KEY,
   PrivacyCommandList,
   PrivacyDisclosureSections,
-  TelemetryToggle,
+  type BeaconStatus,
 } from '../../components/PrivacyDisclosure'
 import { i18nT } from '../../i18n/t'
 
@@ -41,6 +44,107 @@ interface CollectionStatus {
 /** A 409 from the config route is the egress refusal, not a transient failure. */
 function isEgressRefusal(err: unknown): boolean {
   return err instanceof ApiError && err.status === 409
+}
+
+/**
+ * The heartbeat opt-out control, registry-visible (#2689).
+ *
+ * `PrivacyDisclosure.tsx`'s `TelemetryToggle` renders the identical control —
+ * same query, same mutation, same override precedence — but as a bare
+ * `<Toggle>`, and it stays that way: it is shared with the onboarding privacy
+ * step (`PrivacyChapter.tsx`), which is not a `pages/settings/*` panel and
+ * has no config-key concept of its own. The settings-registry extractor
+ * (`settingsExtract.ts`) only finds a `<SettingsToggle configKey=…>` element
+ * whose SOURCE TEXT is literally inside a `PANEL_TAB_MAP`-mapped file — it
+ * does not follow into an imported component's own JSX — so `<SettingRef
+ * configKey="telemetry.beacon_enabled" />` could never resolve to a deep link
+ * while the only rendering of this control lived in `PrivacyDisclosure.tsx`.
+ * This duplicates the toggle's state/logic (accepted cost, per the issue) so
+ * this file's own JSX carries a `SettingsToggle` the extractor can see.
+ */
+function BeaconToggle() {
+  const qc = useQueryClient()
+  const statusQ = useQuery<BeaconStatus>({
+    queryKey: ['beaconStatus'],
+    queryFn: () => api.beaconStatus(),
+  })
+
+  const enabled = statusQ.data?.enabled ?? false
+  const envOverride = statusQ.data?.env_override ?? false
+  const overlayOverride = statusQ.data?.overlay_override ?? false
+  const govOverride = statusQ.data?.governance_override ?? false
+  const pinned = govOverride || envOverride || overlayOverride
+  const shadowed = enabled && !statusQ.data?.would_send && !statusQ.isLoading
+
+  const toggleMut = useMutation({
+    mutationFn: (value: boolean) => api.patchConfig('telemetry.beacon_enabled', value),
+    onMutate: async (value: boolean) => {
+      await qc.cancelQueries({ queryKey: ['beaconStatus'] })
+      const prev = qc.getQueryData<BeaconStatus>(['beaconStatus'])
+      qc.setQueryData<BeaconStatus>(['beaconStatus'], old => ({ ...(old ?? {}), enabled: value }))
+      return { prev }
+    },
+    onError: (_err, _value, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['beaconStatus'], ctx.prev)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['beaconStatus'] })
+      qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    },
+  })
+
+  const NOTE_ID = 'beacon-toggle-note'
+  const showNote = pinned || (!pinned && shadowed)
+
+  return (
+    <div>
+      <SettingsToggle
+        label={i18nT('privacyDisclosure.toggleLabel')}
+        description={i18nT('privacyDisclosure.toggleDescription')}
+        checked={enabled}
+        onChange={v => toggleMut.mutate(v)}
+        disabled={statusQ.isLoading || toggleMut.isPending || pinned}
+        configKey="telemetry.beacon_enabled"
+        describedBy={showNote ? NOTE_ID : undefined}
+      />
+      {toggleMut.isError && (
+        <p role="alert" className="text-[12px] text-danger mt-1">
+          {i18nT('privacyDisclosure.toggleSaveFailed')}
+        </p>
+      )}
+      {/* Precedence mirrors TelemetryToggle: an admin pin outranks the env
+          var, which outranks the overlay; only shown at all when nothing
+          pins it does the "not sending" note apply. */}
+      {govOverride && (
+        <p id={NOTE_ID} className="text-[12px] text-muted mt-1">
+          {i18nT('privacyDisclosure.governanceOverrideNote')}
+        </p>
+      )}
+      {!govOverride && envOverride && (
+        <p id={NOTE_ID} className="text-[12px] text-muted mt-1">
+          <Trans
+            i18nKey="privacyDisclosure.envOverrideWithSettingRef"
+            components={{
+              settingRef: <SettingRef kind="env" configKey={statusQ.data?.env_var ?? 'KIROCREW_TELEMETRY_DISABLED'} envIntent="unset" />,
+            }}
+          />
+        </p>
+      )}
+      {!govOverride && !envOverride && overlayOverride && (
+        <p id={NOTE_ID} className="text-[12px] text-muted mt-1">
+          {i18nT('privacyDisclosure.overlayOverrideNote')}
+        </p>
+      )}
+      {!pinned && shadowed && (
+        <p id={NOTE_ID} className="text-[12px] text-muted mt-1">
+          {i18nT(
+            NOT_SENDING_KEY[statusQ.data?.reason_code as keyof typeof NOT_SENDING_KEY]
+            ?? 'privacyDisclosure.notSendingGeneric',
+          )}
+        </p>
+      )}
+    </div>
+  )
 }
 
 function MetricRecordingToggle() {
@@ -165,7 +269,7 @@ export function PrivacyPanel() {
           <SlidersHorizontal className="lucide-inline" aria-hidden="true" />
           {i18nT('privacyDisclosure.controlsTitle')}
         </CardTitle>
-        <TelemetryToggle />
+        <BeaconToggle />
         {/* Recording is a separate decision from the heartbeat: this one never
             leaves the machine, so it sits below the egress control rather than
             being folded into it. */}

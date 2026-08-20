@@ -42,7 +42,10 @@ export const SHELL_COMMANDS = [
  * diagnostic onto the user's screen. `reason` stays in the payload for bug
  * reports and logs.
  */
-const NOT_SENDING_KEY = {
+/** Exported so `pages/settings/PrivacyPanel.tsx`'s registry-visible
+ *  `BeaconToggle` (#2689) can reuse the same reason-code -> copy mapping
+ *  instead of drifting a second copy out of sync with this one. */
+export const NOT_SENDING_KEY = {
   already_sent_today: 'privacyDisclosure.notSendingAlreadySentToday',
   awaiting_privacy_ack: 'privacyDisclosure.notSendingAwaitingAck',
   ci: 'privacyDisclosure.notSendingCi',

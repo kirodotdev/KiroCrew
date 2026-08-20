@@ -653,6 +653,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "telemetry.enabled"
   },
   {
+    "id": "privacy.send-anonymous-usage-heartbeat",
+    "label": "Send anonymous usage heartbeat",
+    "description": "Saved for future launches.",
+    "tab": "privacy",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "telemetry.beacon_enabled"
+  },
+  {
     "id": "security.trust-every-third-party-app",
     "label": "Trust every third-party app",
     "labelKey": "pages.settings.securityPanel.trustedApps.allow_all_label",

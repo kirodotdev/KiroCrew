@@ -52,4 +52,16 @@ describe('settingsRegistry.gen.ts — anti-stale guard', () => {
     const ids = SETTINGS_REGISTRY.map(e => e.id)
     expect(new Set(ids).size).toBe(ids.length)
   })
+
+  it('telemetry.beacon_enabled resolves to a settings tab (#2689)', () => {
+    // The beacon toggle used to render ONLY inside PrivacyDisclosure.tsx,
+    // shared with onboarding and never scanned by the extractor -- so a
+    // <SettingRef configKey="telemetry.beacon_enabled" /> fell through to
+    // the copyable-CLI-command fallback instead of a deep link. PrivacyPanel
+    // now also renders a registry-visible SettingsToggle for the same key.
+    const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'telemetry.beacon_enabled')
+    expect(entry).toBeDefined()
+    expect(entry?.tab).toBe('privacy')
+    expect(entry?.type).toBe('toggle')
+  })
 })

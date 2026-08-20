@@ -3,6 +3,16 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **`<SettingRef configKey="telemetry.beacon_enabled" />` now resolves to a
+  real deep link into Settings → Privacy instead of a copyable CLI command.**
+  The heartbeat opt-out toggle previously rendered only inside
+  `PrivacyDisclosure.tsx` — shared with the onboarding privacy step — which
+  the settings-registry extractor never scans (it only reads
+  `SettingsToggle` elements whose source text is literally inside a
+  `pages/settings/*` panel file). `PrivacyPanel.tsx` now also renders a
+  registry-visible toggle for the same key, mirroring the fix #2651 already
+  shipped for `telemetry.enabled`. The onboarding flow keeps using the
+  original shared component unchanged. (#2689)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

@@ -181,6 +181,21 @@ describe('PrivacyPanel', () => {
       expect(patchConfig).toHaveBeenCalledWith('telemetry.beacon_enabled', false))
   })
 
+  it('carries the configKey the settings registry needs to resolve a deep link (#2689)', async () => {
+    // <SettingRef configKey="telemetry.beacon_enabled" /> resolved to a copyable
+    // CLI popover instead of a real deep link because the only rendering of
+    // this control lived in PrivacyDisclosure.tsx (shared with onboarding),
+    // which settingsExtract.ts never scans -- it only reads SettingsToggle
+    // elements whose source text is literally inside a pages/settings/* panel
+    // file. SettingsToggle stamps `data-setting-key` from `configKey`, so
+    // asserting on that attribute here is the same check the extractor's
+    // static scan is doing against this file's own JSX.
+    renderWithProviders(<PrivacyPanel />)
+    const toggle = await screen.findByRole('switch', { name: TOGGLE_LABEL })
+    const row = toggle.closest('[data-setting-key]')
+    expect(row).toHaveAttribute('data-setting-key', 'telemetry.beacon_enabled')
+  })
+
   it('surfaces a save failure and restores the previous state', async () => {
     patchConfig.mockRejectedValue(new Error('nope'))
     renderWithProviders(<PrivacyPanel />)
