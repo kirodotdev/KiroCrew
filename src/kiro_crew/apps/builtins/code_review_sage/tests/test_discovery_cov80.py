@@ -13,7 +13,6 @@ Patched the same way as ``test_discovery.py``: ``gh_bin`` plus
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -38,7 +37,19 @@ def _stub_bin(name: str) -> str:
 
 
 def _proc(returncode=0, stdout="", stderr=""):
-    return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    """Stand in for what ``subprocess.run`` hands ``github_runner.run_gh``.
+
+    A real ``CompletedProcess`` carrying BYTES: ``run_gh`` decodes the streams
+    itself (strictly, as UTF-8) instead of letting subprocess guess with the
+    locale codec, so a ``SimpleNamespace`` of ``str`` has neither ``args`` nor
+    ``decode``.
+    """
+    return subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=returncode,
+        stdout=stdout.encode("utf-8") if isinstance(stdout, str) else stdout,
+        stderr=stderr.encode("utf-8") if isinstance(stderr, str) else stderr,
+    )
 
 
 class TestCurrentLogin(unittest.TestCase):

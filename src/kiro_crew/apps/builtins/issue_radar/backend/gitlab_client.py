@@ -50,7 +50,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlparse
 
@@ -242,11 +241,6 @@ def _glab_bin() -> str:
     global _glab_bin_cache
     if _glab_bin_cache:
         return _glab_bin_cache
-    if sys.platform == "win32":
-        raise ProviderCliError(
-            "Issue Radar requires a POSIX platform (macOS/Linux); "
-            "Windows is not supported — use WSL to run the Kiro Crew gateway"
-        )
 
     from kiro_crew.dashboard.handlers.source_providers import (
         _validate_provider_executable,
@@ -363,13 +357,17 @@ def _glab_run(
     glab = _glab_bin()
     operation = f"glab {' '.join(argv[1:3])}"  # e.g. "glab api projects/…" (bounded)
     try:
+        # Bytes, decoded below under our own control. See the long note in
+        # github_runner.run_gh: `text=True` follows the locale (the ANSI codepage
+        # on Windows) and crashes in subprocess's reader thread on non-ASCII
+        # output, while `errors="replace"` would let U+FFFD through into a JSON
+        # string value and on into stored issue records.
         proc = subprocess.run(
             [glab, *argv[1:]],
             capture_output=True,
-            text=True,
             timeout=timeout,
             check=False,
-            input=input_text,
+            input=input_text.encode("utf-8") if input_text is not None else None,
             env=_glab_env(resolved_host),
         )
     except FileNotFoundError as exc:  # pragma: no cover — _glab_bin guards first
@@ -380,11 +378,24 @@ def _glab_run(
     except subprocess.TimeoutExpired as exc:
         _audit("glab_run", operation, "failure", error=f"timeout after {timeout}s")
         raise ProviderCliError(f"`glab` timed out after {timeout}s") from exc
-    if proc.returncode != 0:
-        _audit("glab_run", operation, "failure", error=f"exit {proc.returncode}")
+    try:
+        decoded = subprocess.CompletedProcess(
+            proc.args,
+            proc.returncode,
+            stdout=proc.stdout.decode("utf-8") if proc.stdout is not None else None,
+            stderr=proc.stderr.decode("utf-8") if proc.stderr is not None else None,
+        )
+    except UnicodeDecodeError as exc:
+        # Stream offset only -- never the offending bytes, which are payload.
+        _audit("glab_run", operation, "failure", error="undecodable output")
+        raise ProviderCliError(
+            f"`glab` returned output that is not valid UTF-8 (at byte {exc.start})"
+        ) from exc
+    if decoded.returncode != 0:
+        _audit("glab_run", operation, "failure", error=f"exit {decoded.returncode}")
     else:
         _audit("glab_run", operation, "ok")
-    return proc
+    return decoded
 
 
 # Markers ``glab`` prints when the CLI itself has no usable credentials for the

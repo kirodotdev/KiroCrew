@@ -107,9 +107,18 @@ def gh_bin() -> str:
     Set ``KIROCREW_SAGE_GH`` to an absolute path to override (still validated).
     Raises :class:`GhSetupError` when no acceptable executable is found."""
     if sys.platform == "win32":
+        # The provider-CLI trust gate this app shares with Issue Radar now works
+        # on Windows, but Sage needs a SECOND thing Issue Radar does not: its
+        # review prompts and its `sage-review` skill hand the worker session
+        # `python3 sage_lib/...` commands, and `python3` is not an interpreter on
+        # Windows -- the name resolves to the Microsoft Store app-execution
+        # alias, or to nothing. Enabling Sage here would trade a clear refusal
+        # for a review that starts and then produces no result record, so the
+        # refusal stays until the worker names the running interpreter.
         raise GhSetupError(
-            "Code Review Sage requires a POSIX platform (macOS/Linux); "
-            "run the Kiro Crew gateway under WSL on Windows"
+            "Code Review Sage is not yet supported on Windows: its review worker "
+            "invokes `python3`, which is not an interpreter on this platform "
+            "(tracked separately). Issue Radar does work on Windows."
         )
     if github_runner is None:  # pragma: no cover - standalone fallback
         raise RuntimeError("gh_bin requires the Kiro Crew runtime")

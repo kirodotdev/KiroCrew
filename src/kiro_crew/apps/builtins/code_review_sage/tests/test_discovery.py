@@ -16,9 +16,9 @@ import json
 import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
-import types
 import unittest
 import unittest.mock
 from datetime import datetime, timedelta, timezone
@@ -32,7 +32,19 @@ from sage_lib import discovery, store  # noqa: E402  (app root added to sys.path
 
 
 def _proc(returncode=0, stdout="", stderr=""):
-    return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    """Stand in for what ``subprocess.run`` hands ``github_runner.run_gh``.
+
+    A real ``CompletedProcess`` carrying BYTES, because ``run_gh`` decodes the
+    streams itself (strictly, as UTF-8) rather than letting subprocess guess with
+    the locale codec. A ``SimpleNamespace`` with ``str`` streams fails twice over:
+    no ``args`` attribute, and no ``decode``.
+    """
+    return subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=returncode,
+        stdout=stdout.encode("utf-8") if isinstance(stdout, str) else stdout,
+        stderr=stderr.encode("utf-8") if isinstance(stderr, str) else stderr,
+    )
 
 
 def _iso(dt):

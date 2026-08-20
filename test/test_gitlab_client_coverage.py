@@ -38,6 +38,17 @@ def _proc(stdout: str = "", returncode: int = 0, stderr: str = "") -> SimpleName
     return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode, args=[])
 
 
+def _raw_proc(stdout: bytes = b"", returncode: int = 0, stderr: bytes = b"") -> SimpleNamespace:
+    """A stand-in for what ``subprocess.run`` itself returns — BYTES.
+
+    ``_glab_run`` captures bytes and decodes them strictly in its own frame, so
+    a stub at the subprocess boundary must be bytes too. (Letting subprocess
+    decode puts a failure on its reader thread, where it hands the caller
+    ``stdout=None`` instead of an attributable error.)
+    """
+    return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode, args=[])
+
+
 class Router:
     """Stub for ``_glab_run``: answers from an ordered path table, records calls.
 
@@ -267,7 +278,7 @@ def test_glab_run_substitutes_the_trusted_binary(monkeypatch):
     def _run(argv, **kwargs):
         seen["argv"] = argv
         seen["kwargs"] = kwargs
-        return _proc(stdout="{}")
+        return _raw_proc(stdout=b"{}")
 
     monkeypatch.setattr(gl.subprocess, "run", _run)
     proc = gl._glab_run(["glab", "api", "user"], host="gitlab.com", timeout=5.0)
@@ -291,8 +302,23 @@ def test_glab_run_maps_a_timeout_to_a_cli_error(monkeypatch):
 
 def test_glab_run_returns_a_failure_without_raising(monkeypatch):
     monkeypatch.setattr(gl, "_glab_bin", lambda: "/trusted/bin/glab")
-    monkeypatch.setattr(gl.subprocess, "run", lambda argv, **kw: _proc(returncode=22))
+    monkeypatch.setattr(gl.subprocess, "run", lambda argv, **kw: _raw_proc(returncode=22))
     assert gl._glab_run(["glab", "api", "user"], host="gitlab.com", timeout=1.0).returncode == 22
+
+
+def test_glab_run_maps_undecodable_output_to_a_cli_error(monkeypatch):
+    """Non-UTF-8 provider output must be an attributable error, not corruption.
+
+    glab emits UTF-8, so this is a genuine anomaly. The failure names the byte
+    offset and must not echo the offending bytes, which are provider payload.
+    """
+    monkeypatch.setattr(gl, "_glab_bin", lambda: "/trusted/bin/glab")
+    monkeypatch.setattr(
+        gl.subprocess, "run", lambda argv, **kw: _raw_proc(stdout=b'{"t": "\xff"}')
+    )
+    with pytest.raises(gl.ProviderCliError, match="not valid UTF-8") as caught:
+        gl._glab_run(["glab", "api", "user"], host="gitlab.com", timeout=1.0)
+    assert "\xff" not in str(caught.value)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
@@ -365,10 +391,26 @@ def test_glab_bin_accepts_the_first_trusted_candidate(monkeypatch, tmp_path):
     assert gl._glab_bin() == str(present)
 
 
-def test_glab_bin_refuses_windows(monkeypatch):
-    monkeypatch.setattr(gl.sys, "platform", "win32")
-    with pytest.raises(gl.ProviderCliError, match="POSIX"):
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows resolution path")
+def test_glab_bin_no_longer_short_circuits_on_windows(monkeypatch):
+    """Windows is resolved and validated like any other host.
+
+    The old behaviour was an unconditional ``ProviderCliError`` naming WSL,
+    which fired before candidate discovery. It is gone: the platform is no
+    longer a special case, so a Windows host with no acceptable ``glab``
+    must fail for the ordinary reason (nothing trustworthy found) rather than
+    for being Windows.
+    """
+    from kiro_crew.dashboard.handlers import source_providers
+
+    monkeypatch.setattr(gl, "_glab_bin_cache", "")
+    monkeypatch.delenv("KIROCREW_ISSUE_RADAR_GLAB", raising=False)
+    monkeypatch.setattr(source_providers, "provider_executable_candidates", lambda name: ())
+
+    with pytest.raises(gl.ProviderSetupError) as excinfo:
         gl._glab_bin()
+    assert "POSIX" not in str(excinfo.value)
+    assert "WSL" not in str(excinfo.value)
 
 
 # ── the API layer: pagination and error mapping ──────────────────────────────

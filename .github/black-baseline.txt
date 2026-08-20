@@ -49,7 +49,6 @@ src/kiro_crew/apps/builtins/code_review_sage/sage_lib/results.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py
-src/kiro_crew/apps/builtins/code_review_sage/tests/conftest.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_activity_progress.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/test_adapters.py

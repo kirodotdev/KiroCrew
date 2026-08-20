@@ -21,8 +21,13 @@ from .test_backend_routes import _load_routes_module
 
 
 def _cp(stdout: str = "", returncode: int = 0, stderr: str = ""):
-    return subprocess.CompletedProcess(args=["gh"], returncode=returncode,
-                                       stdout=stdout, stderr=stderr)
+    """BYTES streams: ``run_gh`` decodes them itself, strictly as UTF-8."""
+    return subprocess.CompletedProcess(
+        args=["gh"],
+        returncode=returncode,
+        stdout=stdout.encode("utf-8") if isinstance(stdout, str) else stdout,
+        stderr=stderr.encode("utf-8") if isinstance(stderr, str) else stderr,
+    )
 
 
 def _repo(name: str, owner: str = "acme", **over) -> dict:

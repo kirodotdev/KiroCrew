@@ -1,18 +1,24 @@
 """Collection-time platform gate for the Code Review Sage suite.
 
-The app itself refuses to run off POSIX — `sage_lib/discovery.py` raises
-"Code Review Sage requires a POSIX platform (macOS/Linux); run the Kiro Crew
-gateway under WSL on Windows" — so these tests assert POSIX behaviour throughout:
-`0600` file modes, forward-slash path suffixes, and a `gh` binary the Windows
-runner never reaches because the platform guard fires first.
+Two independent reasons, both still true:
 
-Running them on Windows therefore tests a configuration the app does not support,
-and the failures say nothing about the code. Skip the suite there rather than
-teaching nine assertions to be platform-agnostic for a platform the app rejects.
+* the app refuses to run on Windows — `sage_lib/discovery.py` raises because its
+  review worker invokes `python3`, which is not an interpreter there; and
+* these tests assert POSIX behaviour throughout anyway (`0600` file modes,
+  forward-slash path suffixes, shell-script `gh` stubs the Windows runner cannot
+  execute).
 
-This lives here, next to the suite it gates, so the reason travels with the tests
+Note what changed and what did not. The provider-CLI trust gate Sage shares with
+Issue Radar is no longer POSIX-only: `github_runner.validate_provider_executable`
+now answers from the Windows ACL. Sage's own refusal is narrower than it was — it
+names the interpreter, not the trust check — but it is still a refusal, so
+running this suite on Windows would still exercise a configuration the app
+rejects.
+
+This lives next to the suite it gates, so the reason travels with the tests
 rather than sitting in a CI workflow that would hide it.
 """
+
 import os
 
 import pytest
@@ -21,7 +27,7 @@ collect_ignore_glob = ["*"] if os.name == "nt" else []
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt",
-    reason="Code Review Sage requires a POSIX platform (see sage_lib/discovery.py)",
+    reason="Code Review Sage does not run on Windows yet (see sage_lib/discovery.py)",
 )
 
 

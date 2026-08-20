@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -109,11 +108,6 @@ def _gh_bin() -> str:
     ``KIROCREW_ISSUE_RADAR_GH`` to an absolute path to override (still
     validated), or ``KIROCREW_PROVIDER_BIN_STRICT=1`` to require a root-owned
     ``gh``. Raises :class:`GhSetupError` if no acceptable executable is found."""
-    if sys.platform == "win32":
-        raise GhCliError(
-            "Issue Radar requires a POSIX platform (macOS/Linux); "
-            "Windows is not supported — use WSL to run the Kiro Crew gateway"
-        )
     try:
         return github_runner.resolve_gh(override_env=_GH_OVERRIDE_ENV)
     except github_runner.SetupError as exc:

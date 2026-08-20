@@ -26,7 +26,16 @@ from unittest import mock
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only gh hardening")
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    # NOT because the hardening is POSIX-only -- it no longer is. These
+    # assertions pin the POSIX policy's own messages ("world-writable", "owned
+    # by another user (uid ...)") and build `#!/bin/sh` gh stubs, none of which
+    # the Windows branch produces or can execute. The Windows policy has its
+    # own suite in test/test_windows_acl.py; porting these assertions to be
+    # platform-agnostic is separate work.
+    reason="asserts the POSIX branch's messages and fixtures (see test_windows_acl.py)",
+)
 
 from kiro_crew import github_runner as runner  # noqa: E402
 
@@ -62,6 +71,13 @@ class TestResolveGh:
         monkeypatch.setattr(
             runner, "check_provider_path_component",
             lambda path, *, label, uid, strict: None,
+        )
+        # Same reasoning for the Windows walk, which reads a real ACL and so
+        # depends on the runner's own tmp ancestry just as much.
+        monkeypatch.setattr(
+            runner,
+            "check_provider_path_component_windows",
+            lambda path, *, label, me_sid, strict: None,
         )
 
     def test_caller_override_wins_over_generic_and_candidates(self, monkeypatch, tmp_path):
@@ -249,7 +265,18 @@ class TestGhEnv:
 
 
 def _proc(returncode: int = 0) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(args=["gh"], returncode=returncode, stdout="", stderr="")
+    """A stand-in for what ``subprocess.run`` returns to ``run_gh`` -- BYTES.
+
+    ``run_gh`` captures bytes and decodes them strictly in its own frame, so a
+    stub at the subprocess boundary must hand it bytes. Handing it `str` raises
+    `AttributeError: 'str' object has no attribute 'decode'`.
+
+    This file is skipped on Windows (see the module-level `pytestmark`), so
+    these five tests are the ones a Windows-only local run does NOT execute --
+    which is exactly how the `str` version of this helper reached CI green
+    locally and red on the Linux shards.
+    """
+    return subprocess.CompletedProcess(args=["gh"], returncode=returncode, stdout=b"", stderr=b"")
 
 
 class TestRunGh:

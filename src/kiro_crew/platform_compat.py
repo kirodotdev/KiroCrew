@@ -3034,6 +3034,76 @@ def current_user_sid() -> str | None:
     return sid
 
 
+def is_token_elevated() -> bool | None:
+    """Whether this process runs with an ELEVATED token, or ``None`` if unknown.
+
+    Lives here rather than beside its one caller because this module already
+    owns "read this process's own access token" for the codebase (see
+    :func:`_process_token_sid_unguarded`), and a second copy of the
+    ``OpenProcessToken`` / ``GetTokenInformation`` prototype pair is plumbing
+    that drifts.
+
+    The tri-state return is deliberate and the two non-``True`` answers are not
+    interchangeable: ``False`` means the token was read and is not elevated,
+    while ``None`` means it could not be read at all. A caller that treats
+    elevation as disqualifying must refuse on ``None`` too, because "unknown"
+    is not "fine". Returns ``False`` on POSIX, where the concept does not exist
+    and the equivalent question is ``geteuid() == 0``.
+    """
+    if not IS_WINDOWS:
+        return False
+    TOKEN_QUERY = 0x0008
+    TOKEN_ELEVATION = 20
+    try:
+        # Per-line ignore is this module's own convention for the Windows-only
+        # ctypes surface (typeshed guards it, and CI type-checks on Linux).
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    except OSError:  # pragma: no cover - a Windows without advapi32
+        return None
+
+    # Same reason as _process_token_sid_unguarded: declare every prototype and
+    # pass ctypes instances, never bare Python ints.
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), wintypes.DWORD(TOKEN_QUERY), ctypes.byref(token)
+    ):
+        return None
+    try:
+        elevation = wintypes.DWORD()
+        returned = wintypes.DWORD()
+        ok = advapi32.GetTokenInformation(
+            token,
+            ctypes.c_int(TOKEN_ELEVATION),
+            ctypes.byref(elevation),
+            wintypes.DWORD(ctypes.sizeof(elevation)),
+            ctypes.byref(returned),
+        )
+        if not ok:
+            return None
+        return bool(elevation.value)
+    finally:
+        kernel32.CloseHandle(token)
+
+
 def make_owner_only_dir(path: str | os.PathLike) -> None:
     """Create *path* (with parents) and make it readable only by this user.
 

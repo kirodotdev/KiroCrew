@@ -948,10 +948,16 @@ the list, the filters, the selected item — is untouched.
 
 ## Platform Requirements
 
-- POSIX only (macOS/Linux). Windows raises `GhCliError` immediately.
+- Works on macOS, Linux **and Windows**. The `gh` trust check is answered from
+  POSIX ownership (`st_uid` + the group/other write bits) or, on Windows, from
+  the object's ACL — see `github_runner.check_provider_path_component_windows`
+  and `kiro_crew.windows_acl`. An **elevated** Windows gateway is refused for the
+  same reason a root POSIX one is: its children would be elevated too, which
+  makes the ownership walk vacuous.
 - `gh` CLI authenticated on the host.
 - Any `gh` the user can run from their terminal is accepted: the well-known dirs
   (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/home/linuxbrew/…`, the
-  managed `libexec/kirocrew` dirs) are searched first, then `PATH`. No `sudo`
+  managed `libexec/kirocrew` dirs, and on Windows the `GitHub CLI` subdirectory
+  of each Program Files root) are searched first, then `PATH`. No `sudo`
   copy is required. Override with `KIROCREW_ISSUE_RADAR_GH`; harden with
   `KIROCREW_PROVIDER_BIN_STRICT=1`.
