@@ -1013,6 +1013,7 @@
       },
       "header": {
         "browser_note": "Ceci est la vue navigateur. Tout ici est en direct, mais le compagnon lui-même apparaît dans l’application de bureau Kiro Crew.",
+        "desktop_tip": "Clique sur le compagnon sur ton bureau pour ouvrir son panneau ; clique droit pour changer son avatar.",
         "subtitle": "Définis ton rythme de pauses, ajoute des rappels, choisis ce dont ton compagnon te parle, et repense au temps passé ensemble.",
         "title": "Crew Companion"
       },
@@ -1063,8 +1064,8 @@
       "offline": {
         "body": "Ouvre-le pour modifier les rappels de pause et définir des rappels — ils vivent dans le compagnon sur ton Mac.",
         "couldnt_open": "Impossible d’ouvrir le compagnon — {{error}}",
+        "couldnt_turn_off": "Impossible de désactiver le compagnon — {{error}}",
         "open": "Ouvrir Crew Companion",
-        "quit_tip": "Clique sur le compagnon sur ton bureau pour ouvrir son panneau ; clique droit pour changer son avatar ou le quitter.",
         "title": "Crew Companion n’est pas lancé"
       },
       "panel": {

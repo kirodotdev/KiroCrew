@@ -937,6 +937,7 @@
       },
       "header": {
         "browser_note": "这是浏览器视图。这里的一切都是实时的，但伙伴本身出现在 Kiro Crew 桌面应用中。",
+        "desktop_tip": "点击桌面上的伙伴来打开它的面板；右键点击可更换头像。",
         "subtitle": "设定你的休息节奏、添加提醒、选择让伙伴告诉你哪些事，并回顾你们一起度过的时光。",
         "title": "Crew Companion"
       },
@@ -981,8 +982,8 @@
       "offline": {
         "body": "打开它就能修改休息提醒、设定提醒事项 — 这些都在你 Mac 上的伙伴里。",
         "couldnt_open": "无法打开桌面伙伴 — {{error}}",
+        "couldnt_turn_off": "无法关闭桌面伙伴 — {{error}}",
         "open": "打开 Crew Companion",
-        "quit_tip": "点击桌面上的伙伴来打开它的面板；右键点击可更换头像或退出。",
         "title": "Crew Companion 尚未运行"
       },
       "panel": {

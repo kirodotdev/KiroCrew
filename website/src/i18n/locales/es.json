@@ -987,6 +987,7 @@
       },
       "header": {
         "browser_note": "Esta es la vista del navegador. Todo aquí está en vivo, pero el compañero en sí aparece en la aplicación de escritorio de Kiro Crew.",
+        "desktop_tip": "Haz clic en el compañero en tu escritorio para abrir su panel; haz clic derecho para cambiar su avatar.",
         "subtitle": "Define tu ritmo de descansos, agrega recordatorios, elige de qué quieres que te avise tu compañero y recuerda el tiempo que han pasado juntos.",
         "title": "Crew Companion"
       },
@@ -1037,8 +1038,8 @@
       "offline": {
         "body": "Ábrelo para cambiar los recordatorios de descanso y programar recordatorios: esos viven dentro del compañero en tu Mac.",
         "couldnt_open": "No se pudo abrir el acompañante — {{error}}",
+        "couldnt_turn_off": "No se pudo apagar el compañero — {{error}}",
         "open": "Abrir Crew Companion",
-        "quit_tip": "Haz clic en el compañero en tu escritorio para abrir su panel; haz clic derecho para cambiar su avatar o salir.",
         "title": "Crew Companion no se está ejecutando"
       },
       "panel": {

@@ -987,6 +987,7 @@
       },
       "header": {
         "browser_note": "Questa è la vista browser. Tutto qui è in tempo reale, ma il compagno stesso appare nell’app desktop di Kiro Crew.",
+        "desktop_tip": "Fai clic sul compagno sul desktop per aprire il suo pannello; fai clic con il tasto destro per cambiare avatar.",
         "subtitle": "Imposta il tuo ritmo delle pause, aggiungi promemoria, scegli di cosa il tuo compagno ti tiene aggiornato e ripensa al tempo passato insieme.",
         "title": "Crew Companion"
       },
@@ -1037,8 +1038,8 @@
       "offline": {
         "body": "Aprilo per cambiare i promemoria per le pause e impostare i promemoria — vivono all'interno del compagno sul tuo Mac.",
         "couldnt_open": "Impossibile aprire il compagno — {{error}}",
+        "couldnt_turn_off": "Impossibile disattivare il compagno — {{error}}",
         "open": "Apri Crew Companion",
-        "quit_tip": "Fai clic sul compagno sul desktop per aprire il suo pannello; fai clic con il tasto destro per cambiare avatar o uscire.",
         "title": "Crew Companion non è in esecuzione"
       },
       "panel": {

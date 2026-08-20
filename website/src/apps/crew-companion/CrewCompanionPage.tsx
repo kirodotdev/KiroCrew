@@ -8,16 +8,18 @@
  * can't easily surface from the desktop: how it nudges you (Settings), what it will
  * remind you about (Reminders), and its record of your time together (Memories).
  *
- * When the companion is not running, both of its endpoints are unreachable; instead
- * of rendering dead disabled controls, the page shows a distinct "not running" state
- * with an Open action, and keeps Memories visible from a local cache.
+ * When the companion is disabled, or both of its endpoints are unreachable,
+ * the page shows a distinct "not running" state with an Open action instead
+ * of dead controls, and keeps Memories visible from a local cache.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Ghost, ExternalLink } from 'lucide-react'
+import { Ghost, ExternalLink, PowerOff } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { isElectron } from '../../lib/electron'
 import { apiGet, apiPost } from './api'
-import { REMINDERS_PATH, STATS_PATH, POLL_MS } from './constants'
+import {
+  REMINDERS_PATH, STATS_PATH, POLL_MS, ENABLE_PATH, DISABLE_PATH, WINDOW_PATH,
+} from './constants'
 import { CC_CSS } from './styles'
 import SettingsSection from './SettingsSection'
 import RemindersSection from './RemindersSection'
@@ -38,6 +40,7 @@ export default function CrewCompanionPage() {
 
   /** Transient message for a failed write, announced politely to assistive tech. */
   const [notice, setNotice] = useState<string | null>(null)
+  const [turningOff, setTurningOff] = useState(false)
   /**
    * Clear the failure notice on the next success — otherwise a user who retries
    * and succeeds still reads that it had failed.
@@ -122,12 +125,6 @@ export default function CrewCompanionPage() {
   }, [loadReminders, clearNotice])
 
   /**
-   * Relaunch the desktop pet. The user can Quit it from the avatar menu, after
-   * which there is no other way back — this button hits the gateway's app-open
-   * endpoint (allowed in the manifest). On a headless/remote gateway the open
-   * is not possible locally, so surface the command instead of failing silently.
-   */
-  /**
    * Bring the companion back.
    *
    * The original page POSTed to `/open`, which launched the separate desktop app. As a
@@ -144,20 +141,54 @@ export default function CrewCompanionPage() {
    * write on this page. It used to reuse `offline.body` — a piece of guidance prose
    * with no placeholder — so a failure showed the user "Open it to change break
    * nudges…" and threw the real reason away.
+   *
+   * A successful open re-reads reminders and stats so the away card can drop
+   * without waiting for the poll. Disable 403s those GETs, and Open is what
+   * clears that; leaving remError set would keep "isn't running" up for 10s
+   * after the companion is already back.
    */
   const openPet = useCallback(() => {
-    const open = () => apiPost('/api/apps/crew-companion/window', { target: 'panel' })
+    const open = () => apiPost(WINDOW_PATH, { target: 'panel' })
+    const onOpened = () => {
+      clearNotice()
+      void loadReminders()
+      void loadMemories()
+    }
     open()
-      .then(clearNotice)
+      .then(onOpened)
       .catch(() =>
-        apiPost('/api/apps/crew-companion/enable', {})
+        apiPost(ENABLE_PATH, {})
           .then(open)               // the request that was asked for in the first place
-          .then(clearNotice)
+          .then(onOpened)
           .catch((e: unknown) => {
             setNotice(i18nT('apps.crewCompanion.offline.couldnt_open', { error: errText(e) }))
           }),
       )
-  }, [clearNotice])
+  }, [clearNotice, loadReminders, loadMemories])
+
+  /**
+   * Stop the companion from this page. Library's Disable button and the pet's
+   * right-click "Turn off companion" item already POST the same path; this page
+   * did not, and its only hint pointed at a macOS menu that never opens.
+   *
+   * Every companion route is wrapped in `_require_enabled`, so the next poll
+   * would 403 and the away card would appear anyway. Marking both reads offline
+   * here is so that wait is not the UI: after a successful disable the overlay
+   * is already gone, and Open on that card is the way back on.
+   */
+  const turnOff = useCallback(() => {
+    setTurningOff(true)
+    apiPost(DISABLE_PATH, {})
+      .then(() => {
+        clearNotice()
+        setRemError('offline')
+        setMemOffline(true)
+      })
+      .catch((e: unknown) => {
+        setNotice(i18nT('apps.crewCompanion.offline.couldnt_turn_off', { error: errText(e) }))
+      })
+      .finally(() => setTurningOff(false))
+  }, [])
 
   // Memories is a look-back, not a live control — keep it visible even when the
   // pet is off by caching the last good stats and showing them (labelled) offline.
@@ -186,16 +217,34 @@ export default function CrewCompanionPage() {
       <style>{CC_CSS}</style>
 
       <div>
-        <div className="cc-head-top">
-          <Ghost size={22} style={{ color: 'var(--accent)' }} aria-hidden />
-          <h1 className="cc-h1">{i18nT('apps.crewCompanion.header.title')}</h1>
+        <div className="cc-head-top" style={{ justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <Ghost size={22} style={{ color: 'var(--accent)' }} aria-hidden />
+            <h1 className="cc-h1">{i18nT('apps.crewCompanion.header.title')}</h1>
+          </div>
+          {!offline ? (
+            <button
+              type="button"
+              className="cc-btn cc-turn-off"
+              style={{ flexShrink: 0 }}
+              onClick={turnOff}
+              disabled={turningOff}
+            >
+              <PowerOff className="lucide-inline" aria-hidden />
+              {i18nT('apps.crewCompanion.menu.quit')}
+            </button>
+          ) : null}
         </div>
         <p className="cc-sub">{i18nT('apps.crewCompanion.header.subtitle')}</p>
         {/* Mochi-parity honesty (MochiPage.tsx does the same): in a browser there
-          * is no desktop overlay to click, so the quit-tip's "click the companion
-          * on your desktop" instruction is unfollowable and reads as a bug. Swap
-          * it for a note that names where the companion actually lives. */}
-        {!offline && isElectron ? <p className="cc-quit-tip">{i18nT('apps.crewCompanion.offline.quit_tip')}</p> : null}
+          * is no desktop overlay to click, so the desktop tip's "click the
+          * companion on your desktop" instruction is unfollowable and reads as
+          * a bug. Swap it for a note that names where the companion actually
+          * lives. The Electron tip no longer tells the user to quit from the
+          * right-click menu: that control is the header button above. */}
+        {!offline && isElectron ? (
+          <p className="cc-quit-tip">{i18nT('apps.crewCompanion.header.desktop_tip')}</p>
+        ) : null}
         {!offline && !isElectron ? (
           <p role="note" className="cc-quit-tip">{i18nT('apps.crewCompanion.header.browser_note')}</p>
         ) : null}

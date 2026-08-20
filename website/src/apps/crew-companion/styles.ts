@@ -8,6 +8,7 @@
 export const CC_CSS = `
 .cc-page { max-width:880px; margin:0 auto; padding:24px 24px 48px; color:var(--text); font-size:13px; }
 .cc-head-top { display:flex; align-items:center; gap:10px; }
+.cc-turn-off { flex-shrink:0; }
 .cc-h1 { margin:0; font-size:18px; font-weight:650; }
 .cc-sub { font-size:13px; color:var(--muted); line-height:1.5; margin:6px 0 0; }
 

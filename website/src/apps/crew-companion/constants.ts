@@ -21,6 +21,8 @@ export const REMINDERS_PATH = `${API_BASE}/reminders`
 export const STATS_PATH = `${API_BASE}/stats`
 /** Turn the companion on. The app manager's generic per-app enable route. */
 export const ENABLE_PATH = `${API_BASE}/enable`
+/** Turn the companion off. Same path Library Disable and the pet menu already POST. */
+export const DISABLE_PATH = `${API_BASE}/disable`
 /**
  * Ask the always-running overlay to open one of its Electron windows. The
  * dashboard page has no bridge to the desktop main process, so it records the

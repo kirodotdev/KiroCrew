@@ -987,6 +987,7 @@
       },
       "header": {
         "browser_note": "Esta é a visualização do navegador. Tudo aqui é ao vivo, mas o companheiro em si aparece no aplicativo de desktop do Kiro Crew.",
+        "desktop_tip": "Clique no companheiro na sua área de trabalho para abrir o painel dele; clique com o botão direito para trocar o avatar.",
         "subtitle": "Defina seu ritmo de pausas, adicione lembretes, escolha sobre o que seu companheiro te conta e relembre o tempo que passaram juntos.",
         "title": "Crew Companion"
       },
@@ -1037,8 +1038,8 @@
       "offline": {
         "body": "Abra-o para alterar os lembretes de pausa e definir lembretes — eles ficam dentro do companheiro no seu Mac.",
         "couldnt_open": "Não foi possível abrir o companheiro — {{error}}",
+        "couldnt_turn_off": "Não foi possível desligar o companheiro — {{error}}",
         "open": "Abrir o Crew Companion",
-        "quit_tip": "Clique no companheiro na sua área de trabalho para abrir o painel dele; clique com o botão direito para trocar o avatar ou sair.",
         "title": "O Crew Companion não está em execução"
       },
       "panel": {

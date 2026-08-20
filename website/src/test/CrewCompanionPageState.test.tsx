@@ -12,8 +12,9 @@
  * kept the copy and dropped the action, leaving the user told that the companion was
  * away with no way to bring it back.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
+import { i18nT } from '../i18n/t'
 
 /** Per-test switch: does the companion's backend answer, or not? */
 const state = vi.hoisted(() => ({ reachable: true, enabled: true }))
@@ -25,7 +26,9 @@ const FAILURE_REASON = 'kaboom-from-the-server'
 
 vi.mock('../apps/crew-companion/api', () => ({
   apiGet: vi.fn(async (path: string) => {
-    if (!state.reachable) throw new Error('offline')
+    // Disable 403s every companion route (`_require_enabled`). Reachable is a
+    // separate fact: the overlay process may be down while the app is still on.
+    if (!state.reachable || !state.enabled) throw new Error('offline')
     if (path.includes('/reminders')) {
       return {
         reminders: [],
@@ -49,6 +52,7 @@ vi.mock('../apps/crew-companion/api', () => ({
     // the test flip the switch itself at a moment of its own choosing.
     if (path.includes('/window') && !state.enabled) throw new Error(FAILURE_REASON)
     if (path.includes('/enable')) state.enabled = true
+    if (path.includes('/disable')) state.enabled = false
     return {}
   }),
 }))
@@ -57,6 +61,13 @@ vi.mock('../apps/crew-companion/api', () => ({
 const { default: CrewCompanionPage } = await import(
   '../apps/crew-companion/CrewCompanionPage'
 )
+
+beforeEach(() => {
+  state.reachable = true
+  state.enabled = true
+  posts.length = 0
+  postFailFor.clear()
+})
 
 describe('CrewCompanionPage: reachable vs not', () => {
   it('shows the live sections when the companion answers', async () => {
@@ -138,5 +149,58 @@ describe('the away card\'s button actually opens the companion', () => {
     await waitFor(() => expect(container.textContent ?? '').toContain(FAILURE_REASON))
     postFailFor.clear()
     state.enabled = true
+  })
+})
+
+describe('the live page can turn the companion off', () => {
+  it('posts disable and then shows the away card', async () => {
+    state.reachable = true
+    const { container } = render(<CrewCompanionPage />)
+    await waitFor(() => expect(container.querySelector('.cc-turn-off')).not.toBeNull())
+    const turnOff = container.querySelector('.cc-turn-off') as HTMLButtonElement
+    expect(turnOff.textContent).toContain(i18nT('apps.crewCompanion.menu.quit'))
+    turnOff.click()
+
+    await waitFor(() => expect(posts.some((p) => p.includes('/disable'))).toBe(true))
+    await waitFor(() => expect(container.querySelector('.cc-offline')).not.toBeNull())
+    expect(container.querySelector('.cc-turn-off')).toBeNull()
+  })
+
+  it('keeps the live page and reports the reason when disable fails', async () => {
+    state.reachable = true
+    postFailFor.add('/disable')
+    const { container } = render(<CrewCompanionPage />)
+    await waitFor(() => expect(container.querySelector('.cc-turn-off')).not.toBeNull())
+    ;(container.querySelector('.cc-turn-off') as HTMLButtonElement).click()
+
+    await waitFor(() => expect(container.textContent ?? '').toContain(FAILURE_REASON))
+    expect(container.querySelector('.cc-offline')).toBeNull()
+    expect(container.querySelector('.cc-turn-off')).not.toBeNull()
+  })
+
+  it('does not put a turn-off control on the away card', async () => {
+    state.reachable = false
+    const { container } = render(<CrewCompanionPage />)
+    await waitFor(() => expect(container.querySelector('.cc-offline')).not.toBeNull())
+    expect(container.querySelector('.cc-turn-off')).toBeNull()
+  })
+
+  it('shows the away card when the companion is already disabled', async () => {
+    state.reachable = true
+    state.enabled = false
+    const { container } = render(<CrewCompanionPage />)
+    await waitFor(() => expect(container.querySelector('.cc-offline')).not.toBeNull())
+    expect(container.querySelector('.cc-turn-off')).toBeNull()
+  })
+
+  it('returns to the live page after Open re-enables the companion', async () => {
+    state.reachable = true
+    state.enabled = false
+    const { container } = render(<CrewCompanionPage />)
+    await waitFor(() => expect(container.querySelector('.cc-offline')).not.toBeNull())
+    ;(container.querySelector('.cc-offline .cc-cta') as HTMLElement).click()
+
+    await waitFor(() => expect(container.querySelector('.cc-turn-off')).not.toBeNull())
+    expect(container.querySelector('.cc-offline')).toBeNull()
   })
 })

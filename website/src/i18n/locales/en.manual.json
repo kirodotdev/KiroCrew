@@ -897,6 +897,7 @@
       },
       "header": {
         "browser_note": "This is the browser view. Everything here is live, but the companion itself appears in the Kiro Crew desktop app.",
+        "desktop_tip": "Click the companion on your desktop to open its panel; right-click to change its avatar.",
         "subtitle": "Set your break rhythm, add reminders, choose what your companion tells you about, and look back on your time together.",
         "title": "Crew Companion"
       },
@@ -934,8 +935,8 @@
       "offline": {
         "body": "Open it to change break nudges and set reminders — those live inside the companion on your Mac.",
         "couldnt_open": "Couldn’t open the companion — {{error}}",
+        "couldnt_turn_off": "Couldn’t turn the companion off — {{error}}",
         "open": "Open Crew Companion",
-        "quit_tip": "Click the companion on your desktop to open its panel; right-click to change its avatar or quit.",
         "title": "Crew Companion isn’t running"
       },
       "panel": {

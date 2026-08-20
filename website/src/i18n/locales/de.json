@@ -988,6 +988,7 @@
       },
       "header": {
         "browser_note": "Dies ist die Browser-Ansicht. Alles hier ist live, aber der Begleiter selbst erscheint in der Kiro Crew-Desktop-App.",
+        "desktop_tip": "Klicke auf den Begleiter auf deinem Desktop, um sein Panel zu öffnen; per Rechtsklick änderst du seinen Avatar.",
         "subtitle": "Lege deinen Pausenrhythmus fest, füge Erinnerungen hinzu, wähle aus, worüber dein Begleiter dir Bescheid gibt, und blicke auf eure gemeinsame Zeit zurück.",
         "title": "Crew Companion"
       },
@@ -1035,8 +1036,8 @@
       "offline": {
         "body": "Öffne es, um Pausenerinnerungen zu ändern und Erinnerungen festzulegen — die leben im Begleiter auf deinem Mac.",
         "couldnt_open": "Der Begleiter konnte nicht geöffnet werden — {{error}}",
+        "couldnt_turn_off": "Der Begleiter konnte nicht ausgeschaltet werden — {{error}}",
         "open": "Crew Companion öffnen",
-        "quit_tip": "Klicke auf den Begleiter auf deinem Desktop, um sein Panel zu öffnen; per Rechtsklick änderst du seinen Avatar oder beendest ihn.",
         "title": "Crew Companion läuft nicht"
       },
       "panel": {
