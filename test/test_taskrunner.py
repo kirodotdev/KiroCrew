@@ -2753,6 +2753,129 @@ class TestGitCoord:
         await git_coord.finalize(run)
 
     @pytest.mark.asyncio
+    async def test_workspace_is_valid_true_for_a_live_worktree(self, tmp_path: Path) -> None:
+        from kiro_crew import git_coord
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "file.txt").write_text("content")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "valid_test"
+        run.work_dir = str(work_dir)
+        await git_coord.init_workspace(run)
+
+        assert await git_coord.workspace_is_valid(run) is True
+
+        await git_coord.finalize(run)
+
+    @pytest.mark.asyncio
+    async def test_workspace_is_valid_true_for_a_run_with_no_worktree(self, tmp_path: Path) -> None:
+        """A run that never had a worktree (non-git-folder mode) is trivially
+        valid -- there is nothing broken to detect."""
+        from kiro_crew import git_coord
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "nogit_valid"
+        run.work_dir = str(tmp_path)
+        assert run.branch_name == ""
+
+        assert await git_coord.workspace_is_valid(run) is True
+
+    @pytest.mark.asyncio
+    async def test_reinit_recovers_an_orphaned_worktree(self, tmp_path: Path) -> None:
+        """#3792: reproduce the reported state precisely -- the worktree
+        directory still exists on disk, but its registration under the main
+        repo's ``.git/worktrees/`` was removed out from under it (what an
+        interrupted ``git worktree remove`` leaves behind: deregistration and
+        directory deletion are separate steps). ``workspace_is_valid`` must
+        catch this (directory-exists alone would miss it), and
+        ``reinit_workspace_for_retry`` must recover using the ORIGINAL repo
+        (``run.repo_root``) and the run's EXISTING branch -- not fail with
+        "branch already exists", which a naive re-``init_workspace()`` call
+        would hit."""
+        from kiro_crew import git_coord
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "file.txt").write_text("content")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "orphan_test"
+        run.work_dir = str(work_dir)
+        await git_coord.init_workspace(run)
+        assert run.git_enabled is True
+        worktree_dir = run.worktree_path
+        branch = run.branch_name
+
+        # Simulate the orphaned state: deregister the worktree from the main
+        # repo's admin metadata directly, WITHOUT removing the directory --
+        # the exact "dir exists, `git status` says not a git repo" shape
+        # the issue reports, distinct from the directory being deleted.
+        worktree_name = Path(worktree_dir).name
+        admin_dir = Path(run.repo_root) / ".git" / "worktrees" / worktree_name
+        assert admin_dir.exists()
+        import shutil
+        shutil.rmtree(admin_dir)
+        assert Path(worktree_dir).exists()  # directory itself is untouched
+
+        assert await git_coord.workspace_is_valid(run) is False
+
+        recovered = await git_coord.reinit_workspace_for_retry(run)
+
+        assert recovered is True
+        assert run.git_enabled is True
+        assert run.branch_name == branch  # reused, not a fresh branch
+        assert await git_coord.workspace_is_valid(run) is True
+        assert (Path(run.work_dir) / "file.txt").exists()  # branch content intact
+
+        await git_coord.finalize(run)
+
+    @pytest.mark.asyncio
+    async def test_reinit_fails_closed_when_the_original_repo_is_also_gone(
+        self, tmp_path: Path
+    ) -> None:
+        """If even run.repo_root can no longer be recovered from, reinit must
+        report failure rather than silently disabling git."""
+        from kiro_crew import git_coord
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        (work_dir / "file.txt").write_text("content")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "gone_test"
+        run.work_dir = str(work_dir)
+        await git_coord.init_workspace(run)
+
+        import shutil
+
+        from kiro_crew.platform_compat import rmtree_force
+
+        shutil.rmtree(run.worktree_path, ignore_errors=True)
+        # Plain shutil.rmtree(..., ignore_errors=False) fails closed on Windows:
+        # git writes loose objects under .git/objects read-only, and Windows
+        # (unlike POSIX) checks the file's own read-only attribute rather than
+        # the parent directory's write bit, so os.unlink raises WinError 5
+        # before the repo is actually gone. rmtree_force clears the attribute
+        # and retries, and its return value confirms the ORIGINAL repo really
+        # is gone -- which this test's premise depends on.
+        assert rmtree_force(run.repo_root) is True
+
+        recovered = await git_coord.reinit_workspace_for_retry(run)
+
+        assert recovered is False
+
+    @pytest.mark.asyncio
     async def test_commit_and_revert(self, tmp_path: Path) -> None:
         """commit_step creates commit, revert_step undoes it."""
         from kiro_crew import git_coord

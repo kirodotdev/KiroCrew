@@ -3,6 +3,27 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **A Task Runner retry can no longer silently dispatch its remaining steps
+  against a lost git worktree.** `retry_from_task`'s workspace-recovery guard
+  only checked whether `run.work_dir` still existed on disk — but
+  `git worktree remove` deregisters and deletes in separate steps, so an
+  interrupted `finalize()` (or the worktree being removed some other way) can
+  leave the directory present on disk while no longer a registered git
+  worktree. The guard then skipped re-init entirely, and the retry ran the
+  rest of the step DAG against a non-git directory while still marking each
+  step completed (✅) and leaving the run's status at `Running` — a retry
+  that looks healthy the whole way through while producing nothing. The
+  guard now checks actual git-repo validity, not just directory existence.
+  Recovery also could not simply call `init_workspace()` again: that
+  overwrites `run.work_dir` with the worktree path on the original call, so
+  a second call would check git-repo-ness of the now-dead worktree instead
+  of the original repo, silently disabling git rather than recovering.
+  Recovery now uses `run.repo_root` (set once, never overwritten) and
+  reuses the run's existing branch — `finalize()` only ever removes the
+  worktree, never the branch, so creating a fresh one of the same name
+  would fail with "already exists". If the workspace cannot be restored
+  (the original repo is also gone, or the branch was lost), the run now
+  fails terminally with a clear notification instead of continuing. (#3792)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

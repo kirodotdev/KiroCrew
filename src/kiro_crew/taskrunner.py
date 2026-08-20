@@ -1129,11 +1129,28 @@ class TaskRunner:
         async def _retry() -> None:
             watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
             try:
-                if run.branch_name and not Path(run.work_dir).exists():
-                    try:
-                        await git_coord.init_workspace(run)
-                    except Exception:
-                        logger.debug("Git re-init on retry failed", exc_info=True)
+                if run.branch_name and not await git_coord.workspace_is_valid(run):
+                    # Directory-exists alone is not enough: `git worktree
+                    # remove` deregisters and deletes in separate steps, so
+                    # an interrupted finalize() (or the worktree being
+                    # removed out from under the run some other way) can
+                    # leave the directory present but no longer a registered
+                    # git worktree -- resuming against it would silently
+                    # dispatch every remaining step against a non-git
+                    # directory while still reporting them completed.
+                    if not await git_coord.reinit_workspace_for_retry(run):
+                        run.status = "failed"
+                        run.error = (
+                            "Task Runner workspace worktree was lost and "
+                            "could not be restored before retry"
+                        )
+                        run.finished_at = time.time()
+                        await self._apersist_runs()
+                        await self._notify(
+                            "❌ Retry failed",
+                            "Workspace could not be restored", run=run,
+                        )
+                        return
                 await self._notify("\U0001f504 Retrying", f"From task {from_task}", run=run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
                 await self._execute_tasks(run, history_key)

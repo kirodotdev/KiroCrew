@@ -822,18 +822,70 @@ class TestRetryFromTask:
 
     @pytest.mark.asyncio
     async def test_reinits_git_when_work_dir_is_missing(self, tmp_path: Path) -> None:
+        """A genuinely missing work_dir (not just an orphaned worktree) is
+        detected by the same workspace_is_valid() check -- _is_git_repo()
+        against a nonexistent directory is False too -- and recovery is
+        attempted via reinit_workspace_for_retry(), not init_workspace()
+        directly (see #3792: a second init_workspace() call would check the
+        DEAD worktree path rather than the original repo)."""
         runner = _runner(tmp_path)
         run = _seed_run(runner, tmp_path, status="failed")
         run.branch_name = "feat/x"
         run.work_dir = str(tmp_path / "gone")
-        init_ws = AsyncMock(side_effect=RuntimeError("git absent"))
+        reinit = AsyncMock(return_value=True)
         with patch.object(TaskRunner, "_execute_tasks", AsyncMock()), patch.object(
             TaskRunner, "_watchdog_loop", AsyncMock()
-        ), patch.object(tr.git_coord, "init_workspace", init_ws):
+        ), patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=False)), \
+                patch.object(tr.git_coord, "reinit_workspace_for_retry", reinit):
             task_id = await runner.retry_from_task("plan_1", 1)
             await runner._tasks[task_id]
-        init_ws.assert_awaited_once()
-        assert run.status == "completed"  # git failure is non-fatal
+        reinit.assert_awaited_once_with(run)
+        assert run.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_retry_fails_the_run_when_the_workspace_cannot_be_restored(
+        self, tmp_path: Path
+    ) -> None:
+        """#3792: the original bug -- a retry whose worktree was deregistered
+        (directory present, no longer a registered git repo) must not
+        silently dispatch the remaining steps against it. If recovery fails,
+        the run is failed terminally instead of continuing."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        run.work_dir = str(tmp_path / "orphaned-worktree")
+        execute_tasks = AsyncMock()
+        with patch.object(TaskRunner, "_execute_tasks", execute_tasks), patch.object(
+            TaskRunner, "_watchdog_loop", AsyncMock()
+        ), patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=False)), \
+                patch.object(
+                    tr.git_coord, "reinit_workspace_for_retry", AsyncMock(return_value=False)
+                ):
+            task_id = await runner.retry_from_task("plan_1", 1)
+            await runner._tasks[task_id]
+        execute_tasks.assert_not_awaited()
+        assert run.status == "failed"
+        assert "workspace" in run.error.lower()
+        assert run.tasks[0].status != tr.TaskStatus.PASSED
+
+    @pytest.mark.asyncio
+    async def test_retry_skips_reinit_when_the_workspace_is_already_valid(
+        self, tmp_path: Path
+    ) -> None:
+        """The common case -- worktree still valid -- must not pay the
+        reinit cost or touch the workspace at all."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        reinit = AsyncMock()
+        with patch.object(TaskRunner, "_execute_tasks", AsyncMock()), patch.object(
+            TaskRunner, "_watchdog_loop", AsyncMock()
+        ), patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=True)), \
+                patch.object(tr.git_coord, "reinit_workspace_for_retry", reinit):
+            task_id = await runner.retry_from_task("plan_1", 1)
+            await runner._tasks[task_id]
+        reinit.assert_not_awaited()
+        assert run.status == "completed"
 
     @pytest.mark.asyncio
     async def test_failure_marks_run_failed(self, tmp_path: Path) -> None:
