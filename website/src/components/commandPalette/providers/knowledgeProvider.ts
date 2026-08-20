@@ -7,7 +7,7 @@ import type { NavigateFunction } from 'react-router-dom'
 
 import { api } from '../../../api/client'
 import { i18nT } from '../../../i18n/t'
-import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
+import { fuzzyMatch } from '../../../utils/fuzzyMatch'
 import type { Result, ResourceProvider } from '../types'
 
 /**
@@ -99,10 +99,6 @@ function knowledgeIcon() {
   return createElement(Brain, { className: 'lucide-inline' })
 }
 
-const compareResults = makeScoreThenNameComparator<Result>(
-  (r) => r.score,
-  (r) => r.title,
-)
 
 /**
  * Build the Knowledge {@link ResourceProvider} from injected dependencies.
@@ -127,13 +123,20 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
       const data = await fetchKnowledge(q)
       const items = data?.results ?? []
 
-      const results: Result[] = items.map((k) => {
+      // Backend position per row id, used as the sort tiebreak below. Kept in a
+      // parallel Map rather than on the row itself so the shared `Result` type
+      // (../types) is not widened with a field only this provider can populate.
+      const backendIndexById = new Map<string, number>()
+
+      const results: Result[] = items.map((k, backendIndex) => {
         const title = k.title || k.id
         // Highlight + client-side rank bias; never used to drop backend hits.
         const match = fuzzyMatch(q, title)
         const ref: KnowledgeRef = { id: k.id, title }
+        const id = `${PROVIDER_ID}:${k.id}`
+        backendIndexById.set(id, backendIndex)
         return {
-          id: `${PROVIDER_ID}:${k.id}`,
+          id,
           providerId: PROVIDER_ID,
           title,
           subtitle: k.summary || k.source || undefined,
@@ -153,10 +156,17 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
         }
       })
 
-      // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's ordering is preserved.
+      // Title matches first, then the BACKEND's relevance order as the tiebreak
+      // (issue #4579). The backend already ranked these hits; an alphabetical
+      // fallback threw that ranking away whenever every hit was a body match
+      // (all scores 0). Skip the re-rank on an empty query so the backend's
+      // ordering is preserved as-is.
       if (q.length > 0) {
-        results.sort(compareResults)
+        results.sort(
+          (a, b) =>
+            b.score - a.score ||
+            (backendIndexById.get(a.id) ?? 0) - (backendIndexById.get(b.id) ?? 0),
+        )
       }
       return results
     },

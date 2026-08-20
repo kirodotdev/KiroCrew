@@ -132,3 +132,39 @@ describe('createKnowledgeProvider — §2 Enter matrix', () => {
     expect(arr.find((r) => r.id === 'knowledge:k1')!.onCmdActivate).toBeUndefined()
   })
 })
+
+describe('createKnowledgeProvider — backend relevance order is the score tiebreak (issue #4579)', () => {
+  it('preserves backend order for body-only hits (all scores 0) instead of alphabetizing', async () => {
+    // Titles are in REVERSE-alphabetical order and share no characters with the
+    // query, so every row is a body hit with score 0. The backend ranked these
+    // by relevance (HybridRetriever); the old name tiebreak returned them
+    // alphabetized ('Alpha…' first). The response order must come back untouched.
+    const items: KnowledgeSearchItem[] = [
+      { id: 'k-z', title: 'Zebra runbook', summary: 'mentions 4579' },
+      { id: 'k-m', title: 'Muffin architecture', summary: 'discusses 4579' },
+      { id: 'k-a', title: 'Alpha deployment', summary: '4579 references' },
+    ]
+    const { d } = deps({ items })
+    const arr = await run(createKnowledgeProvider(d), '4579')
+    expect(arr).toHaveLength(3)
+    expect(arr.every((r) => r.score === 0)).toBe(true)
+    // Backend order, NOT ['Alpha deployment', 'Muffin architecture', 'Zebra runbook'].
+    expect(arr.map((r) => r.title)).toEqual(['Zebra runbook', 'Muffin architecture', 'Alpha deployment'])
+  })
+
+  it('still ranks a title match first even when the backend returned it last (bias preserved)', async () => {
+    const items: KnowledgeSearchItem[] = [
+      { id: 'k-1', title: 'Unrelated alpha', summary: 'mentions grid' },
+      { id: 'k-2', title: 'Unrelated beta', summary: 'grid details' },
+      { id: 'k-3', title: 'grid architecture', summary: 'summary' },
+    ]
+    const { d } = deps({ items })
+    const arr = await run(createKnowledgeProvider(d), 'grid')
+    expect(arr).toHaveLength(3)
+    expect(arr[0].title).toBe('grid architecture')
+    expect(arr[0].score).toBeGreaterThan(0)
+    // The remaining body-only rows keep their backend order between themselves.
+    expect(arr.slice(1).map((r) => r.title)).toEqual(['Unrelated alpha', 'Unrelated beta'])
+  })
+})
+
