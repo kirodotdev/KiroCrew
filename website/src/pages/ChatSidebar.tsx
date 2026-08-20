@@ -101,9 +101,9 @@ const RENAME_MAX_H = 120
  * the secondary line competed with the headline instead of yielding to it.
  *
  * The three boxes need NOT be equal to each other. Row-centring the status
- * gutter did require the first and last to match — it is the only way
+ * marker did require the first and last to match — it is the only way
  * headline-centre can coincide with row-centre — and that constraint is gone
- * because the gutter is anchored to the headline directly (`ROW_GUTTER_TOP`).
+ * because the marker now leads the secondary line and centres on IT.
  * Which is what buys the meta line its 12px box: the tightest of the three,
  * spent on the least important line.
  */
@@ -121,27 +121,20 @@ const ROW_STATUS_CLS = 'text-[11px] leading-[16px]'
  *  branches that render this line each used to spell the type classes out, so a
  *  ninth state was one copy-paste away from re-introducing a size the grid does
  *  not contain — which is how the line ended up at 12px against an 11px meta
- *  line in the first place. Colour is what actually differs between them. */
+ *  line in the first place. Colour is what actually differs between them.
+ *
+ *  All three are FLEX rows, because all three lead with the row's status marker
+ *  (the muted one carries the `unread` dot). A `w-2 h-2` dot only gets its box as
+ *  a flex item — as an inline child both dimensions are dropped and it vanishes. */
 const ROW_STATUS_LINE_CLS = `${ROW_STATUS_CLS} flex items-center gap-1.5 min-w-0`
 const ROW_STATUS_LINE_ACCENT_CLS = `${ROW_STATUS_CLS} text-accent truncate flex items-center gap-1`
-const ROW_STATUS_LINE_MUTED_CLS = `${ROW_STATUS_CLS} text-muted truncate`
+const ROW_STATUS_LINE_MUTED_CLS = `${ROW_STATUS_CLS} text-muted flex items-center gap-1.5 min-w-0`
 
-/** Every glyph in a session row is drawn at ONE size — the status gutter, the
+/** Every glyph in a session row is drawn at ONE size — the status marker, the
  *  meta line's mode/channel markers, and the pin. Three sizes (9 / 10 / 12) read
  *  as accidental variation rather than as a hierarchy, since none of these
  *  glyphs outranks another. */
 const ROW_ICON_PX = 10
-
-/** Top offset (px) of the status gutter's 12px box, measured from the row's top
- *  edge, so the glyph centres on the HEADLINE rather than on the row.
- *
- *  = `py-2` 8 + meta box 12 + (headline box 20 − gutter box 12) / 2 = 24.
- *
- *  A literal, not a measurement: with `ROW_*_CLS` fixed and the headline no
- *  longer wrapping, the headline's y is a constant. Derived from the row's
- *  padding, so it moves with it — a padding change that left this alone would
- *  put the glyph back off the line it exists to mark. */
-const ROW_GUTTER_TOP = 24
 
 /** Translate a slot's running-status line. The status `text` is stored as a raw
  *  English literal by the websocket layer (a plain `.ts` module the i18n codemod
@@ -3310,19 +3303,19 @@ function ChatSidebar({
           ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
-    // The row's ONE status marker, for the gutter left of the headline: the glyph
-    // to draw and the label that names it. Kept as a single value so the two can
-    // never drift apart — a glyph is the gutter's only content, so a missing
-    // label would leave a coloured shape with no accessible name.
+    // The row's ONE status marker and the words beside it, resolved together: the
+    // glyph is built INSIDE the branch's `subtitle`, immediately in front of the
+    // label that names it, so a branch cannot ship a glyph without its phrase or a
+    // phrase without its glyph.
     //
     // ── One ordered state resolver (#3830) ────────────────────────────────
     //
-    // The gutter glyph and the subtitle line encode the SAME precedence. They
-    // used to be two independent ternary chains a few hundred lines apart,
-    // with comments asserting they "can never disagree" and nothing enforcing
-    // it: editing a branch in one silently desynchronised the glyph from the
-    // subtitle. They are now derived from this single list, so the ordering
-    // exists once and a new state is added in one place.
+    // The marker and the subtitle line encode the SAME precedence. They used to
+    // be two independent ternary chains a few hundred lines apart, with comments
+    // asserting they "can never disagree" and nothing enforcing it: editing a
+    // branch in one silently desynchronised the glyph from the subtitle. They are
+    // now ONE node per branch, so the ordering exists once and a new state is
+    // added in one place.
     //
     // Order is the contract. Owed decisions outrank every "working" signal —
     // a blocking card keeps `s.running` true, so without that ranking the row
@@ -3336,8 +3329,7 @@ function ChatSidebar({
     // absent. The ternary chain this replaces got the same property for free by
     // being a ternary; here it has to be explicit.
     //
-    // The tails differ between the two consumers and stay with them: the gutter
-    // falls through to `unread`, the subtitle to `last_message`.
+    // The tail is `last_message`, and the `unread` dot rides on it (below).
     const rowState = ([
       {
         // Pending approval outranks running (mirrors the Board's inferLane,
@@ -3345,15 +3337,12 @@ function ChatSidebar({
         // approval is never hidden behind a "Thinking…" spinner.
         key: 'pending_approval',
         when: !!s.pending_approval,
-        build: () => ({
-          glyph: <ShieldCheck size={ROW_ICON_PX} style={{ color: 'var(--warn)' }} />,
-          label: i18nT('pages.chatSidebar.needs_approval'),
-          subtitle: (
-            <div className={ROW_STATUS_LINE_CLS}>
-              <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.needs_approval')}</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
-            </div>
-          ),
-        }),
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS}>
+            <ShieldCheck size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+            <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.needs_approval')}</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
+          </div>
+        ),
       },
       {
         // Sub-agents blocked on a spawn approval. Directly below the slot's own
@@ -3363,15 +3352,12 @@ function ChatSidebar({
         // to match the row above.
         key: 'subagent_awaiting',
         when: subagentAwaiting > 0,
-        build: () => ({
-          glyph: <Bot size={ROW_ICON_PX} style={{ color: 'var(--warn)' }} />,
-          label: subagentApprovalLabel,
-          subtitle: (
-            <div className={ROW_STATUS_LINE_CLS} title={subagentApprovalLabel}>
-              <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
-            </div>
-          ),
-        }),
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS} title={subagentApprovalLabel}>
+            <Bot size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+            <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
+          </div>
+        ),
       },
       {
         // An unanswered question card. Above every "working" signal for the
@@ -3386,15 +3372,12 @@ function ChatSidebar({
         // the question itself, so the label stands alone.
         key: 'needs_input',
         when: !!s.needs_input,
-        build: () => ({
-          glyph: <MessageCircleQuestionMark size={ROW_ICON_PX} style={{ color: 'var(--info)' }} />,
-          label: needsInputLabel,
-          subtitle: (
-            <div className={ROW_STATUS_LINE_CLS} title={needsInputLabel}>
-              <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
-            </div>
-          ),
-        }),
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS} title={needsInputLabel}>
+            <MessageCircleQuestionMark size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
+            <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
+          </div>
+        ),
       },
       {
         // An active goal loop outranks every "working" signal below it but
@@ -3405,15 +3388,12 @@ function ChatSidebar({
         // `goalLoopStalled`): warn + "interrupted" rather than accent.
         key: 'goal_loop',
         when: !!goalLoop,
-        build: () => ({
-          glyph: <Goal size={ROW_ICON_PX} className={goalLoopStalled ? 'text-warn' : 'text-accent animate-pulse'} />,
-          label: goalLoopStalled ? `${goalLoopLabel} — ${i18nT('pages.chatSidebar.loop_interrupted')}` : goalLoopLabel,
-          subtitle: (
-            <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop && goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop?.cycle_count ?? 0 })}>
-              <span className="truncate"><span className={`font-medium ${goalLoopStalled ? 'text-warn' : 'text-accent'}`}>{goalLoopLabel}{goalLoopStalled ? ` — ${i18nT('pages.chatSidebar.loop_interrupted')}` : ''}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
-            </div>
-          ),
-        }),
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop && goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop?.cycle_count ?? 0 })}>
+            <Goal size={ROW_ICON_PX} className={`shrink-0 ${goalLoopStalled ? 'text-warn' : 'text-accent animate-pulse'}`} aria-hidden />
+            <span className="truncate"><span className={`font-medium ${goalLoopStalled ? 'text-warn' : 'text-accent'}`}>{goalLoopLabel}{goalLoopStalled ? ` — ${i18nT('pages.chatSidebar.loop_interrupted')}` : ''}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
+          </div>
+        ),
       },
       {
         // A dynamic-workflow run launched from this session is still executing
@@ -3423,15 +3403,12 @@ function ChatSidebar({
         // subagents, and "which workflow / phase" is the stronger signal.
         key: 'workflow',
         when: !!wfActive,
-        build: () => ({
-          glyph: <Workflow size={ROW_ICON_PX} className="text-accent animate-pulse" />,
-          label: wfActive?.label ?? '',
-          subtitle: (
-            <div className={ROW_STATUS_LINE_ACCENT_CLS} title={`${wfActive?.count ?? 0} workflow${(wfActive?.count ?? 0) > 1 ? 's' : ''} running`}>
-              <span className="truncate">{wfActive?.label}</span>
-            </div>
-          ),
-        }),
+        build: () => (
+          <div className={ROW_STATUS_LINE_ACCENT_CLS} title={`${wfActive?.count ?? 0} workflow${(wfActive?.count ?? 0) > 1 ? 's' : ''} running`}>
+            <Workflow size={ROW_ICON_PX} className="shrink-0 text-accent animate-pulse" aria-hidden />
+            <span className="truncate">{wfActive?.label}</span>
+          </div>
+        ),
       },
       {
         // A spawned subagent is still running (or queued behind the concurrency
@@ -3440,15 +3417,12 @@ function ChatSidebar({
         // live activity instead of a stale last message.
         key: 'subagents',
         when: subagentCount > 0,
-        build: () => ({
-          glyph: <Bot size={ROW_ICON_PX} className="text-accent animate-pulse" />,
-          label: subagentLabel,
-          subtitle: (
-            <div className={ROW_STATUS_LINE_ACCENT_CLS} title={subagentLabel}>
-              <span className="truncate">{subagentLabel}</span>
-            </div>
-          ),
-        }),
+        build: () => (
+          <div className={ROW_STATUS_LINE_ACCENT_CLS} title={subagentLabel}>
+            <Bot size={ROW_ICON_PX} className="shrink-0 text-accent animate-pulse" aria-hidden />
+            <span className="truncate">{subagentLabel}</span>
+          </div>
+        ),
       },
       {
         // A spinner, not a pulsing dot: "actively working" is the one state
@@ -3458,34 +3432,37 @@ function ChatSidebar({
         when: runningSet.has(s.key),
         build: () => {
           const text = slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
-          return {
-            glyph: <Loader size={ROW_ICON_PX} className="text-accent animate-spin" />,
-            label: text,
-            subtitle: (
-              <div className={ROW_STATUS_LINE_ACCENT_CLS}>{text}</div>
-            ),
-          }
+          // `title` because this is the one status text that is unbounded — a tool
+          // phase can name a long command — and the line truncates. The gutter
+          // glyph used to carry that tooltip, so it has to move with it, or a
+          // truncated tool status becomes unreadable rather than abbreviated.
+          return (
+            <div className={ROW_STATUS_LINE_ACCENT_CLS} title={text}>
+              <Loader size={ROW_ICON_PX} className="shrink-0 text-accent animate-spin" aria-hidden />{text}
+            </div>
+          )
         },
       },
     ] as const).find(entry => entry.when)?.build() ?? null
 
     // `unread` sits LAST, so it lights only when nothing else claims the slot.
     // That is stricter than the dot it replaces, which coexisted with the
-    // workflow and sub-agent states; with one slot, showing two markers for one
-    // row is not available and the more specific state is the useful one. It is
-    // a gutter-only tail — the subtitle's own tail is `last_message`.
+    // workflow and sub-agent states; with one marker, showing two for one row is
+    // not available and the more specific state is the useful one.
     //
-    // The label is NOT passed to the lucide icons as `title`: that lands as an
-    // svg attribute, which is not a tooltip. It goes on the gutter element.
-    const status: { glyph: React.ReactNode; label: string } | null = rowState
-      ? { glyph: rowState.glyph, label: rowState.label }
-      : unreadSet.has(s.key)
-        // A DOT, so it keeps its own size: `ROW_ICON_PX` sizes the lucide
-        // glyphs, whose ink covers a fraction of their box, while a filled
-        // disc covers all of it. At 10px it reads as heavier than every
-        // state that outranks it.
-        ? { glyph: <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} />, label: i18nT('pages.chatSidebar.agent_finished_your_turn') }
-        : null
+    // It is the ONE state whose marker is not accompanied by its own words: the
+    // secondary line it leads is `last_message`, which says what the agent said,
+    // not that you have not read it. So unlike every glyph above — each of which
+    // sits directly in front of the label naming it, and is therefore
+    // `aria-hidden` — this dot keeps a real accessible name and a tooltip.
+    const unreadDot = !rowState && unreadSet.has(s.key)
+      // A DOT, so it keeps its own size: `ROW_ICON_PX` sizes the lucide glyphs,
+      // whose ink covers a fraction of their box, while a filled disc covers all
+      // of it. At 10px it reads as heavier than every state that outranks it.
+      ? <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }}
+        role="img" aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
+        title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
+      : null
     // Custom hex (color_hex) wins over the palette index. It is deliberately
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
@@ -3605,45 +3582,32 @@ function ChatSidebar({
               {shortcutDigitByKey.get(s.key)}
             </span>
           )}
-          {/* STATUS GUTTER — one slot, left of the content column, holding at most
-           *  ONE glyph. Every status branch's glyph lives here rather than inline
-           *  before its own subtitle, so a row has exactly one place to look for
-           *  "what is this session doing"; the coloured LABEL stays in the
-           *  secondary line, which is what keeps "Needs approval" readable as a
-           *  phrase rather than an orphaned dot.
+          {/* NO STATUS GUTTER. The row's one status marker — spinner, bot, shield,
+           *  loop, question, unread dot — leads the SECONDARY LINE, immediately in
+           *  front of the words it marks ("Thinking…", "3 agents running", "Needs
+           *  approval"), and it is built inside each branch's `subtitle` above so a
+           *  branch cannot supply one without the other.
            *
-           *  ABSOLUTE, not a flex child, and this is load-bearing for the whole
-           *  sidebar's left edge. As an in-flow child it added its 12px width
-           *  plus a gap to where the content column starts, which is what pushed
-           *  the sessions inside a folder off the x their folder's NAME sits on.
-           *  Out of flow it costs the content column nothing: the row's
-           *  `pl-3.5` (14px) is its whole left offset, this glyph occupies 1..13
-           *  of it, and the content starts at 14. Putting it back in flow re-breaks
-           *  guides 2 and 3 — see ChatSidebar.folderAlignment.test.tsx.
+           *  It used to sit in an absolutely-positioned gutter inside the row's
+           *  `pl-3.5`, occupying x 1..13 with the content column starting at 14.
+           *  That band is not free: the recency tint paints an opaque accent stripe
+           *  up to 7px wide at this same left edge (`recencyTintShadow`), and the
+           *  session-colour bar takes the first 2px (`.session-colored::before`).
+           *  An accent spinner drawn over an accent stripe is a 1:1 contrast, so on
+           *  a recent session the glyph lost its left half and read as clipped and
+           *  mis-placed rather than tinted.
            *
-           *  Vertically anchored to the HEADLINE, at a constant offset
-           *  (`ROW_GUTTER_TOP`), not centred on the row. Row-centring only put the
-           *  glyph on the headline by accident, and only for a row of exactly
-           *  three lines: a row carrying a chip row (`source_links`, below) is
-           *  ~18px taller, which dropped its glyph well under the headline it was
-           *  supposed to mark. Centring was also never exact even in the plain
-           *  case — it sat 2.375px low, because headline-centre equals row-centre
-           *  only when the meta and secondary line boxes match, which the old
-           *  13.75 / 16.5 pair did not.
+           *  Inline, the glyph starts at the content column (14px) — clear of both
+           *  markers by construction, at every tint rank, with no coordination
+           *  between the two features. It also drops the gutter's `role="img"` +
+           *  `aria-label` for every state except `unread`: a glyph sitting in front
+           *  of its own visible label is decorative, so it is `aria-hidden` and the
+           *  label is read once instead of twice.
            *
-           *  An earlier revision anchored to the headline too and was reverted for
-           *  deriving the y from repeated type classes; that fragility is gone.
-           *  `ROW_*_CLS` fixes every line box, and the headline no longer wraps,
-           *  so the offset is one literal that no row can invalidate. */}
-          <div
-            className="absolute left-px w-3 h-3 flex items-center justify-center pointer-events-none"
-            style={{ top: ROW_GUTTER_TOP }}
-            {...(status
-              ? { role: 'img', 'aria-label': status.label, title: status.label }
-              : { 'aria-hidden': true })}
-          >
-            {status?.glyph}
-          </div>
+           *  The alignment guides are untouched: the gutter was out of flow and
+           *  contributed nothing to the content column, so removing it moves no x —
+           *  see ChatSidebar.folderAlignment.test.tsx, which still asserts the
+           *  row's `pl-3.5` is the content column's whole left offset. */}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               <AnimatePresence mode="wait">
@@ -3763,8 +3727,7 @@ function ChatSidebar({
               ) : null}
             </div>
             {/* NEVER wraps. `truncate` rather than a two-line clamp, so every row
-                is the same height and the status gutter's fixed offset lands on
-                this line for all of them. A clamped title also moved the whole
+                is the same height. A clamped title also moved the whole
                 secondary line down by a full line box on some rows, which is what
                 made the list read as ragged. The full string stays reachable
                 through the `title` attribute, and the rename box below is the one
@@ -3780,13 +3743,22 @@ function ChatSidebar({
                 <textarea ref={renameInputRef} rows={1} className={`w-full bg-transparent border border-accent rounded px-1 py-0 ${ROW_TITLE_CLS} text-text-strong outline-none select-text resize-none block overflow-hidden focus-ring`} value={renameValue} onChange={e => setRenameValue(e.target.value.replace(/[\r\n]+/g, ' '))} {...ime.bindEnter<HTMLTextAreaElement>({ onEnter: () => { (document.activeElement as HTMLTextAreaElement)?.blur() }, onEscape: () => { cancelRenameRef.current = true; setRenamingSlot(null) }, onBlur: () => { if (!cancelRenameRef.current && renameValue.trim()) { dispatch(sseSlotTitle({ key: s.key, title: renameValue.trim() })); api.renameSlot(s.key, renameValue.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) }) } cancelRenameRef.current = false; setRenamingSlot(null) } })} onMouseDown={e => e.stopPropagation()} />
               ) : (s.title && s.title !== s.key ? s.title : s.key)}
             </div>
-            {/* Subtitle: the same ordered resolver the gutter glyph uses, so
-                the two can no longer disagree (#3830). The tail is this
-                consumer's own — `last_message`, where the gutter's is
-                `unread`. */}
-            {rowState ? rowState.subtitle : s.last_message ? (
-              <div className={ROW_STATUS_LINE_MUTED_CLS}>{s.last_message}</div>
-            ) : null}
+            {/* Secondary line: one ordered resolver decides both the words and the
+                marker leading them (#3830), so the two can no longer disagree.
+                The tail is `last_message`, which is also where the `unread` dot
+                lands — the one marker with no state branch of its own. A row that
+                is unread with nothing said yet still renders the line, because the
+                dot IS the content then. */}
+            {rowState ?? ((s.last_message || unreadDot) ? (
+              <div className={ROW_STATUS_LINE_MUTED_CLS}>
+                {unreadDot}
+                {/* `min-w-0` or the ellipsis never renders: this is a flex child, and
+                    a flex item's `min-width: auto` floor keeps it at content width
+                    instead of letting `truncate` clip it (i18n render gate,
+                    layout/ellipsis-with-flex-parent). */}
+                {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
+              </div>
+            ) : null)}
             {s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}
@@ -3840,14 +3812,13 @@ function ChatSidebar({
           )}
         </DndDraggable>
         {/* The divider starts at the CONTENT x, not the row's edge, so it
-         *  underlines the text block rather than boxing the whole row — the
-         *  status gutter reads as a margin, and a rule running under it makes the
-         *  glyph look enclosed. Matches the Figma, which carries this border on
-         *  the `content` frame rather than on the row.
+         *  underlines the text block rather than boxing the whole row — the row's
+         *  left pad reads as a margin, and a rule running through it would box
+         *  the row instead. Matches the Figma, which carries this border on the
+         *  `content` frame rather than on the row.
          *
          *  14px is the row's content offset: the row's whole `pl-3.5`, since
-         *  the status gutter is absolutely positioned inside that pad and adds
-         *  nothing to the content column. The right inset is the row's own
+         *  nothing else lives in that pad. The right inset is the row's own
          *  padding. */}
         {/* `-mt-px` so the rule does NOT add a row of layout height. In flow it made
          *  the row-to-row pitch row-height + 1, and since the active row suppresses

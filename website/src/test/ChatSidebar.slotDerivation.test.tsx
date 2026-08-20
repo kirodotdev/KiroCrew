@@ -10,7 +10,7 @@
  *  (1) `recent`  — a timestamp inside the window OR a running turn. Both halves.
  *  (2) `running` — wider than `s.running`: a workflow run or goal loop counts.
  *  (3) `midTurn` — the RAW turn flag, deliberately NOT the widened one.
- *  (4) `unread`  — reaches the row's status gutter.
+ *  (4) `unread`  — reaches the row's secondary-line status marker.
  * Plus `pinned`, a payload field read through the same lookup.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'

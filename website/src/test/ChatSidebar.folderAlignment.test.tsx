@@ -44,9 +44,10 @@
  *
  * jsdom has no layout engine, so this file asserts the INPUTS to the geometry,
  * never measured x's. That is a real limit: an input-level assertion stayed green
- * through the very gutter change that broke guide 2, because the pad it checked
- * had not moved. Hence the gutter's out-of-flow-ness is asserted too (that being
- * the thing that actually moved the content), and hence the rule — when any of
+ * through the very status-gutter change that broke guide 2, because the pad it
+ * checked had not moved. Hence the assertion that nothing occupies the row's left
+ * pad in flow (that being the thing that actually moved the content), and hence
+ * the rule — when any of
  * these numbers moves, re-measure with
  * `website/scripts/capture-folder-glyph.mjs` under `MEASURE=1`. Do not re-derive
  * on paper: #1211, #3766, #3903 and two paper estimates during this fix were all
@@ -215,9 +216,11 @@ describe('chat sidebar — folder header alignment geometry', () => {
     expect(hasClass(body, 'border-l')).toBe(true)
 
     // GUIDE 2 — the row's `pl-3.5` (14px) is its WHOLE content offset, which holds
-    // only while the status gutter stays OUT of the content flow. The gutter being
-    // an in-flow flex child is what added 12px + a gap and broke this in #3766;
-    // see ChatSidebar.statusGutter.test.tsx, which pins it as absolute.
+    // only while NOTHING lives in that pad in flow. A status gutter as an in-flow
+    // flex child is what added 12px + a gap and broke this in #3766; the gutter is
+    // gone entirely now (the marker leads the secondary line — see
+    // ChatSidebar.statusMarker.test.tsx, which pins that no absolutely-positioned
+    // box returns to the row's left edge either).
     expect(hasClass(row, 'pl-3.5')).toBe(true)
     expect(hasClass(row, 'pr-3')).toBe(true)
     expect(hasClass(row, 'pl-1')).toBe(false)

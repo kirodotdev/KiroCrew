@@ -4,13 +4,14 @@
  * The change is pure geometry, so the evidence has to be geometry: this harness
  * measures the RENDERED boxes in a real browser (jsdom has no layout engine, so
  * the unit test can only assert the classes that ask for them) and fails loudly
- * if a row is not a whole number of grid units, or if the status glyph does not
- * sit on the headline's optical centre.
+ * if a row is not a whole number of grid units, or if the status marker does not
+ * sit on the line it leads — and, since the marker moved out of the row's left
+ * pad, if it starts inside the band the recency tint paints there.
  *
  * Two rows exist to catch what a plain row cannot: a very long title, which used
  * to wrap to two lines and change the row's height, and a row carrying PR chips,
- * which is ~18px taller than the rest — the case that row-centring the gutter got
- * wrong.
+ * which is ~18px taller than the rest — the case that row-centring the marker got
+ * wrong when it lived in an absolute gutter.
  *
  * This is the ONE place the row's geometry is measured. It prints the per-edge
  * audit (every line box's top and bottom, plus the row-to-row PITCH — the term
@@ -33,6 +34,8 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import { recencyTintMaxPx } from './lib/recency-tint.mjs'
+import { MARKER_SELECTORS } from './lib/session-row-marker.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/session-row-grid'
 const ACTIVE = 'chat-run'
@@ -98,14 +101,21 @@ const slots = [
   },
 ]
 
-/** py-2 top pad + the 12px gutter box, both fixed by the component. */
+/** py-2 top pad and the 12px meta box, both fixed by the component. */
 const PAD = 8
 const META = 12
 const BASELINE = process.env.GRID_BASELINE === '1'
 const problems = []
 /** Report in baseline mode, fail in normal mode. */
 const check = msg => { if (BASELINE) problems.push(msg); else throw new Error(msg) }
-const GUTTER_BOX = 12
+/** Widest the recency tint's opaque accent stripe ever gets — READ from
+ *  `recencyTint.ts` rather than copied, so widening the real stripe cannot leave
+ *  this check asserting the old band. It is the band at the row's left edge that
+ *  the status marker must stay out of. */
+const TINT_MAX_PX = recencyTintMaxPx()
+/** Axis-aligned slack for a ROTATING glyph: a spinning square's AABB grows by
+ *  side·(√2−1)/2 per edge at 45°, ≈ 2.07px for the row's 10px marker. */
+const ROTATION_SLACK = 10 * (Math.SQRT2 - 1) / 2 + 0.05
 
 async function main() {
   const { srv, base } = await serveDist()
@@ -139,36 +149,57 @@ async function main() {
     await load(theme)
     await page.locator('.session-row').first().waitFor({ state: 'visible', timeout: 15000 })
 
-    const rows = await page.locator('.session-row').evaluateAll(els => els.map(el => {
+    const rows = await page.locator('.session-row').evaluateAll((els, marks) => els.map(el => {
       const box = el.getBoundingClientRect()
-      const gutter = el.firstElementChild.getBoundingClientRect()
-      const col = el.children[1]
-      const line = i => {
-        const c = col.children[i]
-        return c ? c.getBoundingClientRect() : null
-      }
-      const headline = line(1)
+      // SHAPE-based, not index-based, because `GRID_BASELINE=1` runs this same
+      // script against the PRE-FIX SPA, where the row's first child is the old
+      // absolute status gutter and the content column is the SECOND child. Reading
+      // `firstElementChild` there picked the gutter, so `children[1]` was undefined
+      // and the measurement crashed instead of reporting the baseline it exists to
+      // capture. The content column is the one in-flow flex child of the row.
+      const col = el.querySelector(':scope > .flex-1')
+        ?? Array.from(el.children).find(c => c.children.length >= 2)
+        ?? el.firstElementChild
+      const headline = col.children[1] ? col.children[1].getBoundingClientRect() : null
+      const statusLine = col.children[2] || null
+      // The row's status marker, found by its own classes at whatever depth — in the
+      // new DOM it leads the secondary line, in the pre-fix DOM it sits in the
+      // gutter. Both are measurable, which is what makes the before/after pair
+      // comparable rather than one crashing.
+      const marker = el.querySelector(marks.join(', '))
       const rel = b => [Math.round((b.top - box.top) * 100) / 100, Math.round((b.bottom - box.top) * 100) / 100]
+      const round = v => Math.round(v * 100) / 100
+      const markerBox = marker ? marker.getBoundingClientRect() : null
+      const lineBox = statusLine ? statusLine.getBoundingClientRect() : null
       return {
         title: (col.children[1]?.textContent || '').slice(0, 24),
-        absTop: Math.round(box.top * 100) / 100,
-        height: Math.round(box.height * 100) / 100,
+        absTop: round(box.top),
+        height: round(box.height),
         edges: {
           meta: rel(col.children[0].getBoundingClientRect()),
-          title: rel(headline),
-          status: col.children[2] ? rel(col.children[2].getBoundingClientRect()) : null,
+          title: headline ? rel(headline) : null,
+          status: lineBox ? rel(lineBox) : null,
         },
         // A fourth child is the PR/issue chip row.
         hasChips: col.children.length > 3,
         // Tallest thing sitting inside the meta line — a mode badge when present.
         metaChildMax: Math.max(0, ...[...col.children[0].children]
-          .map(c => Math.round(c.getBoundingClientRect().height * 100) / 100)),
-        // Gutter centre minus headline centre. Zero is the whole point.
-        glyphOffset: Math.round(((gutter.top + gutter.height / 2) - (headline.top + headline.height / 2)) * 100) / 100,
-        headlineH: Math.round(headline.height * 100) / 100,
-        gutterTop: Math.round((gutter.top - box.top) * 100) / 100,
+          .map(c => round(c.getBoundingClientRect().height))),
+        // Marker centre minus status-line centre. Zero is the whole point: the
+        // marker leads the words it names, so it has to sit ON their line. In the
+        // pre-fix DOM the marker is anchored to the HEADLINE instead, so this reads
+        // ~-20px there — reported, not crashed.
+        glyphOffset: markerBox && lineBox
+          ? round((markerBox.top + markerBox.height / 2) - (lineBox.top + lineBox.height / 2))
+          : null,
+        // Marker left edge relative to the row — it must clear the row's left-edge
+        // decorations (recency tint up to TINT_MAX_PX, colour bar 2px) by starting at
+        // the content column, which is the row's whole `pl-3.5`.
+        markerLeft: markerBox ? round(markerBox.left - box.left) : null,
+        contentLeft: round(col.getBoundingClientRect().left - box.left),
+        headlineH: headline ? round(headline.height) : null,
       }
-    }))
+    }), MARKER_SELECTORS)
 
     for (const r of rows) {
       // The headline never wraps, so its box is exactly one 20px line.
@@ -185,10 +216,27 @@ async function main() {
       if (!r.hasChips && r.height !== 64) {
         check(`row is ${r.height}px, not the 64px constant, on "${r.title}"`)
       }
-      // The glyph sits on the headline's optical centre — on the three-line rows
-      // AND on the taller chip row, which is the case row-centring got wrong.
-      if (Math.abs(r.glyphOffset) > 0.01) {
-        check(`status glyph is ${r.glyphOffset}px off the headline on "${r.title}"`)
+      // The marker sits on the optical centre of the LINE IT LEADS — on the
+      // three-line rows AND on the taller chip row. It rides inside that line's
+      // box now, so this is a containment check rather than a derived offset.
+      if (r.glyphOffset !== null && Math.abs(r.glyphOffset) > 0.51) {
+        check(`status marker is ${r.glyphOffset}px off its own status line on "${r.title}"`)
+      }
+      // And it starts at the CONTENT column, clear of the row's left-edge
+      // decorations: the recency tint paints an opaque accent stripe up to 7px in
+      // from this edge, which is what used to swallow the glyph when it lived in
+      // an absolute gutter at x 1..13.
+      //
+      // ROTATION_SLACK, not zero: `getBoundingClientRect` is axis-aligned, so a
+      // SPINNING 10px glyph reports a box up to 10·(√2−1)/2 ≈ 2.07px wider on each
+      // side than its layout box — measured 13.51px / 10.99px wide for the spinner
+      // against exactly 14px / 10px for the static shield. Tightening this to 0
+      // would fail on the spinner's own animation, at a phase-dependent moment.
+      if (r.markerLeft !== null && r.markerLeft < r.contentLeft - ROTATION_SLACK) {
+        check(`status marker starts at ${r.markerLeft}px, left of the ${r.contentLeft}px content column, on "${r.title}"`)
+      }
+      if (r.markerLeft !== null && r.markerLeft < TINT_MAX_PX) {
+        check(`status marker starts at ${r.markerLeft}px, inside the ${TINT_MAX_PX}px recency-tint band, on "${r.title}"`)
       }
       // Nothing inside the meta line may be taller than its 12px box. A badge or
       // chip that overflows would push the headline down and take every edge
@@ -196,24 +244,27 @@ async function main() {
       if (r.metaChildMax > META) {
         check(`something in the meta line is ${r.metaChildMax}px, taller than its ${META}px box, on "${r.title}"`)
       }
-      if (r.gutterTop !== PAD + 12 + (20 - GUTTER_BOX) / 2) {
-        check(`gutter top is ${r.gutterTop}px, not the derived offset, on "${r.title}"`)
-      }
     }
     // Per-edge audit. A row height that is a multiple of 4 says nothing about the
     // edges INSIDE it: `py-1.5` (6px) produced a 60px row with all 8 interior
     // edges 2px off, which is a grid on paper only.
     const on4 = v => Math.abs(v % 4) < 0.01 || Math.abs((v % 4) - 4) < 0.01
     const mark = v => `${String(v).padStart(6)}${on4(v) ? ' ' : '<'}`
-    console.log(`\n${theme}  height  meta.t meta.b ttl.t  ttl.b  st.t   st.b   gut.t`)
+    console.log(`\n${theme}  height  meta.t meta.b ttl.t  ttl.b  st.t   st.b   mk.x`)
     const interior = []
     for (const r of rows) {
-      const e = [r.height, r.edges.meta[0], r.edges.meta[1], r.edges.title[0], r.edges.title[1],
-        ...(r.edges.status ? r.edges.status : []), r.gutterTop]
+      // `edges.title` is null only on the PRE-FIX DOM under `GRID_BASELINE=1`, where
+      // the row's children are shaped differently; the audit reports what it can
+      // measure there rather than crashing (the baseline is the thing being shown).
+      const e = [r.height, r.edges.meta[0], r.edges.meta[1],
+        ...(r.edges.title ? r.edges.title : []),
+        ...(r.edges.status ? r.edges.status : [])]
       // The chip row's own height is out of scope, so it cannot be judged on the
       // 4px rule; its INTERIOR edges are the scale's and still are.
       interior.push(...(r.hasChips ? e.slice(1) : e))
-      console.log(`  ${mark(r.height)}${r.hasChips ? '*' : ' '}${e.slice(1).map(mark).join('')}  ${r.title}`)
+      // The marker's x is printed but NOT judged on the 4px rule: it is a
+      // horizontal offset (the content column at 14px), not a line edge.
+      console.log(`  ${mark(r.height)}${r.hasChips ? '*' : ' '}${e.slice(1).map(mark).join('')}  ${String(r.markerLeft ?? '—').padStart(5)}  ${r.title}`)
     }
     const offGrid = [...new Set(interior.filter(v => !on4(v)))]
     if (offGrid.length) check(`edges off the 4px grid: ${offGrid.join(', ')}`)
@@ -234,10 +285,13 @@ async function main() {
     // offset in prose ("0px off the headline on all") while the same run was
     // reporting 2.38px in baseline mode — a summary that states a result instead
     // of reading it is how a harness starts lying about its own subject.
-    const worstGlyph = Math.max(...rows.map(r => Math.abs(r.glyphOffset)))
+    const offsets = rows.map(r => r.glyphOffset).filter(v => v !== null)
+    const worstGlyph = offsets.length ? Math.max(...offsets.map(Math.abs)) : '—'
+    const lefts = rows.map(r => r.markerLeft).filter(v => v !== null)
     console.log(`  ${rows.length} rows  pitch ${[...new Set(pitches)].join(' / ')}px  ` +
       `${interior.length - interior.filter(v => !on4(v)).length}/${interior.length} edges on 4px  ` +
-      `glyph worst ${worstGlyph}px off the headline  (* = chip row, height out of scope)`)
+      `marker worst ${worstGlyph}px off its status line, x ${[...new Set(lefts)].join(' / ')}px ` +
+      `(tint band ${TINT_MAX_PX}px)  (* = chip row, height out of scope)`)
 
     const side = await page.locator('.session-row').first()
       .evaluate(el => {
