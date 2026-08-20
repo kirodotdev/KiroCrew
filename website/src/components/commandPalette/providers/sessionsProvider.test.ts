@@ -13,8 +13,9 @@ import {
  * mock `fetchSessions` + open spies — no React hooks, React-Query, or Redux.
  *
  * The provider keeps backend hits even when the client-side fuzzy pass does not
- * match (score 0), so test data is crafted so each result set has distinct
- * scores (the `compareByScoreThenName` sort only inspects names on a tie).
+ * match (score 0); ties in score fall back to the BACKEND's returned order
+ * (issue #4568), so test data either crafts distinct scores or asserts the
+ * response order directly.
  */
 
 function deps(over: Partial<SessionsProviderDeps> = {}): {
@@ -255,6 +256,53 @@ describe('createSessionsProvider — folder-fetch failure is distinct from searc
     const p = createSessionsProvider(d)
 
     await expect(p.search('my')).rejects.toThrow('search down')
+  })
+})
+
+describe('createSessionsProvider — backend relevance order is the score tiebreak (issue #4568)', () => {
+  it('preserves backend order for body-only hits (all scores 0) instead of alphabetizing', async () => {
+    // Titles are in REVERSE-alphabetical order and share no characters with the
+    // query, so every row is a body hit with score 0. The backend ranked these
+    // by relevance (search_sessions weighting); the old name tiebreak returned
+    // them alphabetized ('Alpha…' first). The response order must come back
+    // untouched — the clearest user-visible case is searching a PR/issue
+    // number, which lives in transcripts but almost never in a title.
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [
+          { key: 'z', title: 'Zebra rollout', snippet: 'discussed 4568 here' },
+          { key: 'm', title: 'Muffin sync', snippet: 'follow-up on 4568' },
+          { key: 'a', title: 'Alpha rollout', snippet: '4568 mentioned once' },
+        ],
+      }),
+    )
+    const { d } = deps({ fetchSessions })
+    const results = await createSessionsProvider(d).search('4568')
+    expect(results).toHaveLength(3)
+    expect(results.every(r => r.score === 0)).toBe(true)
+    // Backend order, NOT ['Alpha rollout', 'Muffin sync', 'Zebra rollout'].
+    expect(results.map(r => r.title)).toEqual(['Zebra rollout', 'Muffin sync', 'Alpha rollout'])
+  })
+
+  it('still ranks a title match first even when the backend returned it last (bias preserved)', async () => {
+    // The title-match-first bias is deliberate and must survive the tiebreak
+    // change: a title hit outranks body-only hits regardless of backend index.
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [
+          { key: 'b1', title: 'Unrelated alpha', snippet: 'body mentions grid' },
+          { key: 'b2', title: 'Unrelated beta', snippet: 'grid again' },
+          { key: 't', title: 'grid work' },
+        ],
+      }),
+    )
+    const { d } = deps({ fetchSessions })
+    const results = await createSessionsProvider(d).search('grid')
+    expect(results).toHaveLength(3)
+    expect(results[0].title).toBe('grid work')
+    expect(results[0].score).toBeGreaterThan(0)
+    // The remaining body-only rows keep their backend order between themselves.
+    expect(results.slice(1).map(r => r.title)).toEqual(['Unrelated alpha', 'Unrelated beta'])
   })
 })
 

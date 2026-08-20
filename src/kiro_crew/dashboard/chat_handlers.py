@@ -34,6 +34,8 @@ from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
+    _FLUSH_SNAPSHOT_RETRIES,
+    _TRANSIENT_ROLES,
     COLOR_HEX_RE,
     _attach_variants,
     _rehydrate_slot_title,
@@ -74,6 +76,7 @@ from kiro_crew.dashboard.state import (
     _normalize_slot_key,
     is_stop_event_row,
     is_turn_interrupted,
+    parse_cls_meta,
     request_slot_origin,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
@@ -1106,6 +1109,383 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
     )
 
 
+def _load_redacted(body: str) -> str:
+    """Apply the transcript redaction pair, in the one order the repo uses."""
+    redacted, _ = redact_exfiltration_urls(body)
+    redacted, _ = redact_credentials(redacted)
+    return redacted
+
+
+def _same_persisted_body(
+    disk_body: str, window_body: str, role: str, disk_ts: str = "", window_ts: str = ""
+) -> bool:
+    """True when *disk_body* is the persisted form of *window_body*.
+
+    A persisted row can differ from its window copy by exactly the redaction
+    transform, and EITHER side can be the redacted one, which is why the compare
+    applies it symmetrically. A restore redacts on load while keeping ``ts``
+    verbatim (``chat_persistence.py:708-709``), so the window holds the redacted
+    text; a save redacts every non-user role on the way out
+    (``chat_persistence.py:1282-1284``) while the window keeps it verbatim
+    (``state.py:2107``), so in a session that was never restored the DISK holds the
+    redacted text instead. Redacting one side only cannot converge on that second
+    pair — redacting an already-redacted body just reproduces it — so the row reads
+    as un-flushed and the persisted suffix is appended twice.
+
+    Applying the transform is also what separates a persisted row from a foreign
+    row that merely shares a ``ts``: on a coarse clock two writers flooring off the
+    same previous row both emit ``previous + 1µs`` (``history.py:1179-1219``), so
+    matching on ``ts`` alone treats an unrelated row as the window's own and drops
+    an un-flushed message from a response the client uses as a replacement.
+
+    Two bodies can redact to the same text while being different messages, so the
+    redaction-equivalent branch ALSO requires the stamps to match. That costs the
+    legitimate case nothing: this branch only ever fires for a row and its own
+    persisted copy, which differ by the transform precisely because one side was
+    redacted, and both the save and the load copy ``ts`` verbatim
+    (``chat_persistence.py:1288`` and ``:714``). A foreign row whose credential
+    merely redacts to the same text carries its own writer's stamp, so it no longer
+    consumes the window row.
+
+    The requirement is on this branch ALONE, which is why it does not reintroduce
+    the duplication above. A durable injection is byte-identical to its window row,
+    so it returns at the plain-equality check and never reaches here — and that pair
+    genuinely does carry different stamps, because the two writers mint
+    independently.
+    """
+    if disk_body == window_body:
+        return True
+    if role == "user":
+        return False
+    if disk_ts != window_ts:
+        return False
+    return _load_redacted(disk_body) == _load_redacted(window_body)
+
+
+#: Window rows a bounded read must NOT hand back. ``_TRANSIENT_ROLES`` documents
+#: itself as being about a window-region DISK line
+#: (``chat_persistence.py:1320-1322``) and ``chat_persistence.py:1571`` uses it that
+#: way. A bounded read answers a different question — which WINDOW rows does the
+#: client still need — and three of those roles are still needed. ``permission``:
+#: a pending approval is actionable and the client reads it out of the transcript,
+#: so dropping it hides the approval bar while the server is still waiting.
+#: ``chunk``/``streaming``: ``_prepare_messages`` does not discard a chunk run, it
+#: collapses one into a single ``streaming`` row, and that is the only way in-flight
+#: assistant text reaches this endpoint — the client filters raw ``chunk`` itself.
+#: ``done`` is discarded by ``_prepare_messages`` regardless, and ``queued`` stays
+#: listed because the client rebuilds those bubbles from the payload's ``queue``.
+_UNOWED_WINDOW_ROLES = _TRANSIENT_ROLES - {"permission", "chunk", "streaming"}
+
+
+def _is_answered_permission(m: dict) -> bool:
+    """True for a ``permission`` row whose approval has already been answered.
+
+    A permission row is never persisted, so it is always owed and therefore always
+    lands in the tail — i.e. after every row that DID reach disk. For a pending
+    approval that is the right place: it is the newest row, and nothing can follow
+    it because the agent is blocked waiting on it. An answered one is history, and
+    the agent has since produced turns that ARE on disk, so putting it in the tail
+    moves it after them and the rendered order no longer matches what happened.
+
+    The decision is written into the row's ``cls`` JSON in place
+    (``state.py`` ``_mark_permission_resolved``), which is also the only place the
+    stale-sweep and the slot resolver read it, so ``cls`` is the single source of
+    truth here. Truthiness rather than key presence mirrors the client's own
+    ``!meta.resolved`` test (``chatSlice.ts`` ``selectSlotPendingApproval``), so an
+    empty decision still counts as pending and an actionable approval is never lost.
+    """
+    if m.get("role") != "permission":
+        return False
+    meta = parse_cls_meta(m.get("cls", "")) or {}
+    return bool(meta.get("resolved"))
+
+
+def _snapshot_slot_window(slot: "_ChatSlot") -> tuple[int, list[dict]]:
+    """Capture ``(_disk_older_count, window)`` as one internally consistent pair.
+
+    Call this on the EVENT LOOP where possible. The two reads have no ``await``
+    between them, so no loop-scheduled writer can land in the middle — and the
+    finalization that motivates this, ``chat_runner._flush_segment``, is a plain
+    ``def`` that is never handed to ``to_thread``, so it cannot interleave with a
+    loop capture. It assigns ``slot.messages = head`` and only then appends the
+    finalized assistant row, so a reader that lands between those two statements
+    sees a transient chunk-free window missing that row. A worker thread CAN land
+    there, which is why capturing inside the threaded scan is the weaker option.
+
+    From a thread the pair can still tear, so retry: a front trim bumps
+    ``_disk_older_count`` (state.py:2191-2200) between the reads, and a PRE-trim
+    window paired with a POST-trim count shortens ``window_disk``, hides the
+    trimmed rows' ids and re-appends rows the disk read already returned. A trim
+    is the only mutation that changes the window/count relationship, so read the
+    count, copy the window, then confirm the count is unchanged. ``slot._lock``
+    is an ``asyncio.Lock`` and cannot be acquired from a thread, so this mirrors
+    the bounded re-read ``_save_slot_to_history`` uses for the same race
+    (chat_persistence.py:1711-1722).
+    """
+    for _ in range(_FLUSH_SNAPSHOT_RETRIES):
+        disk_older_count = slot._disk_older_count
+        window = list(slot.messages)
+        if slot._disk_older_count == disk_older_count:
+            break
+    else:
+        disk_older_count = slot._disk_older_count
+        window = list(slot.messages)
+    return disk_older_count, window
+
+
+def _append_unflushed_tail(
+    slot: "_ChatSlot",
+    all_msgs: list[dict],
+    *,
+    snapshot: tuple[int, list[dict]] | None = None,
+) -> list[dict]:
+    """Append window messages that are not yet on disk to a chained disk read.
+
+    ``all_msgs`` is a disk read, so it omits transient roles while the window
+    retains them, and it spans any older sessions a chained read walks. Sizing the
+    tail by subtracting the two lengths therefore mixes units AND measures the
+    whole file: it both re-appends rows the disk read already returned and lets a
+    row from another writer consume a turn that is still owed.
+
+    Takes the window itself rather than a caller-supplied count, so a caller cannot
+    pass a length captured before an ``await``; the window can grow while a threaded
+    disk read is in flight. ``snapshot`` is the one safe way to supply it: a
+    ``(disk_older_count, window)`` PAIR from ``_snapshot_slot_window`` captured on
+    the event loop AFTER the disk read, which is consistent by construction and
+    cannot observe a mid-finalization window. Passing no snapshot falls back to
+    capturing inside this thread, which is weaker — see that helper.
+
+    Prefer message identity. A save copies each window row's ``meta.mid`` to disk,
+    so a window row whose id appears in the disk read is persisted. Rows written by
+    any other writer carry no id — ``ConversationLog.append`` persists no ``meta``
+    — so they cannot be mistaken for a flushed window row.
+
+    A disk read holding no ids at all needs a different boundary: a session
+    persisted before ids existed, or rows a durable injector appended without
+    going through a save. Walk the window and the disk read forward TOGETHER and
+    stop at the first row that is not accounted for. A row from another writer no
+    longer ENDS the run, which is what sizing the boundary as
+    ``len(all_msgs) - slot._disk_older_count`` did — that measures the whole file,
+    so a foreign append walked one row too far and dropped the owed turn. Both
+    estimators the slot already carries are wrong here for opposite reasons: that
+    subtraction over-counts, and ``_disk_window_len`` is not advanced by an
+    injector, so it under-counts and would re-append a persisted row.
+
+    The window is matched against the disk region as an ordered SUBSEQUENCE: a row
+    that does not match the window row under consideration is SKIPPED rather than
+    treated as the end of the window. The save is non-destructive against a
+    cross-process append and merges the preserved rows back in TIME order
+    (``_interleave_foreign_lines``), so the region can read
+    ``[window, foreign, window]`` and an unmatched row means "not mine", not "end of
+    window". Ending the run there leaves every persisted row after it in the tail,
+    which appends an already-persisted suffix a second time.
+
+    Skipping cannot pass over a row that should have matched: both sequences are
+    chronological — the save's merge preserves each side's internal order — so a
+    later window row's persisted copy cannot precede the current row's. It is also
+    bounded: the disk cursor only ever moves forward, so the scans total
+    O(window + region), and the first window row with no match anywhere in the
+    remaining region ends the walk, which is the genuine end of the flushed prefix.
+
+    A row matches on role plus content, compared through the redaction transform
+    on both sides (``_same_persisted_body``). A shared ``ts`` is never SUFFICIENT —
+    on a coarse clock two writers flooring off the same previous row both emit
+    ``previous + 1µs`` (``history.py:1179-1219``), so accepting it alone drops an
+    un-flushed message — but it is REQUIRED on the redaction-equivalent branch,
+    where the only legitimate pair is a row and its own copy and the stamp is
+    carried through verbatim.
+
+    Ids are counted over the on-disk WINDOW REGION only,
+    ``all_msgs[slot._disk_older_count:]``. The rows before that are the frozen prefix
+    — on-disk rows older than the window, so none of them is in ``slot.messages``.
+    Counting them would let an occurrence that exists only in the prefix fund a match
+    for a window row that was never flushed, and the boundary would then walk past it.
+    The fallback below already starts its disk cursor at the same offset.
+
+    Id matching is selected only when EVERY row in that region carries a valid id, not
+    merely when some row does. A durable injection is written by two writers — the
+    window copy through ``slot.append``, where an id is minted, and the durable copy
+    through ``append_if_absent``, which persists no ``meta`` at all — so the region can
+    legitimately hold a MIX. Choosing id matching on the strength of one id-carrying
+    row then applies it to a row that structurally cannot match, which reads as
+    un-flushed and appends the injection a second time. A mixed region belongs on the
+    ordered path, which compares the fields both writers do record.
+
+    Ids are matched as a MULTISET, one disk occurrence consumed per window row, not
+    as a set. ``meta`` on an inbound message is caller-supplied and an id is minted
+    only when one is *absent*, so a caller can post the same id twice. A set then
+    matches EVERY window row carrying that id, so the boundary walks past a row that
+    was never persisted and the response omits it — the silent-loss direction. One
+    disk row is enough for that; two disk rows sharing an id are not required.
+    Consuming an occurrence bounds the match to as many rows as really reached disk,
+    and the earliest window row is the persisted one because flushes follow window
+    order.
+
+    Only string ids are matched. A truthy non-string ``mid`` survives to disk for the
+    same caller-supplied reason and would raise ``TypeError`` if hashed.
+
+    The id path selects the owed rows by MEMBERSHIP rather than by a prefix
+    boundary. A boundary assumes every persisted row precedes every un-flushed one.
+    When it does not, a later match moves the boundary past an un-flushed row and
+    the response omits it — a drop, which is worse than the duplication this
+    function exists to prevent. Ending the walk at the first miss is not the
+    remedy either: a transient row is dropped by the save and so can never match,
+    and stopping there re-appends every persisted row after it. Rows the client does
+    not need are skipped outright (``_UNOWED_WINDOW_ROLES``), so selecting by
+    membership cannot surface one the boundary happened to exclude; a pending
+    ``permission`` row is deliberately not among them. Because an id in
+    the disk window region proves that row reached disk, the owed set is simply the
+    rows whose id did not, kept in window order. Where the persisted rows really
+    are a prefix this returns the same answer, so it is a strict generalisation.
+    """
+    if snapshot is None:
+        snapshot = _snapshot_slot_window(slot)
+    disk_older_count, window = snapshot
+    window_disk = all_msgs[disk_older_count:]
+    disk_mid_positions: dict[str, list[int]] = {}
+    every_row_has_an_id = bool(window_disk)
+    for i, m in enumerate(window_disk):
+        meta = m.get("meta")
+        mid = meta.get("mid") if isinstance(meta, dict) else None
+        if isinstance(mid, str) and mid:
+            disk_mid_positions.setdefault(mid, []).append(i)
+        else:
+            every_row_has_an_id = False
+    tail: list[dict]
+    if every_row_has_an_id:
+        # Membership, not a prefix boundary: see the docstring for why neither a
+        # boundary nor a break-on-miss is correct here.
+        #
+        # Owed rows are MERGED at their window position, not concatenated after the
+        # whole disk slice. Window order is authoritative and a persisted row can
+        # sit LATER in it than an owed one: _flush_segment pulls a stop_event out of
+        # the trailing chunk run and re-appends it AFTER the finalized assistant row
+        # (chat_runner.py:2686-2687), so a stop that reached disk during streaming
+        # follows a reply that is still owed. Appending owed rows last renders that
+        # pair inverted -- stop before the reply it belongs to.
+        #
+        # Every row here carries an id, so the position is derivable without the
+        # body matching the other arm needs. Persisted rows keep their disk order
+        # and none is dropped; each owed row is only INSERTED before the disk row of
+        # the next window row that reached disk, so this is additive.
+        owed_before: dict[int, list[dict]] = {}
+        pending: list[dict] = []
+        for m in window:
+            if m.get("role", "assistant") in _UNOWED_WINDOW_ROLES:
+                continue
+            if _is_answered_permission(m):
+                continue
+            meta = m.get("meta")
+            mid = meta.get("mid") if isinstance(meta, dict) else None
+            positions = disk_mid_positions.get(mid) if isinstance(mid, str) else None
+            if positions:
+                at = positions.pop(0)
+                if pending:
+                    owed_before.setdefault(at, []).extend(pending)
+                    pending = []
+                continue
+            pending.append(m)
+        if not owed_before and not pending:
+            return all_msgs
+        merged: list[dict] = list(all_msgs[:disk_older_count])
+        for i, m in enumerate(window_disk):
+            merged.extend(owed_before.get(i, ()))
+            merged.append(m)
+        merged.extend(pending)
+        return merged
+    else:
+        start = 0
+        d = min(disk_older_count, len(all_msgs))
+        # An owed row is one the disk slice does not already carry, and this arm walks
+        # the WHOLE window so that a single owed row cannot strand the rows behind it.
+        # There are two ways to be owed, and both route to ``owed_rows``:
+        #
+        #   1. A TRANSIENT role. A disk read omits transient roles entirely, so such a
+        #      row can NEVER be matched and is ALWAYS owed. Only ``_UNOWED_WINDOW_ROLES``
+        #      (``done``/``queued``) and an already-answered ``permission`` are genuinely
+        #      not owed.
+        #   2. A non-transient row the forward scan does not find on disk. This used to
+        #      ``break`` the loop outright, which left ``start`` pointing AT the unmatched
+        #      row, so ``window[start:]`` re-emitted every LATER window row -- including
+        #      rows already on disk. With a stop_event flushed before reply finalization
+        #      (``_flush_segment`` re-appends the stop AFTER the finalized assistant row,
+        #      see the note at the top of this function) the window reads
+        #      ``[... unflushed reply, flushed stop]``: the reply missed, the loop broke,
+        #      and the persisted stop came back a second time and out of order -- the
+        #      very duplication this function exists to remove.
+        #
+        # The sibling id-carrying arm above already has the right rule, so mirror it
+        # rather than inventing a second one: an unmatched row is held, a later match
+        # flushes what is held at ITS disk position, and leftovers stay in the tail.
+        # That keeps owed rows in window order instead of after the whole disk slice.
+        #
+        # Nothing is emitted twice: ``start`` only advances on a match, and a match flushes
+        # ``owed_rows`` first, so every flushed row had an index below ``start``. Whatever
+        # is left over sits at or after ``start`` and is carried by the trailing slice --
+        # but that slice needs the unowed/answered exclusions applied to it as well, for
+        # the reason recorded at the slice itself.
+        owed_at: dict[int, list[dict]] = {}
+        owed_rows: list[dict] = []
+        for i, m in enumerate(window):
+            role = m.get("role", "assistant")
+            if role in _TRANSIENT_ROLES:
+                if role not in _UNOWED_WINDOW_ROLES and not _is_answered_permission(m):
+                    owed_rows.append(m)
+                continue
+            body = m.get("content", "")
+            probe = d
+            while probe < len(all_msgs):
+                row = all_msgs[probe]
+                if row.get("role", "assistant") == role and _same_persisted_body(
+                    row.get("content", ""),
+                    body,
+                    role,
+                    row.get("ts", ""),
+                    m.get("ts", ""),
+                ):
+                    break
+                probe += 1
+            if probe >= len(all_msgs):
+                owed_rows.append(m)
+                continue
+            if owed_rows:
+                owed_at.setdefault(probe, []).extend(owed_rows)
+                owed_rows = []
+            d = probe + 1
+            start = i + 1
+        # ``start`` does NOT advance past an unowed row: such a row takes the
+        # ``_TRANSIENT_ROLES`` branch above, is correctly kept out of ``owed_rows`` by the
+        # guard there, and then ``continue``s -- skipping ``start = i + 1``. So a raw
+        # ``window[start:]`` re-admits any unowed row that TRAILS the last match, and the
+        # exclusion the guard performed is undone. The sibling arm does not have this hole
+        # because it applies both exclusions at the TOP of its loop, so its leftovers can
+        # never hold one. Apply the same two exclusions here, which is what actually
+        # mirrors it.
+        #
+        # Two symptoms, one cause. A trailing ``done`` reaches the bounded response and
+        # ``_prepare_messages`` then drops it while rendering (``chat_utils.py``), so a
+        # page whose only row is that ``done`` renders EMPTY and replaces the transcript.
+        # A trailing answered ``permission`` is instead re-ordered after every persisted
+        # row -- the misordering ``_is_answered_permission`` exists to prevent.
+        #
+        # ``chunk``/``streaming`` and a still-PENDING ``permission`` are genuinely owed and
+        # MUST survive this filter; narrowing it further would be the opposite defect.
+        tail = [
+            m
+            for m in window[start:]
+            if m.get("role", "assistant") not in _UNOWED_WINDOW_ROLES
+            and not _is_answered_permission(m)
+        ]
+        if not owed_at and not tail:
+            return all_msgs
+        merged_idless: list[dict] = []
+        for idx, row in enumerate(all_msgs):
+            merged_idless.extend(owed_at.get(idx, ()))
+            merged_idless.append(row)
+        merged_idless.extend(tail)
+        return merged_idless
+
+
 async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
@@ -1285,14 +1665,13 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
             all_msgs = []
         # Append any un-flushed in-memory tail messages beyond what's on disk.
-        # Use _disk_older_count to isolate current-session disk count, since
-        # chained disk includes older sessions that inflate disk_len.
-        mem_len = len(slot.messages)
-        disk_len = len(all_msgs)
-        current_session_disk = max(0, disk_len - slot._disk_older_count)
-        unflushed = mem_len - current_session_disk
-        if unflushed > 0:
-            all_msgs = list(all_msgs) + list(slot.messages[-unflushed:])
+        # Snapshot on the LOOP, after the disk read: the two reads inside the helper
+        # have no await between them, so a synchronous finalization cannot be caught
+        # half-done the way a worker thread can catch it.
+        tail_snapshot = _snapshot_slot_window(slot)
+        all_msgs = await asyncio.to_thread(
+            _append_unflushed_tail, slot, all_msgs, snapshot=tail_snapshot
+        )
         total = len(all_msgs)
         if before is not None:
             end = max(0, min(before, total))

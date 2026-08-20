@@ -29,7 +29,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import read_bytes_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
@@ -256,8 +256,8 @@ class CrewStore:
         Only ``FileNotFoundError`` means "nothing enqueued yet". Anything else
         propagates: the slot refuses to build, which surfaces as a failed
         request the user can retry once the file is dealt with. A wedged slot
-        is recoverable; an erased queue is not. Writes go through
-        ``tmp.replace()``, so a malformed payload is not a torn write of ours —
+        is recoverable; an erased queue is not. Writes go through a
+        write-tmp-then-rename, so a malformed payload is not a torn write of ours —
         it is damage from outside, and papering over it is the wrong default.
         """
         path = self.dir / name
@@ -306,7 +306,23 @@ class CrewStore:
                         return  # a newer snapshot already landed
                 tmp = self.dir / f".{name}.tmp"
                 tmp.write_text(payload, encoding="utf-8")
-                tmp.replace(self.dir / name)
+                # `replace_with_retry`, not `tmp.replace()`: this is the write half
+                # of the window #4331 fixed on the read half. On Windows the rename
+                # raises `PermissionError` while ANY other handle is open on either
+                # path -- an indexer, an AV scanner, or this store's own concurrent
+                # reader -- and the payload is lost even though the write itself was
+                # correct. `_written_seq` is advanced only after the rename returns,
+                # so a lost rename also leaves the sequence un-advanced and the next
+                # writer wins by default: the user's message is simply gone.
+                #
+                # `Path.replace` was also unreachable for the repo's own emulator on
+                # Python 3.10, where pathlib holds a captured reference to
+                # `os.replace` rather than looking it up per call -- the same reason
+                # #4331 had to move the read off `Path.read_text`.
+                #
+                # This runs in `run_in_executor` (or inline with no loop), so the
+                # helper's off-the-event-loop gate leaves the retry enabled here.
+                replace_with_retry(tmp, self.dir / name)
                 # Advance ONLY after the atomic replace succeeded — a failed
                 # write must stay retryable, not be recorded as landed. The
                 # per-name io_lock guarantees no concurrent writer for this

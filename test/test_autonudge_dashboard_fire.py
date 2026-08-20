@@ -38,10 +38,15 @@ def _loop(slot_key: str = "chat-1-1785") -> NudgeLoop:
     )
 
 
-def _slot(key: str = "chat-1-1785", *, running: bool = False) -> MagicMock:
+def _slot(
+    key: str = "chat-1-1785", *, running: bool = False, in_stage: bool = False
+) -> MagicMock:
     slot = MagicMock()
     slot.key = key
     slot.running = running
+    # Real _ChatSlot defaults this False; a bare MagicMock would return a truthy
+    # Mock and trip the busy guard, so model the default explicitly.
+    slot._in_stage_execution = in_stage
     return slot
 
 
@@ -208,6 +213,31 @@ class TestDashboardNudgeSlotResolution:
         loop = _loop()
         before = loop.cycle_count
         orch.dashboard_state.get_slot = MagicMock(return_value=_slot(running=True))
+        spawn = _fake_spawn()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is False
+        orch.autonudge_svc.remove.assert_not_awaited()
+        assert spawn.calls == []
+        assert loop.cycle_count == before
+
+    @pytest.mark.asyncio
+    async def test_stage_execution_slot_skips_without_retiring_the_loop(self) -> None:
+        """A multi-stage plan mid-flight defers the cycle; it must not clobber it.
+
+        Between stages the plan sets ``slot.task = None`` (chat_orchestrator), so
+        ``slot.running`` reads False even though the plan is still executing. The
+        nudge must still defer on ``_in_stage_execution`` — firing here would start
+        a concurrent turn that scatters the plan's output.
+        """
+        orch = _orchestrator()
+        loop = _loop()
+        before = loop.cycle_count
+        orch.dashboard_state.get_slot = MagicMock(
+            return_value=_slot(running=False, in_stage=True)
+        )
         spawn = _fake_spawn()
         with (
             patch.object(gw, "spawn_guarded_turn", spawn),

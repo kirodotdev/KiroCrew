@@ -15,7 +15,6 @@ src/kiro_crew/acp/liveness.py
 src/kiro_crew/acp/runtime.py
 src/kiro_crew/acp/session_handle.py
 src/kiro_crew/acp/worker_pool.py
-src/kiro_crew/agent.py
 src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py
@@ -214,8 +213,6 @@ src/kiro_crew/cloud/connect.py
 src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py
 src/kiro_crew/cloud/launch_job.py
-src/kiro_crew/computer_use/macos_skylight.py
-src/kiro_crew/computer_use/overlay_proc.py
 src/kiro_crew/config/loader.py
 src/kiro_crew/config/paths.py
 src/kiro_crew/config/schema.py
@@ -390,7 +387,6 @@ src/kiro_crew/mcp_gateway/backend.py
 src/kiro_crew/mcp_gateway/breaker.py
 src/kiro_crew/mcp_gateway/claim.py
 src/kiro_crew/mcp_gateway/evaluate.py
-src/kiro_crew/mcp_gateway/gatewayd.py
 src/kiro_crew/mcp_gateway/hazards.py
 src/kiro_crew/mcp_gateway/image_budget.py
 src/kiro_crew/mcp_gateway/manager.py
@@ -697,7 +693,6 @@ test/test_completion_result_read_off_loop.py
 test/test_computer_use_apps.py
 test/test_computer_use_ffi.py
 test/test_computer_use_overlay.py
-test/test_computer_use_registration.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
 test/test_config_loader.py

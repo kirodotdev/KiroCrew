@@ -2950,6 +2950,7 @@ class DashboardState:
         self._mcp_gateway_manager: Any = None  # GatewayManager | None
         self._mcp_gateway_apply: Any = None  # async (enabled: bool) -> dict
         self._mcp_gateway_apply_stub: Any = None  # async () -> dict
+        self._mcp_resolve_refresh: Any = None  # async () -> dict
         # Secretary subsystem removed; kept as permanent None for apps/routes.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)

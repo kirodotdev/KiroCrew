@@ -8,6 +8,8 @@ from kiro_crew.validation import (
     ARTIFACT_SAVE_SCHEMA,
     CHANNEL_ID_RE,
     CRON_ADD_SCHEMA,
+    FILE_READ_SCHEMA,
+    FILE_WRITE_SCHEMA,
     LEARN_ADD_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SET_PROJECT_SCHEMA,
@@ -1077,3 +1079,82 @@ def test_unique_items_distinguishes_bool_from_number():
             {"type": "object",
              "properties": {"x": {"type": "array", "uniqueItems": True}}},
         )
+
+
+# ── File I/O path shape (FILE_READ_SCHEMA / FILE_WRITE_SCHEMA) ──
+
+
+class TestFilePathShape:
+    """The syntax gate every dashboard file endpoint validates `path` against.
+
+    It ran POSIX-only until the dashboard file viewer was found to 400 on every
+    file on Windows: the pattern required a `~` or `/` first character and
+    allowed neither `\\` nor `:`, so a native Windows path was refused ahead of
+    the Windows-aware canonicalization below it.
+    """
+
+    @staticmethod
+    def _accepts(path: str) -> bool:
+        try:
+            validate_tool_args({"path": path}, FILE_READ_SCHEMA)
+            return True
+        except ValidationError:
+            return False
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/home/user/project/notes.md",
+            "~/project/notes.md",
+            "/tmp/a file with spaces.md",
+        ],
+    )
+    def test_accepts_posix_absolute(self, path):
+        assert self._accepts(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"C:\Users\me\workspace\notes.md",
+            "C:/Users/me/workspace/notes.md",
+            r"c:\lower\drive\letter.md",
+            r"\\host\share\notes.md",
+            r"C:\Users\me\a file with spaces.md",
+        ],
+    )
+    def test_accepts_windows_absolute(self, path):
+        assert self._accepts(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # Drive-relative: resolves against a per-drive working directory the
+            # caller cannot see, so its target is not the path it appears to name.
+            r"C:notes.md",
+            # NTFS alternate data stream: reads a different byte stream than the
+            # file the path appears to name. ':' is confined to the drive prefix
+            # precisely so this stays refused.
+            r"C:\Users\me\notes.md:hidden",
+            # A bare relative path is still refused -- the endpoints that accept
+            # relative input rewrite it to absolute via _resolve_project_relative
+            # under resolve=1, ahead of this gate.
+            "src/main.py",
+            # Shell metacharacters remain outside the allowed body class.
+            "/tmp/$evil",
+            "/tmp/a;rm -rf b",
+            "/tmp/a|b",
+            # A prefix alone names a root, not a file.
+            "/",
+            "C:\\",
+            # Newline injection into anything that later logs or splits the path.
+            "/tmp/a\nb",
+        ],
+    )
+    def test_refuses(self, path):
+        assert not self._accepts(path)
+
+    def test_write_schema_shares_the_same_gate(self):
+        # One pattern object backs both schemas, so they cannot drift apart.
+        validate_tool_args({"path": r"C:\Users\me\notes.md", "content": "x"}, FILE_WRITE_SCHEMA)
+        with pytest.raises(ValidationError):
+            validate_tool_args({"path": r"C:notes.md", "content": "x"}, FILE_WRITE_SCHEMA)

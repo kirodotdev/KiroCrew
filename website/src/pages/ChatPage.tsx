@@ -1096,7 +1096,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
   }, [])
 
-  const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined)
+  // Project is part of the roster's identity: re-pointing this slot at another
+  // project changes which project-scoped agents exist. Derived here rather than
+  // from `currentSlot`, which is computed further down the render body.
+  const activeSlotProject = slots.find(s => s.key === activeSlot)?.project || undefined
+  const { agents: installedAgents, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
   const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
   // Promotes an agent to the global default. Set-only: clearing the default lives on
   // the Agent Templates page, where the control is labelled and the outcome is visible.

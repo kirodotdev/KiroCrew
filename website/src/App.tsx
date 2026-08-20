@@ -2,13 +2,13 @@ import { useEffect, useState, useCallback, useRef, useMemo, createContext, type 
 import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useAppSelector, useAppDispatch, store } from './store'
+import { useAppSelector, useAppDispatch, useAppStore, store } from './store'
 import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode } from './store/dashboardSlice'
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
 import { queryComposer } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain } from './utils/navIntent'
@@ -1745,13 +1745,51 @@ export default function App() {
     }
   }, [])
 
+  // The Provider's store, for reads inside async callbacks (requestFeature):
+  // the module-level singleton would bypass a test-injected store.
+  const appStore = useAppStore()
   const requestFeature = useCallback(async () => {
     const result = await dispatch(createSlot(undefined)).unwrap()
     const slot = result.key
     const visibleMessage = i18nT('app.i_d_like_to_request_a_feature')
     navigate('/chat')
-    dispatch(appendMessage({ role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString() }))
-    dispatch(setSlotRunning(true))
+    // Both optimistic writes are addressed to the slot this flow CREATED, not
+    // the active one: createSlot.fulfilled has a switched-away guard, so when
+    // the user changes session while the create round-trip is in flight the
+    // new slot is registered but never activated — an active-slot append would
+    // put the bubble in an unrelated session's transcript, and an
+    // unconditional running flag would mark that session busy for a turn it
+    // never started (review finding on #4198).
+    dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString() } }))
+    if (appStore.getState().chat.activeSlot === slot) dispatch(setSlotRunning(true))
+    // A send the server never accepted has to say so where the request landed
+    // (#4198): an HTTP 4xx/5xx RESOLVES rather than rejecting, so the catch
+    // alone never saw the errors that matter — a refused send left the
+    // optimistic bubble on screen next to a slot stuck `running`, with nothing
+    // said. The error row is addressed to the slot that OWNS the bubble, not
+    // the active one (the user can switch sessions while the POST is in
+    // flight); the optimistic `running` is undone only while that slot is
+    // still on screen, because `slotRunning` describes the ACTIVE slot and
+    // clearing it after a switch would clobber another session's live
+    // indicator (a stale flag on this slot self-heals from the server snapshot
+    // on the next switch-back). The payload is a canned constant, so unlike
+    // the chat composers there is no typed text to hand back — the retry
+    // affordance is the feedback pill itself.
+    const reportFailedSend = (reason?: string) => {
+      // FRAMED, not bare: a raw backend reason ("slot agent mismatch") reads
+      // as the agent erroring mid-work, not as "your request never went out".
+      // Both keys are core-owned siblings, so an app's catalog cannot reword a
+      // core error row.
+      dispatch(appendSlotMessage({
+        slot,
+        message: {
+          role: 'error',
+          content: reason ? i18nT('pages.chatPage.send_failed_with_error', { error: reason }) : i18nT('pages.chatPage.send_failed'),
+          cls: '',
+        },
+      }))
+      if (appStore.getState().chat.activeSlot === slot) dispatch(setSlotRunning(false))
+    }
     try {
       // maxAge bounds the seed's lifetime: if the visible send below fails,
       // the queued instructions expire server-side (drain_pending_context
@@ -1760,9 +1798,13 @@ export default function App() {
       await api.chatSlotContext(slot, FEATURE_REQUEST_PROMPT_FALLBACK, { source: 'feature-request', maxAge: 60 })
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
     try {
-      await api.sendChat(visibleMessage, slot, colorTheme)
-    } catch { /* WS will handle response */ }
-  }, [dispatch, navigate, colorTheme])
+      const r = await api.sendChat(visibleMessage, slot, colorTheme)
+      const body = await r.json().catch(() => ({}))
+      // Resolution is not success: the server accepted neither `ok` nor
+      // `queued`, so no turn started and no WS response is coming.
+      if (!body.ok && !body.queued) reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
+    } catch { reportFailedSend() }
+  }, [dispatch, navigate, colorTheme, appStore])
 
   const toggleNav = () => {
     if (isMobile) { setMobileNavOpen(p => !p) }

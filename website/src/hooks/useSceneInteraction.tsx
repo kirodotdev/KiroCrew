@@ -237,11 +237,27 @@ export function useSceneInteraction(
 
   const [draft, setDraft] = useState('')
   const [sendState, setSendState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle')
+  // The server's own explanation for a refused send ('' when none — the
+  // transport-reject path has no body). Rendered as a visible status line
+  // under the composer so the scene surface keeps the reason the App path
+  // already surfaces.
+  const [sendFailReason, setSendFailReason] = useState('')
   const [approvalState, setApprovalState] = useState<'idle' | 'resolving' | 'failed'>('idle')
+  // Which agent the composer state (draft + sendState) belongs to RIGHT NOW,
+  // and a GENERATION for that binding. `sendToAgent` is deliberately
+  // dependency-free, so it reads both through refs: a send outcome that lands
+  // after the popover retargeted — or after the SAME agent's popover was
+  // closed and reopened, which the id alone cannot distinguish — must not
+  // write into the new composer. Every reset below bumps the epoch, so a
+  // stale outcome compares unequal even when the agent id matches again.
+  const composerTargetRef = useRef<string | null>(null)
+  const composerEpochRef = useRef(0)
 
   // Reset composer state when the popover target changes
   useEffect(() => {
-    setDraft(''); setSendState('idle'); setApprovalState('idle')
+    composerTargetRef.current = threadView?.agent.id ?? null
+    composerEpochRef.current += 1
+    setDraft(''); setSendState('idle'); setSendFailReason(''); setApprovalState('idle')
   }, [threadView?.agent.id])
 
   // Draggable popover: dragPos overrides the anchored position once the user
@@ -280,27 +296,90 @@ export function useSceneInteraction(
     if (!msg) return
     const slotKey = agent.id.replace(/^slot-/, '')
     setSendState('sending')
+    // The composer THIS send belongs to: the target agent AND the epoch of
+    // its current open. The id alone cannot tell "still the same composer"
+    // from "closed and reopened on the same agent" — the reopen reset a fresh
+    // draft that a stale outcome must not erase or splice into.
+    const epochAtSend = composerEpochRef.current
+    const sameComposer = () =>
+      composerTargetRef.current === agent.id && composerEpochRef.current === epochAtSend
+    // Clear the sent payload NOW, not on acceptance: everything typed after
+    // this instant is NEWER work that neither outcome may erase. The success
+    // path deliberately does not touch the draft, and the failure path
+    // APPENDS the payload back into whatever is here by then.
+    setDraft('')
+    // A send the server refused has to say so on the composer it was typed
+    // into, and hand the payload back (#4198). Guarded on the SAME composer
+    // (target + epoch): a late failure must not flag a retargeted or reopened
+    // composer, or splice the old payload into its draft. The draft was
+    // cleared at send start, so anything in it now was typed mid-flight and
+    // is newer work: the restore APPENDS with whole-occurrence de-duplication
+    // rather than replacing — clobbering newer text to recover older is the
+    // regression class PR #4180 hit.
+    const reportFailedSend = (reason?: string) => {
+      if (!sameComposer()) return
+      setSendState('failed')
+      setSendFailReason(reason || '')
+      setDraft(prev => {
+        const keep = prev.replace(/\s+$/, '')
+        if (!keep.trim()) return msg
+        // EQUALITY only. The draft was cleared at send start, so anything
+        // here now is NEW text typed while the send was in flight — it can
+        // only equal the payload if the user deliberately retyped it, and
+        // any containment heuristic beyond that guesses about intent: it
+        // misread "do not deploy yet" as containing a retryable "deploy"
+        // (review finding on #4198). When in doubt, APPEND — a duplicated
+        // payload is visible and user-repairable, a dropped one is silent
+        // and unrecoverable.
+        if (keep === msg) return prev
+        // Single-line <input>: a newline separator would be silently stripped
+        // by the DOM, so the payload is appended after one space instead.
+        return [keep, msg].join(' ')
+      })
+    }
     try {
       const src = sourceFor(agent)
       if (src?.running) {
-        // Mid-turn: steer the running turn (backend queues if steer unavailable)
+        // Mid-turn: steer the running turn (backend queues if steer unavailable).
+        // steerChat parses through `j`, which throws on an HTTP error, so the
+        // catch below covers both failure shapes for this branch.
         await api.steerChat(msg, slotKey)
       } else {
-        // Idle or waiting for input: start/continue the turn.
-        // sendChat streams SSE — fire it and swallow the stream; the scene's
-        // live slot state reflects the turn via the normal WS updates.
-        await api.sendChat(msg, slotKey).then(r => { r.body?.cancel().catch(() => {}) })
+        // Idle or waiting for input: start/continue the turn. `?ws=1` answers
+        // with a JSON receipt ({ok, queued, error}) and the turn itself streams
+        // over WS. An HTTP 4xx/5xx RESOLVES rather than rejecting, so the
+        // receipt must be read: without this check every refused send fell
+        // through to 'sent' below — the state asserting the opposite of what
+        // happened, for precisely the errors that matter.
+        const r = await api.sendChat(msg, slotKey)
+        const body = await r.json().catch(() => ({}))
+        if (!body.ok && !body.queued) {
+          reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
+          return
+        }
       }
-      setDraft('')
-      setSendState('sent')
-      setTimeout(() => setSendState('idle'), 1500)
       lastSentRef.current = { slotKey, content: msg, at: Date.now() }
-      // Optimistically append to the mini thread
+      // Composer state belongs to the composer open NOW: after a mid-flight
+      // retarget — or a close-and-reopen of the same agent — the state is a
+      // NEW composer's, and an older send may not acknowledge into it. The
+      // draft is NOT cleared here: it was cleared at send start, so whatever
+      // it holds now was typed while this send was in flight and is newer
+      // work an acceptance must not erase.
+      if (sameComposer()) {
+        setSendState('sent')
+        // Reset only if the tick still shows: a later send (same agent or a
+        // retargeted popover) has moved the state to 'sending'/'failed' by the
+        // time this fires, and an unconditional reset would re-enable submit
+        // while that request is still in flight (review finding on #4198).
+        setTimeout(() => setSendState(s => (s === 'sent' ? 'idle' : s)), 1500)
+      }
+      // Optimistically append to the mini thread — only on acceptance: an
+      // echo of a message the server refused would assert it was delivered.
       setThreadView(tv => tv && tv.agent.id === agent.id
         ? { ...tv, messages: [...tv.messages, { role: 'user', content: msg }].slice(-THREAD_VIEW_MESSAGES) }
         : tv)
     } catch {
-      setSendState('failed')
+      reportFailedSend()
     }
   }, [])
 
@@ -468,6 +547,15 @@ export function useSceneInteraction(
           {sendState === 'sending' ? '…' : sendState === 'sent' ? <Check size={12} aria-hidden /> : sendState === 'failed' ? i18nT('hooks.useSceneInteraction.retry') : i18nT('hooks.useSceneInteraction.send')}
         </button>
       </div>
+      {/* Visible to everyone, not hover-only: a tooltip on the Retry button is
+          unreachable for keyboard, touch, and AT users (UX review on #4198).
+          role="status" announces the refusal when it lands. Framed by the same
+          core-owned entry the feature-request path uses — no new string. */}
+      {sendState === 'failed' && sendFailReason ? (
+        <div role="status" style={{ padding: '0 8px 6px', color: '#f88', fontSize: 10 }}>
+          {i18nT('pages.chatPage.send_failed_with_error', { error: sendFailReason })}
+        </div>
+      ) : null}
     </div>
   ) : null
 

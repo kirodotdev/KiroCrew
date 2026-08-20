@@ -3535,15 +3535,21 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         )
         merge = False
 
+    in_stage = bool(slot._in_stage_execution)
     hold_users = bool(
         (
             state.subagents is not None
             and state.subagents.running_agents_for(f"dashboard:{slot.key}")
         )
-        or slot._in_stage_execution
+        or in_stage
     )
     if hold_users:
-        next_msg, consumed = _dequeue_next_system_message(slot)
+        # During a multi-stage plan hold cron notifications too: each stage is
+        # its own _run_chat whose tail-drain runs while _in_stage_execution is
+        # still set, so draining a cron here starts an unrelated turn between
+        # stages and scatters the plan. It drains at end-of-plan once the gate
+        # clears. Sub-agent completions / recovery still flow.
+        next_msg, consumed = _dequeue_next_system_message(slot, exclude_cron=in_stage)
     else:
         next_msg, consumed = _dequeue_next_message(slot, merge_enabled=merge)
     if next_msg is None:
@@ -6701,9 +6707,7 @@ async def _run_chat(
                     _ac = slot._acp_client
                     _awaiting = bool(
                         getattr(_ac, "_awaiting_permission", False)
-                        or getattr(
-                            getattr(_ac, "_handle", None), "_awaiting_permission", False
-                        )
+                        or getattr(getattr(_ac, "_handle", None), "_awaiting_permission", False)
                     )
                     emit_counter(
                         TURN_TIMEOUT_CAUSE,

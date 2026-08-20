@@ -57,10 +57,11 @@ logger = logging.getLogger(__name__)
 # Reasons the non-macOS backends report. Concrete rather than "not supported":
 # a user on Windows should learn what is missing, and a maintainer should find
 # the next implementation step named here.
-WINDOWS_REASON = (
-    "the Windows UI Automation driver is not implemented yet; computer use is "
-    "macOS-only in this release"
-)
+#: Kept for the case where a Windows host cannot reach UI Automation at all. The
+#: driver reports its OWN reason (``windows_driver.UNAVAILABLE_REASON``) when the
+#: client will not build, so this is the fallback for a failed driver IMPORT —
+#: a partial install, not a missing implementation.
+WINDOWS_REASON = "the Windows UI Automation driver could not be loaded on this host"
 LINUX_REASON = (
     "the Linux AT-SPI driver is not implemented yet; computer use is macOS-only "
     "in this release (Wayland has no unprivileged window capture)"
@@ -339,6 +340,12 @@ def reset_shared_backend() -> None:
     index.reset_shared_index()
 
 
+#: Platform ids with a real driver. Kept beside :func:`select_default_backend`, whose
+#: branches are what make it true, so adding a driver is one edit rather than two that
+#: can disagree. ``test_computer_use_backend.py`` pins the two together.
+_SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset({PLATFORM_MACOS, PLATFORM_WINDOWS})
+
+
 def select_default_backend() -> ComputerUseBackend:
     """Build the backend for THIS platform. The only platform branch in the package.
 
@@ -368,16 +375,46 @@ def select_default_backend() -> ComputerUseBackend:
             logger.warning("macOS computer-use driver unavailable: %s", exc)
             return UnsupportedBackend(PLATFORM_MACOS, DRIVER_IMPORT_REASON.format(detail=exc))
     if platform_compat.IS_WINDOWS:
-        # Deferred + circular: windows_driver subclasses UnsupportedBackend.
-        from kiro_crew.computer_use.windows_driver import WindowsBackend
+        try:
+            # Deferred + circular: windows_driver subclasses ComputerUseBackend.
+            from kiro_crew.computer_use.windows_driver import WindowsBackend
 
-        return WindowsBackend()
+            return WindowsBackend()
+        except Exception as exc:
+            # Same degradation as macOS: a driver module that will not import
+            # disables one capability rather than crashing the process that asked
+            # about it.
+            logger.warning("Windows computer-use driver unavailable: %s", exc)
+            return UnsupportedBackend(PLATFORM_WINDOWS, WINDOWS_REASON)
     if platform_compat.IS_LINUX:
         # Deferred + circular: linux_driver subclasses UnsupportedBackend.
         from kiro_crew.computer_use.linux_driver import LinuxBackend
 
         return LinuxBackend()
     return UnsupportedBackend(PLATFORM_UNSUPPORTED, UNKNOWN_PLATFORM_REASON)
+
+
+def platform_could_be_supported() -> bool:
+    """Whether THIS OS has a driver at all, WITHOUT loading one.
+
+    The cheap half of the support question, for callers on a hot or boot path. It
+    reads only ``platform_compat`` flags, so it loads no native library and imports no
+    driver module — where ``get_shared_backend().status()`` costs a driver import plus
+    five ``WinDLL`` loads (measured at 31ms and 32 modules on Windows).
+
+    Deliberately OPTIMISTIC: it answers "a driver exists for this platform", not "it
+    works on this host". A macOS box with broken frameworks or a Windows box without
+    ``UIAutomationCore`` still answers True here, and the real ``status()`` says
+    otherwise. That is the correct split for the one caller that needs it — the agent
+    spec gate, whose job is to avoid PAYING for a backend process on a platform that
+    has none. The in-process checks the shim already runs (``enable_state`` in
+    ``_list_tools`` and again in the dispatcher) are what refuse when the driver turns
+    out not to work, and they run in the process that would have done the work.
+
+    Never use this to decide whether an ACTION may proceed: for that, ``status()`` is
+    the only honest answer.
+    """
+    return platform_id_for_current_os() in _SUPPORTED_PLATFORM_IDS
 
 
 def platform_id_for_current_os() -> str:

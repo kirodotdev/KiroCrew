@@ -77,12 +77,26 @@ function initialTab(): Tab {
  * that explains why they share a card. Both spell the refs as a list so
  * resolution is one code path regardless of type.
  */
-type EditorialSection = {
+type EditorialItem = {
   type: 'app' | 'collection'
   appRefs: string[]
   title?: string
   blurb?: string
   artwork?: EditorialArtwork
+}
+
+/**
+ * One BLOCK of the Discover page: a `form` saying how its items are arranged,
+ * and the items it arranges. The grouping is the document's, not inferred from
+ * array position -- `full` renders one card across the width, `row` renders its
+ * items side by side. An unrecognised form skips the WHOLE block (the
+ * arrangement cannot be drawn at all); an unrecognised item type skips just
+ * that card. `carousel` is a published form with no renderer here yet, so it
+ * takes the unknown-form path on purpose.
+ */
+type EditorialBlock = {
+  form: 'full' | 'row'
+  items: EditorialItem[]
 }
 
 /** A collection below this has lost members; see the drop in `featuredSections`. */
@@ -253,7 +267,7 @@ export default function AppsPage() {
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
     apps: RegistryApp[]
     categoryOrder: string[]
-    editorialSections: EditorialSection[]
+    editorialSections: EditorialBlock[]
   }>({
     queryKey: ['registry'],
     // api.listRegistry() types `apps` as unknown[]; the backend payload matches
@@ -273,41 +287,59 @@ export default function AppsPage() {
         : []
       // Published layout gets the same treatment as the order: the server
       // already screened each artwork URL, but the SHAPE arrives over HTTP like
-      // any other payload, so a malformed section is dropped here rather than
+      // any other payload, so a malformed block is dropped here rather than
       // reaching a component that would throw mid-render.
-      const publishedSections: EditorialSection[] = Array.isArray(res.editorialSections)
-        ? res.editorialSections.flatMap((raw: unknown) => {
-            if (!raw || typeof raw !== 'object') return []
-            const s = raw as Record<string, unknown>
-            // An unrecognised type is skipped, not coerced: the document's
-            // contract is that a client renders what it knows and ignores the
-            // rest, which is what lets a new shape publish ahead of support.
-            if (s.type !== 'app' && s.type !== 'collection') return []
-            const refs = Array.isArray(s.appRefs)
-              ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
+      const publishedSections: EditorialBlock[] = Array.isArray(res.editorialSections)
+        ? res.editorialSections.flatMap((rawBlock: unknown) => {
+            if (!rawBlock || typeof rawBlock !== 'object') return []
+            const b = rawBlock as Record<string, unknown>
+            // An unrecognised FORM skips the whole block: the arrangement is
+            // what a form names, and a block whose arrangement this client
+            // cannot draw has no partial rendering that is not a guess.
+            // `carousel` lands here deliberately until a renderer ships.
+            if (b.form !== 'full' && b.form !== 'row') return []
+            const items: EditorialItem[] = Array.isArray(b.items)
+              ? b.items.flatMap((raw: unknown) => {
+                  if (!raw || typeof raw !== 'object') return []
+                  const s = raw as Record<string, unknown>
+                  // An unrecognised item TYPE skips just this card -- a narrower
+                  // failure than the form's, because the arrangement can still
+                  // be drawn around a card it does not know.
+                  if (s.type !== 'app' && s.type !== 'collection') return []
+                  const refs = Array.isArray(s.appRefs)
+                    ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
+                    : []
+                  // Dedupe and cap HERE as well as server-side. This boundary exists
+                  // to not trust the payload, and every bound it skipped was one the
+                  // component would have rendered: duplicate refs collide row keys,
+                  // and an `app` item carrying several refs would render a multi-row
+                  // card headed by one member's name.
+                  const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
+                  if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
+                  const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
+                  // A collection is nothing without its theme, so one that arrives
+                  // without a title is dropped rather than rendered anonymously. A
+                  // whitespace-only title is absent, not present-and-blank -- otherwise
+                  // the card renders an empty heading over the rows.
+                  if (s.type === 'collection' && !title) return []
+                  return [{
+                    type: s.type,
+                    appRefs: unique,
+                    // An `app` item is headed by the app's own name; a published
+                    // title there means the document meant `collection`.
+                    title: s.type === 'collection' ? title : undefined,
+                    blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
+                    artwork: normalizeEditorialArtwork(s.artwork),
+                  }]
+                })
               : []
-            // Dedupe and cap HERE as well as server-side. This boundary exists to
-            // not trust the payload, and every bound it skipped was one the
-            // component would have rendered: duplicate refs collide row keys, and
-            // an `app` section carrying several refs would render a multi-row card
-            // headed by one member's name.
-            const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
-            if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
-            const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
-            // A collection is nothing without its theme, so one that arrives
-            // without a title is dropped rather than rendered anonymously. A
-            // whitespace-only title is absent, not present-and-blank -- otherwise
-            // the card renders an empty heading over the rows.
-            if (s.type === 'collection' && !title) return []
-            return [{
-              type: s.type,
-              appRefs: unique,
-              // An `app` section is headed by the app's own name; a published
-              // title there means the document meant `collection`.
-              title: s.type === 'collection' ? title : undefined,
-              blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
-              artwork: normalizeEditorialArtwork(s.artwork),
-            }]
+            // The form's own floor, re-applied at the boundary: a `full` block
+            // holds exactly one card, a `row` needs two to have anything to sit
+            // beside. A block that lost cards to the item filter above can fall
+            // through its floor here, and dropping it whole beats rendering a
+            // half-width card against empty space.
+            if (b.form === 'full' ? items.length !== 1 : items.length < 2) return []
+            return [{ form: b.form, items }]
           })
         : []
       return {
@@ -411,11 +443,18 @@ export default function AppsPage() {
    */
   const featuredSections = useMemo(() => {
     const byName = new Map(browseApps.map(a => [a.name, a]))
-    return (registryData?.editorialSections || []).flatMap(section => {
-      const resolved = section.appRefs.map(n => byName.get(n)).filter((a): a is RegistryApp => !!a)
-      const floor = section.type === 'collection' ? MIN_COLLECTION_APPS : 1
-      if (resolved.length < floor) return []
-      return [{ ...section, apps: resolved }]
+    return (registryData?.editorialSections || []).flatMap(block => {
+      const items = block.items.flatMap(item => {
+        const resolved = item.appRefs.map(n => byName.get(n)).filter((a): a is RegistryApp => !!a)
+        const floor = item.type === 'collection' ? MIN_COLLECTION_APPS : 1
+        if (resolved.length < floor) return []
+        return [{ ...item, apps: resolved }]
+      })
+      // Re-apply the form's floor AFTER resolution: a row whose second card
+      // dissolved (its apps left the registry) is a full-width slot holding a
+      // half-width card, which is an arrangement the curator did not write.
+      if (block.form === 'full' ? items.length !== 1 : items.length < 2) return []
+      return [{ form: block.form, items }]
     })
   }, [registryData, browseApps])
 
@@ -890,21 +929,37 @@ export default function AppsPage() {
                   curator's cards with `featured`-flag picks would show the
                   same app twice and give the curator no way to say "only these". */}
               {showEditorial && featuredSections.length > 0 ? (
-                featuredSections.map((section, position) => (
+                /* Each block renders the arrangement its FORM names -- the
+                   grouping is the document's, not inferred from array position.
+                   `full` runs one card across the width with its art beside the
+                   copy; `row` lays its cards side by side, one column on a
+                   narrow viewport. The old rule here ("position 0 spans, the
+                   rest pair up") drew the same page for the 1+2 case but was a
+                   renderer secret: a curator adding a fourth card had no way to
+                   say which block it joined. */
+                <div className="flex flex-col gap-3.5 mb-6">
+                {featuredSections.map((block, position) => (
+                  <div
+                    key={`block:${position}`}
+                    className={
+                      block.form === 'row'
+                        ? 'grid grid-cols-1 md:grid-cols-2 gap-3.5 items-start'
+                        : ''
+                    }
+                  >
+                  {block.items.map((section, idx) => (
                   <ErrorBoundary
-                    /* Keyed by document POSITION plus the section's FULL data
-                       identity (cardDataKey over the whole section: members,
-                       title, blurb, artwork). The position prefix keeps two
-                       content-identical sections from colliding -- the publish
-                       gate checks duplicate refs within a section, not across
-                       them, and a colliding key lets React reconcile one card
-                       against the other's fiber. The cardDataKey suffix gives
-                       this boundary the same "any field changed" remount
-                       contract as the other three sites, so a corrected
-                       payload -- including a section-level artwork/title/blurb
-                       fix -- clears a latched fallback. */
-                    key={`${position}:${cardDataKey(section)}`}
-                    scope={`apps:featured-section:${position}:${section.type}`}
+                    /* Keyed by block+item POSITION plus the item's FULL data
+                       identity (cardDataKey: members, title, blurb, artwork).
+                       The position prefix keeps two content-identical cards from
+                       colliding -- the publish gate checks duplicate refs within
+                       an item, not across them, and a colliding key lets React
+                       reconcile one card against the other's fiber. The
+                       cardDataKey suffix gives this boundary the same "any field
+                       changed" remount contract as the other three sites, so a
+                       corrected payload clears a latched fallback. */
+                    key={`${position}:${idx}:${cardDataKey(section)}`}
+                    scope={`apps:featured-section:${position}:${idx}:${section.type}`}
                     fallback={
                       <BrowseCardFallback
                         label={section.title}
@@ -919,6 +974,15 @@ export default function AppsPage() {
                       title={section.title}
                       blurb={section.blurb}
                       artwork={section.artwork}
+                      /* A published placement, so the lead app's own hero may
+                         not fill the art band -- see FeaturedSpotlight's
+                         `curated`. The derived card below leaves it false. */
+                      curated
+                      layout={block.form === 'full' ? 'side' : 'stacked'}
+                      /* A row's collections fold their rows into a dialog: three
+                         inline install rows per card made the row taller than
+                         the lead above it, inverting the hierarchy. */
+                      compact={block.form === 'row'}
                       busyName={
                         featuredBusyName(actionLoading, section.apps)
                       }
@@ -927,7 +991,10 @@ export default function AppsPage() {
                       onOpenApp={(name, e) => openDetail(name, e)}
                     />
                   </ErrorBoundary>
-                ))
+                  ))}
+                  </div>
+                ))}
+                </div>
               ) : showEditorial && spotlight && (
                 <>
                   <ErrorBoundary
@@ -1019,7 +1086,13 @@ export default function AppsPage() {
                   {filteredBrowse.length === 0 ? (
                     <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={i18nT('pages.appsPage.try_a_different_search_or_category')} />
                   ) : (
-                    filteredBrowse.map(app => (
+                    /* Two rows to a line on a desktop dashboard. A row is a
+                       name, a provenance line and one control -- it never needed
+                       1100px, and at one per line the list spent a whole screen
+                       on four apps. `items-start` is not needed: every row is
+                       the same height. */
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-3.5">
+                    {filteredBrowse.map(app => (
                       <ErrorBoundary
                         /* Full-data key (cardDataKey): the boundary latches
                            its error state, so ANY corrected registry payload —
@@ -1045,7 +1118,8 @@ export default function AppsPage() {
                           onEnable={() => enableApp(app.name)}
                         />
                       </ErrorBoundary>
-                    ))
+                    ))}
+                    </div>
                   )}
                 </div>
               </div>

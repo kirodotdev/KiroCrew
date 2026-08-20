@@ -8,7 +8,7 @@ import { api } from '../../../api/client'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { resumeFromHistory } from '../../../store/chatSlice'
 import { useSelectInstance } from '../../../hooks/useSelectInstance'
-import { fuzzyMatch, makeScoreThenNameComparator, substringIndices } from '../../../utils/fuzzyMatch'
+import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import type { Result, ResourceProvider } from '../types'
 
@@ -164,7 +164,12 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
         fid ? folders.find((f) => f.id === fid)?.name : undefined
       const sessions = data?.sessions ?? []
 
-      const results: Result[] = sessions.map((s) => {
+      // Backend position per row id, used as the sort tiebreak below. Kept in a
+      // parallel Map rather than on the row itself so the shared `Result` type
+      // (../types) is not widened with a field only this provider can populate.
+      const backendIndexById = new Map<string, number>()
+
+      const results: Result[] = sessions.map((s, backendIndex) => {
         const title = s.title || s.key
         // Highlight + client-side rank bias; never used to drop backend hits.
         const match = fuzzyMatch(q, title)
@@ -193,8 +198,10 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
               ? subIdx.map((i) => i + prefix.length)
               : subIdx
             : undefined
+        const id = remote ? `${PROVIDER_ID}:${s.instance_id}:${s.key}` : `${PROVIDER_ID}:${s.key}`
+        backendIndexById.set(id, backendIndex)
         return {
-          id: remote ? `${PROVIDER_ID}:${s.instance_id}:${s.key}` : `${PROVIDER_ID}:${s.key}`,
+          id,
           providerId: PROVIDER_ID,
           title,
           subtitle,
@@ -221,11 +228,23 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
         }
       })
 
-      // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's recency ordering is preserved (Sessions
-      // tab + All-tab recents rely on it).
+      // Title matches first, then the BACKEND's relevance order as the tiebreak
+      // (issue #4568). `search_sessions` already ranked these rows (weighted
+      // occurrence counts, phrase bonus, recency boost); an alphabetical
+      // fallback threw that ranking away whenever every hit was a body match
+      // (all scores 0 — e.g. searching a PR number that appears in transcripts
+      // but never in a title). Backend index is just as deterministic for
+      // rendering, and strictly more useful. Deliberately NOT the shared
+      // `makeScoreThenNameComparator`: its name tiebreak is right for the nine
+      // providers that score locally, wrong here where the server has already
+      // ranked. Skip the re-rank on an empty query so the backend's recency
+      // ordering is preserved as-is (Sessions tab + All-tab recents rely on it).
       if (q.length > 0) {
-        results.sort(makeScoreThenNameComparator<Result>(r => r.score, r => r.title))
+        results.sort(
+          (a, b) =>
+            b.score - a.score ||
+            (backendIndexById.get(a.id) ?? 0) - (backendIndexById.get(b.id) ?? 0),
+        )
       }
       return results
     },

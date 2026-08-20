@@ -52,7 +52,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ updateChatFolder: vi.fn() }))
+const mocks = vi.hoisted(() => ({ updateChatFolder: vi.fn(), chatFolders: vi.fn(), tagColumns: vi.fn(), chatTags: vi.fn() }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
@@ -116,6 +116,12 @@ function renderSidebar(foldersOverride: ChatFolder[] = folders) {
 
 beforeEach(() => {
   localStorage.clear()
+  // Back the chat-folders refetch with real data: the API proxy resolves
+  // unmocked fetches to [], and an awaited act() flush gives that empty
+  // refetch time to unmount every board folder mid-test.
+  mocks.chatFolders.mockResolvedValue(folders)
+  mocks.tagColumns.mockResolvedValue(columns)
+  mocks.chatTags.mockResolvedValue(tags)
   mocks.updateChatFolder.mockResolvedValue({})
 })
 afterEach(() => vi.clearAllMocks())
@@ -151,14 +157,18 @@ describe('board view: folder reorder wiring', () => {
   it('collapse toggle still works through the drag-handle header', async () => {
     // The whole header carries pointer drag listeners; the 5px activation
     // distance must let plain clicks reach the collapse <button>. Regression
-    // guard: a click on the toggle persists the collapsed flip.
-    const { getAllByRole } = renderSidebar()
-    const toggle = getAllByRole('button', { name: 'Collapse folder Alpha' })[0]
+    // guard: a click on the toggle flips this column's collapse state.
+    // Board collapse is per-column and client-local, so the flip never
+    // writes the server flag.
+    const { container } = renderSidebar()
+    const header = () => container.querySelector(
+      `[data-testid="col-${COL_A}-folder-${FOLDER_A}"] [role="button"][aria-expanded]`,
+    ) as HTMLElement
+    expect(header().getAttribute('aria-expanded')).toBe('true')
     const { fireEvent, waitFor } = await import('@testing-library/react')
-    fireEvent.click(toggle)
-    await waitFor(() =>
-      expect(mocks.updateChatFolder).toHaveBeenCalledWith(FOLDER_A, { collapsed: true }),
-    )
+    fireEvent.click(header())
+    await waitFor(() => expect(header().getAttribute('aria-expanded')).toBe('false'))
+    expect(mocks.updateChatFolder).not.toHaveBeenCalled()
   })
 
   it('renders board folders sorted by their order field, not cache array position', () => {

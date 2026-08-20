@@ -78,20 +78,40 @@ CALLER_IDENTITY_CAPABILITY = "kirocrew.caller-identity"
 # test fails if hashing grows a prefix this does not cover.
 ROTATING_SECRET_ENV_PREFIXES: tuple[str, ...] = ("AWS_SECRET", "AWS_SESSION", "OAUTH")
 
-# Server capabilities that are per-CLIENT state by construction.
+# Server capabilities that DEGRADE when a backend is shared.
 #
-# ``resources.subscribe`` creates a subscription owned by one client; the
-# resulting ``notifications/resources/updated`` carries no request id, so a
-# shared backend cannot attribute it and drops it (deny-by-default in
-# ``backend._notification_owner``). The subscription silently stops working.
+# Reported as notes and nothing more: they do not disqualify a server and they do
+# not withhold a recommendation. Two reasons, and the second is the load-bearing
+# one.
 #
-# ``logging`` is a client-scoped level set by ``logging/setLevel``; on a shared
-# backend the last caller's level wins for everyone.
+# First, neither is a leak. The broker already refuses to guess: an unattributable
+# request-scoped notification is DROPPED (deny-by-default in
+# ``backend._notification_owner``) rather than broadcast, so no co-tenant ever
+# receives another tenant's content.
+#
+# Second, and this is why they inform rather than gate: **both describe a gap in
+# OUR broker, not a property of the server.** A proxy that can correlate a frame
+# to a caller can route it, and correlation is a feature we can build:
+#
+# ``resources.subscribe`` -- ``notifications/resources/updated`` carries no
+# request id, but it does not need one. The broker saw which stub sent
+# ``resources/subscribe`` for which URI, so a ``uri -> {stub_uuid}`` table routes
+# the update exactly. It does not keep one today, which is the actual defect. The
+# notification also carries only the URI and not the resource's content, so the
+# failure it currently causes is a subscription that stops firing.
+#
+# ``logging`` -- ``logging/setLevel`` is process-global, but a proxy can emit at
+# the finest level any tenant asked for and filter DOWN per stub, giving each
+# tenant the verbosity it requested from one process.
+#
+# Withholding pooling for either would be charging the operator for work we have
+# not done. Both are filed as broker gaps instead; when the broker learns to
+# attribute them, these entries are deleted rather than relaxed.
 #
 # ``*.listChanged`` is deliberately NOT here: those notifications are global
 # broadcasts (``backend._GLOBAL_BROADCAST_NOTIFICATIONS``) and are safe to
 # fan out to every attached stub.
-_PER_CLIENT_CAPABILITIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+_SHARED_BACKEND_DEGRADATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("resources", "subscribe"), "resources_subscribe", "truthy"),
     (("logging",), "logging_level", "present"),
 )
@@ -198,25 +218,27 @@ def rotating_secret_env(env_names: tuple[str, ...]) -> tuple[str, ...]:
     )
 
 
-def _per_client_capabilities(capabilities: dict) -> list[Reason]:
-    """Capabilities that make a server per-client by construction.
+def _shared_backend_degradations(capabilities: dict) -> list[Reason]:
+    """Capabilities whose behaviour degrades on a shared backend.
+
+    Pure information: see the table's comment for why each of these is a gap in
+    our own broker rather than a property of the server, which is what makes
+    gating on them charging the operator for work we have not done.
 
     Two detection modes, because a capability and a flag inside one are different
     claims:
 
-    ``truthy`` — the leaf is a FLAG. ``resources: {"subscribe": false}`` is the
+    ``truthy`` -- the leaf is a FLAG. ``resources: {"subscribe": false}`` is the
     server explicitly saying it does not subscribe, so it must not count against
     it.
 
-    ``present`` — the leaf IS the capability. In MCP an empty object is the
+    ``present`` -- the leaf IS the capability. In MCP an empty object is the
     standard way to advertise a capability that takes no sub-options, so
     ``{"logging": {}}`` means ``logging/setLevel`` is supported. Testing
-    truthiness there let a server whose log level is process-wide — one
-    co-tenant's ``setLevel`` changing what every other session gets — through as
-    shareable.
+    truthiness there read a server that advertises logging as one that does not.
     """
     out: list[Reason] = []
-    for path, code, mode in _PER_CLIENT_CAPABILITIES:
+    for path, code, mode in _SHARED_BACKEND_DEGRADATIONS:
         node: object = capabilities
         missing = False
         for key in path:
@@ -227,7 +249,7 @@ def _per_client_capabilities(capabilities: dict) -> list[Reason]:
         if missing:
             continue
         if mode == "present" or node:
-            out.append(Reason("per_client_capability", code))
+            out.append(Reason("degrades_when_shared", code))
     return out
 
 
@@ -275,38 +297,107 @@ def assess(evidence: ShareEvidence) -> ShareVerdict:
             [Reason("observed_hazard", h) for h in evidence.observed_hazards],
         )
 
-    # 2. Structural exclusions. None of these mean "unsafe" in the same sense —
-    #    they mean the question does not apply — so they are reported with
-    #    distinct codes rather than one "unsupported".
+    # 2. The ONE permanent exclusion, and it is not a safety verdict: an HTTP/SSE
+    #    server has no stdio pipe to put a stub in front of, so the question does
+    #    not apply rather than the answer being no.
     if not evidence.is_stdio:
         return verdict(Strength.DISQUALIFIED, [Reason("not_stdio")])
-    if evidence.session_bound_by_construction:
-        return verdict(Strength.DISQUALIFIED, [Reason("first_party_session_scoped")])
 
-    rotating = rotating_secret_env(evidence.declared_env_names)
-    if rotating:
-        # Checked BEFORE probe_ok: this is a config fact, true whether or not
-        # the server ever started, and reporting it is more useful than
-        # "unknown" on a host where the probe cannot run.
+    # 3. Session-bound by construction is a DISQUALIFIER, and the reason is not
+    #    the degradation it looks like.
+    #
+    #    Such a server resolves its caller from its own process, and gatewayd
+    #    forwards no session-identifying env to a shared backend, so on a pooled
+    #    backend it reads EMPTY. The tempting conclusion is that empty is benign --
+    #    features that need a session quietly stop working. That is wrong, because
+    #    what empty MEANS is decided by the consumer, and in the one that matters
+    #    it is privileged: ``mcp_cron._check_cron_job_ownership`` does
+    #
+    #        if not session_key:
+    #            return None  # No session context (single-user local mode) -- allow
+    #
+    #    an empty key FAILS OPEN and the ownership check is skipped entirely. A
+    #    pooled cron would therefore let one session list, pause or remove another
+    #    session's jobs. That is a cross-session authorization failure, not a lost
+    #    feature.
+    #
+    #    It is also the one case this layer's "share by default and retreat when
+    #    something is observed" posture cannot cover: both hazard codes are
+    #    routing-shaped, so a server serving the wrong session's data without ever
+    #    emitting an unroutable frame produces no ledger entry. There is no retreat
+    #    to fall back on, so the gate stays until the servers it names consume the
+    #    injected caller block (#4622) -- at which point the input has no producer
+    #    and this branch is deleted rather than relaxed.
+    #
+    #    Checked BEFORE the probe gate: it is a config fact, true whether or not
+    #    the server ever started.
+    if evidence.session_bound_by_construction:
         return verdict(
-            Strength.DISQUALIFIED,
-            [Reason("rotating_secret_env", n) for n in rotating],
+            Strength.DISQUALIFIED, [Reason("session_bound_by_construction")]
         )
 
-    # 3. Nothing observed. Distinguish "never handshook" from "declared nothing".
+    # 4. Config-derived notes. Computed BEFORE the probe gate for the same reason.
+    #
+    #    ``rotating_secret_env`` no longer DISQUALIFIES, because it is not a leak: a
+    #    secret-prefixed key is never forwarded into a SHARED backend
+    #    (``gatewayd._declared_non_secret_env`` drops it; ``ENV_SCRUB_PREFIXES``
+    #    explains why the keys are excluded from the pool hash so rotation cannot
+    #    shatter the pool, which makes the hash non-injective over them and no
+    #    single value correct). The pooled backend receives NOBODY's secret rather
+    #    than the wrong session's.
+    #
+    #    It does still withhold ``recommend_share``, and for a reason that is not
+    #    about risk at all: the rewriter ALREADY refuses to pool such an entry.
+    #    ``_withheld_env_count`` counts the keys a shared backend would not receive
+    #    -- with forwarding on, exactly this set -- and a non-zero count leaves the
+    #    entry unwrapped, which ``_stub_eligibility`` reports as
+    #    ``pooling_blocked_by_env``. Its stated ground is that any withheld key can
+    #    be the one the server dies without (#3495 cause B). Recommending a share
+    #    the rewriter will decline would have the page promise work the broker never
+    #    does -- two of our own components disagreeing, which is worse than either
+    #    answer. So the verdict follows the guard that actually runs, and when that
+    #    guard changes (routing by credential identity, with ``credwatch`` already
+    #    handling rotation by content digest) this withholding goes with it.
+    notes: list[Reason] = []
+    withhold_share = False
+    for name in rotating_secret_env(evidence.declared_env_names):
+        notes.append(Reason("rotating_secret_env", name))
+        withhold_share = True
+
+    # 4. Nothing observed. Distinguish "never handshook" from "declared nothing".
     if not evidence.probe_ok or evidence.capabilities is None:
-        return verdict(Strength.UNKNOWN, [Reason("not_probed")])
+        return verdict(Strength.UNKNOWN, [Reason("not_probed")] + notes)
 
-    objections = _per_client_capabilities(evidence.capabilities)
-    if objections:
-        return verdict(Strength.DISQUALIFIED, objections)
-
-    # 4. Pre-flight proof. Checked BEFORE the positive declaration below: a
-    #    server may advertise caller-identity and still have been caught
-    #    answering `initialize` differently per caller, and the measurement wins
-    #    over the promise — the same ordering the hazard ledger enforces.
+    # 4. Notes that travel with the verdict instead of replacing it.
+    #
+    #    Both of these used to return DISQUALIFIED, and both were inferences
+    #    dressed as findings. They are collected here and appended to whichever
+    #    tier the evidence actually supports.
+    #
+    #    They are NOT equally load-bearing, and the difference is what this layer
+    #    is for. It exists to turn pooling ON for an operator who never got round
+    #    to it, so "no" is its failure mode rather than its caution.
+    #
+    #    * ``degrades_when_shared`` can withhold an automatic share, but only for
+    #      the entry that names a feature which BREAKS. That is a deterministic
+    #      consequence of our own broker, not a guess about the server.
+    #    * ``handshake_not_reproducible`` withholds NOTHING. It is the two-identity
+    #      comparison finding a difference, and it cannot say WHY: an answer
+    #      computed from ``clientInfo`` (the real hazard) and an answer that varies
+    #      for the server's own reasons -- startup feature detection, a
+    #      reachability probe -- are indistinguishable from two samples that both
+    #      vary the identity. The second kind gives every co-tenant of one process
+    #      the SAME answer, which is what an unpooled process does too. It is also
+    #      re-derived every pass now, so gating on it would make a server's
+    #      eligibility flap with the last sample -- a gate nobody can predict is
+    #      worse than none. Pure information.
+    #
+    #    Both still recommend the STUB, which keeps the backend 1:1 with the
+    #    session -- the same topology as no gateway at all -- so nothing here is a
+    #    reason to withhold that.
+    notes += _shared_backend_degradations(evidence.capabilities)
     if evidence.preflight_ran and evidence.preflight_caller_sensitive:
-        return verdict(Strength.DISQUALIFIED, [Reason("caller_sensitive_initialize")])
+        notes.append(Reason("handshake_not_reproducible"))
 
     # 5. Positive declaration: the server was written for a pooled backend.
     if _declares_caller_identity(evidence.capabilities):
@@ -315,11 +406,23 @@ def assess(evidence: ShareEvidence) -> ShareVerdict:
             reasons.append(Reason("all_tools_read_only"))
         # Sharing still needs the provocation to have actually happened. A
         # declaration plus an unrun pre-flight is a promise nobody has tested.
-        share = evidence.preflight_ran is True
-        reasons.append(
-            Reason("preflight_passed" if share else "preflight_not_run")
-        )
-        return verdict(Strength.DECLARED, reasons, stub=True, share=share)
+        #
+        # ``withhold_share`` is agreement with the rewriter's own pooling gate, not
+        # a second opinion about the server: see its note above. A divergence and a
+        # broker-side degradation do NOT reach this, by design -- both describe work
+        # we have not done, and charging the operator for that is the failure mode
+        # of a layer whose job is to say yes.
+        share = evidence.preflight_ran is True and not withhold_share
+        # ``preflight_passed`` is a claim that the provocation found nothing, so it
+        # must not sit beside ``handshake_not_reproducible`` on the same row --
+        # that reads as "answered identically" and "did not answer identically"
+        # about one server. A divergence leaves the note to speak for itself.
+        diverged = bool(evidence.preflight_ran) and evidence.preflight_caller_sensitive
+        if evidence.preflight_ran and not diverged:
+            reasons.append(Reason("preflight_passed"))
+        elif not evidence.preflight_ran:
+            reasons.append(Reason("preflight_not_run"))
+        return verdict(Strength.DECLARED, reasons + notes, stub=True, share=share)
 
     # 6. Nothing objected. Which of the two remaining tiers this is depends on
     #    whether anybody actually provoked the server:
@@ -351,13 +454,20 @@ def assess(evidence: ShareEvidence) -> ShareVerdict:
     #    with the session (same topology as no gateway) and is what unlocks
     #    server-authored UI. Splitting stub from share is what makes a verdict
     #    short of a declaration still actionable without being reckless.
-    reasons = [Reason("preflight_passed" if evidence.preflight_ran else "no_objection_found")]
+    #
+    #    A pass that RAN and saw the handshake differ has not earned MEASURED
+    #    either. MEASURED's whole content is that something was ruled out, and a
+    #    divergence rules nothing out -- so it falls to NO_OBJECTION carrying the
+    #    note, which is the honest reading: no durable objection exists, and one
+    #    sample looked odd.
+    measured = bool(evidence.preflight_ran) and not evidence.preflight_caller_sensitive
+    reasons = [Reason("preflight_passed" if measured else "no_objection_found")]
     if _all_tools_read_only(evidence.tool_annotations):
         reasons.append(Reason("all_tools_read_only"))
     elif not evidence.tool_annotations:
         reasons.append(Reason("no_tool_annotations", evidence.protocol_version))
     if not evidence.has_tools:
         reasons.append(Reason("no_tools_listed"))
-    if evidence.preflight_ran:
-        return verdict(Strength.MEASURED, reasons, stub=True, share=False)
-    return verdict(Strength.NO_OBJECTION, reasons, stub=True, share=False)
+    if measured:
+        return verdict(Strength.MEASURED, reasons + notes, stub=True, share=False)
+    return verdict(Strength.NO_OBJECTION, reasons + notes, stub=True, share=False)

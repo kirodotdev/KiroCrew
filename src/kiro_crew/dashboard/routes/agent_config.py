@@ -86,6 +86,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/mcp-gateway/metrics", handlers.api_mcp_gateway_metrics)
     app.router.add_get("/api/mcp-gateway/servers", handlers.api_mcp_gateway_servers)
     app.router.add_post("/api/mcp-gateway/servers/stub", handlers.api_mcp_gateway_set_stub)
+    app.router.add_post("/api/mcp-gateway/resolve-refresh", handlers.api_mcp_resolve_refresh)
     # AIM integration
     app.router.add_get("/api/capability/mcp", handlers.api_capability_mcp_list)
     app.router.add_post("/api/capability/mcp/install", handlers.api_capability_mcp_install)

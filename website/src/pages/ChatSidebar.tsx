@@ -23,6 +23,7 @@ import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
+import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason, type SessionRefBlockReason } from '../utils/sessionRefs'
@@ -2630,6 +2631,26 @@ function ChatSidebar({
     if (f) updateFolderMutation.mutate({ id, body: { collapsed: !f.collapsed } })
   }, [folders, updateFolderMutation])
 
+  // Board-view collapse is per (column, folder): the same root folders render
+  // once per column, and the shared server flag would collapse a folder in
+  // every column at once. Overrides are client-local (localStorage) and layer
+  // over the server flag, which stays the default for untouched columns and
+  // the sole state for the list view.
+  const [boardCollapse, setBoardCollapse] = useState<Map<string, boolean>>(loadBoardFolderCollapse)
+  const boardFolderCollapsed = useCallback((columnId: string, folder: ChatFolder): boolean => {
+    return boardCollapse.get(boardCollapseKey(columnId, folder.id)) ?? !!folder.collapsed
+  }, [boardCollapse])
+  const toggleColumnCollapse = useCallback((columnId: string, folder: ChatFolder) => {
+    setBoardCollapse(prev => {
+      const next = new Map(prev)
+      const value = !(prev.get(boardCollapseKey(columnId, folder.id)) ?? !!folder.collapsed)
+      next.set(boardCollapseKey(columnId, folder.id), value)
+      // Delta write: another tab's overrides must survive this tab's toggle.
+      persistBoardOverride(columnId, folder.id, value)
+      return next
+    })
+  }, [])
+
   // ── Folder drag-to-reorder ──
   // Mouse and touch are split on purpose — a single PointerSensor with a
   // distance constraint swallows touch swipes on WebKit: past the activation
@@ -2733,6 +2754,11 @@ function ChatSidebar({
         visited.add(fid)
         const f = folders.find(x => x.id === fid)
         if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
+        // A reveal must win in every board column too: drop any per-column
+        // collapsed overrides, or the revealed row stays hidden in columns
+        // whose local state keeps this ancestor collapsed.
+        setBoardCollapse(prev => clearFolderOverrides(prev, fid))
+        persistClearFolderOverrides(fid)
         if (f?.parent_id) expand(f.parent_id)
       }
       expand(slot.folder_id)
@@ -2857,10 +2883,23 @@ function ChatSidebar({
     const over = event.over
     const overData = over?.data.current as { type?: string; folderId?: string | null } | undefined
     const targetFolderId = overData?.type === 'folder-drop' ? overData.folderId : null
-    // If hovering a collapsed folder, blink ring twice then expand
+    // If hovering a collapsed folder, blink ring twice then expand. In a board
+    // column, "collapsed" is that column's effective state (server flag +
+    // column override), and the expansion must clear the column's override —
+    // the server flag alone can read expanded while the hovered copy is
+    // collapsed by its override, which would leave the drop target shut.
     if (targetFolderId) {
+      const overColumnId = over ? boardColumnFromDroppableId(String(over.id)) : null
       const f = folders.find(x => x.id === targetFolderId)
-      if (f?.collapsed) {
+      const effectiveCollapsed = f ? (overColumnId ? boardFolderCollapsed(overColumnId, f) : !!f.collapsed) : false
+      const expandTarget = () => {
+        if (f?.collapsed) updateFolderMutation.mutate({ id: targetFolderId, body: { collapsed: false } })
+        if (overColumnId) {
+          setBoardCollapse(prev => clearFolderOverrides(prev, targetFolderId, overColumnId))
+          persistClearFolderOverrides(targetFolderId, overColumnId)
+        }
+      }
+      if (effectiveCollapsed) {
         if (dragExpandTimer.current?.id !== targetFolderId) {
           if (dragExpandTimer.current) clearTimeout(dragExpandTimer.current.timer)
           dragExpandTimer.current = {
@@ -2875,11 +2914,11 @@ function ChatSidebar({
                 bright(); setTimeout(dim, 100); setTimeout(bright, 200); setTimeout(dim, 300)
                 setTimeout(() => {
                   el.style.boxShadow = ''; el.style.opacity = ''
-                  updateFolderMutation.mutate({ id: targetFolderId, body: { collapsed: false } })
+                  expandTarget()
                   dragExpandTimer.current = null
                 }, 450)
               } else {
-                updateFolderMutation.mutate({ id: targetFolderId, body: { collapsed: false } })
+                expandTarget()
                 dragExpandTimer.current = null
               }
             }, 500),
@@ -2893,7 +2932,7 @@ function ChatSidebar({
       clearTimeout(dragExpandTimer.current.timer)
       dragExpandTimer.current = null
     }
-  }, [folders, updateFolderMutation])
+  }, [folders, updateFolderMutation, boardFolderCollapsed])
   const createChatInFolderMutation = useMutation({
     mutationFn: ({ folderId }: { folderId: string; columnId?: string; focus?: boolean }) => {
       const agent = resolveFolderAgent(folders, folderId, defaultAgent)
@@ -2938,6 +2977,11 @@ function ChatSidebar({
       const folder = folders.find(f => f.id === currentId)
       if (!folder) break
       if (folder.collapsed) updateFolderMutation.mutate({ id: folder.id, body: { collapsed: false } })
+      // Board columns keep their own collapse overrides; drop them for the
+      // whole ancestor path so the destination is visible in the clicked
+      // column (and every other) as creation begins.
+      setBoardCollapse(prev => clearFolderOverrides(prev, folder.id))
+      persistClearFolderOverrides(folder.id)
       currentId = folder.parent_id || undefined
     }
     createChatInFolderMutation.mutate({ folderId, columnId: opts?.columnId, focus: opts?.focus })
@@ -3053,13 +3097,13 @@ function ChatSidebar({
           style={{ paddingLeft: '6px' }}
           role="button"
           tabIndex={0}
-          aria-expanded={!folder.collapsed}
-          aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
+          aria-expanded={!boardFolderCollapsed(columnId, folder)}
+          aria-label={boardFolderCollapsed(columnId, folder) ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
           {...(draggable ? dragHandleProps : {})}
-          onClick={() => toggleCollapse(folder.id)}
-          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapse(folder.id) } }}
+          onClick={() => toggleColumnCollapse(columnId, folder)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleColumnCollapse(columnId, folder) } }}
         >
-          <FolderGlyph color={folder.color} size={11} open={!folder.collapsed} />
+          <FolderGlyph color={folder.color} size={11} open={!boardFolderCollapsed(columnId, folder)} />
           {editingId === folder.id && editScope === columnId ? (
             /* Inline rename input — board-view parity with renderFolderHeader.
              *  Without this branch the ⋯-menu "Rename" set editingId but no
@@ -3105,7 +3149,7 @@ function ChatSidebar({
           </span>
           )}
         </div>
-        <FolderBody open={!folder.collapsed && !forceCollapsed}>
+        <FolderBody open={!boardFolderCollapsed(columnId, folder) && !forceCollapsed}>
           {/* ml-4 + no pl: flush-connector treatment matching the list-view
            *  folder body (renderFolderBlock) so nested rows sit identically
            *  against the connector line in both views. */}

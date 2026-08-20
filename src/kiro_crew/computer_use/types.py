@@ -99,6 +99,32 @@ DEFAULT_CLICK_METHOD = CLICK_METHOD_AUTO
 # ever asking. That naming requirement is what the Settings copy discloses.
 POINTER_MOVING_METHODS: frozenset[str] = frozenset({CLICK_METHOD_GLOBAL})
 
+# ── Windows named actions ──
+# The vocabulary ``computer_perform_action`` accepts on the Windows driver, and the
+# vocabulary ``ElementRec.actions`` publishes there. It lives HERE rather than in
+# ``windows_driver`` because both ends need it: ``snapshot_windows`` advertises the
+# names and the driver serves them, and the driver already imports the snapshot
+# module, so the constants cannot live on the driver without a cycle. Two modules
+# agreeing on one spelling is the whole point — a name published but not served is a
+# refusal the model was invited to trigger.
+#
+# Deliberately a CLOSED set rather than a free-form provider string: the
+# LegacyIAccessible pattern exposes ``SetValue``, so a free-form action name over that
+# interface would be an un-gated write path around ``ValuePattern`` and the
+# secure-field check that guards it.
+WINDOWS_ACTION_PRESS = "press"
+WINDOWS_ACTION_TOGGLE = "toggle"
+WINDOWS_ACTION_SELECT = "select"
+WINDOWS_ACTION_EXPAND = "expand"
+WINDOWS_ACTION_COLLAPSE = "collapse"
+WINDOWS_SUPPORTED_ACTIONS: tuple[str, ...] = (
+    WINDOWS_ACTION_PRESS,
+    WINDOWS_ACTION_TOGGLE,
+    WINDOWS_ACTION_SELECT,
+    WINDOWS_ACTION_EXPAND,
+    WINDOWS_ACTION_COLLAPSE,
+)
+
 # ── Mouse buttons ──
 # Values are the ``CGMouseButton`` enum; the mapping to the six per-button event
 # types lives beside the FFI in ``macos_ffi``, because those are ABI facts.
@@ -388,10 +414,18 @@ SECURE_PLACEHOLDER = "<secure>"
 TREE_INDENT = "  "
 TRUNCATED_NOTE = "[tree truncated at {count} nodes]"
 DEPTH_NOTE = "[subtree elided below depth {depth}]"
+#: The image is DOWNSCALED (a 1280px long edge by default), and saying so is not
+#: decoration: the window's own size is printed by ``WINDOW_ORIGIN_NOTE`` immediately
+#: above, so a reader who assumes the two match reads an image pixel as a window
+#: pixel. Measured on real windows, that mistake lands 374-383px off on a 1938x1158
+#: or 1923x1143 window — far enough to hit a different pane. Element frames are the
+#: coordinate source; the image is corroboration.
 SCREENSHOT_NOTE = (
     "Screenshot: {path}\n"
-    "  ({width}x{height} jpeg, {size}) — read it with the fs_read tool only if "
-    "the tree is insufficient."
+    "  ({width}x{height} jpeg, {size}) — DOWNSCALED from the window size printed "
+    "above, so image pixels are not window coordinates. Take coordinates from an "
+    "element's own frame. Read the file with the fs_read tool only if the tree is "
+    "insufficient."
 )
 SECURE_WINDOW_NOTE = (
     "Screenshot suppressed: this window contains a secure (password) field, so "
@@ -455,9 +489,18 @@ REFUSAL_POINTER_NOT_ENABLED = (
 )
 # ``click_method: accessibility`` with no ``element_index``. AXPress addresses an
 # element; there is no coordinate form of it.
+# Names the fix that works on EVERY platform and no method beyond it. The earlier
+# wording ended "or use click_method 'app_post' to click a point", which Windows
+# refuses by name — so one mistake cost two consecutive refusals there, and the second
+# one blamed a method the model had been told to use. ``app_post`` is a macOS route;
+# the shared string cannot recommend it.
 REFUSAL_ACCESSIBILITY_NEEDS_INDEX = (
     "click_method 'accessibility' presses a specific control, so it needs an "
-    "element_index. Pass one, or use click_method 'app_post' to click a point."
+    "element_index — there is no coordinate form of an accessibility action. Pass an "
+    "element_index from computer_get_state. To click a POINT instead, omit "
+    "click_method and pass x + y, and the platform's own coordinate route is chosen "
+    "(on Windows that route moves the real cursor, so it must be named explicitly as "
+    "click_method 'global')."
 )
 # Exactly one of (element_index | x+y). Validated rather than guessed: picking
 # one silently would make a model that supplied both act on a target it did not

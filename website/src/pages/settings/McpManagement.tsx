@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { AlertTriangle, ExternalLink, Gauge, ListChecks, RefreshCw, Server as ServerIcon } from 'lucide-react'
 import {
   api,
+  ApiError,
   type McpManagedServer,
   type McpMeasureProgress,
   type McpShareRecommendation,
@@ -95,11 +96,13 @@ const STRENGTH_LABEL_KEY: Record<string, string> = {
 const REASON_LABEL_KEY: Record<string, string> = {
   observed_hazard: 'pages.mcpManagement.assessment.reason_observed_hazard',
   not_stdio: 'pages.mcpManagement.assessment.reason_not_stdio',
-  first_party_session_scoped: 'pages.mcpManagement.assessment.reason_first_party',
+  session_bound_by_construction:
+    'pages.mcpManagement.assessment.reason_session_bound_by_construction',
   rotating_secret_env: 'pages.mcpManagement.assessment.reason_rotating_secret_env',
   not_probed: 'pages.mcpManagement.assessment.reason_not_probed',
-  per_client_capability: 'pages.mcpManagement.assessment.reason_per_client_capability',
-  caller_sensitive_initialize: 'pages.mcpManagement.assessment.reason_caller_sensitive',
+  degrades_when_shared: 'pages.mcpManagement.assessment.reason_degrades_when_shared',
+  handshake_not_reproducible:
+    'pages.mcpManagement.assessment.reason_handshake_not_reproducible',
   declares_caller_identity: 'pages.mcpManagement.assessment.reason_declares_caller_identity',
   all_tools_read_only: 'pages.mcpManagement.assessment.reason_all_tools_read_only',
   preflight_passed: 'pages.mcpManagement.assessment.reason_preflight_passed',
@@ -581,6 +584,10 @@ export function McpManagement() {
   // `notice` below, which is that control's own inline hint rather than a
   // page-level statement about the gateway.
   const [restartNotice, setRestartNotice] = useState<string | null>(null)
+  // A third state rather than a reuse of either sibling above: `notice` reports a
+  // stub-set change and `restartNotice` reports a pending restart, and one banner
+  // shared by unrelated actions would let either overwrite the other's result.
+  const [resolveNotice, setResolveNotice] = useState<string | null>(null)
 
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
@@ -647,6 +654,61 @@ export function McpManagement() {
     onError: onApplyError('pages.mcpManagement.sharing_failed'),
   })
 
+  // Pre-resolving an npm-launcher server lets its launch exec the installed
+  // tree, so session start does no dependency resolution. The timed pass keeps
+  // an unpinned spec current on its own; this is the operator asking to check
+  // upstream now, so it reports what the pass produced rather than only that it
+  // ran. A 409 means a pass is already in flight, which is information, not a
+  // failure to retry.
+  const resolveRefresh = useMutation({
+    mutationFn: () => api.mcpResolveRefresh(),
+    onSuccess: res => {
+      invalidate()
+      if (!res.ok) {
+        // Not an error: the operator has nothing routed, which is the same class
+        // of fact the sharing card states as plain text rather than as an alarm.
+        setResolveNotice(i18nT('pages.mcpManagement.resolve_no_targets'))
+        return
+      }
+      const ready = res.ready?.length ?? 0
+      // `ready === 0` has two causes that must NOT read the same. Everything was
+      // already fresh (nothing to do), or every install failed -- a registry
+      // outage, a rejected token. Reporting the second as "nothing needed" tells
+      // someone who just pressed this button that launches now skip the network
+      // when not one of them does. The per-package outcome is already in the
+      // response; count it rather than inferring from `ready` alone.
+      const failed = Object.values(res.resolved ?? {}).filter(state => state === 'error').length
+      if (failed > 0) {
+        setResolveNotice(
+          ready > 0
+            ? i18nT('pages.mcpManagement.resolve_partly_ready', {
+                ready: String(ready),
+                failed: String(failed),
+              })
+            : i18nT('pages.mcpManagement.resolve_all_failed', { failed: String(failed) }),
+        )
+        return
+      }
+      setResolveNotice(
+        ready > 0
+          ? i18nT('pages.mcpManagement.resolve_ready', { ready: String(ready) })
+          : i18nT('pages.mcpManagement.resolve_none_ready'),
+      )
+    },
+    onError: err => {
+      invalidate()
+      // 409 is the endpoint reporting an in-flight pass, which it deliberately
+      // encodes as information rather than a failure to retry. Painting it as
+      // "could not pre-resolve" contradicts the state the response carries: the
+      // pass the second tab is being told about is running fine.
+      if (err instanceof ApiError && err.status === 409) {
+        setResolveNotice(i18nT('pages.mcpManagement.resolve_already_running'))
+        return
+      }
+      setError(i18nT('pages.mcpManagement.resolve_failed'))
+    },
+  })
+
   const busy = setStub.isPending || setSharing.isPending
   // An unsupported platform must never TRAP an operator in a state they cannot
   // leave: a config carried over from another machine can arrive with sharing on
@@ -675,8 +737,21 @@ export function McpManagement() {
   // ``recommendation`` at all counts too: an older gateway reached through Make
   // Live sends no verdict field, and that row is exactly as unmeasured as one
   // whose verdict says so.
+  //
+  // A row whose handshake did not reproduce counts as well, and this is load
+  // bearing rather than a nicety. The backend deliberately re-measures such a row
+  // every pass (a divergence is reported, never frozen), and the row's own text
+  // tells the operator that measuring again retests it. Leaving it out of this
+  // count disabled the only control that does so, which is an offered action with
+  // no path to it.
   const unmeasuredCount = useMemo(
-    () => servers.filter(s => !s.recommendation || s.recommendation.strength === 'unknown').length,
+    () =>
+      servers.filter(
+        s =>
+          !s.recommendation ||
+          s.recommendation.strength === 'unknown' ||
+          s.recommendation.reasons.some(r => r.code === 'handshake_not_reproducible'),
+      ).length,
     [servers],
   )
 
@@ -940,6 +1015,52 @@ export function McpManagement() {
               else setSharing.mutate(false)
             }}
           />
+        </div>
+      </section>
+
+      {/* Global: pre-resolve npm-launcher servers so launches skip resolution. */}
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-5 py-4">
+        <div className="flex items-start gap-5">
+          <div className="flex-1">
+            <div className="text-[15px] font-semibold text-[var(--text)]">
+              {i18nT('pages.mcpManagement.resolve_label')}
+            </div>
+            <p
+              id="mcp-resolve-desc"
+              className="mt-1.5 max-w-[64ch] text-[13px] leading-relaxed text-[var(--muted)]"
+            >
+              {i18nT('pages.mcpManagement.resolve_description')}
+            </p>
+            {/* A control that can do nothing has to say so BEFORE it is pressed.
+                Pre-resolving acts on the routed set, and routing is what a stub
+                creates, so with nothing stubbed there is nothing to resolve --
+                the same gate the sharing card states in plain text above. */}
+            {stubCount === 0 && (
+              <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+                {i18nT('pages.mcpManagement.resolve_needs_a_stub')}
+              </p>
+            )}
+            {resolveNotice && (
+              <p className="mt-2 text-[12.5px] text-[var(--text)]" role="status">
+                {resolveNotice}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-describedby="mcp-resolve-desc"
+            disabled={resolveRefresh.isPending}
+            onClick={() => {
+              setError(null)
+              setResolveNotice(null)
+              resolveRefresh.mutate()
+            }}
+            className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {resolveRefresh.isPending
+              ? i18nT('pages.mcpManagement.resolve_updating')
+              : i18nT('pages.mcpManagement.resolve_update_now')}
+          </button>
         </div>
       </section>
 

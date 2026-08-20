@@ -1459,21 +1459,21 @@ export const createSlot = createAsyncThunk<
     // create payload instead.)
     if (project) {
       slot.project = project
-      if (activate) {
-        api.chatSlotProject(slot.key, project).catch(() => {})
-      } else {
-        // Background create (activate: false): the caller is setting this slot up
-        // and the user must not be able to reach it half-configured. Publishing it
-        // via addSlotOptimistic makes it selectable from the sidebar immediately,
-        // so a turn sent before scoping landed would run in the DEFAULT checkout.
-        // Await the scope, and if it fails delete the session server-side rather
-        // than publish an unscoped one.
-        try {
-          await api.chatSlotProject(slot.key, project)
-        } catch (err) {
-          await api.deleteChatSlot(slot.key).catch(() => {})
-          throw err
-        }
+      // Await the scope on BOTH paths before publishing the slot. Publishing
+      // via addSlotOptimistic makes the slot selectable (and, when activated,
+      // keys the agents-roster fetch to this optimistic project), so anything
+      // that observes the slot before the server records the project runs
+      // against the DEFAULT checkout: a turn would execute in the wrong
+      // directory, and a roster fetch racing the POST would cache a
+      // global-only roster under the new (slot, project) identity and never
+      // refetch (the later slots frame carries the same project string). If
+      // the scope fails, delete the session server-side rather than publish
+      // an unscoped one.
+      try {
+        await api.chatSlotProject(slot.key, project)
+      } catch (err) {
+        await api.deleteChatSlot(slot.key).catch(() => {})
+        throw err
       }
     }
     dispatch(addSlotOptimistic(slot))

@@ -6,6 +6,10 @@
  * the centered top-bar search overlay, so the overlay keeps its full width and
  * never unmounts.
  *
+ * A fourth scenario opens the menu instead, where the pin lives: one lit/unlit
+ * pin per crew row. It asserts that each destination owns exactly one named pin
+ * and that the lit ones are exactly the pinned crews.
+ *
  * Crews are pinned by DRIVING THE UI, not by seeding localStorage: the dashboard
  * does not carry a pre-seeded value across the reload the store would need to
  * observe it, and clicking the real menu rows proves the interaction as a
@@ -92,9 +96,12 @@ const SLOTS = [{
 
 const TRIGGER = '[aria-label^="Switch crew"]'
 const CHIP_ROW = '[data-testid="crew-chip-row"]'
+const PIN_ITEM = '[data-testid^="crew-pin-"]'
 const PINNED_KEY = 'mc-crew-switcher-pinned'
 
 const results = []
+/** Open-menu scenarios: the per-row pin toggles, which the header clip cannot see. */
+const menuResults = []
 
 async function main() {
   const { srv, base } = await serveDist()
@@ -137,8 +144,7 @@ async function main() {
    * @param name    output file stem
    * @param pinIds  crews to pre-pin
    */
-  async function scenario(name, pinIds, opts = {}) {
-    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2 })
+  async function scenario(name, pinIds, opts = {}) {    const context = await browser.newContext({ viewport: opts.viewport || VIEWPORT, deviceScaleFactor: 2 })
     const page = await context.newPage()
     logPageProblems(page)
     // A crew reported `connected` makes InstancesViewport mount a warm pane
@@ -171,6 +177,57 @@ async function main() {
 
 
     await page.waitForTimeout(300)
+
+    // The pin lives ON each crew's row in the open menu, so that state is only
+    // photographable with the menu down — and the menu is portalled outside the
+    // header, so it needs its own clip rather than HEADER_CLIP.
+    if (opts.openMenu) {
+      await page.click(TRIGGER)
+      await page.waitForSelector(PIN_ITEM, { timeout: 10000 })
+      await page.waitForTimeout(250)
+      const menu = await page.evaluate(() => {
+        const items = [...document.querySelectorAll('[data-testid^="crew-pin-"]')]
+        const content = items[0]?.closest('[role="menu"]')
+        const r = content?.getBoundingClientRect()
+        return {
+          pins: items.map(el => ({
+            id: el.getAttribute('data-testid').replace('crew-pin-', ''),
+            checked: el.getAttribute('aria-checked'),
+            name: el.getAttribute('aria-label'),
+            // Fill is the ONLY thing separating pinned from unpinned, so it is
+            // read back rather than assumed: an outline pin on a pinned crew
+            // reads as "not pinned" and invites a click that unpins it.
+            filled: !!el.querySelector('svg')?.getAttribute('class')?.includes('fill-current'),
+          })),
+          // One switch target per crew: the old design listed every crew a second
+          // time under a "Pin crews…" heading, which is what this replaces.
+          destinations: content ? content.querySelectorAll('[role="menuitemradio"]').length : 0,
+          // Same measure the geometry scenarios use: a chip whose trailing edge
+          // passes the row's visible width is cut off, which is what puts a
+          // pinned crew into the `noRoom` state this scenario exists to cover.
+          chipsClipped: (() => {
+            const row = document.querySelector('[data-testid="crew-chip-row"]')
+            if (!row) return 0
+            return [...row.children].filter(
+              k => k.offsetLeft + k.offsetWidth > row.clientWidth + 1,
+            ).length
+          })(),
+          box: r
+            ? { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }
+            : null,
+        }
+      })
+      menuResults.push({ name, expectedPinned: pinIds, requireClipped: !!opts.requireClipped, ...menu })
+      await page.screenshot({
+        path: `${OUT}/${name}.png`,
+        clip: menu.box
+          ? { x: menu.box.x - 8, y: 0, width: menu.box.width + 16, height: menu.box.y + menu.box.height + 8 }
+          : HEADER_CLIP,
+      })
+      await page.close()
+      await context.close()
+      return
+    }
 
     // Geometry: does the switcher reach the centered search overlay?
     const geom = await page.evaluate(() => {
@@ -220,7 +277,9 @@ async function main() {
 
     await page.screenshot({
       path: `${OUT}/${name}.png`,
-      clip: HEADER_CLIP,
+      // Clipped to the header band, at THIS scenario's width — a fixed 1280px clip
+      // would overrun a narrow viewport and fail the capture outright.
+      clip: { ...HEADER_CLIP, width: (opts.viewport || VIEWPORT).width },
     })
     await page.close()
     await context.close()
@@ -234,8 +293,27 @@ async function main() {
   await scenario('02-two-short-names-pinned', ['devdesk', 'sandbox'])
 
   // 3. All four pinned, two of them host-shaped — the row overflows and the chips
-  //    that do not fit are cut at the row edge, marked by the fade.
-  await scenario('03-overflow-clipped-with-fade', ['devdesk', 'prod', 'staging', 'sandbox'])
+  //    that do not fit are cut at the row edge, marked by the fade. Narrow, because
+  //    the chip row adapts to its own track: four host-shaped names fit at 1280px,
+  //    where this scenario would photograph no cut and prove no fade.
+  await scenario('03-overflow-clipped-with-fade', ['devdesk', 'prod', 'staging', 'sandbox'], {
+    viewport: { width: 820, height: 760 },
+  })
+
+  // 4. The menu itself: every row carries its own pin, lit for the two pinned
+  //    crews and unlit for the rest — one list of crews, not two.
+  await scenario('04-menu-row-pins', ['devdesk', 'sandbox'], { openMenu: true })
+
+  // 5. The same menu with the header row OVERFLOWING, so some pinned crews have
+  //    no visible chip. That state must still render a FILLED pin: the only case
+  //    where a pinned crew could be mistaken for an unpinned one, and the one
+  //    jsdom cannot produce because it has no layout. Narrow on purpose — the chip
+  //    row adapts to its own track, so four host-shaped names fit at 1280px.
+  await scenario('05-menu-pins-with-clipped-chips', ['devdesk', 'prod', 'staging', 'sandbox'], {
+    openMenu: true,
+    viewport: { width: 820, height: 760 },
+    requireClipped: true,
+  })
 
 
 
@@ -244,6 +322,44 @@ async function main() {
 
   console.log('--- geometry (the switcher must never reach the centered search overlay) ---')
   for (const r of results) console.log(JSON.stringify(r))
+  console.log('--- open menu (one row per crew, each with its own pin state) ---')
+  for (const r of menuResults) console.log(JSON.stringify(r))
+
+  // Every destination owns exactly one pin, and it reads checked for exactly the
+  // pinned crews. A screenshot of a pin that reports the wrong state would
+  // document a feature that does not work.
+  for (const m of menuResults) {
+    const lit = m.pins.filter(p => p.checked === 'true').map(p => p.id).sort()
+    const want = [...m.expectedPinned].sort()
+    if (m.pins.length !== CREWS.length + 1 || m.destinations !== m.pins.length) {
+      console.error(`FAIL: ${m.name} has ${m.pins.length} pins for ${m.destinations} destinations`)
+      console.error('      (expected one pin per row, Local included, and no second crew list)')
+      process.exit(1)
+    }
+    if (lit.join(',') !== want.join(',')) {
+      console.error(`FAIL: ${m.name} lit ${lit.join(',') || '(none)'}, expected ${want.join(',')}`)
+      process.exit(1)
+    }
+    if (m.pins.some(p => !p.name)) {
+      console.error(`FAIL: ${m.name} has an unnamed pin — an icon-only control must say which crew it pins`)
+      process.exit(1)
+    }
+    const unfilled = m.pins.filter(p => p.checked === 'true' && !p.filled).map(p => p.id)
+    if (unfilled.length) {
+      console.error(`FAIL: ${m.name} rendered pinned crew(s) ${unfilled.join(',')} WITHOUT fill.`)
+      console.error('      An outline pin on a pinned crew reads as "not pinned" and invites an accidental unpin.')
+      process.exit(1)
+    }
+    if (m.pins.some(p => p.checked === 'false' && p.filled)) {
+      console.error(`FAIL: ${m.name} filled an UNPINNED pin — fill must mean pinned and nothing else`)
+      process.exit(1)
+    }
+    if (m.requireClipped && m.chipsClipped === 0) {
+      console.error(`FAIL: ${m.name} was meant to photograph pinned crews whose header chip is cut off,`)
+      console.error('      but nothing clipped at this width, so the filled-while-clipped evidence is vacuous.')
+      process.exit(1)
+    }
+  }
 
   const derived = results
   const bad = derived.filter(r => !r.overlayPresent || r.clearsOverlay !== true)
@@ -259,7 +375,10 @@ async function main() {
     console.error('      so these screenshots would document a feature that does not work.')
     process.exit(1)
   }
-  if (!derived.some(r => r.chipsClipped > 0)) {
+  // Clipping evidence may come from a header-only scenario OR from the open-menu
+  // one: the chip row adapts to its own track, so four host-shaped names no longer
+  // overflow at 1280px and only the narrow scenario reaches the clipped state.
+  if (![...derived, ...menuResults].some(r => (r.chipsClipped ?? 0) > 0)) {
     console.error('FAIL: no scenario overflowed, so the clipping evidence is vacuous.')
     process.exit(1)
   }

@@ -265,17 +265,37 @@ def _collection_section(raw: dict[str, Any]) -> dict[str, Any] | None:
 _SECTION_READERS = {"app": _app_section, "collection": _collection_section}
 
 
+#: The forms this client can draw. `carousel` is published-schema-legal but has
+#: no renderer here yet, so it deliberately takes the unknown-form path below
+#: and the whole block stays invisible until support ships.
+_KNOWN_FORMS = frozenset({"full", "row"})
+
+#: Each form's floor and ceiling on `items`, re-applied at this boundary: this
+#: reader also sees documents that never passed the publish gate (a stale cache,
+#: a hand-edited file). A `full` holds exactly one; a `row` of one would render
+#: a half-width card against empty space, so it needs two.
+_FORM_ITEM_BOUNDS = {"full": (1, 1), "row": (2, MAX_APP_REFS)}
+
+
 def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
-    """Return the published featured sections, or ``[]`` for none.
+    """Return the published editorial blocks, or ``[]`` for none.
 
-    Two types are projected: `app` (one featured app) and `collection` (several
-    under a curator's theme). An unknown `type` is SKIPPED rather than refused --
-    that is the document's own stated contract, and it is what lets a curator
-    publish a new shape before every client can render it.
+    Each entry is one BLOCK of the Discover page: a ``form`` saying how its
+    contents are arranged (``full``: one card across the width; ``row``: cards
+    side by side) plus the ``items`` it arranges. Items keep the two projected
+    types, `app` and `collection`, each with ``appRefs`` as a list so the caller
+    resolves references one way regardless of type.
 
-    Both project `appRefs` as a list so the caller resolves references one way
-    regardless of type; `type` is what the renderer branches on, and an `app`
-    section always carries exactly one.
+    TWO GRAINS OF SKIP, and the difference is the contract. An unknown ``form``
+    skips the WHOLE block -- the arrangement is what a form names, and a block
+    whose arrangement this client cannot draw has no partial rendering that is
+    not a guess. An unknown item ``type`` skips just that card, because the
+    arrangement can still be drawn around a card it does not know. Both are what
+    let a new shape publish before every client can render it.
+
+    A block that falls below its form's floor after item projection is dropped
+    whole: a row whose second card dissolved is an arrangement the curator did
+    not write.
 
     Empty is always a safe answer: Discover falls back to picking featured apps
     out of the registry, which is what it did before this module existed.
@@ -290,34 +310,45 @@ def load_sections(fetcher: Any = None) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     skipped = 0
-    for item in raw:
+    for block in raw:
         # The cap counts what RENDERS, not what was read: applying it to the raw
-        # list would let 40 sections of an unsupported type consume the whole
-        # budget and starve a supported one sitting behind them.
+        # list would let a run of unsupported blocks consume the whole budget
+        # and starve a supported one sitting behind them.
         if len(out) >= MAX_SECTIONS:
             break
-        if not isinstance(item, dict):
+        if not isinstance(block, dict):
             skipped += 1
             continue
-        # A non-string `type` is skipped by the same path as an unknown one: the
-        # document is malformed either way, and neither may cost the other
-        # sections their render.
-        kind = item.get("type")
-        reader = _SECTION_READERS.get(kind) if isinstance(kind, str) else None
-        if reader is None:
+        form = block.get("form")
+        if not isinstance(form, str) or form not in _KNOWN_FORMS:
             skipped += 1
             continue
-        if projected := reader(item):
-            out.append(projected)
-        else:
+        raw_items = block.get("items")
+        if not isinstance(raw_items, list):
             skipped += 1
+            continue
+        items: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            reader = _SECTION_READERS.get(kind) if isinstance(kind, str) else None
+            if reader is None:
+                continue
+            if projected := reader(item):
+                items.append(projected)
+        lo, hi = _FORM_ITEM_BOUNDS[form]
+        if not lo <= len(items) <= hi:
+            skipped += 1
+            continue
+        out.append({"form": form, "items": items})
 
     if skipped:
         # Without this line an old-shape document and a curator who published
         # nothing are indistinguishable: both yield [] and both render the
         # derived layout, for up to a full cache TTL, with nothing recording why.
         logger.debug(
-            "editorial: %d of %d section(s) skipped; %d projected",
+            "editorial: %d of %d block(s) skipped; %d projected",
             skipped,
             len(raw),
             len(out),

@@ -122,7 +122,10 @@ export default function ChatPane({
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
   // in single chat) lands here too; a per-hook refresh would leave sibling pickers stale.
   const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.refreshTrigger ?? 0)
-  const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey)
+  // This pane takes no project prop, so read THIS slot's project from the store:
+  // it scopes which project-local agents exist, so a project change must refetch.
+  const paneProject = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey)?.project || undefined)
+  const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
   const navigate = useNavigate()
   const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
   // Same contract as ChatPage: set-only, clearing lives on the Templates page.

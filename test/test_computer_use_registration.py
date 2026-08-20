@@ -602,6 +602,12 @@ class TestGatedEntryIsNotPreserved:
                 patch("kiro_crew.agent._prompt_path", return_value=Path("/tmp/p.md"))
             )
             stack.enter_context(patch("kiro_crew.platform_compat.IS_MACOS", macos))
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.backend.platform_could_be_supported",
+                    return_value=macos,
+                )
+            )
             if macos:
                 stack.enter_context(
                     patch("kiro_crew.computer_use.enable_state.is_enabled", return_value=True)
@@ -703,6 +709,12 @@ class TestGatedRefsAreLeftALONE:
                 patch("kiro_crew.agent._prompt_path", return_value=Path("/tmp/p.md"))
             )
             stack.enter_context(patch("kiro_crew.platform_compat.IS_MACOS", macos))
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.backend.platform_could_be_supported",
+                    return_value=macos,
+                )
+            )
             if macos:
                 stack.enter_context(
                     patch("kiro_crew.computer_use.enable_state.is_enabled", return_value=True)
@@ -773,6 +785,12 @@ class TestGatedRefsAreLeftALONE:
                 patch("kiro_crew.agent._prompt_path", return_value=Path("/tmp/p.md"))
             )
             stack.enter_context(patch("kiro_crew.platform_compat.IS_MACOS", False))
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.backend.platform_could_be_supported",
+                    return_value=False,
+                )
+            )
             cfg = agent.build_agent_config()
         if CU_REF in agent.get_shipped_tools().get("tools", []):
             assert CU_REF in cfg.get("tools", []), "a fresh build stripped the shipped ref"
@@ -804,6 +822,22 @@ if __name__ == "__main__":  # pragma: no cover
 # ── The spec-emission gate ──
 
 
+class _FakeSupport:
+    """Minimal stand-in for a backend, reporting only ``status().supported``.
+
+    The gate reads nothing else off the backend, so a fuller fake would only
+    invite a reader to think the rest matters.
+    """
+
+    def __init__(self, supported: bool) -> None:
+        self._supported = supported
+
+    def status(self):
+        from kiro_crew.computer_use.types import BackendStatus
+
+        return BackendStatus(supported=self._supported, platform_id="probe", reason="")
+
+
 class TestSpecEmissionGate:
     """The server must not reach the EMITTED spec when it cannot be used.
 
@@ -826,7 +860,19 @@ class TestSpecEmissionGate:
 
     @staticmethod
     def _build(tmp_path: Path, *, macos: bool, keystone: "dict | None") -> dict:
-        """Build a fresh spec with *macos* and *keystone* in effect.
+        """Build a fresh spec with driver support *macos* and *keystone* in effect.
+
+        ``macos`` names DRIVER SUPPORT rather than the OS: the gate asks the
+        backend's own ``status().supported`` instead of naming a platform, so a
+        platform that gains a driver needs no change here. ``IS_MACOS`` is patched
+        too, so a gate that regressed to reading the platform flag agrees with the
+        support argument rather than contradicting it.
+
+        Support is injected at ``get_shared_backend`` — the REGISTRY seam the gate
+        reads, and the one the suite's process-wide ``FakeComputerUseBackend`` is
+        installed on. Patching ``select_default_backend`` instead would leave the
+        gate reading the fake (which reports ``supported=True`` everywhere), so an
+        "unsupported" case would silently prove nothing.
 
         The keystone is written to a real temp file and read through the real
         ``enable_state``, so the four malformed spellings below are judged by the
@@ -856,6 +902,16 @@ class TestSpecEmissionGate:
                 patch("kiro_crew.agent._mc_config_path", return_value=tmp_path / "none.json")
             )
             stack.enter_context(patch("kiro_crew.platform_compat.IS_MACOS", macos))
+            # The gate reads the BACKEND's support through the REGISTRY, so that is
+            # what a supported/unsupported case must control. The suite registers a
+            # fake backend process-wide that reports supported=True on every
+            # platform, so patching the platform flag alone would leave the gate open.
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.backend.platform_could_be_supported",
+                    return_value=macos,
+                )
+            )
             stack.enter_context(
                 patch(
                     "kiro_crew.computer_use.enable_state.computer_use_state_path",
@@ -864,13 +920,19 @@ class TestSpecEmissionGate:
             )
             return agent.build_agent_config()
 
-    def test_a_non_darwin_platform_gets_no_entry(self, tmp_path: Path):
-        """**The Linux/Windows case — the one with no driver at all.**
+    def test_an_unsupported_platform_gets_no_entry(self, tmp_path: Path):
+        """**The no-driver case (Linux today).**
 
-        Asserted with the keystone ENABLED, so the platform half of the gate is
+        Asserted with the keystone ENABLED, so the support half of the gate is
         proven on its own rather than passing because the feature happened to be
-        off too. ``select_default_backend`` has no driver here, so the spawned
-        process could never have done anything.
+        off too. The backend reports unsupported here, so a spawned process could
+        never have done anything.
+
+        Note this is DRIVER SUPPORT, not "is it macOS": Windows now has a
+        read-path driver and must therefore get the entry (see the test below).
+        Gating on the OS name kept the server out of the spec on Windows while
+        ``tools`` still advertised its @ref, so the model was told the tools
+        existed and no server was ever spawned.
         """
         config = self._build(tmp_path, macos=False, keystone={"enabled": True})
         assert CU_SERVER not in config["mcpServers"]
@@ -900,15 +962,42 @@ class TestSpecEmissionGate:
         config = self._build(tmp_path, macos=True, keystone=keystone)
         assert CU_SERVER not in config["mcpServers"]
 
-    def test_darwin_with_the_keystone_ON_gets_the_entry(self, tmp_path: Path):
-        """**Guard against over-gating the one path that must work.**
+    def test_a_supported_platform_with_the_keystone_ON_gets_the_entry(self, tmp_path: Path):
+        """**Guard against over-gating the paths that must work.**
 
         Without this, "no entry" could be satisfied by a gate that is simply
-        always closed — which would ship the feature dead on its own platform.
+        always closed — which would ship the feature dead on every platform. This
+        is also the Windows regression: the driver reports supported, so the entry
+        must be emitted and a server actually spawned, rather than the @ref being
+        advertised over an absent server.
         """
         config = self._build(tmp_path, macos=True, keystone={"enabled": True})
         assert config["mcpServers"][CU_SERVER]["args"] == [CU_SUBCOMMAND]
         assert CU_REF in config["tools"]
+
+    def test_the_gate_names_no_operating_system(self):
+        """Structural: the predicate must not hardcode a platform flag.
+
+        A behavioural test cannot catch the regression this replaced — a
+        reintroduced ``IS_MACOS`` check would keep passing every case above while
+        silently withholding the server on Windows. The gate must ask the backend.
+        """
+        import inspect
+
+        source = inspect.getsource(agent._computer_use_spec_gate)
+        body = source.split('"""')[-1]  # exclude the docstring, which may cite them
+        assert "IS_MACOS" not in body
+        assert "IS_WINDOWS" not in body
+        assert "IS_LINUX" not in body
+        assert "supported" in body
+        # And it must ask the REGISTRY, not build a platform backend of its own —
+        # see test_the_gate_reads_the_registry_so_a_fake_backend_holds.
+        # And it must not LOAD a driver to answer: this runs on the agent-config
+        # rebuild path, where reaching status() costs a driver import plus five
+        # WinDLLs (31ms, 32 modules) for a question the platform flags settle in 1ms.
+        assert "platform_could_be_supported" in body
+        assert "get_shared_backend" not in body
+        assert "select_default_backend" not in body
 
     def test_the_withheld_entry_is_what_stops_the_spawn_not_the_ref(self, tmp_path: Path):
         """The ``mcpServers`` entry carries the command, so withholding it is enough.
@@ -926,14 +1015,29 @@ class TestSpecEmissionGate:
         assert "kirocrew-core" in config["mcpServers"]
         assert "@kirocrew-core" in config["tools"]
 
-    def test_an_override_file_cannot_smuggle_the_entry_past_the_gate(self, tmp_path: Path):
-        """A user override naming the server does not defeat a PLATFORM gate.
+    @pytest.mark.parametrize(
+        ("supported", "keystone"),
+        [(False, {"enabled": True}), (True, {"enabled": False})],
+        ids=["no-driver", "keystone-off"],
+    )
+    def test_an_override_file_cannot_smuggle_the_entry_past_the_gate(
+        self, tmp_path: Path, supported: bool, keystone: dict
+    ):
+        """A user override naming the server does not defeat EITHER half of the gate.
 
         ``build_agent_config`` merges the user override file over shipped
         defaults, so a ``continue`` alone would let an entry arriving from there
-        reach the spec — spawning a backend on an OS where it has no driver.
+        reach the spec — spawning a backend on an OS where it has no driver, or one
+        the operator never enabled.
+
+        Both halves are parametrized because each one alone can make this pass. A
+        version that only pinned the platform half kept passing after the gate was
+        rewritten to ask the backend, since the keystone was absent in the test home
+        and closed the gate for an unrelated reason.
         """
         cfg_dir = _bundled_defaults(tmp_path)
+        state_path = tmp_path / "computer_use.json"
+        state_path.write_text(json.dumps(keystone), encoding="utf-8")
         override = tmp_path / "override.json"
         override.write_text(
             json.dumps({"mcpServers": {CU_SERVER: {"command": "/x", "args": ["y"]}}}),
@@ -960,9 +1064,66 @@ class TestSpecEmissionGate:
             stack.enter_context(
                 patch("kiro_crew.agent._mc_config_path", return_value=tmp_path / "none.json")
             )
-            stack.enter_context(patch("kiro_crew.platform_compat.IS_MACOS", False))
+            stack.enter_context(patch("kiro_crew.platform_compat.IS_MACOS", supported))
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.backend.platform_could_be_supported",
+                    return_value=supported,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.enable_state.computer_use_state_path",
+                    return_value=state_path,
+                )
+            )
             config = agent.build_agent_config()
         assert CU_SERVER not in config["mcpServers"]
+
+    def test_the_gate_loads_no_driver_to_answer(self, tmp_path: Path):
+        """The gate must not construct a fresh platform backend of its own.
+
+        ``select_default_backend`` is the one path the suite's
+        ``FakeComputerUseBackend`` registration cannot intercept, so a gate calling
+        it would load a real native library on every runner that builds an agent
+        config — five ``WinDLL`` loads here, and a real ApplicationServices import on
+        macOS — for ~26 test modules. That is what
+        ``test_ci_never_selects_a_native_backend`` forbids, and it cannot see this
+        one because it asserts on the registry.
+
+        Asserted by NAME rather than by evicting the driver modules from
+        ``sys.modules``: an eviction here leaks into every later test that patches an
+        attribute on the cached driver module, because the re-import produces a fresh
+        unpatched one (it broke
+        ``test_computer_use_windows_driver.py::test_a_failed_driver_import_...``,
+        which passed alone and failed in a full run). The structural assertion is the
+        durable one anyway — ``select_default_backend`` must not appear at all.
+        """
+        import inspect
+
+        state_path = tmp_path / "computer_use.json"
+        state_path.write_text(json.dumps({"enabled": True}), encoding="utf-8")
+        source = inspect.getsource(agent._computer_use_spec_gate)
+        body = source.split('"""')[-1]
+        assert "select_default_backend" not in body
+        assert "get_shared_backend" not in body
+        assert "platform_could_be_supported" in body
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.backend.platform_could_be_supported",
+                    return_value=False,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "kiro_crew.computer_use.enable_state.computer_use_state_path",
+                    return_value=state_path,
+                )
+            )
+            # The registry's answer decides, on every OS: with the keystone ON, a
+            # fake reporting unsupported must still close the gate.
+            assert agent._computer_use_spec_gate() is False
 
     def test_a_refresh_RETRACTS_an_entry_written_while_the_gate_was_open(self):
         """Turning the feature OFF must reclaim the process turning it on started.
@@ -980,9 +1141,7 @@ class TestSpecEmissionGate:
             "allowedTools": [f"{CU_REF}/computer_get_state"],
         }
         with ExitStack() as stack:
-            stack.enter_context(
-                patch.multiple("kiro_crew.agent", _MANAGED_MCP_SERVERS=self._GATED)
-            )
+            stack.enter_context(patch.multiple("kiro_crew.agent", _MANAGED_MCP_SERVERS=self._GATED))
             stack.enter_context(
                 patch("kiro_crew.agent._prompt_path", return_value=Path("/tmp/p.md"))
             )
@@ -1036,9 +1195,7 @@ class TestSpecEmissionGate:
 
     def test_the_shipped_row_gate_is_the_computer_use_predicate(self):
         """Pinned by identity: a gate is only useful if it is the real one."""
-        assert agent._MANAGED_MCP_SERVERS[CU_SERVER]["spec_gate"] is (
-            agent._computer_use_spec_gate
-        )
+        assert agent._MANAGED_MCP_SERVERS[CU_SERVER]["spec_gate"] is (agent._computer_use_spec_gate)
 
     def test_enabling_rebuilds_the_spec_before_resetting_sessions(self):
         """**The enable path must still work in the session the user is sitting in.**
@@ -1074,9 +1231,7 @@ class TestSpecEmissionGate:
             "mcpServers": {CU_SERVER: {"command": "x", "args": []}},
         }
         with ExitStack() as stack:
-            stack.enter_context(
-                patch.multiple("kiro_crew.agent", _MANAGED_MCP_SERVERS=self._GATED)
-            )
+            stack.enter_context(patch.multiple("kiro_crew.agent", _MANAGED_MCP_SERVERS=self._GATED))
             stack.enter_context(
                 patch("kiro_crew.agent._prompt_path", return_value=Path("/tmp/p.md"))
             )
@@ -1085,9 +1240,7 @@ class TestSpecEmissionGate:
         assert CU_SERVER not in cfg["mcpServers"], "the withhold must still happen"
         assert cfg["tools"] == {"not": "a list"}
 
-    def test_the_WHOLE_install_withholds_the_server_and_audits_the_decision(
-        self, tmp_path: Path
-    ):
+    def test_the_WHOLE_install_withholds_the_server_and_audits_the_decision(self, tmp_path: Path):
         """**End-to-end through ``install_agent``, which is what actually runs.**
 
         The per-function tests above prove each half; this one proves the file
@@ -1189,9 +1342,9 @@ class TestSpecEmissionGate:
             path = _run_install(tmp_path, cfg_dir, managed=self._GATED)
 
         assert CU_SERVER not in _installed(path)["mcpServers"]
-        assert [e for e in events if e.get("operation") == "mcp_server_withheld"], (
-            f"a fresh install withheld the server without auditing it: {events}"
-        )
+        assert [
+            e for e in events if e.get("operation") == "mcp_server_withheld"
+        ], f"a fresh install withheld the server without auditing it: {events}"
 
     def test_no_withheld_audit_when_the_template_never_granted_it(self, tmp_path: Path):
         """An edition that ships without computer use has nothing to report.

@@ -11,6 +11,53 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_for_write(root: Path, *rel: str) -> Path:
+    """Resolve ``root/*rel`` for writing; raise ``ValueError`` on any symlink.
+
+    The resolved target must EQUAL its lexical path beneath the resolved root.
+    Plain containment (``is_relative_to``) is not enough: it refuses escapes
+    but admits an intra-root alias -- ``out/victim -> out/existing`` resolves
+    inside the root, and scaffolding "victim" would truncate the sibling
+    project's files. Exact equality refuses every symlink beneath the root:
+    an escaping one (``Path.exists()`` is ``False`` for a dangling symlink, so
+    an existence test falls through to a write that follows the link), a
+    symlinked parent directory, and an in-root alias alike. An ABSOLUTE
+    component is refused before the comparison: ``joinpath`` discards the root
+    for one, making target equal expected trivially while both point outside
+    it. The root itself may still be a symlink (a symlinked home, ``/tmp`` on
+    macOS): both sides are built from ``root.resolve()``, so it compares
+    equal.
+
+    A refusal aborts the scaffold rather than skipping the site: a skipped
+    write would leave a partial app (no ``app.json``, no agent) while the CLI
+    reports success. Resolution failing outright (a symlink loop raises
+    ``OSError`` on Python 3.10/3.11 and ``RuntimeError`` on 3.12+) is refused
+    the same way rather than crashing with an unexplained traceback.
+    """
+    target = root.joinpath(*rel)
+    try:
+        resolved_root = root.resolve()
+        expected = resolved_root.joinpath(*rel)
+        # An absolute component (or a Windows drive-relative one) makes
+        # joinpath DISCARD the root, so target equals expected trivially while
+        # both point outside it; require the expected path to sit strictly
+        # beneath the resolved root before comparing. is_relative_to is
+        # lexical, so a ".." component passes here and is refused by the
+        # equality check below instead (resolve() normalizes it away).
+        if not expected.is_relative_to(resolved_root) or expected == resolved_root:
+            raise ValueError(f"refusing a path component that leaves {root}: {rel}")
+        resolved = target.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"cannot resolve {target} under {root}: {exc}") from exc
+    if resolved != expected:
+        raise ValueError(
+            f"refusing to write through a symlink or traversal: "
+            f"{target} resolves to {resolved}, expected {expected}"
+        )
+    return resolved
+
+
 _MANIFEST_TEMPLATE = {
     "name": "",
     "version": "0.1.0",
@@ -233,6 +280,9 @@ def scaffold_app(
         author = os.environ.get("USER", "developer")
 
     app_dir = output_dir / name
+    # Refuses both a traversal in *name* and a pre-existing symlink at
+    # output_dir/name that would relocate every write outside the output dir.
+    _resolve_for_write(output_dir, name)
     app_dir.mkdir(parents=True, exist_ok=True)
 
     # Manifest
@@ -266,49 +316,46 @@ def scaffold_app(
                 "message": f"Run periodic check for {display_name}",
             }
         ]
-    (app_dir / "app.json").write_text(
+    _resolve_for_write(app_dir, "app.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
 
     # Agent
-    agents_dir = app_dir / "agents"
-    agents_dir.mkdir(exist_ok=True)
-    (agents_dir / "sample-agent.json").write_text(
+    _resolve_for_write(app_dir, "agents").mkdir(exist_ok=True)
+    _resolve_for_write(app_dir, "agents", "sample-agent.json").write_text(
         json.dumps(_AGENT_TEMPLATE, indent=2) + "\n", encoding="utf-8"
     )
 
     # Skill
-    skill_dir = app_dir / "skills" / "sample-skill"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(
+    _resolve_for_write(app_dir, "skills", "sample-skill").mkdir(
+        parents=True, exist_ok=True
+    )
+    _resolve_for_write(app_dir, "skills", "sample-skill", "SKILL.md").write_text(
         _SKILL_TEMPLATE.format(name=name, display_name=display_name),
         encoding="utf-8",
     )
 
     # Backend (optional)
     if include_backend:
-        backend_dir = app_dir / "backend"
-        backend_dir.mkdir(exist_ok=True)
-        (backend_dir / "server.py").write_text(
+        _resolve_for_write(app_dir, "backend").mkdir(exist_ok=True)
+        _resolve_for_write(app_dir, "backend", "server.py").write_text(
             _BACKEND_TEMPLATE.format(name=name), encoding="utf-8"
         )
 
     # UI (optional)
     if include_ui:
-        ui_dir = app_dir / "ui"
-        ui_dir.mkdir(exist_ok=True)
-        src_dir = ui_dir / "src"
-        src_dir.mkdir(exist_ok=True)
+        _resolve_for_write(app_dir, "ui").mkdir(exist_ok=True)
+        _resolve_for_write(app_dir, "ui", "src").mkdir(exist_ok=True)
 
         component_name = name.replace("-", " ").title().replace(" ", "")
 
-        (ui_dir / "package.json").write_text(
+        _resolve_for_write(app_dir, "ui", "package.json").write_text(
             _UI_PACKAGE_JSON_TEMPLATE.format(name=name), encoding="utf-8"
         )
-        (ui_dir / "vite.config.ts").write_text(
+        _resolve_for_write(app_dir, "ui", "vite.config.ts").write_text(
             _UI_VITE_CONFIG_TEMPLATE.format(), encoding="utf-8"
         )
-        (src_dir / "App.tsx").write_text(
+        _resolve_for_write(app_dir, "ui", "src", "App.tsx").write_text(
             _UI_APP_TSX_TEMPLATE.format(
                 component_name=component_name,
                 display_name=display_name,
@@ -316,12 +363,12 @@ def scaffold_app(
             ),
             encoding="utf-8",
         )
-        (ui_dir / ".gitignore").write_text(
+        _resolve_for_write(app_dir, "ui", ".gitignore").write_text(
             _UI_GITIGNORE_TEMPLATE, encoding="utf-8"
         )
 
     # README
-    (app_dir / "README.md").write_text(
+    _resolve_for_write(app_dir, "README.md").write_text(
         _README_TEMPLATE.format(
             name=name, display_name=display_name, description=description
         ),

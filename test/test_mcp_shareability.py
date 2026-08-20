@@ -56,14 +56,87 @@ class TestRefutationOutranksEverything:
 
 
 class TestDisqualifiers:
-    def test_rotating_secret_env_disqualifies_without_a_probe(self) -> None:
-        """A config fact stands whether or not the server could be started."""
+    def test_rotating_secret_env_is_reported_even_without_a_probe(self) -> None:
+        """A config fact stands whether or not the server could be started.
+
+        It is no longer a disqualification. A secret-prefixed key is never
+        forwarded into a SHARED backend at all -- ``_declared_non_secret_env``
+        drops it because ``ENV_SCRUB_PREFIXES`` makes the pool hash non-injective
+        over these keys, so no single value is correct -- which means the pooled
+        backend receives NOBODY's secret rather than the wrong session's. Nothing
+        crosses tenants. What breaks is a server that authenticates FROM declared
+        env, and it breaks loudly at its own auth layer.
+
+        And a server following the documented pattern (read the credential from
+        disk) declares the key without needing it at runtime, so it pools fine --
+        the case a disqualification got wrong, and the expensive kind of mistake
+        for a layer whose job is to say yes.
+
+        Reported BEFORE the probe gate on purpose: on a host where the probe
+        cannot run, naming the config fact beats saying only "unknown".
+        """
         verdict = assess(
             ShareEvidence(name="x", probe_ok=False, declared_env_names=("AWS_SECRET_ACCESS_KEY",))
         )
-        assert verdict.strength is Strength.DISQUALIFIED
-        assert _codes(verdict) == {"rotating_secret_env"}
-        assert verdict.reasons[0].detail == "AWS_SECRET_ACCESS_KEY"
+        assert verdict.strength is Strength.UNKNOWN
+        assert _codes(verdict) == {"not_probed", "rotating_secret_env"}
+        rotating = [r for r in verdict.reasons if r.code == "rotating_secret_env"]
+        assert [r.detail for r in rotating] == ["AWS_SECRET_ACCESS_KEY"]
+
+    def test_rotating_secret_env_is_a_note_that_follows_the_rewriter(self) -> None:
+        """Not a disqualifier, and still not auto-shared. Both halves matter.
+
+        Not disqualifying, because it is not a leak: a secret-prefixed key is never
+        forwarded into a shared backend at all, so a pooled backend receives
+        NOBODY's secret rather than the wrong session's. A server reading its
+        credential from disk -- the documented pattern -- declares the key without
+        consuming it and pools perfectly well.
+
+        Still not auto-shared, and this is agreement rather than caution. The
+        rewriter ALREADY refuses to pool such an entry: ``_withheld_env_count``
+        counts the keys a shared backend would not receive, a non-zero count leaves
+        the entry unwrapped, and ``_stub_eligibility`` reports that as
+        ``pooling_blocked_by_env``. Recommending a share the rewriter will decline
+        would have the page promise work the broker never does. When that guard
+        changes, this withholding goes with it.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="x",
+                probe_ok=True,
+                has_tools=True,
+                declared_env_names=("OAUTH_TOKEN",),
+                capabilities={"experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}}},
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.DECLARED
+        assert verdict.recommend_stub is True
+        assert verdict.recommend_share is False
+        assert "rotating_secret_env" in _codes(verdict)
+
+    def test_a_broker_gap_does_not_borrow_that_withholding(self) -> None:
+        """The two must not collapse into one rule.
+
+        ``rotating_secret_env`` withholds because a live guard declines the work.
+        A broker gap has no such guard -- pooling proceeds and a subscription simply
+        stops firing -- so it must stay pure information. Sharing one flag between
+        them would silently re-introduce the disqualifier this change removed.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="x",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={
+                    "experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}},
+                    "resources": {"subscribe": True},
+                },
+                preflight_ran=True,
+            )
+        )
+        assert verdict.recommend_share is True
+        assert "degrades_when_shared" in _codes(verdict)
 
     def test_rotating_prefixes_cover_every_pool_key_exclusion(self) -> None:
         """Ratchet: hashing's scrub list is what makes co-tenants disagree.
@@ -80,9 +153,21 @@ class TestDisqualifiers:
         """The disqualifier is the identity mechanism, not the authorship.
 
         ``kirocrew-cron`` is the real shape: one of ours, and still reading its
-        channel identity from process env, so one backend cannot serve two
-        sessions. The sibling test below pins the other half — that being ours is
-        NOT itself a disqualifier.
+        channel identity from process env. The sibling test below pins the other
+        half -- that being ours is NOT itself a disqualifier.
+
+        Why this one stayed a disqualifier when three others became notes: on a
+        shared backend such a server reads EMPTY, and empty is not benign here
+        because the consumer treats it as privileged.
+        ``mcp_cron._check_cron_job_ownership`` returns None -- allow -- when the
+        session key is falsy, so a pooled cron skips the ownership check entirely
+        and one session could list, pause or remove another's jobs. That is a
+        cross-session authorization failure rather than a lost feature.
+
+        It is also the one case the "share and retreat" posture cannot cover: both
+        hazard codes are routing-shaped, so serving the wrong session's data emits
+        no unroutable frame and produces no ledger entry. No retreat exists to fall
+        back on, which is what earns the gate.
         """
         verdict = assess(
             ShareEvidence(
@@ -90,7 +175,8 @@ class TestDisqualifiers:
             )
         )
         assert verdict.strength is Strength.DISQUALIFIED
-        assert _codes(verdict) == {"first_party_session_scoped"}
+        assert _codes(verdict) == {"session_bound_by_construction"}
+        assert verdict.recommend_share is False
 
     def test_a_managed_server_that_consumes_the_caller_block_is_not_disqualified(self) -> None:
         """Regression: ``kirocrew-core`` was disqualified for being ours.
@@ -118,14 +204,29 @@ class TestDisqualifiers:
         verdict = assess(ShareEvidence(name="x", is_stdio=False, probe_ok=True))
         assert _codes(verdict) == {"not_stdio"}
 
-    def test_resources_subscribe_disqualifies(self) -> None:
+    def test_resources_subscribe_is_a_note_not_a_disqualifier(self) -> None:
+        """A lost feature is not a hazard.
+
+        ``notifications/resources/updated`` carries no request id, so a shared
+        backend cannot attribute it and DROPS it (deny-by-default in
+        ``backend._notification_owner``). The subscription silently stops working
+        -- nobody receives anybody else's content. That costs the operator a
+        feature, which is worth reporting, and it is not a reason to refuse the
+        stub: a stub keeps the backend 1:1 with the session.
+        """
         verdict = assess(
             ShareEvidence(
-                name="x", probe_ok=True, capabilities={"resources": {"subscribe": True}}
+                name="x",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={"resources": {"subscribe": True}},
             )
         )
-        assert verdict.strength is Strength.DISQUALIFIED
-        assert verdict.reasons[0].detail == "resources_subscribe"
+        assert verdict.strength is Strength.NO_OBJECTION
+        assert verdict.recommend_stub is True
+        assert verdict.recommend_share is False
+        notes = [r for r in verdict.reasons if r.code == "degrades_when_shared"]
+        assert [r.detail for r in notes] == ["resources_subscribe"]
 
     def test_subscribe_false_is_an_explicit_no_and_does_not_count(self) -> None:
         """``{"subscribe": false}`` is the server saying it does NOT subscribe."""
@@ -155,18 +256,32 @@ class TestDisqualifiers:
         )
         assert verdict.strength is Strength.NO_OBJECTION
 
-    def test_declaring_logging_at_all_disqualifies(self) -> None:
-        """In MCP an empty object ADVERTISES a capability, it does not withhold it.
+    def test_declaring_logging_is_detected_but_does_not_disqualify(self) -> None:
+        """Two claims, and only one of them survived the epistemics change.
 
-        ``{"logging": {}}`` means ``logging/setLevel`` is supported, and that
-        level is process-wide: one co-tenant's call changes what every other
-        session receives. Testing truthiness here (an earlier version of this
-        module) let exactly that server through as shareable.
+        STILL TRUE: in MCP an empty object ADVERTISES a capability rather than
+        withholding it, so ``{"logging": {}}`` means ``logging/setLevel`` is
+        supported. Testing truthiness here (an earlier version of this module)
+        read that server as one that does not log at all, so the ``present`` mode
+        must keep detecting both shapes.
+
+        NO LONGER TRUE: that this disqualifies. The cost of pooling a logging
+        server is that the last caller's level wins for everyone, and that a log
+        notification tied to one caller's in-flight call is dropped rather than
+        broadcast. That is log volume and lost log lines. No co-tenant ever
+        receives another tenant's content, so there is nothing here to condemn
+        the server for -- and what it predicts is precisely what
+        ``HAZARD_UNATTRIBUTABLE_NOTIFICATION`` records if it ever happens for
+        real, on evidence worth more than this guess.
         """
         for caps in ({"logging": {}}, {"logging": {"level": "info"}}):
-            verdict = assess(ShareEvidence(name="x", probe_ok=True, capabilities=caps))
-            assert verdict.strength is Strength.DISQUALIFIED, caps
-            assert verdict.reasons[0].detail == "logging_level"
+            verdict = assess(
+                ShareEvidence(name="x", probe_ok=True, has_tools=True, capabilities=caps)
+            )
+            assert verdict.strength is Strength.NO_OBJECTION, caps
+            assert verdict.recommend_stub is True, caps
+            notes = [r for r in verdict.reasons if r.code == "degrades_when_shared"]
+            assert [r.detail for r in notes] == ["logging_level"], caps
 
     def test_absent_logging_key_does_not_disqualify(self) -> None:
         verdict = assess(
@@ -224,8 +339,22 @@ class TestPositiveDeclaration:
         assert verdict.recommend_share is False
         assert "preflight_not_run" in _codes(verdict)
 
-    def test_measurement_beats_the_declaration(self) -> None:
-        """Caught answering initialize per-caller outranks advertising support."""
+    def test_a_divergence_does_not_beat_the_declaration(self) -> None:
+        """The inversion this refactor is about, on its sharpest case.
+
+        This test used to assert the opposite, on the reasoning that a
+        measurement outranks a promise. It does -- when the measurement measured
+        something. Two spawns under two different ``clientInfo`` values cannot:
+        an answer computed from the caller and an answer that varies for the
+        server's own reasons both produce a difference, and the variable is never
+        isolated.
+
+        For a server that ADVERTISES caller-identity the reading is weaker still,
+        because answering two callers differently is the advertised behaviour
+        working. So the divergence rides along as a note and the declaration
+        stands. The thing that can still overrule a declaration is an entry in
+        the hazard ledger, which is an event rather than an inference.
+        """
         verdict = assess(
             ShareEvidence(
                 name="x",
@@ -236,9 +365,74 @@ class TestPositiveDeclaration:
                 preflight_caller_sensitive=True,
             )
         )
-        assert verdict.strength is Strength.DISQUALIFIED
-        assert _codes(verdict) == {"caller_sensitive_initialize"}
-        assert not verdict.recommend_stub
+        assert verdict.strength is Strength.DECLARED
+        assert verdict.recommend_stub is True
+        assert "handshake_not_reproducible" in _codes(verdict)
+        assert "declares_caller_identity" in _codes(verdict)
+        # And it withholds NOTHING. This layer's job is to turn pooling on for an
+        # operator who never got round to it, so "no" is its failure mode, not its
+        # caution -- and a note that is re-derived every pass would make
+        # eligibility flap with the last sample. Pure information.
+        assert verdict.recommend_share is True
+        # And it does NOT also claim the pass found nothing. Both reasons on one
+        # row would read as "answered identically" and "did not answer
+        # identically" about the same server.
+        assert "preflight_passed" not in _codes(verdict)
+
+    def test_logging_informs_but_does_not_withhold_sharing(self) -> None:
+        """Noisier logs are not worth refusing pooling over.
+
+        The cost of pooling a logging server is a shared verbosity level and some
+        dropped call-scoped log lines: degraded, not broken. Withholding the
+        automatic action here would trade something valuable for something cheap,
+        which is the trade this layer exists to stop making.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="x",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={
+                    "experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}},
+                    "logging": {},
+                },
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.DECLARED
+        assert verdict.recommend_share is True
+        assert "degrades_when_shared" in _codes(verdict)
+
+    def test_a_broker_gap_is_reported_but_does_not_withhold_sharing(self) -> None:
+        """The note names OUR missing feature, so it cannot be the server's cost.
+
+        ``notifications/resources/updated`` carries no request id, but it does not
+        need one: the broker saw which stub subscribed to which URI, so a
+        ``uri -> {stub_uuid}`` table would route the update exactly. It keeps no
+        such table today -- that is the defect, and it is ours. Withholding
+        pooling here would charge the operator for work we have not done, which is
+        the failure mode of a layer whose whole job is to say yes.
+
+        The note still ships, because until the broker learns to attribute them a
+        subscription really does stop firing once pooled, and the operator is
+        entitled to know that before pressing a bulk action.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="x",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={
+                    "experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}},
+                    "resources": {"subscribe": True},
+                },
+                preflight_ran=True,
+            )
+        )
+        assert verdict.strength is Strength.DECLARED
+        assert verdict.recommend_stub is True
+        assert verdict.recommend_share is True
+        assert "degrades_when_shared" in _codes(verdict)
 
 
 class TestNoObjectionSplitsStubFromShare:
@@ -392,8 +586,14 @@ class TestMeasurementCanEarnAVerdict:
         assert verdict.strength is Strength.NO_OBJECTION
         assert verdict.recommend_share is False
 
-    def test_measurement_does_not_override_a_disqualifier(self) -> None:
-        """Order matters: an objection outranks a clean measurement."""
+    def test_a_degradation_note_does_not_lower_the_tier(self) -> None:
+        """A note travels with the verdict; it does not replace it.
+
+        Previously this server was DISQUALIFIED and the clean measurement was
+        discarded, because the note was modelled as an objection that outranked
+        it. Both facts are now reported at once: the measurement earned the tier,
+        and the operator still gets told what pooling would cost.
+        """
         verdict = assess(
             ShareEvidence(
                 name="third-party",
@@ -403,7 +603,33 @@ class TestMeasurementCanEarnAVerdict:
                 preflight_ran=True,
             )
         )
-        assert verdict.strength is Strength.DISQUALIFIED
+        assert verdict.strength is Strength.MEASURED
+        assert "degrades_when_shared" in _codes(verdict)
+        assert "preflight_passed" in _codes(verdict)
+
+    def test_a_divergence_does_not_earn_measured(self) -> None:
+        """MEASURED's whole content is that something was ruled OUT.
+
+        A pass that ran and saw the handshake differ ruled nothing out, so it must
+        not collect the tier that claims otherwise, and must not claim
+        ``preflight_passed`` either. It lands on NO_OBJECTION carrying the note:
+        no durable objection exists, and one sample looked odd.
+        """
+        verdict = assess(
+            ShareEvidence(
+                name="third-party",
+                probe_ok=True,
+                has_tools=True,
+                capabilities={},
+                preflight_ran=True,
+                preflight_caller_sensitive=True,
+            )
+        )
+        assert verdict.strength is Strength.NO_OBJECTION
+        assert "handshake_not_reproducible" in _codes(verdict)
+        assert "preflight_passed" not in _codes(verdict)
+        assert verdict.recommend_stub is True
+        assert verdict.recommend_share is False
 
     def test_measured_still_reports_the_supporting_annotation_evidence(self) -> None:
         """The extra reasons are the same set; only the headline tier changes."""

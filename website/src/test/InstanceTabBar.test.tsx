@@ -266,7 +266,8 @@ describe('InstanceTabBar', () => {
     expect(await screen.findByRole('button', { name: /Switch crew/i })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-chip-row')).toBeNull()
 
-    // Pin it from the dropdown's flat Pin crews section.
+    // Pin it from the crew's own row: one lit/unlit pin per destination, no
+    // second list of the same crews.
     await u.click(screen.getByRole('button', { name: /Switch crew/i }))
     const pinItem = await screen.findByTestId('crew-pin-cd-1')
     expect(pinItem).toHaveAttribute('aria-checked', 'false')
@@ -278,6 +279,95 @@ describe('InstanceTabBar', () => {
     // ...and the chip is now on screen, outside the menu.
     const row = await screen.findByTestId('crew-chip-row')
     expect(row.textContent).toMatch(/Cloud One/)
+  })
+
+  it('toggles the pin without switching crews, and keeps the menu open', async () => {
+    // The pin shares a row with the destination, so the two must stay separable:
+    // pinning a crew the user is not on must not navigate there, and the menu has
+    // to survive the click so a second crew can be pinned in the same visit.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByTestId('crew-pin-cd-1'))
+    expect(store.getState().instances.activeId).toBeNull()
+
+    // Still open, and the same control now reads as checked — the icon is a
+    // toggle, not a one-way action.
+    const again = await screen.findByTestId('crew-pin-cd-1')
+    expect(again).toHaveAttribute('aria-checked', 'true')
+    await u.click(again)
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem('mc-crew-switcher-pinned')!)).toEqual([]),
+    )
+  })
+
+  it('pins from the keyboard, since Enter is the only way a keyboard user can', async () => {
+    // Radix fires `onSelect` for pointer AND Enter/Space; a raw DOM `onClick`
+    // fires for neither reliably here, which would leave the icon-only control
+    // mouse-only. Arrow keys walk row -> pin, so Enter lands on the pin.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    const pin = await screen.findByTestId('crew-pin-cd-1')
+    pin.focus()
+    await u.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem('mc-crew-switcher-pinned')!)).toEqual(['cd-1']),
+    )
+  })
+
+  it('gives every row its own pin control instead of a separate pin section', async () => {
+    // The regression this guards: pinning used to be a second flat list of the
+    // same crews below the destinations, so each crew appeared twice.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    // One pin per destination (Local + the crew), each naming its own crew.
+    expect(await screen.findByTestId('crew-pin-__local__')).toHaveAccessibleName(/Pin Local/i)
+    expect(await screen.findByTestId('crew-pin-cd-1')).toHaveAccessibleName(/Pin Cloud One/i)
+    // ...and each crew is listed once, as one switch target.
+    expect(screen.getAllByRole('menuitemradio', { name: /Cloud One/i })).toHaveLength(1)
+  })
+
+  it('keeps the resting pin at full strength, since it is the only affordance', async () => {
+    // The labelled "Pin crews" list is gone, so this glyph is the whole feature's
+    // discoverability. `--muted` below full strength measures ~2.3:1 on the
+    // default themes, under the 3:1 floor a UI control has to clear, and a
+    // control a low-vision user cannot see is a feature they cannot reach.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    const glyph = (await screen.findByTestId('crew-pin-cd-1')).querySelector('svg')
+    expect(glyph?.getAttribute('class')).toMatch(/text-muted/)
+    expect(glyph?.getAttribute('class')).not.toMatch(/opacity-/)
+  })
+
+  it('marks a pinned crew by FILL, so no state reads as the unpinned outline', async () => {
+    // Fill is the only thing separating pinned from unpinned, and it must not be
+    // conditional: a pinned crew rendered as an outline (however tinted) reads as
+    // "not pinned" and invites a click that unpins it. Opacity is out for the same
+    // reason plus a harder one — `--accent` differs per theme, so no single faded
+    // value is measurably above the 3:1 floor everywhere.
+    setCrewPins(['cd-1'])
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />)
+
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    const glyph = (await screen.findByTestId('crew-pin-cd-1')).querySelector('svg')
+    expect(glyph?.getAttribute('class')).toMatch(/fill-current/)
+    expect(glyph?.getAttribute('class')).not.toMatch(/opacity-/)
   })
 
   it('switches by clicking a pinned crew chip, without re-minting a warm pane', async () => {

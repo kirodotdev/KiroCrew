@@ -235,6 +235,30 @@ _ELEMENT_REQUIRED_TOOLS: frozenset[str] = frozenset(
         TOOL_PERFORM_ACTION,
     }
 )
+
+# Tools that run ``policy.check_input_target``'s SECURE-FIELD refusal.
+#
+# Wider than "the tools that write text", and the reason is platform-specific.
+# ``computer_perform_action`` takes a NAMED action, and on Windows the UIA analogue
+# of an arbitrary action is a pattern method: ``LegacyIAccessiblePattern`` exposes
+# ``SetValue`` and sits on nearly every node of a real Win32 tree, so an
+# un-gated perform-action route could write a password field ``set_value`` is
+# refused on. ``computer_scroll`` is included for the weaker reason that scrolling a
+# secure field can reveal masked content the tree redacted.
+#
+# The Windows driver closes the same hole a second way — it accepts only a CLOSED
+# set of action names, each mapped to one specific pattern, and never binds the
+# Legacy ``SetValue`` slot at all — but defence in depth belongs at the chokepoint
+# too: this set governs every backend, including one added later.
+_SECURE_TARGET_TOOLS: frozenset[str] = frozenset(
+    {
+        TOOL_TYPE_TEXT,
+        TOOL_SET_VALUE,
+        TOOL_PRESS_KEY,
+        TOOL_PERFORM_ACTION,
+        TOOL_SCROLL,
+    }
+)
 # Tools that synthesize KEYSTROKES. Both are element-targeted, and both are refused
 # outright without an index (see 3b in ``_dispatch``) — including
 # ``computer_press_key``, because ``press_key('tab')`` can MOVE focus onto a
@@ -607,7 +631,7 @@ def _run(
     text = str(clean.get(ARG_TEXT) or "") if tool_name == TOOL_TYPE_TEXT else ""
     if tool_name == TOOL_SET_VALUE:
         text = str(clean.get(ARG_VALUE) or "")
-    if tool_name in (TOOL_TYPE_TEXT, TOOL_SET_VALUE, TOOL_PRESS_KEY):
+    if tool_name in _SECURE_TARGET_TOOLS:
         # Input-target policy: the secure-field refusal (a macOS password box is
         # ``role='AXTextField'`` with ``subrole='AXSecureTextField'`` and a
         # READABLE value, so ``ElementRec.secure`` is the only reliable signal)
@@ -704,12 +728,14 @@ def _perform(
     if tool_name == TOOL_PRESS_KEY:
         spec = str(clean.get(ARG_KEY) or "")
         # Parsed here, in the platform-free layer, so an unknown key is refused
-        # BEFORE a keystroke is synthesized into a live window. ``keymap`` is the
-        # package's single key vocabulary: a future driver with a different one
-        # must EXTEND keymap rather than bypass this check, or an unsupported
-        # spelling would reach a real application.
+        # BEFORE a keystroke is synthesized into a live window. ``parse_spec``
+        # rather than ``parse_key``: the abstract grammar is what every platform
+        # shares, while ``parse_key``'s ``(keycode, flags)`` pair is macOS-shaped
+        # and would make this check silently macOS-only. A driver with its own
+        # numeric table still resolves through ``keymap``'s vocabulary, so an
+        # unsupported spelling cannot reach a real application on any platform.
         try:
-            keymap.parse_key(spec)
+            keymap.parse_spec(spec)
         except KeyParseError as exc:
             raise KeyParseError(f"{ERR_UNKNOWN_KEY.format(key=spec)} {exc}") from exc
         return svc.press_key(target, rec, spec)

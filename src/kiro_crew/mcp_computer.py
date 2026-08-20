@@ -348,11 +348,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "presses the control and requires element_index. "
                             f"'{CLICK_METHOD_APP_POST}' sends a click at x/y to the "
                             "target app WITHOUT moving the pointer — correct for a "
-                            f"background window. '{CLICK_METHOD_GLOBAL}' MOVES THE "
-                            "USER'S REAL MOUSE POINTER and clicks there; it is off "
-                            "by default and refused unless the user enabled it and "
-                            "policy permits it, so only ask for it when a click "
-                            "must be physically real."
+                            "background window, and macOS-only: WINDOWS HAS NO "
+                            "PER-PROCESS MOUSE ROUTE, so it is refused there (as is "
+                            f"'{CLICK_METHOD_AUTO}' with x/y). On Windows, pass an "
+                            "element_index for a pointer-free click, or name "
+                            f"'{CLICK_METHOD_GLOBAL}' to accept the cursor move. "
+                            f"'{CLICK_METHOD_GLOBAL}' MOVES THE USER'S REAL MOUSE "
+                            "POINTER and clicks there, so only ask for it when a "
+                            "click must be physically real."
                         ),
                     },
                 },
@@ -365,8 +368,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Drag from one screen point to another inside an application — for "
                 "canvas strokes, sliders, range selections and reordering. "
                 "Coordinate-only: there is no element form, because a drag's "
-                "meaning is the path between the two points. The pointer is not "
-                f"moved unless you ask for click_method '{CLICK_METHOD_GLOBAL}'."
+                "meaning is the path between the two points. On macOS the pointer "
+                "is not moved unless you ask for click_method "
+                f"'{CLICK_METHOD_GLOBAL}'. ON WINDOWS EVERY DRAG MOVES THE USER'S "
+                f"REAL CURSOR, so click_method '{CLICK_METHOD_GLOBAL}' must be "
+                "passed EXPLICITLY there and the default is refused — the refusal "
+                "is what keeps 'the pointer was not moved' a true statement."
             ),
             "inputSchema": {
                 "type": "object",
@@ -383,11 +390,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": (
                             f"'{CLICK_METHOD_AUTO}' (default) and "
                             f"'{CLICK_METHOD_APP_POST}' send the drag to the target "
-                            "app without moving the pointer. "
-                            f"'{CLICK_METHOD_GLOBAL}' MOVES THE USER'S REAL MOUSE "
-                            "POINTER along the path and needs their opt-in. "
+                            "app without moving the pointer — macOS only. On "
+                            f"WINDOWS both are refused and '{CLICK_METHOD_GLOBAL}' "
+                            "is the only method, because there is no per-process "
+                            "mouse route: name it explicitly to accept the cursor "
+                            f"move. '{CLICK_METHOD_GLOBAL}' MOVES THE USER'S REAL "
+                            "MOUSE POINTER along the path. "
                             f"'{CLICK_METHOD_ACCESSIBILITY}' cannot express a drag "
-                            "and is refused."
+                            "and is refused everywhere."
                         ),
                     },
                 },

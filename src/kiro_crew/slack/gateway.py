@@ -72,6 +72,7 @@ from kiro_crew.config.loader import (
     CRED_WEIXIN_TOKEN,
     _session_work_dir,
     build_provider_factory,
+    config_dir,
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
@@ -158,6 +159,7 @@ from kiro_crew.mcp_gateway.manager import (
     GatewayManager,
     GatewaySpec,
 )
+from kiro_crew.mcp_gateway.resolve_once import prefetch as resolve_prefetch
 from kiro_crew.mcp_gateway.rewriter import (
     default_socket_path,
     resolve_overlay_dir,
@@ -1263,6 +1265,19 @@ class GatewayOrchestrator:
         # stalled git fetch cannot hold the process open.
         self._update_check_task: "asyncio.Task[None] | None" = None
         self._mcp_gateway_manager: GatewayManager | None = None
+        # Detached pre-resolve pass for npm-launcher MCP targets. Held so the
+        # loop keeps a strong reference (a bare create_task is only weakly held)
+        # and so broker shutdown can cancel an install still in flight.
+        self._mcp_resolve_prefetch: asyncio.Task[None] | None = None
+        # The rewriter's ``KIROCREW_MCP_TARGET_*`` mapping from the last broker
+        # start, kept so an explicit refresh resolves the same launches the
+        # daemon is actually serving rather than a freshly re-derived guess.
+        self._mcp_target_env: dict[str, str] = {}
+        # Resolved here, in sync construction, because config_dir() does file IO
+        # and must never be called from an async path (issue #1057). The store
+        # lives beside the rest of the data home for the life of the process.
+
+        self._mcp_resolve_home: str = str(config_dir())
 
     def _count_in_flight_work(self) -> int:
         """Count in-flight backend tasks that an abrupt restart would lose.
@@ -4190,11 +4205,13 @@ class GatewayOrchestrator:
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
 
-        if slot.running:
-            # Turn still active — drop this nudge. Next idle-timer tick will
-            # schedule again once the turn ends. Queueing would stack
-            # identical 3KB+ nudges and blow up the context window.
-            # Returning False keeps cycle_count accurate (only delivered
+        if slot.running or slot._in_stage_execution:
+            # Turn still active, OR a multi-stage plan is mid-flight (slot.task is
+            # None between stages, so slot.running alone misses that window and the
+            # nudge would start a concurrent turn that clobbers the plan) — drop this
+            # nudge. Next idle-timer tick will schedule again once the turn/plan ends.
+            # Queueing would stack identical 3KB+ nudges and blow up the context
+            # window. Returning False keeps cycle_count accurate (only delivered
             # nudges count toward max_cycles).
             logger.info(
                 "AutoNudge skip: slot %s is running (loop %s cycle %d)",
@@ -6500,6 +6517,16 @@ class GatewayOrchestrator:
                 prewarm_count=cfg_gw.prewarm_count,
             )
         )
+        # Pre-resolve npm-launcher targets in the background. An npx spec asks the
+        # registry what it means on every launch; once resolved, the daemon execs
+        # the installed tree instead, so session start does no resolution and
+        # needs no network. Fired detached and never awaited: a launch that beats
+        # the prefetch just uses today's path, so blocking startup on installs
+        # would trade the stall we are removing for one at boot.
+        self._mcp_target_env = dict(target_env)
+        self._mcp_resolve_prefetch = asyncio.create_task(
+            self._mcp_resolve_prefetch_loop(dict(target_env))
+        )
         if await manager.start():
             self._mcp_gateway_manager = manager
             # Report the stub set and the sharing decision. There is one
@@ -6520,8 +6547,103 @@ class GatewayOrchestrator:
                 "on" if cfg_gw.enabled else "off",
             )
 
+    #: Floor on the gap between timed pre-resolve passes. ``refresh_hours = 0``
+    #: legitimately means "always stale" for the freshness check, but it must not
+    #: turn the timer into a spin loop that reinstalls continuously.
+    _MCP_RESOLVE_MIN_SLEEP_SECS = 300.0
+
+    async def _mcp_resolve_prefetch_loop(self, target_env: dict[str, str]) -> None:
+        """Run the pre-resolve pass on the configured cadence until cancelled.
+
+        A single startup pass is not enough to make
+        ``resolve_once_refresh_hours`` mean what it says. Staleness is consulted
+        only when a pass runs, and ``resolved_launch`` ignores it by design, so
+        on a gateway that stays up for weeks -- the normal case -- an unpinned
+        ``@latest`` spec would freeze at whatever it resolved to on boot and
+        silently stop picking up upstream fixes. The window needs something to
+        tick it.
+
+        Sleeps for the refresh window itself between passes: each pass already
+        skips anything not yet stale, so the cadence only has to be fine enough
+        that "expires after N hours" is honoured within about one window.
+
+        Never returns normally -- ``_stop_mcp_broker`` cancels it, which is the
+        only exit. The window is re-read every iteration so a config reload takes
+        effect on the next pass without a broker restart.
+        """
+        while True:
+            await self._prefetch_mcp_resolutions(target_env)
+            window = float(self._cfg.mcp_gateway.resolve_once_refresh_hours) * 3600.0
+            await asyncio.sleep(max(window, self._MCP_RESOLVE_MIN_SLEEP_SECS))
+
+    async def _prefetch_mcp_resolutions(
+        self, target_env: dict[str, str], *, force: bool = False
+    ) -> dict[str, str]:
+        """Pre-resolve npm-launcher MCP targets so launches skip dependency resolution.
+
+        ``force`` bypasses the freshness window -- that is the operator asking to
+        go to the registry now, rather than asking whether it is time to.
+
+        Errors are logged and swallowed: a resolution that does not land leaves
+        the server launching exactly the way it does today.
+        """
+
+        refresh_secs = float(self._cfg.mcp_gateway.resolve_once_refresh_hours) * 3600.0
+        try:
+            outcomes = await resolve_prefetch(
+                self._mcp_resolve_home, target_env, refresh_secs=refresh_secs, force=force
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("mcp-gateway: pre-resolve pass failed")
+            return {}
+        ready = sorted(pkg for pkg, state in outcomes.items() if state == "ready")
+        if ready:
+            logger.info(
+                "mcp-gateway: %d npm target(s) pre-resolved; their launches now "
+                "skip dependency resolution (%s)",
+                len(ready),
+                ", ".join(ready),
+            )
+        return outcomes
+
+    async def _refresh_mcp_resolutions(self) -> dict:
+        """Dashboard callback: re-resolve every npm-launcher MCP target now.
+
+        This is the explicit half of the freshness policy. The timed pass asks
+        "is it time to check upstream?"; pressing this says "check upstream",
+        so it forces past the window even for a pinned spec.
+
+        Awaited rather than detached, because the caller is a person waiting for
+        an answer -- unlike the startup pass, whose whole point is not to block.
+        Reports which packages are now ready so the UI can say what happened
+        instead of only that something was attempted.
+        """
+
+        self._cfg = KiroCrewConfig.load()
+        target_env = dict(self._mcp_target_env)
+        if not target_env:
+            # No broker start has computed a target set, so there is nothing this
+            # could refresh. Say so rather than reporting an empty success.
+            return {"ok": False, "reason": "no_targets", "resolved": {}}
+        outcomes = await self._prefetch_mcp_resolutions(target_env, force=True)
+        return {
+            "ok": True,
+            "resolved": outcomes,
+            "ready": sorted(pkg for pkg, state in outcomes.items() if state == "ready"),
+        }
+
     async def _stop_mcp_broker(self) -> None:
         """Stop the MCP gateway broker if running and clear the handle."""
+        task = self._mcp_resolve_prefetch
+        self._mcp_resolve_prefetch = None
+        if task is not None and not task.done():
+            # An install in flight has nothing left to serve once the broker is
+            # gone, and leaving it running would race the next pass.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
         mgr = self._mcp_gateway_manager
         self._mcp_gateway_manager = None
         if mgr is not None:
@@ -6634,6 +6756,7 @@ class GatewayOrchestrator:
         self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
         self.dashboard_state._mcp_gateway_apply = self._apply_mcp_gateway_enabled
         self.dashboard_state._mcp_gateway_apply_stub = self._apply_mcp_stub
+        self.dashboard_state._mcp_resolve_refresh = self._refresh_mcp_resolutions
 
     # ------------------------------------------------------------------
     # Shutdown

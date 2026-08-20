@@ -2702,7 +2702,11 @@ class TestGatewayCrewInit:
         # GPT finding on 85f8fbe2: a failed durable write must surface, and
         # the generation must stay retryable (not recorded as landed).
         st = CrewStore("s1")
-        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
+        # Faulted at `os.replace`, the call the store's rename actually makes
+        # since it moved onto `replace_with_retry`. A bare `OSError` is not the
+        # Windows sharing violation that helper retries, so it still propagates
+        # on the first attempt — which is what this test is about.
+        with patch("os.replace", side_effect=OSError("disk full")):
             st.add_msg("doomed")
             with pytest.raises(OSError):
                 await st.wait_writes()

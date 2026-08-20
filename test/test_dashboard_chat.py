@@ -1149,6 +1149,1079 @@ class TestSlotDetailPagination:
         assert "arrived mid-read" in contents, "message that landed during the await was dropped"
         assert contents == [f"msg {i}" for i in range(10)] + ["arrived mid-read"]
 
+    @pytest.mark.asyncio
+    async def test_transient_window_row_does_not_duplicate_the_tail(self, tmp_path, monkeypatch):
+        """A transient row in the window must not re-append rows already on disk.
+
+        A save drops transient roles, so the disk read holds only persisted rows
+        while the window holds both. Sizing the un-flushed tail by subtracting the
+        two lengths therefore counts each transient row as one missing message and
+        reaches that many rows too far back — rows the disk read already returned.
+
+        Here everything persisted is on disk, so the correct tail is empty. The
+        window carries one ``done`` row, which ``_prepare_messages`` drops from the
+        response, so a duplicated row is directly visible in the content sequence.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("dup")
+        log = state.conversation_log
+        for i in range(4):
+            log.append("dashboard:dup", "user", f"msg {i}")
+        slot.append("user", "msg 0")
+        slot.append("user", "msg 1")
+        slot.append("done", "")
+        slot.append("user", "msg 2")
+        slot.append("user", "msg 3")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/dup?limit=10")
+            assert resp.status == 200
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert contents == [f"msg {i}" for i in range(4)], (
+            "un-flushed tail sized by a length subtraction re-appended a persisted row"
+        )
+        assert data["total"] == 4
+
+    @pytest.mark.asyncio
+    async def test_genuinely_unflushed_tail_is_still_appended_once(self, tmp_path, monkeypatch):
+        """Control for the test above: a real un-flushed tail must still arrive.
+
+        Only the first two window rows reached disk, so the last two are owed to the
+        client. A transient row sits between them, so a fix that merely stopped
+        appending would pass the duplication test and fail this one.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("owed")
+        log = state.conversation_log
+        for i in range(2):
+            log.append("dashboard:owed", "user", f"msg {i}")
+        slot.append("user", "msg 0")
+        slot.append("user", "msg 1")
+        slot.append("done", "")
+        slot.append("user", "msg 2")
+        slot.append("user", "msg 3")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/owed?limit=10")
+            assert resp.status == 200
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert contents == [f"msg {i}" for i in range(4)], "un-flushed tail was dropped"
+
+    @pytest.mark.asyncio
+    async def test_foreign_disk_row_does_not_consume_the_unflushed_tail(
+        self, tmp_path, monkeypatch
+    ):
+        """A disk row absent from the window must not consume an owed turn.
+
+        This is the OVER-count direction. A writer other than this slot's own save
+        appends to the same transcript, so the chained disk read grows without any
+        window row having been flushed. Sizing the boundary as
+        ``len(all_msgs) - _disk_older_count`` therefore counts that foreign row as
+        one more persisted window row, walks one row too far, and drops the
+        genuinely un-flushed turn from a response the client uses as a replacement.
+        Under-count fails safe with an empty tail; over-count loses a message.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("overcount")
+        for i in range(3):
+            slot.append("user", f"msg {i}")
+        slot.drain()
+        # Persist through the real save path, so the disk rows carry the window's
+        # own message ids rather than a shape only a test helper produces.
+        _save_slot_to_history(state, slot, force=True)
+        # A writer that does not mirror into the window appends to the transcript.
+        state.conversation_log.append("dashboard:overcount", "assistant", "foreign row")
+        # A new turn arrives in memory and has not reached disk.
+        slot.append("user", "new turn")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/overcount?limit=10")
+            assert resp.status == 200
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert "new turn" in contents, f"over-count dropped the owed turn; got {contents}"
+
+    @pytest.mark.asyncio
+    async def test_non_string_message_id_does_not_crash_the_bounded_read(
+        self, tmp_path, monkeypatch
+    ):
+        """A caller-supplied non-string ``meta.mid`` must not turn the read into a 500.
+
+        ``meta`` on an inbound message comes from the HTTP caller and is checked
+        only for being a dict, so its values keep whatever type arrived. A truthy
+        non-string id is preserved rather than replaced, reaches disk, and is then
+        hashed by the boundary match, where a list raises ``TypeError``.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", AsyncMock())
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("listmid")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "message": "hi",
+                    "slot": "listmid",
+                    "meta": {"mid": ["not-a-string"]},
+                },
+            )
+            assert resp.status == 200
+            slot = state.get_or_create_slot("listmid")
+            slot.drain()
+            # The id must be on disk as well as in the window: the boundary match
+            # hashes both sides.
+            _save_slot_to_history(state, slot, force=True)
+            assert slot.messages[-1]["meta"]["mid"] == ["not-a-string"], (
+                "fixture no longer reproduces a non-string id"
+            )
+
+            resp = await client.get("/api/chat/slots/listmid?limit=10")
+            assert resp.status == 200, await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_foreign_row_does_not_consume_the_tail_of_an_id_less_session(
+        self, tmp_path, monkeypatch
+    ):
+        """The same over-count, on a session whose disk rows carry no message ids.
+
+        The id match cannot help here: a session persisted before ids existed has
+        none on disk, so the boundary falls back to counting. Sizing it as
+        ``len(all_msgs) - _disk_older_count`` measures the whole file rather than
+        this slot's own persisted rows, so a row appended by any other writer is
+        counted as one more flushed window row and the owed turn is dropped.
+
+        ``_disk_window_len`` is how many window rows are on disk, which is the
+        quantity the subtraction was approximating, and a foreign append does not
+        move it.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("legacy")
+        log = state.conversation_log
+        # ConversationLog.append writes role/content/ts only, so these rows reach
+        # disk with no ids -- what a pre-id session looks like.
+        for i in range(3):
+            log.append("dashboard:legacy", "user", f"msg {i}")
+        for i in range(3):
+            slot.append("user", f"msg {i}")
+        slot.drain()
+        # Mirror what the restore path leaves behind for such a session.
+        slot._disk_older_count = 0
+        slot._disk_window_len = len(slot.messages)
+        slot._dirty = False
+        # A writer that does not mirror into the window appends to the transcript.
+        log.append("dashboard:legacy", "assistant", "foreign row")
+        slot.append("user", "new turn")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/legacy?limit=10")
+            assert resp.status == 200
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert "new turn" in contents, f"over-count dropped the owed turn; got {contents}"
+        assert contents.count("msg 2") == 1, f"boundary walked short and duplicated; got {contents}"
+
+    def test_id_less_boundary_matches_a_row_redacted_on_load(self):
+        """A restored row keeps its ``ts`` verbatim but not always its content.
+
+        Restore redacts non-user content before it enters the window while the disk
+        row stays raw, so matching on content alone ends the run at that row and
+        re-appends everything from there — rows the disk read already returned.
+
+        The pair is taken from the REAL redactor rather than written by hand: an
+        invented pair passes for the wrong reason, because a stamp match would carry
+        it even when the transform would not.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+        raw = "AKIAIOSFODNN7EXAMPLE"
+        loaded, _ = redact_exfiltration_urls(raw)
+        loaded, _ = redact_credentials(loaded)
+        assert loaded != raw, "fixture no longer exercises a real redaction"
+
+        all_msgs = [
+            {"role": "user", "content": "ask", "ts": "t1"},
+            {"role": "assistant", "content": raw, "ts": "t2"},
+        ]
+        slot = SimpleNamespace(
+            messages=[
+                {"role": "user", "content": "ask", "ts": "t1"},
+                {"role": "assistant", "content": loaded, "ts": "t2"},
+                {"role": "user", "content": "new turn", "ts": "t3"},
+            ],
+            _disk_older_count=0,
+        )
+
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+
+        assert [m["content"] for m in out] == ["ask", raw, "new turn"], (
+            "a row whose content was redacted on load was treated as un-flushed"
+        )
+
+    def test_shared_stamp_foreign_row_does_not_swallow_an_unflushed_row(self):
+        """A foreign row sharing a ``ts`` must not be accepted as the window's own.
+
+        On a coarse clock two writers flooring off the same previous row both emit
+        ``previous + 1µs`` (``history.py:1179-1219``), so a foreign disk row and an
+        un-flushed window row of the SAME role can carry an identical stamp while
+        holding different messages. Accepting a stamp match on its own then treats
+        the foreign row as the window row, the boundary advances past the un-flushed
+        one, and the bounded response omits it — from a payload the client uses to
+        REPLACE its transcript, so the message is simply gone from view.
+
+        Content is the discriminator: these two rows differ by more than the load
+        redaction, so nothing may match them.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        collided = "2026-08-18T12:00:00.000001+00:00"
+        all_msgs = [
+            {"role": "user", "content": "q", "ts": "2026-08-18T12:00:00+00:00"},
+            {"role": "assistant", "content": "another writer's row", "ts": collided},
+        ]
+        slot = SimpleNamespace(
+            messages=[
+                {"role": "user", "content": "q", "ts": "2026-08-18T12:00:00+00:00"},
+                {"role": "assistant", "content": "owed reply", "ts": collided},
+            ],
+            _disk_older_count=0,
+        )
+        assert all_msgs[1]["ts"] == slot.messages[1]["ts"], "fixture lost the collision"
+        assert all_msgs[1]["role"] == slot.messages[1]["role"], "fixture lost same-role"
+
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+
+        assert "owed reply" in [m["content"] for m in out], (
+            f"a shared stamp swallowed the un-flushed row; got {[m['content'] for m in out]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_repeated_caller_supplied_id_does_not_hide_an_unflushed_row(
+        self, tmp_path, monkeypatch
+    ):
+        """A caller may repeat ``meta.mid``, and a set membership test over-reaches.
+
+        ``meta`` on an inbound message is caller-supplied and an id is minted only
+        when one is *absent*, so a client can post the same id twice. The first row
+        reaches disk; the second is still only in the window. Testing membership
+        against a *set* of disk ids matches both window rows, so the boundary walks
+        past the row that was never persisted and the bounded read omits it — the
+        silent-loss direction. One disk row is enough to reproduce it; two disk rows
+        sharing an id are not required.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", AsyncMock())
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("dupmid")
+        dup = "m-deadbeefdeadbeef"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={"message": "first", "slot": "dupmid", "meta": {"mid": dup}},
+            )
+            assert resp.status == 200
+            slot = state.get_or_create_slot("dupmid")
+            slot.drain()
+            # Only the first row reaches disk, so the id is on disk exactly once.
+            _save_slot_to_history(state, slot, force=True)
+
+            resp = await client.post(
+                "/api/chat",
+                json={"message": "second", "slot": "dupmid", "meta": {"mid": dup}},
+            )
+            assert resp.status == 200
+            slot.drain()
+            mids = [
+                m["meta"].get("mid")
+                for m in slot.messages
+                if isinstance(m.get("meta"), dict)
+            ]
+            assert mids.count(dup) == 2, (
+                f"fixture no longer reproduces a repeated id; got {mids}"
+            )
+
+            resp = await client.get("/api/chat/slots/dupmid?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert "second" in contents, f"a repeated id hid the un-flushed row; got {contents}"
+        assert contents.count("first") == 1, f"a row was duplicated; got {contents}"
+
+    def test_frozen_prefix_id_does_not_fund_a_window_match(self):
+        """An id occurrence in the frozen prefix must not count as a flushed window row.
+
+        ``all_msgs[:_disk_older_count]`` is the frozen prefix — on-disk rows OLDER
+        than the window, so none of them is in ``slot.messages``. Counting ids over
+        the whole disk read lets such an occurrence fund a consumption for a window
+        row that was never flushed, and the boundary then walks past it. Only the
+        on-disk window region, ``all_msgs[_disk_older_count:]``, may fund a match.
+
+        Reachable because a caller-supplied ``mid`` is preserved rather than re-minted
+        (``state.py:1801-1803``), which is what lets a redelivered row carry an id
+        whose original has since been paged into the prefix.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        dup = "m-deadbeefdeadbeef"
+        all_msgs = [
+            {"role": "user", "content": "paged out", "ts": "t0", "meta": {"mid": dup}},
+            {"role": "user", "content": "on disk", "ts": "t1", "meta": {"mid": "m-window1"}},
+        ]
+        slot = SimpleNamespace(
+            messages=[
+                {"role": "user", "content": "on disk", "ts": "t1", "meta": {"mid": "m-window1"}},
+                {"role": "user", "content": "owed turn", "ts": "t2", "meta": {"mid": dup}},
+            ],
+            _disk_older_count=1,
+        )
+        # Guard the fixture: with no frozen prefix this case cannot arise at all and
+        # the test would pass against the defect.
+        assert slot._disk_older_count > 0, "fixture establishes no frozen prefix"
+
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+
+        assert [m["content"] for m in out] == ["paged out", "on disk", "owed turn"], (
+            "a frozen-prefix id funded a match and hid the owed turn"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mixed_id_and_id_less_disk_window_does_not_duplicate_an_injection(
+        self, tmp_path, monkeypatch
+    ):
+        """A disk window holding BOTH id-carrying and id-less rows must not duplicate.
+
+        A durable injection is written twice by design: ``slot.append`` puts it in the
+        window, where an id is minted, and ``append_if_absent`` persists the durable
+        copy with no ``meta`` at all (``history.py:2204-2245`` delegates to ``append``,
+        which has no ``meta`` parameter). When that durable copy lands before the next
+        slot save, the disk window holds earlier saved rows WITH ids plus this row
+        WITHOUT one.
+
+        Selecting id matching because SOME row carries an id then applies it to a row
+        that structurally cannot match, so the injection is treated as un-flushed and
+        appended a second time. Id matching is only sound when EVERY row in the disk
+        window carries one; a mixed window belongs on the ordered path, which matches
+        the fields both writers do record.
+
+        Driven through the real writers rather than a hand-built mixed window, so it
+        cannot encode a row shape neither writer emits.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("mixed")
+        key = "dashboard:mixed"
+
+        slot.append("user", "q1")
+        slot.append("assistant", "a1")
+        slot.drain()
+        # Real save: these disk rows carry the window's own ids.
+        _save_slot_to_history(state, slot, force=True)
+
+        # The injector shape: window copy (id minted) plus durable copy (no meta).
+        slot.append("assistant", "injected result")
+        slot.drain()
+        state.conversation_log.append_if_absent(key, "assistant", "injected result")
+
+        disk = state.conversation_log.read_messages_chained(key)
+        with_id = [
+            m
+            for m in disk
+            if isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+        ]
+        without_id = [
+            m
+            for m in disk
+            if not (
+                isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+            )
+        ]
+        assert with_id and without_id, (
+            f"fixture did not produce a MIXED disk window; "
+            f"with_id={len(with_id)} without_id={len(without_id)}"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/mixed?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert contents.count("injected result") == 1, (
+            f"the durable injection was appended twice; got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_interleaved_foreign_row_does_not_duplicate_the_persisted_suffix(
+        self, tmp_path, monkeypatch
+    ):
+        """A foreign row BETWEEN two window rows must not end the ordered scan.
+
+        The save is non-destructive against a cross-process append: it preserves
+        rows another writer added and merges them back in TIME order
+        (``_interleave_foreign_lines``, ``chat_persistence.py:1337-1357``, whose
+        docstring notes such rows "genuinely happened BETWEEN the window's turns").
+        So the on-disk window region can read ``[window, foreign, window]``.
+
+        An unmatched row there means "not mine", not "end of window". Stopping at it
+        leaves every persisted row after it in the tail, and those rows are appended
+        a second time — duplication of an already-persisted suffix.
+
+        Built through the real save path so the interleave is produced by the code
+        that really orders these rows, and guarded so it cannot pass vacuously if no
+        interleave occurs.
+
+        The window timestamps are set EXPLICITLY, far apart, rather than left to the
+        clock. The foreign row takes its real "now" and must sort strictly between
+        them. With three clock-minted timestamps the test is platform-fragile: on a
+        coarse-clock platform the foreign append and the second window row land in
+        the same tick, and a shared ``ts`` carried by exactly one unmatched window
+        entry and one unmatched disk line is the save's UNAMBIGUOUS in-place-edit
+        case (``chat_persistence.py:1573-1587``), so the foreign row is dropped and
+        the interleave never happens. Do not collapse these back to clock defaults.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("interleave")
+        key = "dashboard:interleave"
+
+        slot.append("user", "w1", ts="2020-01-01T00:00:00.000000+00:00")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        # Another writer appends between saves; its ts is "now", between the two
+        # window rows below, so the merge must place it in the middle.
+        state.conversation_log.append(key, "assistant", "foreign row")
+
+        slot.append("user", "w2", ts="2030-01-01T00:00:00.000000+00:00")
+        slot.drain()
+        # This save preserves the foreign row and merges it back in time order.
+        _save_slot_to_history(state, slot, force=True)
+
+        disk = [m.get("content") for m in state.conversation_log.read_messages_chained(key)]
+        assert disk == ["w1", "foreign row", "w2"], (
+            f"fixture did not interleave the foreign row mid-window; disk={disk}"
+        )
+
+        # A genuinely un-flushed turn after the interleave.
+        slot.append("user", "w3", ts="2030-01-02T00:00:00.000000+00:00")
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/interleave?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert contents.count("w2") == 1, (
+            f"the persisted suffix after the foreign row was duplicated; got {contents}"
+        )
+        assert "w3" in contents, f"the un-flushed turn was dropped; got {contents}"
+
+    @pytest.mark.asyncio
+    async def test_save_redacted_row_does_not_duplicate_the_persisted_suffix(
+        self, tmp_path, monkeypatch
+    ):
+        """A row the SAVE redacted must still match its raw window copy.
+
+        The redaction is asymmetric in a session that was never restored. The save
+        redacts every non-user role (``chat_persistence.py:1282-1284``) while the
+        window keeps the text verbatim (``state.py:2107``), so the disk side is
+        redacted and the window side is raw. Redacting only the disk side cannot
+        converge on that pair, because redacting an already-redacted body just
+        reproduces it. The row then reads as un-flushed, the walk stops, and the
+        persisted suffix is appended a second time.
+
+        Driven through the real writers, and the fixture asserts both preconditions
+        first: the disk window region is MIXED, which is what selects the ordered
+        path, and the two sides genuinely differ by the redaction transform.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _save_slot_to_history,
+            redact_credentials,
+            redact_exfiltration_urls,
+        )
+
+        secret = "key AKIAIOSFODNN7EXAMPLE here"
+        redacted, _ = redact_exfiltration_urls(secret)
+        redacted, _ = redact_credentials(redacted)
+        assert redacted != secret, "fixture needs content the real redactor changes"
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("redactdup")
+        key = "dashboard:redactdup"
+
+        # Explicit stamps, far apart, so the foreign row's real "now" sorts
+        # strictly between them and can equal neither. On a coarse-clock platform
+        # (Windows ticks in ~15.6 ms steps) clock-minted stamps put the foreign
+        # append and the second window row in the same tick, and a ``ts`` carried
+        # by exactly one unmatched window entry and one unmatched disk line is the
+        # save's UNAMBIGUOUS in-place-edit case, so the second save DROPS the
+        # foreign line and the region is no longer mixed. Do not collapse these
+        # back to clock defaults; the sibling interleave test pins them for the
+        # same reason.
+        slot.append("user", "q1", ts="2020-01-01T00:00:00.000000+00:00")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        # An id-less foreign row is what puts this region on the ordered path.
+        state.conversation_log.append(key, "assistant", "foreign row")
+
+        slot.append("assistant", secret, ts="2030-01-01T00:00:00.000000+00:00")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        disk = state.conversation_log.read_messages_chained(key)
+        has_id = [
+            isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+            for m in disk
+        ]
+        assert any(has_id) and not all(has_id), (
+            f"fixture did not produce a MIXED disk window, so the ordered path "
+            f"would not run; has_id={has_id}"
+        )
+        assert any(m["content"] == redacted for m in disk), (
+            f"fixture did not persist the redacted form; disk="
+            f"{[m['content'] for m in disk]}"
+        )
+        assert any(m.get("content") == secret for m in slot.messages), (
+            "fixture did not keep the window copy raw"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/redactdup?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert sum(1 for c in contents if "REDACTED" in c) == 1, (
+            f"the save-redacted row was appended twice; got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_redaction_equal_foreign_row_does_not_consume_an_unflushed_row(
+        self, tmp_path, monkeypatch
+    ):
+        """Two DIFFERENT secrets redact alike; they must not be treated as one row.
+
+        The redaction-equivalent compare exists for one shape only: a row and its
+        own persisted copy, which differ by the transform because one side was
+        redacted on save or load. That pair always carries the SAME ``ts`` — the
+        save copies it verbatim (``chat_persistence.py:1288``) and so does the load
+        (``:714``). So requiring the stamps to match costs the legitimate case
+        nothing, and it stops a foreign row whose credential merely redacts to the
+        same text from being consumed as the window's own.
+
+        It cannot disturb a durable injection either: that pair is byte-identical,
+        so it returns at the plain-equality branch above and never reaches here.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _save_slot_to_history,
+            redact_credentials,
+            redact_exfiltration_urls,
+        )
+
+        def red(text: str) -> str:
+            out, _ = redact_exfiltration_urls(text)
+            out, _ = redact_credentials(out)
+            return out
+
+        # Two different credential KINDS rather than two near-identical keys: an
+        # access-key id and a labelled secret-key assignment redact to the same tag,
+        # so no second key-shaped literal is needed to make the bodies collide.
+        mine = "key AKIAIOSFODNN7EXAMPLE here"
+        theirs = "key aws_secret_access_key=x here"
+        assert mine != theirs, "fixture needs two DISTINCT bodies"
+        assert red(mine) == red(theirs) != mine, (
+            f"fixture needs two bodies that redact alike; got {red(mine)!r} vs {red(theirs)!r}"
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("redconflate")
+        key = "dashboard:redconflate"
+
+        slot.append("user", "q1", ts="2020-01-01T00:00:00.000000+00:00")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        # A foreign, id-less row carrying a DIFFERENT secret. Id-less is what puts
+        # this region on the ordered path.
+        state.conversation_log.append(key, "assistant", theirs)
+
+        # Our own un-flushed row, never saved, with a stamp that cannot collide.
+        slot.append("assistant", mine, ts="2030-01-01T00:00:00.000000+00:00")
+        slot.drain()
+
+        disk = state.conversation_log.read_messages_chained(key)
+        has_id = [
+            isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+            for m in disk
+        ]
+        assert any(has_id) and not all(has_id), (
+            f"fixture did not produce a MIXED disk window, so the ordered path "
+            f"would not run; has_id={has_id}"
+        )
+        assert not any(m.get("content") == mine for m in disk), (
+            "fixture expects our row to be un-flushed"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/redconflate?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert sum(1 for c in contents if "REDACTED" in c) == 2, (
+            f"a foreign row that merely redacts alike consumed the un-flushed row; "
+            f"got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bounded_read_runs_the_tail_match_off_the_event_loop(
+        self, tmp_path, monkeypatch
+    ):
+        """The tail match must not run on the event loop.
+
+        It walks the whole window against the whole disk window region and applies
+        the redaction transform to both sides of every candidate compare, so on a
+        large mixed or id-less history the cost is real. Running it inline blocks
+        every other request on the loop, and the loop-stall watchdog treats a long
+        enough block as a hung gateway. The disk read immediately above it already
+        goes through ``asyncio.to_thread``; this makes the pair consistent.
+        """
+        import threading
+
+        import kiro_crew.dashboard.chat_handlers as ch
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("offloop")
+        slot.append("user", "q1")
+        slot.append("assistant", "a1")
+        slot.drain()
+
+        loop_thread = threading.get_ident()
+        seen: dict[str, int] = {}
+        original = ch._append_unflushed_tail
+
+        def spy(*args, **kwargs):
+            seen["thread"] = threading.get_ident()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(ch, "_append_unflushed_tail", spy)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/offloop?limit=10")
+            assert resp.status == 200, await resp.text()
+
+        assert "thread" in seen, (
+            "the tail match never ran, so this test asserts nothing -- the request "
+            "did not reach it"
+        )
+        assert seen["thread"] != loop_thread, (
+            "the tail match ran on the event loop thread; it must be dispatched to a "
+            "worker so a large history cannot stall the loop"
+        )
+
+    @pytest.mark.asyncio
+    async def test_interleaved_unmatched_row_is_not_dropped_by_the_id_walk(
+        self, tmp_path, monkeypatch
+    ):
+        """An un-flushed row BEFORE a persisted one must still reach the response.
+
+        The id walk used to record a prefix boundary: on a match it set
+        ``start = i + 1``, and a miss simply did not advance. So an un-flushed row
+        followed by a matching row had the boundary moved PAST it, and the bounded
+        response omitted it entirely — a drop, not a duplicate.
+
+        Identity does not need a prefix. An id present in the disk window region
+        proves that row reached disk, so the owed set is the rows whose id did NOT,
+        taken in window order. That is a strict generalisation: when the persisted
+        rows really are a prefix it gives the same answer.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("interleaveid")
+        key = "dashboard:interleaveid"
+
+        slot.append("user", "q1")
+        slot.append("assistant", "a1")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        disk = state.conversation_log.read_messages_chained(key)
+        disk_mids = {
+            m["meta"]["mid"]
+            for m in disk
+            if isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+        }
+        assert len(disk_mids) == len(disk) and disk, (
+            f"fixture needs EVERY disk row to carry an id so the id walk runs; "
+            f"disk={len(disk)} mids={len(disk_mids)}"
+        )
+
+        # An un-flushed assistant row positioned BEFORE the already-persisted one.
+        owed = {
+            "role": "assistant",
+            "content": "owed-turn",
+            "cls": "msg msg-a",
+            "ts": "2026-08-18T21:00:00+00:00",
+            "meta": {"mid": "m-owedneverpersist"},
+        }
+        slot.messages.insert(1, owed)
+        assert owed["meta"]["mid"] not in disk_mids, "fixture row must be un-persisted"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/interleaveid?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert "owed-turn" in contents, (
+            f"the un-flushed row before a persisted row was dropped; got {contents}"
+        )
+        assert contents.count("a1") == 1, (
+            f"the persisted row was duplicated; got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_transient_window_row_does_not_truncate_the_id_prefix(
+        self, tmp_path, monkeypatch
+    ):
+        """A transient row mid-window must not push persisted rows into the tail.
+
+        Negative control for the test above. Transient roles are dropped by the
+        save, and ``queued`` is outside ``_WIRE_ONLY_ROLES`` so it still gets an id
+        minted — an id that can never appear on disk. Ending the walk at the first
+        miss would therefore stop at this row and re-append every persisted row
+        after it, which is the duplication this change exists to prevent.
+
+        Driven through the real writers.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("transid")
+        key = "dashboard:transid"
+
+        slot.append("user", "q1")
+        slot.append("queued", "queued-notice")
+        slot.append("assistant", "a1")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        disk = state.conversation_log.read_messages_chained(key)
+        assert [m.get("content") for m in disk] == ["q1", "a1"], (
+            f"fixture expects the save to drop the transient row; disk="
+            f"{[m.get('content') for m in disk]}"
+        )
+        queued = [m for m in slot.messages if m.get("role") == "queued"]
+        assert queued and isinstance(queued[0].get("meta"), dict), (
+            "fixture expects the queued row to carry a minted id"
+        )
+        assert isinstance(queued[0]["meta"].get("mid"), str), (
+            "fixture expects a string mid on the queued row"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/transid?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert contents == ["q1", "a1"], (
+            f"a transient row truncated the id prefix and duplicated a persisted "
+            f"row; got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pending_approval_survives_a_bounded_read(self, tmp_path, monkeypatch):
+        """A live ``permission`` row must reach the bounded response.
+
+        ``_TRANSIENT_ROLES`` documents itself as being about a *window-region disk
+        line* (``chat_persistence.py:1320-1322``), and that is how
+        ``chat_persistence.py:1571`` uses it. The owed-set loop applies it to
+        in-memory ``slot.messages`` instead, which answers a different question:
+        which rows does the client still need? A pending approval is actionable, and
+        the client reads it straight out of the transcript
+        (``chatSlice.ts`` ``selectSlotPendingApproval``), so dropping it makes the
+        approval bar vanish while the server is still waiting on an answer.
+
+        Skipping it also bought nothing: ``permission`` is never persisted
+        (``chat_persistence.py:1274`` returns ``None`` for it), so it can never have
+        a disk counterpart for the id dedup to match.
+
+        Single delivery is safe because the client REPLACES its transcript from this
+        payload (``chatSlice.ts`` ``state.messages = next``) rather than appending,
+        so returning the row once cannot double it.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("perm")
+        key = "dashboard:perm"
+
+        slot.append("user", "q1")
+        slot.append("assistant", "a1")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        # Same call shape the runner uses: the approval metadata rides in ``cls``.
+        slot.append("permission", "Run a shell command?", _json.dumps({"request_id": "req-1"}))
+        slot.drain()
+
+        disk = state.conversation_log.read_messages_chained(key)
+        mids = [
+            m["meta"]["mid"]
+            for m in disk
+            if isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+        ]
+        assert disk and len(mids) == len(disk), (
+            f"fixture needs EVERY disk row to carry an id so the owed-set loop runs; "
+            f"disk={len(disk)} mids={len(mids)}"
+        )
+        assert not any(m.get("role") == "permission" for m in disk), (
+            "fixture expects the permission row to be un-persisted"
+        )
+        assert any(m.get("role") == "permission" for m in slot.messages), (
+            "fixture expects the permission row in the window"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/perm?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        roles = [m["role"] for m in data["messages"]]
+        assert roles.count("permission") == 1, (
+            f"the pending approval prompt was dropped or duplicated; roles={roles}"
+        )
+        contents = [m["content"] for m in data["messages"]]
+        assert contents.count("a1") == 1, (
+            f"a persisted row was duplicated; got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolved_permission_is_not_appended_after_later_turns(
+        self, tmp_path, monkeypatch
+    ):
+        """A RESOLVED approval must not be re-appended after later persisted rows.
+
+        ``permission`` is never persisted (``chat_persistence.py:1274`` returns
+        ``None``), so a permission row in the window is ALWAYS owed. For a pending
+        one that is right — it is the last row, and the client needs it. A resolved
+        one is historical: the agent has continued past it and those later turns
+        have reached disk, so putting it in the tail moves it AFTER them and the
+        rendered order is wrong.
+
+        Resolution is an in-place edit of the row's ``cls`` JSON
+        (``state.py`` ``_mark_permission_resolved``), so the row stays in the window
+        and its position cannot distinguish it.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("permdone")
+        key = "dashboard:permdone"
+
+        slot.append("user", "q1")
+        slot.append("permission", "Run a shell command?", _json.dumps({"request_id": "req-1"}))
+        slot.mark_permission_resolved("req-1", "approved")
+        slot.append("assistant", "a1")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        disk = state.conversation_log.read_messages_chained(key)
+        mids = [
+            m["meta"]["mid"]
+            for m in disk
+            if isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+        ]
+        assert disk and len(mids) == len(disk), (
+            f"fixture needs EVERY disk row to carry an id so the owed-set loop runs; "
+            f"disk={len(disk)} mids={len(mids)}"
+        )
+        assert not any(m.get("role") == "permission" for m in disk), (
+            "fixture expects the permission row to be un-persisted"
+        )
+        window_roles = [m.get("role") for m in slot.messages]
+        assert "permission" in window_roles, "fixture expects the permission row in the window"
+        assert window_roles.index("permission") < window_roles.index("assistant"), (
+            f"fixture expects the approval to sit BEFORE the later turn; {window_roles}"
+        )
+        perm = next(m for m in slot.messages if m.get("role") == "permission")
+        assert _json.loads(perm["cls"]).get("resolved") == "approved", (
+            "fixture expects the permission row to be marked resolved"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/permdone?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        roles = [m["role"] for m in data["messages"]]
+        assert roles == ["user", "assistant"], (
+            f"a resolved approval was re-appended after later persisted rows, "
+            f"corrupting transcript order; roles={roles}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_chunk_row_survives_a_bounded_read(self, tmp_path, monkeypatch):
+        """A live ``chunk`` row must reach the bounded response.
+
+        ``_prepare_messages`` does not discard chunk rows, it ACCUMULATES them and
+        emits one ``streaming`` row (``chat_utils.py:1651-1660``). That is the only
+        way in-flight assistant text reaches the client through this endpoint,
+        because the client filters raw ``chunk`` itself (``chatSlice.ts``
+        ``SKIP_ROLES``). So skipping chunk rows in the owed set does not merely omit
+        noise — it destroys the partial answer.
+
+        Driven through the real producer's call shape (``chat_runner.py:3784``).
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("livechunk")
+        key = "dashboard:livechunk"
+
+        slot.append("user", "q1")
+        slot.append("assistant", "a1")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+
+        partial = "partial answer so far"
+        slot.append("chunk", partial, "chunk")
+
+        disk = state.conversation_log.read_messages_chained(key)
+        has_id = [
+            isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+            for m in disk
+        ]
+        assert has_id and all(has_id), (
+            f"fixture needs every disk row to carry an id so the owed-set path "
+            f"runs; has_id={has_id}"
+        )
+        assert not any(m.get("content") == partial for m in disk), (
+            "fixture expects the chunk row to be un-persisted"
+        )
+        assert any(m.get("role") == "chunk" for m in slot.messages), (
+            "fixture expects the chunk row to be in the window"
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/livechunk?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        streamed = [m["content"] for m in data["messages"] if m.get("role") == "streaming"]
+        assert streamed == [partial], (
+            f"the live partial answer was dropped by the bounded read; "
+            f"streaming rows={streamed}"
+        )
+
+    def test_window_snapshot_survives_a_trim_between_the_two_reads(self):
+        """A trim landing mid-snapshot must not duplicate a persisted row.
+
+        The scan runs in a worker thread, so an event-loop append can trim the
+        front of the window and bump ``_disk_older_count``
+        (``state.py:2191-2200``) while the snapshot is being taken. Pairing a
+        PRE-trim window with a POST-trim count shortens ``window_disk``, hides the
+        trimmed rows' ids, and re-appends rows the disk read already returned.
+
+        ``slot._lock`` is an ``asyncio.Lock`` and cannot be taken from this thread,
+        so the fix is the bounded re-read ``_save_slot_to_history`` already uses
+        (``chat_persistence.py:1711-1722``).
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        all_msgs = [
+            {"role": "user", "content": "q1", "ts": "t1", "meta": {"mid": "m1"}},
+            {"role": "assistant", "content": "a1", "ts": "t2", "meta": {"mid": "m2"}},
+            {"role": "user", "content": "q2", "ts": "t3", "meta": {"mid": "m3"}},
+        ]
+
+        class TrimOnCopy(list):
+            """Fires ONE trim after a copy has read every element."""
+
+            def __init__(self, items):
+                super().__init__(items)
+                self.owner = None
+                self.fired = False
+
+            def __iter__(self):
+                snapshot = list(super().__iter__())
+                yield from snapshot
+                if not self.fired:
+                    self.fired = True
+                    del self[:2]
+                    self.owner._disk_older_count += 2
+
+        window = TrimOnCopy(
+            [
+                {"role": "user", "content": "q1", "ts": "t1", "meta": {"mid": "m1"}},
+                {"role": "assistant", "content": "a1", "ts": "t2", "meta": {"mid": "m2"}},
+                {"role": "user", "content": "q2", "ts": "t3", "meta": {"mid": "m3"}},
+                {"role": "assistant", "content": "owed", "ts": "t4"},
+            ]
+        )
+        slot = SimpleNamespace(messages=window, _disk_older_count=0)
+        window.owner = slot
+
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+
+        assert window.fired, "fixture never fired the trim, so nothing was raced"
+        contents = [m["content"] for m in out]
+        assert contents.count("q1") == 1 and contents.count("a1") == 1, (
+            f"a trim between the two snapshot reads duplicated a persisted row; "
+            f"got {contents}"
+        )
+
 
 # ── History persistence and disk fallback ──
 
@@ -15153,4 +16226,470 @@ class TestCloseBroadcastDurability:
         )
         assert calls.index("remove") < calls.index("sync"), (
             f"active-slot set published before the session teardown: {calls}"
+        )
+
+
+class TestUnflushedTailOrderingAndSnapshot:
+    """The owed tail must land in window order, from a snapshot taken on the loop."""
+
+    @staticmethod
+    def _row(role: str, body: str, mid: str, ts: str) -> dict:
+        return {"role": role, "content": body, "cls": f"msg msg-{role[0]}", "ts": ts,
+                "meta": {"mid": mid}}
+
+    def test_owed_row_merges_at_its_window_position_not_after_the_disk_slice(self):
+        """A persisted row LATER in window order must not be rendered before an owed one.
+
+        ``_flush_segment`` pulls a ``stop_event`` out of the trailing chunk run and
+        re-appends it AFTER the finalized assistant row (chat_runner.py:2686-2687).
+        So a stop that reached disk during streaming sits, in window order, behind a
+        reply that is still owed. Concatenating the owed rows after the whole disk
+        slice therefore renders the pair inverted -- the stop card above the prose it
+        terminated.
+
+        Window order is authoritative and every row in this arm carries an id, so the
+        position is derivable without the body matching the other arm needs.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._row("user", "run it", "u1", "2026-08-19T10:00:00+00:00")
+        reply = self._row("assistant", "done", "a1", "2026-08-19T10:00:03+00:00")
+        stop = self._row("assistant", "stopped", "s1", "2026-08-19T10:00:02+00:00")
+
+        window = [q, reply, stop]
+        all_msgs = [q, stop]  # the reply has not been flushed yet
+        slot = SimpleNamespace(messages=window, _disk_older_count=0)
+
+        disk_mids = {m["meta"]["mid"] for m in all_msgs}
+        assert reply["meta"]["mid"] not in disk_mids, "fixture needs the reply un-persisted"
+        assert stop["meta"]["mid"] in disk_mids, "fixture needs the stop already on disk"
+        assert window.index(reply) < window.index(stop), (
+            "fixture must place the owed reply BEFORE the persisted stop, else there "
+            "is no inversion to detect"
+        )
+
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert bodies.count("stopped") == 1 and bodies.count("done") == 1, (
+            f"a row was dropped or duplicated; got {bodies}"
+        )
+        assert bodies.index("done") < bodies.index("stopped"), (
+            f"the persisted stop was rendered before the owed reply it follows in the "
+            f"window; got {bodies}"
+        )
+
+    def test_tail_with_no_inversion_still_appends_after_the_disk_slice(self):
+        """Negative control: with no inversion the result must be the old concatenation.
+
+        Fails for the intended reason if the merge reorders rows it should leave alone
+        -- every owed row here already follows every persisted one in window order, so
+        the answer must be exactly ``all_msgs + owed``.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._row("user", "run it", "u1", "2026-08-19T10:00:00+00:00")
+        stop = self._row("assistant", "stopped", "s1", "2026-08-19T10:00:02+00:00")
+        reply = self._row("assistant", "done", "a1", "2026-08-19T10:00:03+00:00")
+
+        all_msgs = [q, stop]
+        slot = SimpleNamespace(messages=[q, stop, reply], _disk_older_count=0)
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+        assert out == [q, stop, reply], (
+            f"the no-inversion case must be untouched concatenation; got "
+            f"{[m['content'] for m in out]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_tail_snapshot_is_captured_on_the_loop_not_inside_the_worker(
+        self, tmp_path, monkeypatch
+    ):
+        """The window snapshot must be taken before the offload, not inside the thread.
+
+        ``_flush_segment`` assigns ``slot.messages = head`` and only THEN appends the
+        finalized assistant row, so between those two statements the window is a
+        transient chunk-free head missing that row. It is a plain ``def`` that is never
+        handed to ``to_thread``, so the event loop cannot interleave with it -- but the
+        threaded tail scan can land exactly there and snapshot the hole, and
+        ``_disk_older_count`` is untouched by that mutation so the bounded re-read
+        cannot detect it.
+
+        Simulated deterministically: the mutation is applied at the moment the worker
+        is entered. A snapshot captured on the loop predates it and keeps the row; one
+        taken inside the worker sees the hole and drops the row from the response.
+        """
+        import kiro_crew.dashboard.chat_handlers as ch
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("loopsnap")
+        key = "dashboard:loopsnap"
+
+        slot.append("user", "q1")
+        slot.drain()
+        _save_slot_to_history(state, slot, force=True)
+        disk = state.conversation_log.read_messages_chained(key)
+        disk_mids = {
+            m["meta"]["mid"]
+            for m in disk
+            if isinstance(m.get("meta"), dict) and isinstance(m["meta"].get("mid"), str)
+        }
+        assert disk and len(disk_mids) == len(disk), (
+            f"fixture needs every disk row to carry an id so the id arm runs; "
+            f"disk={len(disk)} mids={len(disk_mids)}"
+        )
+
+        owed = {
+            "role": "assistant",
+            "content": "finalized-reply",
+            "cls": "msg msg-a",
+            "ts": "2026-08-19T10:00:03+00:00",
+            "meta": {"mid": "m-finalizedneverpersisted"},
+        }
+        slot.messages.append(owed)
+        assert owed["meta"]["mid"] not in disk_mids, "fixture row must be un-persisted"
+
+        original = ch._append_unflushed_tail
+        seen: dict[str, object] = {}
+
+        def worker_entered(slot_arg, all_msgs_arg, **kwargs):
+            # The worker is now running. Reproduce the mid-finalization window: the
+            # finalized assistant row is not in slot.messages yet.
+            seen["snapshot_kwarg"] = "snapshot" in kwargs
+            slot_arg.messages = [
+                m for m in slot_arg.messages if m.get("content") != "finalized-reply"
+            ]
+            return original(slot_arg, all_msgs_arg, **kwargs)
+
+        monkeypatch.setattr(ch, "_append_unflushed_tail", worker_entered)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/loopsnap?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert seen.get("snapshot_kwarg") is not None, (
+            "the tail match never ran, so this test asserts nothing"
+        )
+        assert seen["snapshot_kwarg"] is True, (
+            "the caller did not pass a snapshot, so the window is still read inside "
+            "the worker thread where a mid-finalization window is observable"
+        )
+        contents = [m["content"] for m in data["messages"]]
+        assert "finalized-reply" in contents, (
+            f"the worker snapshotted the transient chunk-free window and dropped the "
+            f"finalized row; got {contents}"
+        )
+
+    @staticmethod
+    def _idless(role: str, body: str, ts: str, cls: str | None = None) -> dict:
+        """A row with NO ``meta.mid`` -- forces the id-less body-matching arm."""
+        r = {"role": role, "content": body, "ts": ts}
+        if cls is not None:
+            r["cls"] = cls
+        return r
+
+    def test_live_streamed_row_before_a_persisted_row_is_not_dropped(self):
+        """An owed transient row must survive the suffix boundary in the id-less arm.
+
+        The matcher skipped a transient row WITHOUT advancing ``start``; a later
+        persisted match then set ``start = i + 1``, moving the boundary PAST the skipped
+        row, and ``window[start:]`` excluded it. So a live streamed chunk sitting before
+        a persisted ``stop_event`` was dropped from the bounded response entirely.
+
+        A disk read omits transient roles, so such a row can never be matched and is
+        always owed -- which is precisely the rule the id-based arm already applies.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "run it", "2026-08-19T15:00:00+00:00")
+        chunk = self._idless("chunk", "partial an", "2026-08-19T15:00:01+00:00")
+        stop = self._idless("assistant", "stopped", "2026-08-19T15:00:02+00:00")
+
+        all_msgs = [q, stop]  # a disk read holds no transient rows
+        window = [q, chunk, stop]
+        assert not any("meta" in m for m in all_msgs), (
+            "fixture must be id-less, else the id arm runs and this asserts nothing"
+        )
+        assert window.index(chunk) < window.index(stop), (
+            "fixture must place the transient BEFORE the persisted row, else the "
+            "suffix boundary never moves past it"
+        )
+
+        slot = SimpleNamespace(messages=window, _disk_older_count=0)
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert "partial an" in bodies, (
+            f"the live streamed row was dropped by the suffix boundary; got {bodies}"
+        )
+        assert bodies.index("partial an") < bodies.index("stopped"), (
+            f"the owed transient must keep its window position ahead of the persisted "
+            f"row; got {bodies}"
+        )
+
+    def test_trailing_transient_row_is_emitted_exactly_once(self):
+        """Negative control for the merge: an owed transient must not be emitted twice.
+
+        Rows left in ``pending`` sit at or after ``start`` and are therefore already
+        carried by ``window[start:]``. Emitting them again as well would re-append a
+        live row -- the duplication class this change exists to avoid. Fails for the
+        intended reason if the merge and the suffix both claim the same row.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "run it", "2026-08-19T15:00:00+00:00")
+        stop = self._idless("assistant", "stopped", "2026-08-19T15:00:02+00:00")
+        chunk = self._idless("chunk", "partial an", "2026-08-19T15:00:03+00:00")
+
+        slot = SimpleNamespace(messages=[q, stop, chunk], _disk_older_count=0)
+        out = _append_unflushed_tail(slot, [q, stop])  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert bodies.count("partial an") == 1, (
+            f"the trailing transient was emitted more than once; got {bodies}"
+        )
+        assert bodies == ["run it", "stopped", "partial an"], (
+            f"a transient already after the last match must stay where it was; got "
+            f"{bodies}"
+        )
+
+    def test_unowed_and_answered_rows_stay_excluded_from_the_idless_tail(self):
+        """Negative control: only genuinely owed transients may be merged.
+
+        ``done``/``queued`` are ``_UNOWED_WINDOW_ROLES`` and an answered ``permission``
+        has already been dispositioned, so neither is owed. Merging transients
+        unconditionally would re-append them, which is the same defect in the opposite
+        direction from the drop above. A still-pending permission IS owed, so it is
+        included -- that arm of the assertion is what stops the fix from over-narrowing
+        into a second drop.
+        """
+        import json
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "run it", "2026-08-19T15:00:00+00:00")
+        stop = self._idless("assistant", "stopped", "2026-08-19T15:00:02+00:00")
+        done = self._idless("done", "unowed-marker", "2026-08-19T15:00:01+00:00")
+        answered = self._idless(
+            "permission", "answered-approval", "2026-08-19T15:00:01+00:00",
+            cls=json.dumps({"resolved": "approve"}),
+        )
+        pending = self._idless(
+            "permission", "pending-approval", "2026-08-19T15:00:01+00:00",
+            cls=json.dumps({}),
+        )
+
+        for extra, body, owed in (
+            (done, "unowed-marker", False),
+            (answered, "answered-approval", False),
+            (pending, "pending-approval", True),
+        ):
+            slot = SimpleNamespace(messages=[q, extra, stop], _disk_older_count=0)
+            out = _append_unflushed_tail(slot, [q, stop])  # type: ignore[arg-type]
+            bodies = [m["content"] for m in out]
+            if owed:
+                assert body in bodies, (
+                    f"{extra['role']} row {body!r} is owed and must be merged; got "
+                    f"{bodies}"
+                )
+            else:
+                assert body not in bodies, (
+                    f"{extra['role']} row {body!r} is NOT owed and must not be "
+                    f"re-appended; got {bodies}"
+                )
+
+    def test_unmatched_row_does_not_strand_the_persisted_rows_behind_it(self):
+        """An owed row must not make the id-less arm re-emit later persisted rows.
+
+        The arm forward-scans the disk slice for each window row. When a row was NOT
+        found the loop used to ``break`` outright, which left ``start`` pointing AT that
+        row -- so ``window[start:]`` carried it AND every later window row, including
+        rows the disk slice already holds. Those came back a second time, and out of
+        order, which is the duplication this function exists to remove.
+
+        The reachable shape is a ``stop_event`` flushed before reply finalization:
+        ``_flush_segment`` re-appends the stop AFTER the finalized assistant row, so the
+        window reads ``[... unflushed reply, flushed stop]``. The reply misses, and on
+        the old code the persisted stop was emitted twice.
+
+        The sibling id-carrying arm already holds an unmatched row and keeps walking, so
+        this mirrors that rule rather than inventing a second one.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "run it", "2026-08-19T16:00:00+00:00")
+        reply = self._idless("assistant", "the reply", "2026-08-19T16:00:01+00:00")
+        stop = self._idless("assistant", "stopped", "2026-08-19T16:00:02+00:00")
+
+        # The reply is still owed; the stop already reached disk ahead of it.
+        all_msgs = [q, stop]
+        window = [q, reply, stop]
+        assert not any("meta" in m for m in all_msgs), (
+            "fixture must be id-less, else the id arm runs and this asserts nothing"
+        )
+        assert window.index(reply) < window.index(stop), (
+            "fixture must place the UNMATCHED row before the persisted one, else the "
+            "loop never abandons the rows behind it"
+        )
+        assert not any(m["content"] == "the reply" for m in all_msgs), (
+            "fixture must keep the reply off disk, else there is nothing unmatched"
+        )
+
+        slot = SimpleNamespace(messages=window, _disk_older_count=0)
+        out = _append_unflushed_tail(slot, all_msgs)  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+
+        assert bodies.count("stopped") == 1, (
+            f"the persisted stop was re-emitted because an earlier unmatched row "
+            f"abandoned the scan; got {bodies}"
+        )
+        assert bodies == ["run it", "the reply", "stopped"], (
+            f"output must follow window order with each row exactly once; got {bodies}"
+        )
+
+    def test_unmatched_row_is_still_emitted_and_not_dropped(self):
+        """Negative control: holding the unmatched row must not silently drop it.
+
+        The fix stops an unmatched row from stranding the rows behind it. The opposite
+        failure is just as silent -- discarding that row instead of retaining it would
+        also stop the duplicate, and would pass a test that only counted the persisted
+        row. So assert the owed row itself survives, in both the with-a-later-match and
+        no-later-match shapes.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "ask", "2026-08-19T16:10:00+00:00")
+        owed = self._idless("assistant", "owed body", "2026-08-19T16:10:01+00:00")
+        persisted = self._idless("assistant", "on disk", "2026-08-19T16:10:02+00:00")
+
+        # (a) a later row DOES match, so the owed row is flushed at that disk position
+        slot = SimpleNamespace(messages=[q, owed, persisted], _disk_older_count=0)
+        out = _append_unflushed_tail(slot, [q, persisted])  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert bodies.count("owed body") == 1, (
+            f"the owed row must be retained exactly once, not dropped; got {bodies}"
+        )
+        assert bodies.index("owed body") < bodies.index("on disk"), (
+            f"the retained row must keep its window position; got {bodies}"
+        )
+
+        # (b) NO later row matches, so the owed row can only arrive via the tail
+        slot = SimpleNamespace(messages=[q, owed], _disk_older_count=0)
+        out = _append_unflushed_tail(slot, [q])  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert bodies.count("owed body") == 1, (
+            f"with no later match the owed row must still be emitted once; got {bodies}"
+        )
+
+    def test_trailing_unowed_and_answered_rows_are_excluded_from_the_idless_tail(self):
+        """An unowed row in the LAST window position must not reach the tail.
+
+        ``start`` only advances on a match, and an unowed row takes the transient branch
+        and ``continue``s -- skipping ``start = i + 1``. So when such a row TRAILS the last
+        match, a raw ``window[start:]`` re-admits it and undoes the exclusion the loop's own
+        guard performed. The sibling id-carrying arm has no such hole because it applies
+        both exclusions at the top of its loop.
+
+        Two symptoms share that cause. A trailing ``done`` reaches the bounded response and
+        ``_prepare_messages`` drops it while rendering, so a page whose only row is that
+        ``done`` renders EMPTY and replaces the transcript. A trailing answered
+        ``permission`` is instead re-ordered after every persisted row.
+
+        The sibling test above puts the extra row in the MIDDLE, where the later match
+        advances ``start`` PAST it -- so the exclusion it observes comes from ``start``
+        overshooting, not from any filter, and it cannot see this defect. The whole body
+        list is asserted rather than mere membership, because membership alone cannot see a
+        mis-ordering.
+        """
+        import json
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "run it", "2026-08-20T04:00:00+00:00")
+        stop = self._idless("assistant", "stopped", "2026-08-20T04:00:01+00:00")
+        done = self._idless("done", "unowed-marker", "2026-08-20T04:00:02+00:00")
+        queued = self._idless("queued", "queued-marker", "2026-08-20T04:00:02+00:00")
+        answered = self._idless(
+            "permission",
+            "answered-approval",
+            "2026-08-20T04:00:02+00:00",
+            cls=json.dumps({"resolved": "approve"}),
+        )
+
+        for extra, body in (
+            (done, "unowed-marker"),
+            (queued, "queued-marker"),
+            (answered, "answered-approval"),
+        ):
+            window = [q, stop, extra]
+            assert window[-1] is extra, (
+                "fixture must place the unowed row LAST, else a later match advances "
+                "start past it and the assertion passes without a filter"
+            )
+            slot = SimpleNamespace(messages=window, _disk_older_count=0)
+            out = _append_unflushed_tail(slot, [q, stop])  # type: ignore[arg-type]
+            bodies = [m["content"] for m in out]
+            assert body not in bodies, (
+                f"trailing {extra['role']} row {body!r} was re-admitted by the unfiltered "
+                f"tail slice; got {bodies}"
+            )
+            assert bodies == ["run it", "stopped"], (
+                f"the bounded page must hold exactly the persisted rows in order; got "
+                f"{bodies}"
+            )
+
+    def test_trailing_owed_rows_survive_the_idless_tail_filter(self):
+        """Negative control: the tail filter must not over-narrow into a second drop.
+
+        ``_UNOWED_WINDOW_ROLES`` is ``{done, queued}`` -- ``chunk`` and ``streaming`` are
+        subtracted out, and a still-PENDING ``permission`` has not been dispositioned. All
+        three are genuinely owed: a disk read carries no transient row, so they can never be
+        matched, and dropping them loses a live streamed answer or an approval the user has
+        yet to answer. That is the opposite defect from the leak, and it is the one an
+        over-eager filter actually produces.
+        """
+        import json
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+
+        q = self._idless("user", "run it", "2026-08-20T04:10:00+00:00")
+        stop = self._idless("assistant", "stopped", "2026-08-20T04:10:01+00:00")
+        pending = self._idless(
+            "permission",
+            "pending-approval",
+            "2026-08-20T04:10:02+00:00",
+            cls=json.dumps({}),
+        )
+        chunk = self._idless("chunk", "partial an", "2026-08-20T04:10:02+00:00")
+
+        slot = SimpleNamespace(messages=[q, stop, pending], _disk_older_count=0)
+        out = _append_unflushed_tail(slot, [q, stop])  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert bodies == ["run it", "stopped", "pending-approval"], (
+            f"a still-pending permission is owed and must survive the tail filter; got "
+            f"{bodies}"
+        )
+
+        slot = SimpleNamespace(messages=[q, stop, chunk], _disk_older_count=0)
+        out = _append_unflushed_tail(slot, [q, stop])  # type: ignore[arg-type]
+        bodies = [m["content"] for m in out]
+        assert bodies.count("partial an") == 1, (
+            f"a trailing live chunk is owed and must be emitted exactly once; got {bodies}"
+        )
+        assert bodies == ["run it", "stopped", "partial an"], (
+            f"the owed chunk must keep its trailing window position; got {bodies}"
         )

@@ -70,9 +70,7 @@ logger = logging.getLogger(__name__)
 # the standard search path. ``dlopen`` of an absent path simply fails, which is the
 # degradation we want.
 _SKYLIGHT_PATH = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
-_APP_SERVICES_PATH = (
-    "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
-)
+_APP_SERVICES_PATH = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
 
 # ── The private symbols ──
 # ``CGEventSetWindowLocation`` lives in SkyLight despite the CG prefix, and
@@ -256,9 +254,7 @@ class _SkyLightSPI:
             return
 
         missing: list[str] = []
-        self.post_to_pid = _bind(
-            sky, _SYM_POST_TO_PID, None, [c_int32, c_void_p], missing
-        )
+        self.post_to_pid = _bind(sky, _SYM_POST_TO_PID, None, [c_int32, c_void_p], missing)
         self.set_int_field = _bind(
             sky, _SYM_SET_INT_FIELD, None, [c_void_p, c_uint32, c_int64], missing
         )
@@ -389,9 +385,7 @@ def click_recipe(click_count: int, button: str = _LEFT_BUTTON) -> tuple[SkyClick
     ]
     for pair in range(1, int(click_count) + 1):
         last = pair == int(click_count)
-        steps.append(
-            SkyClickStep(down_type, True, pair, _PHASE_TARGET, _DELAY_AFTER_TARGET_DOWN)
-        )
+        steps.append(SkyClickStep(down_type, True, pair, _PHASE_TARGET, _DELAY_AFTER_TARGET_DOWN))
         steps.append(
             SkyClickStep(
                 up_type,
@@ -513,9 +507,7 @@ def _post_recipe(
     if not source:
         raise ComputerUseError(_REFUSAL_EVENT)
     click_group = int(time.monotonic_ns() % _CLICK_GROUP_MODULUS)
-    button_number, _down, _up, _dragged = macos_ffi.mouse_button_codes(
-        _LEFT_BUTTON
-    )
+    button_number, _down, _up, _dragged = macos_ffi.mouse_button_codes(_LEFT_BUTTON)
     try:
         for step in recipe:
             point = screen if step.at_target else _PRIMER_POINT

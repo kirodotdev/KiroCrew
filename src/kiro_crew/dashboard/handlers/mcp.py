@@ -2245,6 +2245,60 @@ def _freeze_stub_servers(section: dict, overlay: dict | None = None) -> None:
         section["stub_servers"] = sorted(set(_resolve_stub_servers(effective)))
 
 
+#: Serializes explicit pre-resolve refreshes. Installs are registry-bound and
+#: slow, so two overlapping presses would double the network work and race each
+#: other's atomic commits. Deliberately NOT the gateway apply lock: a refresh
+#: must not block an operator toggling sharing while it runs.
+_MCP_RESOLVE_REFRESH_LOCK = asyncio.Lock()
+
+
+async def api_mcp_resolve_refresh(request: web.Request) -> web.Response:
+    """POST /api/mcp-gateway/resolve-refresh -- re-resolve npm MCP targets now.
+
+    Pre-resolving lets a launch exec an already-installed tree, so session start
+    performs no dependency resolution. An unpinned spec is refreshed on a timer;
+    this is the operator asking for that check immediately, so it forces past the
+    freshness window.
+
+    Returns ``{ok, resolved, ready}`` where ``resolved`` maps each npm package to
+    ``ready`` / ``unresolved`` / ``error``. A server that fails to resolve is not
+    an error for the request: it simply keeps launching the way it does today.
+    """
+    state: DashboardState = request.app["state"]
+    refresh = getattr(state, "_mcp_resolve_refresh", None)
+    if refresh is None:
+        return web.json_response(
+            {
+                "error": "Pre-resolve is not available in this process.",
+                "code": "resolve_refresh_unavailable",
+            },
+            status=503,
+        )
+    if _MCP_RESOLVE_REFRESH_LOCK.locked():
+        # Report the in-flight pass instead of queueing behind it: the caller is
+        # a person who pressed a button, and a silent multi-minute wait reads as
+        # a hang.
+        return web.json_response(
+            {"error": "A pre-resolve pass is already running.", "code": "resolve_in_progress"},
+            status=409,
+        )
+    async with _MCP_RESOLVE_REFRESH_LOCK:
+        try:
+            result = await refresh()
+        except Exception:
+            logger.exception("mcp-gateway: explicit pre-resolve refresh failed")
+            return web.json_response(
+                {"error": "Could not pre-resolve.", "code": "resolve_refresh_failed"},
+                status=500,
+            )
+    if not isinstance(result, dict):
+        return web.json_response(
+            {"error": "Could not pre-resolve.", "code": "resolve_refresh_failed"},
+            status=500,
+        )
+    return web.json_response(result)
+
+
 async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     """POST /api/mcp-gateway/enable — persist the flag and apply it in-process.
 
