@@ -50,12 +50,17 @@ function setLocalGatewayEnabled(store, enabled) {
  * use" line left by an earlier run would otherwise classify a silent port as a
  * conflict and offer to force-stop a holder that does not exist.
  *
+ * The incomplete-bundle case is likewise not a crash: the spawn was refused
+ * because the installer is still writing the backend, so a plain retry resolves
+ * it and "failed to start" would send the user hunting a defect that is not there.
+ *
  * @param {object} o
  * @param {boolean} o.failedToStart      the wait rejected with kind === 'failed'
- * @param {{disabled?: boolean}|null} [o.failure]  the failure record it carried
+ * @param {{disabled?: boolean, incompleteBundle?: boolean}|null} [o.failure]
+ *   the failure record it carried
  * @param {boolean} [o.isOwnPort]        this window points at our own gateway port
  * @param {boolean} [o.portInUseInLog]   the launch log tail reports a bound port
- * @returns {"client-only"|"port-conflict"|"failed"|"unreachable"}
+ * @returns {"client-only"|"installing"|"port-conflict"|"failed"|"unreachable"}
  */
 function classifyStartFailure({
   failedToStart,
@@ -64,6 +69,7 @@ function classifyStartFailure({
   portInUseInLog = false,
 } = {}) {
   if (failedToStart && failure && failure.disabled) return "client-only";
+  if (failedToStart && failure && failure.incompleteBundle) return "installing";
   if (failedToStart && isOwnPort && portInUseInLog) return "port-conflict";
   if (failedToStart) return "failed";
   return "unreachable";

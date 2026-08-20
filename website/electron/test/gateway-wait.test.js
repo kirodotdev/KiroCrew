@@ -91,6 +91,18 @@ test("waitForGateway aborts when the window is gone", async () => {
 
 // ── describeGatewayFailure ──
 
+// An incomplete bundle is not a launch failure: the installer is still writing
+// the backend. Prefixing "could not be launched" would open with failure
+// vocabulary under a title that says the install is still finishing.
+test("describeGatewayFailure: an incomplete bundle passes its message through bare", () => {
+  const msg = "Kiro Crew's bundled Python runtime is still being installed — retry.";
+  assert.strictEqual(describeGatewayFailure({ error: msg, incompleteBundle: true }), msg);
+});
+
+test("describeGatewayFailure: an ordinary spawn error keeps the launch-failure prefix", () => {
+  assert.match(describeGatewayFailure({ error: "EACCES" }), /could not be launched/);
+});
+
 test("describeGatewayFailure: exit code", () => {
   assert.match(describeGatewayFailure({ code: 1, signal: null }), /code 1/);
 });

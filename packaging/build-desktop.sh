@@ -313,6 +313,9 @@ LAUNCH
     rm -rf lib/python3.12/test lib/python3.12/idlelib lib/python3.12/tkinter \
            lib/python3.12/turtledemo lib/python3.12/ensurepip lib/python3.12/lib2to3 2>/dev/null || true )
 
+  # After pruning, so it validates what actually ships.
+  stdlib_probe_gate "$out"
+
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
 
@@ -364,7 +367,42 @@ build_backend_windows() {
     find Lib/site-packages -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
     rm -rf Lib/test Lib/idlelib Lib/tkinter Lib/turtledemo Lib/ensurepip Lib/lib2to3 2>/dev/null || true )
 
+  # After pruning, so it validates what actually ships.
+  stdlib_probe_gate "$out"
+
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
+}
+
+# Stdlib-probe agreement gate: every package bundle-integrity.js probes must be
+# present, as an importable package, in the tree we just built. That module
+# refuses to spawn a backend whose stdlib looks incomplete, so a name it probes
+# that this bundle does not ship (a Python bump turning a package back into a
+# module, a rename, or a new prune above) would refuse EVERY launch of a healthy
+# app — a permanent failure strictly worse than the transient one it prevents.
+# Failing the build here converts that into a build error the developer sees.
+#   $1 = built backend tree
+stdlib_probe_gate() {
+  local out="$1"
+  if ! command -v node >/dev/null 2>&1; then
+    log "node unavailable — SKIPPING stdlib-probe gate for $(basename "$out")"
+    return 0
+  fi
+  log "Verifying bundle-integrity.js stdlib probes resolve ($(basename "$out"))…"
+  node -e '
+    const fs=require("fs"), path=require("path");
+    const { findMissingBundleParts, REQUIRED_STDLIB_PARTS } =
+      require(path.join(process.argv[1], "bundle-integrity"));
+    const out = process.argv[2];
+    const missing = findMissingBundleParts(fs, path, out);
+    if (missing.length) {
+      console.error(`ERROR: bundle-integrity.js probes ${REQUIRED_STDLIB_PARTS.length} stdlib `
+        + `packages; this bundle is missing: ${missing.join(", ")}`);
+      console.error("       The launcher would refuse to start this bundle on every launch.");
+      console.error("       Fix the prune step, or update REQUIRED_STDLIB_PARTS in");
+      console.error("       website/electron/bundle-integrity.js to match the shipped stdlib.");
+      process.exit(1);
+    }
+  ' "$ELECTRON_DIR" "$out" || exit 1
 }
 
 # Resolver-agreement gate: the Electron launcher (find-bin.js) must locate the

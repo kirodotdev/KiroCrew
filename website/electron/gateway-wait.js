@@ -96,6 +96,11 @@ function describeGatewayFailure(failure) {
       + "not to start one on this machine. Start the gateway you connect to (or "
       + "the connection that reaches it) and retry, or start one here.";
   }
+  // An incomplete bundle is not a launch failure — the installer is still writing
+  // the backend. That message already explains the state and names Retry, so pass
+  // it through bare; prefixing "could not be launched" would open with failure
+  // vocabulary under a title saying the install is still finishing.
+  if (failure.incompleteBundle && failure.error) return failure.error;
   if (failure.error) return `The gateway could not be launched: ${failure.error}`;
   if (failure.signal === "SIGKILL") {
     return "The gateway was killed on launch (SIGKILL). On macOS this usually "

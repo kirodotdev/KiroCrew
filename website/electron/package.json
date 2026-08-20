@@ -138,6 +138,7 @@
       "instance-guard.js",
       "context-menu.js",
       "find-bin.js",
+      "bundle-integrity.js",
       "data-home.js",
       "auto-update.js",
       "update-logger.js",

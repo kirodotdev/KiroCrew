@@ -78,6 +78,39 @@ test("classifyStartFailure: client-only OUTRANKS a stale port-in-use log line", 
   );
 });
 
+test("classifyStartFailure: a refused incomplete bundle is 'installing', not a crash", () => {
+  assert.equal(
+    classifyStartFailure({ failedToStart: true, failure: { incompleteBundle: true } }),
+    "installing",
+  );
+});
+
+test("classifyStartFailure: installing OUTRANKS a stale port-in-use log line", () => {
+  // Nothing was spawned, so a bound-port line left by an earlier run must not
+  // offer to force-stop a holder that this refusal says nothing about.
+  assert.equal(
+    classifyStartFailure({
+      failedToStart: true,
+      failure: { incompleteBundle: true },
+      isOwnPort: true,
+      portInUseInLog: true,
+    }),
+    "installing",
+  );
+});
+
+test("classifyStartFailure: client-only outranks an incomplete bundle", () => {
+  // Both can hold at once on a client-only install that also has a partial
+  // bundle; the user turned the local gateway off, so that is the real story.
+  assert.equal(
+    classifyStartFailure({
+      failedToStart: true,
+      failure: { disabled: true, incompleteBundle: true },
+    }),
+    "client-only",
+  );
+});
+
 test("classifyStartFailure: a real port conflict still wins when nothing is disabled", () => {
   assert.equal(
     classifyStartFailure({ failedToStart: true, isOwnPort: true, portInUseInLog: true }),

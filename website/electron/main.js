@@ -7,6 +7,13 @@ const path = require("path");
 const http = require("http");
 
 const { findKirocrewBin } = require("./find-bin");
+const {
+  findMissingBundleParts,
+  describeIncompleteBundle,
+  shouldReclassifyAsInstalling,
+  currentAttemptLog,
+  SPAWN_MARKER,
+} = require("./bundle-integrity");
 const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
@@ -207,6 +214,10 @@ const LINUX_FRAME_DECISION = IS_LINUX
   : null;
 const LINUX_FRAMELESS = !!(LINUX_FRAME_DECISION && LINUX_FRAME_DECISION.frameless);
 const DEFAULT_THEME_ACCENT = "#8E48FF";
+// Loading-screen status for a refused spawn on a bundle that is still being
+// written. Deliberately not "Gateway failed": nothing failed, so the line must
+// not contradict the dialog that follows.
+const INSTALLING_STATUS = "Finishing installation…";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
 function currentThemeAccent() {
@@ -801,6 +812,36 @@ function spawnGateway(resolve) {
         let execState = "executable";
         try { fs.accessSync(bin, fs.constants.X_OK); } catch (e) { execState = `NOT-EXECUTABLE(${e.code})`; }
         glog(`no gateway on :${PORT} — spawning bundled backend: bin=${bin} bundled=${bundled} ${execState}`);
+
+        // Refuse to exec a bundled interpreter whose stdlib is only partly on
+        // disk. The installer extracts backend-dist/ incrementally and starts the
+        // app as it finishes (runAfterFinish), so a launch inside that window
+        // finds python.exe present but late-alphabet stdlib packages missing --
+        // the interpreter then dies on `from urllib.parse import ...` from inside
+        // pathlib, which reads as a corrupt install rather than an unfinished one.
+        //
+        // This is PREVENTIVE and unsound; the launch-log backstop in the failure
+        // handler is sound but after-the-fact. They cover different halves, so
+        // neither replaces the other: refusing before spawn() keeps a doomed
+        // interpreter from running module-scope work against the user's live data
+        // home (it creates the home and .local_secret, and writes bytecode caches)
+        // and from failing in messier ways than ModuleNotFoundError while
+        // extraction is still writing underneath it -- the backstop only ever
+        // explains a crash that already happened.
+        if (bundled) {
+          const backendRoot = path.resolve(path.dirname(bin), "..");
+          const missingParts = findMissingBundleParts(fs, path, backendRoot);
+          if (missingParts.length) {
+            const errMsg = describeIncompleteBundle(missingParts);
+            glog(`spawn REFUSED: incomplete bundle at ${backendRoot} — missing: ${missingParts.join(", ")}`);
+            gatewayStartFailure = { error: errMsg, incompleteBundle: true, bundled: true };
+            // Neutral status: nothing failed, the install has not finished.
+            sendStatus(INSTALLING_STATUS);
+            resolve(false);
+            return;
+          }
+        }
+
         sendStatus("Starting gateway…");
 
         // Linux AppImage only: this process is about to exec the backend with no
@@ -843,7 +884,7 @@ function spawnGateway(resolve) {
         // "killed: 9" on a recipient's machine.
         let childOut = "ignore";
         try { childOut = fs.openSync(gatewayLogPath(), "a"); } catch (e) { glog(`WARN could not open child log fd: ${e.message}`); }
-        glog("---- spawning gateway; child stdout+stderr follows ----");
+        glog(SPAWN_MARKER);
         gatewayStartFailure = null; // re-arm for this spawn attempt
 
         // Bind handlers to THIS child via a captured reference, not the
@@ -868,14 +909,24 @@ function spawnGateway(resolve) {
             spawnBin = pyExe;
             spawnArgs = ["-s", "-m", "kiro_crew", ...spawnArgs];
           } else {
-            // Bundled layout is present but python.exe is missing/corrupted.
-            // Surface this as a clear error instead of letting spawn() hang or
-            // emit a cryptic ENOENT for the .cmd shim.
-            const errMsg = `Bundled Python interpreter not found at ${pyExe}. `
-              + `The installation may be corrupted — reinstall the app.`;
-            glog(`spawn ERROR: ${errMsg}`);
-            gatewayStartFailure = { error: errMsg };
-            sendStatus(`Gateway failed: ${errMsg}`);
+            // The .cmd shim is here but python.exe is not. That is the same
+            // extraction race as the incomplete-stdlib case above, caught one
+            // wave earlier — bin/ lands before the interpreter — so it gets the
+            // same "still installing, retry" framing.
+            //
+            // A mid-extraction tree and a permanently truncated one are
+            // indistinguishable at this instant, so this deliberately reads the
+            // ambiguity as transient. Mid-extraction is the common state (every
+            // install and update passes through it) and the costs are asymmetric:
+            // guessing "installing" wrongly costs a retry, after which the copy's
+            // "if this persists, reinstall" gives the right instruction anyway,
+            // while guessing "corrupted" wrongly sends the user to reinstall a
+            // bundle that needed a few more seconds — the harm this whole path
+            // exists to prevent, and not undoable once done.
+            const errMsg = describeIncompleteBundle([]);
+            glog(`spawn REFUSED: bundled interpreter absent at ${pyExe} — install likely still extracting`);
+            gatewayStartFailure = { error: errMsg, incompleteBundle: true, bundled: true };
+            sendStatus(INSTALLING_STATUS);
             resolve(false);
             return;
           }
@@ -918,7 +969,7 @@ function spawnGateway(resolve) {
           // ENOENT = bin not found on disk; EACCES = present but not executable.
           glog(`spawn ERROR code=${err.code || "?"} msg=${err.message}`);
           if (gatewayProcess !== child) return; // stale child we already replaced
-          gatewayStartFailure = { error: err.message };
+          gatewayStartFailure = { error: err.message, bundled };
           sendStatus(`Gateway failed: ${err.message}`);
           resolve(false);
         });
@@ -937,7 +988,7 @@ function spawnGateway(resolve) {
           // user-initiated Retry clears it so a re-probe can genuinely succeed.
           // Guard: preserve the root cause from the 'error' handler if it fired
           // first (Node fires both 'error' then 'exit' on spawn failure).
-          if (!gatewayStartFailure) gatewayStartFailure = { code, signal };
+          if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
           gatewayProcess = null;
         });
         resolve(true);
@@ -2745,9 +2796,36 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // Nothing was spawned in the client-only case, so it is classified before
     // the port-conflict probe — see classifyStartFailure for why the log tail
     // cannot be trusted to mean "a holder exists right now".
-    const failureKind = classifyStartFailure({
+    // The pre-spawn check cannot be complete: extraction order within a package
+    // is not ours to control, so a spawn can still die on a stdlib import that
+    // was a moment away from existing. The interpreter's own traceback settles
+    // what no filesystem probe could, so a missing-stdlib crash is reclassified
+    // here as an unfinished install rather than reported as a defect.
+    //
+    // Requires the tail to be free of a bound-port report. The launch log is
+    // append-only across launches, so a stdlib traceback left by an EARLIER run
+    // would otherwise relabel today's "address already in use" exit as
+    // "installing" and hide the force-stop path — the port holder is still
+    // there, so Retry alone would loop. When both signals appear, the port
+    // conflict is the actionable one. This guard applies only to the log-sniffed
+    // path; a pre-spawn refusal sets `incompleteBundle` explicitly and keeps
+    // outranking a stale port line, since nothing was spawned in that case.
+    const failureRecord = shouldReclassifyAsInstalling({
       failedToStart,
       failure: err.failure,
+      logTail,
+      // Scoped to THIS attempt, like the crash match itself: a bound-port line
+      // left by an earlier launch must not suppress a genuine current stdlib
+      // crash. The port-conflict branch below keeps using the whole tail, since
+      // its own guard is about not offering force-stop for a port nothing holds.
+      portInUseInLog: isPortInUse(currentAttemptLog(logTail)),
+      bundled: !!(err.failure && err.failure.bundled),
+    })
+      ? { ...err.failure, incompleteBundle: true }
+      : err.failure;
+    const failureKind = classifyStartFailure({
+      failedToStart,
+      failure: failureRecord,
       isOwnPort: backendUrl === BACKEND_URL,
       portInUseInLog: isPortInUse(logTail),
     });
@@ -2755,7 +2833,15 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     const portConflict = failureKind === "port-conflict";
 
     let title, message;
-    if (localGatewayOff) {
+    if (failureKind === "installing") {
+      // The bundled backend is still being written to disk, so the honest
+      // framing is "not ready yet" and Retry is the whole remedy. Use the
+      // unfinished-install copy rather than err.message: on the reclassified
+      // path err.message is the interpreter's own exit report, which is what
+      // this branch exists to stop showing as the headline.
+      title = "Kiro Crew — installation still finishing";
+      message = err.failure?.incompleteBundle ? err.message : describeIncompleteBundle([]);
+    } else if (localGatewayOff) {
       // Nothing failed here — the app was told not to start a gateway and the
       // port is silent. "Failed to start" would send the user hunting a crash.
       title = `Kiro Crew — no gateway on port ${PORT}`;
