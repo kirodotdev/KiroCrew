@@ -606,24 +606,34 @@ def _process_apparmor_confinement() -> str:
     return ""
 
 
-def _service_unit_applies_profile(unit_path: Path, profile_name: str) -> bool:
-    """True when the installed systemd unit transitions the service into the profile.
+def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
+    """True when the installed profile is ATTACHED to the launcher script this
+    host currently resolves (#3463).
 
-    The unit is rendered with ``AppArmorProfile=-<name>`` (the leading dash keeps
-    the unit startable while the profile is temporarily unloaded); the dashless
-    form is accepted too so a hand-edited unit still counts.
+    Before #3463 this asked a different question — whether the systemd unit
+    carried an ``AppArmorProfile=<name>`` directive — because that directive
+    was the mechanism that confined the service. It no longer is: the profile
+    is now attached BY PATH to ``kirocrew_bin()`` (the same path ``ExecStart``
+    uses), and installing the directive alongside a path attachment was found
+    to make the directive silently win, defeating the attachment. So
+    ``kirocrew service install`` no longer writes it, and this check follows —
+    it reads the profile's own attachment clause and compares it against the
+    CURRENTLY resolved launcher path, the same comparison
+    ``apparmor.launcher_status()`` already makes for the AppImage case.
+
+    A moved or reinstalled launcher (a venv rebuilt at a new path, a symlink
+    re-pointed) makes this False until ``kirocrew service install`` re-renders
+    the profile against the new path — the same staleness
+    ``kirocrew sandbox status`` already reports for the launcher profile.
     """
+    attached = apparmor.installed_attachment(profile_path, profile_name)
+    if attached is None:
+        return False
     try:
-        text = unit_path.read_text(encoding="utf-8")
+        current = str(Path(service_linux.kirocrew_bin()).resolve(strict=True))
     except OSError:
         return False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("AppArmorProfile="):
-            value = stripped.split("=", 1)[1].strip().lstrip("-")
-            if value == profile_name:
-                return True
-    return False
+    return attached == current
 
 
 def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
@@ -632,12 +642,17 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     Three honest verdicts, decided from real signals rather than the happy path:
 
     * profile absent → broken, with the install command;
-    * profile installed but nothing applies it, or the probe failed even though
-      THIS process is confined by the profile → broken, with the repair command;
-    * profile installed, the service unit applies it, and this process is
-      unconfined → the probe's failure says nothing about the service, so the
-      verdict is "cannot be verified from this shell" plus how to verify — NOT
-      a claim that the sandbox works, and NOT counted as an issue.
+    * profile installed but not ATTACHED to the launcher script this host
+      currently resolves (#3463 — this used to check the systemd unit for an
+      ``AppArmorProfile=`` directive; that directive is retired, and checking
+      it now would silently fail closed against a correctly-installed,
+      correctly-attached profile), or the probe failed even though THIS
+      process is confined by the profile → broken, with the repair command;
+    * profile installed and attached to the resolved launcher script, and this
+      process is unconfined → the probe's failure says nothing about the
+      service, so the verdict is "cannot be verified from this shell" plus how
+      to verify — NOT a claim that the sandbox works, and NOT counted as an
+      issue.
     """
     if not apparmor.PROFILE_PATH.is_file():
         print(f"  backend:     ❌ none — {reason}")
@@ -663,26 +678,26 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
         issues.append("sandbox: probe failed under the AppArmor profile")
         return
 
-    if not _service_unit_applies_profile(service_linux.UNIT_PATH, apparmor.PROFILE_NAME):
+    if not _service_profile_applies(apparmor.PROFILE_PATH, apparmor.PROFILE_NAME):
         print(f"  backend:     ❌ none — {reason}")
         _print_wrapped(
-            f"The {apparmor.PROFILE_NAME} AppArmor profile is installed, but no systemd "
-            f"unit applies it, so nothing on this host runs confined by it. Run "
-            f"`kirocrew service install` to (re)install the gateway service with the "
-            f"profile applied."
+            f"The {apparmor.PROFILE_NAME} AppArmor profile is installed, but it is not "
+            f"attached to the kirocrew launcher script this host currently resolves, so "
+            f"nothing on this host runs confined by it. Run `kirocrew service install` "
+            f"to (re)install the gateway service with the profile attached."
         )
-        issues.append("sandbox: AppArmor profile installed but not applied")
+        issues.append("sandbox: AppArmor profile installed but not attached")
         return
 
     # Unverifiable from here — deliberately NOT an issue, and deliberately NOT a
     # success claim either.
     print("  backend:     ⏭  cannot be verified from this shell")
     _print_wrapped(
-        f"The {apparmor.PROFILE_NAME} AppArmor profile is installed and the gateway "
-        f"service unit is configured to run under it, but this shell is unconfined "
-        f"and aa_change_onexec() into a named profile is not permitted for an "
-        f"unconfined user — so this probe cannot succeed here no matter how healthy "
-        f"the service's sandbox is. To verify the sandbox in the confined context "
+        f"The {apparmor.PROFILE_NAME} AppArmor profile is installed and attached to "
+        f"the kirocrew launcher script this host resolves, but this process was not "
+        f"invoked through that exact path (or this shell is otherwise unconfined) — "
+        f"so this probe cannot confirm the service's confinement from here no matter "
+        f"how healthy it actually is. To verify the sandbox in the confined context "
         f"the service uses, run:"
     )
     # The interpreter path is quoted for the shell: the recipe is meant to be

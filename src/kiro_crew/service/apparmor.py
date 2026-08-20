@@ -13,17 +13,49 @@ Ubuntu already ships exactly this for every application in the same position
 ``ch-run``, ``QtWebEngineProcess``, ``1password``, ``Discord``). KiroCrew was the
 outlier.
 
-**Why a NAMED profile plus systemd, not a path attachment.** The obvious design —
-attach the profile to the gateway's interpreter — does not work here, and worse,
-the naive fix over-grants. ``~/.kiro/crew-venv/bin/python3`` is a *symlink* to the
-system interpreter (verified on Ubuntu 26.04: it resolves to ``/usr/bin/python3``),
-and AppArmor matches an attachment against the path the kernel resolves, not the
-symlink. So a profile attached to the venv path would never match, while one
-attached to ``/usr/bin/python3`` would grant ``userns`` to **every Python process
-on the machine**. Instead this module installs a profile with **no attachment
-path** and has systemd transition the service into it via ``AppArmorProfile=``,
-which confines exactly one unit and is independent of how the interpreter is
-resolved.
+**Why a NAMED profile ATTACHED to the launcher script, not the interpreter, and
+not systemd's ``AppArmorProfile=`` alone (#3463).** Two designs were tried before
+this one and both were wrong:
+
+1. *Attach to the interpreter.* ``~/.kiro/crew-venv/bin/python3`` is a *symlink*
+   to the system interpreter (verified on Ubuntu 26.04: it resolves to
+   ``/usr/bin/python3``), and AppArmor matches an attachment against the path the
+   kernel resolves, not the symlink. A profile attached to the venv path would
+   never match, while one attached to ``/usr/bin/python3`` would grant ``userns``
+   to **every Python process on the machine**.
+2. *Name-only profile, applied by systemd's ``AppArmorProfile=`` alone, no
+   attachment path at all.* This confines exactly one unit and does not depend on
+   how the interpreter is resolved, so it looked like the right fix — and #1210
+   shipped it. It does not work: #3463 traced a live failure via
+   ``/proc/<pid>/attr/current`` and the kernel audit log and found that
+   ``AppArmorProfile=`` labels only the literal top-level unit PID
+   (``change_onexec`` "converted to stacking"). The gateway's sandbox probe
+   (``sandbox.py``'s ``_probe_child_sequence``) runs in a **different PID**
+   reached through the launcher's own exec chain, and that PID was still
+   ``unconfined`` in the audit trail at the moment it called ``unshare()`` — the
+   stacking never propagated that far down, reproducing identically across a
+   systemd-managed service, a bare foreground launch, and ``aa-exec -p`` (which
+   stacks the top PID correctly and STILL fails downstream). Worse: with a
+   path-attached profile installed *and* ``AppArmorProfile=`` still present in the
+   unit, the directive's ``change_onexec`` appears to take precedence over the
+   kernel's automatic path attachment and silently wins, so the two mechanisms
+   are mutually exclusive in practice, not merely redundant.
+
+The fix verified in #3463 is to attach the profile **by path to the
+fully-resolved launcher script** — not the interpreter, not any symlink in the
+chain (``~/.local/bin/kirocrew`` → ``~/.kiro/crew-venv/bin/kirocrew``, itself a
+shebang script naming the shared interpreter) — and to drop
+``AppArmorProfile=`` from the unit entirely once the profile is path-attached.
+Kernel-side automatic path attachment applies at every ``execve()`` in the
+launcher's chain and is inherited by a forked-not-exec'd child (the probe),
+which is exactly the propagation the systemd directive was missing. The launcher
+script (e.g. ``~/.kiro/crew-venv/bin/kirocrew``) is a stable, per-install,
+non-symlinked path — narrower in scope than the shared interpreter, since only
+the kirocrew entry point gets ``userns``, not every uv-managed tool sharing that
+Python build. :func:`validate_exec_path` (below, shared with the AppImage
+launcher case) enforces that this attachment path cannot be a shared
+interpreter, cannot live under a world-writable directory, and cannot be
+substitutable by another local user.
 
 The gate is deliberately **mechanism-based, never distro-based**: Ubuntu
 derivatives (Pop!_OS, Mint, Zorin, elementary) inherit the restriction and would
@@ -213,19 +245,46 @@ def detect_abi() -> str | None:
     return f"{best[0]}.{best[1]}"
 
 
-def render_profile(abi: str | None) -> str:
+def render_profile(abi: str | None, exec_path: Path | None = None) -> str:
     """Render the named profile.
 
     ``flags=(unconfined)`` means the profile restricts nothing — it exists solely
     to carry the ``userns`` grant, which is the same shape stock Ubuntu uses for
-    ``chrome`` / ``brave``. There is deliberately **no attachment path**: systemd
-    applies it by name, so it cannot leak onto an unrelated interpreter.
+    ``chrome`` / ``brave``.
+
+    ``exec_path``, when given, ATTACHES the profile to that resolved executable
+    path (the venv launcher script, already validated by
+    :func:`validate_exec_path`) — see the module docstring and #3463 for why an
+    unattached, systemd-``AppArmorProfile=``-only profile does not actually
+    confine the gateway's sandbox probe. ``None`` renders the legacy unattached
+    form (no callers request this for the service anymore; kept for the module's
+    own tests and any future non-service caller that has no exec path to offer).
 
     ``abi`` names a policy abi file this host actually ships (see
     :func:`detect_abi`) — declaring one that is absent makes the profile fail to
     load. When None the line is omitted and the parser uses its default.
     """
     abi_line = f"abi <abi/{abi}>,\n\n" if abi else ""
+    attachment = f' "{exec_path}"' if exec_path is not None else ""
+    if exec_path is not None:
+        attachment_note = f"""# It is ATTACHED to the resolved launcher script at {exec_path} (#3463): the
+# kernel applies an attachment at every execve() in that path's chain and the
+# attachment is inherited by a forked-not-exec'd child, which is what the
+# gateway's sandbox probe needs and a bare systemd AppArmorProfile= transition
+# does not provide (it only labels the unit's own top-level PID). Moving or
+# reinstalling to a different path silently stops this profile from applying;
+# `kirocrew service install` re-renders it against the current path on every
+# run. Do NOT attach this to the shared interpreter behind the launcher's
+# shebang (a symlink to the system python) — that would grant this permission
+# to every Python process on the host; the launcher script itself is the one
+# stable, per-install, non-symlinked target.
+#"""
+    else:
+        attachment_note = """# It is a NAMED profile with no attachment path. Do NOT add an attachment path
+# for the venv interpreter — that is a symlink to the system python, and
+# attaching there would grant this permission to every Python process on the
+# host.
+#"""
     return f"""# Managed by KiroCrew — regenerated by `kirocrew service install`.
 #
 # This profile grants ONE permission: creating an unprivileged user namespace.
@@ -235,12 +294,7 @@ def render_profile(abi: str | None) -> str:
 # blocks that second step, so KiroCrew fail-closes and refuses to run the agent
 # rather than run it unisolated.
 #
-# It is a NAMED profile with no attachment path: systemd applies it to the
-# kirocrew service via AppArmorProfile=. It therefore cannot apply to any other
-# process. Do NOT add an attachment path for the venv interpreter — that is a
-# symlink to the system python, and attaching there would grant this permission
-# to every Python process on the host.
-#
+{attachment_note}
 # flags=(unconfined) means this profile restricts nothing else; it is the same
 # shape /etc/apparmor.d/chrome and /etc/apparmor.d/brave use.
 #
@@ -249,7 +303,7 @@ def render_profile(abi: str | None) -> str:
 # `kirocrew service uninstall` removes it for you.
 {abi_line}include <tunables/global>
 
-profile {PROFILE_NAME} flags=(unconfined) {{
+profile {PROFILE_NAME}{attachment} flags=(unconfined) {{
   userns,
 
   # Site-specific additions and overrides. See local/README for details.
@@ -395,13 +449,31 @@ def verify_enforcement(
     return (False, output.strip() or "the namespace probe still fails inside the profile")
 
 
-def install(sudo_install_file, sudo_run, sudo_capture, uid: int, gid: int) -> ProfileOutcome:
+def install(
+    sudo_install_file,
+    sudo_run,
+    sudo_capture,
+    uid: int,
+    gid: int,
+    exec_path: str | None = None,
+    expected_uid: int | None = None,
+) -> ProfileOutcome:
     """Generate, validate, load and verify the profile. NEVER raises.
 
     ``sudo_install_file(text, dest)`` and ``sudo_run(*argv)`` are injected so this
     reuses the caller's existing privileged helpers — the same ones that already
     write the systemd unit — rather than inventing a second escalation path, and
     so tests can drive the whole flow without touching the real host.
+
+    ``exec_path``, when given, is resolved and validated (:func:`validate_exec_path`,
+    forwarding ``expected_uid``) and the profile is ATTACHED to the result — see
+    the module docstring and #3463 for why the service profile now needs this
+    instead of relying on ``AppArmorProfile=`` alone. A validation failure returns
+    a clean, non-fatal :class:`ProfileOutcome` naming the problem, same shape as
+    every other failure branch here; nothing is written to disk. ``None`` (the
+    default) preserves the legacy unattached rendering — no production caller
+    passes ``None`` for the service path anymore, but the module's own tests do,
+    and it costs nothing to keep the flexibility.
     """
     needed, reason = should_install()
     if not needed:
@@ -411,7 +483,15 @@ def install(sudo_install_file, sudo_run, sudo_capture, uid: int, gid: int) -> Pr
     if parser is None or version is None:  # pragma: no cover - should_install covers
         return ProfileOutcome(False, "AppArmor profile skipped: parser unavailable")
 
-    text = render_profile(detect_abi())
+    resolved_exec: Path | None = None
+    if exec_path is not None:
+        resolved_exec, exec_problem = validate_exec_path(exec_path, expected_uid=expected_uid)
+        if resolved_exec is None:
+            return ProfileOutcome(
+                False, f"AppArmor profile not installed: {exec_problem}", ok=False
+            )
+
+    text = render_profile(detect_abi(), resolved_exec)
     valid, detail = validate(parser, text)
     if not valid:
         # Refuse to install something that does not compile: loading a broken
@@ -440,8 +520,10 @@ def install(sudo_install_file, sudo_run, sudo_capture, uid: int, gid: int) -> Pr
         )
     return ProfileOutcome(
         True,
-        f"AppArmor profile installed at {PROFILE_PATH} — grants unprivileged "
-        "userns to the kirocrew service only, and enforcement is confirmed",
+        f"AppArmor profile installed at {PROFILE_PATH}"
+        + (f", attached to {resolved_exec}" if resolved_exec is not None else "")
+        + " — grants unprivileged userns to the kirocrew service only, and "
+        "enforcement is confirmed",
     )
 
 
@@ -520,10 +602,11 @@ _SHARED_INTERPRETER_RE = re.compile(
     r"(?:python[\d.]*|perl[\d.]*|ruby[\d.]*|node|bash|dash|sh|zsh|env|busybox)$"
 )
 
-_ATTACHMENT_RE = re.compile(
-    r"^profile\s+" + re.escape(LAUNCHER_PROFILE_NAME) + r'\s+"(?P<path>[^"]+)"',
-    re.MULTILINE,
-)
+
+def _attachment_re(profile_name: str) -> re.Pattern[str]:
+    return re.compile(
+        r"^profile\s+" + re.escape(profile_name) + r'\s+"(?P<path>[^"]+)"', re.MULTILINE
+    )
 
 
 def default_exec_path() -> str | None:
@@ -544,7 +627,7 @@ def default_exec_path() -> str | None:
     return value or None
 
 
-def _substitutable_by_others(resolved: Path) -> str | None:
+def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) -> str | None:
     """Explain how another local user could take over *resolved*, or None.
 
     The prefix denylist above is a good *message* for the common cases, but it is
@@ -561,14 +644,14 @@ def _substitutable_by_others(resolved: Path) -> str | None:
     * **No group- or world-writable component.** Walked all the way to ``/``,
       because a writable *ancestor* is enough: rename the parent directory and the
       same absolute path now resolves to an attacker's file.
-    * **Owned by the invoking user.** This is the rule that makes the whole check
+    * **Owned by the expected user.** This is the rule that makes the whole check
       sound, and it is deliberately stricter than "not owned by a stranger".
       :data:`_SHARED_INTERPRETER_RE` is a BLOCKLIST, and a blocklist of shared
       runtimes is incomplete by construction — it names python, perl, ruby, node
       and the shells, but not ``java``, ``mono``, ``dotnet``, ``php``, ``lua``,
       ``wine``, ``R`` or ``qemu-*``. Attaching to ``/usr/bin/java`` would grant
       unprivileged userns to every Java process on the host. Requiring the target
-      to be owned by the caller converts that leaky list into a complete
+      to be owned by the expected user converts that leaky list into a complete
       invariant: a root-owned executable in a system location is, by definition,
       shared with every user of the machine.
 
@@ -578,10 +661,20 @@ def _substitutable_by_others(resolved: Path) -> str | None:
     ``--path`` and cannot know that. Packaged profiles remain the right answer for
     a system-wide install; the message says so.
 
-    The check keys on the invoking uid, so an administrator who deliberately runs
-    this as root can still attach to a root-owned path. That is a conscious act by
-    someone who could edit ``/etc/apparmor.d`` by hand anyway; what the rule
-    prevents is an unprivileged user over-granting by accident.
+    ``expected_uid`` defaults to the CALLING process's uid (the AppImage launcher
+    case: an unprivileged user runs ``kirocrew sandbox install-profile`` on their
+    own account). The systemd service case (#3463) is different: ``kirocrew
+    service install`` may itself run as root (bare root, or ``sudo``), while the
+    path being attached is the venv launcher script owned by the human the
+    *service* runs as (``User=`` in the unit) — a different account from whichever
+    one is executing the installer. The caller passes that account's uid
+    explicitly there so the check still verifies "owned by the account this grant
+    is for", not "owned by whoever happens to be typing the install command".
+
+    An administrator who deliberately runs the AppImage case as root can still
+    attach to a root-owned path. That is a conscious act by someone who could edit
+    ``/etc/apparmor.d`` by hand anyway; what the rule prevents is an unprivileged
+    user over-granting by accident.
 
     A sticky bit does not rescue a world-writable directory here. Sticky only
     stops one user deleting *another's* file; it does nothing when the target does
@@ -589,21 +682,30 @@ def _substitutable_by_others(resolved: Path) -> str | None:
     not just the instant it is installed.
     """
     getuid = getattr(os, "getuid", None)  # absent on Windows, where this is moot
+    check_uid = expected_uid if expected_uid is not None else (getuid() if getuid is not None else None)
     try:
         info = resolved.stat()
     except OSError as exc:
         return f"{resolved} could not be inspected ({exc})"
-    if getuid is not None and info.st_uid != getuid():
+    if check_uid is not None and info.st_uid != check_uid:
         owner = "root" if info.st_uid == 0 else f"uid {info.st_uid}"
+        # "not by you" when the check is against the invoking process's own uid
+        # (the AppImage/launcher case, expected_uid=None); "not by the expected
+        # account" when a caller passed an explicit expected_uid (the systemd
+        # service case, #3463) -- a message wouldn't otherwise say who "you" is
+        # supposed to mean when the installer and the service run as different
+        # accounts.
+        whom = "you" if expected_uid is None else "the expected account"
         return (
-            f"{resolved} is owned by {owner}, not by you (uid {getuid()}). An "
-            "attachment grants unprivileged user namespaces to whatever runs at "
-            "that path, and an executable you do not own is one you cannot vouch "
-            "for: a root-owned binary in a system location is shared with every "
-            "user of this machine, so attaching there would hand the grant to all "
-            "of them. Point this at your own copy of the app (an AppImage you "
-            "downloaded is owned by you), or ship a packaged profile if you are "
-            "confining a system-wide install."
+            f"{resolved} is owned by {owner}, not by {whom} (uid "
+            f"{check_uid}). An attachment grants unprivileged user namespaces to "
+            "whatever runs at that path, and an executable owned by a different "
+            "account is one this profile cannot vouch for: a root-owned binary in "
+            "a system location is shared with every user of this machine, so "
+            "attaching there would hand the grant to all of them. Point this at "
+            f"{'your own' if expected_uid is None else 'the expected account'}'s "
+            "copy of the app, or ship a packaged profile if you are confining a "
+            "system-wide install."
         )
     for component in (resolved, *resolved.parents):
         try:
@@ -623,7 +725,7 @@ def _substitutable_by_others(resolved: Path) -> str | None:
     return None
 
 
-def validate_exec_path(raw: str) -> tuple[Path | None, str]:
+def validate_exec_path(raw: str, expected_uid: int | None = None) -> tuple[Path | None, str]:
     """Resolve *raw* to the path AppArmor will match. ``(path, problem)``.
 
     On refusal returns ``(None, why)`` — every rejection is a real
@@ -633,6 +735,12 @@ def validate_exec_path(raw: str) -> tuple[Path | None, str]:
     resolves, not the symlink used to reach it. Validating before resolving is
     how a link in a safe directory pointing at ``/usr/bin/python3`` would sneak a
     host-wide grant past these checks.
+
+    Shared by both attachment shapes: the AppImage launcher case (``exec_path``
+    from ``--path`` / ``$APPIMAGE``) and the systemd service case (#3463,
+    ``kirocrew_bin()``). ``expected_uid`` is forwarded to
+    :func:`_substitutable_by_others` unchanged — see its docstring for why the
+    service case needs an explicit override there.
     """
     if not raw or not raw.strip():
         return (None, "no executable path was given")
@@ -653,8 +761,8 @@ def validate_exec_path(raw: str) -> tuple[Path | None, str]:
                 f"{resolved} lives under {bad.rstrip('/')}, which any local user can "
                 "write to. An AppArmor attachment there would grant unprivileged "
                 "user namespaces to whatever file later appears at that path. Move "
-                "the AppImage somewhere durable (for example ~/Applications) and "
-                "re-run this command.",
+                "the executable somewhere durable (for example ~/Applications, or "
+                "the installed venv) and re-run this command.",
             )
     if _SHARED_INTERPRETER_RE.match(text):
         return (
@@ -662,7 +770,8 @@ def validate_exec_path(raw: str) -> tuple[Path | None, str]:
             f"{resolved} is a shared system interpreter. Attaching the profile "
             "there would grant unprivileged user namespaces to every program on "
             "this host that runs it. Point this at the AppImage file instead, or "
-            "use `kirocrew service install`, which confines a single systemd unit.",
+            "use `kirocrew service install`, which now attaches to the installed "
+            "launcher script rather than the interpreter behind it.",
         )
     bad_chars = sorted({ch for ch in text if ch in _GLOB_METACHARS} | {
         ch for ch in text if ord(ch) < 0x20 or ord(ch) == 0x7F
@@ -675,7 +784,7 @@ def validate_exec_path(raw: str) -> tuple[Path | None, str]:
             "match more paths than intended, so rename the file or move it to a "
             "path without those characters.",
         )
-    takeover = _substitutable_by_others(resolved)
+    takeover = _substitutable_by_others(resolved, expected_uid=expected_uid)
     if takeover:
         return (None, takeover)
     return (resolved, "")
@@ -761,13 +870,33 @@ profile {LAUNCHER_PROFILE_NAME} "{exec_path}" flags=(unconfined) {{
 """
 
 
-def installed_attachment() -> str | None:
-    """Path the installed launcher profile attaches to, or None if not installed."""
+def installed_attachment(
+    profile_path: Path | None = None, profile_name: str | None = None
+) -> str | None:
+    """Path the installed profile at *profile_path* attaches to, or None.
+
+    Defaults to the launcher profile (``kirocrew sandbox status``'s original
+    caller). The service profile (#3463) is attached too now, so
+    ``cli_doctor.py`` passes ``PROFILE_PATH`` / ``PROFILE_NAME`` here to answer
+    the same question for the systemd service — "is the profile actually
+    attached to the launcher script this host currently resolves?" — instead of
+    the retired unit-directive check.
+
+    Defaults are resolved INSIDE the body, not bound as parameter defaults:
+    a default bound at def time would freeze in the ORIGINAL
+    ``LAUNCHER_PROFILE_PATH`` object, immune to the
+    ``monkeypatch.setattr(aa, "LAUNCHER_PROFILE_PATH", ...)`` this module's own
+    tests rely on to avoid touching a real host's ``/etc/apparmor.d``.
+    """
+    if profile_path is None:
+        profile_path = LAUNCHER_PROFILE_PATH
+    if profile_name is None:
+        profile_name = LAUNCHER_PROFILE_NAME
     try:
-        body = LAUNCHER_PROFILE_PATH.read_text(encoding="utf-8")
+        body = profile_path.read_text(encoding="utf-8")
     except OSError:
         return None
-    match = _ATTACHMENT_RE.search(body)
+    match = _attachment_re(profile_name).search(body)
     return match.group("path") if match else None
 
 
