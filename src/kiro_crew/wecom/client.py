@@ -117,18 +117,28 @@ class WeComClient:
     async def close(self) -> None:
         """Gracefully shut down the client."""
         self._closed = True
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        # Session close in a `finally` -- see DiscordClient.close() for why the
+        # steps above it can raise and what leaking the session costs.
+        try:
+            if self._ws and not self._ws.closed:
+                # Guarded like DiscordClient.close(): closing a websocket whose
+                # transport is already broken raises, and this one is on the way out
+                # either way.
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                self._task = None
+        finally:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     async def _ws_send(self, ws: aiohttp.ClientWebSocketResponse[Any], frame: dict) -> None:
         """Serialize a single WS send under ``_send_lock`` (concurrent-safe)."""

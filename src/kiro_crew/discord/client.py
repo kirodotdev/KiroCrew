@@ -191,22 +191,36 @@ class DiscordClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
-        self._stop_heartbeat()
-        if self._ws is not None and not self._ws.closed:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        # The session close is the LAST thing this method must do and the one
+        # thing it must not skip, so it lives in a `finally`. Every step above it
+        # can raise: `task.cancel()` on a task that ALREADY died with an error
+        # is a no-op, and the following `await self._task` then re-raises that
+        # error -- `except asyncio.CancelledError` does not catch it. A shutdown
+        # while this coroutine is itself being cancelled does the same, since
+        # `CancelledError` is a `BaseException`.
+        #
+        # Leaking the `ClientSession` leaves its connector and open sockets
+        # behind for the process lifetime (aiohttp reports it as "Unclosed
+        # client session" at GC), and `self._session` stays non-None, so a
+        # later close finds a session it believes is already handled.
+        try:
+            self._stop_heartbeat()
+            if self._ws is not None and not self._ws.closed:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                self._task = None
+        finally:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     def set_message_handler(self, on_message: Callable[[DiscordInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.

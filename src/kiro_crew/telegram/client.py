@@ -348,17 +348,21 @@ class TelegramClient:
         # handler it spawns races SessionManager._closing and may be refused,
         # exactly as a plain message arriving at shutdown already is today. It
         # costs nothing, sometimes wins, and drains the buffer either way.
-        self._flush_all_albums()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        # Session close in a `finally` -- see DiscordClient.close() for why the
+        # steps above it can raise and what leaking the session costs.
+        try:
+            self._flush_all_albums()
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                self._task = None
+        finally:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     def set_message_handler(self, on_message: Callable[[TelegramInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.
