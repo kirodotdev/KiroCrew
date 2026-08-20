@@ -182,13 +182,27 @@ describe('savePosition coalescing', () => {
     expect(calls[0].body).toEqual({ petX: 30, petY: 41 })
   })
 
-  it('swallows a failed write — the companion stays where it is on screen', async () => {
-    stubFetchAll({ fails: true })
+  it('a failed write does not wedge the coalescing timer', async () => {
+    // Renamed and re-pointed. The old body was `expect(true).toBe(true)` behind a
+    // comment claiming "no unhandled rejection escapes", which asserted nothing —
+    // it passed whether or not `flushSave` kept its `.catch()`. Asserting the
+    // rejection directly does not close that gap either: MEASURED, deleting the
+    // `.catch()` still leaves all 68 tests green, because the rejection surfaces
+    // as a process-level event that vitest attributes to no single test.
+    //
+    // So this pins the consequence that IS observable from here, and is the one
+    // that would actually break the feature: a failed save must leave the module's
+    // timer handle clear, or the companion's position silently stops persisting
+    // for the rest of the session after one network blip.
+    const { fn } = stubFetchAll({ fails: true })
     petBridge.savePosition!(1, 2)
     vi.advanceTimersByTime(250)
-    // No unhandled rejection escapes; the call simply had no effect.
+    expect(fn).toHaveBeenCalledOnce()
     await Promise.resolve()
-    expect(true).toBe(true)
+
+    petBridge.savePosition!(3, 4)
+    vi.advanceTimersByTime(250)
+    expect(fn).toHaveBeenCalledTimes(2)
   })
 })
 

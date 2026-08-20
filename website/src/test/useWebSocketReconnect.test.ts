@@ -75,6 +75,12 @@ describe('useWebSocket reconnect unread suppression', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    // Unconditional, because the fake-timer installs in this file are restored
+    // INLINE at the end of the tests that need them. An assertion that fails
+    // before its restore line leaves fake timers installed for every LATER test
+    // here, so one real failure reports as a cascade of unrelated ones and the
+    // real cause is buried. Idempotent when timers were never faked.
+    vi.useRealTimers()
   })
 
   function wrapper({ children }: { children: React.ReactNode }) {
@@ -273,6 +279,12 @@ describe('unread fires on chat_done not chat_chunk', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    // Unconditional, because the fake-timer installs in this file are restored
+    // INLINE at the end of the tests that need them. An assertion that fails
+    // before its restore line leaves fake timers installed for every LATER test
+    // here, so one real failure reports as a cascade of unrelated ones and the
+    // real cause is buried. Idempotent when timers were never faked.
+    vi.useRealTimers()
   })
 
   function wrapper({ children }: { children: React.ReactNode }) {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readSource } from './readSource'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -376,7 +376,12 @@ describe('breadcrumbSegments', () => {
  * `onRevealConsumed` arrow out of the dependency array.
  */
 describe('MarkdownPanel line-reveal effect', () => {
-  const src = readFileSync(join(__dirname, '..', 'components', 'MarkdownPanel.tsx'), 'utf8')
+  // Read through `readSource`, which normalizes line endings to LF. This block
+  // asserts on the SOURCE TEXT with `$`-anchored patterns; `website/.gitattributes`
+  // now pins `*.tsx eol=lf` so a Windows checkout no longer carries the CRLF that
+  // used to defeat those anchors, and this read stays defensive for a working tree
+  // that predates that attribute or carries an unusual git config.
+  const src = readSource(join(__dirname, '..', 'components', 'MarkdownPanel.tsx'))
 
   /** The reveal `useEffect` call, from `useEffect(` through its closing line.
    *  Only the effect's own closer sits at two-space indentation. */

@@ -18,7 +18,7 @@
  * resolved-vs-raw tag distinction the declaration documents.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readSource } from './readSource'
 import { join } from 'node:path'
 import { render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -173,7 +173,7 @@ describe('listNarrowed derives from the filter dimensions', () => {
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
 // Flattened first: a line-by-line scan misses a construct the moment a
 // reformat splits it across lines.
-const raw = readFileSync(SRC, 'utf8')
+const raw = readSource(SRC)
 const flat = raw.replace(/\s+/g, ' ')
 
 describe('all three consumers derive from the single filterDimensions declaration', () => {

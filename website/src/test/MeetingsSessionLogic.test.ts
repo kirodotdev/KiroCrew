@@ -23,16 +23,16 @@ import {
   captionWindow,
 } from '../apps/meetings/hooks/useMeetingTranscription'
 import type { AgentDef, MeetingsConfig } from '../apps/meetings/api'
-import { readFileSync } from 'node:fs'
+import { readSource } from './readSource'
 import EN_CATALOG from '../i18n/locales/en.json'
 
 // Plain repo-relative paths, the convention in PapyrusCloseProject.test.tsx:
 // vitest runs with `website/` as cwd.
-const TranscriptionSource = readFileSync(
-  'src/apps/meetings/hooks/useMeetingTranscription.ts', 'utf-8',
+const TranscriptionSource = readSource(
+  'src/apps/meetings/hooks/useMeetingTranscription.ts',
 )
-const SessionSource = readFileSync('src/apps/meetings/hooks/useMeetingSession.ts', 'utf-8')
-const SettingsSource = readFileSync('src/apps/meetings/SettingsView.tsx', 'utf-8')
+const SessionSource = readSource('src/apps/meetings/hooks/useMeetingSession.ts')
+const SettingsSource = readSource('src/apps/meetings/SettingsView.tsx')
 
 const AGENTS: AgentDef[] = [
   { id: 'note-taker', name: 'Note Taker', widget_type: 'markdown', enabled_by_default: true },
@@ -441,10 +441,7 @@ describe('task sidebar inputs track the server value', () => {
   // update. Keying on the server value remounts the input when the server's copy
   // changes, which is what makes the refresh visible.
 
-  const sidebar = readFileSync(
-    'src/apps/meetings/components/TaskSidebar.tsx',
-    'utf-8',
-  )
+  const sidebar = readSource('src/apps/meetings/components/TaskSidebar.tsx')
 
   it('keys the description input on the server value', () => {
     expect(sidebar).toContain('key={`desc:${task.description}`}')
@@ -471,7 +468,7 @@ describe('settings saves cannot revert each other', () => {
   // The backend PUT is a full, validated replace, so each patch carries the whole
   // config. Built from the render-time snapshot, two rapid changes each sent a base
   // missing the other's change and the later response reverted it.
-  const settings = readFileSync('src/apps/meetings/SettingsView.tsx', 'utf-8')
+  const settings = readSource('src/apps/meetings/SettingsView.tsx')
 
   it('derives the payload from the CACHE, not the render snapshot', () => {
     // `onSuccess` writes the server's response into the cache, so reading it at send
@@ -513,7 +510,7 @@ describe('a nested settings patch is derived from the latest config', () => {
   // from the config — `meeting_agents` mapped from the existing array, `calendar`
   // spread to keep its other key — was still computed at call time from the render
   // snapshot, so two rapid toggles each queued a value missing the other's change.
-  const settings = readFileSync('src/apps/meetings/SettingsView.tsx', 'utf-8')
+  const settings = readSource('src/apps/meetings/SettingsView.tsx')
 
   it('patch accepts an updater resolved against the latest config', () => {
     expect(settings).toMatch(/\(latest: MeetingsConfig\) => Partial<MeetingsConfig>/)

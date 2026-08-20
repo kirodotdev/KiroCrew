@@ -8,6 +8,11 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { isBrowseCommand } from '../utils/browseCommand'
+// Re-exported so the symbol `ChatPage` exported before this extraction stays
+// importable from here; the implementation lives in `utils/browseCommand` so a
+// pure test need not pull ChatPage's module graph.
+export { isBrowseCommand }
 import { useSwipeEdge } from '../hooks/useSwipeEdge'
 import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
@@ -742,35 +747,6 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
 /** Stable empty set so the mcpApps-derived selector returns a referentially
  *  equal value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
-
-/**
- * Whether a shell command preview is the START of a browse.
- *
- * Matches the INVOCATION, not a mention: `playwright-cli` has to be the first
- * word of a command, so `grep playwright-cli .` and `echo playwright-cli` are
- * not browses while `cd /tmp && playwright-cli open …` is. Exported so the
- * distinction is unit-tested rather than asserted in a comment -- a regex that
- * merely required leading WHITESPACE matched every mention.
- */
-export function isBrowseCommand(preview: string | undefined | null): boolean {
-  if (!preview) return false
-  // A real shell preview is the tool INPUT, which is JSON:
-  // `{"command":"playwright-cli open https://x"}`. Testing the raw string never
-  // matched, because `playwright-cli` sits behind a quote rather than at a
-  // command boundary -- so the panel never opened. Pull the command field out
-  // first, mirroring the backend's own `_extract_bash_command`, and fall back to
-  // the raw text for a preview that is already a bare command.
-  let cmd = preview
-  try {
-    const parsed: unknown = JSON.parse(preview)
-    if (parsed && typeof parsed === 'object' && typeof (parsed as { command?: unknown }).command === 'string') {
-      cmd = (parsed as { command: string }).command
-    }
-  } catch {
-    // Not JSON: use the preview verbatim.
-  }
-  return /(^|[;&|(]\s*)playwright-cli(\s|$)/.test(cmd)
-}
 
 // Per-action titles for the refused-press notice above the composer. A press
 // added later gets its refusal surfaced by adding one entry here and calling

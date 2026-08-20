@@ -17,8 +17,14 @@ import { describe, it, expect } from 'vitest'
 import { render, act } from '@testing-library/react'
 import DetailHeader from '../apps/issue-radar/components/DetailHeader'
 
+/** Source text with line endings normalized to LF. Vite's `?raw` hands back the
+ *  bytes on disk, so on a Windows checkout every line ends `\r\n` — and the
+ *  assertions below match multi-line shapes (`\}\n\s*<\/span>`), which a `\r`
+ *  defeats. Without this they fail for every Windows contributor while passing on
+ *  CI's Linux runner. */
 async function src(path: string): Promise<string> {
-  return (await import(`../apps/issue-radar/${path}?raw`)).default as string
+  const raw = (await import(`../apps/issue-radar/${path}?raw`)).default as string
+  return raw.replace(/\r\n/g, '\n')
 }
 
 describe('an empty detail pane is still escapable while narrow', () => {

@@ -15,6 +15,30 @@ import {
 /** Compressible filler — repetitive so gzip/brotli always shrink it. */
 const filler = (bytes: number) => 'console.log("aaaaaaaaaaaaaaaa");'.repeat(Math.ceil(bytes / 32)).slice(0, bytes)
 
+/**
+ * Whether this process may create a symlink at all.
+ *
+ * On Windows `symlinkSync` needs SeCreateSymbolicLinkPrivilege — held by an
+ * elevated shell and by CI's admin runner, but NOT by an ordinary developer
+ * shell, where it throws `EPERM`. Probed once rather than keyed on
+ * `process.platform` so an elevated Windows shell still RUNS the assertion
+ * instead of being skipped on a platform guess, and a POSIX host with an odd
+ * sandbox is handled too.
+ */
+const CAN_SYMLINK = (() => {
+  const probe = mkdtempSync(path.join(tmpdir(), 'precompress-symlink-probe-'))
+  try {
+    const target = path.join(probe, 'target')
+    writeFileSync(target, 'x')
+    symlinkSync(target, path.join(probe, 'link'))
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(probe, { recursive: true, force: true })
+  }
+})()
+
 let dir: string
 
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'precompress-')) })
@@ -103,7 +127,11 @@ describe('compressDir', () => {
     expect(existsSync(path.join(dir, 'index-abc123.js.gz.gz'))).toBe(false)
   })
 
-  it('skips symlinks rather than following them', () => {
+  // Skipped where this process cannot create a symlink at all (see CAN_SYMLINK)
+  // — the alternative is an EPERM failure that says nothing about compressDir.
+  // A hardlink is NOT a substitute: `compressDir` skips on `!entry.isFile()`,
+  // and a hardlink IS a file, so it would assert the opposite of the contract.
+  it.skipIf(!CAN_SYMLINK)('skips symlinks rather than following them', () => {
     const real = path.join(dir, 'real-abc123.js')
     writeFileSync(real, filler(4096))
     symlinkSync(real, path.join(dir, 'link-abc123.js'))

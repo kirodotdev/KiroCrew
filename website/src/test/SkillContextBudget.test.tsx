@@ -146,10 +146,19 @@ describe('SkillContextBudget — control plane', () => {
   })
 
   describe('sort options', () => {
-    it('renders all three sort options in the dropdown', async () => {
+    it('offers all three sort options once the dropdown is open', async () => {
+      // Previously this only awaited /biggest cost/i without opening anything —
+      // which matches the CLOSED trigger's own value, so it asserted exactly what
+      // the "defaults to" test below asserts and proved nothing about the option
+      // list. Open the Select and read its items.
       mount()
-      await screen.findByText(/biggest cost/i)
-      // The Select component renders its value; the other options are inside the dropdown
+      const trigger = await screen.findByRole('combobox')
+      fireEvent.pointerDown(trigger, { pointerType: 'mouse', button: 0, ctrlKey: false })
+
+      const options = await screen.findAllByRole('option')
+      expect(options.map(o => o.textContent)).toEqual([
+        'Biggest cost', 'Biggest file', 'Recently used',
+      ])
     })
 
     it('defaults to Biggest cost sort', async () => {

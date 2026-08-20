@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readSource } from './readSource'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,9 +20,9 @@ import { readSlotTranscript, setChatSlotProject } from '../apps/design-tweak/api
  */
 describe('design-tweak chat-slot response contract', () => {
   const root = process.cwd()
-  const api = readFileSync(join(root, 'src/apps/design-tweak/api.ts'), 'utf-8')
-  const types = readFileSync(join(root, 'src/apps/design-tweak/types.ts'), 'utf-8')
-  const page = readFileSync(join(root, 'src/apps/design-tweak/DesignTweakPage.tsx'), 'utf-8')
+  const api = readSource(join(root, 'src/apps/design-tweak/api.ts'))
+  const types = readSource(join(root, 'src/apps/design-tweak/types.ts'))
+  const page = readSource(join(root, 'src/apps/design-tweak/DesignTweakPage.tsx'))
 
   it('types the adopt response `messages` as a number, not a list', () => {
     const block = types.slice(
@@ -345,7 +345,7 @@ describe('readSlotTranscript behavior', () => {
  */
 describe('design-tweak slot-key derivation', () => {
   const root = process.cwd()
-  const page = readFileSync(join(root, 'src/apps/design-tweak/DesignTweakPage.tsx'), 'utf-8')
+  const page = readSource(join(root, 'src/apps/design-tweak/DesignTweakPage.tsx'))
 
   it('no longer uses the collision-prone 32-bit single-lane fold', () => {
     expect(page).not.toContain('djb2Base36')

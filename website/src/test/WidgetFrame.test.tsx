@@ -394,10 +394,11 @@ describe('WidgetFrame interactive event bridge', () => {
       source: iframe.contentWindow,
     }))
 
-    await new Promise(r => setTimeout(r, 50))
+    // Poll for the event rather than sleeping a guessed interval: the handler
+    // dispatches synchronously, so this settles on the first tick.
+    await waitFor(() => expect(events).toHaveLength(1))
     window.removeEventListener('mc-widget-send', listener)
 
-    expect(events).toHaveLength(1)
     expect(events[0].detail.text).toBe('[UI] approve: {"id":"123"}')
   })
 
@@ -414,10 +415,11 @@ describe('WidgetFrame interactive event bridge', () => {
       source: iframe.contentWindow,
     }))
 
-    await new Promise(r => setTimeout(r, 50))
+    // Poll for the event rather than sleeping a guessed interval: the handler
+    // dispatches synchronously, so this settles on the first tick.
+    await waitFor(() => expect(events).toHaveLength(1))
     window.removeEventListener('mc-widget-send', listener)
 
-    expect(events).toHaveLength(1)
     expect(events[0].detail.text).toBe('[UI] cancel')
   })
 
@@ -435,7 +437,10 @@ describe('WidgetFrame interactive event bridge', () => {
       source: iframe.contentWindow,
     }))
 
-    await new Promise(r => setTimeout(r, 50))
+    // A negative assertion has no condition to poll for, so flush one macrotask
+    // (enough for the message handler to have run had it accepted the payload)
+    // and assert nothing arrived. `waitFor` would only re-check a true predicate.
+    await new Promise(r => setTimeout(r, 0))
     window.removeEventListener('mc-widget-send', listener)
     expect(events).toHaveLength(0)
   })
@@ -453,9 +458,8 @@ describe('WidgetFrame interactive event bridge', () => {
       source: iframe.contentWindow,
     }))
 
-    await new Promise(r => setTimeout(r, 50))
+    await waitFor(() => expect(events).toHaveLength(1))
     window.removeEventListener('mc-widget-send', listener)
-    expect(events).toHaveLength(1)
     expect(events[0].detail.text).toBe('[UI] go')
     expect(events[0].detail.action).toBe('go')
   })
@@ -473,9 +477,8 @@ describe('WidgetFrame interactive event bridge', () => {
       source: iframe.contentWindow,
     }))
 
-    await new Promise(r => setTimeout(r, 50))
+    await waitFor(() => expect(events).toHaveLength(1))
     window.removeEventListener('mc-widget-send', listener)
-    expect(events).toHaveLength(1)
     expect(events[0].detail.text.length).toBeLessThanOrEqual(4001)
     expect(events[0].detail.text.endsWith('…')).toBe(true)
   })

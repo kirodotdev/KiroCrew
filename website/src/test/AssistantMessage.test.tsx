@@ -2,6 +2,10 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import AssistantMessage, { fmtTurnElapsed, fmtCredits, fmtTurnModel } from '../pages/chat/AssistantMessage'
 import { parseOptions } from '../app-sdk/protocol'
+// Imported from the defining module, not the `protocol` barrel, which deliberately
+// does not re-export a g-flagged regex. Only `.source` is read below — a string
+// copy — so the shared `lastIndex` this const's own docs warn about is untouched.
+import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -380,13 +384,40 @@ describe('parseOptions', () => {
 
   // ReDoS guard: untrusted model output with thousands of unterminated `[OPTIONS:`
   // prefixes must not drive quadratic backtracking in the synchronous render path.
-  // The tempered body (utils/optionsMarker.ts) fails in O(1) per prefix.
+  //
+  // Asserted STRUCTURALLY, on the pattern itself, because no timing assertion can
+  // work here. This file installs fake timers for every test in `beforeEach`, and
+  // vitest's default `toFake` covers the whole clock surface: MEASURED under it,
+  // `Date.now()`, `performance.now()` AND `process.hrtime.bigint()` all report a
+  // delta of exactly 0 across a 20M-iteration spin. So the original
+  // `expect(Date.now() - start).toBeLessThan(500)` could not fail — it passed
+  // even against a catastrophically backtracking pattern — and swapping in either
+  // other clock does not fix it.
+  //
+  // A duration budget would be the wrong shape anyway: a backtracking regex is
+  // synchronous, so vitest's per-test timeout cannot interrupt it and a regression
+  // surfaces as a WEDGED WORKER rather than a failure. MEASURED: substituting a
+  // nested-quantifier body `(?:[^\n]+)+` for the tempered one takes this file from
+  // 29s to 357s with `tests 0ms`, and 300s standalone without finishing.
+  //
+  // What makes the pattern linear is the TEMPERED body: each alternative excludes
+  // the delimiter that starts a fresh marker, so a failed match cannot re-partition
+  // the same run. Pinning that shape catches the regression the timing check was
+  // reaching for, deterministically and in microseconds. The behavioural half — an
+  // adversarial input still parses to no options — is asserted directly below.
   it('does not catastrophically backtrack on adversarial `[OPTIONS:` input', () => {
-    const evil = '[OPTIONS:'.repeat(20000)
-    const start = Date.now()
-    const { options } = parseOptions(evil)
-    expect(options).toEqual([])
-    expect(Date.now() - start).toBeLessThan(500)
+    const src = OPTION_MARKER_RE.source
+    // The label body: tempered alternation, NOT a nested quantifier.
+    expect(src).toContain('(?:[^[\\n]|\\[(?!OPTIONS?:))*')
+    // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
+    // exponentially, and it is what the tempered body above replaced.
+    expect(src).not.toMatch(/\([^)]*[+*]\)[+*]/)
+    // And the parse itself still terminates and yields nothing for 20k
+    // unterminated prefixes. Under the tempered body this returns in ~2ms; under
+    // a backtracking one it would never return, which is a wedge the reviewer
+    // reads in the log rather than an assertion failure — hence the shape checks
+    // above, which fail first and cheaply.
+    expect(parseOptions('[OPTIONS:'.repeat(20000)).options).toEqual([])
   })
 
   it('shows "Copy link to message" button when messageTs and slotKey are provided', () => {

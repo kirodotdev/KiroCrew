@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 
-import { isBrowseCommand } from '../pages/ChatPage'
+// From `utils/browseCommand`, not `../pages/ChatPage`: importing the page pulled
+// ~700 eager modules into this fork for a set of string assertions.
+import { isBrowseCommand } from '../utils/browseCommand'
 
 /**
  * The Browser panel auto-opens on the agent's own shell command, so this

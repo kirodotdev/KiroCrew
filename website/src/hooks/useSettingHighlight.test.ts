@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -8,6 +8,15 @@ import { useSettingHighlight } from './useSettingHighlight'
 // Mock scrollIntoView (not available in jsdom)
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+})
+
+// Three tests here install fake timers and restore them INLINE on their last
+// line. An assertion that fails before that line leaves fake timers installed for
+// every LATER test in the file, so one real failure reports as a cascade of
+// unrelated timeouts and the actual cause is buried. Restoring here makes that
+// impossible; it is idempotent when timers were never faked.
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 function wrapper(initialEntries: string[]) {

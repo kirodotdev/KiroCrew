@@ -15,6 +15,7 @@ import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
 import { updateAffordance } from './utils/updateAffordance'
+import { metricColor } from './utils/metricColor'
 import { fetchNotifications, ackNotification } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
@@ -172,10 +173,12 @@ const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   previewFlag: s.previewFlag,
 }))
 
-/** Usage color class: green (<70%), yellow (70-90%), red (>90%). */
-export function metricColor(pct: number): string {
-  return pct > 0.9 ? 'text-danger' : pct > 0.7 ? 'text-warn' : 'text-muted'
-}
+/** Re-exported for the topbar readout's existing consumers; defined in
+ *  `utils/metricColor` so a pure test need not import the app root.
+ *  `memColorClass` is the historical alias for the same function — preserved so
+ *  the moved definition does not silently drop a public `App.tsx` export a
+ *  downstream edition might still name. */
+export { metricColor }
 export const memColorClass = metricColor
 
 /**

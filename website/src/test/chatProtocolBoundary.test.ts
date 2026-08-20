@@ -16,12 +16,20 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const PROTOCOL = join(SRC, 'app-sdk', 'protocol')
+/** Separators normalized to `/` so the path comparisons below hold on Windows
+ *  too. `join`/`resolve` emit `\` there, while the exclusions are spelled with
+ *  `/` — without this, `startsWith(PROTOCOL + '/')` and the `src/test` filter
+ *  never match, every test file counts as an offender, and the "only home"
+ *  assertion fails for every Windows contributor while passing on CI's Linux
+ *  runner. `fs` accepts either separator, so only the comparisons change. */
+const posix = (p: string) => p.split('\\').join('/')
+
+const SRC = posix(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
+const PROTOCOL = `${SRC}/app-sdk/protocol`
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
-    const p = join(dir, name)
+    const p = `${dir}/${name}`
     return statSync(p).isDirectory() ? walk(p) : [p]
   })
 }
@@ -58,7 +66,7 @@ describe('the marker protocol module', () => {
   it('is the only non-test source that defines the markers', () => {
     const elsewhere = walk(SRC)
       .filter(isSource)
-      .filter((f) => !f.startsWith(PROTOCOL + '/') && !f.includes(`${join(SRC, 'test')}/`))
+      .filter((f) => !f.startsWith(PROTOCOL + '/') && !f.includes(`${SRC}/test/`))
       .filter((f) => MARKER_DEFINITION.test(read(f)))
       .map((f) => relative(SRC, f))
     expect(elsewhere).toEqual([])

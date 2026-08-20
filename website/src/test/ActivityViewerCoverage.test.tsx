@@ -50,7 +50,8 @@ vi.mock('../components/MarkdownPanel', async () => {
   }
 })
 
-import ActivityViewer, { countDiffStats } from '../pages/chat/ActivityViewer'
+import ActivityViewer from '../pages/chat/ActivityViewer'
+import { countDiffStats } from '../utils/diffLineCounts'
 import { api } from '../api/client'
 import { createTestStore } from './helpers'
 import { openActivityToTab, selectSubagent } from '../store/chatSlice'

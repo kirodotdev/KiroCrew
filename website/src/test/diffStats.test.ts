@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { countLines } from '../components/FileChangeChips'
-import { countDiffStats } from '../pages/chat/ActivityViewer'
+// Both from `utils/diffLineCounts`, not from the component/page that re-exports
+// them: importing those pulled the Pierre diff runtime, framer-motion,
+// react-markdown, katex and highlight.js into this fork — measured 144.65s, of
+// which 51ms was the tests.
+import { countLines, countDiffStats } from '../utils/diffLineCounts'
 
-// Test countDiffStats logic (same as ActivityViewer's countDiffStats but exported from FileChangeChips as countLines)
 describe('countLines (diff stats)', () => {
   it('returns zeros for identical content', () => {
     expect(countLines('hello', 'hello')).toEqual({ added: 0, removed: 0 })

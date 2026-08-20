@@ -7,6 +7,7 @@ import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
+import { countDiffStats } from '../../utils/diffLineCounts'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -389,17 +390,12 @@ function LinksTab({
   )
 }
 
+// Re-exported so the symbol `ActivityViewer` exported before this extraction
+// stays importable from here; the implementation lives in `utils/diffLineCounts`
+// so a pure test need not pull this page's module graph.
+export { countDiffStats }
+
 /* ── Main component ── */
-
-
-export function countDiffStats(diff: string): { added: number; removed: number } {
-  let added = 0, removed = 0
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+') && !line.startsWith('+++')) added++
-    else if (line.startsWith('-') && !line.startsWith('---')) removed++
-  }
-  return { added, removed }
-}
 
 /* ── Resource-link list row ──────────────────────────────────────────────────
  * One row of the Links tab, left to right: a fixed-width type icon (pull-request

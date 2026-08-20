@@ -238,16 +238,45 @@ describe('apiTransport — exported blessed transport (not a registry)', () => {
     }
   })
 
-  it('methods are stable wrappers — destructuring at module-init must not throw', () => {
-    // extensions.ts is imported before client.ts in main.tsx, so an edition
-    // that destructures the transport at its own module-init could reach it
-    // before install. The wrappers resolve at CALL time, so destructuring is
-    // always safe (no import-ordering hazard); only calling before install
-    // would error, which never happens after startup.
-    expect(() => {
-      const { get, post, put } = apiTransport
-      return [get, post, put]
-    }).not.toThrow()
+  it('a reference destructured BEFORE install still forwards after it', async () => {
+    // The previous body only asserted that destructuring does not throw — a plain
+    // property read on an object literal, which cannot throw whatever the seam
+    // does, so the test held no matter how the wrappers were written.
+    //
+    // The invariant that actually matters for import order: `extensions.ts` is
+    // imported before `client.ts` in `main.tsx`, so an edition may capture
+    // `apiTransport.get` at its own module-init, BEFORE any transport is
+    // installed, and that captured reference must still reach the transport
+    // installed later. That is what "resolves at CALL time" buys, and it fails
+    // the moment a wrapper is replaced by a direct bind to `_installed`.
+    //
+    // Run it against a FRESH, uninstalled copy of the module rather than swapping
+    // the process-wide singleton the rest of this file's tests share: `_installed`
+    // has no getter, so the real transport cannot be read back to restore it, and
+    // installing `apiTransport` itself (the wrapper object) would make
+    // `_resolve().get()` call itself — unbounded recursion. `vi.resetModules()`
+    // gives an isolated instance whose `_installed` starts null, exactly the
+    // edition's module-init state.
+    vi.resetModules()
+    const fresh = await import('../api/apiTransport')
+
+    // Captured from the fresh module BEFORE anything is installed into it.
+    const { get } = fresh.apiTransport
+
+    const calls: string[] = []
+    fresh.installApiTransport({
+      ...fresh.apiTransport,
+      get: (async (url: string) => { calls.push(url); return 'from-stub' }) as typeof fresh.apiTransport.get,
+    })
+
+    // The pre-captured reference reaches the LATER-installed transport, which is
+    // exactly what an edition destructuring at module-init depends on.
+    await expect((get as (u: string) => Promise<unknown>)('/probe')).resolves.toBe('from-stub')
+    expect(calls).toEqual(['/probe'])
+
+    // Drop the isolated registry so the file's shared `apiTransport` import is
+    // untouched; the next importer gets the normal singleton again.
+    vi.resetModules()
   })
 })
 

@@ -19,6 +19,52 @@ async function* walkSource(dir: string): AsyncGenerator<string> {
   }
 }
 
+/**
+ * Every source file under `src/`, read ONCE and shared by the assertions below.
+ *
+ * Two things here are load-bearing, and both were measured on this tree (1285
+ * files):
+ *
+ *  1. **Read once, not once per test.** Each assertion below used to walk and
+ *     read the whole tree itself, so it was read four times over plus a fifth
+ *     pass for `src/apps`.
+ *  2. **Reads are CONCURRENT.** `for (const f of files) await readFile(f)` takes
+ *     **12.7s** here even with a warm page cache, while the same reads issued
+ *     together take **209ms** — a 60x gap, because the cost is per-file I/O
+ *     latency rather than throughput, and awaiting in a loop serializes it. That
+ *     serialization is what pushed these tests past the 15s per-test budget on a
+ *     Windows checkout, where per-file latency is higher: they failed for every
+ *     Windows contributor while passing on CI's Linux runner.
+ *
+ * Contents are normalized to LF because these assertions match multi-line shapes
+ * and split on '\n', which a CRLF checkout would otherwise break independently
+ * of the timing.
+ *
+ * A module-level promise rather than a `beforeAll`, so the work happens once per
+ * FILE and every test simply awaits the same result.
+ */
+const SOURCES: Promise<ReadonlyArray<{ file: string; src: string }>> = (async () => {
+  const files: string[] = []
+  for await (const file of walkSource(SRC)) files.push(file)
+  // Read in bounded windows rather than one `Promise.all` over all ~1288 files:
+  // an unbounded fan-out opens that many descriptors at once, which can exceed
+  // the per-process limit on a constrained runner. A window of 64 keeps almost
+  // all of the concurrency win (the 60x over serial is gone by ~8-16 in flight)
+  // while capping open descriptors.
+  const WINDOW = 64
+  const out: { file: string; src: string }[] = []
+  for (let i = 0; i < files.length; i += WINDOW) {
+    const batch = await Promise.all(
+      files.slice(i, i + WINDOW).map(async (file) => ({
+        file,
+        src: (await readFile(file, 'utf8')).replace(/\r\n/g, '\n'),
+      })),
+    )
+    out.push(...batch)
+  }
+  return out
+})()
+
 describe('narrow-first layout baseline', () => {
   it('never puts two conflicting horizontal paddings at the SAME breakpoint', async () => {
     // A literal sweep left `px-2 md:px-2 md:px-6` behind on one page. Both `md:`
@@ -35,8 +81,7 @@ describe('narrow-first layout baseline', () => {
     // those. Widening only adds candidates -- a candidate fails solely on a real
     // same-breakpoint collision.
     const offenders: string[] = []
-    for await (const file of walkSource(SRC)) {
-      const src = await readFile(file, 'utf8')
+    for (const { file, src } of await SOURCES) {
       for (const m of src.matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`]*)`/g)) {
         const cls = m[1] ?? m[2] ?? m[3] ?? ''
         for (const prefix of ['md:', 'sm:', 'lg:', 'xl:']) {
@@ -57,8 +102,7 @@ describe('narrow-first layout baseline', () => {
     // exception. That shape is what forced every narrow fix to pair an override
     // with a hand-synchronized negative margin somewhere else.
     const offenders: string[] = []
-    for await (const file of walkSource(SRC)) {
-      const src = await readFile(file, 'utf8')
+    for (const { file, src } of await SOURCES) {
       if (/\bmax-(?:md|sm|lg):/.test(src)) offenders.push(file.replace(SRC, 'src'))
     }
     expect(offenders, 'write `foo md:bar` instead: unprefixed is the phone')
@@ -78,8 +122,7 @@ describe('narrow-first layout baseline', () => {
     // file holding both spellings, because that is a visible misalignment between
     // a header and the rows under it.
     const offenders: string[] = []
-    for await (const file of walkSource(SRC)) {
-      const src = await readFile(file, 'utf8')
+    for (const { file, src } of await SOURCES) {
       if (!src.includes('px-4 md:px-6')) continue
       const stripped = src.replace(/(?<![\w:-])(?:md|sm|lg|xl):px-6/g, '')
       for (const [i, line] of stripped.split('\n').entries()) {
@@ -107,8 +150,8 @@ describe('narrow-first layout baseline', () => {
     // carry no gutter at all. A pill's own padding (`rounded-full px-6`) is not
     // a gutter either.
     const offenders: string[] = []
-    for await (const file of walkSource(join(SRC, 'apps'))) {
-      const src = await readFile(file, 'utf8')
+    const appsRoot = join(SRC, 'apps')
+    for (const { file, src } of (await SOURCES).filter(s => s.file.startsWith(appsRoot))) {
       const stripped = src.replace(/(?<![\w:-])(?:md|sm|lg|xl):px-6/g, '')
       for (const [i, line] of stripped.split('\n').entries()) {
         if (!/(?<![\w:-])px-6/.test(line)) continue
@@ -215,8 +258,7 @@ describe('narrow-first layout baseline', () => {
     const CONTENT_WIDTH_VAR = '--mc-content-width'
     const NEAR = 200
     const offenders: string[] = []
-    for await (const file of walkSource(SRC)) {
-      const src = await readFile(file, 'utf8')
+    for (const { file, src } of await SOURCES) {
       for (const m of src.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
         const tokens = (m[1] ?? m[2] ?? '').split(/\s+/)
         if (!tokens.includes('mx-auto') || !tokens.includes('w-full')) continue

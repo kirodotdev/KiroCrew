@@ -121,6 +121,11 @@ describe('ArtifactsPage keeps the axis on the page at one column', () => {
     vi.clearAllMocks()
     listProps.scrollerRef = undefined
     mobile = true
+    // Cleared first: the page reads four `mc-artifacts-*` keys (`view`,
+    // `pinned-only`, `sort`, `session-docs-collapsed`) and this fixture seeds two,
+    // so without the clear the other two carry over from whatever ran before —
+    // the fixture would be only partly determined by itself.
+    localStorage.clear()
     localStorage.setItem('mc-artifacts-view', 'grid')
     localStorage.setItem('mc-artifacts-pinned-only', '0')
   })

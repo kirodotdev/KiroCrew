@@ -59,6 +59,41 @@ const boundary = (term: string) => {
   return new RegExp(`(?<!\\w)(?<!\\w\\.)${t}(?!\\w)(?!\\.\\w)`)
 }
 
+/**
+ * The DNT patterns, compiled ONCE, paired with the term for the report.
+ *
+ * `boundary()` used to be called in the innermost loop, so the same 41 patterns
+ * were recompiled for every key in every catalog: 41 terms x 6884 keys x 11
+ * catalogs = **3.1 MILLION** `new RegExp` constructions per test, twice over
+ * (both tests below run the identical scan). That is what put this file at
+ * 29-41s of test time against the 15s per-test budget — it failed on load, from
+ * a cost that is entirely avoidable rather than inherent to what it checks.
+ */
+const DNT_PATTERNS: ReadonlyArray<{ term: string; re: RegExp }> =
+  glossary.dnt.map((term) => ({ term, re: boundary(term) }))
+
+/**
+ * Every DNT violation in the catalogs, computed ONCE and shared by both tests.
+ *
+ * They ask two different questions of the same scan — "at most the baseline"
+ * and "exactly the baseline, so tighten it" — so running it twice doubled the
+ * cost for no additional coverage.
+ */
+const DROPPED: ReadonlyArray<string> = (() => {
+  const out: string[] = []
+  for (const [code, catalog] of Object.entries(catalogs)) {
+    if (code === DEFAULT_LANGUAGE) continue
+    for (const [key, value] of Object.entries(catalog)) {
+      const source = en[key]
+      if (source === undefined) continue
+      for (const { term, re } of DNT_PATTERNS) {
+        if (re.test(source) && !re.test(value)) out.push(`${code}:${key} [${term}]`)
+      }
+    }
+  }
+  return out
+})()
+
 describe('glossary', () => {
   it('glossary.json is well formed', () => {
     expect(Array.isArray(glossary.dnt)).toBe(true)
@@ -66,42 +101,18 @@ describe('glossary', () => {
   })
 
   it('do-not-translate terms are not dropped in translation', () => {
-    const dropped: string[] = []
-    for (const [code, catalog] of Object.entries(catalogs)) {
-      if (code === DEFAULT_LANGUAGE) continue
-      for (const [key, value] of Object.entries(catalog)) {
-        const source = en[key]
-        if (source === undefined) continue
-        for (const term of glossary.dnt) {
-          const re = boundary(term)
-          if (re.test(source) && !re.test(value)) dropped.push(`${code}:${key} [${term}]`)
-        }
-      }
-    }
     expect(
-      dropped.length,
-      `${dropped.length} translations dropped a product name (baseline ${DNT_BASELINE}).\n`
-        + `${dropped.slice(0, 8).map((d) => `  ${d}`).join('\n')}\n`
+      DROPPED.length,
+      `${DROPPED.length} translations dropped a product name (baseline ${DNT_BASELINE}).\n`
+        + `${DROPPED.slice(0, 8).map((d) => `  ${d}`).join('\n')}\n`
         + 'Lower the baseline when violations are fixed.',
     ).toBeLessThanOrEqual(DNT_BASELINE)
   })
 
   it('ratchet: report exact DNT count for tightening', () => {
-    const dropped: string[] = []
-    for (const [code, catalog] of Object.entries(catalogs)) {
-      if (code === DEFAULT_LANGUAGE) continue
-      for (const [key, value] of Object.entries(catalog)) {
-        const source = en[key]
-        if (source === undefined) continue
-        for (const term of glossary.dnt) {
-          const re = boundary(term)
-          if (re.test(source) && !re.test(value)) dropped.push(`${code}:${key}`)
-        }
-      }
-    }
     expect(
-      dropped.length,
-      `only ${dropped.length} now — lower DNT_BASELINE to ${dropped.length}`,
+      DROPPED.length,
+      `only ${DROPPED.length} now — lower DNT_BASELINE to ${DROPPED.length}`,
     ).toBe(DNT_BASELINE)
   })
 })
