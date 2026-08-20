@@ -3,6 +3,18 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The advisory Design/UX review lanes now verify their own current-head
+  proof marker.** `design-review.yml`, `ux-review.yml` and their fork
+  counterparts emit `[DESIGN-REVIEWED] <sha>` / `[UX-REVIEWED] <sha>` but
+  scored the verdict off the `Design-Verdict:` / `UX-Verdict:` header
+  ALONE, which made the marker decorative: a reply carrying a stale or
+  rewritten marker still counted as a verdict for the current revision, so
+  a badge could assert "reviewed at this sha" without that ever being
+  checked. All four lanes now require the exact current-head marker and
+  degrade to the existing non-blocking "could not complete" path when it
+  is absent or mismatched, rather than inventing a verdict. The check uses
+  a here-string so a long summary cannot manufacture a SIGPIPE status
+  under `pipefail`. (#3447)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only

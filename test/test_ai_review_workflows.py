@@ -1005,6 +1005,81 @@ class TestFirstPrinciplesScopeGateBehavior:
         assert (out.stdout == "true") is want, f"{lane}: {touched!r} -> {out.stdout!r}"
 
 
+ADVISORY_LANES = {
+    "design-review.yml": "DESIGN-REVIEWED",
+    "fork-design-review.yml": "DESIGN-REVIEWED",
+    "ux-review.yml": "UX-REVIEWED",
+    "fork-ux-review.yml": "UX-REVIEWED",
+}
+
+
+class TestAdvisoryVerdictRequiresCurrentHeadMarker:
+    """#3447 defect 2: the advisory lanes emitted a `[<LANE>-REVIEWED] <sha>`
+    proof marker but scored the verdict off the header ALONE, so the marker was
+    decorative -- a reply carrying a stale or rewritten marker still counted as
+    a verdict for the current revision.
+
+    These lanes are non-blocking, so the failure is not a bad merge gate; it is
+    a badge that asserts "reviewed at this sha" without that being checked.
+    """
+
+    @pytest.mark.parametrize(("lane", "marker"), sorted(ADVISORY_LANES.items()))
+    def test_the_head_marker_is_verified_not_just_emitted(
+        self, lane: str, marker: str
+    ) -> None:
+        flat = _flat(_workflow(lane))
+        assert f'grep -qF "[{marker}] $HEAD"' in flat or (
+            f'grep -qF "[{marker}] ${{HEAD:-}}"' in flat
+        ), f"{lane}: verdict is accepted without proving the marker matches HEAD"
+        assert 'verdict="UNKNOWN"' in flat, (
+            f"{lane}: a missing marker must degrade to the existing "
+            "non-blocking UNKNOWN path, not invent a verdict"
+        )
+
+    @pytest.mark.parametrize(("lane", "marker"), sorted(ADVISORY_LANES.items()))
+    def test_the_marker_check_does_not_reintroduce_the_pipe_bug(
+        self, lane: str, marker: str
+    ) -> None:
+        """The check must not be `printf … | grep -q`: under `pipefail` a long
+        summary lets grep exit first, and the SIGPIPE status would silently
+        turn every verdict into UNKNOWN (same defect as #3447's defect 3)."""
+        flat = _flat(_workflow(lane))
+        i = flat.index(f"[{marker}] $")
+        window = flat[max(0, i - 200):i]
+        assert "printf" not in window.split("if ")[-1], (
+            f"{lane}: marker check pipes a writer into grep"
+        )
+
+    @pytest.mark.parametrize("marker", ["DESIGN-REVIEWED", "UX-REVIEWED"])
+    def test_marker_matching_is_literal_and_head_scoped(self, marker: str) -> None:
+        """Behavioural: the guard accepts only the CURRENT head's marker.
+
+        `grep -qF` matters -- the marker is bracketed, and those are regex
+        metacharacters, so a non-fixed match would not mean what it reads as.
+        """
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("the guard runs only under Bash")
+        script = (
+            "set -uo pipefail\n"
+            'if ! grep -qF "[%s] $HEAD" <<< "$SUMMARY"; then\n'
+            '  echo UNKNOWN\nelse\n  echo KEPT\nfi'
+        ) % marker
+        cases = {
+            f"Verdict: PASS\n[{marker}] abc123": "KEPT",
+            f"Verdict: PASS\n[{marker}] deadbeef": "UNKNOWN",
+            "Verdict: PASS": "UNKNOWN",
+        }
+        for summary, want in cases.items():
+            out = subprocess.run(
+                [bash, "-c", script],
+                check=False, capture_output=True, text=True,
+                env={**os.environ, "HEAD": "abc123", "SUMMARY": summary},
+            )
+            assert out.returncode == 0, out.stderr
+            assert out.stdout.strip() == want, f"{summary!r} -> {out.stdout!r}"
+
+
 class TestPreparePrPreSubmitReview:
     def test_two_read_only_reviewers_run_before_the_first_push(self) -> None:
         skill = _prepare_pr_skill()
