@@ -1,8 +1,18 @@
 /** Append resolve=1 for relative paths. The backend resolves such paths
  * against KIROCREW_PROJECT_DIR; absolute and ~-paths pass through unchanged. */
 function withResolve(url: string, filePath: string): string {
-  const relative = !filePath.startsWith('/') && !filePath.startsWith('~')
-  return relative ? url + '&resolve=1' : url
+  return isAbsolute(filePath) ? url : url + '&resolve=1'
+}
+
+/** Is this path already absolute, i.e. NOT to be resolved against the project dir?
+ *
+ * Covers the Windows shapes as well as the POSIX ones: a drive-qualified path
+ * (`C:\x`, `C:/x`) and a UNC path (`\\host\share\x`) are absolute, and marking
+ * them `resolve=1` mislabels them. The backend currently passes drive and UNC
+ * shapes through its resolver untouched, so the flag is inert today — but the
+ * classification is what the caller is asserting, so it should be true. */
+function isAbsolute(filePath: string): boolean {
+  return /^([~/]|[A-Za-z]:[\\/]|\\\\)/.test(filePath)
 }
 
 /** Build the /api/file-read URL, appending resolve=1 for relative paths. */

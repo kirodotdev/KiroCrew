@@ -2292,21 +2292,40 @@ HOOK_UPDATE_SCHEMA = ToolSchema(
 
 # ── Tool Schemas (File I/O) ──
 
+#: Syntactic shape gate for a filesystem path arriving over the dashboard's
+#: file endpoints. It admits POSIX (``/x``, ``~/x``) *and* native Windows
+#: (``C:\x``, ``C:/x``, UNC ``\\host\share\x``) absolute paths. A prefix is
+#: still required, so a bare relative path is refused exactly as before --
+#: the endpoints that support relative input rewrite it to an absolute path
+#: via ``_resolve_project_relative`` under ``resolve=1``, ahead of this gate.
+#:
+#: One pattern rather than a ``sys.platform`` branch: a drive letter and a UNC
+#: root have no meaning on POSIX, so accepting those shapes there admits no
+#: path that was previously unreachable, and a single pattern cannot drift
+#: between platforms the way two would. This is a *syntax* gate only -- the
+#: security boundary is downstream, where ``hooks.validate_file_path``
+#: canonicalizes through ``realpath`` (resolving ``..`` and following symlinks)
+#: and refuses the resolved target via ``is_sensitive_path``.
+#:
+#: The prefix alternation is matched separately from the body so that ``:``
+#: stays confined to a drive prefix: an NTFS alternate data stream
+#: (``C:\x\file.txt:hidden``, which reads a different byte stream than the path
+#: the caller appears to name) has a ``:`` in the body and is still refused.
+#: A drive-relative path (``C:x``) is likewise refused -- it resolves against a
+#: per-drive working directory the caller cannot see.
+_FS_PATH_PATTERN = re.compile(r"^(?:[~/]|[A-Za-z]:[\\/]|\\\\)[-\w.@~/\\ ]+$")
+
 FILE_READ_SCHEMA = ToolSchema(
     tool_name="file_read",
     fields=[
-        FieldSpec(
-            "path", str, required=True, max_len=4096, pattern=re.compile(r"^[~/][-\w.@~/ ]+$")
-        ),
+        FieldSpec("path", str, required=True, max_len=4096, pattern=_FS_PATH_PATTERN),
     ],
 )
 
 FILE_WRITE_SCHEMA = ToolSchema(
     tool_name="file_write",
     fields=[
-        FieldSpec(
-            "path", str, required=True, max_len=4096, pattern=re.compile(r"^[~/][-\w.@~/ ]+$")
-        ),
+        FieldSpec("path", str, required=True, max_len=4096, pattern=_FS_PATH_PATTERN),
         FieldSpec("content", str, required=True, max_len=512000),
     ],
 )

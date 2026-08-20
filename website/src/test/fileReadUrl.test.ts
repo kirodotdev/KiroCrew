@@ -34,6 +34,26 @@ describe('fileReadUrl', () => {
     expect(url).toContain('resolve=1')
     expect(url).toContain(encodeURIComponent('home/user/project/notes.md'))
   })
+
+  // A Windows path starts with neither `/` nor `~`, so the original
+  // relative-path test classified every one of them as project-relative and
+  // appended resolve=1. Inert against today's backend (its resolver passes
+  // drive and UNC shapes through untouched) but the wrong assertion to send.
+  it.each([
+    ['C:\\Users\\me\\workspace\\notes.md', 'a drive path with backslashes'],
+    ['C:/Users/me/workspace/notes.md', 'a drive path with forward slashes'],
+    ['\\\\host\\share\\notes.md', 'a UNC path'],
+  ])('treats %s as absolute (%s)', (path) => {
+    const url = fileReadUrl(path)
+    expect(url).toBe('/api/file-read?path=' + encodeURIComponent(path))
+    expect(url).not.toContain('resolve=1')
+  })
+
+  it('a drive-relative path is still relative — it has no root', () => {
+    // `C:notes.md` resolves against a per-drive working directory, so it is not
+    // absolute and the backend schema refuses it outright.
+    expect(fileReadUrl('C:notes.md')).toContain('resolve=1')
+  })
 })
 
 describe('fileDownloadUrl', () => {

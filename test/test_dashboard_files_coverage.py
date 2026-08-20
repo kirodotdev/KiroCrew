@@ -79,30 +79,15 @@ def _get_app(route: str, handler) -> web.Application:
 # ── /api/file-read ──
 
 
-# Every test below that hands a real `tmp_path` to the file-read/write/watch
-# endpoints is POSIX-only, because the PRODUCT rejects native Windows paths
-# before any branch under test is reached: FILE_READ_SCHEMA / FILE_WRITE_SCHEMA
-# in validation.py pin `path` to `^[~/][-\w.@~/ ]+$`, which admits neither the
-# `C:` drive prefix nor a backslash separator. A Windows tmp_path like
-# `C:\Users\runneradmin\AppData\Local\Temp\pytest-...` therefore 400s as
-# "invalid input" no matter what the endpoint would otherwise do.
-#
-# This is the same defect class as deploy's `_LOCAL_DIR_RE` (reported from the
-# first coverage wave): a POSIX-shaped allowlist guarding a path that reaches
-# real file I/O. Widening it is security-relevant and belongs in its own
-# reviewed change, NOT in a coverage PR -- so these classes are skipped on
-# win32 and will start covering Windows for free once the schema is fixed.
-_WINDOWS_PATH_DEFECT = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "FILE_READ/WRITE_SCHEMA reject native Windows paths (no drive letter or "
-        "backslash in the allowed pattern), so every request 400s before the "
-        "branch under test -- product defect, not a test defect"
-    ),
-)
-
-
-@_WINDOWS_PATH_DEFECT
+# Every test below hands a real `tmp_path` to the file-read/write/watch
+# endpoints, so it exercises a native Windows path on Windows and a POSIX one
+# elsewhere. That works because `_FS_PATH_PATTERN` in validation.py -- the
+# syntax gate FILE_READ_SCHEMA / FILE_WRITE_SCHEMA pin `path` to -- admits the
+# `C:` drive prefix and the backslash separator alongside the POSIX shapes.
+# Before it did, a Windows `tmp_path` like
+# `C:\Users\runneradmin\AppData\Local\Temp\pytest-...` 400'd as "invalid input"
+# ahead of every branch under test, so these three classes were skipped on
+# win32 and the endpoints had no Windows coverage at all.
 class TestFileRead:
     @staticmethod
     def _client_app() -> web.Application:
@@ -257,7 +242,6 @@ class TestFileRead:
 # ── /api/file-write ──
 
 
-@_WINDOWS_PATH_DEFECT
 class TestFileWrite:
     @staticmethod
     def _client_app() -> web.Application:
@@ -485,7 +469,6 @@ class TestFileRaw:
 # ── /api/file-watch ──
 
 
-@_WINDOWS_PATH_DEFECT
 class TestFileWatch:
     @staticmethod
     def _client_app() -> web.Application:
