@@ -487,6 +487,32 @@ def _mentions_skill_basename(raw_params: dict | None, command: str | None) -> bo
     return False
 
 
+def _disabled_app_names() -> frozenset[str]:
+    """Installed apps that are currently DISABLED.
+
+    Used to keep a disabled app's bundled skills out of trigger matching.
+    ``bridges`` registers each app skill under ``skills/<app>/<skill>`` (plus a
+    flat link), so the first path segment names the owning app.
+
+    Read once per matching pass rather than per skill: this runs on every
+    message, and ``is_app_enabled`` reads a JSON file per call. Failures return
+    an EMPTY set on purpose — the gate then hides nothing, which keeps a
+    transient read error from silently stripping an enabled app's skills.
+    Deferred import: ``apps.manager`` is a higher layer than this module.
+    """
+    try:
+        from kiro_crew.apps.manager import list_apps
+
+        return frozenset(
+            str(a.get("name"))
+            for a in list_apps()
+            if a.get("name") and not a.get("enabled")
+        )
+    except Exception:
+        logger.debug("skills: could not read app enablement", exc_info=True)
+        return frozenset()
+
+
 def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
     """Recursively find all SKILL.md files under *base*.
 
@@ -1502,6 +1528,38 @@ class SkillsLoader:
                 }
             )
         return skills
+
+    def _owning_app(self, name: str, skill_file: Path) -> str | None:
+        """The app whose bundle this skill came from, or ``None``.
+
+        Two shapes have to resolve to the same owner, because ``bridges``
+        registers every app skill twice and either registration can be the one
+        this walk kept (see ``_iter_skill_files``'s ``seen_real`` note):
+
+        * the namespaced ``skills/<app>/<skill>`` directory — the first segment
+          of ``name`` IS the app;
+        * the flat ``skills/<skill>`` link, whose name says nothing — so the
+          real path is consulted, and an app-owned skill resolves inside that
+          app's own package tree.
+
+        Path-shaped, not manifest-shaped, on purpose: it must answer for a
+        third-party app just as well as a builtin, and the registration layout
+        is the one thing every app shares.
+        """
+        head = name.split("/", 1)[0]
+        if head != name:
+            return head
+        try:
+            from kiro_crew.apps.manager import apps_dir
+
+            real = Path(os.path.realpath(skill_file))
+            root = apps_dir()
+            if real.is_relative_to(root):
+                # <apps root>/<app>/... — the segment directly under the root.
+                return real.relative_to(root).parts[0]
+        except Exception:
+            return None
+        return None
 
     def _owned_hint(self, skill_file: Path) -> bool:
         """Whether *skill_file* sits under the directory Kiro Crew owns.
@@ -3497,12 +3555,21 @@ class SkillsLoader:
         Returns up to ``max_triggered`` skills sorted by best overlap score.
         """
         text_words = set(re.findall(r"\w+", text.lower()))
+        # Disabling an app must actually stop its skills loading. The skill tree
+        # an app bundles was never gated on the app's enabled state, so a
+        # disabled app's skills stayed in this index and kept matching into
+        # every turn's context on generic trigger words — burning tokens and
+        # polluting the prompt for an app the user explicitly opted out of,
+        # with no visible reason (#4023).
+        disabled_apps = _disabled_app_names()
 
         scored: list[tuple[str, float]] = []
         # Skills a negative trigger actively excluded — a permission DENY that
         # must still be audited (see the audit event below).
         negated_skills: list[str] = []
         for name, skill_file in self._iter():
+            if disabled_apps and self._owning_app(name, skill_file) in disabled_apps:
+                continue
             meta = self._cached_frontmatter(skill_file)
             if meta.get("always", "").lower() == "true":
                 continue
