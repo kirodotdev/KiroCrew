@@ -1142,6 +1142,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # run twice. Nothing redacted here is written or shown — the ledger and
         # the transcript keep the original text.
         "dashboard/steer_settle.py",
+        # DETECTOR, not a redactor: scans candidate frontend bytes and discards the
+        # redacted output. Admission either preserves those original bytes unchanged
+        # or aborts the dist injection, so this module owns no redacted egress.
+        "cloud/source.py",
         # DETECTOR, not a redactor: the pre-push content scan calls both scanners only
         # to COUNT findings and then refuses the push. It deliberately discards the
         # cleaned text — rewriting a code diff would corrupt the very fix the gate

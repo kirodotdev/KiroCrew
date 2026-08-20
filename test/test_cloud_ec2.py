@@ -596,9 +596,18 @@ class TestDeployDryRun:
 class TestDeployShipsSource:
     def test_deploy_uploads_source_and_passes_params(self, monkeypatch):
         import kiro_crew.cloud.source as source_mod
+        from kiro_crew import frontend as frontend_mod
 
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
         monkeypatch.setattr(source_mod, "ensure_instance_boundary", lambda *a, **k: _BOUNDARY_ARN)
+
+        # Launch must NEVER rebuild the frontend: on a source install
+        # static/dist is the LIVE tree the local gateway serves, and an
+        # in-launch npm build would empty/replace it mid-serve.
+        def _never_build(*a, **k):
+            raise AssertionError("ec2.deploy must not call frontend.build_and_stage")
+
+        monkeypatch.setattr(frontend_mod, "build_and_stage", _never_build)
         monkeypatch.setattr(
             source_mod,
             "upload_source",

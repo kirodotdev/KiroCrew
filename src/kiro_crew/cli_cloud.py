@@ -18,7 +18,7 @@ import sys
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import login as login_mod
-from kiro_crew.cloud import sizes, ssm, ui, wizard
+from kiro_crew.cloud import sizes, source, ssm, ui, wizard
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
 from kiro_crew.deploy.engine import resolve_aws_bin
@@ -118,6 +118,14 @@ def _cloud_connect(args: argparse.Namespace) -> int:
         ui.fail(str(exc))
         return 1
     if conn.ready and conn.url:
+        # Warn early if the box serves the "Dashboard HTML not found" page (no
+        # static/dist) instead of letting the user open a broken dashboard.
+        # Deferred import: cli_server pulls the gateway's heavy module chain
+        # (vector_memory → numpy), which must not load at CLI import time
+        # (test_cli_lazy_imports, issue #3504).
+        from kiro_crew.cli_server import _probe_dashboard_health
+
+        _probe_dashboard_health(conn.local_port)
         if not conn.token:
             # Tunnel is up but the token mint failed — the URL will hit the
             # dashboard's login wall. Say so instead of implying it's ready.
@@ -389,6 +397,19 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     else:
         ui.fail("AWS not reachable")
         ui.detail(reach.get("note", ""))
+    # A launch builds the stock frontend from the exact source archive in an
+    # isolated temporary tree, so a residual gitignored static/dist can never
+    # influence what ships. Doctor checks only the local prerequisites; the
+    # packaging path remains fail-closed and falls back to the box build.
+    try:
+        reason = source.dist_ineligible_reason(source.repo_root())
+    except Exception as exc:
+        reason = f"could not inspect the checkout ({exc})"
+    if not reason:
+        ui.ok("frontend source ready (launch builds an isolated prebuilt bundle)")
+    else:
+        ui.warn(f"frontend cannot be prebuilt for launch: {reason}")
+        ui.detail("The box will use its required npm-build fallback.")
     return 0
 
 

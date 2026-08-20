@@ -565,6 +565,11 @@ def deploy(
     # access needed). Fall back to a git clone only if source shipping is off.
     source_bucket = source_key = ""
     if ship_source:
+        # Build the stock frontend from website/ inside the exact filtered source
+        # archive, then inject its admitted bytes. The temporary build never
+        # mutates the checkout's live website/dist or trusts its ignored
+        # static/dist; failure leaves the source archive unchanged so the box
+        # uses its required npm-build fallback.
         source_bucket, source_key = source_mod.upload_source(tag, profile, region)
 
     def _cleanup_uploaded_source() -> None:

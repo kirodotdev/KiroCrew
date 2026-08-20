@@ -361,7 +361,40 @@ cd "$KIROCREW_APP_DIR"
 # ── Frontend (npm + vite) ──
 # Vite emits to website/dist; we stage it into src/kiro_crew/static/dist
 # where setup.py copies it into the package at install time.
-if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
+# A launch that ships the prebuilt bundle (kirocrew cloud launch injects it
+# into the source tarball) skips this step entirely — the on-box npm build is
+# the fallback path. The skip is gated on KIROCREW_REQUIRE_FRONTEND=1 (exported
+# by the CFn template) so it only fires on cloud boxes: a LOCAL checkout also
+# has a staged static/dist (a symlink on source installs), and skipping there
+# would freeze the dashboard on whatever was built last. index.html alone does
+# not prove a usable bundle: a torn staging or interrupted earlier build can
+# leave an index whose hashed chunks are missing, and an install RETRY that
+# trusted it would skip the rebuild and serve a shell whose every chunk 404s.
+# So the skip additionally requires every /assets/ chunk the index references
+# to exist (the same completeness signal frontend._incomplete_bundle_reason
+# uses); an incomplete tree falls through to the npm rebuild below. A cloud box
+# that ends up with no dist is failed by the existing gates:
+# KIROCREW_REQUIRE_FRONTEND=1 makes a build failure fatal below, and the
+# template's own DIST_INDEX check fails the stack before the gateway starts.
+# Local installs stay non-fatal.
+_dist_bundle_complete() {
+    # Complete = index.html exists and every /assets/*.js|.css it references
+    # is present on disk. Gateway-served routes (/manifest.js) are not under
+    # /assets/ and are deliberately not matched.
+    local _dist_dir _refs _ref
+    _dist_dir="$1"
+    [ -f "$_dist_dir/index.html" ] || return 1
+    _refs="$(grep -oE '(src|href)="/assets/[^"?#]+\.(js|css)"' \
+        "$_dist_dir/index.html" 2>/dev/null | sed -E 's/^[^"]*"//; s/"$//')"
+    for _ref in $_refs; do
+        [ -f "$_dist_dir$_ref" ] || return 1
+    done
+    return 0
+}
+if [ "${KIROCREW_REQUIRE_FRONTEND:-0}" = "1" ] \
+    && _dist_bundle_complete "$KIROCREW_APP_DIR/src/kiro_crew/static/dist"; then
+    ok "Frontend shipped pre-built — skipping npm build"
+elif has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     info "Building frontend (website/)…"
     _fe_log="$(mktemp)"
     (
