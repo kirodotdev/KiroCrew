@@ -3282,7 +3282,10 @@ class TestRestoreCollision:
         rmtree_call_count = 0
         original_rmtree = __import__("shutil").rmtree
 
-        def _stubborn_rmtree(path, ignore_errors=False):
+        # `**kwargs` absorbs the `onexc=`/`onerror=` hook that
+        # `platform_compat.rmtree_force` passes: the removal this test pins is
+        # the one that CANNOT delete dest, whichever spelling the caller uses.
+        def _stubborn_rmtree(path, ignore_errors=False, **kwargs):
             nonlocal rmtree_call_count
             rmtree_call_count += 1
             # ALL rmtree calls on dest silently fail (simulating locked files).

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1733,3 +1735,139 @@ class TestCatalogFailureNeverBreaksTheStore:
             await self._rows(monkeypatch)
         assert any("catalog" in r.message for r in caplog.records)
         assert any(r.exc_info for r in caplog.records), "expected a traceback"
+
+
+# ---------------------------------------------------------------------------
+# A failed FRESH clone must actually remove the partial checkout on Windows.
+#
+# git writes `.git/objects/pack/*.{pack,idx,rev}` read-only. On Windows that is
+# FILE_ATTRIBUTE_READONLY, so `shutil.rmtree(..., ignore_errors=True)` cannot
+# unlink them and silently reports success over a tree that is still on disk.
+# The update path already copes with a surviving tree -- its `finally` moves the
+# leftover aside so the restore rename cannot collide -- but the fresh-install
+# path had no such guard, so the leftover became permanent: the next install
+# sees `dest/.git` with a matching origin, takes the fast-forward branch, and
+# `git pull` in a never-finished clone fails on every retry.
+#
+# POSIX cannot express this: the read-only bit there does not govern unlink (the
+# parent directory's write permission does), so `rmtree` succeeds either way and
+# the test would be green before the fix. Hence a platform gate rather than a
+# simulated failure -- the real file attribute is the entire mechanism.
+# ---------------------------------------------------------------------------
+
+
+def _partial_clone(dest):
+    """What a `git clone` killed partway through leaves behind at *dest*."""
+    pack = dest / ".git" / "objects" / "pack"
+    pack.mkdir(parents=True, exist_ok=True)
+    (dest / ".git" / "config").write_text(
+        '[remote "origin"]\n\turl = https://example.com/demo.git\n', encoding="utf-8"
+    )
+    blob = pack / "pack-0123456789abcdef0123456789abcdef01234567.pack"
+    blob.write_bytes(b"PACK")
+    os.chmod(blob, stat.S_IREAD)
+    return blob
+
+
+def _fresh_clone_harness(monkeypatch, dest, *, mode):
+    """Patch registry so a fresh clone into *dest* fails in *mode*."""
+    monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
+    monkeypatch.setattr(registry, "_kill_process_group", AsyncMock())
+    monkeypatch.setattr(registry, "_CLONE_TIMEOUT", 0.05)
+
+    class _Proc:
+        returncode = 1 if mode == "exit" else 0
+        pid = 4242
+
+        async def communicate(self):
+            if mode == "timeout":
+                await asyncio.sleep(30)
+            if mode == "cancel":
+                raise asyncio.CancelledError()
+            return b"fatal: early EOF", b""
+
+    async def _fake_spawn(*argv, **kwargs):
+        # git created the destination and wrote pack files before it died.
+        _partial_clone(dest)
+        return _Proc()
+
+    monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    platform_compat.IS_POSIX,
+    reason="the read-only attribute only blocks unlink on Windows",
+)
+@pytest.mark.parametrize("mode", ["exit", "timeout", "cancel"])
+async def test_failed_fresh_clone_removes_read_only_partial_checkout(
+    monkeypatch, tmp_path, mode
+):
+    """Every fresh-clone failure exit must leave no destination behind."""
+    dest = tmp_path / "app-sources" / "demoapp"
+    _fresh_clone_harness(monkeypatch, dest, mode=mode)
+
+    if mode == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await registry._git_clone_or_pull(
+                "https://example.com/demo.git", "main", dest, []
+            )
+    else:
+        err = await registry._git_clone_or_pull(
+            "https://example.com/demo.git", "main", dest, []
+        )
+        assert err is not None and err["ok"] is False
+
+    assert not dest.exists(), (
+        "the partial checkout survived: the next install would find its .git, "
+        "take the fast-forward branch and fail on every retry"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    platform_compat.IS_POSIX,
+    reason="the read-only attribute only blocks unlink on Windows",
+)
+async def test_failed_pinned_fetch_removes_read_only_partial_checkout(
+    monkeypatch, tmp_path
+):
+    """The pinned path materialises its own destination with `git init`; a failed
+    fetch must discard it as completely as the clone path does."""
+    dest = tmp_path / "app-sources" / "pinnedapp"
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
+    monkeypatch.setattr(registry, "_kill_process_group", AsyncMock())
+
+    class _Proc:
+        pid = 4242
+
+        def __init__(self, rc):
+            self.returncode = rc
+
+        async def communicate(self):
+            return b"fatal: could not read from remote repository", b""
+
+    async def _fake_spawn(*argv, **kwargs):
+        if "init" in argv:
+            _partial_clone(dest)  # git init made it; the fetch left pack files
+            return _Proc(0)
+        if "fetch" in argv:
+            return _Proc(1)
+        return _Proc(0)
+
+    monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
+
+    err = await registry._git_fetch_commit(
+        "https://example.com/demo.git",
+        "a" * 40,
+        dest,
+        [],
+        clone_env={},
+        sandbox_mode="strict",
+    )
+
+    assert err is not None and err["ok"] is False
+    assert not dest.exists(), "the pinned path left an undeletable checkout behind"

@@ -3487,8 +3487,11 @@ async def _git_fetch_commit(
         succeeded = True
         return None
     finally:
+        # `created_here` means the destination is this call's own `git init`, so a
+        # failed fetch leaves a repository holding read-only pack files -- the same
+        # removal requirement as the clone path in `_git_clone_or_pull`.
         if created_here and not succeeded:
-            await asyncio.to_thread(shutil.rmtree, dest, True)
+            await asyncio.to_thread(platform_compat.rmtree_force, dest)
 
 
 async def _git_clone_or_pull(
@@ -3739,19 +3742,33 @@ async def _git_clone_or_pull(
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             env=clone_env,
         )
+        # `rmtree_force`, never `shutil.rmtree(..., ignore_errors=True)`: what a
+        # half-finished `git clone` leaves at *dest* is a git checkout, and git
+        # creates `.git/objects/pack/*.{pack,idx,rev}` READ-ONLY. On Windows that
+        # is the FILE_ATTRIBUTE_READONLY bit, so the unlink raises, `ignore_errors`
+        # swallows it, and the tree stays on disk while this returns an error the
+        # caller reads as "nothing was left behind".
+        #
+        # Only the FRESH-INSTALL path reaches the three removals below; when an
+        # existing checkout was moved aside the `finally` owns the unwind and
+        # already copes with a surviving tree. That asymmetry is the bug: with
+        # nothing moved aside, an undeletable partial clone is never noticed, and
+        # the next install finds `dest/.git` present with a matching origin and
+        # takes the fast-forward branch instead -- `git pull` in a repo the clone
+        # never finished, which fails, so every retry of that install fails too.
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
             log_lines.append(stdout.decode(errors="replace").strip())
         except asyncio.TimeoutError:
             await _kill_process_group(proc)
-            await asyncio.to_thread(shutil.rmtree, dest, True)
+            await asyncio.to_thread(platform_compat.rmtree_force, dest)
             return {"ok": False, "name": dest.name, "error": "git clone timed out"}
         except asyncio.CancelledError:
             await _kill_process_group(proc)
-            await asyncio.to_thread(shutil.rmtree, dest, True)
+            await asyncio.to_thread(platform_compat.rmtree_force, dest)
             raise
         if proc.returncode != 0:
-            await asyncio.to_thread(shutil.rmtree, dest, True)
+            await asyncio.to_thread(platform_compat.rmtree_force, dest)
             return {"ok": False, "name": dest.name, "error": "git clone failed"}
         clone_succeeded = True
         return None
@@ -3773,10 +3790,12 @@ async def _git_clone_or_pull(
             else:
                 # Clone did NOT succeed — remove any partial dest and restore
                 # the old checkout so the user's code is not stranded.
-                await asyncio.to_thread(shutil.rmtree, dest, True)
-                # If dest still exists (rmtree silently failed, e.g. locked
-                # files on Windows), move IT aside so the restore rename
-                # cannot collide. Keep the path inside app-sources.
+                await asyncio.to_thread(platform_compat.rmtree_force, dest)
+                # If dest still exists the removal genuinely could not finish:
+                # `rmtree_force` clears the read-only bit, but a file another
+                # process holds OPEN still refuses to unlink on Windows. Move IT
+                # aside so the restore rename cannot collide. Keep the path inside
+                # app-sources.
                 if dest.exists():
                     partial_name = f"{dest.name}.partial-{uuid.uuid4().hex[:8]}"
                     partial_aside = dest.with_name(partial_name)
