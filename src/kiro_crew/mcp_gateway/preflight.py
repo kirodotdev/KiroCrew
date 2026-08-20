@@ -88,13 +88,19 @@ PREFLIGHT_IDENTITY_NAMES: tuple[str, str] = (_IDENTITY_A["name"], _IDENTITY_B["n
 #: because they describe how the evidence was OBTAINED, and the verdict engine
 #: only needs to know they are disqualifying.
 #:
-#: One caller-sensitive code covers every facet, because every consumer collapses
+#: One divergence code covers every facet, because every consumer collapses
 #: the measurement to a single boolean: the row builder keeps ``(ran,
 #: caller_sensitive)`` and the verdict engine derives the reason itself. Naming
 #: which facet caught the divergence would need that whole path to carry the
 #: stored reason, so it is a change of its own rather than a constant declared
 #: here with nothing reading it.
-REASON_CALLER_SENSITIVE_INIT = "caller_sensitive_initialize"
+#:
+#: The VALUE matches the code the verdict engine emits, so a grep for either
+#: finds both. It deliberately no longer says "caller sensitive": two spawns that
+#: both vary ``clientInfo`` cannot tell a caller-derived answer from one that
+#: varies for the server's own reasons, so the honest name describes what was
+#: seen rather than what caused it.
+REASON_HANDSHAKE_NOT_REPRODUCIBLE = "handshake_not_reproducible"
 REASON_PREFLIGHT_UNAVAILABLE = "preflight_unavailable"
 
 
@@ -145,7 +151,7 @@ class PreflightResult:
         if not self.ran:
             return (REASON_PREFLIGHT_UNAVAILABLE,)
         if self.caller_sensitive:
-            return (REASON_CALLER_SENSITIVE_INIT,)
+            return (REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
         return ()
 
 

@@ -334,7 +334,9 @@ describe('sharing assessment', () => {
     expect(await screen.findByText(/unsuitable for sharing/i)).toBeTruthy()
     // The translated reason AND the server's own verbatim detail, which is data
     // and must never be translated or dropped.
-    expect(screen.getByText(/reads a credential whose value differs per session/i)).toBeTruthy()
+    expect(
+      screen.getByText(/a shared backend never receives this credential/i),
+    ).toBeTruthy()
     expect(screen.getByText('AWS_SESSION_TOKEN')).toBeTruthy()
   })
 
@@ -476,7 +478,7 @@ describe('sharing assessment', () => {
     } as never)
     await openAssessment()
     expect(
-      await screen.findByRole('button', { name: /measure 2 unmeasured servers/i }),
+      await screen.findByRole('button', { name: /measure 2 servers/i }),
     ).toBeTruthy()
   })
 
@@ -490,7 +492,7 @@ describe('sharing assessment', () => {
     } as never)
     await openAssessment()
     expect(
-      await screen.findByRole('button', { name: /measure 1 unmeasured server$/i }),
+      await screen.findByRole('button', { name: /measure 1 server$/i }),
     ).toBeTruthy()
   })
 
@@ -516,7 +518,7 @@ describe('sharing assessment', () => {
       .spyOn(api, 'mcpMeasureStart')
       .mockResolvedValue({ running: true, done: 0, total: 1 } as never)
     await openAssessment()
-    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+    ;(await screen.findByRole('button', { name: /measure 1 server$/i })).click()
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
   })
 
@@ -573,7 +575,7 @@ describe('sharing assessment', () => {
       )
     await openAssessment()
     // The press is what makes a closure line eligible at all, so the bug needs it.
-    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+    ;(await screen.findByRole('button', { name: /measure 1 server$/i })).click()
 
     await waitFor(() => expect(screen.getByText(/stopped early/i)).toBeTruthy(), {
       timeout: 4000,
@@ -615,7 +617,7 @@ describe('sharing assessment', () => {
         { running: false, done: 5, measured: 2, total: 5 } as never,
       )
     await openAssessment()
-    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+    ;(await screen.findByRole('button', { name: /measure 1 server$/i })).click()
 
     expect(await screen.findByText(/^measured 2 servers$/i, undefined, { timeout: 4000 }))
       .toBeTruthy()
@@ -644,7 +646,7 @@ describe('sharing assessment', () => {
         { running: false, done: 3, measured: 0, total: 3 } as never,
       )
     await openAssessment()
-    ;(await screen.findByRole('button', { name: /measure 1 unmeasured server$/i })).click()
+    ;(await screen.findByRole('button', { name: /measure 1 server$/i })).click()
 
     // Prove the pass reached the RUNNING state first. Waiting only for the absence
     // of the running line is satisfied before the pass starts as well as after it
@@ -793,7 +795,7 @@ describe('stub every server the evidence allows', () => {
     strength: 'disqualified',
     recommendStub: false,
     recommendShare: false,
-    reasons: [{ code: 'first_party_session_scoped', detail: '' }],
+    reasons: [{ code: 'session_bound_by_construction', detail: '' }],
   }
   const idleProgress = { running: false, done: 0, total: 0, error: '' }
 

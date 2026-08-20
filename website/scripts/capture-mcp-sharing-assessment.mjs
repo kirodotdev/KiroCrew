@@ -43,7 +43,13 @@ const rec = (strength, share, reasons, stub = true) => ({
  * name, stubbed, transport, verdict
  */
 const ROWS = [
-  ['alpha-mcp', true, 'stdio', rec('disqualified', false, [{ code: 'first_party_session_scoped', detail: '' }], false)],
+  // Session-bound by construction: still a disqualifier, because the consumer
+  // treats an EMPTY session key as allow (mcp_cron._check_cron_job_ownership), so
+  // a pooled backend skips ownership rather than merely losing a feature -- and no
+  // routing-shaped hazard code would ever record it.
+  ['alpha-mcp', true, 'stdio', rec('disqualified', false, [
+    { code: 'session_bound_by_construction', detail: '' },
+  ], false)],
   ['bravo-mcp', true, 'stdio', rec('no_objection', false, [
     { code: 'no_objection_found', detail: '' },
     { code: 'no_tool_annotations', detail: '2025-06-18' },
@@ -55,14 +61,27 @@ const ROWS = [
     { code: 'no_objection_found', detail: '' },
     { code: 'all_tools_read_only', detail: '' },
   ])],
-  ['delta-mcp', true, 'stdio', rec('disqualified', false, [
-    { code: 'per_client_capability', detail: 'logging_level' },
-  ], false)],
-  ['echo-mcp', true, 'stdio', rec('disqualified', false, [
+  // Advertises logging. Pooling it costs log volume and some dropped call-scoped
+  // log lines, and both are gaps in OUR broker rather than properties of the
+  // server -- a proxy can emit at the finest level any tenant asked for and filter
+  // down per stub. So it is reported and gates nothing.
+  ['delta-mcp', true, 'stdio', rec('measured', false, [
+    { code: 'preflight_passed', detail: '' },
+    { code: 'degrades_when_shared', detail: 'logging_level' },
+  ])],
+  // Declares a rotating secret env key. No longer a disqualification: such a key
+  // is never forwarded into a shared backend at all, so the pooled backend gets
+  // NOBODY's secret rather than the wrong session's. A server reading its
+  // credential from disk -- the documented pattern -- declares the key without
+  // needing it and pools fine.
+  ['echo-mcp', true, 'stdio', rec('declared', false, [
+    { code: 'declares_caller_identity', detail: '' },
+    { code: 'preflight_passed', detail: '' },
     { code: 'rotating_secret_env', detail: 'AWS_SESSION_TOKEN' },
-  ], false)],
-  // Refutation: the strongest tier, reached only by watching a shared server
-  // actually misbehave.
+  ])],
+  // Refutation: the strongest tier, and now the ONLY durable disqualification.
+  // Reached only by watching a shared server actually misbehave, which is also
+  // what makes the gateway serve it a private backend from here on.
   ['foxtrot-mcp', true, 'stdio', rec('refuted', false, [
     { code: 'observed_hazard', detail: 'unroutable_notification' },
   ], false)],
@@ -89,10 +108,13 @@ const ROWS = [
     { code: 'preflight_passed', detail: '' },
     { code: 'all_tools_read_only', detail: '' },
   ])],
-  // Same verdict, and additionally a shared backend would withhold a declared env
-  // key, so the rewriter would leave it unwrapped.
-  ['november-mcp', false, 'stdio', rec('measured', false, [
-    { code: 'preflight_passed', detail: '' },
+  // Provoked, and the handshake did NOT replay. That is reported without being
+  // frozen: it does not claim MEASURED (nothing was ruled out), it does not
+  // claim preflight_passed, and it is never written to the verdict store -- so
+  // the button keeps offering this row and the next press can clear it.
+  ['november-mcp', false, 'stdio', rec('no_objection', false, [
+    { code: 'no_objection_found', detail: '' },
+    { code: 'handshake_not_reproducible', detail: '' },
   ])],
 ]
 
@@ -281,7 +303,7 @@ oneNowMeasured = false
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2400)
 await openAssessment()
-await page.getByRole('button', { name: /measure 2 unmeasured servers/i }).click()
+await page.getByRole('button', { name: /measure 3 servers/i }).click()
 measureProgress = { running: false, done: 2, measured: 0, total: 2 }
 await page.waitForTimeout(3400)
 await shot('07-measured-nothing-says-nothing')
@@ -296,7 +318,7 @@ oneNowMeasured = false
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(2400)
 await openAssessment()
-await page.getByRole('button', { name: /measure 2 unmeasured servers/i }).click()
+await page.getByRole('button', { name: /measure 3 servers/i }).click()
 // The verdict lands with the settle, so flip the row before the poll sees it end.
 oneNowMeasured = true
 measureProgress = { running: false, done: 2, measured: 1, total: 2 }

@@ -424,6 +424,64 @@ class TestEvaluateOnlyWhatChanged:
         assert len(fake.identities) == spawns
 
     @pytest.mark.asyncio
+    async def test_a_divergence_is_reported_but_never_frozen(
+        self, patch_probe, tmp_path
+    ) -> None:
+        """The #4339 fix, and the reason it needs no expiry clock.
+
+        Two spawns that disagree cannot say WHY they disagree: an answer computed
+        from ``clientInfo`` and an answer that varies for the server's own reasons
+        both look like this. Storing the guess turned one unlucky sample into a
+        permanent mark, because a stored row is skipped by every later pass.
+
+        So a divergence joins the branch above: reported for this pass, re-derived
+        on the next one. The server keeps costing two spawns, which is the honest
+        price of a question we cannot answer once and for all -- and it is exactly
+        what makes the measure button able to clear a wrong row.
+        """
+        from kiro_crew.mcp_gateway import evaluate as ev
+
+        fake = patch_probe(
+            {_ID_A: ("ok", {"tools": {}}), _ID_B: ("ok", {"prompts": {}})}
+        )
+
+        first = await ev.evaluate_new_servers([_server()], tmp_path)
+        assert first["srv"].ran is True, "it WAS measured"
+        assert first["srv"].caller_sensitive is True, "and the divergence is reported"
+        spawns = len(fake.identities)
+        assert spawns > 0
+
+        await ev.evaluate_new_servers([_server()], tmp_path)
+
+        assert len(fake.identities) > spawns, "a divergence must not suppress a re-measure"
+
+    @pytest.mark.asyncio
+    async def test_a_divergence_is_still_visible_to_the_page(
+        self, patch_probe, tmp_path
+    ) -> None:
+        """Not frozen must not mean not reported.
+
+        The dashboard builds its assessment rows from the verdict cache and from
+        nothing else -- both production callers of ``evaluate_new_servers`` discard
+        the returned dict. So a result withheld from the store is not merely
+        forgotten: the page calls the server UNMEASURED, about a server just
+        spawned twice, and the divergence note becomes unreachable in production.
+
+        Hence the split this test guards: the row is STORED so it can be shown, and
+        separately it never suppresses the next measurement.
+        """
+        from kiro_crew.mcp_gateway import evaluate as ev
+        from kiro_crew.mcp_gateway.verdict_cache import load_cache
+
+        patch_probe({_ID_A: ("ok", {"tools": {}}), _ID_B: ("ok", {"prompts": {}})})
+        await ev.evaluate_new_servers([_server()], tmp_path)
+
+        row = load_cache(tmp_path).get_by_name("srv")
+        assert row is not None, "the page reads this cache; an absent row reads as unmeasured"
+        assert row.ran is True
+        assert row.caller_sensitive is True
+
+    @pytest.mark.asyncio
     async def test_disabled_server_is_never_spawned(self, patch_probe, tmp_path) -> None:
         """Probing IS the act consent gates; a disabled row must not be provoked."""
         from kiro_crew.mcp_gateway import evaluate as ev
@@ -592,7 +650,7 @@ class TestPreflight:
         )
         result = await pf.preflight(_server())
         assert result.ran and result.caller_sensitive
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
 
     @pytest.mark.asyncio
     async def test_free_form_values_do_not_count_as_divergence(self, patch_probe) -> None:
@@ -674,7 +732,7 @@ class TestToolSurfaceIsCompared:
         result = await pf.preflight(_server())
         assert result.ran and result.caller_sensitive
         # The reason must name the measurement that caught it, not the handshake.
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
         # One reason code covers every facet; ``detail`` is what still names which
         # measurement caught it, and it is what the log line carries.
         assert result.detail == f"{pf.FACET_TOOLS}_shape_differs"
@@ -691,7 +749,7 @@ class TestToolSurfaceIsCompared:
         )
         result = await pf.preflight(_server())
         assert result.ran and result.caller_sensitive
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
         assert result.detail == f"{pf.FACET_TOOLS}_shape_differs"
 
     @pytest.mark.asyncio
@@ -756,7 +814,7 @@ class TestToolSurfaceIsCompared:
         )
         result = await pf.preflight(_server())
         assert result.ran and result.caller_sensitive
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
         assert result.detail == f"{pf.FACET_TOOLS}_shape_differs"
 
 
@@ -773,7 +831,7 @@ class TestHandshakeFacetsBeyondCapabilities:
         )
         result = await pf.preflight(_server())
         assert result.ran and result.caller_sensitive
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
 
     @pytest.mark.asyncio
     async def test_server_info_gaining_a_key_per_caller_is_caught(self, patch_probe) -> None:
@@ -789,7 +847,7 @@ class TestHandshakeFacetsBeyondCapabilities:
         )
         result = await pf.preflight(_server())
         assert result.ran and result.caller_sensitive
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
 
     @pytest.mark.asyncio
     async def test_a_varying_build_id_in_server_info_is_not_divergence(
@@ -823,7 +881,7 @@ class TestHandshakeFacetsBeyondCapabilities:
         )
         result = await pf.preflight(_server())
         assert result.detail == f"{pf.FACET_INIT}_shape_differs"
-        assert result.reasons == (pf.REASON_CALLER_SENSITIVE_INIT,)
+        assert result.reasons == (pf.REASON_HANDSHAKE_NOT_REPRODUCIBLE,)
 
 
 class TestAnnotationsAreNeverPairedWithATool:

@@ -191,7 +191,17 @@ async def test_a_caller_sensitive_server_is_caught_by_provoking_it(
             preflight_caller_sensitive=True,
         )
     )
-    assert verdict.strength is Strength.DISQUALIFIED
+    # Detection is unchanged and is what the assertions above prove: a real
+    # server that answers per caller IS caught, over real pipes, twice.
+    #
+    # What changed is the consequence. Two spawns that both vary ``clientInfo``
+    # cannot separate "computed from the caller" from "varies for the server's
+    # own reasons", so the finding is reported and gates nothing: no
+    # DISQUALIFIED, no MEASURED (nothing was ruled out), and the stub still
+    # stands because a stub is 1:1 with the session.
+    assert verdict.strength is Strength.NO_OBJECTION
+    assert "handshake_not_reproducible" in {r.code for r in verdict.reasons}
+    assert verdict.recommend_stub is True
     assert verdict.recommend_share is False
 
 

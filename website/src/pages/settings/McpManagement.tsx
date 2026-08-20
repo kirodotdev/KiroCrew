@@ -95,11 +95,13 @@ const STRENGTH_LABEL_KEY: Record<string, string> = {
 const REASON_LABEL_KEY: Record<string, string> = {
   observed_hazard: 'pages.mcpManagement.assessment.reason_observed_hazard',
   not_stdio: 'pages.mcpManagement.assessment.reason_not_stdio',
-  first_party_session_scoped: 'pages.mcpManagement.assessment.reason_first_party',
+  session_bound_by_construction:
+    'pages.mcpManagement.assessment.reason_session_bound_by_construction',
   rotating_secret_env: 'pages.mcpManagement.assessment.reason_rotating_secret_env',
   not_probed: 'pages.mcpManagement.assessment.reason_not_probed',
-  per_client_capability: 'pages.mcpManagement.assessment.reason_per_client_capability',
-  caller_sensitive_initialize: 'pages.mcpManagement.assessment.reason_caller_sensitive',
+  degrades_when_shared: 'pages.mcpManagement.assessment.reason_degrades_when_shared',
+  handshake_not_reproducible:
+    'pages.mcpManagement.assessment.reason_handshake_not_reproducible',
   declares_caller_identity: 'pages.mcpManagement.assessment.reason_declares_caller_identity',
   all_tools_read_only: 'pages.mcpManagement.assessment.reason_all_tools_read_only',
   preflight_passed: 'pages.mcpManagement.assessment.reason_preflight_passed',
@@ -675,8 +677,21 @@ export function McpManagement() {
   // ``recommendation`` at all counts too: an older gateway reached through Make
   // Live sends no verdict field, and that row is exactly as unmeasured as one
   // whose verdict says so.
+  //
+  // A row whose handshake did not reproduce counts as well, and this is load
+  // bearing rather than a nicety. The backend deliberately re-measures such a row
+  // every pass (a divergence is reported, never frozen), and the row's own text
+  // tells the operator that measuring again retests it. Leaving it out of this
+  // count disabled the only control that does so, which is an offered action with
+  // no path to it.
   const unmeasuredCount = useMemo(
-    () => servers.filter(s => !s.recommendation || s.recommendation.strength === 'unknown').length,
+    () =>
+      servers.filter(
+        s =>
+          !s.recommendation ||
+          s.recommendation.strength === 'unknown' ||
+          s.recommendation.reasons.some(r => r.code === 'handshake_not_reproducible'),
+      ).length,
     [servers],
   )
 
