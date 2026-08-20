@@ -1720,7 +1720,7 @@ def _save_slot_to_history(
         else:
             disk_older = slot._disk_older_count
             window = list(slot.messages)
-    if not window:
+    if not window and not closed:
         return
     # Skip a pure no-op: a freshly resumed slot with no new AND no edited
     # messages. ``slot._dirty`` is set by both append and in-place edits
@@ -1728,14 +1728,18 @@ def _save_slot_to_history(
     # so a dirty slot whose length merely equals the resumed count still falls
     # through and re-serializes the window — otherwise an in-place edit after
     # resume would never reach disk. closed/force/rewrite always proceed.
+    resumed = getattr(slot, "_resumed_count", 0)
+    resumed_count = resumed if isinstance(resumed, int) else 0
     if (
-        slot._resumed_count > 0
-        and len(window) <= slot._resumed_count
-        and not slot._dirty
+        resumed_count > 0
+        and len(window) <= resumed_count
+        and not getattr(slot, "_dirty", False)
         and not closed
         and not force
         and not rewrite
     ):
+        return
+    if getattr(state, "conversation_log", None) is None:
         return
     history_key = slot_history_key(slot)
     try:
