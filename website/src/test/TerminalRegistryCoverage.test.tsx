@@ -345,7 +345,7 @@ describe('terminalRegistry', () => {
       expect(second.dataCb).toBeUndefined()
     })
 
-    it('resets the cached terminal and registers the socket on open', () => {
+    it('waits for the shell-ready frame before releasing queued commands', () => {
       const id = session('open')
       const term = new FakeTerm()
       const fit = new FakeFit()
@@ -356,6 +356,10 @@ describe('terminalRegistry', () => {
 
       ws.simulateOpen()
       expect(term.reset).toHaveBeenCalledTimes(1)
+      expect(getTerminalWs(id)).toBeNull()
+      expect(waiter).not.toHaveBeenCalled()
+
+      ws.simulateJson({ type: 'ready' })
       expect(getTerminalWs(id)).toBe(ws as unknown as WebSocket)
       expect(waiter).toHaveBeenCalledTimes(1)
       // Hidden tab: fit() would measure 0x0, so no fit and no resize frame.
@@ -438,6 +442,7 @@ describe('terminalRegistry', () => {
 
       const ws1 = WS_INSTANCES[0]
       ws1.simulateOpen()
+      ws1.simulateJson({ type: 'ready' })
       expect(getTerminalWs(id)).not.toBeNull()
 
       ws1.simulateClose()

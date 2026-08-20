@@ -71,6 +71,9 @@ def _make_session(session_id="s1", alive=True, ws=None, disconnect=None):
         proc=proc,
         ws=ws,
     )
+    # Most unit tests exercise an established terminal. Tests for the startup
+    # barrier opt back into the fresh-session state explicitly.
+    sess.shell_ready = True
     sess.last_ws_disconnect = disconnect
     sess.reader_task = None
     return sess
@@ -1860,6 +1863,47 @@ class TestApiTerminalWs:
         assert spawn.call_args.kwargs["env"]["SHELL"] == "/bin/zsh"
 
     @pytest.mark.asyncio
+    async def test_bash_spawn_uses_the_post_profile_init_stream(self, monkeypatch):
+        registry: dict = {}
+        req = _make_request(registry=registry, session_id="bash-ready")
+        req.query = MagicMock()
+        req.query.get = lambda *a, **k: None
+
+        ws = AsyncMock()
+        ws.closed = False
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        monkeypatch.setattr(
+            terminal.shutil, "which", lambda c: c if c == "/bin/bash" else None
+        )
+
+        pty_fds = os.pipe()
+        spawn = AsyncMock(side_effect=RuntimeError("stop before read loop"))
+        fake_pty = MagicMock()
+        fake_pty.openpty.return_value = pty_fds
+        fake_fcntl = MagicMock()
+        fake_termios = MagicMock(TIOCSWINSZ=1, TIOCSCTTY=2)
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal.platform_compat, "IS_WINDOWS", False), \
+             patch.object(terminal, "_pty", fake_pty), \
+             patch.object(terminal, "fcntl", fake_fcntl), \
+             patch.object(terminal, "termios", fake_termios), \
+             patch.object(terminal.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal.web, "WebSocketResponse", return_value=ws), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_ws(req)
+
+        assert resp is ws
+        args = spawn.call_args.args
+        assert args[0].replace("\\", "/").endswith("/bin/bash")
+        assert args[1] == "--init-file"
+        assert args[2].startswith("/dev/fd/")
+        assert args[3] == "-i"
+        inherited = spawn.call_args.kwargs["pass_fds"]
+        assert inherited == (int(args[2].rsplit("/", 1)[-1]),)
+
+    @pytest.mark.asyncio
     async def test_windows_conpty_spawn_failure_sends_error(self, monkeypatch):
         """On Windows a new WS session spawns a ConPTY shell (kiro_crew.conpty);
         the old 'not supported on Windows' refusal no longer exists. If the
@@ -2402,6 +2446,9 @@ class TestTerminalWsIntegration:
             sess = registry["recon-sess"]
             original_pid = terminal._sess_pid(sess)
             assert sess.ws is None  # disconnected
+            # The startup barrier has already completed for this PTY. A new
+            # browser must receive the same readiness state after replay.
+            sess.shell_ready = True
 
             # Reconnect
             async with client.ws_connect("/api/ws/terminal/recon-sess") as ws:
@@ -2409,6 +2456,13 @@ class TestTerminalWsIntegration:
                 assert terminal._sess_pid(sess) == original_pid  # same PTY
                 assert sess.ws is not None  # reconnected
                 assert sess.last_ws_disconnect is None
+                for _ in range(40):
+                    msg = await ws.receive(timeout=3)
+                    if msg.type == web.WSMsgType.TEXT:
+                        if json.loads(msg.data).get("type") == "ready":
+                            break
+                else:
+                    raise AssertionError("reconnected initialized shell did not send ready")
                 await ws.close()
 
             await terminal._kill_session(registry["recon-sess"])
@@ -2519,9 +2573,10 @@ class TestTerminalWsIntegration:
             def __init__(self, argv, cwd=None, env=None, cols=80, rows=24):
                 self.pid = 4321
                 self._alive = True
+                self._reads = iter((b"PS> ", b""))
 
             def read(self, size=4096):
-                return b""  # EOF: the reader loop exits cleanly
+                return next(self._reads)  # prompt, then EOF
 
             def write(self, data):
                 return len(data)
@@ -2549,6 +2604,12 @@ class TestTerminalWsIntegration:
                 sess = registry["winok-sess"]
                 assert sess.winpty is not None
                 assert sess.proc is None  # Windows backend has no asyncio proc
+                prompt = await ws.receive(timeout=3)
+                ready = await ws.receive(timeout=3)
+                assert prompt.type == web.WSMsgType.BINARY
+                assert prompt.data == b"PS> "
+                assert ready.type == web.WSMsgType.TEXT
+                assert json.loads(ready.data) == {"type": "ready"}
                 await ws.close()
 
         if "winok-sess" in registry:
@@ -2605,15 +2666,27 @@ class TestTerminalWsIntegration:
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/sigint-sess") as ws:
-                # Readiness gate: drive it off INPUT ECHO, not an unsolicited
-                # prompt. A login shell on a minimal build host (no MOTD, empty
-                # PS1, non-interactive-looking PTY) may emit nothing until it
-                # receives input, so waiting for a spontaneous ``$ ``/``# ``
-                # prompt is brittle and fired "shell never produced any PTY
-                # output" on the fleet. Instead send a probe and wait for the
-                # PTY line discipline to echo it back — the same proven pattern
-                # as test_ws_binary_io. This confirms the shell is interactive
-                # and consuming stdin without depending on prompt rendering.
+                # The backend's Bash init stream emits readiness only after the
+                # login profile chain returns. Wait for that control frame
+                # before writing the first probe, exactly as Run in terminal
+                # does; prompt text and timing are deliberately irrelevant.
+                loop = asyncio.get_event_loop()
+                ready_deadline = loop.time() + 15
+                ready_seen = False
+                while loop.time() < ready_deadline:
+                    msg = await ws.receive(timeout=ready_deadline - loop.time())
+                    if msg.type == web.WSMsgType.TEXT:
+                        if json.loads(msg.data).get("type") == "ready":
+                            ready_seen = True
+                            break
+                    elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                        break
+                assert ready_seen, "shell never emitted the post-profile ready frame"
+
+                # Drive the PTY off INPUT ECHO, not an unsolicited prompt. A
+                # login shell on a minimal build host (no MOTD, empty PS1) may
+                # render no recognizable prompt. The probe confirms the shell
+                # is interactive and consuming stdin without depending on one.
                 await ws.send_bytes(b"echo __PTY_READY__\n")
                 ready = await _drain_until(
                     ws,
@@ -2894,6 +2967,48 @@ class TestSessionTitle:
              patch("os.tcgetpgrp", return_value=12345), \
              patch.object(terminal, "_proc_cwd", return_value=None):
             assert terminal._session_title(self._sess()) is None
+
+
+# ── shell input readiness ──
+
+
+class TestBashShellReadiness:
+    """Bash readiness is an explicit post-profile signal, never a PTY timing
+    or foreground-process-group inference."""
+
+    def test_recognizes_only_bash_executables(self):
+        assert terminal._is_bash_shell("/bin/bash") is True
+        assert terminal._is_bash_shell("C:\\tools\\bash.exe") is True
+        assert terminal._is_bash_shell("/bin/zsh") is False
+
+    def test_init_script_marks_ready_after_the_login_profile_chain(self):
+        script = terminal._bash_init_script("abc123")
+        marker = b"builtin printf '\\033]697;KiroCrewReady;abc123\\007'"
+        assert script.index(b". /etc/profile") < script.index(b'. "$HOME/.bash_profile"')
+        assert script.index(b'. "$HOME/.bash_profile"') < script.index(marker)
+        assert script.index(b'. "$HOME/.bash_login"') < script.index(marker)
+        assert script.index(b'. "$HOME/.profile"') < script.index(marker)
+
+    def test_marker_match_is_split_safe_and_one_shot(self):
+        sess = _make_session()
+        sess.shell_ready = False
+        sess.ready_marker = b"<random-ready-marker>"
+
+        assert terminal._consume_ready_marker(sess, b"output<random-") is False
+        assert sess.shell_ready is False
+        assert terminal._consume_ready_marker(sess, b"ready-marker>prompt") is True
+        assert sess.shell_ready is True
+        assert sess.ready_marker is None
+        assert sess.ready_probe == bytearray()
+        assert terminal._consume_ready_marker(sess, b"<random-ready-marker>") is False
+
+    def test_unrelated_output_never_releases_the_barrier(self):
+        sess = _make_session()
+        sess.shell_ready = False
+        sess.ready_marker = b"<random-ready-marker>"
+
+        assert terminal._consume_ready_marker(sess, b"profile is still waiting") is False
+        assert sess.shell_ready is False
 
 
 # ── one cwd probe per poll tick ──

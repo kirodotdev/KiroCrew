@@ -119,6 +119,16 @@ class _TerminalSession:
     # and on (re)connect, where the dedup markers are cleared and both frames
     # must be pushed again.
     frames_dirty: bool = True
+    # A WebSocket upgrade completes before startup has yielded the terminal back
+    # to a freshly spawned login shell. Run-in-terminal callers must not release
+    # queued commands until this barrier has been crossed.
+    shell_ready: bool = False
+    # Bash receives a one-use init file that emits this randomized OSC marker
+    # only after its login profiles return. ``ready_probe`` retains the small
+    # suffix needed when the marker straddles two PTY reads; output itself is
+    # still forwarded byte-for-byte.
+    ready_marker: bytes | None = None
+    ready_probe: bytearray = field(default_factory=bytearray)
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -341,6 +351,49 @@ def _session_title(sess: "_TerminalSession") -> str | None:
     if cwd:
         return os.path.basename(cwd.rstrip("/")) or cwd
     return None
+
+
+def _is_bash_shell(shell: str) -> bool:
+    """Whether *shell* supports the injected post-profile readiness marker."""
+    name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name in {"bash", "bash.exe"}
+
+
+def _bash_init_script(token: str) -> bytes:
+    """Build the Bash init file that emulates ``-l`` then marks readiness.
+
+    Bash ignores ``--init-file`` for a login shell, so the injected interactive
+    init file sources the same profile chain itself. The marker comes strictly
+    after those files return, including shell builtins such as ``read`` that do
+    not change the PTY foreground process group.
+    """
+    return (
+        "if [ -r /etc/profile ]; then . /etc/profile; fi\n"
+        'if [ -r "$HOME/.bash_profile" ]; then\n'
+        '    . "$HOME/.bash_profile"\n'
+        'elif [ -r "$HOME/.bash_login" ]; then\n'
+        '    . "$HOME/.bash_login"\n'
+        'elif [ -r "$HOME/.profile" ]; then\n'
+        '    . "$HOME/.profile"\n'
+        "fi\n"
+        f"builtin printf '\\033]697;KiroCrewReady;{token}\\007'\n"
+    ).encode("utf-8")
+
+
+def _consume_ready_marker(sess: "_TerminalSession", data: bytes) -> bool:
+    """Advance the split-safe Bash marker matcher for one raw PTY read."""
+    marker = sess.ready_marker
+    if sess.shell_ready or marker is None:
+        return False
+    combined = bytes(sess.ready_probe) + data
+    if marker in combined:
+        sess.shell_ready = True
+        sess.ready_marker = None
+        sess.ready_probe.clear()
+        return True
+    keep = max(0, len(marker) - 1)
+    sess.ready_probe = bytearray(combined[-keep:]) if keep else bytearray()
+    return False
 
 
 def _sess_alive(sess: "_TerminalSession") -> bool:
@@ -596,6 +649,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         existing.last_cwd = None
         existing.frames_dirty = True
         sess = existing
+        if existing.shell_ready:
+            try:
+                async with existing.send_lock:
+                    if existing.ws is ws and not ws.closed:
+                        await ws.send_str(json.dumps({"type": "ready"}))
+            except (ConnectionResetError, RuntimeError, OSError):
+                pass
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.reconnect",
@@ -649,8 +709,14 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 "terminal: configured shell %r not executable; falling back to %r",
                 rejected_shell, shell,
             )
-        # Spawn new PTY
+        # Spawn new PTY. Bash gets a one-use init stream so it can emit a
+        # definitive readiness marker after login profiles return. Foreground
+        # process ownership alone is insufficient: a profile's builtin `read`
+        # runs in the shell process and would consume an early command batch.
         master_fd, worker_fd = _pty.openpty()
+        init_read_fd: int | None = None
+        init_write_fd: int | None = None
+        ready_marker: bytes | None = None
         try:
             fcntl.ioctl(
                 worker_fd,
@@ -698,14 +764,28 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 # no Python allocation or lock acquisition.
                 fcntl.ioctl(0, tiocsctty, 0)
 
+            argv = [shell, "-l"]
+            pass_fds: tuple[int, ...] = ()
+            if _is_bash_shell(shell):
+                token = uuid.uuid4().hex
+                ready_marker = (
+                    f"\x1b]697;KiroCrewReady;{token}\x07".encode("ascii")
+                )
+                init_read_fd, init_write_fd = os.pipe()
+                os.write(init_write_fd, _bash_init_script(token))
+                os.close(init_write_fd)
+                init_write_fd = None
+                argv = [shell, "--init-file", f"/dev/fd/{init_read_fd}", "-i"]
+                pass_fds = (init_read_fd,)
+
             proc = await asyncio.create_subprocess_exec(
-                shell,
-                "-l",
+                *argv,
                 stdin=worker_fd,
                 stdout=worker_fd,
                 stderr=worker_fd,
                 start_new_session=True,
                 preexec_fn=_setup_ctty,
+                pass_fds=pass_fds,
                 cwd=cwd,
                 env=env,
             )
@@ -722,12 +802,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             return ws
         finally:
             os.close(worker_fd)
+            if init_read_fd is not None:
+                os.close(init_read_fd)
+            if init_write_fd is not None:
+                os.close(init_write_fd)
 
         sess = _TerminalSession(
             session_id=session_id,
             master_fd=master_fd,
             proc=proc,
             ws=ws,
+            ready_marker=ready_marker,
         )
         registry[session_id] = sess
         _sel().log_api_access(
@@ -737,6 +822,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"session={session_id},pid={proc.pid},shell={shell}",
         )
+        if ready_marker is None:
+            # The reliable injection above intentionally targets Bash, the
+            # reported shell. Preserve the historical transport-ready behavior
+            # for configured shells whose startup protocol we cannot control.
+            sess.shell_ready = True
+            try:
+                async with sess.send_lock:
+                    if sess.ws is ws and not ws.closed:
+                        await ws.send_str(json.dumps({"type": "ready"}))
+            except (ConnectionResetError, RuntimeError, OSError):
+                pass
 
     # --- Read loop: PTY → WebSocket ---
     async def read_pty():
@@ -750,6 +846,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 data = await loop.run_in_executor(None, reader)
                 if not data:
                     break
+                became_ready = _consume_ready_marker(sess, data)
                 sess.scrollback.extend(data)
                 sess.frames_dirty = True
                 if len(sess.scrollback) > _SCROLLBACK_MAX:
@@ -772,6 +869,19 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         if sess.ws is not live or live.closed:
                             continue  # client went away while we waited
                         await live.send_bytes(data)
+                        # ConPTY has no foreground-process-group probe. Its first
+                        # output is the earliest portable startup signal, so do
+                        # not release queued input before output reaches the client.
+                        if sess.winpty is not None and not sess.shell_ready:
+                            sess.shell_ready = True
+                            became_ready = True
+                        if became_ready:
+                            try:
+                                await live.send_str(json.dumps({"type": "ready"}))
+                            except (ConnectionResetError, RuntimeError, OSError):
+                                # Preserve shell_ready so a reconnect can receive
+                                # the frame even if this socket disappeared here.
+                                pass
         except OSError:
             pass
 

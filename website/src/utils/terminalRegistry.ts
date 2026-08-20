@@ -2,10 +2,9 @@ import { useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 
-/** sessionId → live WebSocket. Each activity-bar terminal tab owns one entry. */
+/** sessionId → shell-ready WebSocket. Each terminal tab owns one entry. */
 const registry = new Map<string, WebSocket>()
-/** Per-session one-shot "socket is open" listeners (run-in-terminal waits on
- *  these to send a command as soon as its freshly-opened tab connects). */
+/** Per-session one-shot shell-ready listeners. */
 const readyListeners = new Map<string, Set<() => void>>()
 
 let _enabled = false
@@ -83,9 +82,9 @@ export function getTerminalWs(sessionId: string): WebSocket | null {
 }
 
 /**
- * Run `cb` once the given session's WebSocket is open — immediately if it
- * already is. Returns an unsubscribe fn (no-op once it fires). Used by
- * "Run in terminal" to send a command the moment its new terminal tab connects.
+ * Run `cb` once the given session's shell is ready for input — immediately if
+ * it already is. Returns an unsubscribe fn (no-op once it fires). Used by
+ * "Run in terminal" to keep command batches behind shell initialization.
  */
 export function onTerminalReady(sessionId: string, cb: () => void): () => void {
   if (getTerminalWs(sessionId)) { cb(); return () => {} }
@@ -163,7 +162,9 @@ function connect(sessionId: string, c: Conn) {
     // Server replays this session's scrollback on (re)connect; reset first so
     // the cached term's retained screen doesn't stack under the replay.
     c.term.reset()
-    registerTerminalWs(sessionId, ws)   // update registry + fire onTerminalReady
+    // The server upgrades the socket before it spawns a fresh login shell.
+    // Registration waits for its explicit ready frame so automated command
+    // batches cannot land while shell startup still owns the terminal.
     // Only fit when the terminal is actually laid out. A reconnect can fire
     // while this tab is hidden (display:none), where fit() measures 0×0 and
     // would ship bogus cols/rows to the PTY. When the tab becomes visible,
@@ -179,6 +180,7 @@ function connect(sessionId: string, c: Conn) {
     if (typeof ev.data === 'string') {
       try {
         const m = JSON.parse(ev.data)
+        if (m && m.type === 'ready') registerTerminalWs(sessionId, ws)
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
       } catch { /* ignore non-JSON control frames */ }
