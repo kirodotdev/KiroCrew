@@ -97,21 +97,22 @@ function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = []) {
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], folders)
-  const utils = render(
+  const tree = (s: any[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={slots} activeSlot={null} unreadSlots={[]}
+              slots={s} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
-  return { store, ...utils }
+  const utils = render(tree(slots))
+  return { store, rerenderWith: (s: any[]) => utils.rerender(tree(s)), ...utils }
 }
 
 beforeEach(() => localStorage.clear())
@@ -155,5 +156,54 @@ describe('chat sidebar — held-modifier digit badges', () => {
     const { getAllByTestId } = renderSidebar(many)
     act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
     expect(getAllByTestId('digit-jump-badge')).toHaveLength(9)
+  })
+
+  it('freezes digits and the published order while held: a background recency bump neither renumbers badges nor moves the jump targets until release', () => {
+    const { store, rerenderWith, getAllByTestId } = renderSidebar()
+    act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
+    expect(store.getState().dashboard.sidebarOrder).toEqual(['k-newest', 'k-middle', 'k-oldest'])
+
+    // Mid-hold, agent activity bumps the oldest session to the top of the
+    // date-desc sort (touchSlotActivity semantics: last-activity changes).
+    rerenderWith([
+      { key: 'k-oldest', title: 'Oldest', messages: 1, running: false, modified: 4000 },
+      { key: 'k-middle', title: 'Middle', messages: 1, running: false, modified: 2000 },
+      { key: 'k-newest', title: 'Newest', messages: 1, running: false, modified: 3000 },
+    ])
+
+    // Frozen: each digit stays glued to the session the user aimed at (badges
+    // travel with their rows), and the store order the jump handler reads is
+    // unchanged — pressing 1 still picks k-newest.
+    const byRow = getAllByTestId('digit-jump-badge').map(b => [b.closest('[data-session-row]')?.getAttribute('data-session-row'), b.textContent])
+    expect(byRow).toContainEqual(['k-newest', '1'])
+    expect(byRow).toContainEqual(['k-middle', '2'])
+    expect(byRow).toContainEqual(['k-oldest', '3'])
+    expect(store.getState().dashboard.sidebarOrder).toEqual(['k-newest', 'k-middle', 'k-oldest'])
+
+    // Release: the deferred reorder publishes.
+    act(() => { fireEvent.keyUp(window, { altKey: false }) })
+    expect(store.getState().dashboard.sidebarOrder).toEqual(['k-oldest', 'k-newest', 'k-middle'])
+  })
+
+  it('renumbers badges compactly when a session closes mid-hold, matching the jump handler compaction', () => {
+    const { store, rerenderWith, getAllByTestId } = renderSidebar()
+    act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
+
+    // Mid-hold, the middle session closes. The jump handler compacts the
+    // frozen order (digit 2 now targets k-oldest), so the badges must
+    // renumber the same way — a stale "3" on k-oldest would be picked by
+    // digit 2, the exact badge/target drift the freeze exists to prevent.
+    rerenderWith([
+      { key: 'k-oldest', title: 'Oldest', messages: 1, running: false, modified: 1000 },
+      { key: 'k-newest', title: 'Newest', messages: 1, running: false, modified: 3000 },
+    ])
+
+    const byRow = getAllByTestId('digit-jump-badge').map(b => [b.closest('[data-session-row]')?.getAttribute('data-session-row'), b.textContent])
+    expect(byRow).toHaveLength(2)
+    expect(byRow).toContainEqual(['k-newest', '1'])
+    expect(byRow).toContainEqual(['k-oldest', '2'])
+    // The published frozen order is untouched — the handler compacts at
+    // keypress time from the same live-slot basis the badge map now uses.
+    expect(store.getState().dashboard.sidebarOrder).toEqual(['k-newest', 'k-middle', 'k-oldest'])
   })
 })

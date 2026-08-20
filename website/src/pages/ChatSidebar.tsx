@@ -2565,6 +2565,22 @@ function ChatSidebar({
     () => (flatView && folders.length > 0 ? flatSlots : filteredSlots).map(s => s.key),
     [flatView, folders.length, flatSlots, filteredSlots],
   )
+  // Freeze the shortcut order while the jump modifier is held. Under a
+  // last-activity sort, background agent events (touchSlotActivity recency
+  // bumps) re-sort the list at any moment; without the freeze, the digits
+  // reassign between the user aiming at a badge and pressing it, so the press
+  // lands on whatever row REPLACED the one they read. Frozen, the badge map
+  // and the published store order both derive from the same held snapshot:
+  // badges travel with their rows if the visual order shifts mid-hold, and
+  // the digit picks the session the user saw. Render-time ref write is the
+  // same derived-state pattern ChatPage uses for filteredSlotsRef; the
+  // `.length` guard re-arms the freeze if the modifier was held before the
+  // first slots frame arrived.
+  const digitModifierHeld = useDigitModifierHeld()
+  const heldOrderRef = useRef<string[] | null>(null)
+  if (!digitModifierHeld) heldOrderRef.current = null
+  else heldOrderRef.current ??= (shortcutOrderKeys.length ? shortcutOrderKeys : null)
+  const effectiveOrderKeys = heldOrderRef.current ?? shortcutOrderKeys
   // Publish to the store for useKeyboardShortcuts (which reads at keypress
   // time). Diff-guarded so slot-detail churn that doesn't reorder rows never
   // dispatches. Deliberately not cleared on unmount: a last-known display
@@ -2572,21 +2588,35 @@ function ChatSidebar({
   // collapsed.
   const lastPublishedOrderRef = useRef('')
   useEffect(() => {
-    const joined = shortcutOrderKeys.join('\n')
+    const joined = effectiveOrderKeys.join('\n')
     if (joined === lastPublishedOrderRef.current) return
     lastPublishedOrderRef.current = joined
-    dispatch(setSidebarOrder(shortcutOrderKeys))
-  }, [shortcutOrderKeys, dispatch])
+    dispatch(setSidebarOrder(effectiveOrderKeys))
+  }, [effectiveOrderKeys, dispatch])
 
   // First nine sessions in shortcut order → their digit, shown as row badges
   // while the jump modifier is held (Ctrl on Mac in Ctrl+digit mode, Alt
   // elsewhere — mirrors the Digit1..9 chords).
-  const digitModifierHeld = useDigitModifierHeld()
   const shortcutDigitByKey = useMemo(() => {
+    // Compact the frozen order exactly like the jump handler's
+    // orderSlotsBySidebar does — drop keys whose session no longer exists —
+    // BEFORE assigning digits. If a session closes mid-hold, the handler's
+    // digit N targets the Nth surviving frozen key; numbering the raw frozen
+    // list instead would leave a row visibly badged "3" that digit 2 picks —
+    // the exact badge/target drift this feature exists to prevent. The
+    // `slots` prop is the existence basis (mirrors the handler's store
+    // lookup), not the display list, so a mid-hold visibility change cannot
+    // desynchronize the two consumers either.
+    const live = new Set(slots.map(s => s.key))
     const m = new Map<string, number>()
-    shortcutOrderKeys.slice(0, 9).forEach((k, i) => m.set(k, i + 1))
+    let digit = 1
+    for (const k of effectiveOrderKeys) {
+      if (digit > 9) break
+      if (!live.has(k)) continue
+      m.set(k, digit++)
+    }
     return m
-  }, [shortcutOrderKeys])
+  }, [effectiveOrderKeys, slots])
 
   // Folder rows for the filter menu: every folder in tree order, each with the
   // count of flat-lane sessions filed directly in it, and whether an unchecked
