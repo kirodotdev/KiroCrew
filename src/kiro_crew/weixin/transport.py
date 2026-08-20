@@ -31,6 +31,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from kiro_crew.messaging.tables import TABLE_POLICY_NATIVE
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -69,6 +70,10 @@ WEIXIN_CAPABILITIES = TransportCapabilities(
     files_outbound=False,
     rich_blocks=False,
     threads=False,
+    # iLink clients render Markdown natively, tables included -- which is why
+    # weixin/renderer.py preserves them instead of flattening.
+    table_mode=TABLE_POLICY_NATIVE,
+    native_tables=True,
     max_message_chars=WEIXIN_CHUNK_LIMIT,
     max_buttons=0,
     supports_proactive_send=True,

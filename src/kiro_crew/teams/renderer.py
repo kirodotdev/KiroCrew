@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.messaging.renderer import Renderer, chunk_text
+from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 
 if TYPE_CHECKING:
@@ -124,12 +125,25 @@ class TeamsRenderer(Renderer):
             return
         self._finalized = True
         ok = stop_reason != "error"
-        content = self.text() or ("…" if ok else _ERROR_TEXT)
-        chunks = chunk_text(content, self.capabilities.max_message_chars) or ["…"]
-        for chunk in chunks:
-            sent = await self._client.send_message(
-                self._conversation_id, chunk, self._service_url
+        raw = self.text()
+        content = self.render_tables_for_target(raw)
+        cap = self.capabilities.max_message_chars
+        if cap > 0 and content != raw and len(content) > cap:
+            # Generated grids must stay in one message; cards and display-safe
+            # raw text can use the ordinary continuation splitter. An
+            # unrepresentable card run reports its grid so the raw form wins.
+            content, generated_grid = self.render_tables_for_target_with_metadata(
+                raw,
+                policy=TABLE_POLICY_CARDS,
             )
+            if generated_grid and len(content) > cap:
+                safe_raw = self.safe_raw_table_fallback(raw, policy=TABLE_POLICY_CARDS)
+                if safe_raw is not None:
+                    content = safe_raw
+        content = content or ("…" if ok else _ERROR_TEXT)
+        chunks = chunk_text(content, cap) or ["…"]
+        for chunk in chunks:
+            sent = await self._client.send_message(self._conversation_id, chunk, self._service_url)
             if sent is None:
                 # Stop at the first failed chunk: the delivered prefix is
                 # coherent, and skipping ahead would splice a gap into the

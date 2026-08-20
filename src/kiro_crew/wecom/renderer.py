@@ -131,9 +131,7 @@ class WeComRenderer(Renderer):
         self._tool = title or tool_kind or "工具"
         await self._push(force=True)
 
-    async def on_prompt_choice(
-        self, options: list[dict[str, Any]], request_id: str | int
-    ) -> None:
+    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
         # WeCom has no interactive buttons. The driver only dispatches
         # prompt_choice for INTERACTIVE + a decider, and WeCom runs decider-less
         # (deny-by-default), so this is never reached -- kept as a safe no-op to
@@ -151,7 +149,7 @@ class WeComRenderer(Renderer):
         self._finalized = True
         self._tool = ""  # never lock a tool footer into the final answer
         ok = stop_reason != "error"
-        content = self.text() or ("…" if ok else "⚠️ 出错了，请重试")
+        content = self._render_for_delivery(final=True) or ("…" if ok else "⚠️ 出错了，请重试")
         if self._stream_ok:
             sent = await self._client.send_stream(
                 self._req_id, self._stream_id, content, finish=True
@@ -174,9 +172,28 @@ class WeComRenderer(Renderer):
         """
         return _strip_options("".join(self._buf).strip())
 
+    def _render_for_delivery(self, *, final: bool) -> str:
+        """Render tables without worsening WeCom's single-bubble truncation.
+
+        WeCom cannot send continuation bubbles for one streamed answer. If a
+        conversion alone pushes otherwise deliverable canonical text past the
+        cap, preserving the raw table is preferable to silently losing tail
+        rows at the client's final slice.
+        """
+        raw = self.text()
+        converted = self.render_tables_for_target(raw, final=final)
+        cap = self.capabilities.max_message_chars
+        if cap > 0 and len(converted) > cap:
+            safe_raw = self.safe_raw_table_fallback(raw, final=final)
+            if safe_raw is not None and len(safe_raw) <= cap:
+                return safe_raw
+        return converted
+
     def _compose(self) -> str:
         """Streaming content = answer text + optional transient tool footer."""
-        body = self.text()
+        # final=False: a table whose last row is still arriving stays raw for
+        # this frame and converts once the turn seals in on_done.
+        body = self._render_for_delivery(final=False)
         if self._tool:
             footer = f"🔧 正在运行：{self._tool}…"
             return f"{body}\n\n{footer}" if body else footer

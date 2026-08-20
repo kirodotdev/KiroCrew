@@ -46,6 +46,12 @@ ENFORCED = {
     # no widget (trailer stripped; their text fallback is the
     # approval-ladder work).
     "max_buttons",
+    # Read by Renderer.render_tables_for_target at every opted-in outbound
+    # boundary. ``table_mode`` selects off/cards/grid/native/auto and
+    # ``native_tables`` prevents an unsupported native claim from leaking raw
+    # pipes. Pinned per channel by test_channel_table_rendering.py.
+    "table_mode",
+    "native_tables",
 }
 
 #: Declared honestly, read by nothing yet. The capability-gated interface

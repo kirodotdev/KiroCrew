@@ -396,7 +396,6 @@ src/kiro_crew/messaging/attachments.py
 src/kiro_crew/messaging/driver.py
 src/kiro_crew/messaging/link.py
 src/kiro_crew/messaging/queue_receipt.py
-src/kiro_crew/messaging/renderer.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/local_exporter.py
 src/kiro_crew/metrics/provider.py
@@ -456,7 +455,6 @@ src/kiro_crew/task_models.py
 src/kiro_crew/task_planner.py
 src/kiro_crew/taskrunner.py
 src/kiro_crew/teams/client.py
-src/kiro_crew/teams/renderer.py
 src/kiro_crew/teams/transport_dispatch.py
 src/kiro_crew/telegram/client.py
 src/kiro_crew/telegram/transport_dispatch.py
@@ -470,7 +468,6 @@ src/kiro_crew/voice_reply.py
 src/kiro_crew/webex/transport_dispatch.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/wecom/gateway.py
-src/kiro_crew/wecom/renderer.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/weixin/gateway.py
 src/kiro_crew/weixin/transport_dispatch.py
