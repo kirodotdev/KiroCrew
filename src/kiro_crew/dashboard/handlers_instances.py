@@ -75,6 +75,33 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
         logger.debug("SEL audit failed for instances_%s", operation, exc_info=True)
 
 
+# The addressing fields Stop/Start/Delete resolve the real EC2 stack through
+# (see coordsOf() in RemoteCrewPanel.tsx). Locked from PATCH for a correlated
+# cloud instance — see _is_correlated_cloud_instance().
+_ADDRESSING_FIELDS = {"connection_method", "ssm_target", "aws_profile", "aws_region"}
+
+
+def _is_correlated_cloud_instance(ssm_target: str) -> bool:
+    """True if *ssm_target* was provisioned by a Kiro Crew cloud launch.
+
+    Deferred import: this is the one place the instances feature reaches into
+    the cloud module, kept lazy so instances stays usable with the cloud
+    module unavailable/import-broken (mirrors register_instance()'s own
+    best-effort posture in cloud/connect.py). Only the import itself is
+    best-effort (``ImportError`` -> not correlated, the "cloud feature
+    absent" case) — a launch-job STORE read failure inside
+    ``is_launched_instance()`` is a different failure mode and is NOT caught
+    here, so it propagates to ``api_instances_update``, which fails the PATCH
+    CLOSED rather than silently treating a possibly-launched instance as
+    uncorrelated.
+    """
+    try:
+        from kiro_crew.cloud.connect import is_launched_instance
+    except ImportError:  # pragma: no cover - cloud feature absent
+        return False
+    return is_launched_instance(ssm_target)
+
+
 def _is_slack_origin(request: web.Request) -> bool:
     """True if the request arrived via the Slack path (X-Session-Key 'slack:*')."""
     sk = request.headers.get("X-Session-Key", "")
@@ -342,6 +369,72 @@ async def api_instances_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "not found", "code": "instance_not_found"}, status=404
         )
+    # Addressing fields resolve the real EC2 stack for Stop/Start/Delete, so
+    # editing them on an instance Kiro Crew launched would strand a running,
+    # billing instance with no dashboard path to reach it. Checked against the
+    # `current` record already fetched above rather than re-reading the
+    # registry, so this costs no extra (blocking) lookup.
+    # Split rather than `and`-chained: mypy unifies the operand types of an
+    # `and` expression, so folding the set-intersection test into the same
+    # condition makes it infer to_thread's callable as returning set[str].
+    correlated = False
+    if _ADDRESSING_FIELDS & set(changes):
+        try:
+            correlated = await asyncio.to_thread(
+                _is_correlated_cloud_instance, current.ssm_target
+            )
+        except Exception as exc:
+            # The correlation check is what stands between a caller and
+            # rewriting a launched instance's addressing fields out from
+            # under Stop/Start/Delete, so a lookup failure here fails CLOSED
+            # (refuse the edit, persist nothing) instead of falling back to
+            # `correlated = False` and risking the exact stranding this lock
+            # exists to prevent.
+            logger.info(
+                "correlation check failed for instance %r, refusing addressing edit: %s",
+                instance_id,
+                exc,
+            )
+            _audit(
+                "update",
+                "denied",
+                request_id=instance_id,
+                error=f"correlation check failed: {exc}",
+            )
+            return web.json_response(
+                {
+                    "error": (
+                        "could not determine whether this instance's addressing "
+                        "fields are locked (cloud launch store unreadable) — "
+                        "refusing to edit connection_method/ssm_target/"
+                        "aws_profile/aws_region; retry once the store is "
+                        "reachable"
+                    ),
+                    "code": "cloud_instance_correlation_check_failed",
+                },
+                status=503,
+            )
+    if correlated:
+        _audit(
+            "update",
+            "denied",
+            request_id=instance_id,
+            error="addressing fields locked: correlated cloud instance",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "connection_method/ssm_target/aws_profile/aws_region cannot be "
+                    "edited on an instance Kiro Crew launched — Stop/Start/Delete "
+                    "resolve the real EC2 stack through these fields, so changing "
+                    "them here would strand a running, billing instance with no "
+                    "dashboard path to reach it"
+                ),
+                "code": "cloud_instance_addressing_locked",
+            },
+            status=400,
+        )
+
     transport_changed = any(
         k in transport_keys and v != getattr(current, k) for k, v in changes.items()
     )

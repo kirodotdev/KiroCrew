@@ -301,6 +301,37 @@ def register_instance(
         return None
 
 
+def is_launched_instance(ssm_target: str) -> bool:
+    """True if *ssm_target* (an EC2 instance id) was provisioned by a Kiro Crew
+    cloud launch, per the launch job store — i.e. it is a *correlated* instance,
+    not a hand-added SSM record that merely happens to use the same transport.
+
+    Used to protect a correlated instance's addressing fields
+    (``connection_method``/``ssm_target``/``aws_profile``/``aws_region``) from
+    being rewritten via the generic ``PATCH /api/instances/{id}`` endpoint:
+    doing so would leave Stop/Start/Delete unable to resolve the real EC2 stack,
+    which then keeps running and billing with no dashboard path to reach it.
+
+    Best-effort ONLY for the "cloud feature not installed" case: an
+    ``ImportError`` on the launch job module means nothing could ever have
+    been launched, so returning False (not correlated) is safe. A launch job
+    STORE read failure — the module resolved but the store itself couldn't be
+    read — is deliberately NOT swallowed here: silently treating an unreadable
+    store as "not correlated" would let a transient I/O blip unlock a launched
+    instance's addressing fields for PATCH to rewrite, which is exactly the
+    stranding this function exists to prevent. It propagates so the caller
+    (``handlers_instances._is_correlated_cloud_instance`` / the PATCH handler)
+    can fail the request CLOSED instead.
+    """
+    if not ssm_target:
+        return False
+    try:
+        from kiro_crew.cloud.launch_job import LaunchJobStore
+    except ImportError:  # pragma: no cover - cloud feature absent
+        return False
+    return any(job.instance_id == ssm_target for job in LaunchJobStore().list())
+
+
 def unregister_instance(instance_id_or_name: str) -> bool:
     """Remove a box from the Instances registry (called on cloud destroy)."""
     # An empty needle would spuriously match the empty transport field of the

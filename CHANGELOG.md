@@ -700,6 +700,18 @@ All notable changes to KiroCrew are documented in this file.
   stops resolving; the file itself is untouched and still reachable under its
   canonical key, but the stored reference has to be re-pointed. (#3369)
 
+- **`PATCH /api/instances/{id}` no longer lets a non-dashboard caller strand a
+  billing cloud instance.** The endpoint accepted edits to `connection_method`,
+  `ssm_target`, `aws_profile`, and `aws_region` for any instance — the four
+  fields Stop/Start/Delete use to resolve the real EC2 stack. The dashboard
+  already freezes these for a crew launched by Kiro Crew and never sends
+  them, but the CLI, a script, or the agent itself could still rewrite them,
+  after which Stop and Delete resolved nothing while the instance kept
+  running and billing. The handler now cross-checks the target's
+  `ssm_target` against the cloud launch job store and rejects the edit
+  (`400`, `code: "cloud_instance_addressing_locked"`) when the instance is
+  one Kiro Crew provisioned; a hand-added SSM instance is unaffected. (#3387)
+
 - **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
   whose launcher exited without signalling it (a torn-down `pytest` run, for
   example) used to stay resident forever — invisible to every sweep, ~27 MB

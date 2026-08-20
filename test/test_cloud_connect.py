@@ -484,3 +484,58 @@ class TestRegistryIntegration:
 
         assert connect.unregister_instance("i-0abc") is True
         assert not any(i.ssh_host == "i-0abc" for i in reg.list())
+
+
+class TestIsLaunchedInstance:
+    """Unit coverage for is_launched_instance() — the #3387 correlation check
+    handlers_instances.py uses to lock PATCH's addressing fields."""
+
+    def _store(self, monkeypatch, tmp_path):
+        import kiro_crew.cloud.launch_job as ljmod
+
+        store = ljmod.LaunchJobStore(root=tmp_path / "launch-jobs")
+        monkeypatch.setattr(ljmod, "LaunchJobStore", lambda *a, **k: store)
+        return store
+
+    def test_empty_target_is_not_launched(self):
+        assert connect.is_launched_instance("") is False
+
+    def test_matching_job_is_launched(self, monkeypatch, tmp_path):
+        store = self._store(monkeypatch, tmp_path)
+        job = store.create(profile="dev", region="us-west-2", size_key="light")
+        job.instance_id = "i-0abc1234"
+        store.save(job)
+
+        assert connect.is_launched_instance("i-0abc1234") is True
+
+    def test_unrelated_target_is_not_launched(self, monkeypatch, tmp_path):
+        # A hand-added SSM record whose ssm_target happens to look like an EC2 id
+        # but was never provisioned by a Kiro Crew launch job.
+        store = self._store(monkeypatch, tmp_path)
+        job = store.create(profile="dev", region="us-west-2", size_key="light")
+        job.instance_id = "i-0abc1234"
+        store.save(job)
+
+        assert connect.is_launched_instance("i-neverlaunched") is False
+
+    def test_no_jobs_at_all_is_not_launched(self, monkeypatch, tmp_path):
+        self._store(monkeypatch, tmp_path)
+        assert connect.is_launched_instance("i-0abc1234") is False
+
+    def test_store_error_propagates(self, monkeypatch):
+        # Fails CLOSED: a launch-job store read failure must NOT be silently
+        # treated as "not correlated" — that would let a transient I/O blip
+        # unlock a launched instance's addressing fields for PATCH to
+        # rewrite, stranding the real (billing) EC2 instance. The error
+        # propagates so the caller (handlers_instances._is_correlated_cloud_
+        # instance / api_instances_update) can refuse the edit instead of
+        # persisting a change against an unverifiable correlation.
+        import kiro_crew.cloud.launch_job as ljmod
+
+        class _Boom:
+            def list(self):
+                raise OSError("disk unavailable")
+
+        monkeypatch.setattr(ljmod, "LaunchJobStore", lambda *a, **k: _Boom())
+        with pytest.raises(OSError):
+            connect.is_launched_instance("i-0abc1234")
