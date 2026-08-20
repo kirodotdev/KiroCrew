@@ -6260,7 +6260,9 @@
       "search_everywhere": "हर जगह खोजें",
       "show_or_focus_the_kiro_crew_window": "Kiro Crew विंडो दिखाएँ या फ़ोकस करें",
       "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें",
-      "use_ctrl_not_option_for_chat_1_to_9": "चैट 1 से 9 के लिए Ctrl (Option नहीं) का उपयोग करें"
+      "use_ctrl_not_option_for_chat_1_to_9": "चैट 1 से 9 के लिए Ctrl (Option नहीं) का उपयोग करें",
+      "panel_toggles": "पैनल टॉगल",
+      "unset": "सेट नहीं है"
     },
     "sidePanelLayout": {
       "update_available": "अपडेट उपलब्ध है"
@@ -6798,7 +6800,10 @@
       "schedule_panel": "शेड्यूल पैनल",
       "switch_to_local": "स्थानीय पर जाएँ",
       "switch_to_remote_crew": "रिमोट क्रू {{n}} पर जाएँ",
-      "walk_back_mru_history": "MRU इतिहास में पीछे जाएँ"
+      "walk_back_mru_history": "MRU इतिहास में पीछे जाएँ",
+      "toggle_left_sidebar": "बायाँ साइडबार दिखाएँ/छिपाएँ",
+      "toggle_session_panel": "सत्र पैनल दिखाएँ/छिपाएँ",
+      "toggle_side_panel": "साइड पैनल दिखाएँ/छिपाएँ"
     },
     "usePanelTabs": {
       "artifacts": "आर्टिफ़ैक्ट",
@@ -11186,7 +11191,9 @@
         "record_prompt": "कुंजियाँ दबाएँ…",
         "search": "खोजें",
         "turn_keyboard_shortcuts_on_or_off_globally": "कीबोर्ड शॉर्टकट को पूरे सिस्टम में चालू या बंद करो — {{mod}} + K (यह संदर्भ) हमेशा काम करता है",
-        "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें"
+        "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें",
+        "clear_shortcut": "साफ़ करें",
+        "panel_toggles": "पैनल टॉगल"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "प्रत्येक पूर्ण हुए सेशन का विश्लेषण करें और जब वह सेशन कोई दोहराई जाने वाली प्रक्रिया दिखाए — ऐसी प्रक्रिया जिसे भविष्य का कोई सेशन किसी अलग लक्ष्य पर फिर से चलाएगा — तो पुनः प्रयोग योग्य SKILL.md का ड्राफ़्ट बनाएँ। डिफ़ॉल्ट रूप से बंद। ड्राफ़्ट समीक्षा के लिए स्किल टैब की लंबित कतार में रखे जाते हैं — आपकी स्वीकृति के बिना कुछ भी लाइव नहीं होता (नीचे देखें)।",

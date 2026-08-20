@@ -6348,7 +6348,9 @@
       "search_everywhere": "Buscar en todo",
       "show_or_focus_the_kiro_crew_window": "Mostrar o enfocar la ventana de Kiro Crew",
       "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
-      "use_ctrl_not_option_for_chat_1_to_9": "Usar Ctrl (no Option) para los chats 1 a 9"
+      "use_ctrl_not_option_for_chat_1_to_9": "Usar Ctrl (no Option) para los chats 1 a 9",
+      "panel_toggles": "Alternar paneles",
+      "unset": "Sin definir"
     },
     "sidePanelLayout": {
       "update_available": "actualización disponible"
@@ -6887,7 +6889,10 @@
       "schedule_panel": "Panel de programación",
       "switch_to_local": "Cambiar a Local",
       "switch_to_remote_crew": "Cambiar al crew remoto {{n}}",
-      "walk_back_mru_history": "Retroceder por el historial MRU"
+      "walk_back_mru_history": "Retroceder por el historial MRU",
+      "toggle_left_sidebar": "Mostrar u ocultar la barra lateral izquierda",
+      "toggle_session_panel": "Mostrar u ocultar el panel de sesiones",
+      "toggle_side_panel": "Mostrar u ocultar el panel lateral"
     },
     "usePanelTabs": {
       "artifacts": "Artefactos",
@@ -11310,7 +11315,9 @@
         "record_prompt": "Pulsa las teclas…",
         "search": "Buscar",
         "turn_keyboard_shortcuts_on_or_off_globally": "Activa o desactiva los atajos de teclado de forma global — {{mod}} + K (esta referencia) siempre funciona",
-        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9"
+        "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
+        "clear_shortcut": "Borrar",
+        "panel_toggles": "Alternar paneles"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando la sesión demuestra un procedimiento recurrente — uno que una sesión futura, trabajando sobre un objetivo distinto, volvería a ejecutar. Desactivado por defecto. Los borradores pasan a la cola de pendientes de la pestaña Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",
