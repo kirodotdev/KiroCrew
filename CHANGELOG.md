@@ -3,6 +3,20 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Reconnecting during a subagent stall no longer downgrades the badge.** The
+  live `subagent_stalled` event carries `idle_secs`, so the row renders
+  "possibly stalled at <tool> — no activity for Ns". The `subagent_snapshot`
+  frame replayed on WebSocket reconnect carried `stalled` but not the span, so
+  a reconnecting client fell back to the plain "no activity" wording — a
+  fallback meant only for a gateway too old to send the field, which in
+  practice ANY reconnect during an active stall took. The user lost the number
+  that justifies the warning purely because their socket blipped. The snapshot
+  now carries `idle_secs`, computed at replay time from `last_activity` (the
+  field the reaper itself measures) rather than replaying the original
+  transition value — by reconnect the agent has usually been idle longer. The
+  key is omitted when the agent is not stalled, and the reducer pairs the span
+  with the flag exactly as the live frame does, so the plain fallback stays
+  reachable for a genuinely older gateway. (#3929)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
