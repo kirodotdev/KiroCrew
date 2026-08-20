@@ -158,9 +158,16 @@ The dashboard's **Browser** panel shows the live session and lets the user take 
 
 `computer_*` MCP tools read and drive the user's **real desktop applications**
 through the accessibility layer — for work that lives outside a web page. It is
-**opt-in and off by default** (the user enables it in Settings → Computer Use) and
-**macOS-only** in this release, so treat a "disabled" or "not supported" refusal as
-the final answer: relay it and stop, never retry.
+**opt-in and off by default** (the user enables it in Settings → Computer Use).
+macOS and Windows both support the full tool set. They differ in ONE way you must
+relay to the user: on Windows there is no per-process input, so a keystroke takes
+their keyboard focus and a coordinate click moves their real cursor — the result
+text says so, and you should pass that on rather than silently succeeding. Do not
+assume the platform from your own knowledge — CALL the tool and act on what it
+returns: a "disabled" or "not supported" refusal is final (relay it and stop),
+while a refusal that names an alternative (an `element_index` instead of
+coordinates, `click_method: "global"` to accept the cursor move) is telling you
+the next call to make.
 
 **Tree first, always.** Call `computer_get_state(app=...)` before any action — it
 returns the window as a numbered element outline, and prefer addressing an element

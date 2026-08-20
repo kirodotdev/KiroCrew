@@ -15,7 +15,6 @@ src/kiro_crew/acp/liveness.py
 src/kiro_crew/acp/runtime.py
 src/kiro_crew/acp/session_handle.py
 src/kiro_crew/acp/worker_pool.py
-src/kiro_crew/agent.py
 src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py
@@ -206,7 +205,6 @@ src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli.py
 src/kiro_crew/cli_bench.py
 src/kiro_crew/cli_cloud.py
-src/kiro_crew/cli_commands.py
 src/kiro_crew/cli_desktop.py
 src/kiro_crew/cli_doctor.py
 src/kiro_crew/cli_server.py
@@ -215,8 +213,6 @@ src/kiro_crew/cloud/connect.py
 src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py
 src/kiro_crew/cloud/launch_job.py
-src/kiro_crew/computer_use/macos_skylight.py
-src/kiro_crew/computer_use/overlay_proc.py
 src/kiro_crew/config/loader.py
 src/kiro_crew/config/paths.py
 src/kiro_crew/config/schema.py
@@ -415,7 +411,6 @@ src/kiro_crew/mcp_tools/skills.py
 src/kiro_crew/mcp_tools/spawn.py
 src/kiro_crew/mcp_tools/workflows.py
 src/kiro_crew/mcp_utils.py
-src/kiro_crew/memory.py
 src/kiro_crew/messaging/attachments.py
 src/kiro_crew/messaging/driver.py
 src/kiro_crew/messaging/link.py
@@ -447,7 +442,6 @@ src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/safety_override.py
-src/kiro_crew/sandbox.py
 src/kiro_crew/security.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py
@@ -700,7 +694,6 @@ test/test_completion_result_read_off_loop.py
 test/test_computer_use_apps.py
 test/test_computer_use_ffi.py
 test/test_computer_use_overlay.py
-test/test_computer_use_registration.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
 test/test_config_loader.py

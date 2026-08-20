@@ -10571,6 +10571,8 @@
         "screen_recording": "屏幕录制",
         "screenshot_width": "截图宽度",
         "show_cursor_motion": "显示光标移动",
+        "takes_focus_and_cursor": "焦点 + 光标",
+        "on_windows_keystrokes_take_your_keyboard_focus": "在 Windows 上，按键会夺取你的键盘焦点，坐标点击会移动真实光标——这个平台没有面向单个应用的输入通道。",
         "the_app_lists_in_computer_use_json_could_not_be": "无法读取 computer_use.json 中的应用列表，因此这里显示为空。在该文件成为有效 JSON 之前，代理仍会拒绝所有依赖这些列表的操作。",
         "your_chat_sessions_were_restarted_so_this_takes": "你的聊天会话已重启，所以改动立即生效 — Kiro 每个会话只读取一次工具列表，否则已经打开的聊天不会拾取到改动。你的消息都还在；代理会在你下一条消息时重新读取上下文。"
       },

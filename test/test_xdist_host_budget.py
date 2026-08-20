@@ -569,7 +569,17 @@ def test_a_healthy_host_is_silent(
         warnings.simplefilter("always")
         assert ct.resolve_workers() == 10
 
-    assert [str(w.message) for w in caught] == []
+    # THIS module's warnings only. ``simplefilter("always")`` + ``record=True``
+    # captures every warning raised in the window, including a ``ResourceWarning``
+    # from an unclosed event loop that a PREVIOUS test in the same xdist worker
+    # leaked and the garbage collector happened to reap inside this call. That made
+    # the assertion order-dependent — observed red on a 3.12 shard as two
+    # "unclosed event loop <_UnixSelectorEventLoop ...>" entries — while saying
+    # nothing about the budget, which is the only thing this test is about. Every
+    # message the budget emits carries this prefix (``xdist_budget`` has exactly
+    # three ``warnings.warn`` calls and all three use it).
+    narrated = [str(w.message) for w in caught if "xdist worker budget" in str(w.message)]
+    assert narrated == []
 
 
 def test_a_contended_host_names_the_other_run_not_memory(

@@ -651,10 +651,31 @@ def _computer_use_spec_gate() -> bool:
     decide whether it runs at all, because they execute inside the process the
     spec already caused kiro-cli to spawn. So a disabled feature still cost a
     full backend process — ~109 MB, per chat process including every
-    ``spawn_run`` subagent — and on Linux/Windows it cost that for a capability
-    with no driver at all (see ``backend.select_default_backend``: macOS is the
-    only platform with one). This gate is the same decision moved to the only
-    place that can act on it: spec emission.
+    ``spawn_run`` subagent — and on a platform with no driver it cost that for a
+    capability that could not work. This gate is the same decision moved to the
+    only place that can act on it: spec emission.
+
+    Two conditions, and the platform one ASKS THE BACKEND rather than naming an
+    OS. The driver's own ``status().supported`` is the same seam the Settings panel
+    reads, so a platform gaining a driver needs no edit here — which is exactly the
+    bug this replaced: a hardcoded ``IS_MACOS`` kept the server out of the spec on
+    Windows after the Windows driver shipped, so the tools were advertised in
+    ``tools`` while no server was ever spawned and the model was told they did not
+    exist.
+
+    **Neither condition loads a native library**, which matters because this gate runs
+    on the agent-config rebuild path: ``is_enabled()`` is one small JSON read and
+    ``platform_could_be_supported()`` reads only ``platform_compat`` flags, where
+    reaching a driver's ``status()`` imports the platform driver and five ``WinDLL``s
+    (measured 31ms and 32 modules on Windows) to answer a question the platform flags
+    already settle. The keystone is tested first: both must hold, both fail closed, and
+    it is the cheaper of the two.
+
+    That makes the support half OPTIMISTIC — it says a driver EXISTS for this OS, not
+    that it works on this host. Correct here: this gate's job is to avoid PAYING for a
+    backend process on a platform with no driver at all, and a driver that exists but
+    will not load is caught by the shim's own in-process checks, which run inside the
+    process that would otherwise have done the work.
 
     Both in-process checks stay as defence in depth. They still cover the case
     this gate structurally cannot — the keystone flipping OFF mid-session, after
@@ -665,19 +686,21 @@ def _computer_use_spec_gate() -> bool:
     gate hands out the operator's whole desktop, so an unreadable ceiling must
     never be read generously.
     """
-    if not platform_compat.IS_MACOS:
-        return False
     try:
         # Function-local: ``enable_state`` reaches ``config.loader`` at module
         # scope, and agent.py imports that loader function-locally everywhere
         # else for exactly that reason — a module-scope import here would close
         # an import cycle through the config plane.
+        from kiro_crew.computer_use import backend as cu_backend
         from kiro_crew.computer_use import enable_state
 
-        return enable_state.is_enabled()
+        if not enable_state.is_enabled():
+            return False
+        # The NON-LOADING predicate, not ``status()``: see the docstring above.
+        return cu_backend.platform_could_be_supported()
     except Exception:
         logger.debug(
-            "computer-use keystone unreadable; omitting it from the agent spec",
+            "computer-use support or keystone unreadable; omitting it from the agent spec",
             exc_info=True,
         )
         return False
@@ -726,8 +749,9 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
     "kirocrew-cron": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-cron")},
     "kirocrew-core": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-core")},
     # Computer use (native desktop GUI automation).  ``spec_gate`` keeps the
-    # entry out of the emitted spec unless this is macOS AND the keystone primary
-    # enable is on, so kiro-cli never spawns the backend for a feature that is
+    # entry out of the emitted spec unless the platform HAS a supported driver
+    # AND the keystone primary enable is on, so kiro-cli never spawns the
+    # backend for a feature that is
     # off or unsupported (see _computer_use_spec_gate).  The shim's own empty
     # ``tools/list`` while disabled is retained as defence in depth.
     #
@@ -1974,9 +1998,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     return config
 
 
-def _refresh_dynamic_fields(
-    config: dict, *, gated_off: "frozenset[str] | None" = None
-) -> None:
+def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" = None) -> None:
     """Update security-critical and dynamic fields in an existing config.
 
     Called when ``kirocrew.json`` already exists so user customizations are
@@ -3188,20 +3210,12 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
                 if not _candidates:
                     _base = _alias_family_base(name)
                     _held = _cfg_servers.get(_base)
-                    if (
-                        _base != name
-                        and isinstance(_held, dict)
-                        and _held.get("url") != _url
-                    ):
+                    if _base != name and isinstance(_held, dict) and _held.get("url") != _url:
                         _candidates = [
-                            c
-                            for c in _store_by_alias.get(_base, ())
-                            if c.get("url") == _url
+                            c for c in _store_by_alias.get(_base, ()) if c.get("url") == _url
                         ]
                 _store_entry = _candidates[0] if len(_candidates) == 1 else None
-            valid_servers[name] = kiro_oauth_wire_entry(
-                spec, store_entry=_store_entry, server=name
-            )
+            valid_servers[name] = kiro_oauth_wire_entry(spec, store_entry=_store_entry, server=name)
             continue
         # Build candidate specs in priority order: the merged winner first,
         # then the same server from each source as a resolution fallback.
@@ -3795,9 +3809,7 @@ def ensure_agent_materialized(agent: str | None) -> bool:
         rebuild_agent_config()
         return agent_file.exists()
     except Exception:
-        logger.warning(
-            "ensure_agent_materialized failed for agent %r", agent, exc_info=True
-        )
+        logger.warning("ensure_agent_materialized failed for agent %r", agent, exc_info=True)
         return False
 
 

@@ -176,14 +176,54 @@ describe('ComputerUsePanel', () => {
     })
   })
 
-  it('tags the section as macOS only', async () => {
-    // Computer use has a macOS-only driver; the panel must say so up front rather
-    // than only in the unsupported-platform reason text. Shown in every state.
-    // `renderPanel` already awaits the settled render, so a synchronous getByText
-    // is correct here — a `findByText` retry can latch onto a transient node from
-    // React Query's re-render and resolve to a detached element.
+  it('tags the section macOS only on a macOS host', async () => {
+    // The badge states the platform reality up front rather than only in the
+    // unsupported reason text. macOS drives the full tool set, so the badge names
+    // the capability that does not follow the operator to another OS.
+    //
+    // findByText, not getByText: no badge renders until `cfg` resolves, because the
+    // platform is unknown before then and there is no wording that is true for all
+    // three (see the panel's `platformBadge`).
     await renderPanel()
-    expect(screen.getByText('macOS only')).toBeInTheDocument()
+    expect(await screen.findByText('macOS only')).toBeInTheDocument()
+  })
+
+  it('warns that a Windows host gives up focus and the cursor', async () => {
+    // Windows drives the full tool set, so the badge must NOT say "macOS only"
+    // beneath a working enable toggle — that either scares the operator off a
+    // working feature or implies the toggle is inert.
+    //
+    // What it says instead is the operator-visible divergence: Windows has no
+    // per-process input, so a keystroke takes their keyboard focus and a coordinate
+    // click moves their real cursor. Nothing else on this panel would tell them, and
+    // it is their own machine.
+    await renderPanel(snapshot({ supported: true, platform: 'windows' }))
+    // findByText, not getByText: the badge shows the macOS-only FALLBACK until the
+    // config query resolves, then flips. A synchronous read would latch the pre-load
+    // fallback. This is also why the macOS test can use a synchronous read — there
+    // the loaded value equals the fallback.
+    expect(await screen.findByText('Focus + cursor')).toBeInTheDocument()
+    expect(screen.queryByText('macOS only')).not.toBeInTheDocument()
+    // The enable toggle is live, not decorative.
+    expect(screen.getByRole('switch', { name: ENABLE_LABEL })).toBeInTheDocument()
+  })
+
+  it('spells out the Windows takeover in words once enabled', async () => {
+    // The badge names two NOUNS ("Focus + cursor"); a cold reader cannot derive the
+    // consequence from that, and this is the one fact an operator needs BEFORE
+    // enabling, on their own machine. The shared paragraph says the opposite for
+    // Windows — "leave your pointer alone" is the per-process case macOS has and
+    // Windows does not — so the sentence is platform-gated rather than reworded.
+    await renderPanel(snapshot({ supported: true, enabled: true, platform: 'windows' }))
+    expect(await screen.findByText(/keystrokes take your keyboard focus/i)).toBeInTheDocument()
+  })
+
+  it('does NOT show the Windows takeover sentence on macOS', async () => {
+    // macOS delivers per-process, so the sentence would be false there — and the
+    // shared paragraph above already describes that case correctly.
+    await renderPanel(snapshot({ supported: true, enabled: true, platform: 'macos' }))
+    expect(await screen.findByText('macOS only')).toBeInTheDocument()
+    expect(screen.queryByText(/keystrokes take your keyboard focus/i)).not.toBeInTheDocument()
   })
 
   it('renders only the reason and no toggle when the platform is unsupported', async () => {
@@ -198,8 +238,13 @@ describe('ComputerUsePanel', () => {
       await screen.findByText('the Linux AT-SPI driver is not implemented yet'),
     ).toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: ENABLE_LABEL })).not.toBeInTheDocument()
-    // The macOS-only tag stays visible on the unsupported host too.
-    expect(screen.getByText('macOS only')).toBeInTheDocument()
+    // **No badge on an unsupported host**, and specifically not "macOS only": on
+    // Linux that is a claim about a different platform sitting beside a reason that
+    // says otherwise, and a Windows operator who reaches the error branch would read
+    // it as "this feature is not for me" and stop. The reason text is the honest
+    // channel here. An absent badge withholds a fact; a wrong one ends the attempt.
+    expect(screen.queryByText('macOS only')).not.toBeInTheDocument()
+    expect(screen.queryByText('Focus + cursor')).not.toBeInTheDocument()
   })
 
 

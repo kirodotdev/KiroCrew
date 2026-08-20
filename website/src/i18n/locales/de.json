@@ -10695,6 +10695,8 @@
         "screen_recording": "Bildschirmaufnahme",
         "screenshot_width": "Screenshot-Breite",
         "show_cursor_motion": "Cursor-Bewegung anzeigen",
+        "takes_focus_and_cursor": "Fokus + Zeiger",
+        "on_windows_keystrokes_take_your_keyboard_focus": "Unter Windows übernehmen Tastenanschläge Ihren Tastaturfokus und Koordinatenklicks bewegen Ihren echten Mauszeiger — auf dieser Plattform gibt es keinen App-spezifischen Eingabeweg.",
         "the_app_lists_in_computer_use_json_could_not_be": "Die App-Listen in computer_use.json konnten nicht gelesen werden, daher werden sie hier leer angezeigt. Der Agent verweigert weiterhin jede Aktion, die von ihnen abhängt, bis die Datei gültiges JSON ist.",
         "your_chat_sessions_were_restarted_so_this_takes": "Deine Chat-Sitzungen wurden neu gestartet, damit dies sofort wirkt — Kiro liest seine Werkzeugliste einmal pro Sitzung, ein offener Chat hätte sie sonst nicht übernommen. Deine Nachrichten sind weiterhin da; der Agent liest seinen Kontext bei deiner nächsten Nachricht erneut."
       },

@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Read and drive native desktop applications through the accessibility layer — list on-screen apps, snapshot one window as a numbered element tree, then click / type / set a value / scroll / drag / run a named action, by element index or by screen coordinates. Use for work in a desktop app rather than a web page. macOS only; off unless the user enabled it in Settings.
+description: Read and drive native desktop applications through the accessibility layer — list on-screen apps, snapshot one window as a numbered element tree, then click / type / set a value / scroll / drag / run a named action, by element index or by screen coordinates. Use for work in a desktop app rather than a web page. Full tool set on macOS and Windows; on Windows a keystroke takes the user's keyboard focus and a coordinate click moves their real cursor. Off unless the user enabled it in Settings.
 triggers: desktop, desktop app, native app, app window, on screen, click button, type into, accessibility, a11y, AXUIElement, computer use, drive the app, Finder, Preview, TextEdit, Excel, Word, System Events, !browser, !web page, !playwright
 ---
 
@@ -18,9 +18,12 @@ Two things to internalise before your first call:
   against drift, and the mouse pointer does not move. Coordinates exist as a
   fallback for canvases, maps and custom-drawn UI that expose no element — see
   [Coordinates and dragging](#coordinates-and-dragging-the-fallback-not-the-default).
-- **It is off unless the user turned it on** (Settings → Computer Use, macOS only).
-  A refusal saying so is a real configuration answer, not a transient error —
-  relay it and stop; do not retry.
+- **It is off unless the user turned it on** (Settings → Computer Use). The full
+  tool set runs on macOS and Windows alike. They differ in ONE way worth relaying:
+  Windows has no per-process input, so a keystroke takes the user's keyboard focus
+  and a coordinate click moves their real cursor. A "disabled" or "not supported"
+  refusal is a real configuration answer, not a transient error — relay it and
+  stop; do not retry.
 
 ## The loop
 
@@ -181,6 +184,9 @@ single/double/triple), and `click_method`:
 
 `computer_drag` is coordinate-only — no accessibility action expresses a sweep
 between two points — and it takes the same `mouse_button` / `click_method` options.
+**On Windows a drag always moves the operator's real cursor**, so it must be asked
+for by name: pass `click_method: "global"`, because the default is the macOS
+app-scoped route and is refused rather than quietly substituted.
 
 **4. Release when you are finished with the app.**
 
@@ -291,15 +297,21 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `refusing to type this text into 'X': …` | the text looked like a sensitive command or credential | do not rephrase to get around it; explain and stop |
 | `refusing to … a secure text field` | the target is a password field | ask the user to type it themselves |
 | `computer use is disabled …` | the primary switch is off | tell the user to enable it in Settings → Computer Use; do not retry |
-| `computer use is not supported on this platform (…)` | not macOS | say so once |
-| `moving the real mouse pointer is switched off for this caller` | you asked for `click_method: "global"` on a leg that refuses it | use `app_post` (or an element index) — neither moves the pointer |
+| `computer use is not supported on this platform (…)` | no driver for this OS (e.g. Linux) | say so once |
+| `click_method 'app_post' is macOS-only …` / `'sky_click' is macOS-only …` | a macOS-only click method on Windows | use an `element_index` (no pointer moves), or name `click_method: "global"` to accept the cursor move |
+| `click_method 'auto' with coordinates cannot be served on Windows` | `auto` + x/y, where the only coordinate route moves the real cursor | pass an `element_index`, or name `global` explicitly — `auto` never takes the pointer on its own |
+| `element N … advertises no action this platform can perform` | the element implements no invoke / toggle / select / legacy default action | try its parent or a child from `computer_get_state` |
+| `dragging on Windows moves the operator's real cursor …` | a drag with the default `click_method` (the macOS app-scoped route) | pass `click_method: "global"` explicitly — Windows has no pointer-free drag, so the opt-in is the whole point. There is no element form of a drag |
+| `a right-button click cannot be delivered to element N …` | a non-left button on the element path, where UIA has no context-menu pattern | name `click_method: "global"` with coordinates, or address the menu command directly if `computer_get_state` already lists it |
+| `moving the real mouse pointer is switched off for this caller` | you asked for `click_method: "global"` on a leg that refuses it | use an element index — it moves no pointer on either platform. (`app_post` also avoids the pointer, but only on macOS; it is refused on Windows) |
 | `give either element_index or both x and y, not both forms` | you supplied two different targets in one call | pick one — the element index if the outline has the control |
 
 ## When the tree is lying to you
 
-Only about a third of macOS apps implement accessibility well, so a tree that looks
-authoritative can be wrong. Recognising this is what stops you clicking the same
-wrong index four times:
+Only some apps implement the accessibility layer well — roughly a third on
+macOS, and on Windows a control that omits a property reads as its default rather
+than as "unknown" — so a tree that looks authoritative can be wrong. Recognising
+this is what stops you clicking the same wrong index four times:
 
 - **Repeated or empty labels.** Three rows all reading `row` with no title, or a
   blank `textfield` where you expected "Search" — the tree cannot disambiguate them.

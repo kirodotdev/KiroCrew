@@ -10571,6 +10571,8 @@
         "screen_recording": "画面収録",
         "screenshot_width": "スクリーンショット幅",
         "show_cursor_motion": "カーソル移動を表示",
+        "takes_focus_and_cursor": "フォーカス + カーソル",
+        "on_windows_keystrokes_take_your_keyboard_focus": "Windows では、キー入力はキーボードフォーカスを奪い、座標クリックは実際のカーソルを動かします。このプラットフォームにはアプリ単位の入力経路がありません。",
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json のアプリリストが読み取れなかったため、ここに空で表示されています。ファイルが有効な JSON になるまで、エージェントはそれらに依存するすべてのアクションを拒否します。",
         "your_chat_sessions_were_restarted_so_this_takes": "チャットセッションが再起動されたため、すぐに反映されます。Kiro はセッションごとにツールリストを一度だけ読み取るため、オープンなチャットではそれを取得できなかったはずです。メッセージはまだそこにあります。エージェントは次のメッセージでコンテキストを再度読み取ります。"
       },

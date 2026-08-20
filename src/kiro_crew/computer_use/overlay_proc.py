@@ -452,8 +452,8 @@ class CursorOverlayWindow:
                 # and the dip that IS the click would never reach the screen.
                 # Capping the advance keeps the peak on screen on a loaded
                 # machine, at a floor of ceil(1 / CLICK_PULSE_MAX_STEP) frames.
-                progress = target if duration <= 0.0 else min(
-                    target, progress + CLICK_PULSE_MAX_STEP
+                progress = (
+                    target if duration <= 0.0 else min(target, progress + CLICK_PULSE_MAX_STEP)
                 )
                 self._set_alpha(1.0 - CLICK_PULSE_DEPTH * math.sin(progress * math.pi))
                 if progress >= 1.0:

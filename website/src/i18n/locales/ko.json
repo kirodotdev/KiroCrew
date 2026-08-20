@@ -10571,6 +10571,8 @@
         "screen_recording": "화면 기록",
         "screenshot_width": "스크린샷 너비",
         "show_cursor_motion": "커서 움직임 표시",
+        "takes_focus_and_cursor": "포커스 + 커서",
+        "on_windows_keystrokes_take_your_keyboard_focus": "Windows에서는 키 입력이 키보드 포커스를 가져가고 좌표 클릭이 실제 커서를 움직입니다. 이 플랫폼에는 앱별 입력 경로가 없습니다.",
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json의 앱 목록을 읽을 수 없어 여기에는 비어 있는 상태로 표시됩니다. 파일이 유효한 JSON이 될 때까지 에이전트는 이 목록에 의존하는 모든 작업을 거부합니다.",
         "your_chat_sessions_were_restarted_so_this_takes": "채팅 세션이 다시 시작되어 이 변경이 즉시 적용됩니다 — Kiro는 세션마다 도구 목록을 한 번만 읽으므로 열려 있던 채팅은 그렇지 않으면 변경을 반영하지 못합니다. 메시지는 그대로 남아 있으며, 에이전트는 다음 메시지에서 컨텍스트를 다시 읽습니다."
       },

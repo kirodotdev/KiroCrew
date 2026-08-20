@@ -10820,6 +10820,8 @@
         "screen_recording": "Enregistrement de l’écran",
         "screenshot_width": "Largeur de la capture",
         "show_cursor_motion": "Afficher le mouvement du curseur",
+        "takes_focus_and_cursor": "Focus + curseur",
+        "on_windows_keystrokes_take_your_keyboard_focus": "Sous Windows, les frappes prennent le focus du clavier et les clics par coordonnées déplacent votre curseur réel — cette plateforme n'a aucune voie d'entrée par application.",
         "the_app_lists_in_computer_use_json_could_not_be": "Les listes d’applications de computer_use.json n’ont pas pu être lues, elles apparaissent donc vides ici. L’agent continue de refuser toute action qui en dépend jusqu’à ce que le fichier soit du JSON valide.",
         "your_chat_sessions_were_restarted_so_this_takes": "Tes sessions de chat ont été redémarrées pour que cela prenne effet immédiatement — Kiro lit sa liste d’outils une seule fois par session, sinon un chat ouvert ne l’aurait pas prise en compte. Tes messages sont toujours là ; l’agent relit son contexte à ton prochain message."
       },

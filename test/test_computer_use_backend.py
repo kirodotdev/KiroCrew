@@ -23,7 +23,6 @@ from kiro_crew.computer_use import index as index_mod
 from kiro_crew.computer_use.backend import (
     LINUX_REASON,
     UNKNOWN_PLATFORM_REASON,
-    WINDOWS_REASON,
     ComputerUseBackend,
     UnsupportedBackend,
     get_shared_backend,
@@ -302,17 +301,22 @@ class TestPlatformSelection:
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
         monkeypatch.setattr(platform_compat, "IS_LINUX", linux)
 
-    def test_windows_degradation_on_any_runner(self, monkeypatch):
+    def test_windows_selection_on_any_runner(self, monkeypatch):
         """How the Windows path is tested on a Linux runner: flip one flag.
 
         The branch reads ``platform_compat.IS_*`` rather than ``sys.platform``
         precisely so this is possible.
+
+        ``status().supported`` is deliberately NOT asserted here. Windows now has a
+        read-path driver, so the answer depends on whether UI Automation actually
+        loads on the host — which is exactly what ``status`` exists to report and
+        cannot be true on a Linux runner. The selection is what this test owns; the
+        driver's own behaviour is pinned in
+        ``test_computer_use_windows_driver.py``.
         """
         self._pin(monkeypatch, windows=True)
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_WINDOWS
-        assert driver.status().supported is False
-        assert driver.status().reason == WINDOWS_REASON
 
     def test_linux_degradation_on_any_runner(self, monkeypatch):
         self._pin(monkeypatch, linux=True)
@@ -378,6 +382,11 @@ class TestPlatformSelection:
         * ``macos_ffi.py`` guards its framework load (raising
           ``ComputerUseUnsupported`` off macOS) — the one place a native load must be
           refused regardless of what the selector chose;
+        * ``windows_ffi.py`` guards its library load the same way, and reads
+          ``IS_WINDOWS`` for it. A native guard asks about its OWN platform, so the
+          flag it may read is the one its libraries belong to — that is still a
+          local bail-out rather than a competing selector, because it answers "can I
+          load" and never "which backend should exist";
         * ``permissions.py`` is reached directly by the dashboard's ``doctor --json``
           probe, whose whole point is learning the TCC state WITHOUT loading a
           driver, so it must answer ``unsupported`` on its own;
@@ -420,18 +429,22 @@ class TestPlatformSelection:
         # ``macos_skylight.py`` is here for the sharpest version of that reason: it
         # dlopens a PRIVATE framework, so it has to answer "am I even on macOS"
         # before reporting a capability.
+        # Maps each permitted bail-out to the ONE flag it may read: its own
+        # platform's. A guard that read a second flag would be deciding which
+        # platform this is, which is the selector's job.
         guards = {
-            "macos_ffi.py",
-            "macos_skylight.py",
-            "permissions.py",
-            "overlay.py",
-            "overlay_proc.py",
+            "macos_ffi.py": {"IS_MACOS"},
+            "macos_skylight.py": {"IS_MACOS"},
+            "permissions.py": {"IS_MACOS"},
+            "overlay.py": {"IS_MACOS"},
+            "overlay_proc.py": {"IS_MACOS"},
+            "windows_ffi.py": {"IS_WINDOWS"},
         }
-        assert set(readers) <= {"backend.py"} | guards, readers
+        assert set(readers) <= {"backend.py"} | set(guards), readers
         # The selector must read all three (it is the exhaustive branch).
         assert readers.get("backend.py") == flags
-        # Every other reader is a local "not my platform" bail-out, so IS_MACOS is
-        # all it may read. Iterating the FOUND readers (not the allowlist) keeps the
-        # rule applying to any new bail-out that gets added to the allowlist above.
-        for guard in sorted(set(readers) & guards):
-            assert readers[guard] <= {"IS_MACOS"}, (guard, readers[guard])
+        # Every other reader is a local "not my platform" bail-out, so its own
+        # platform's flag is all it may read. Iterating the FOUND readers (not the
+        # allowlist) keeps the rule applying to any new bail-out added above.
+        for guard in sorted(set(readers) & set(guards)):
+            assert readers[guard] <= guards[guard], (guard, readers[guard])

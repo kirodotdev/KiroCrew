@@ -736,95 +736,86 @@ class TestFailureDetailIsRedactedAtTheSource:
                 assert fragment not in step["stderr"]
 
     def test_redaction_timing_scales_linearly(self):
-        """Doubling the input must not more than triple the runtime.
+        """Redaction must not blow up super-linearly on adversarial input.
 
-        An absolute-duration assertion is fragile across CI environments
-        (coverage overhead, CPU contention). A bounded RATIO between two
-        input sizes is stable: quadratic or exponential growth (ReDoS)
-        doubles the ratio on each doubling of input, while linear growth
-        keeps it near 2.0.
+        **What this asserts, and why it is no longer a tight ratio.** The bound
+        this test exists to defend is the gap between LINEAR and CATASTROPHIC,
+        which is the gap between milliseconds and seconds-to-minutes. It does
+        not need to resolve 2.0x from 3.0x, and trying to do so is what made it
+        flake three separate times:
 
-        Three measurement details keep the ratio itself stable on a shared CI
-        runner, matching what ``TestIsDeniedReDoSResistance`` already does
-        for the same class of assertion:
+        * originally, one ``perf_counter`` sample per size — billed for
+          whatever the OS gave the sibling xdist workers;
+        * then ``thread_time`` + best-of-3, which removed the cross-worker
+          noise but not the tick quantization on Windows (~15.625ms steps, so
+          6 ticks over 2 ticks reports exactly 3.0 and fails ``< 3.0``);
+        * then an adaptive repeat count to clear the tick, which still failed
+          CI at **3.07x** on the 3.12 shard — the ONE shard that runs under
+          ``--cov``, whose tracer bills every ``re`` call unevenly across the
+          two samples while the 3.10 shard (``--no-cov``) passed.
 
-        * ``thread_time``, not ``perf_counter``: wall-clock bills this test
-          for however long the OS gave the core to the sibling pytest-xdist
-          workers, and that noise lands unevenly across the two samples.
-          Redaction is single-threaded pure-regex work, so per-thread CPU is
-          its complete cost — a genuinely catastrophic pattern inflates it
-          identically.
-        * Best-of-3 per size: this is a floor measurement, and scheduler
-          noise only ever ADDS, so the minimum is the closest estimate of
-          the true cost.
-        * Each sample redacts REPEATEDLY, and the repeat count is grown at
-          runtime until the small sample clears ``_MIN_TRUSTED_SAMPLE``.
-          This is what makes the ratio meaningful on a coarse-tick platform,
-          and it is the fix for the failure mode the two details above did
-          NOT cover: ``thread_time`` on Windows advances in ~15.625ms steps,
-          so a single 25k-char redaction (~31ms there) is only two ticks and
-          the ratio can only land on 2.0, 2.5, 3.0, 3.5 … A healthy matcher
-          measured as 6 ticks over 2 ticks reports EXACTLY 3.0 and fails a
-          `< 3.0` bound — observed in CI as
-          "0.0938s / 0.0312s = 3.0x", both values exact multiples of the
-          tick. Growing the repeat count until the denominator is tens of
-          ticks makes quantization a few per cent instead of fifty.
+        Measured directly: for genuinely linear code, twelve independent
+        best-of-3 ratio measurements on one machine spread **1.53x to 2.50x**.
+        A ±0.5 band around 2.0 leaves no room under a 3.0 ceiling, so the
+        ratio is measuring scheduler and tracer noise, not scaling.
 
-          Adaptive rather than a hardcoded count so it holds on both a fast
-          developer machine (where a fixed count would measure too little)
-          and a slow runner (where it would waste seconds).
+        So the shape is asserted where the code HAS structure to observe, and
+        the timing bound is made generous enough that only catastrophe trips
+        it — the rule ``TestIsDeniedReDoSResistance`` and
+        ``TestUserRegexReDoSGate`` already follow ("only has to separate
+        linear from catastrophic … not assert a sub-100ms wall clock on a
+        shared, parallel CI runner"):
 
-        Neither change weakens the guarantee: the bound stays at 3.0x, and
-        quadratic growth still lands at >=4x on every sample. Measured
-        locally, the ratio is 2.00 at every repeat count from 1 to 50.
+        * **Structural half, deterministic:** the pattern is checked to carry
+          a bounded quantifier. Catastrophic backtracking on this input needs
+          an unbounded one, so its ABSENCE is the actual guarantee — and this
+          half cannot flake at all.
+        * **Timing half, generously bounded:** doubling the input must not
+          cost more than :data:`_CATASTROPHIC_CEILING`. Real quadratic growth
+          on 50k chars runs for seconds; the measured linear cost is ~30ms.
+          Two orders of magnitude of headroom is what makes it stable.
         """
+        import re
         import time
 
-        #: A sample below this is not trustworthy on a platform whose
-        #: per-thread clock advances in ~15.625ms steps. Not derived from
-        #: ``get_clock_info('thread_time').resolution``, which reports 1ns on
-        #: Windows and so describes the API rather than the tick.
-        _MIN_TRUSTED_SAMPLE = 0.05
-        _MAX_REPS = 128
+        #: Separates linear from catastrophic with room for a loaded runner and
+        #: a coverage tracer. The linear cost of 50k chars is ~30ms here; a
+        #: genuinely quadratic matcher on the same input takes seconds. Anything
+        #: in between is noise, and this test declines to adjudicate it.
+        _CATASTROPHIC_CEILING = 2.0
 
-        def cost(text: str, reps: int) -> float:
-            """CPU consumed by THIS thread redacting *text* *reps* times."""
-            start = time.thread_time()
-            for _ in range(reps):
-                mod._redact(text)
-            return time.thread_time() - start
-
-        # Adversarial: all chars match the env-var prefix class [A-Z0-9_],
-        # the shape that triggered the original catastrophic backtracking
-        # before the {0,40} bound was added.
+        # Adversarial: all chars match the env-var prefix class [A-Z0-9_], the
+        # shape that triggered the original catastrophic backtracking before
+        # the {0,40} bound was added.
         small = "A" * 25_000
         large = "A" * 50_000
 
-        # Warm up (JIT, import overhead).
-        mod._redact(small)
-
-        reps = 4
-        while True:
-            t_small = min(cost(small, reps) for _ in range(3))
-            if t_small >= _MIN_TRUSTED_SAMPLE or reps >= _MAX_REPS:
-                break
-            reps *= 2
-
-        if t_small < _MIN_TRUSTED_SAMPLE:
-            pytest.skip(
-                f"per-thread clock cannot resolve {reps} redactions "
-                f"({t_small:.4f}s < {_MIN_TRUSTED_SAMPLE}s); a ratio from this "
-                "would be quantization noise, not evidence about scaling"
+        # ── The structural half: the bound that PREVENTS the blow-up ──
+        # The keyword pattern is the one that backtracked catastrophically, and
+        # ``{0,40}`` is precisely what fixed it: an unbounded run before a
+        # required keyword is what explodes on a long class-matching input
+        # (measured as a 120s timeout on 50 KB of stderr — see
+        # ``_NPM_SECRET_RES``). Asserting the bound is PRESENT is both stronger
+        # and completely deterministic, where timing it is neither.
+        keyword_res = [
+            pattern.pattern for pattern in mod._NPM_SECRET_RES if "TOKEN" in pattern.pattern
+        ]
+        assert keyword_res, "the keyword redaction pattern is gone"
+        for pattern in keyword_res:
+            assert re.search(r"\{\d*,\d+\}", pattern), (
+                "the keyword prefix lost its bounded quantifier, which is the only "
+                f"thing keeping it linear on a long [A-Z0-9_] run: {pattern}"
             )
 
-        t_large = min(cost(large, reps) for _ in range(3))
-
-        # Linear growth ⇒ ratio ≈ 2.0; allow up to 3.0 for noise.
-        # ReDoS (quadratic+) yields ratio ≥ 4.0 reliably.
-        ratio = t_large / t_small
-        assert ratio < 3.0, (
-            f"Redaction scaled super-linearly: {t_large:.4f}s / "
-            f"{t_small:.4f}s = {ratio:.1f}x (limit 3.0x, {reps} reps/sample)"
+        # ── The timing half: catastrophe only ──
+        mod._redact(small)  # warm up (JIT, import overhead)
+        start = time.thread_time()
+        mod._redact(large)
+        elapsed = time.thread_time() - start
+        assert elapsed < _CATASTROPHIC_CEILING, (
+            f"redacting {len(large)} adversarial chars took {elapsed:.3f}s, over the "
+            f"{_CATASTROPHIC_CEILING}s catastrophic-backtracking ceiling — the "
+            "matcher is no longer linear in input length"
         )
 
 
