@@ -34,6 +34,10 @@ class TestDetectInstallLayout:
         proj.mkdir()
         _init_repo(proj)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
 
         from kiro_crew.platform.update_layout import detect_install_layout
 
@@ -75,6 +79,10 @@ class TestDetectInstallLayout:
         proj.mkdir()
         _init_repo(proj)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
 
         from kiro_crew.platform.update_layout import detect_install_layout
 
@@ -403,6 +411,10 @@ class TestUpdateDispatch:
         proj.mkdir()
         _init_repo(proj)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
 
         import kiro_crew.cli_server as cs
 

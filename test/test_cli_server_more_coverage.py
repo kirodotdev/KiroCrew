@@ -967,6 +967,13 @@ def git_checkout(monkeypatch, tmp_path):
     # and a bare ``.git`` directory is refused by both on purpose.
     (proj / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+    # The git lane requires provenance as well as the path probe; this fixture
+    # exercises the git path with a fabricated tree the test process does not
+    # run from, so provenance is declared rather than derived.
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_capability.running_from_checkout",
+        lambda root, **kw: True,
+    )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.resolve_remote_url",
         lambda p, remote="", branch="": "https://github.com/kirodotdev/KiroCrew.git",

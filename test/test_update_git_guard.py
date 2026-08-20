@@ -89,6 +89,10 @@ class TestUpdateCheckGitGuard:
         # the real git dir — update checks must still run there.
         _init_repo(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
         called = {"n": 0}
 
         class _Proc:
@@ -108,6 +112,10 @@ class TestUpdateCheckGitGuard:
     def test_proceeds_when_dot_git_present(self, monkeypatch, tmp_path):
         _init_repo(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
         called = {"n": 0}
 
         class _Proc:

@@ -383,6 +383,13 @@ class TestGitCheckoutStillWorks:
     def _git_install(self, monkeypatch, tmp_path):
         _init_repo(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        # These tests exercise the CHECK against a scripted git; the process
+        # running them does not load kiro_crew from tmp_path, so the provenance
+        # half of the git-lane gate is declared rather than derived.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
         return tmp_path
 
     @staticmethod

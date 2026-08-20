@@ -27,6 +27,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from typing import Any
 
+from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.beacon import distribution
 from kiro_crew.platform_compat import trusted_system_bin
 
@@ -227,10 +228,10 @@ def is_git_worktree(root: str) -> bool:
     match would silently stop working under a non-English locale.
 
     Both paths stay ANCHORED at *root*, so ancestor capture is rejected either
-    way. What the fallback cannot do is tell this install's own checkout from an
-    unrelated repository that ``KIROCREW_PROJECT_DIR`` happens to name — neither
-    could the check it replaced, and deciding it would need a signal other than
-    the path.
+    way. What neither path can do is tell this install's own checkout from an
+    unrelated repository that ``KIROCREW_PROJECT_DIR`` happens to name — that
+    needs a signal other than the path, which is what
+    :func:`running_from_checkout` supplies on top of this probe.
     """
     if not root or "\x00" in root:
         return False
@@ -252,6 +253,42 @@ def is_git_worktree(root: str) -> bool:
         return os.path.samefile(top, root)
     except OSError:
         return os.path.realpath(top) == os.path.realpath(root)
+
+
+def running_from_checkout(root: str) -> bool:
+    """Is *root* the checkout the ``kiro_crew`` package THIS process runs from?
+
+    The signal :func:`is_git_worktree` cannot supply: that *root* is a real
+    working tree says nothing about whether the running code came from it. A
+    release install (a wheel in its own venv) whose ``KIROCREW_PROJECT_DIR``
+    resolves onto a checkout — the CWD-walking project detection does exactly
+    this when the gateway is launched from inside a clone — passes the path
+    probe while its bytes are owned by the release feed. Classifying it as a
+    git install misreports the version drift, and the apply endpoint would then
+    ``git pull`` + ``pip install -e`` that clone, silently replacing the
+    release install with whatever the clone contains.
+
+    Delegates to :func:`kiro_crew._bootstrap._source_checkout_root`, which
+    resolves where the imported package actually loads from: the repo root for
+    an editable install or a ``PYTHONPATH=src`` dev run — the layouts whose
+    bytes ``git pull`` genuinely updates — and ``None`` for anything resolving
+    through an installed tree (a wheel's ``site-packages``, including a venv
+    nested under an unrelated repository such as a dotfiles home). *root* must
+    then be that same directory: a DIFFERENT checkout is exactly the
+    misclassification this refuses.
+    """
+    if not root or "\x00" in root:
+        return False
+    checkout = _source_checkout_root()
+    if checkout is None:
+        return False
+    target = os.path.abspath(root)
+    try:
+        # Inode identity, not string equality — same reasoning as the anchor
+        # comparison in is_git_worktree.
+        return os.path.samefile(str(checkout), target)
+    except OSError:
+        return os.path.realpath(str(checkout)) == os.path.realpath(target)
 
 
 @dataclass(frozen=True)
@@ -374,7 +411,14 @@ def derive_capability(
             },
         )
 
-    if is_git_worktree(install_root):
+    if is_git_worktree(install_root) and running_from_checkout(install_root):
+        # BOTH halves are required for the git lane. The worktree probe answers
+        # "is this path a checkout"; provenance answers "is it THIS install's
+        # checkout". A release install pointed at someone's clone (the CWD-derived
+        # project dir does this) passes the first and must not take this branch:
+        # its updates come from the release feed below, and the apply endpoint
+        # would otherwise replace the install with the clone's contents.
+        #
         # can_apply is true because ``POST /api/update`` genuinely applies on a
         # checkout: git fetch + reset + rebuild + restart. It answers only
         # "can the running process apply this", which is the question an
@@ -439,4 +483,5 @@ __all__ = [
     "UpdateCapability",
     "derive_capability",
     "is_git_worktree",
+    "running_from_checkout",
 ]

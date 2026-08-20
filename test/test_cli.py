@@ -406,6 +406,10 @@ class TestUpdateFailures:
 
     def test_git_fetch_failure_exits(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
 
         def _side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
@@ -433,6 +437,10 @@ class TestUpdateFailures:
 
     def test_pip_install_failure_exits(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
 
         def _side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])

@@ -220,6 +220,10 @@ class TestUpdateEndpoints:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         _init_repo(tmp_path)  # must be a git checkout to reach the dirty check
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
 
         from kiro_crew.dashboard.handlers import api_update_apply
 

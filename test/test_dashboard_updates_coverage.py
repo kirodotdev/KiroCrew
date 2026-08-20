@@ -137,18 +137,24 @@ def _sequence_procs(monkeypatch, procs: list[_FakeProc]) -> list[tuple[str, ...]
     return argv_seen
 
 
-def _git_proj(tmp_path) -> str:
+def _git_proj(monkeypatch, tmp_path) -> str:
     """A directory the capability derivation accepts as this install's checkout.
 
     ``.git/HEAD`` is written, not just ``.git/``: the derivation asks git first
     and falls back to the on-disk markers of a working tree's own root, and a
     bare ``.git`` directory satisfies neither — a fabricated one is refused on
-    purpose.
+    purpose. The git lane also requires provenance (the running package loads
+    from the tree), which a fabricated directory cannot satisfy, so it is
+    declared here rather than derived.
     """
     proj = tmp_path / "checkout"
     proj.mkdir()
     (proj / ".git").mkdir()
     (proj / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_capability.running_from_checkout",
+        lambda root, **kw: True,
+    )
     return str(proj)
 
 
@@ -219,7 +225,7 @@ class TestGitCheckoutFailurePaths:
 
     async def _run(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
         argv = _sequence_procs(monkeypatch, procs)
-        await updates._check_git_checkout(_git_proj(tmp_path), _git_capability())
+        await updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
         return argv
 
     def _assert_failed_check(self, error: str) -> None:
@@ -581,7 +587,7 @@ class TestApplyRefusals:
         permits this host to pull from this remote -- and a blocked update must
         leave no "updating" overlay behind for the user to dismiss.
         """
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "https://example.invalid/x")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "remote is not permitted")
 
@@ -597,7 +603,7 @@ class TestApplyRefusals:
 
     @pytest.mark.asyncio
     async def test_a_hung_status_check_answers_500_rather_than_hanging(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(monkeypatch, [_FakeProc(time_out=True, kill_raises=True)])
@@ -611,7 +617,7 @@ class TestApplyRefusals:
 
     @pytest.mark.asyncio
     async def test_a_dirty_tree_is_refused_without_starting_the_worker(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(monkeypatch, [_FakeProc(out=b" M src/kiro_crew/cli.py\n")])
@@ -625,7 +631,7 @@ class TestApplyRefusals:
 
     async def _drive_worker(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
         """Accept the request, then await the background worker it scheduled."""
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         _sequence_procs(monkeypatch, [_FakeProc(out=b"")] + procs)
@@ -664,7 +670,7 @@ class TestApplyRefusals:
         The overlay has no other way to leave the "updating" state, so a
         swallowed error strands the user on a spinner forever.
         """
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
         calls = {"n": 0}
@@ -1333,7 +1339,7 @@ class TestExternallyManagedCheck:
     async def test_an_unexpected_crash_records_an_error_rather_than_a_verdict(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(tmp_path))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
 
         async def _boom(_proj: str, _capability) -> None:
             raise RuntimeError("git is not installed")

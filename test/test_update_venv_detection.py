@@ -272,6 +272,10 @@ class TestApiUpdateApplyVenvDispatch:
     ) -> None:
         proj = _make_pip_proj(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
         monkeypatch.setattr("kiro_crew.env.is_toolbox_install", lambda: False)
 
         pip_called: list[bool] = []
@@ -323,6 +327,10 @@ class TestApiUpdateApplyVenvDispatch:
     ) -> None:
         proj = _make_pip_proj(tmp_path)
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
         monkeypatch.setattr("kiro_crew.env.is_toolbox_install", lambda: False)
 
         restart_called: list[bool] = []
