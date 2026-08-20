@@ -6662,6 +6662,27 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "crewEditor": {
+      "group_how_work_arrives": "작업이 들어오는 경로",
+      "group_what_it_can_do": "무엇을 할 수 있는지",
+      "group_where_it_works": "어디에서 작동하는지",
+      "group_who_it_is": "무엇인지",
+      "node_none": "없음",
+      "pane_overview": "개요",
+      "pane_schedules": "일정",
+      "pane_webhook": "웹훅",
+      "pane_workspace_memory": "워크스페이스 · 메모리 저장소",
+      "rail_label": "크루 설정",
+      "stat_active_schedules": "활성 일정",
+      "stat_crews_sharing": "저장소를 공유하는 크루",
+      "stat_resolved_model": "확정된 모델",
+      "stat_unknown": "알 수 없음",
+      "tag_shared": "공유됨",
+      "unsaved_changes": "저장되지 않은 변경",
+      "webhook_unbound_reason": "웹훅 토큰은 아직 크루에 연결되지 않으므로 어떤 토큰으로도 아무 크루를 깨울 수 있습니다.",
+      "webhook_unbound_short": "크루에 연결되지 않음",
+      "wire_what_it_works_with": "무엇으로 작동하는지"
     }
   },
   "hooks": {

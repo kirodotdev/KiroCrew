@@ -118,6 +118,10 @@ test.describe('Capabilities Page — /capabilities', () => {
       await card.click()
       const editSheet = page.getByRole('dialog', { name: `Edit crew ${agentName}` })
       await expect(editSheet).toBeVisible({ timeout: 5000 })
+      // The editor is a rail plus one pane, so removal lives on its own pane and
+      // the button is not mounted until that pane is showing. This is the click a
+      // user makes; without it the button below is simply absent.
+      await editSheet.getByTestId('crew-rail-danger').click()
       await editSheet.getByRole('button', { name: 'Delete crew', exact: true }).click()
       // Delete is a two-step confirm: the first press only arms it, so without
       // this second press the sheet never closes and the delete never happens.

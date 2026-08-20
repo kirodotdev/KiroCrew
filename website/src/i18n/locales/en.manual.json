@@ -2292,6 +2292,27 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "crewEditor": {
+      "group_how_work_arrives": "How work arrives",
+      "group_what_it_can_do": "What it can do",
+      "group_where_it_works": "Where it works",
+      "group_who_it_is": "Who it is",
+      "node_none": "None",
+      "pane_overview": "Overview",
+      "pane_schedules": "Schedules",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "Workspace · Memory",
+      "rail_label": "Crew settings",
+      "stat_active_schedules": "Active schedules",
+      "stat_crews_sharing": "Crews sharing its storage",
+      "stat_resolved_model": "Resolved model",
+      "stat_unknown": "Unknown",
+      "tag_shared": "Shared",
+      "unsaved_changes": "Unsaved changes",
+      "webhook_unbound_reason": "Webhook tokens carry no crew binding yet, so any token can wake any crew.",
+      "webhook_unbound_short": "Not bound to a crew",
+      "wire_what_it_works_with": "What it works with"
     }
   },
   "hooks": {

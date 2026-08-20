@@ -6751,6 +6751,27 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "crewEditor": {
+      "group_how_work_arrives": "কাজ কীভাবে আসে",
+      "group_what_it_can_do": "এটি কী করতে পারে",
+      "group_where_it_works": "এটি কোথায় কাজ করে",
+      "group_who_it_is": "এটি কী",
+      "node_none": "কোনোটি নয়",
+      "pane_overview": "সংক্ষিপ্ত বিবরণ",
+      "pane_schedules": "সময়সূচি",
+      "pane_webhook": "webhook",
+      "pane_workspace_memory": "ওয়ার্কস্পেস · মেমরি স্টোর",
+      "rail_label": "Crew সেটিংস",
+      "stat_active_schedules": "সক্রিয় সময়সূচি",
+      "stat_crews_sharing": "এর স্টোরেজ ভাগ করা Crew",
+      "stat_resolved_model": "নির্ধারিত মডেল",
+      "stat_unknown": "অজানা",
+      "tag_shared": "ভাগ করা",
+      "unsaved_changes": "সংরক্ষিত হয়নি এমন পরিবর্তন",
+      "webhook_unbound_reason": "webhook টোকেন এখনও কোনো Crew-এর সঙ্গে বাঁধা নয়, তাই যেকোনো টোকেন যেকোনো Crew-কে জাগাতে পারে।",
+      "webhook_unbound_short": "কোনো Crew-এর সঙ্গে বাঁধা নয়",
+      "wire_what_it_works_with": "এটি কী ব্যবহার করে"
     }
   },
   "hooks": {

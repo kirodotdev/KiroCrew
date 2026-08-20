@@ -6840,6 +6840,27 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "crewEditor": {
+      "group_how_work_arrives": "Cómo llega el trabajo",
+      "group_what_it_can_do": "Qué puede hacer",
+      "group_where_it_works": "Dónde trabaja",
+      "group_who_it_is": "Qué es",
+      "node_none": "Ninguna",
+      "pane_overview": "Resumen",
+      "pane_schedules": "Programaciones",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "Espacio · Memoria",
+      "rail_label": "Configuración del crew",
+      "stat_active_schedules": "Programaciones activas",
+      "stat_crews_sharing": "Crews que comparten su almacenamiento",
+      "stat_resolved_model": "Modelo resuelto",
+      "stat_unknown": "Desconocido",
+      "tag_shared": "Compartido",
+      "unsaved_changes": "Cambios sin guardar",
+      "webhook_unbound_reason": "Los tokens de webhook aún no están vinculados a ningún crew, por lo que cualquier token puede activar cualquier crew.",
+      "webhook_unbound_short": "Sin vincular a un crew",
+      "wire_what_it_works_with": "Con qué trabaja"
     }
   },
   "hooks": {

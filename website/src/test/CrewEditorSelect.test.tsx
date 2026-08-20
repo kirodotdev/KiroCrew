@@ -235,6 +235,8 @@ describe('crew editor — collision warning', () => {
     // has already happened.
     await renderRoster()
     const sheet = await openEditor('oncall')
+    // Both the picker and the warning live on the workspace/memory pane.
+    fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
 
     // oncall starts on its own store, so nothing collides yet.
     expect(within(sheet).queryByText(/Also used by/)).not.toBeInTheDocument()
@@ -256,6 +258,16 @@ describe('crew editor — collision warning', () => {
       expect(within(sheet).getByText(/Also used by kirocrew/)).toBeInTheDocument(),
     )
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
+
+    // The overview must agree with that warning about WHICH resource collides.
+    // Reading a persisted per-agent count here instead of the in-flight value
+    // reports the collision the crew used to have, so the same screen showed a
+    // sharing count with no pill on the node that caused it.
+    fireEvent.click(within(sheet).getByTestId('crew-rail-overview'))
+    await waitFor(() =>
+      expect(within(sheet).getByTestId('crew-wire-memory')).toHaveTextContent('Shared'),
+    )
+    expect(within(sheet).getByTestId('crew-wire-workspace')).not.toHaveTextContent('Shared')
   })
 })
 

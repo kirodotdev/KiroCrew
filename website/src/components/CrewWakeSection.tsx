@@ -22,29 +22,9 @@ import { timeAgo } from '../utils/timeAgo'
 import { fmtRelative } from '../i18n/format'
 import type { CronJob } from '../types'
 import { useCronActions } from '../hooks/useCronActions'
+import { wakesCrew, crewWakeQueryKey } from './crew/wakesCrew'
 
 import { i18nT } from '../i18n/t'
-
-/**
- * Whether `job` wakes `crew`, in the order the backend resolves it.
- *
- * 1. A script or command job opens no session, so it runs as NO crew — whatever
- *    `agent` it happens to carry. Checked first, so a stale `agent_id` on such a
- *    job cannot list it under a crew it never wakes.
- * 2. A sequence of MORE THAN ONE agent takes precedence over `agent_id` at run
- *    time (`len(agents) > 1` in the gateway's dispatch), so such a job belongs to
- *    the crews it names and to no others — in particular, an empty `agent_id` on
- *    one must NOT read as "the default crew". A one-element sequence does NOT
- *    take precedence, so it falls through to `agent_id` like any other job.
- * 3. Otherwise the bound `agent`, and an empty one means the default crew.
- */
-function wakesCrew(job: CronJob, crew: string, isDefaultCrew: boolean): boolean {
-  if (job.script || job.command) return false
-  const seq = (job.agent_sequence || []).map(a => (a || '').trim()).filter(Boolean)
-  if (seq.length > 1) return seq.includes(crew)
-  const bound = (job.agent || '').trim()
-  return bound ? bound === crew : isDefaultCrew
-}
 
 function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
   const { running, runNow, toggleEnabled, actionError } = useCronActions(onChanged)
@@ -124,7 +104,7 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
 export default function CrewWakeSection({ crew, isDefaultCrew }: { crew: string; isDefaultCrew: boolean }) {
   const navigate = useNavigate()
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['crons', 'crew-wake', crew],
+    queryKey: crewWakeQueryKey(crew),
     queryFn: () => api.crons(),
   })
   const jobs: CronJob[] = (data?.jobs || []).filter((j: CronJob) => wakesCrew(j, crew, isDefaultCrew))

@@ -6751,6 +6751,27 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "crewEditor": {
+      "group_how_work_arrives": "काम कैसे आता है",
+      "group_what_it_can_do": "यह क्या कर सकता है",
+      "group_where_it_works": "यह कहाँ काम करता है",
+      "group_who_it_is": "यह क्या है",
+      "node_none": "कोई नहीं",
+      "pane_overview": "अवलोकन",
+      "pane_schedules": "शेड्यूल",
+      "pane_webhook": "वेबहुक",
+      "pane_workspace_memory": "वर्कस्पेस · मेमोरी स्टोर",
+      "rail_label": "Crew सेटिंग्स",
+      "stat_active_schedules": "चालू शेड्यूल",
+      "stat_crews_sharing": "इसका स्टोरेज साझा करने वाले Crew",
+      "stat_resolved_model": "हल किया गया मॉडल",
+      "stat_unknown": "अज्ञात",
+      "tag_shared": "साझा",
+      "unsaved_changes": "सहेजे नहीं गए बदलाव",
+      "webhook_unbound_reason": "वेबहुक टोकन अभी किसी Crew से बंधे नहीं हैं, इसलिए कोई भी टोकन किसी भी Crew को जगा सकता है।",
+      "webhook_unbound_short": "किसी Crew से बंधा नहीं",
+      "wire_what_it_works_with": "यह किसके साथ काम करता है"
     }
   },
   "hooks": {

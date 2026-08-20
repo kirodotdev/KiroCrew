@@ -19,6 +19,11 @@ import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar from '../components/CrewAvatar'
 import CrewWakeSection from '../components/CrewWakeSection'
+import CrewEditorRail from '../components/crew/CrewEditorRail'
+import CrewOverviewPane from '../components/crew/CrewOverviewPane'
+import { useCrewEditorSections, type CrewPaneKey } from '../components/crew/crewEditorSections'
+import { wakesCrew, crewWakeQueryKey } from '../components/crew/wakesCrew'
+import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 
@@ -254,11 +259,114 @@ function Binding({ icon, label, value, muted, note }: {
   )
 }
 
+/** An EMPTY current value means "nothing selected" and must NOT be appended as an
+ *  option: SimpleSelect treats an options list containing '' as making empty
+ *  selectable, which suppresses the trigger placeholder and adds a blank row. */
+function withCurrent(opts: string[], cur: string): string[] {
+  return !cur || opts.includes(cur) ? opts : [...opts, cur]
+}
+
 /**
- * The four binding selects. Shared by the create and edit modes of the editor
- * panel so the two paths cannot drift (and so the block is not duplicated,
- * which the jscpd gate would reject).
+ * One component per binding, so the create form and the editor's panes render the
+ * SAME control rather than two copies that drift. Create composes them through
+ * `BindingFields`; the editor mounts them individually, one per rail pane.
  */
+export function TemplateField({ label, options, value, onChange }: {
+  label: string; options: string[]; value: string; onChange: (v: string) => void
+}) {
+  return (
+    <Field label={label} hint={i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')}>
+      <SimpleSelect
+        options={withCurrent(options, value)}
+        value={value}
+        onChange={onChange}
+        triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
+        aria-label={label}
+      />
+    </Field>
+  )
+}
+
+export function WorkspaceField({ options, value, onChange, onNewWorkspace }: {
+  options: string[]; value: string; onChange: (v: string) => void; onNewWorkspace: () => void
+}) {
+  return (
+    <Field
+      label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
+      hint={i18nT('pages.kiroCrewAgentsPage.isolated_memory_and_files_for_this_crew')}
+      info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
+    >
+      <SimpleSelect
+        options={withCurrent(options, value)}
+        value={value}
+        onChange={onChange}
+        action={{ label: i18nT('pages.kiroCrewAgentsPage.new_workspace_action'), onSelect: onNewWorkspace }}
+        aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
+      />
+    </Field>
+  )
+}
+
+export function MemoryStoreField({ options, value, onChange }: {
+  options: string[]; value: string; onChange: (v: string) => void
+}) {
+  return (
+    <Field
+      label={i18nT('pages.kiroCrewAgentsPage.memory_store')}
+      hint={i18nT('pages.kiroCrewAgentsPage.which_store_its_lessons_and_history_are_written')}
+      info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
+    >
+      <SimpleSelect options={withCurrent(options, value)} value={value} onChange={onChange} aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')} />
+      {/* Show the "more coming" note only when `default` is the sole option —
+          an install that has declared extra `memory_stores` in config already
+          has a real choice here, and the copy must not contradict a picker
+          that is visibly offering other stores. */}
+      {options.length <= 1 && (
+        <span className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-accent">
+          <Sparkles className="lucide-inline h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
+          {i18nT('pages.kiroCrewAgentsPage.additional_stores_coming_with_memory_v2')}
+        </span>
+      )}
+    </Field>
+  )
+}
+
+export function ModelField({ options, value, onChange }: {
+  options: string[]; value: string; onChange: (v: string) => void
+}) {
+  return (
+    <Field label={i18nT('pages.kiroCrewAgentsPage.model')}>
+      <SimpleSelect
+        options={withCurrent(options, value)}
+        // The inherit option must NOT read as "auto": in the chat picker "auto"
+        // promises task-based routing, whereas here it means "pin nothing,
+        // inherit the next tier" — which can resolve to a concrete model. Label
+        // it as the card does so the round trip stays honest.
+        optionLabels={withCurrent(options, value).map(m => (m === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : m))}
+        value={value}
+        onChange={onChange}
+        aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
+      />
+    </Field>
+  )
+}
+
+/** The routing-keyword input. Rendered by the create form and by the editor's
+ *  routing pane, so it is a component rather than two copies. */
+export function TriggersField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <Field label={i18nT('pages.kiroCrewAgentsPage.triggers')} hint={i18nT('pages.kiroCrewAgentsPage.triggers_hint')} info={i18nT('pages.kiroCrewAgentsPage.triggers_info')}>
+      <Input
+        placeholder={i18nT('pages.kiroCrewAgentsPage.triggers_placeholder')}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        aria-label={i18nT('pages.kiroCrewAgentsPage.triggers')}
+      />
+    </Field>
+  )
+}
+
+/** The create form's binding block. */
 function BindingFields({
   templateLabel, kiroAgentOptions, kiroAgent, setKiroAgent,
   workspaceOptions, workspace, setWorkspace, onNewWorkspace,
@@ -271,65 +379,13 @@ function BindingFields({
   memoryStoreOptions: string[]; memoryStore: string; setMemoryStore: (v: string) => void
   modelOptions?: string[]; model?: string; setModel?: (v: string) => void
 }) {
-  // An EMPTY current value means "nothing selected" and must NOT be appended as
-  // an option: SimpleSelect treats an options list containing '' as making empty
-  // selectable, which suppresses the trigger placeholder and adds a blank row.
-  const withCurrent = (opts: string[], cur: string) => (!cur || opts.includes(cur) ? opts : [...opts, cur])
   return (
     <>
-      <Field label={templateLabel} hint={i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')}>
-        <SimpleSelect
-          options={withCurrent(kiroAgentOptions, kiroAgent)}
-          value={kiroAgent}
-          onChange={setKiroAgent}
-          triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
-          aria-label={templateLabel}
-        />
-      </Field>
-      <Field
-        label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
-        hint={i18nT('pages.kiroCrewAgentsPage.isolated_memory_and_files_for_this_crew')}
-        info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
-      >
-        <SimpleSelect
-          options={withCurrent(workspaceOptions, workspace)}
-          value={workspace}
-          onChange={setWorkspace}
-          action={{ label: i18nT('pages.kiroCrewAgentsPage.new_workspace_action'), onSelect: onNewWorkspace }}
-          aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}
-        />
-      </Field>
-      <Field
-        label={i18nT('pages.kiroCrewAgentsPage.memory_store')}
-        hint={i18nT('pages.kiroCrewAgentsPage.which_store_its_lessons_and_history_are_written')}
-        info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
-      >
-        <SimpleSelect options={withCurrent(memoryStoreOptions, memoryStore)} value={memoryStore} onChange={setMemoryStore} aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')} />
-        {/* Show the "more coming" note only when `default` is the sole option —
-            an install that has declared extra `memory_stores` in config already
-            has a real choice here, and the copy must not contradict a picker
-            that is visibly offering other stores. */}
-        {memoryStoreOptions.length <= 1 && (
-          <span className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-accent">
-            <Sparkles className="lucide-inline h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
-            {i18nT('pages.kiroCrewAgentsPage.additional_stores_coming_with_memory_v2')}
-          </span>
-        )}
-      </Field>
+      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} />
+      <WorkspaceField options={workspaceOptions} value={workspace} onChange={setWorkspace} onNewWorkspace={onNewWorkspace} />
+      <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} />
       {modelOptions && setModel && model !== undefined && (
-        <Field label={i18nT('pages.kiroCrewAgentsPage.model')}>
-          <SimpleSelect
-            options={withCurrent(modelOptions, model)}
-            // The inherit option must NOT read as "auto": in the chat picker
-            // "auto" promises task-based routing, whereas here it means "pin
-            // nothing, inherit the next tier" — which can resolve to a concrete
-            // model. Label it as the card does so the round trip stays honest.
-            optionLabels={withCurrent(modelOptions, model).map(m => (m === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : m))}
-            value={model}
-            onChange={setModel}
-            aria-label={i18nT('pages.kiroCrewAgentsPage.edit_model')}
-          />
-        </Field>
+        <ModelField options={modelOptions} value={model} onChange={setModel} />
       )}
     </>
   )
@@ -738,15 +794,75 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  create, and reading `editingAgent.*` here meant re-pointing a crew at a
    *  store another crew already uses stayed silent until after a save and a
    *  reopen. */
-  const collidingCrews = editing
-    ? agents
-      .filter(a => a.name !== editing
-        && (a.workspace === workspace || a.memory_store === memoryStore))
-      .map(a => a.name)
+  /** Crews sharing the IN-FLIGHT selection, split by WHICH resource collides.
+   *
+   *  Split rather than OR-ed because the overview tags each node from its own
+   *  resource: one OR-ed value labels a private workspace "Shared" whenever only
+   *  the memory store is. `collidingCrews` is their union, so the stat, the
+   *  warning and the two pills are three readings of one predicate and cannot
+   *  disagree. Read off the in-flight values, never the persisted per-agent
+   *  counts in `sharedTargets` — those answer a question about the ROSTER, and
+   *  against a selection the user has just changed they report the collision the
+   *  crew used to have instead of the one it is about to create. */
+  const sharingWorkspace = editing
+    ? agents.filter(a => a.name !== editing && a.workspace === workspace).map(a => a.name)
     : []
+  const sharingMemoryStore = editing
+    ? agents.filter(a => a.name !== editing && a.memory_store === memoryStore).map(a => a.name)
+    : []
+  const collidingCrews = [...new Set([...sharingWorkspace, ...sharingMemoryStore])]
 
   const creating = sheet?.mode === 'create'
   const sheetBusy = createMut.isPending || updateMut.isPending || deleteMut.isPending
+
+  /** Which rail pane the editor body is showing. Reset whenever the editor is
+   *  pointed somewhere else, so a crew never opens on the pane the previous one
+   *  happened to be left on. */
+  const [pane, setPane] = useState<CrewPaneKey>('overview')
+  useEffect(() => { setPane('overview') }, [sheet])
+
+  /** The rail's schedule count reads the SAME cached query the wake pane uses, so
+   *  opening the editor costs one request rather than two. */
+  const wakeQuery = useQuery({
+    queryKey: crewWakeQueryKey(editing),
+    queryFn: () => api.crons(),
+    enabled: !!editing,
+  })
+  const wakeJobs = useMemo<CronJob[]>(
+    () => (wakeQuery.data?.jobs || []).filter(
+      (j: CronJob) => wakesCrew(j, editing, editing === defaultAgent)),
+    [wakeQuery.data, editing, defaultAgent],
+  )
+
+  /** Keywords the orchestrator can match, counted the way the field is authored:
+   *  comma-separated, blanks ignored, so a trailing comma is not a keyword. */
+  const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
+
+  /** Which panes hold an edit not yet saved. Compared against the SAVED crew,
+   *  so a value the user typed and then typed back is not reported as pending. */
+  const dirtyPanes = useMemo(() => {
+    const out = new Set<CrewPaneKey>()
+    if (!editingAgent) return out
+    if (kiroAgent !== (editingAgent.kiro_agent || '')) out.add('template')
+    if (workspace !== (editingAgent.workspace || '') || memoryStore !== (editingAgent.memory_store || '')) {
+      out.add('place')
+    }
+    if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
+    if (triggers !== (editingAgent.triggers || '')) out.add('routing')
+    return out
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, triggers])
+
+  const sections = useCrewEditorSections({
+    templateLabel: provider.labels.agentTemplateField,
+    activeSchedules: wakeJobs.filter(j => j.enabled).length,
+    totalSchedules: wakeJobs.length,
+    routingWords,
+    sharesStorage: collidingCrews.length > 0,
+    canDelete: !!editing && editing !== defaultAgent,
+    schedulesUnknown: wakeQuery.isError,
+    dirtyPanes,
+  })
+  const panelId = `crew-editor-pane-${editing || 'new'}`
 
   return (
     <>
@@ -919,7 +1035,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
 
       <Dialog open={!!sheet} onOpenChange={next => { if (!next) closeSheet() }}>
         <DialogContent
-          maxWidth={560}
+          /* The rail needs horizontal room; the create form does not have one. */
+          maxWidth={creating ? 560 : 790}
           /* The visible title is just the crew name, which is not a usable
              accessible name on its own — it has to say what you are doing to it.
              An explicit aria-label outranks Radix's aria-labelledby, and the
@@ -944,106 +1061,175 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             )}
           </DialogHeader>
 
-          <DialogBody>
-            <div className="flex flex-col gap-6">
-        {creating && (
-          <section className="flex flex-col gap-3">
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.identity')}</h3>
-            <Field label={i18nT('pages.kiroCrewAgentsPage.name')}>
-              <Input placeholder={i18nT('pages.kiroCrewAgentsPage.e_g_oncall')} value={name} onChange={e => setName(e.target.value)} autoFocus />
-            </Field>
-          </section>
-        )}
-
-        <section className="flex flex-col gap-3">
-          <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.routing')}</h3>
-          <Field label={i18nT('pages.kiroCrewAgentsPage.triggers')} hint={i18nT('pages.kiroCrewAgentsPage.triggers_hint')} info={i18nT('pages.kiroCrewAgentsPage.triggers_info')}>
-            <Input
-              placeholder={i18nT('pages.kiroCrewAgentsPage.triggers_placeholder')}
-              value={triggers}
-              onChange={e => setTriggers(e.target.value)}
-              aria-label={i18nT('pages.kiroCrewAgentsPage.triggers')}
-            />
-          </Field>
-        </section>
-
-        <section className="flex flex-col gap-3">
-          <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.runtime_binding')}</h3>
-          <BindingFields
-            templateLabel={provider.labels.agentTemplateField}
-            kiroAgentOptions={kiroAgentOptions} kiroAgent={kiroAgent} setKiroAgent={setKiroAgent}
-            workspaceOptions={workspaceOptions} workspace={workspace} setWorkspace={setWorkspace}
-            onNewWorkspace={() => setWsModalOpen(true)}
-            memoryStoreOptions={memoryStoreOptions} memoryStore={memoryStore} setMemoryStore={setMemoryStore}
-            {...(creating ? {} : { modelOptions, model: editModel, setModel: setEditModel })}
-          />
-          {!creating && collidingCrews.length > 0 && (
-            <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-              {i18nT('pages.kiroCrewAgentsPage.also_used_by_these_crews', { crews: collidingCrews.join(', ') })}
-            </div>
-          )}
-          {!creating && resolved && (
-            <div className="rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-              <span className="text-text">
-                {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
-              </span>
-              {' — '}
-              {resolved.pinned
-                ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
-                : resolved.model
-                  ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
-                  : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
-            </div>
-          )}
-        </section>
-
-        {!creating && <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} />}
-
-        {!creating && editing !== defaultAgent && (
-          <section className="flex flex-col gap-3">
-            <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.danger_zone')}</h3>
-            <div className="flex flex-col gap-3 rounded-md border border-danger-subtle bg-danger-subtle p-3">
-              <p className="m-0 text-[12px] leading-relaxed text-muted">
-                {confirmDelete
-                  ? i18nT('pages.kiroCrewAgentsPage.delete_crew_named_confirm', { name: editing })
-                  : i18nT('pages.kiroCrewAgentsPage.deleting_a_crew_unbinds_it_from_new_sessions_its')}
-              </p>
-              {/* Two-step rather than a one-click destructive button. The
-                  previous table deleted immediately too, but a misclick in a
-                  slide-in panel is far likelier, and a first-run reviewer
-                  flagged it as the one action they would regret. A nested
-                  confirm DIALOG was the other option; inline keeps this out of
-                  a third stacked focus trap. */}
-              <div ref={confirmRef} className="flex items-center gap-2">
-                <div className="flex-1" />
-                {confirmDelete ? (
-                  <>
-                    <Btn onClick={() => setConfirmDelete(false)} data-testid="cancel-delete-crew">{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
-                    <Btn danger onClick={() => deleteMut.mutate({ name: editing, epoch: sheetEpoch.current })} disabled={sheetBusy} data-testid="confirm-delete-crew">
-                      {i18nT('pages.kiroCrewAgentsPage.yes_delete_it')}
-                    </Btn>
-                  </>
-                ) : (
-                  <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy}>
-                    {i18nT('pages.kiroCrewAgentsPage.delete_crew')}
-                  </Btn>
-                )}
+          {/* Create is a short form and keeps the stacked layout. Edit is a rail:
+              an existing crew has surfaces (schedules, bindings, removal) that a
+              new one does not, and a wizard for creation is a separate decision. */}
+          <DialogBody className={creating ? undefined : 'flex flex-col overflow-hidden p-0 sm:flex-row'}>
+            {creating ? (
+              <div className="flex flex-col gap-6">
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.identity')}</h3>
+                  <Field label={i18nT('pages.kiroCrewAgentsPage.name')}>
+                    <Input placeholder={i18nT('pages.kiroCrewAgentsPage.e_g_oncall')} value={name} onChange={e => setName(e.target.value)} autoFocus />
+                  </Field>
+                </section>
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.routing')}</h3>
+                  <TriggersField value={triggers} onChange={setTriggers} />
+                </section>
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{i18nT('pages.kiroCrewAgentsPage.runtime_binding')}</h3>
+                  <BindingFields
+                    templateLabel={provider.labels.agentTemplateField}
+                    kiroAgentOptions={kiroAgentOptions} kiroAgent={kiroAgent} setKiroAgent={setKiroAgent}
+                    workspaceOptions={workspaceOptions} workspace={workspace} setWorkspace={setWorkspace}
+                    onNewWorkspace={() => setWsModalOpen(true)}
+                    memoryStoreOptions={memoryStoreOptions} memoryStore={memoryStore} setMemoryStore={setMemoryStore}
+                  />
+                </section>
               </div>
-            </div>
-          </section>
-        )}
-            </div>
+            ) : (
+              <>
+                <CrewEditorRail
+                  sections={sections}
+                  value={pane}
+                  onChange={setPane}
+                  ariaLabel={i18nT('components.crewEditor.rail_label')}
+                  unsavedLabel={i18nT('components.crewEditor.unsaved_changes')}
+                  sharedLabel={i18nT('components.crewEditor.tag_shared')}
+                  panelIdPrefix={panelId}
+                />
+                {/* `tabIndex={-1}` so moving focus here after a rail change is
+                    possible without adding a Tab stop. The pane scrolls, not the
+                    dialog body, which keeps the rail in view at any height. */}
+                <div
+                  id={`${panelId}-${pane}`}
+                  role="tabpanel"
+                  tabIndex={-1}
+                  className="flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4"
+                >
+                  {pane === 'overview' && (
+                    <CrewOverviewPane
+                      hub={<CrewAvatar seed={editing} size={34} />}
+                      templateLabel={provider.labels.agentTemplateField}
+                      template={kiroAgent}
+                      workspace={workspace}
+                      memoryStore={memoryStore}
+                      modelLabel={editModel === INHERIT_MODEL ? i18nT('pages.kiroCrewAgentsPage.inherited') : editModel}
+                      modelInherited={editModel === INHERIT_MODEL}
+                      resolvedModel={resolved?.model || ''}
+                      activeSchedules={wakeJobs.filter(j => j.enabled).length}
+                      schedulesUnknown={wakeQuery.isError}
+                      routingWords={routingWords}
+                      sharingCrews={collidingCrews.length}
+                      workspaceShared={sharingWorkspace.length > 0}
+                      memoryShared={sharingMemoryStore.length > 0}
+                    />
+                  )}
+
+                  {pane === 'template' && (
+                    <TemplateField
+                      label={provider.labels.agentTemplateField}
+                      options={kiroAgentOptions}
+                      value={kiroAgent}
+                      onChange={setKiroAgent}
+                    />
+                  )}
+
+                  {pane === 'model' && (
+                    <>
+                      <ModelField options={modelOptions} value={editModel} onChange={setEditModel} />
+                      {resolved && (
+                        <div className="rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+                          <span className="text-text">
+                            {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
+                          </span>
+                          {' — '}
+                          {resolved.pinned
+                            ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
+                            : resolved.model
+                              ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
+                              : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {pane === 'place' && (
+                    <>
+                      <WorkspaceField
+                        options={workspaceOptions}
+                        value={workspace}
+                        onChange={setWorkspace}
+                        onNewWorkspace={() => setWsModalOpen(true)}
+                      />
+                      <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} />
+                      {collidingCrews.length > 0 && (
+                        <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+                          {i18nT('pages.kiroCrewAgentsPage.also_used_by_these_crews', { crews: collidingCrews.join(', ') })}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {pane === 'schedules' && (
+                    <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} />
+                  )}
+
+                  {pane === 'routing' && <TriggersField value={triggers} onChange={setTriggers} />}
+
+                  {pane === 'danger' && (
+                    <div className="flex flex-col gap-3 rounded-md border border-danger-subtle bg-danger-subtle p-3">
+                      <p className="m-0 text-[12px] leading-relaxed text-muted">
+                        {confirmDelete
+                          ? i18nT('pages.kiroCrewAgentsPage.delete_crew_named_confirm', { name: editing })
+                          : i18nT('pages.kiroCrewAgentsPage.deleting_a_crew_unbinds_it_from_new_sessions_its')}
+                      </p>
+                      {/* Two-step rather than a one-click destructive button: a
+                          misclick in an overlay is far likelier than in a table,
+                          and a first-run reviewer flagged it as the one action
+                          they would regret. A nested confirm DIALOG was the other
+                          option; inline keeps this out of a stacked focus trap. */}
+                      <div ref={confirmRef} className="flex items-center gap-2">
+                        <div className="flex-1" />
+                        {confirmDelete ? (
+                          <>
+                            <Btn onClick={() => setConfirmDelete(false)} data-testid="cancel-delete-crew">{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
+                            <Btn danger onClick={() => deleteMut.mutate({ name: editing, epoch: sheetEpoch.current })} disabled={sheetBusy} data-testid="confirm-delete-crew">
+                              {i18nT('pages.kiroCrewAgentsPage.yes_delete_it')}
+                            </Btn>
+                          </>
+                        ) : (
+                          <Btn danger onClick={() => setConfirmDelete(true)} disabled={sheetBusy}>
+                            {i18nT('pages.kiroCrewAgentsPage.delete_crew')}
+                          </Btn>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </DialogBody>
 
+          {/* Save is disabled while nothing is pending. The schedule pause/run
+              controls in the wake pane apply IMMEDIATELY, so a live Save button
+              beside them implies those toggles are drafts that Cancel would roll
+              back — which it cannot. */}
           <DialogFooter>
             <ErrorNotice message={error} variant="inline" className="mr-auto" />
+            {!creating && dirtyPanes.size > 0 && !error && (
+              <span className="mr-auto text-[11.5px] text-muted" data-testid="crew-unsaved-note">
+                {i18nT('components.crewEditor.unsaved_changes')}
+              </span>
+            )}
             <Btn onClick={closeSheet}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
             {creating ? (
               <SendBtn onClick={create} disabled={sheetBusy}>
                 {createMut.isPending ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}
               </SendBtn>
             ) : (
-              <SendBtn onClick={saveEdit} disabled={sheetBusy}>{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
+              <SendBtn onClick={saveEdit} disabled={sheetBusy || dirtyPanes.size === 0}>{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
             )}
           </DialogFooter>
 

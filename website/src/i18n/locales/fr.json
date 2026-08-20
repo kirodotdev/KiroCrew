@@ -6840,6 +6840,27 @@
       "no_matching_skills": "No matching skills",
       "skills_hint": "Skills loaded when this hook matches — no command needed.",
       "selected": "Selected"
+    },
+    "crewEditor": {
+      "group_how_work_arrives": "Comment le travail arrive",
+      "group_what_it_can_do": "Ce qu'il peut faire",
+      "group_where_it_works": "Où il travaille",
+      "group_who_it_is": "Ce qu'il est",
+      "node_none": "Aucune",
+      "pane_overview": "Vue d'ensemble",
+      "pane_schedules": "Planifications",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "Espace · Mémoire",
+      "rail_label": "Paramètres du crew",
+      "stat_active_schedules": "Planifications actives",
+      "stat_crews_sharing": "Crews partageant son stockage",
+      "stat_resolved_model": "Modèle résolu",
+      "stat_unknown": "Inconnu",
+      "tag_shared": "Partagé",
+      "unsaved_changes": "Modifications non enregistrées",
+      "webhook_unbound_reason": "Les jetons de webhook ne sont pas encore liés à un crew, donc n'importe quel jeton peut réveiller n'importe quel crew.",
+      "webhook_unbound_short": "Non lié à un crew",
+      "wire_what_it_works_with": "Ce qu'il utilise"
     }
   },
   "hooks": {
