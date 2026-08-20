@@ -9026,6 +9026,8 @@
         "loading_graph": "Graph wird geladen…",
         "no_graph_data_yet": "Noch keine Graphdaten",
         "nodes": "Knoten,",
+        "all_sources": "Alle Quellen",
+        "filter_by_source": "Nach Quelle filtern",
         "recenter": "Neu zentrieren"
       },
       "sourceGroup": {

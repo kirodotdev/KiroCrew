@@ -466,6 +466,69 @@ class TestGetFullGraph:
         assert len(data["nodes"]) == 1
         assert data["edges"] == []
 
+    @pytest.mark.asyncio
+    async def test_source_id_filter_restricts_to_mentioned_entities(self, store):
+        # Create two sources with items and entities linked via mentions
+        src_a = store.add_source("Source A", "local_folder", "/tmp/a")
+        src_b = store.add_source("Source B", "local_folder", "/tmp/b")
+        item_a = store.add_item("doc a", "content a", "note", source_id=src_a)
+        item_b = store.add_item("doc b", "content b", "note", source_id=src_b)
+        e1 = store.add_entity("Alice", "person")
+        e2 = store.add_entity("Bravo", "service")
+        store.add_entity_relation(e1, e2, "uses")
+        store.add_mention(item_a, e1)
+        store.add_mention(item_b, e2)
+        async with _client(_make_app(store)) as client:
+            # Unfiltered: both entities
+            data = await (await client.get("/api/knowledge/graph")).json()
+            assert {n["name"] for n in data["nodes"]} == {"Alice", "Bravo"}
+            # Filter to source A: only Alice
+            data_a = await (await client.get(
+                "/api/knowledge/graph", params={"source_id": src_a})).json()
+            assert {n["name"] for n in data_a["nodes"]} == {"Alice"}
+            # Filter to source B: only Bravo
+            data_b = await (await client.get(
+                "/api/knowledge/graph", params={"source_id": src_b})).json()
+            assert {n["name"] for n in data_b["nodes"]} == {"Bravo"}
+
+    @pytest.mark.asyncio
+    async def test_source_id_filter_with_no_mentions_returns_empty(self, store):
+        src = store.add_source("Empty", "local_folder", "/tmp/empty")
+        store.add_entity("Orphan", "concept")
+        async with _client(_make_app(store)) as client:
+            data = await (await client.get(
+                "/api/knowledge/graph", params={"source_id": src})).json()
+        assert data == {"nodes": [], "edges": []}
+
+    @pytest.mark.asyncio
+    async def test_source_id_filter_includes_source_locations(self, store):
+        # An item owned by source A but also located in source B (dedup scenario)
+        # should appear when filtering by source B.
+        src_a = store.add_source("Owner", "local_folder", "/tmp/owner")
+        src_b = store.add_source("Location", "local_folder", "/tmp/loc")
+        item = store.add_item("shared doc", "content", "note", source_id=src_a)
+        store.add_source_location(item, src_b)
+        e1 = store.add_entity("Shared", "concept")
+        store.add_mention(item, e1)
+        async with _client(_make_app(store)) as client:
+            # Filter by owner source: finds entity via items.source_id
+            data_a = await (await client.get(
+                "/api/knowledge/graph", params={"source_id": src_a})).json()
+            assert {n["name"] for n in data_a["nodes"]} == {"Shared"}
+            # Filter by location source: finds entity via source_locations
+            data_b = await (await client.get(
+                "/api/knowledge/graph", params={"source_id": src_b})).json()
+            assert {n["name"] for n in data_b["nodes"]} == {"Shared"}
+
+    @pytest.mark.asyncio
+    async def test_source_id_filter_with_only_commas_returns_empty(self, store):
+        # Edge case: source_id=","  should not crash (empty IN clause)
+        store.add_entity("Node", "concept")
+        async with _client(_make_app(store)) as client:
+            data = await (await client.get(
+                "/api/knowledge/graph", params={"source_id": ","})).json()
+        assert data == {"nodes": [], "edges": []}
+
 
 # --------------------------------------------------------------------- stats
 

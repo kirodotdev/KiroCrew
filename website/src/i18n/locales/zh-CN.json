@@ -8915,6 +8915,8 @@
         "loading_graph": "正在加载图谱…",
         "no_graph_data_yet": "暂无图谱数据",
         "nodes": "个节点，",
+        "all_sources": "所有来源",
+        "filter_by_source": "按来源筛选",
         "recenter": "重新居中"
       },
       "sourceGroup": {

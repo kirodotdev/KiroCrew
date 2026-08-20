@@ -9026,6 +9026,8 @@
         "loading_graph": "ग्राफ़ लोड हो रहा है...",
         "no_graph_data_yet": "अभी कोई ग्राफ़ डेटा नहीं",
         "nodes": "नोड,",
+        "all_sources": "सभी स्रोत",
+        "filter_by_source": "स्रोत द्वारा फ़िल्टर करें",
         "recenter": "फिर केंद्र में लाएं"
       },
       "sourceGroup": {

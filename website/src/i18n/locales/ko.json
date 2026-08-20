@@ -8915,6 +8915,8 @@
         "loading_graph": "그래프를 불러오는 중…",
         "no_graph_data_yet": "아직 그래프 데이터 없음",
         "nodes": "노드,",
+        "all_sources": "모든 소스",
+        "filter_by_source": "소스별 필터",
         "recenter": "다시 가운데로"
       },
       "sourceGroup": {

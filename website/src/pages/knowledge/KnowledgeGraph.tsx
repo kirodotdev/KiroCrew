@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Network, RotateCcw } from 'lucide-react'
+import { Network, RotateCcw, Filter } from 'lucide-react'
 import type { Simulation, SimulationNodeDatum, SimulationLinkDatum, ZoomBehavior, Selection } from 'd3'
 import { EmptyState } from '../../components/ui'
+import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
-import type { GraphData } from './types'
+import type { GraphData, Source } from './types'
 
 import { i18nT } from '../../i18n/t'
 const TYPE_COLORS: Record<string, string> = { service: '#3b82f6', technology: '#22c55e', concept: '#a855f7', org: '#f97316' }
@@ -33,7 +34,13 @@ export default function KnowledgeGraph({ onSelectEntity, highlightEntity }: { on
   onSelectRef.current = onSelectEntity
   const highlightRef = useRef(highlightEntity)
   highlightRef.current = highlightEntity
-  const { data: graph, isLoading } = useQuery({ queryKey: ['knowledge-graph'], queryFn: () => knowledgeApi<GraphData>('/graph?limit=200') })
+
+  const [selectedSourceId, setSelectedSourceId] = useState<string>('')
+
+  const { data: sources } = useQuery({ queryKey: ['knowledge-sources'], queryFn: () => knowledgeApi<Source[]>('/sources') })
+
+  const graphQueryParams = selectedSourceId ? `/graph?limit=200&source_id=${selectedSourceId}` : '/graph?limit=200'
+  const { data: graph, isLoading } = useQuery({ queryKey: ['knowledge-graph', selectedSourceId], queryFn: () => knowledgeApi<GraphData>(graphQueryParams) })
 
   // Highlight a node when highlightEntity changes (without full re-render)
   useEffect(() => {
@@ -243,6 +250,20 @@ export default function KnowledgeGraph({ onSelectEntity, highlightEntity }: { on
         <button onClick={() => zoomRef.current?.reset()} className="px-2 py-0.5 text-[11px] border border-border rounded hover:bg-bg-elevated bg-transparent cursor-pointer text-muted flex items-center gap-1">
           <RotateCcw size={10} /> {i18nT('pages.knowledge.knowledgeGraph.recenter')}
         </button>
+        {sources && sources.length > 1 && (
+          <span className="flex items-center gap-1">
+            <Filter size={10} />
+            <SimpleSelect
+              options={sources.map((s) => s.id)}
+              optionLabels={sources.map((s) => s.name)}
+              value={selectedSourceId}
+              onChange={setSelectedSourceId}
+              clearLabel={i18nT('pages.knowledge.knowledgeGraph.all_sources')}
+              aria-label={i18nT('pages.knowledge.knowledgeGraph.filter_by_source')}
+              className="h-6 text-[11px] px-1.5"
+            />
+          </span>
+        )}
         <span className="ml-auto flex gap-2">
           {Object.entries(TYPE_COLORS).map(([t, c]) => <span key={t} className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{ background: c }} />{t}</span>)}
         </span>

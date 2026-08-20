@@ -112,7 +112,10 @@ beforeEach(() => {
   resizeCallbacks = []
   globalThis.ResizeObserver = CapturingResizeObserver as unknown as typeof ResizeObserver
   qc = makeClient()
-  mockKnowledgeApi.mockResolvedValue(GRAPH)
+  mockKnowledgeApi.mockImplementation((path: string) => {
+    if (path.startsWith('/sources')) return Promise.resolve([])
+    return Promise.resolve(GRAPH)
+  })
 })
 
 afterEach(() => {
@@ -265,7 +268,7 @@ describe('KnowledgeGraph — d3 draw', () => {
     // Renaming a node changes the data identity, so the effect re-runs — but the
     // render key is derived from ids plus edge count only, so the existing
     // drawing is kept and the new name is never picked up.
-    qc.setQueryData(['knowledge-graph'], {
+    qc.setQueryData(['knowledge-graph', ''], {
       nodes: GRAPH.nodes.map(n => (n.id === 'n1' ? { ...n, name: 'Renamed' } : { ...n })),
       edges: GRAPH.edges.map(e => ({ ...e })),
     })
@@ -277,7 +280,7 @@ describe('KnowledgeGraph — d3 draw', () => {
   })
 
   it('abandons the draw when the component unmounts before d3 resolves', async () => {
-    qc.setQueryData(['knowledge-graph'], GRAPH)
+    qc.setQueryData(['knowledge-graph', ''], GRAPH)
     const { container, unmount } = renderGraph()
     // No await between mount and unmount, so the dynamic d3 import has not had a
     // microtask to settle and must observe the aborted flag.
@@ -289,7 +292,7 @@ describe('KnowledgeGraph — d3 draw', () => {
   it('redraws from scratch when the node set changes', async () => {
     const { container } = renderGraph()
     await drawn(container)
-    qc.setQueryData(['knowledge-graph'], {
+    qc.setQueryData(['knowledge-graph', ''], {
       nodes: [{ id: 'z1', name: 'Solo', type: 'service' }],
       edges: [],
     })
@@ -434,7 +437,7 @@ describe('KnowledgeGraph — highlight', () => {
   it('polls for the zoom handle when the highlight is set before d3 has drawn', async () => {
     // Seeding the cache means the svg exists on the first committed render, so
     // the highlight effect runs while the zoom handle is still uninitialised.
-    qc.setQueryData(['knowledge-graph'], GRAPH)
+    qc.setQueryData(['knowledge-graph', ''], GRAPH)
     vi.useFakeTimers()
     try {
       const { container } = renderGraph({ highlightEntity: 'Gateway' })
@@ -448,7 +451,7 @@ describe('KnowledgeGraph — highlight', () => {
     }
   })
   it('gives up polling for the zoom handle after twenty attempts', async () => {
-    qc.setQueryData(['knowledge-graph'], GRAPH)
+    qc.setQueryData(['knowledge-graph', ''], GRAPH)
     vi.useFakeTimers()
     try {
       renderGraph({ highlightEntity: 'Gateway' })
@@ -491,7 +494,7 @@ describe('KnowledgeGraph — resize refit', () => {
   })
 
   it('ignores a resize that lands while the svg exists but d3 has not drawn', async () => {
-    qc.setQueryData(['knowledge-graph'], GRAPH)
+    qc.setQueryData(['knowledge-graph', ''], GRAPH)
     const { container } = renderGraph()
     // Fired synchronously after mount: the observer is registered but the d3
     // import has had no microtask to record the graph bounds yet.

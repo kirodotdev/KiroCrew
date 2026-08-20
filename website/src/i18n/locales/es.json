@@ -9137,6 +9137,8 @@
         "loading_graph": "Cargando el grafo...",
         "no_graph_data_yet": "Aún no hay datos del grafo",
         "nodes": "nodos,",
+        "all_sources": "Todas las fuentes",
+        "filter_by_source": "Filtrar por fuente",
         "recenter": "Recentrar"
       },
       "sourceGroup": {

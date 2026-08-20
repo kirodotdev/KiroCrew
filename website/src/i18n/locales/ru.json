@@ -9248,6 +9248,8 @@
         "loading_graph": "Загрузка графа...",
         "no_graph_data_yet": "Данных графа пока нет",
         "nodes": "узлов,",
+        "all_sources": "Все источники",
+        "filter_by_source": "Фильтр по источнику",
         "recenter": "Центрировать"
       },
       "sourceGroup": {
