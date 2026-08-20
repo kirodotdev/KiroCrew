@@ -16,8 +16,7 @@
 # non-interactive callers (make) can use it without re-running a version
 # manager. The data home is "$KIROCREW_HOME" when set, else
 # "$HOME/.kiro/crew" (the current default) — NOT the pre-move "$HOME/.kirocrew",
-# which the one-time data-home migration deletes, so writing there would
-# resurrect the legacy dir on every build.
+# which is not the data home and must not be written to.
 
 MIN_MAJOR=3
 MIN_MINOR=10

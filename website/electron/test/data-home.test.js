@@ -15,25 +15,25 @@ function withTempHome(run) {
 }
 
 describe("findConfiguredDashboardPort", () => {
-  it("uses legacy config before migration and canonical config after it disappears", () => {
+  it("uses the first readable candidate, falling through when it disappears", () => {
     withTempHome((home) => {
-      const legacy = path.join(home, ".kirocrew");
-      const canonical = path.join(home, ".kiro", "crew");
-      fs.mkdirSync(legacy);
-      fs.mkdirSync(canonical, { recursive: true });
+      const first = path.join(home, "first");
+      const second = path.join(home, "second");
+      fs.mkdirSync(first);
+      fs.mkdirSync(second, { recursive: true });
       fs.writeFileSync(
-        path.join(legacy, "config.json"),
+        path.join(first, "config.json"),
         JSON.stringify({ dashboard: { url: "localhost:6777" } }),
       );
       fs.writeFileSync(
-        path.join(canonical, "config.json"),
+        path.join(second, "config.json"),
         JSON.stringify({ dashboard: { url: "http://localhost:6888" } }),
       );
-      const candidates = [legacy, canonical];
+      const candidates = [first, second];
 
       assert.equal(findConfiguredDashboardPort(fs, path, candidates), 6777);
 
-      fs.rmSync(legacy, { recursive: true });
+      fs.rmSync(first, { recursive: true });
       assert.equal(findConfiguredDashboardPort(fs, path, candidates), 6888);
     });
   });

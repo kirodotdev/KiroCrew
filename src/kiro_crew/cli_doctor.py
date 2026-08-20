@@ -28,11 +28,8 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir
 from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
-    MIGRATION_MARKER_NAME,
     _valid_override_home,
-    detect_data_home_conflict,
     kiro_agents_dir,
-    preserved_entries,
 )
 from kiro_crew.constants import MIN_NODE_MAJOR
 from kiro_crew.dashboard.crash_dump_store import (
@@ -427,84 +424,69 @@ def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
     print(f"      Then have your admin allow-list, by these exact names: {names}")
 
 
-def _doctor_data_home() -> None:
-    """Report the data home and any leftover pre-move legacy home.
+# Top-level entries that hold a Python virtual environment rather than user
+# data. An older wheel install could nest its managed venv INSIDE the legacy
+# ``~/.kirocrew`` home, so a leftover legacy dir may still contain the running
+# interpreter — deleting it would break the live install.
+_LEGACY_VENV_DIR_NAMES = ("venv", ".venv", "venvs")
 
-    The one-time ``~/.kirocrew`` -> ``~/.kiro/crew`` migration force-copies the
-    old home into the new one (overwriting anything already there), writes a
-    completion marker, and then deletes ``~/.kirocrew``'s DATA — there is no
-    rollback copy. A leftover ``~/.kirocrew`` here is rendered as one of several
-    states: a **conflict** (marker present + non-preserved leftovers → resurrection
-    debris that is never used and needs manual cleanup), **IGNORED** (a valid
-    ``KIROCREW_HOME`` override is active, so migration is disabled), a **retained
-    venv** (marker present + only a preserved virtual environment → expected, and
-    explicitly NOT safe to delete, since it is the live interpreter), **UNUSED**
-    (marker present + empty legacy → migration already completed, harmless
-    leftover), or a genuine **pending** migration (no marker yet → it retries on
-    the next cold start). Purely informational — doctor never deletes it itself.
+
+def _legacy_venv_entries(home: Path) -> list[str]:
+    """Names of virtual-environment entries at the top of *home* (best-effort)."""
+    try:
+        return sorted(name for name in _LEGACY_VENV_DIR_NAMES if (home / name).is_dir())
+    except OSError:  # pragma: no cover - defensive
+        return []
+
+
+def _doctor_data_home() -> None:
+    """Report the data home and any leftover top-level ``~/.kirocrew`` directory.
+
+    The data root is ``~/.kiro/crew`` (or a valid ``KIROCREW_HOME`` override). A
+    leftover top-level ``~/.kirocrew`` is not the data home unless an override
+    points at it; a leftover that still holds a virtual environment is flagged as
+    UNSAFE to delete (it may be the live interpreter), otherwise it is reported as
+    an unused directory. Purely informational — doctor never deletes it itself.
     """
     print("\nData Home")
     home = config_dir()
     print(f"  location:    ✅ {home}")
 
-    conflict = detect_data_home_conflict()
     legacy = Path.home() / LEGACY_CONFIG_DIR_NAME
-    if conflict:
-        # marker present + non-empty legacy → the legacy is debris, NOT a
-        # pending migration; it is never used and needs manual cleanup.
-        print(f"  ⚠ conflict:  {legacy} exists but is NOT used (migration already completed).")
-        print(f"               {conflict}")
-    elif legacy.is_dir():
-        override_home = _valid_override_home()
-        if override_home is not None:
-            try:
-                points_at_legacy = override_home == legacy.resolve()
-            except OSError:  # pragma: no cover - defensive
-                points_at_legacy = override_home == legacy
-            if points_at_legacy:
-                # The override points AT the legacy dir, so legacy IS the active
-                # data home — not ignored debris (don't mislabel the home the
-                # process is actually using).
-                print(
-                    f"  legacy:      ✅ {legacy} is the ACTIVE data home "
-                    f"(KIROCREW_HOME override points to it)"
-                )
-            else:
-                # A valid KIROCREW_HOME override elsewhere bypasses migration on
-                # every start, so this legacy dir will NOT be migrated — don't
-                # imply a retry.
-                print(
-                    f"  legacy:      ⏹ {legacy} present but IGNORED "
-                    f"(KIROCREW_HOME override active — migration disabled until it is unset)"
-                )
-        elif (home / MIGRATION_MARKER_NAME).exists():
-            # Marker present + a legacy dir that detect_data_home_conflict did not
-            # flag. Either it is empty leftover, or it survives ONLY to hold a
-            # preserved virtual environment — which must NOT be described as safe
-            # to delete, since that is the user's live interpreter.
-            preserved = preserved_entries(legacy)
-            if preserved:
-                print(
-                    f"  legacy:      ✅ {legacy} retained to hold the KiroCrew "
-                    f"virtual environment ({', '.join(preserved)})"
-                )
-                print(
-                    f"               Data was migrated to {home}; the venv stays "
-                    f"here because moving it would break the interpreter."
-                )
-                print(
-                    "               Do NOT delete it while it is your active "
-                    "install (`which kirocrew` resolves through it)."
-                )
-            else:
-                print(
-                    f"  legacy:      ⏹ {legacy} present but UNUSED "
-                    f"(migration already completed; empty leftover, safe to delete)"
-                )
-        else:
+    if not legacy.is_dir():
+        return
+    override_home = _valid_override_home()
+    if override_home is not None:
+        try:
+            points_at_legacy = override_home == legacy.resolve()
+        except OSError:  # pragma: no cover - defensive
+            points_at_legacy = override_home == legacy
+        if points_at_legacy:
+            # The override points AT the legacy dir, so it IS the active data
+            # home — don't mislabel the home the process is actually using.
             print(
-                f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)"
+                f"  legacy:      ✅ {legacy} is the ACTIVE data home "
+                f"(KIROCREW_HOME override points to it)"
             )
+            return
+    venvs = _legacy_venv_entries(legacy)
+    if venvs:
+        # A wheel install could nest its managed venv here; the dir survives to
+        # hold it. Never advise deleting it — removing it takes the running
+        # interpreter with it (`which kirocrew` may resolve through it).
+        print(
+            f"  legacy:      ✅ {legacy} retained to hold a Kiro Crew "
+            f"virtual environment ({', '.join(venvs)})"
+        )
+        print(
+            "               Do NOT delete it while it is your active install "
+            "— removing it would delete the running interpreter."
+        )
+        return
+    print(
+        f"  legacy:      ⏹ {legacy} present but not the data home — safe to "
+        f"delete once you have confirmed it holds nothing you need"
+    )
 
 
 def _doctor_path_launcher() -> None:
@@ -1474,7 +1456,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  auth:        ⚠️  Slack not configured — token generation unavailable")
             issues.append("dashboard auth: remote bind without Slack")
 
-    # ── Data Home (+ leftover migration archive) ──
+    # ── Data Home (+ leftover legacy home) ──
     _doctor_data_home()
     _doctor_path_launcher()
     _doctor_trust_root()

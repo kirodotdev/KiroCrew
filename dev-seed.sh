@@ -6,8 +6,8 @@
 set -e
 
 # The data home moved from the top-level ~/.kirocrew to ~/.kiro/crew. Prefer
-# the current location; fall back to the legacy one for a not-yet-migrated
-# box so this script doesn't silently no-op after the move.
+# the current location; fall back to the legacy one for a box that still uses
+# it so this script doesn't silently no-op.
 if [ -d "$HOME/.kiro/crew" ]; then
   SRC="$HOME/.kiro/crew"
 elif [ -d "$HOME/.kirocrew" ]; then

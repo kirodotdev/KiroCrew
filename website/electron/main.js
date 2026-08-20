@@ -142,13 +142,10 @@ const store = new Store({
 // that IS the user asking for a gateway right now.
 let runLocalGateway = isLocalGatewayEnabled(store);
 
-// The PRE-SPAWN read home (see home-dir.js for the full contract): whichever
-// directory's config.json governs this launch under the backend's migration
-// rules -- legacy ~/.kirocrew when it exists (the backend force-copies it
-// over ~/.kiro/crew, marker or not), canonical otherwise. Parity with
-// config/paths.py is gated by test/fixtures/home-resolution-cases.json.
-// Boot-time WRITES (mkdir, pycache prefix) use canonicalHome() instead --
-// writing into the legacy dir re-arms the migration every launch (#483).
+// The data home whose config.json governs this launch (see home-dir.js): a
+// valid KIROCREW_HOME override, else the default ~/.kiro/crew -- mirroring the
+// backend resolver in config/paths.py. Boot-time WRITES (mkdir, pycache prefix)
+// use canonicalHome() so an override is honored without a stray write.
 const { resolveHome, canonicalHome } = require("./home-dir");
 const { fetchLocalToken: fetchTokenFromHome } = require("./local-token");
 const KIROCREW_HOME = resolveHome();
@@ -166,8 +163,7 @@ function resolvePort() {
   // No env override — derive the gateway port from config.json. The fork's
   // DashboardConfig has no `dashboard.port` key; the port lives in
   // `dashboard.url` (see backend cli_server.resolve_client_port /
-  // dashboard/origin.parse_dashboard_url). A real legacy home is checked first
-  // because the backend migration makes legacy data authoritative on conflict.
+  // dashboard/origin.parse_dashboard_url). Read it from the resolved data home.
   const configuredPort = findConfiguredDashboardPort(fs, path, [KIROCREW_HOME]);
   if (configuredPort) return configuredPort;
   console.debug("No usable dashboard.url port in the data home, falling back to 5476");
@@ -783,12 +779,10 @@ function resolveProjectDir() {
 }
 
 function spawnGateway(resolve) {
-        // Pre-create the backend's POST-migration data root so the pycache
-        // prefix below has a live target. Deliberately NOT resolveHome():
-        // that answers "which config content governs this launch" and can be
-        // the legacy dir -- pre-creating or writing into ~/.kirocrew re-arms
-        // the backend's legacy migration on every launch (issue #483 class).
-        // The gateway creates/owns its home and .local_secret regardless.
+        // Pre-create the backend's data root so the pycache prefix below has a
+        // live target. Honor a KIROCREW_HOME override, else the default home
+        // (canonicalHome()). The gateway creates/owns its home and
+        // .local_secret regardless.
         const kirocrewDir = process.env.KIROCREW_HOME || canonicalHome();
         try {
           fs.mkdirSync(kirocrewDir, { recursive: true, mode: 0o700 });
@@ -949,20 +943,14 @@ function spawnGateway(resolve) {
  * this thin wrapper binds the module-level child process + config.
  *
  * Uses call-time home resolution (secretCandidates) rather than the boot-time
- * KIROCREW_HOME pin, because on the migration launch the boot-time dir may
- * have been deleted by the backend — the secret lives in whichever candidate
- * still exists at shutdown time.
+ * KIROCREW_HOME pin, so a KIROCREW_HOME change between boot and shutdown is
+ * honored when locating the secret.
  */
 async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
   const proc = gatewayProcess;
   if (!proc || proc.exitCode !== null) { gatewayProcess = null; return; }
   console.log("Stopping gateway gracefully...");
-  // Resolve the secret location at call time: try each candidate in order
-  // (canonical first, legacy second) so graceful stop works even when the
-  // boot-time home was moved/deleted during migration.
-  // Resolve the secret location at call time: a migration may have moved or
-  // deleted the boot-time home, and a partial migration can leave BOTH a
-  // canonical and a legacy `.local_secret`. Collect every readable candidate
+  // Resolve the secret location at call time. Collect every readable candidate
   // value and let gateway-stop POST each one — the gateway answers 200 only to
   // the secret it actually loaded, so a stale copy can't force a hard SIGTERM.
   const candidates = secretCandidates();
@@ -1019,8 +1007,8 @@ function fetchRemoteToken(port) {
 }
 
 async function fetchLocalToken(backendUrl = BACKEND_URL) {
-  // Re-resolve the authoritative home at call time: migration may move or pin
-  // the live secret after Electron starts. Send exactly that one secret to the
+  // Re-resolve the authoritative home at call time so a KIROCREW_HOME change
+  // after Electron starts is honored. Send exactly that one secret to the
   // gateway's literal IPv4 bind address; never probe alternate homes/addresses.
   return fetchTokenFromHome({
     backendUrl,

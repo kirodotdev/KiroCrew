@@ -1,59 +1,27 @@
-// Desktop data-home resolution -- a deliberate 1:1 mirror of the backend's
-// decision tree in src/kiro_crew/config/paths.py (config_dir ->
-// _maybe_migrate_legacy_home). PARITY-GATED: test/fixtures/
-// home-resolution-cases.json is the shared contract -- this module's tests
-// assert the JS answers per case, and test/test_home_resolution_parity.py
-// runs the REAL backend resolver against the same cases and asserts the
-// config content Electron would read pre-spawn equals the content the
-// backend serves post-boot. Change either implementation and the other
-// side's suite fails until the fixture (and both mirrors) agree again.
-//
-// The backend contract being mirrored (paths.py):
+// Desktop data-home resolution -- a mirror of the backend's data-home resolver
+// in src/kiro_crew/config/paths.py (config_dir -> _resolve_default_home):
 //   1. A valid KIROCREW_HOME env override wins. INVALID overrides -- a
 //      filesystem/drive root ("/" or "C:\") or a POSIX system dir
 //      (/usr, /System, /etc) -- are rejected (paths.py _valid_override_home)
-//      and fall through to the rules below, so both sides agree on which
-//      overrides are honored.
-//   2. The completion marker is AUTHORITATIVE: once ~/.kiro/crew holds the
-//      migration marker, canonical wins even if a legacy ~/.kirocrew dir is
-//      still present -- that legacy dir is resurrection debris (e.g. a
-//      downgrade write-back after a completed migration) and is NEVER
-//      promoted or re-migrated. This design has no rollback path.
-//   3. No marker + a legacy ~/.kirocrew present -> legacy wins: migration is
-//      pending and force-copies legacy over ~/.kiro/crew, so the legacy
-//      content is the winning pre-spawn read.
-//   4. No marker + no legacy -> canonical ~/.kiro/crew (fresh install).
+//      and fall through to the default, so both sides agree on which overrides
+//      are honored.
+//   2. Otherwise the default home ~/.kiro/crew.
 //
-// Electron consumes this in two distinct ways:
-//   - resolveHome(): the PRE-SPAWN read home -- which directory's
-//     config.json content will govern this launch. When migration is pending
-//     (no marker, legacy present) the legacy content is about to be
-//     force-copied over canonical, so the legacy file IS the winning content
-//     even though the backend's post-migration data root is canonical.
-//   - secretCandidates(): the POST-SPAWN secret location, re-resolved at
-//     call time. By then migration has run: the secret lives in canonical
-//     (holding the migrated, legacy-derived value); the legacy path remains
-//     only for the backend's migration-FAILURE pin (paths.py falls back to
-//     the still-intact legacy home so a botched copy never loses data).
+// Electron consumes this in two ways:
+//   - resolveHome(): the data home whose config.json content governs this
+//     launch.
+//   - secretCandidates(): the .local_secret location, re-resolved at call time.
+//     The backend reads .local_secret only from config_dir() (the override or
+//     the default home), so this returns that single location.
 //
-// Boot-time side effects (mkdir pre-create, PYTHONPYCACHEPREFIX) must use
-// canonicalHome() directly, never resolveHome(): writing into a legacy dir
-// -- or recreating one -- re-arms the migration on every launch (issue #483).
+// Boot-time side effects (mkdir pre-create, PYTHONPYCACHEPREFIX) use
+// canonicalHome() directly.
 
 const nodeOs = require("os");
 const nodePath = require("path");
-const nodeFs = require("fs");
-
-// Mirror of paths.py MIGRATION_MARKER_NAME -- the completion-marker filename
-// written inside the canonical home once migration verified-completes.
-const MIGRATION_MARKER_NAME = ".data-home-ready";
 
 function canonicalHome(os = nodeOs, path = nodePath) {
   return path.join(os.homedir(), ".kiro", "crew");
-}
-
-function legacyHome(os = nodeOs, path = nodePath) {
-  return path.join(os.homedir(), ".kirocrew");
 }
 
 /**
@@ -83,41 +51,25 @@ function validOverride(env, os, path) {
 }
 
 /**
- * The pre-spawn read home: whichever directory's config content will govern
- * this launch under the backend's migration rules.
- * @param {{env?: object, os?: object, path?: object, fs?: object}} deps
+ * The data home whose config content governs this launch: a valid
+ * KIROCREW_HOME override, else the default ~/.kiro/crew.
+ * @param {{env?: object, os?: object, path?: object}} deps
  * @returns {string}
  */
-function resolveHome({ env = process.env, os = nodeOs, path = nodePath, fs = nodeFs } = {}) {
-  const override = validOverride(env, os, path);
-  if (override) return override;
-  const canonical = canonicalHome(os, path);
-  // The completion marker is AUTHORITATIVE (paths.py): once migration
-  // completed, canonical wins even if a legacy dir is still present or
-  // reappears -- it is debris, never promoted or re-migrated.
-  try { if (fs.existsSync(path.join(canonical, MIGRATION_MARKER_NAME))) return canonical; } catch { /* treat as absent */ }
-  const legacy = legacyHome(os, path);
-  // No marker + legacy present -> migration pending; paths.py force-copies
-  // legacy over canonical, so the legacy content is the winning pre-spawn read.
-  try { if (fs.existsSync(legacy)) return legacy; } catch { /* treat as absent */ }
-  return canonical;
+function resolveHome({ env = process.env, os = nodeOs, path = nodePath } = {}) {
+  return validOverride(env, os, path) || canonicalHome(os, path);
 }
 
 /**
- * Ordered candidate paths for .local_secret, re-resolved at call time
- * (post-spawn: migration has run by the time a token is fetched).
- * Canonical first -- it holds the migrated secret; legacy second -- only the
- * backend's migration-failure fallback still serves from there. An env
- * override is authoritative and sole.
+ * Candidate paths for .local_secret, re-resolved at call time. Mirrors the
+ * backend, which reads it from config_dir() only -- the override when set, else
+ * the default home.
  * @returns {string[]}
  */
 function secretCandidates({ env = process.env, os = nodeOs, path = nodePath } = {}) {
   const override = validOverride(env, os, path);
-  if (override) return [path.join(override, ".local_secret")];
-  return [
-    path.join(canonicalHome(os, path), ".local_secret"),
-    path.join(legacyHome(os, path), ".local_secret"),
-  ];
+  const home = override || canonicalHome(os, path);
+  return [path.join(home, ".local_secret")];
 }
 
-module.exports = { resolveHome, secretCandidates, canonicalHome, legacyHome };
+module.exports = { resolveHome, secretCandidates, canonicalHome };

@@ -470,13 +470,12 @@ if command -v pipx >/dev/null 2>&1; then
   BIN="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "$HOME/.local/bin")"
 else
   # The managed venv lives BESIDE the data home, never inside it. Nesting the
-  # interpreter in the data home put the runtime and the user's data in one
-  # blast radius: the one-time ~/.kirocrew -> ~/.kiro/crew data-home migration
-  # copied the whole legacy tree and then deleted it, which for a wheel install
-  # meant copying a non-relocatable venv (dead shebangs at the destination) and
-  # deleting the live interpreter mid-run — leaving a dangling
-  # ~/.local/bin/kirocrew and no working CLI. Keeping the venv out of the data
-  # home means no home-wide operation can ever reach the interpreter again.
+  # interpreter in the data home would put the runtime and the user's data in
+  # one blast radius: any home-wide operation (a bulk delete, a backup restore,
+  # a relocation) could reach the live interpreter — a non-relocatable venv with
+  # absolute shebangs — and leave a dangling ~/.local/bin/kirocrew and no working
+  # CLI. Keeping the venv out of the data home means no home-wide operation can
+  # ever reach the interpreter.
   _DATA_HOME_FOR_VENV="${KIROCREW_HOME:-$HOME/.kiro/crew}"
   VENV="${KIROCREW_VENV:-${_DATA_HOME_FOR_VENV%/}-venv}"
   _OLD_VENV="${_DATA_HOME_FOR_VENV%/}/venv"

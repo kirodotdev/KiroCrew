@@ -39,7 +39,7 @@ done
 # Repo root = directory containing this script (run from a local clone).
 KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Data home: honor KIROCREW_HOME, else the current default ~/.kiro/crew (NOT the
-# pre-move ~/.kirocrew, which the one-time data-home migration deletes).
+# pre-move ~/.kirocrew, which is not the data home).
 KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 NODE_VERSION="24"
 # Minimum Node major the frontend build actually supports. Defined here

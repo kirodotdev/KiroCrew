@@ -163,9 +163,9 @@ class TestOtelSdkImportIsDeferred:
 class TestConfigDirMemo:
     """``config_dir()`` is called from 323 sites and measured 94.9us per call —
     a ``Path.resolve()`` + ``mkdir`` and, on the default path, a breadcrumb
-    read/write plus the leftover-archive sweep, every time."""
+    read/write, every time."""
 
-    def test_repeat_calls_do_not_redo_breadcrumb_or_sweep(
+    def test_repeat_calls_do_not_redo_breadcrumb(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
@@ -173,27 +173,20 @@ class TestConfigDirMemo:
         monkeypatch.setattr(paths, "_resolved_home", None)
         monkeypatch.setattr(paths, "_config_dir_memo", None, raising=False)
 
-        calls = {"breadcrumb": 0, "sweep": 0}
+        calls = {"breadcrumb": 0}
         real_breadcrumb = paths._write_recovery_breadcrumb
-        real_sweep = paths._sweep_ungated_archive_leftovers
 
         def _breadcrumb(d: Path) -> None:
             calls["breadcrumb"] += 1
             real_breadcrumb(d)
 
-        def _sweep() -> None:
-            calls["sweep"] += 1
-            real_sweep()
-
         monkeypatch.setattr(paths, "_write_recovery_breadcrumb", _breadcrumb)
-        monkeypatch.setattr(paths, "_sweep_ungated_archive_leftovers", _sweep)
 
         first = paths.config_dir()
         for _ in range(50):
             assert paths.config_dir() == first
 
         assert calls["breadcrumb"] == 1, "breadcrumb write must be once per resolution"
-        assert calls["sweep"] == 1, "archive sweep must be once per resolution"
 
     def test_override_change_is_honoured(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

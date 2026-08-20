@@ -8,8 +8,8 @@
 # "<data-home>/node-bin-dir" so non-interactive callers (e.g. make) can put
 # the right node on PATH without re-running a version manager. The data home is
 # "$KIROCREW_HOME" when set, else "$HOME/.kiro/crew" (the current default) —
-# NOT the pre-move "$HOME/.kirocrew", which the one-time data-home migration
-# deletes, so writing there would resurrect the legacy dir on every build.
+# NOT the pre-move "$HOME/.kirocrew", which is not the data home and must not
+# be written to.
 
 # The frontend build (vite 8 / rolldown) requires a Node in the bundler's own
 # declared support range: `vite@8.2.0` and `rolldown@1.2.3` both set

@@ -30,8 +30,8 @@ non-comment shell lines, Python ``KIROCREW_HOME`` defaults in shipped packages,
 and Python ``expanduser`` of a hardcoded legacy literal. Comment/doc prose is
 deliberately NOT asserted (a comment cannot create a directory;
 ``test_skill_home_paths.py`` owns guidance text), and neither are modules that
-reference the legacy home *on purpose* to migrate it, seed from it, or keep
-detecting it (``home_migration.py``, ``config/paths.py``, ``security.py``,
+reference the legacy home *on purpose* to seed from it or keep
+detecting it (``config/paths.py``, ``security.py``,
 ``sandbox.py``, ``history.py``, ``cloud/source.py``,
 ``apps/builtins/file_explorer/server.py``, ``kiro_prerequisite.py``,
 ``instances/token_mint.py``, plus the two allow-listed scripts below).

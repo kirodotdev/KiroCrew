@@ -4519,8 +4519,8 @@ class TestWindowsPathShapes:
         # The write-protected leaf branch is POSIX-separator anchored, so on a
         # Windows host the resolved home literal (``C:\Users\u``) spells every
         # leaf with backslashes and reached the fenced file unblocked. Each leaf
-        # is an input to an authorization decision (migration completion, the
-        # on-call schedule, the incident index, the alias ownership record), so
+        # is an input to an authorization decision (the on-call schedule, the
+        # incident index, the alias ownership record, the browse launch config), so
         # the native spelling has to be gated in the raw text like the fenced
         # dirs already are -- host-independently, since the raw pass never
         # depends on the runner's OS.
@@ -4691,7 +4691,7 @@ class TestBareTokenProtectedLeaves:
         # name. Admitting a generic leaf (``index.json``, ``config.json``,
         # ``rotation.yaml``) would refuse a large fraction of ordinary commands, so the
         # tuple must never grow one -- and the anchored forms must keep working.
-        for generic in ("index.json", "config.json", "rotation.yaml", ".data-home-ready"):
+        for generic in ("index.json", "config.json", "rotation.yaml"):
             assert generic not in security._BARE_TOKEN_PROTECTED_LEAVES
             assert is_sensitive_bash_command(f"touch {generic}") is None
         for leaf in security._WRITE_PROTECTED_BASH_LEAVES:

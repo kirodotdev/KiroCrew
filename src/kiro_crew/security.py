@@ -1187,8 +1187,8 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(
         id="sensitive-file-read-cat-kirocrew-env",
         # Match both the LIVE ~/.kiro/crew/.env and the legacy ~/.kirocrew/.env,
-        # since a not-yet-migrated box still holds live secrets at the legacy
-        # path.
+        # since a box that still has a legacy home holds live secrets at the
+        # legacy path.
         pattern=".*cat.*/(?:\\.kiro/crew|\\.kirocrew)/\\.env.*",
         category="sensitive-file-read",
         description=(
@@ -4263,10 +4263,8 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #
 # Each leaf is expanded under EVERY known crew data-home prefix so the secret is
 # gated identically whether it lives in the current home (``~/.kiro/crew``) or a
-# not-yet-migrated pre-move legacy home (``~/.kirocrew``). Keeping one leaf list
-# means a new secret is added once and covered in both locations. The migration
-# force-deletes ``~/.kirocrew`` once the move completes — there is no rollback
-# copy left behind to gate.
+# pre-move legacy home (``~/.kirocrew``) that a user still has on disk. Keeping
+# one leaf list means a new secret is added once and covered in both locations.
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 _CREW_SECRET_LEAVES: list[str] = [
     ".env",
@@ -4277,9 +4275,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # credential store. The app's own backend opens it directly rather than
     # through this gate, so it keeps working. It is a leaf here (not a flat
     # ``~/.kiro/crew`` entry) so it is generated for BOTH ``_CREW_HOME_PREFIXES``:
-    # ``HOME`` follows ``config_dir()``, which can resolve to the legacy
-    # ``.kirocrew`` data-home during a migration fallback, and the PAT must be
-    # protected there too. A vault relocated with ``MD_NOTEBOOK_HOME`` falls
+    # a user may still have a pre-move legacy ``.kirocrew`` home on disk holding a
+    # live PAT, so it must be protected there too. A vault relocated with
+    # ``MD_NOTEBOOK_HOME`` falls
     # outside a home-relative entry; the default path is what ships and what an
     # agent would find.
     "workspace/md-notebook/pat",
@@ -4308,7 +4306,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # it to the CLI through the environment, so nothing legitimate opens the file.
     "playwright-extension-token",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
-    # a backup restore resurrects after migration). Kept alongside the ``trust``
+    # a backup restore resurrects). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.
     "sel_hmac.key",
     # SEL trust-root directory: sel.py stores/migrates the audit chain's HMAC
@@ -4486,13 +4484,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
     # config.json / config.local.json: security-relevant resource ceilings.
-    # .data-home-ready: the data-home completion marker (config.paths
-    # MIGRATION_MARKER_NAME). It is AUTHORITATIVE — once present, boot trusts
-    # ~/.kiro/crew and never re-migrates the legacy home. A prompt-injected
-    # agent that could WRITE it into a pre-migration (empty/partial) new home
-    # would make the next boot skip migration and ignore the legacy home's
-    # governance policy + secrets. The migration code writes it directly and
-    # does NOT route through this gate, so legitimate stamping still works.
     # playwright-cli-config.json: the browse launch config
     # (browser_cli/launch.py). It holds no secret and the CLI must READ it on
     # every invocation, so it is write-protected rather than sensitive. But it is
@@ -4503,7 +4494,7 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # directly and does NOT route through this gate, so its own write still works.
     # Paired with the same leaf in _WRITE_PROTECTED_BASH_LEAVES — protected on one
     # path only is not protected.
-    for leaf in ("config.json", "config.local.json", ".data-home-ready", "playwright-cli-config.json")
+    for leaf in ("config.json", "config.local.json", "playwright-cli-config.json")
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
     # sensitive: it holds no secret and every teammate's instance must READ it to
@@ -4585,50 +4576,36 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # or any novel write verb slip past it). Naming-based blocking incidentally
 # denies bash READS of these leaves too, which is harmless: they carry no secret
 # (so this is NOT in ``_SENSITIVE_HOME_DIRS`` — file-read tools and
-# ``is_sensitive_path`` stay unaffected), and the only legitimate readers
-# (``kirocrew doctor``, the migration code) use Python ``os`` calls, not bash.
-#
-# The data-home marker is the sole entry: its mere PRESENCE is the migration
-# trust signal, and — unlike config.json, whose inflated values the loader
-# clamps at load time regardless of how they were written — nothing neutralizes
-# a planted marker. A prompt-injected agent that shell-plants it into a
-# pre-migration home makes the next boot skip migration and ignore the legacy
-# home's governance policy + secrets; shell-deleting it forces a needless
-# re-migration. The migration code stamps it directly in Python (not via bash),
-# so legitimate stamping is unaffected. Kept as a literal to avoid a
-# config->security import cycle; a drift guard in the tests pins it to
-# ``MIGRATION_MARKER_NAME``.
+# ``is_sensitive_path`` stay unaffected), and the legitimate readers
+# (``kirocrew doctor``, Kiro Crew's own writers) use Python ``os`` calls, not bash.
 #
 # SCOPE NOTE (please do NOT flag incremental regex gaps as new HIGHs): this
 # bash gate is DEFENSE-IN-DEPTH, not the primary control. The primary control
-# is the file-edit tool gate (`is_sensitive_write_path`, above) plus the fact
-# that the migration stamps the marker only from Python, never a tool/shell.
+# is the file-edit tool gate (`is_sensitive_write_path`, above).
 # Like the credential/sensitive-dir rules, the bash matcher is HOME-ANCHORED and
 # shares their intrinsic limits — a `cd <home> && touch <leaf>` bare-relative
 # write, or an unusual `${VAR}`/quoting form, can evade the regex exactly as it
 # can for `~/.aws/credentials`. Chasing shell-parser completeness here is a
-# losing game and holds the marker to a higher bar than credentials get; the
-# realistic residual threat (skipping a one-time session-data copy) is low and
-# already covered on the tool path. Widen this only via the SHARED matcher (so
-# credentials benefit too), not with marker-only special cases.
+# losing game. Widen this only via the SHARED matcher (so
+# credentials benefit too), not with per-leaf special cases.
 #
 # ONE ENTRY IS EXEMPT from that anchoring limit, and the exemption is about
 # severity rather than parser completeness: the alias ownership record's residual
-# threat is not a skipped copy but the DELETION of a user-authored alias by Kiro
+# threat is the DELETION of a user-authored alias by Kiro
 # Crew's own trusted writer, so its filename is additionally matched
 # anchor-independently as a bare path segment (see
 # ``_BARE_TOKEN_PROTECTED_LEAVES`` below). That widening is affordable only
 # because the name is globally distinctive; it is NOT a template for the other
 # leaves, and the anchoring limit above still describes them.
 #
-# ``rotation.yaml`` is the second entry, and it meets the bar the scope note sets rather than
+# ``rotation.yaml`` is the first entry, and it meets the bar the scope note sets rather than
 # being a special case: it is an INPUT TO AN AUTHORIZATION DECISION, not merely a
 # security-relevant setting. An agent that rewrites it to name its own login makes
 # ``rotation.authorize_action`` -> ``_definitely_off_shift`` accept a forged shift and execute a
 # production write against a teammate's incident tooling — and unlike ``config.json``, whose
 # inflated values the loader clamps, nothing downstream neutralizes a forged schedule entry.
 # The tool-path gate (``is_sensitive_write_path``) is still the primary control; this closes the
-# shell path for the same reason it is closed for the marker. Reads stay allowed on BOTH paths:
+# shell path so a redirect cannot reach what the file-edit tool is already refused. Reads stay allowed on BOTH paths:
 # every teammate's instance must read the file to answer "am I on call?", and it holds no
 # secret. ``ledger_sync`` converges the file with a direct ``git checkout``, not through this
 # gate, so team sync is unaffected.
@@ -4637,13 +4614,13 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # ``apps/.../data/`` subpath — spelling it as a bare leaf silently matched nothing, which is
 # the failure mode where a security addition reads as done and enforces nothing.
 #
-# The incident INDEX is the third, on the same reasoning one step over: it is what
+# The incident INDEX is the second, on the same reasoning one step over: it is what
 # ``/incident/action`` reads to decide WHICH signal the autonomy gate is authorizing, so an
 # agent that rewrites it can have the gate approve one signal while the sink mutates another.
 # Reads stay allowed for the same reason as the schedule — it is the board every instance
 # renders, and it holds no secret.
 #
-# The Connections tool-alias OWNERSHIP RECORD is the fourth, and it clears the same bar: by
+# The Connections tool-alias OWNERSHIP RECORD is the third, and it clears the same bar: by
 # its module's invariant 2 it is the grant that AUTHORIZES DELETION —
 # ``alias_record.load_claimed`` returns the pairs the alias pass may strip from the agent
 # spec, and nothing else confers that permission. A shell-planted ``committed`` record can
@@ -4657,7 +4634,6 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # unaffected. Reads stay allowed on the tool path for the same reason as the two entries
 # above: the record holds no secret.
 _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
-    ".data-home-ready",
     "apps/ops-mission-control/data/rotation.yaml",
     "apps/ops-mission-control/data/incidents/index.json",
     "connections-tool-aliases.json",
@@ -4667,7 +4643,7 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     #
     # Deliberately ANCHORED, not bare-token (see the SCOPE note below). The name
     # is distinctive enough to qualify on that test, but it does not earn the wider
-    # blast radius, for the same shape of reason ``.data-home-ready`` does not: the
+    # blast radius: the
     # agent can already point PLAYWRIGHT_MCP_CONFIG at a file of its own, so this
     # filename is not the grant the way the alias record's is. What the anchored
     # entry removes is the DURABLE form — silently rewriting the config the product
@@ -4699,12 +4675,9 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
 # lines, so the false-positive cost is confined to commands that genuinely mean
 # this record. A generic leaf must NEVER be added here: unanchored
 # ``index.json`` or ``config.json`` would refuse a large fraction of routine
-# commands in any repository. ``.data-home-ready`` is distinctive enough to
-# qualify on that test but is deliberately left ANCHORED, because its realistic
-# residual threat is skipping a one-time session-data copy — the low-severity
-# case the scope note above already accepts on purpose — so it does not earn the
-# wider blast radius. The other two leaves are not distinctive at all (their
-# distinguishing part is the ``apps/.../data/`` subpath) and must stay anchored.
+# commands in any repository. The other write-protected leaves are not
+# distinctive at all (their distinguishing part is the ``apps/.../data/``
+# subpath) and must stay anchored.
 _BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = ("connections-tool-aliases.json",)
 
 # Regex for bash commands that read sensitive paths.
@@ -4771,16 +4744,16 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     escaped_dirs = [re.escape(d) for d in _SENSITIVE_HOME_DIRS]
     dirs_pattern = "|".join(escaped_dirs)
     sensitive_path = rf"{home_alts}/(?:{dirs_pattern})(?:/|\s|$|['\"])"
-    # Write-protected leaves (e.g. the data-home marker): a full home-anchored
+    # Write-protected leaves (e.g. the on-call schedule): a full home-anchored
     # path to a specific leaf file, matched verb-INDEPENDENTLY (below) so no
     # write form can bypass it. See _WRITE_PROTECTED_BASH_LEAVES for why reads
     # are blocked too (harmless: no secret; legitimate readers use Python).
     wp_prefixes = "|".join(re.escape(p) for p in _CREW_HOME_PREFIXES)
     wp_leaves = "|".join(re.escape(leaf) for leaf in _WRITE_PROTECTED_BASH_LEAVES)
     write_protected_path = (
-        # trailing ``/`` is included so ``mkdir -p ~/.kiro/crew/.data-home-ready/x``
-        # (which also MATERIALISES the marker as a directory, satisfying
-        # ``marker.exists()``) is caught, not just the exact-leaf forms.
+        # trailing ``/`` is included so a ``mkdir -p <home>/<crew-prefix>/<leaf>/x``
+        # (which also MATERIALISES the leaf as a directory) is caught, not just
+        # the exact-leaf forms.
         rf"{home_alts}/(?:{wp_prefixes})/(?:{wp_leaves})(?:/|\s|$|['\"])"
     )
     # Windows-native spellings of the same fenced dirs, matched in the RAW
@@ -5308,7 +5281,7 @@ def exfil_query_min_len() -> int:
 # though the bare home dir is not itself a sensitive-path entry.  Match the
 # destination-dir form specifically so normal home access (sessions.db,
 # config.json) is not over-blocked.  Covers every crew home root: the current
-# ``~/.kiro/crew`` and a not-yet-migrated pre-move legacy ``~/.kirocrew``.
+# ``~/.kiro/crew`` and a pre-move legacy ``~/.kirocrew``.
 _CREW_HOME_ALT = "|".join(re.escape("/" + p) for p in _CREW_HOME_PREFIXES)
 _EXTRACT_INTO_TRUST_ROOT_RE = re.compile(
     r"-(?:C|d)\s+(?:~|\$HOME|/home/[^/\s]+|/Users/[^/\s]+|"

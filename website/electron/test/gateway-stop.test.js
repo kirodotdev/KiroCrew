@@ -88,13 +88,13 @@ test("postShutdown returns false when no secret file exists", async () => {
 });
 
 test("postShutdown tries each candidate secret — a stale first secret does not block the live one", async () => {
-  // Migration edge: a partially-copied canonical secret is stale, but the
-  // gateway is authenticated by the legacy one. postShutdown must POST both.
-  const { server, port } = await startServer({ secret: "live-legacy", status: 200 });
+  // The gateway is authenticated by whichever secret it actually loaded, so a
+  // stale first candidate must not stop postShutdown from POSTing the live one.
+  const { server, port } = await startServer({ secret: "live-secret", status: 200 });
   try {
     const ok = await postShutdown({
       backendUrl: `http://127.0.0.1:${port}`,
-      secrets: ["stale-canonical", "live-legacy"],
+      secrets: ["stale-secret", "live-secret"],
     });
     assert.strictEqual(ok, true);
   } finally { server.close(); }

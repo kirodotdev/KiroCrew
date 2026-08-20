@@ -20,7 +20,7 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
-## Data Home Location & Migration
+## Data Home Location
 
 KiroCrew's data root nests **under kiro-cli's own `~/.kiro/` base** so all
 Kiro-family apps share a single directory a user can secure. `config_dir()`
@@ -31,114 +31,16 @@ is the single accessor and resolves to:
    `/usr`, `/System`, `/etc`), else
 2. `~/.kiro/crew` (the default).
 
-**One-time migration.** On the first launch after upgrading an existing install,
-`config_dir()` triggers a one-time relocation of the pre-move top-level
-`~/.kirocrew` into `~/.kiro/crew` (implemented in `kiro_crew/home_migration.py`).
-
-**The completion marker is authoritative.** Resolution is gated on
-`~/.kiro/crew/.data-home-ready`: once it exists (written only after a verified
-copy), the migration is done and the new home is authoritative — `config_dir()`
-returns it and **never re-migrates**, even if a `~/.kirocrew` directory is
-present alongside it. Because the migration force-deletes legacy and there is
-no downgrade/rollback path (below), a legacy dir that reappears *after* the
-marker can only be resurrection **debris** (stale files an old or legacy-pinned
-process wrote back); it is never authoritative and is never copied over the new
-home — doing so would revert same-named files (`sel_hmac.key`, logs,
-`workspace/`) to stale versions. The debris is left in place and RETAINED for
-manual cleanup — it stays under the credential-protected `.kirocrew`
-sensitive-path prefix, but is NOT auto-removed (the leftover sweep only clears
-`.kirocrew.archived` / `.kiro/crew.pre-migration`, never `.kirocrew` itself). A
-legacy dir re-created later is likewise never promoted, so the recreate /
-check-to-resolve race is benign. The conflicted state (marker + non-empty
-legacy) is not silent: `config_dir()` logs a one-time WARNING and
-`detect_data_home_conflict()` surfaces it in `kirocrew doctor`'s Data Home
-section with a manual-cleanup hint. Migration therefore runs **only**
-when the marker is absent (a genuine pre-move install whose legacy home is the
-real data root).
-
-It is **copy-then-verify-then-delete**: the legacy tree is copied directly into
-the new home — OVERWRITING any file already present there under the same
-relative path, so the legacy copy always wins over whatever pre-existed at
-`~/.kiro/crew` (a partial prior migration, a dir a sibling Kiro tool created, or
-a `KIROCREW_HOME=~/.kiro/crew` experiment), while a new-home-only entry with no
-legacy counterpart is left untouched — every regular file is then verified
-present at the destination, and only after that verification succeeds is
-`~/.kirocrew` removed outright. **There is no rollback copy and no backup of
-whatever the new home held before the overwrite** — once the move completes,
-only `~/.kiro/crew` remains on disk. If the copy or verification fails,
-`~/.kirocrew` is left fully intact for a retry on the next start. The move is
-idempotent, skipped while a gateway is live on either home (the resolving
-process JOINS whichever home the live gateway holds — legacy or new — so its
-`.local_secret` matches the gateway's for internal IPC, rather than pinning to
-the other home and failing every internal API call with 403; the completion
-marker is NOT written on a liveness skip — it is reserved for a verified copy,
-so a fail-safe `_gateway_is_live` OSError can't brand a partial home as
-migrated — and the one-time copy simply completes on the next clean cold
-start), and never runs when `KIROCREW_HOME` is set (dev/worktree homes are
-not migrated). Before the copy starts it prints a one-line `migrating data
-home …` notice to stderr so a slow first-run copy on a large home is not
-mistaken for a hang.
-
-**Read-only destination files are overwritten.** The copy passes a custom
-`copy_function` (`_copy_overwrite`) instead of `shutil.copytree`'s default
-`copy2`. When the new home is already populated (a partial prior migration, or
-a directory a sibling Kiro tool created — the marker is ABSENT, so this is the
-one-time first migration, NOT a re-migration; under the marker-authoritative
-rule a marker-present home is never re-migrated), a same-path destination file
-that is read-only would make `copy2`'s
-truncate-open fail with `PermissionError`. This is not hypothetical: git writes
-packfiles (`*.pack`/`*.idx`/`*.rev` under `.git/objects/pack`) mode `0o444`, and
-app-source checkouts under the data home carry them, so an unguarded merge
-reliably aborted on the first such file — leaving the user in a permanent
-split-brain (legacy authoritative, new home half-populated, gateway pinned to
-legacy). `_copy_overwrite` clears the destination's read-only state (adds the
-owner-write bit, `st_mode | S_IWUSR`) before delegating to `copy2` (which then
-copies the source's own mode bits over, restoring `0o444`), so legacy still wins
-the overwrite as intended. The chmod is best-effort and only touches a path that
-already exists at the destination — never the read-only source.
-
-**Symlinks are skipped, not preserved.** The copy does not pass
-`symlinks=True` to `shutil.copytree`, so any symlink in the legacy tree —
-intra-home, pointing outside the home, or dangling — is skipped entirely
-(matched by `_make_copy_ignore` alongside sockets/FIFOs/devices) rather than
-followed or reproduced. This is a deliberate simplification: preserving
-symlinks across a merge has real edge cases (a legacy symlink can't overwrite
-a real file already at the destination; an absolute intra-home symlink would
-dangle once legacy is deleted; a dangling symlink would abort the whole
-`copytree` call if dereferenced), and the data home has no user-facing
-symlinks worth carrying forward. The practical effect is limited to internal
-convenience links a user or tool may have created inside the data home.
-
-**Excluded bulk trees.** `_EXCLUDED_TOP_LEVEL_DIRS` (`models`, `cache`) are
-large and regenerable, so they are never copied — carrying them forward would
-make the first-run copy needlessly slow for no benefit. The new home simply
-regenerates them on demand (the sha256-pinned GGUF embedding model re-downloads
-over HTTPS on next start), exactly as a fresh install does. A same-named dir
-NESTED under real data is not excluded (the match is anchored at the legacy
-root).
-
-**No rollback.** Because the legacy home is deleted (not archived) and any
-pre-existing divergent `~/.kiro/crew` is overwritten (not backed up), there is no
-supported downgrade path: a release older than this move knows nothing of
-`~/.kiro/crew`, and after the migration completes there is nothing left under
-`~/.kirocrew` to restore from. A user who needs to preserve the pre-move state
-must back it up themselves (e.g. `cp -a ~/.kirocrew ~/.kirocrew.manual-backup`)
-BEFORE upgrading.
-
-**Leftover-archive cleanup (`_sweep_ungated_archive_leftovers`).** An EARLIER
-release of this migration (already shipped on `main` before this no-retention
-contract) could have left `~/.kirocrew.archived` (a full rollback copy) or
-`~/.kiro/crew.pre-migration/<timestamp>` (a sidelined divergent-home backup) on
-disk. Neither path is on the security keystone anymore (`_CREW_HOME_PREFIXES`
-dropped `.kirocrew.archived`; the `.kiro/crew.pre-migration` entry was removed
-outright — nothing creates them, so gating them was dead weight), which means a
-leftover one from that earlier release is now UNGATED: its frozen credentials
-would otherwise be agent-readable indefinitely with nothing to ever prompt a
-cleanup. `config_dir()` therefore deletes either directory outright (matching
-this migration's no-retention design — not just shredding the credential
-leaves) on every default-path resolution. It never follows a symlink at either
-root, is best-effort (a removal failure is logged and retried on the next
-start, never blocks startup), and is a quiet no-op once both are gone.
+**No migration — net-new users only.** All supported installs start directly in
+`~/.kiro/crew`; there is no `~/.kirocrew` to relocate, so `config_dir()` simply
+resolves and `mkdir`s the home above. The one-time `~/.kirocrew` → `~/.kiro/crew`
+data-home migration that earlier releases carried has been **removed** (see
+`docs/system-specs/post-launch-removals.md`). A leftover top-level `~/.kirocrew`
+from an old install is never read, migrated, or deleted; it is left in place —
+still credential-gated by the `.kirocrew` security-path spelling — and `kirocrew
+doctor` reports it, warning rather than advising deletion when it still holds a
+virtual environment (`venv`/`.venv`/`venvs`), since that may be the running
+interpreter.
 
 **Repository-controlled uninstall contract.** Every uninstall path owned by this
 repository preserves the KiroCrew data home by default. `kirocrew service
@@ -200,9 +102,8 @@ _SOME_DIR = config_dir() / "some"        # WRONG -- frozen at import
 ```
 
 An import-time binding captures whatever home was active when the module was
-first imported, which breaks three things at once: pod isolation (a pod exports
-its own `KIROCREW_HOME`), the one-time legacy-home migration (resolved after
-import), and test isolation — `conftest.py`'s autouse `_isolate_kirocrew_home`
+first imported, which breaks two things at once: pod isolation (a pod exports
+its own `KIROCREW_HOME`) and test isolation — `conftest.py`'s autouse `_isolate_kirocrew_home`
 fixture runs *after* collection has already imported the module under test, so
 it cannot reach a frozen constant. That last hole let a local test run write
 2128 fixture rows into an operator's real usage store.
@@ -227,38 +128,32 @@ fails on every hit. The factory list is derived from `paths.py` itself, so a
 newly added factory is covered without editing the test. Issue #874.
 
 **`config_dir()` maintains; `data_home()` only resolves.** `config_dir()` is
-*resolve + maintain*: besides resolving the home it `mkdir`s it, refreshes the
-`~/.kiro-crew-location` recovery breadcrumb (a stat + a read) and re-runs
-`_sweep_ungated_archive_leftovers()`, which can `shutil.rmtree` a leftover
-archive from an earlier release. That work belongs to process start —
+*resolve + maintain*: besides resolving the home it `mkdir`s it and refreshes the
+recovery breadcrumb (a stat + a read). That work belongs to process start —
 `ensure_data_home()` is the startup hook — and the distinction did not matter
 while callers froze the result in a module constant, because the maintenance
 then ran exactly once, at import.
 
 Resolving per call makes it load-bearing: a request handler would otherwise
-perform a destructive sweep **on the event loop** as a side effect of asking
-where a directory is. So the accessors above call **`data_home()`**:
+refresh the breadcrumb **on the event loop** as a side effect of asking where a
+directory is. So the accessors above call **`data_home()`**:
 
 | branch | behaviour |
 | --- | --- |
-| a **valid** `KIROCREW_HOME` override | delegates to `config_dir()` every call, so an override set *after* import is honoured. That branch performs neither the breadcrumb refresh nor the sweep — only a cheap `mkdir`. |
-| default home already resolved | returns the cached `_resolved_home` directly — no `mkdir`, no breadcrumb, no sweep. |
-| not yet resolved | delegates to `config_dir()`, so the **first** resolution in a process still migrates, creates the home and sweeps once. |
+| a **valid** `KIROCREW_HOME` override | delegates to `config_dir()` every call, so an override set *after* import is honoured. That branch performs no breadcrumb refresh — only a cheap `mkdir`. |
+| default home already resolved | returns the cached `_resolved_home` directly — no `mkdir`, no breadcrumb. |
+| not yet resolved | delegates to `config_dir()`, so the **first** resolution in a process creates the home and refreshes the breadcrumb once. |
 
 The first row tests `_valid_override_home()` — the **same predicate `config_dir()`
 gates on**, not merely "is the env var set". An override naming a system
 directory (`/`, `/usr`, …) is rejected there and resolution falls through to the
 default home, so gating on the raw env var would send every call down the
-maintenance path and put the destructive sweep back on the request path for
-anyone with a bad override. The two predicates must not drift apart; a regression
-test pins both directions.
+maintenance path for anyone with a bad override. The two predicates must not
+drift apart; a regression test pins both directions.
 
-That last row is what keeps the sweep's documented contract intact: it specifies
-"a leftover created between two starts … is still caught on the **next start**".
-The sweep is specified per *start*; running it per *call* was the mechanism, not
-the requirement. `data_home()` keeps no cache of its own — the override branch
-must stay live, and the cached branch reads the same `_resolved_home` that
-`config_dir()` populates, so there is one source of truth for the location.
+`data_home()` keeps no cache of its own — the override branch must stay live, and
+the cached branch reads the same `_resolved_home` that `config_dir()` populates,
+so there is one source of truth for the location.
 
 Existing direct `config_dir()` callers are unchanged and keep the maintenance
 behaviour, including 25 pre-existing calls that already sit inside async
@@ -796,7 +691,8 @@ leaf on `security._CREW_SECRET_LEAVES`):
 The absence is deliberate and the precedent is `denied_commands.json`:
 `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True` (the *tool* path is
 protected), but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is
-`None` — `_WRITE_PROTECTED_BASH_LEAVES` is `('.data-home-ready',)` only. A config
+`None` — `config.json` is not among `_WRITE_PROTECTED_BASH_LEAVES` (which fences
+only a few specific control files elsewhere under the home). A config
 toggle would therefore be flippable by a prompt-injected agent through any shell
 redirect.
 

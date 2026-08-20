@@ -32,7 +32,11 @@ class TestSpawnRunSessionKeyRouting:
             env.pop("KIROCREW_SESSION_KEY", None)
             env.pop("KIROCREW_HOME", None)  # ensure config_dir() uses patched Path.home()
             with patch.dict("os.environ", env, clear=True):
-                kirocrew_dir = tmp_path / "fake_home" / ".kirocrew"
+                # The gateway writes session_pid files into the data home
+                # (config_dir() -> ~/.kiro/crew), which is where the fallback
+                # reader looks; there is no legacy fallback for these per-boot
+                # runtime files.
+                kirocrew_dir = tmp_path / "fake_home" / ".kiro" / "crew"
                 kirocrew_dir.mkdir(parents=True)
                 (kirocrew_dir / f"session_pid_{os.getppid()}.txt").write_text("sess-from-pid")
 

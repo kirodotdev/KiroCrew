@@ -6,8 +6,8 @@ freezes whichever home happened to be active when that module was first
 imported, which silently breaks:
 
 * **pod isolation** -- a pod exports its own ``KIROCREW_HOME``;
-* **the lazy legacy-home migration** (``~/.kirocrew`` -> ``~/.kiro/crew``), which
-  is deliberately resolved late and cached;
+* **the lazy default-home resolution** (``~/.kiro/crew``), which is deliberately
+  resolved late and cached;
 * **test isolation** -- the autouse ``_isolate_kirocrew_home`` fixture in
   ``conftest.py`` runs *after* collection has already imported the module under
   test, so it cannot reach a frozen constant. That hole is how a local test run
@@ -50,7 +50,7 @@ def _path_factories() -> set[str]:
 
     Restricted to functions whose return annotation mentions ``Path``, which is
     the precision half of the same problem: ``paths.py`` also exports helpers
-    like ``preserved_entries() -> list[str]``, ``_safe_dir_name() -> str`` and
+    like ``_safe_dir_name() -> str`` and
     ``_is_unsafe_home() -> bool``. Since the detector matches a bare call name
     (and an attribute call of the same name), including those would make the
     guard flag unrelated module-level calls repo-wide as ``paths.py`` grows --
@@ -270,10 +270,8 @@ class TestNoImportTimePathResolution:
         assert {"config_dir", "kiro_sessions_dir", "kiro_agents_dir"} <= factories
         # non-Path returners in the same module must NOT be treated as factories
         for name in (
-            "preserved_entries",  # -> list[str]
             "_safe_dir_name",  # -> str
             "_is_unsafe_home",  # -> bool
-            "detect_data_home_conflict",  # -> str | None
             "_in_linked_git_worktree",  # -> bool
         ):
             assert name not in factories, name
@@ -293,7 +291,6 @@ class TestNoImportTimePathResolution:
         assert "_screenshot_dir" in factories, "_screenshot_dir calls data_home"
         # Non-Path returners must still be excluded
         for name in (
-            "preserved_entries",
             "_safe_dir_name",
             "_is_unsafe_home",
         ):
@@ -392,7 +389,7 @@ class TestAccessorsFollowTheLiveHome:
     """A post-import ``KIROCREW_HOME`` change must redirect every accessor.
 
     ``config_dir()`` returns a ``$KIROCREW_HOME`` override immediately, ahead of
-    the cached default-home/migration branch, so the override path is live on
+    the cached default-home resolution branch, so the override path is live on
     every call. These modules are imported at collection time -- long before the
     env var below is set -- which is exactly the sequence that used to strand
     them on the operator's real home.
@@ -447,11 +444,10 @@ class TestAccessorsFollowTheLiveHome:
 class TestResolutionDoesNotRepeatStartupMaintenance:
     """``data_home()`` must not re-run start-of-process maintenance per call.
 
-    ``config_dir()`` is resolve + maintain: it also mkdirs the home, refreshes the
-    recovery breadcrumb and re-runs the ungated-archive sweep, which can
-    ``shutil.rmtree`` a leftover. Resolving per call (the #874 fix) would
-    otherwise put that on every caller -- including request handlers, where a
-    destructive sweep would run on the event loop as a side effect of asking
+    ``config_dir()`` is resolve + maintain: it also mkdirs the home and refreshes
+    the recovery breadcrumb (a stat + a read). Resolving per call (the #874 fix)
+    would otherwise put that on every caller -- including request handlers, where
+    the breadcrumb refresh would run on the event loop as a side effect of asking
     where a directory is.
 
     Each assertion is paired with its negative control: the test proves
@@ -459,13 +455,10 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
     assertion cannot be explained by the maintenance simply being dead.
     """
 
-    def _count_sweeps(self, monkeypatch):
+    def _count_maintenance(self, monkeypatch):
         from kiro_crew.config import paths
 
         calls: list[int] = []
-        monkeypatch.setattr(
-            paths, "_sweep_ungated_archive_leftovers", lambda: calls.append(1)
-        )
         monkeypatch.setattr(paths, "_write_recovery_breadcrumb", lambda d: calls.append(1))
         return calls
 
@@ -478,7 +471,7 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
         home = tmp_path / "resolved"
         home.mkdir()
         monkeypatch.setattr(paths, "_resolved_home", home)
-        calls = self._count_sweeps(monkeypatch)
+        calls = self._count_maintenance(monkeypatch)
 
         assert paths.data_home() == home
         assert paths.data_home() == home
@@ -489,16 +482,16 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
         assert calls, "config_dir() no longer performs maintenance; test is vacuous"
 
     def test_first_resolution_still_performs_maintenance(self, tmp_path, monkeypatch):
-        """Per START, not per call -- which is what the sweep's docstring specifies."""
+        """Per START, not per call -- the breadcrumb refresh runs once per process."""
         from kiro_crew.config import paths
 
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.setattr(paths, "_resolved_home", None)
-        monkeypatch.setattr(paths, "_maybe_migrate_legacy_home", lambda: tmp_path / "fresh")
-        calls = self._count_sweeps(monkeypatch)
+        monkeypatch.setattr(paths, "_resolve_default_home", lambda: tmp_path / "fresh")
+        calls = self._count_maintenance(monkeypatch)
 
         paths.data_home()
-        assert calls, "the first resolution in a process must still sweep"
+        assert calls, "the first resolution in a process must still perform maintenance"
 
     def test_override_is_never_cached(self, tmp_path, monkeypatch):
         """A KIROCREW_HOME set after import must still be honoured (#874).
@@ -523,10 +516,10 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
 
         ``config_dir()`` gates the override branch on ``_valid_override_home()``
         (set AND safe); an override like ``/usr`` is rejected there and
-        resolution falls through to the default home, which mkdirs, refreshes
-        the breadcrumb and runs the sweep. So ``data_home()`` must gate on the
+        resolution falls through to the default home, which mkdirs and refreshes
+        the breadcrumb. So ``data_home()`` must gate on the
         SAME predicate -- testing merely "is the env var set" would send every
-        call down the maintenance path and put the destructive sweep back on the
+        call down the maintenance path and put the breadcrumb refresh back on the
         request path for anyone with a bad override.
         """
         from kiro_crew.config import paths
@@ -544,7 +537,7 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
         monkeypatch.setenv("KIROCREW_HOME", tmp_path.anchor)
         assert paths._valid_override_home() is None, "precondition: override rejected"
 
-        calls = self._count_sweeps(monkeypatch)
+        calls = self._count_maintenance(monkeypatch)
         assert paths.data_home() == home
         assert paths.data_home() == home
         assert calls == [], "invalid override re-ran maintenance on every call"

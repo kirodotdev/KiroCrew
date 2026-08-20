@@ -152,11 +152,11 @@ function postShutdown({
   pathMod = path,
   timeoutMs = 5000,
 }) {
-  // A migration can leave more than one `.local_secret` on disk (canonical +
-  // legacy), and the running gateway is authenticated by whichever one it
-  // actually loaded. Try every candidate and let a 200 pick the live one: a
-  // stale/wrong secret returning 403 must NOT short-circuit the clean-flush
-  // path into a hard SIGTERM that skips session/memory/cron persistence.
+  // The caller may pass more than one candidate secret, and the running gateway
+  // is authenticated by whichever one it actually loaded. Try every candidate
+  // and let a 200 pick the live one: a stale/wrong secret returning 403 must NOT
+  // short-circuit the clean-flush path into a hard SIGTERM that skips
+  // session/memory/cron persistence.
   let secretList = Array.isArray(secrets) ? secrets : [];
   if (!secretList.length) {
     try {

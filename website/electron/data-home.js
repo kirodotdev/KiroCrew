@@ -1,5 +1,5 @@
 /**
- * Read the first valid dashboard.url port from the backend-compatible home
+ * Read the first valid dashboard.url port from the given candidate homes, in
  * order. Returns null when no usable configured port exists.
  */
 function findConfiguredDashboardPort(fs, path, homeCandidates) {
@@ -12,7 +12,7 @@ function findConfiguredDashboardPort(fs, path, homeCandidates) {
       const port = parseInt(new URL(url).port, 10);
       if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
     } catch {
-      // Try the next migration-compatible home.
+      // Unreadable/malformed — try the next candidate home.
     }
   }
   return null;

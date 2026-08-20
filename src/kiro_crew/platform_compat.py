@@ -323,17 +323,16 @@ else:
 # EACCES), so an unbounded spin would turn a permission error into a hang.
 #
 # Two ceilings, because on-loop and off-loop have opposite needs:
-#  - OFF the loop (cron, home migration, app backends — threads/subprocesses):
-#    the wait must cover a legitimately long holder. home_migration holds the
-#    lock across a full copy+verify+delete of the data home, which can exceed
-#    many seconds, and a waiter there must NOT give up and race it. So use a
-#    generous ceiling that no real hold approaches, matching POSIX's "wait for
-#    the lock" as closely as a bounded spin can.
+#  - OFF the loop (cron, app backends — threads/subprocesses): the wait must
+#    cover a legitimately long holder that can hold the lock across a
+#    multi-second operation, and a waiter there must NOT give up and race it. So
+#    use a generous ceiling that no real hold approaches, matching POSIX's "wait
+#    for the lock" as closely as a bounded spin can.
 #  - ON the loop (e.g. bridges._mcp_lock during app enable): a spin-sleep would
 #    freeze chat/heartbeat, so that path never sleeps at all (single-shot).
 _WIN_LOCK_POLL_SECS = 0.01
-# Generous off-loop ceiling: longer than any legitimate hold (a large data-home
-# migration), short enough that a truly stuck/permission-denied fd still fails.
+# Generous off-loop ceiling: longer than any legitimate hold, short enough that
+# a truly stuck/permission-denied fd still fails.
 _WIN_LOCK_TIMEOUT_SECS = 300.0
 
 
@@ -348,8 +347,8 @@ def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -
     loop is detected the acquire is single-shot — take it if free, else return
     False at once — and the caller fails closed rather than stalling the loop.
     Off the loop (the common case) it polls up to ``timeout`` as a real
-    blocking wait, so a legitimately long holder (a data-home migration) is
-    waited out rather than raced.
+    blocking wait, so a legitimately long holder is waited out rather than
+    raced.
     """
 
     def _try_once() -> bool:

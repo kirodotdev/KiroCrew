@@ -42,11 +42,11 @@ class TestFixHint:
 class TestDataHome:
     """`kirocrew doctor` Data Home section — location + leftover legacy home."""
 
-    def test_legacy_present_says_will_retry(self, monkeypatch, tmp_path: Path, capsys) -> None:
-        # A leftover ~/.kirocrew (a live gateway held it, the delete failed, or
-        # this is the first cold start) is always transient now — migration
-        # force-overwrites and deletes it on the next start, so "will retry" is
-        # correct in every case (there is no more divergence-abort state).
+    def test_legacy_present_default_path_says_not_the_data_home(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A leftover top-level ~/.kirocrew on the default path is not the data
+        # home — the doctor notes it as safe to delete, never as active state.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)  # default-path case
         home = tmp_path / ".kiro" / "crew"
@@ -59,27 +59,8 @@ class TestDataHome:
         cli_doctor._doctor_data_home()
 
         out = capsys.readouterr().out
-        assert "will retry on next cold start" in out
-
-    def test_legacy_present_under_valid_override_says_ignored(
-        self, monkeypatch, tmp_path: Path, capsys
-    ) -> None:
-        # Under a VALID KIROCREW_HOME override migration is bypassed on every
-        # start, so a leftover legacy is NOT going to be migrated — the doctor
-        # must not claim "will retry" (GPT 5.6 MEDIUM).
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "override"))
-        home = tmp_path / ".kiro" / "crew"
-        monkeypatch.setattr(cli_doctor, "config_dir", lambda: home)
-        home.mkdir(parents=True)
-        legacy = tmp_path / cli_doctor.LEGACY_CONFIG_DIR_NAME
-        legacy.mkdir()
-
-        cli_doctor._doctor_data_home()
-
-        out = capsys.readouterr().out
-        assert "IGNORED" in out and "override active" in out
-        assert "will retry on next cold start" not in out
+        assert "not the data home" in out
+        assert "ACTIVE" not in out
 
     def test_legacy_override_points_at_legacy_says_active_not_ignored(
         self, monkeypatch, tmp_path: Path, capsys
@@ -101,54 +82,28 @@ class TestDataHome:
         assert "IGNORED" not in out
         assert "will retry on next cold start" not in out
 
-    def test_marker_present_nonempty_legacy_renders_conflict(
+    def test_legacy_with_venv_is_never_advised_deletable(
         self, monkeypatch, tmp_path: Path, capsys
     ) -> None:
-        # Marker present + a NON-EMPTY legacy dir → a genuine conflict: the
-        # legacy is resurrection debris, NOT a pending migration. The doctor must
-        # render the conflict (⚠ / NOT used) and never claim a retry (GPT 5.6
-        # MEDIUM: pin the conflict-rendering branch so removing it fails a test).
+        # An older wheel install could nest its managed venv inside ~/.kirocrew,
+        # so the leftover dir may hold the running interpreter. The doctor must
+        # NOT tell the user it is safe to delete — that would remove their live
+        # install.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        home = tmp_path / ".kiro" / "crew"
-        monkeypatch.setattr(cli_doctor, "config_dir", lambda: home)
-        home.mkdir(parents=True)
-        (home / cli_doctor.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
+        monkeypatch.setattr(cli_doctor, "config_dir", lambda: tmp_path / ".kiro" / "crew")
         legacy = tmp_path / cli_doctor.LEGACY_CONFIG_DIR_NAME
-        legacy.mkdir()
-        (legacy / "sessions.db").write_text("stale", encoding="utf-8")  # non-empty debris
+        (legacy / "venv" / "bin").mkdir(parents=True)
 
         cli_doctor._doctor_data_home()
 
         out = capsys.readouterr().out
-        assert "conflict" in out and "NOT used" in out
-        assert "will retry on next cold start" not in out
-
-    def test_marker_present_empty_legacy_says_unused_not_retry(
-        self, monkeypatch, tmp_path: Path, capsys
-    ) -> None:
-        # Marker present + an EMPTY recreated legacy dir: migration already
-        # completed and is marker-authoritative, so it will NEVER retry. The
-        # doctor must call the dir UNUSED leftover, not claim a pending retry
-        # (GPT 5.6 MEDIUM — the misleading "will retry" would persist forever).
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        home = tmp_path / ".kiro" / "crew"
-        monkeypatch.setattr(cli_doctor, "config_dir", lambda: home)
-        home.mkdir(parents=True)
-        (home / cli_doctor.MIGRATION_MARKER_NAME).write_text("done\n", encoding="utf-8")
-        legacy = tmp_path / cli_doctor.LEGACY_CONFIG_DIR_NAME
-        legacy.mkdir()  # empty debris
-
-        cli_doctor._doctor_data_home()
-
-        out = capsys.readouterr().out
-        assert "UNUSED" in out and "migration already completed" in out
-        assert "will retry on next cold start" not in out
+        assert "Do NOT delete" in out
+        assert "virtual environment" in out and "venv" in out
+        assert "safe to delete" not in out
 
     def test_no_legacy_stays_quiet(self, monkeypatch, tmp_path: Path, capsys) -> None:
-        # Fresh install / migration already completed: only the location line,
-        # no leftover-legacy nag. There is no archive to report either way.
+        # Fresh install: only the location line, no leftover-legacy nag.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         monkeypatch.setattr(cli_doctor, "config_dir", lambda: tmp_path / ".kiro" / "crew")
 
@@ -157,7 +112,6 @@ class TestDataHome:
         out = capsys.readouterr().out
         assert "Data Home" in out
         assert "legacy:" not in out
-        assert "rollback copy" not in out
         assert "rm -rf" not in out
 
 

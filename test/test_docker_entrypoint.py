@@ -228,37 +228,6 @@ def test_existing_config_without_key_gets_note_but_no_write(tmp_path: Path) -> N
     assert "sandbox_allow_unsandboxed_exec is not set" in result.stdout
 
 
-def test_legacy_home_is_migrated_by_the_product_resolver(tmp_path: Path) -> None:
-    """A volume carrying the legacy ~/.kirocrew layout: the entrypoint's
-    data-home resolution delegates to the product's ensure_data_home(),
-    which runs the REAL migration (force-copy, verify, delete legacy,
-    stamp marker) before any entrypoint write. The entrypoint must then
-    treat the migrated config as operator-owned (no seed) and write
-    credentials where the gateway will read them."""
-    legacy = tmp_path / ".kirocrew"
-    legacy.mkdir(parents=True)
-    legacy_config = '{"agent": {"model": "custom"}}\n'
-    (legacy / "config.json").write_text(legacy_config, encoding="utf-8")
-
-    result = _run_entrypoint(
-        tmp_path,
-        probe_backend_available=False,
-        extra_env={"SLACK_BOT_TOKEN": "post-migration-cred"},
-    )
-    assert result.returncode == 0, result.stderr
-
-    new_home = tmp_path / ".kiro" / "crew"
-    assert (new_home / "config.json").read_text(encoding="utf-8") == legacy_config, (
-        "the product migration must have carried the legacy config over"
-    )
-    assert (new_home / ".data-home-ready").exists(), "migration marker missing"
-    assert not legacy.exists(), "verified migration deletes the legacy home"
-    assert "seeded" not in result.stdout, "migrated config is operator-owned"
-    # Credentials land in the MIGRATED home — the exact divergence the
-    # resolver delegation exists to prevent.
-    assert "post-migration-cred" in (new_home / ".env").read_text(encoding="utf-8")
-
-
 def test_explicit_kirocrew_home_env_is_honored(tmp_path: Path) -> None:
     """KIROCREW_HOME overrides the default seed location (parity with the
     backend's env handling)."""

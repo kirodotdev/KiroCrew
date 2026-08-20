@@ -63,9 +63,6 @@ def _read_gateway_pid() -> int | None:
     immediately and report None. If we cannot, a live holder exists and the
     recorded PID names it. Any error reads as "cannot confirm" and returns None —
     fail closed, since the failure mode is profiling the wrong process.
-
-    Mirrors ``home_migration._gateway_is_live``, which uses the same probe to
-    decide whether relocating a data home is safe.
     """
     lock_path = config_dir() / LOCK_FILENAME
     try:

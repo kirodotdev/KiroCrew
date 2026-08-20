@@ -347,7 +347,6 @@ src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/github_runner.py
 src/kiro_crew/heartbeat.py
 src/kiro_crew/history.py
-src/kiro_crew/home_migration.py
 src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
@@ -911,7 +910,6 @@ test/test_history_consolidation_retry.py
 test/test_history_coverage.py
 test/test_history_locking_remediation.py
 test/test_history_race.py
-test/test_home_migration.py
 test/test_hook_matcher_modes.py
 test/test_hooks.py
 test/test_hooks_coverage.py

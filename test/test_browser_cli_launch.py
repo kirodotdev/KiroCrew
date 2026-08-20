@@ -225,7 +225,7 @@ def test_launch_config_shell_protection_matches_an_existing_protected_leaf() -> 
     ``_BARE_TOKEN_PROTECTED_LEAVES``, a leaf earns anchor-independent matching only
     when the filename IS the grant, and here it is not -- the agent can point
     ``PLAYWRIGHT_MCP_CONFIG`` at a file of its own. So a ``cd``-relative write is
-    the accepted residual, exactly as it is for ``.data-home-ready``.
+    the accepted residual, exactly as it is for the on-call schedule.
 
     Asserting parity is what protects the invariant: it fails if someone protects
     one leaf and not the other, and it does not pretend a gap is closed.
@@ -233,7 +233,7 @@ def test_launch_config_shell_protection_matches_an_existing_protected_leaf() -> 
     from kiro_crew import security
 
     ours = "playwright-cli-config.json"
-    existing = ".data-home-ready"
+    existing = "apps/ops-mission-control/data/rotation.yaml"
     for form in (
         "echo x > ~/.kiro/crew/{leaf}",
         "echo x > $HOME/.kiro/crew/{leaf}",
