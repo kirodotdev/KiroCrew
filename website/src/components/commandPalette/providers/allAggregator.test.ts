@@ -95,6 +95,18 @@ describe('createAllAggregator — fan-out + merge', () => {
     const arr = await Promise.resolve(agg.search('q'))
     expect(arr.map((r) => r.id)).toEqual(['a:1'])
   })
+
+  it('preserves each provider established internal order when scores are equal (issue #4579)', async () => {
+    // Providers a and b return body-only hits (score 0) in their own relevance order.
+    // The aggregator must preserve each provider's internal sequence rather than
+    // re-alphabetizing by title.
+    const a = provider('a', [result('a:z', 'a', 'Zebra item', 0), result('a:a', 'a', 'Alpha item', 0)])
+    const b = provider('b', [result('b:y', 'b', 'Yellow item', 0), result('b:b', 'b', 'Beta item', 0)])
+    const agg = make({ getProviders: () => [a, b] })
+
+    const arr = await Promise.resolve(agg.search('4579'))
+    expect(arr.map((r) => r.id)).toEqual(['a:z', 'a:a', 'b:y', 'b:b'])
+  })
 })
 
 describe('createAllAggregator — recents on empty query', () => {

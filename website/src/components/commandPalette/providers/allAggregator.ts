@@ -3,7 +3,6 @@ import type { ReactNode } from 'react'
 import { useMemo } from 'react'
 import { Sparkles } from 'lucide-react'
 
-import { makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
 import { getProviders as getRegisteredProviders, getProvider } from './index'
@@ -15,8 +14,9 @@ import { getProviders as getRegisteredProviders, getProvider } from './index'
  * of owning a data source it fans the query out to every *other* registered
  * provider, keeps the top-N hits per provider (so one chatty source can't
  * flood the blended list), then merges everything into a single list ordered
- * by score-descending, name-ascending (the same ordering every per-category
- * tab uses, via {@link makeScoreThenNameComparator}).
+ * by score-descending with a stable sort, so each provider's own internal
+ * ranking (including backend relevance order for body-only hits) is preserved
+ * as the tiebreak (issue #4579).
  *
  * Empty query is special-cased: rather than asking each provider for its
  * "everything" list, the All tab shows **recents** (recent sessions). This
@@ -52,10 +52,6 @@ function inlineIcon(): ReactNode {
   return createElement(Sparkles, { className: 'lucide-inline' })
 }
 
-const compareResults = makeScoreThenNameComparator<Result>(
-  (r) => r.score,
-  (r) => r.title,
-)
 
 /**
  * Injectable dependencies for {@link createAllAggregator}. Decoupling the
@@ -126,13 +122,14 @@ export function createAllAggregator(deps: AllAggregatorDeps): ResourceProvider {
       )
 
       // Cap each provider's contribution (top-N after its own ordering), then
-      // blend everything and re-sort by score-desc, name-asc.
+      // blend everything ordered by score-descending. Stable sort ensures
+      // each provider's established internal ranking (including backend tiebreaks
+      // for body-only hits, issue #4579) is preserved.
       const merged: Result[] = []
       for (const results of perProvider) {
-        const top = [...results].sort(compareResults).slice(0, perProviderLimit)
-        merged.push(...top)
+        merged.push(...results.slice(0, perProviderLimit))
       }
-      merged.sort(compareResults)
+      merged.sort((a, b) => b.score - a.score)
       return merged
     },
   }

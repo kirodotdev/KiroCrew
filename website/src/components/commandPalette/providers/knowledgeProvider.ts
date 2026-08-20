@@ -7,7 +7,7 @@ import type { NavigateFunction } from 'react-router-dom'
 
 import { api } from '../../../api/client'
 import { i18nT } from '../../../i18n/t'
-import { fuzzyMatch, makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
+import { fuzzyMatch } from '../../../utils/fuzzyMatch'
 import type { Result, ResourceProvider } from '../types'
 
 /**
@@ -99,10 +99,6 @@ function knowledgeIcon() {
   return createElement(Brain, { className: 'lucide-inline' })
 }
 
-const compareResults = makeScoreThenNameComparator<Result>(
-  (r) => r.score,
-  (r) => r.title,
-)
 
 /**
  * Build the Knowledge {@link ResourceProvider} from injected dependencies.
@@ -153,10 +149,10 @@ export function createKnowledgeProvider(deps: KnowledgeProviderDeps): ResourcePr
         }
       })
 
-      // Title matches first, then deterministic name order. Skip the re-rank on
-      // an empty query so the backend's ordering is preserved.
+      // Title matches first, then backend relevance order is preserved via stable sort (issue #4579).
+      // Skip the re-rank on an empty query so the backend's ordering is preserved as-is.
       if (q.length > 0) {
-        results.sort(compareResults)
+        results.sort((a, b) => b.score - a.score)
       }
       return results
     },
