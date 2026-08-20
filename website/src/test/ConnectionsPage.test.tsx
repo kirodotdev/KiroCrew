@@ -23,6 +23,17 @@ const server = (status: string): McpServer => ({
 })
 
 describe('Connections card states', () => {
+  it('lets a confirmed absent grant override a cached-ok probe', () => {
+    // `ok` is a cached reachability verdict and outlives revocation; a CONFIRMED
+    // absent grant is the fresher authorization fact and must win.
+    expect(connectionStateFor(server('ok'), undefined, false, false)).toBe('not-verified')
+    expect(connectionStateFor(server('ok'), undefined, false, true)).toBe('connected')
+    // Indeterminate / not-yet-loaded (undefined) keeps the prior behaviour.
+    expect(connectionStateFor(server('ok'), undefined, false, undefined)).toBe('connected')
+    // A flow completed in THIS session outranks a possibly-lagging status poll.
+    expect(connectionStateFor(server('ok'), { completed: true }, false, false)).toBe('connected')
+  })
+
   it('covers not connected, waiting, connected, and needs-attention states', () => {
     expect(connectionStateFor(undefined, undefined)).toBe('not-connected')
     expect(connectionStateFor(server('unknown'), undefined)).toBe('waiting-for-approval')
@@ -38,6 +49,23 @@ describe('Connections card states', () => {
    */
   it('reports needs_auth as not-verified rather than an error card', () => {
     expect(connectionStateFor(server('needs_auth'), undefined)).toBe('not-verified')
+  })
+
+  it('keeps the waiting card across a refresh while the backend mint is in flight', () => {
+    // A reload mid-consent drops every per-tab signal (locallyWaiting, the chat
+    // oauth message), but the backend's awaiting_consent verdict survives it —
+    // the card must keep waiting, not silently fall back to Connect.
+    expect(connectionStateFor(undefined, undefined, false, undefined, true))
+      .toBe('waiting-for-approval')
+    expect(connectionStateFor(server('needs_auth'), undefined, false, false, true))
+      .toBe('waiting-for-approval')
+    // Precedence is unchanged: a live grant (cached-ok probe, no confirmed
+    // absence) still outranks a stale awaiting verdict from the 30s poll.
+    expect(connectionStateFor(server('ok'), undefined, false, true, true)).toBe('connected')
+    // And a refused grant is still a real failure, not a spinner.
+    expect(connectionStateFor(server('needs_auth'), {
+      completed: false, failed: true, oauthUrl: '', error: 'denied', timestamp: 1,
+    }, false, false, true)).toBe('needs-attention')
   })
 
   it('lets live OAuth evidence outrank a tokenless needs_auth probe', () => {
@@ -318,5 +346,38 @@ describe('loopback OAuth return-address validation', () => {
     'http://127.0.0.1:43123/?code=x#fragment',
   ])('rejects unsafe or incomplete return address %s', value => {
     expect(isValidLoopbackReturnAddress(value)).toBe(false)
+  })
+})
+
+describe('the authorization axis resolves the needs_auth ambiguity', () => {
+  // A tokenless probe answers `needs_auth` for BOTH a server nobody authorized
+  // and one authorized outside the dashboard. `grantPresent` from
+  // /api/connections/status is the fact that separates them.
+  it('reads needs_auth with a grant on disk as connected', () => {
+    expect(connectionStateFor(server('needs_auth'), undefined, false, true)).toBe('connected')
+  })
+
+  it('keeps needs_auth without a grant honest as not-verified', () => {
+    expect(connectionStateFor(server('needs_auth'), undefined, false, false)).toBe('not-verified')
+  })
+
+  it('preserves the pre-status behaviour when the feed has not answered yet', () => {
+    // Undefined is "not known", not "no grant": the card must not change meaning
+    // on the first render before the status query resolves.
+    expect(connectionStateFor(server('needs_auth'), undefined, false, undefined)).toBe('not-verified')
+    expect(connectionStateFor(server('needs_auth'), undefined)).toBe('not-verified')
+  })
+
+  it('does not let a grant override a live attempt or a real failure', () => {
+    const oauth = (over: Partial<OAuthState>): OAuthState => ({
+      completed: false, failed: false, oauthUrl: '', error: '', timestamp: 1, ...over,
+    })
+    // A pending attempt still owns the card, grant or not.
+    expect(connectionStateFor(server('needs_auth'), undefined, true, true)).toBe('waiting-for-approval')
+    // A refused grant stays a failure: the artifacts existing does not make it work.
+    expect(connectionStateFor(server('needs_auth'), oauth({ failed: true }), false, true))
+      .toBe('needs-attention')
+    // A grant says nothing about an endpoint that is actually broken.
+    expect(connectionStateFor(server('error'), undefined, false, true)).toBe('needs-attention')
   })
 })

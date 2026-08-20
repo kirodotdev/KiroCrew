@@ -297,9 +297,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     # card would read it as the verdict on this attempt.
     token, prior = await reserve_mint_row(slug)
     try:
-        task = asyncio.create_task(
-            start_oauth_mint(slug, str(provider["mcp_url"]), token, prior)
-        )
+        task = asyncio.create_task(start_oauth_mint(slug, str(provider["mcp_url"]), token, prior))
     except BaseException:
         # The flow owns the displaced row once it starts; if it never starts,
         # nothing else will ever release that row's process and spec.
@@ -355,3 +353,69 @@ async def api_connections_mint_state(request: web.Request) -> web.Response:
     if view.get("reason"):
         payload["reason"] = view["reason"]
     return web.json_response(payload)
+
+
+async def api_connections_status(request: web.Request) -> web.Response:
+    """GET /api/connections/status — authorization verdict per visible provider.
+
+    Reports whether kiro-cli holds a grant (``grantPresent``) and the persisted
+    first-connect time (``connectedSince``) for each visible provider. It does
+    NOT probe endpoint reachability -- that stays with ``/api/mcp`` -- and it
+    never owns approval-URL minting, which remains the mint endpoints' job. It is
+    the authorization axis the card is otherwise blind to: a provider authorized
+    outside the dashboard, and one never authorized, both answer the reachability
+    probe with the same 401, and only a grant presence check tells them apart.
+    """
+    # Function-local for the same reason as the mint handlers below: the gateway
+    # imports this package at boot, and status collection reaches the mint engine
+    # for grant presence -- test_the_handlers_package_does_not_import_the_mint_engine
+    # keeps that engine off the boot path.
+    from kiro_crew.connections.status import _STATUS_SCHEMA_VERSION, collect_connection_statuses
+
+    statuses = await collect_connection_statuses()
+    return web.json_response({"schema_version": _STATUS_SCHEMA_VERSION, "connections": statuses})
+
+
+async def api_connections_cancel(request: web.Request) -> web.Response:
+    """POST /api/connections/cancel — dispose a provider's in-flight mint.
+
+    Body: ``{"slug": "<provider>", "token"?: "<row token>"}``. Releases the mint
+    process, its loopback listener and its ephemeral spec so a Connect the user
+    abandoned does not hold them until the TTL expires. It deliberately does NOT
+    remove the MCP config entry: the card owns that decision, because a cancelled
+    NEW connect uninstalls the entry it just created while a cancelled reconnect
+    keeps the working connection. Idempotent -- cancelling a provider with no
+    live mint answers ``dropped=false``.
+    """
+    parsed = await _mint_request(request)
+    if isinstance(parsed, web.Response):
+        return parsed
+    body, provider = parsed
+    slug = str(provider["slug"])
+    raw_token = body.get("token")
+    # Only an ABSENT token (or JSON null, its wire spelling) means "cancel
+    # whatever row is current". A token that is present but empty or non-string
+    # is a malformed request, not a privilege: coercing it to None would let a
+    # caller that failed to echo its row token dispose another tab's mint.
+    if raw_token is not None and (not isinstance(raw_token, str) or not raw_token):
+        return _bad_request("token must be a non-empty string when provided", "invalid_token")
+    token = raw_token
+
+    # Function-local, same boot-path reason as the mint handlers.
+    from kiro_crew.connections.mint import cancel_mint
+
+    dropped = await cancel_mint(slug, token)
+
+    # Off the loop: the FIRST sel() of a process constructs the log (trust-dir
+    # creation, key validation, on Windows an icacls subprocess). Same reasoning
+    # as api_connections_mint above.
+    await asyncio.to_thread(
+        lambda: sel().log_api_access(
+            caller="dashboard",
+            operation="connections_cancel",
+            outcome="ok",
+            source="dashboard",
+            resources=f"provider:{slug} dropped={dropped}",
+        )
+    )
+    return web.json_response({"ok": True, "slug": slug, "dropped": dropped})

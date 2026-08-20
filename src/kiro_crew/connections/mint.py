@@ -155,6 +155,20 @@ def grant_key(mcp_url: str) -> str:
     return hashlib.sha256(f"{origin}{parts.path or '/'}".encode("utf-8")).hexdigest()
 
 
+def grant_artifact_paths(mcp_url: str, *, cache_dir: Path | None = None) -> tuple[Path, Path]:
+    """The paired grant artifact paths for ``mcp_url`` (token, registration).
+
+    The single source of the artifact layout, shared with the status module so
+    its indeterminacy probe cannot drift from what :func:`grant_present` stats.
+    """
+    directory = cache_dir if cache_dir is not None else kiro_oauth_cache_dir()
+    key = grant_key(mcp_url)
+    return (
+        directory / f"{key}{_TOKEN_SUFFIX}",
+        directory / f"{key}{_REGISTRATION_SUFFIX}",
+    )
+
+
 def grant_present(mcp_url: str, *, cache_dir: Path | None = None) -> bool:
     """Whether kiro-cli holds a persisted grant for ``mcp_url``.
 
@@ -166,11 +180,8 @@ def grant_present(mcp_url: str, *, cache_dir: Path | None = None) -> bool:
     long as the mount does against a network-mounted one, so async callers run this
     through ``asyncio.to_thread`` rather than on the event loop.
     """
-    directory = cache_dir if cache_dir is not None else kiro_oauth_cache_dir()
-    key = grant_key(mcp_url)
-    return (directory / f"{key}{_TOKEN_SUFFIX}").is_file() and (
-        directory / f"{key}{_REGISTRATION_SUFFIX}"
-    ).is_file()
+    token, registration = grant_artifact_paths(mcp_url, cache_dir=cache_dir)
+    return token.is_file() and registration.is_file()
 
 
 def _acp_client_factory() -> Any:
@@ -610,6 +621,38 @@ async def reserve_mint_row(slug: str) -> tuple[str, MintState | None]:
     return token, prior
 
 
+async def cancel_mint(slug: str, token: str | None = None) -> bool:
+    """Withdraw ``slug``'s in-flight mint, releasing the process it holds.
+
+    Returns True when a row was dropped. The card calls this on Cancel: without
+    it a cancelled mint's dedicated kiro-cli process, its loopback listener and
+    its ephemeral spec stay held until the TTL expires or a later Connect
+    supersedes the row -- a real leak for a flow the user just abandoned.
+
+    ``token`` fences a stale tab. The table is keyed by slug, so a sibling tab
+    connecting the same provider REPLACES the row; a cancel carrying the caller's
+    own row token refuses to dispose a row that is no longer theirs. A cancel
+    with no token disposes whatever row is current -- a caller that never held a
+    token cannot distinguish rows, so its intent is only "cancel this provider".
+
+    Disposal runs OUTSIDE the table lock, for the reason ``reserve_mint_row``
+    hands its displaced row back rather than disposing under the lock: a wedged
+    teardown waits up to the shutdown timeout, and holding the table that long
+    stalls Connect for every other provider.
+    """
+    async with _mints_lock:
+        entry = _mints.get(slug)
+        if entry is None:
+            return False
+        if token is not None and entry.get("token") != token:
+            return False
+        _mints.pop(slug, None)
+        doomed = entry
+    await _dispose_mint(doomed)
+    await asyncio.to_thread(_log_mint_outcome, slug, "ok", "reason=cancelled")
+    return True
+
+
 def _claim_mint_pid(client: Any, holdings: MintState) -> bool:
     """Shield the mint's child PID from the orphan sweep. Idempotent.
 
@@ -670,7 +713,12 @@ async def start_oauth_mint(
                 }
         # Every POST logs outcome=started, so every path has to log a completion or
         # the audit trail shows starts that never finished.
-        await asyncio.to_thread(_log_mint_outcome, slug, "ok", "reason=already_granted")
+        await asyncio.to_thread(
+            _log_mint_outcome,
+            slug,
+            "ok",
+            "reason=already_granted",
+        )
         return
 
     # Accumulates what this flow owns, so every exit path releases all of it.
@@ -700,7 +748,9 @@ async def start_oauth_mint(
         # sweep reaps it once it ages past the spawn grace. Waiting for readiness
         # would leave that whole initialization window -- up to the readiness
         # timeout -- open to the sweep killing a mint that is still starting.
-        claim = asyncio.get_running_loop().create_task(_claim_mint_pid_when_spawned(client, holdings))
+        claim = asyncio.get_running_loop().create_task(
+            _claim_mint_pid_when_spawned(client, holdings)
+        )
         try:
             await asyncio.wait_for(client.ensure_ready(), timeout=_MINT_READY_TIMEOUT_SECONDS)
         finally:
@@ -780,7 +830,15 @@ async def start_oauth_mint(
         if entry_missing:
             await asyncio.to_thread(_log_mint_outcome, slug, "error", "reason=mint_server_absent")
         else:
-            await asyncio.to_thread(_log_mint_outcome, slug, "ok", f"url_minted={bool(oauth_url)}")
+            # ``url_minted`` records whether the spawn produced an approval URL
+            # or found no challenge (an open endpoint, or a grant that landed
+            # concurrently) -- the route is derivable from it and ``reason``.
+            await asyncio.to_thread(
+                _log_mint_outcome,
+                slug,
+                "ok",
+                f"url_minted={bool(oauth_url)}",
+            )
     except Exception as exc:  # noqa: BLE001 — background task; record, never raise
         logger.warning("OAuth mint for %r failed: %s", slug, type(exc).__name__)
         await _dispose_mint(holdings)

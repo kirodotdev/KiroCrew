@@ -2659,6 +2659,15 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # the observation a caller acts on, not per poll; see
     # ``mint._grant_observed`` for why that boundary is not fail-closed.
     "connections_mint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
+    # Class 2, same artifacts and same posture as the mint entry above: the
+    # status module (``kiro_crew.connections.status``) STATS the identical
+    # paired grant artifacts to answer the dashboard's authorization question.
+    # A separate id, not a reuse of the mint's, so the SEL trail says which
+    # surface looked. Audited only on the acted-on observation -- the stamping
+    # of a provider's first-connect timestamp -- never per poll sweep; see
+    # ``status.reconcile_connected_since`` for why that boundary is
+    # best-effort rather than fail-closed (stats only, no bytes returned).
+    "connections_status.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
 }
 
 

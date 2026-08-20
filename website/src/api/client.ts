@@ -147,6 +147,27 @@ export interface ConnectionMintState {
 }
 
 /**
+ * A provider's authorization verdict from GET /api/connections/status.
+ *
+ * This is the AUTHORIZATION axis only: `grantPresent` says whether kiro-cli
+ * holds an OAuth grant. Endpoint reachability is a separate axis carried by the
+ * `/api/mcp` server status — the two together are what let the card tell a
+ * provider authorized outside the dashboard (grant present, probe answers 401)
+ * from one never authorized (no grant, same 401). `connectedSince` is a
+ * persisted first-authorization timestamp, present only while a grant exists.
+ */
+export interface ConnectionStatus {
+  slug: string
+  status: 'connected' | 'awaiting_consent' | 'not_connected'
+  reason?: string
+  grantPresent: boolean
+  /** True when the grant lookup itself failed, so `grantPresent: false` means
+   *  "could not look" rather than "absent". */
+  grantIndeterminate?: boolean
+  connectedSince?: string
+}
+
+/**
  * A single task-runner plan step as sent to the server. Known fields are
  * typed; the payload is forwarded verbatim, so extra fields are permitted via
  * the index signature.
@@ -1954,6 +1975,14 @@ export const api = {
     post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
   connectionsMintState: (slug: string) =>
     fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
+  // Authorization verdict + first-connect time per visible provider. Additive to
+  // the mint feed above; never mints.
+  connectionsStatus: () =>
+    fetch('/api/connections/status').then(j) as Promise<{ schema_version: number; connections: ConnectionStatus[] }>,
+  // Dispose an in-flight mint (process, listener, spec). Does NOT touch the MCP
+  // config entry — the card owns that. `token` fences a sibling tab's row.
+  connectionsCancel: (slug: string, token?: string) =>
+    post('/api/connections/cancel', token ? { slug, token } : { slug }).then(j) as Promise<{ ok: boolean; slug: string; dropped: boolean }>,
   // MCP Gateway (shared pool)
   mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean }>,
   mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,

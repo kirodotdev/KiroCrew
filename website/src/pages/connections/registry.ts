@@ -6,7 +6,6 @@ export interface ConnectionProvider {
   slug: string
   tier: 1 | 2 | 3
   mcp_url: string
-  recommended_scopes: string[]
   revoke_page_url: string
   docs_url: string
   gotcha_copy: string
