@@ -1587,12 +1587,9 @@
       "tunnel_error": "tunnel error",
       "tunnel_state": "Tunnel {{state}}.",
       "stopped": "stopped",
-      "pin_crews": "Pin crews…",
-      "pinned": "pinned",
-      "pinned_no_room": "pinned, no room in the header",
-      "no_room": "no room",
       "pin_crew": "Pin {{name}} to the header",
-      "unpin_crew": "Unpin {{name}} from the header"
+      "unpin_crew": "Unpin {{name}} from the header",
+      "pinned_no_room": "pinned, no room in the header"
     },
     "issuePanel": {
       "add_to_chat": "Add to chat",

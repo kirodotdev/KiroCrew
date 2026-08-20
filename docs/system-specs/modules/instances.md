@@ -523,10 +523,17 @@ clicked, since the menu has already closed by then.
 ### Pinned crew chips
 
 Switching between two crews through the dropdown costs a click every time. Any
-entry — including **Local** — can be PINNED from the dropdown's *Pin crews*
-section, which lifts it out of the menu into an always-visible chip beside the
-trigger. Nothing is pinned by default, so a single-crew user pays no header width
-for the feature and sees no chip row at all.
+entry — including **Local** — can be PINNED from the pin icon on its own dropdown
+row (lit for pinned, unlit outline for not), which lifts it out of the menu into
+an always-visible chip beside the trigger. Nothing is pinned by default, so a
+single-crew user pays no header width for the feature and sees no chip row at all.
+
+The pin sits on the row rather than in a second list of the same crews below it,
+and it is a SIBLING menu item of the row's switch target rather than a button
+inside it: a `menuitemradio` may not contain another interactive element, so a
+nested pin would be invalid ARIA and unreachable by the menu's own arrow keys.
+Clicking a pin toggles it and leaves the menu open, so several crews can be
+pinned in one visit without navigating anywhere.
 
 Pinning is per crew rather than one expand-everything switch because the header's
 budget is a PIXEL budget, not a crew count: three crews named after real hosts

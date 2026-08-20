@@ -5392,12 +5392,9 @@
       "switch_crew": "Trocar de crew",
       "switch_crew_unread": "Trocar de crew, {{n}} não lidos em outro lugar",
       "stopped": "parado",
-      "pin_crews": "Fixar crews…",
-      "pinned": "fixado",
-      "pinned_no_room": "fixado, sem espaço no cabeçalho",
-      "no_room": "sem espaço",
       "pin_crew": "Fixar {{name}} no cabeçalho",
-      "unpin_crew": "Desafixar {{name}}"
+      "unpin_crew": "Desafixar {{name}}",
+      "pinned_no_room": "fixado, sem espaço no cabeçalho"
     },
     "instancesViewport": {
       "connecting": "Conectando…",

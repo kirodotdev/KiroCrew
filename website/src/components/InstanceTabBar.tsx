@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Loader2, ChevronDown, Pin, Check } from 'lucide-react'
+import { Home, Loader2, ChevronDown, Pin } from 'lucide-react'
 import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
@@ -39,7 +39,6 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuLabel,
   DropdownMenuItem,
 } from './ui/dropdown-menu'
 
@@ -297,6 +296,7 @@ function SwitcherRow({
   onSelect,
   pinned,
   noRoom,
+  onTogglePin,
 }: {
   entry: SwitcherEntry
   onSelect: () => void
@@ -304,67 +304,103 @@ function SwitcherRow({
   pinned: boolean
   /** Pinned, but the header cut its chip off — see `useClippedChipIds`. */
   noRoom: boolean
+  onTogglePin: () => void
 }) {
   const isLocal = entry.id === null
-  // The pin state rides on the row's own hover/accessible name rather than on the
-  // glyph, because a `title` on a non-interactive span inside a menu item is not
-  // reliably surfaced. `noRoom` has to be sayable: a pinned crew with no visible
-  // chip otherwise looks like the pin silently failed.
-  const pinNote = !pinned
-    ? ''
-    : noRoom
-      ? i18nT('components.instanceTabBar.pinned_no_room')
-      : i18nT('components.instanceTabBar.pinned')
+  const id = entry.id ?? LOCAL_VALUE
+  // `noRoom` has to be sayable: a pinned crew with no visible chip otherwise
+  // looks like the pin silently failed, and the glyph does not encode it.
+  const pinTitle = pinned
+    ? i18nT('components.instanceTabBar.unpin_crew', { name: entry.name })
+    : i18nT('components.instanceTabBar.pin_crew', { name: entry.name })
+  const pinLabel =
+    pinned && noRoom
+      ? `${pinTitle} — ${i18nT('components.instanceTabBar.pinned_no_room')}`
+      : pinTitle
   return (
-    <DropdownMenuRadioItem
-      value={entry.id ?? LOCAL_VALUE}
-      className="gap-2 text-[13px]"
-      onSelect={onSelect}
-      title={pinNote ? `${entry.title} — ${pinNote}` : entry.title}
-    >
-      {isLocal ? (
-        <Home className="lucide-inline shrink-0" />
-      ) : entry.connecting ? (
-        <Loader2 className="lucide-inline shrink-0 animate-spin" />
-      ) : (
-        <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
-          aria-hidden
-        />
-      )}
-      <span className="flex flex-col min-w-0 flex-1">
-        <span className="truncate">{entry.name}</span>
-        {/* A crew whose ssh alias IS its name would otherwise render the same
-            word twice, which reads as a bug rather than as extra detail. */}
-        {entry.detail && entry.detail !== entry.name ? (
-          <span className="truncate text-[12px] text-muted">{entry.detail}</span>
-        ) : null}
-      </span>
-      {entry.unread > 0 ? (
-        <UnreadBadge
-          count={entry.unread}
-          label={i18nT('components.instanceTabBar.n_unread', { n: entry.unread })}
-        />
-      ) : null}
-      {/* Visible, not sr-only. The dot is the only other carrier of state, and
-          colour alone cannot distinguish a connected crew from a failed one for
-          a colourblind user — who would otherwise have to hover every row to
-          find the one that errored. One label serves both audiences, so the
-          word a screen reader announces is the word on screen. */}
-      {entry.state ? (
-        <span className={`shrink-0 text-[11px] ${stateTextCls(entry.state)}`}>
-          {stateLabel(entry.state)}
+    // The destination and its pin are SIBLING menu items sharing one visual row,
+    // never a control nested inside the row: a menuitemradio may not contain
+    // another interactive element (invalid ARIA, and the menu's arrow-key focus
+    // cannot reach it). Two stops per row is the cost, and it keeps each pin
+    // beside the crew it pins instead of in a second list of the same crews.
+    <div className="flex items-center">
+      <DropdownMenuRadioItem
+        value={id}
+        className="gap-2 text-[13px] flex-1 min-w-0 pr-2"
+        onSelect={onSelect}
+        title={entry.title}
+      >
+        {isLocal ? (
+          <Home className="lucide-inline shrink-0" />
+        ) : entry.connecting ? (
+          <Loader2 className="lucide-inline shrink-0 animate-spin" />
+        ) : (
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
+            aria-hidden
+          />
+        )}
+        <span className="flex flex-col min-w-0 flex-1">
+          <span className="truncate">{entry.name}</span>
+          {/* A crew whose ssh alias IS its name would otherwise render the same
+              word twice, which reads as a bug rather than as extra detail. */}
+          {entry.detail && entry.detail !== entry.name ? (
+            <span className="truncate text-[12px] text-muted">{entry.detail}</span>
+          ) : null}
         </span>
-      ) : null}
-      {/* Filled = pinned and on screen; dimmed = pinned but cut off. The word is in
-          the row's title, so this is decoration for sighted scanning only. */}
-      {pinned ? (
+        {entry.unread > 0 ? (
+          <UnreadBadge
+            count={entry.unread}
+            label={i18nT('components.instanceTabBar.n_unread', { n: entry.unread })}
+          />
+        ) : null}
+        {/* Visible, not sr-only. The dot is the only other carrier of state, and
+            colour alone cannot distinguish a connected crew from a failed one for
+            a colourblind user — who would otherwise have to hover every row to
+            find the one that errored. One label serves both audiences, so the
+            word a screen reader announces is the word on screen. */}
+        {entry.state ? (
+          <span className={`shrink-0 text-[11px] ${stateTextCls(entry.state)}`}>
+            {stateLabel(entry.state)}
+          </span>
+        ) : null}
+      </DropdownMenuRadioItem>
+      <DropdownMenuItem
+        className="shrink-0 px-1.5 justify-center"
+        role="menuitemcheckbox"
+        aria-checked={pinned}
+        data-testid={`crew-pin-${id}`}
+        title={pinLabel}
+        aria-label={pinLabel}
+        // Toggle from `onSelect`, the one activation handler Radix fires exactly
+        // once for BOTH pointer and keyboard (Enter/Space) — the menuitemcheckbox
+        // is unreachable by keyboard otherwise. Hanging the toggle on the raw DOM
+        // `onClick` also dropped pointer clicks: the whole entries list re-renders
+        // on every pin change (the glyph flips), so the item pressed could be
+        // replaced between pointerdown and click and never receive the event.
+        // preventDefault keeps the menu open so a second crew can be pinned
+        // without reopening it, and stops the click from switching crews.
+        onSelect={(e: Event) => {
+          e.preventDefault()
+          onTogglePin()
+        }}
+      >
+        {/* Two states, and FILL is the whole distinction: filled accent = pinned,
+            unfilled muted outline = not pinned. The resting glyph carries no
+            opacity, because it is the only affordance the feature has and
+            `--muted` composited below full strength drops under the 3:1 contrast
+            floor a UI control has to clear. A pinned crew whose header chip got
+            clipped stays filled for the same reason inverted: fading accent to
+            mark it would read as the unpinned outline and invite an accidental
+            unpin, and `--accent` differs per theme so no single opacity is
+            measurably safe. That state is said in the item's accessible name
+            instead. */}
         <Pin
-          className={`lucide-inline shrink-0 text-accent ${noRoom ? 'opacity-40' : 'fill-current'}`}
+          className={`lucide-inline shrink-0 ${pinned ? 'text-accent fill-current' : 'text-muted'}`}
           aria-hidden
         />
-      ) : null}
-    </DropdownMenuRadioItem>
+      </DropdownMenuItem>
+    </div>
   )
 }
 
@@ -448,71 +484,11 @@ function SwitcherMenu({
                 onSelect={() => onSelect(entry.id)}
                 pinned={pinned.has(entry.id ?? LOCAL_VALUE)}
                 noRoom={clippedPinned.has(entry.id ?? LOCAL_VALUE)}
+                onTogglePin={() => onTogglePin(entry.id ?? LOCAL_VALUE)}
               />
             </Fragment>
           ))}
         </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        {/* Pinning is a flat section of this menu rather than a submenu, and not a
-            button on each row above: a menuitemradio may not contain another
-            interactive control (nested interactive elements are invalid ARIA), and
-            a submenu buries a set-once choice behind a hover. Listing the crews
-            twice is the cost — once to switch to, once to pin — and it reads
-            cleanly because the two lists answer different questions. Checkbox
-            semantics are hand-built on DropdownMenuItem, the same pattern the
-            session sidebar's folder filter uses, because the menu has no checkbox
-            primitive. */}
-        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] text-muted">
-          {i18nT('components.instanceTabBar.pin_crews')}
-        </DropdownMenuLabel>
-        {entries.map(entry => {
-          const id = entry.id ?? LOCAL_VALUE
-          const isPinned = pinned.has(id)
-          return (
-            <DropdownMenuItem
-              key={`pin-${id}`}
-              className="gap-2 text-[13px]"
-              role="menuitemcheckbox"
-              aria-checked={isPinned}
-              data-testid={`crew-pin-${id}`}
-              title={
-                isPinned
-                  ? i18nT('components.instanceTabBar.unpin_crew', { name: entry.name })
-                  : i18nT('components.instanceTabBar.pin_crew', { name: entry.name })
-              }
-              // Toggle from `onSelect`, the one activation handler Radix fires
-              // exactly once for BOTH pointer and keyboard (Enter/Space) — the
-              // menuitemcheckbox is unreachable by keyboard otherwise. Hanging the
-              // toggle on the raw DOM `onClick` also dropped pointer clicks: the
-              // whole entries list re-renders on every pin change (the check glyph
-              // flips), so the item pressed could be replaced between pointerdown
-              // and click and never receive the event. preventDefault keeps the
-              // menu open so a second crew can be pinned without reopening it.
-              onSelect={(e: Event) => {
-                e.preventDefault()
-                onTogglePin(id)
-              }}
-            >
-              <span
-                aria-hidden
-                className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
-                style={
-                  isPinned
-                    ? { borderColor: 'var(--accent)', background: 'var(--accent)' }
-                    : { borderColor: 'var(--border)', background: 'transparent' }
-                }
-              >
-                {isPinned ? <Check className="lucide-inline text-accent-fg" strokeWidth={3} /> : null}
-              </span>
-              <span className="flex-1 truncate">{entry.name}</span>
-              {isPinned && clippedPinned.has(id) ? (
-                <span className="shrink-0 text-[11px] text-muted">
-                  {i18nT('components.instanceTabBar.no_room')}
-                </span>
-              ) : null}
-            </DropdownMenuItem>
-          )
-        })}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -732,7 +708,8 @@ function useClippedChipIds(
  * any cut reaches — a fade there dissolves the one glyph the chip exists to show.
  * `data-cut` drives a 1px rule at the boundary (index.css), and the count itself
  * survives twice over: the cut crew's unread is already rolled into the dropdown
- * trigger's aggregate badge, and its row there says `no_room`.
+ * trigger's aggregate badge, and its dropdown pin announces the cut in its own
+ * accessible name (`pinned_no_room`).
  *
  * The row needs no width cap of its own: it sits in the topbar's left grid track
  * (`minmax(0,1fr)`) inside `.tb-left`, which carries `min-width:0` and

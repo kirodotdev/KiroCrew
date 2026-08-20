@@ -5310,12 +5310,9 @@
       "switch_crew": "Crew wechseln",
       "switch_crew_unread": "Crew wechseln, {{n}} ungelesen an anderer Stelle",
       "stopped": "gestoppt",
-      "pin_crews": "Crews anpinnen…",
-      "pinned": "angepinnt",
-      "pinned_no_room": "angepinnt, kein Platz in der Kopfzeile",
-      "no_room": "kein Platz",
       "pin_crew": "{{name}} an die Kopfzeile anpinnen",
-      "unpin_crew": "{{name}} von der Kopfzeile loslösen"
+      "unpin_crew": "{{name}} von der Kopfzeile loslösen",
+      "pinned_no_room": "angepinnt, kein Platz in der Kopfzeile"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",

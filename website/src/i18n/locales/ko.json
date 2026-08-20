@@ -5228,12 +5228,9 @@
       "switch_crew": "크루 전환",
       "switch_crew_unread": "크루 전환, 다른 곳에 읽지 않은 항목 {{n}}개",
       "stopped": "중지됨",
-      "pin_crews": "페로우 고정…",
-      "pinned": "고정됨",
-      "pinned_no_room": "고정됨, 헤더에 공간 없음",
-      "no_room": "공간 없음",
       "pin_crew": "{{name}}을(를) 헤더에 고정",
-      "unpin_crew": "{{name}} 고정 해제"
+      "unpin_crew": "{{name}} 고정 해제",
+      "pinned_no_room": "고정됨, 헤더에 공간 없음"
     },
     "instancesViewport": {
       "connecting": "연결 중…",

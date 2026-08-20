@@ -5392,12 +5392,9 @@
       "switch_crew": "Changer de crew",
       "switch_crew_unread": "Changer de crew, {{n}} non lus ailleurs",
       "stopped": "arrêté",
-      "pin_crews": "Épingler des crews…",
-      "pinned": "épinglé",
-      "pinned_no_room": "épinglé, pas de place dans l’en-tête",
-      "no_room": "pas de place",
       "pin_crew": "Épingler {{name}} dans l’en-tête",
-      "unpin_crew": "Désépingler {{name}}"
+      "unpin_crew": "Désépingler {{name}}",
+      "pinned_no_room": "épinglé, pas de place dans l’en-tête"
     },
     "instancesViewport": {
       "connecting": "Connexion…",

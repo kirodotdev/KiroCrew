@@ -5310,12 +5310,9 @@
       "switch_crew": "क्रू बदलें",
       "switch_crew_unread": "क्रू बदलें, अन्यत्र {{n}} अपठित",
       "stopped": "रुका हुआ",
-      "pin_crews": "क्रू पिन करें…",
-      "pinned": "पिन किया गया",
-      "pinned_no_room": "पिन किया गया, हेडर में जगह नहीं",
-      "no_room": "जगह नहीं",
       "pin_crew": "{{name}} को हेडर में पिन करें",
-      "unpin_crew": "{{name}} को अनपिन करें"
+      "unpin_crew": "{{name}} को अनपिन करें",
+      "pinned_no_room": "पिन किया गया, हेडर में जगह नहीं"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",

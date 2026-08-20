@@ -5228,12 +5228,9 @@
       "switch_crew": "クルーを切り替え",
       "switch_crew_unread": "クルーを切り替え、他に {{n}} 件の未読",
       "stopped": "停止中",
-      "pin_crews": "クルーをピン留め…",
-      "pinned": "ピン留め済み",
-      "pinned_no_room": "ピン留め済み、ヘッダーに空きがありません",
-      "no_room": "空きなし",
       "pin_crew": "{{name}} をヘッダーにピン留め",
-      "unpin_crew": "{{name}} のピン留めを解除"
+      "unpin_crew": "{{name}} のピン留めを解除",
+      "pinned_no_room": "ピン留め済み、ヘッダーに空きがありません"
     },
     "instancesViewport": {
       "connecting": "接続中…",

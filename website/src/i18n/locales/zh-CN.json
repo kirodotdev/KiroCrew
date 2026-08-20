@@ -5228,12 +5228,9 @@
       "switch_crew": "切换 Crew",
       "switch_crew_unread": "切换 Crew，其他处有 {{n}} 条未读",
       "stopped": "已停止",
-      "pin_crews": "置顶 Crew…",
-      "pinned": "已置顶",
-      "pinned_no_room": "已置顶，顶栅空间不足",
-      "no_room": "空间不足",
       "pin_crew": "将 {{name}} 置顶到顶栅",
-      "unpin_crew": "取消置顶 {{name}}"
+      "unpin_crew": "取消置顶 {{name}}",
+      "pinned_no_room": "已置顶，顶栅空间不足"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
