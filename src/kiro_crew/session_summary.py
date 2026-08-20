@@ -401,8 +401,8 @@ def redact_payload(value: Any) -> Any:
 def normalize_payload(
     raw: object,
     *,
-    max_intents: int = 8,
-    max_constraints: int = 5,
+    max_intents: int = 50,
+    max_constraints: int = 50,
 ) -> dict | None:
     """Validate and clamp a generated summary into the stored payload shape.
 
@@ -418,8 +418,24 @@ def normalize_payload(
         return None
     intents.sort(key=lambda i: i.last_touched_turn, reverse=True)
     if len(intents) > max_intents:
-        # Trim from the tail: those are the oldest-touched, which the panel
-        # collapses to a single line anyway.
+        # A rail, not an editorial choice. This runs BEFORE the sidecar is
+        # written, so what it removes is absent from the record rather than
+        # collapsed in the panel -- the panel itself withholds nothing it is
+        # given. The tail is the oldest-touched, so it is the least likely to be
+        # what a returning reader came back for.
+        #
+        # Logged at WARNING because the rail sits high enough that reaching it is
+        # pathological rather than routine, and because the loss is otherwise
+        # invisible: nothing downstream can report a difference between a session
+        # that produced 50 intents and one that produced 90. An operator asking
+        # "why does my summary stop there" has no other thread to pull.
+        logger.warning(
+            "session summary: dropping %d of %d intents at the max_intents rail (%d); "
+            "they are absent from the stored summary, not collapsed in the panel",
+            len(intents) - max_intents,
+            len(intents),
+            max_intents,
+        )
         intents = intents[:max_intents]
 
     constraints_raw = raw.get("constraints")
@@ -428,7 +444,24 @@ def normalize_payload(
         for c in constraints_raw:
             if isinstance(c, str) and c.strip():
                 constraints.append(c.strip())
-    constraints = constraints[:max_constraints]
+    if len(constraints) > max_constraints:
+        # Same rail, same invisibility -- and here the tail is not even the
+        # oldest: notes arrive in generation order and are never sorted, so what
+        # this drops is whichever ones the model happened to emit last.
+        #
+        # `0` is exempt because it is a documented setting meaning "suppress the
+        # section entirely", so discarding notes there is the operator's intent
+        # rather than an anomaly. Warning on it would fire on every regeneration
+        # of every session that emits a note, which is the routine noise this
+        # line exists to avoid being.
+        if max_constraints > 0:
+            logger.warning(
+                "session summary: dropping %d of %d project notes at the max_constraints rail (%d)",
+                len(constraints) - max_constraints,
+                len(constraints),
+                max_constraints,
+            )
+        constraints = constraints[:max_constraints]
 
     return redact_payload(
         {

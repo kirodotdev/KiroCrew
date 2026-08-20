@@ -9,6 +9,7 @@ judgement.
 from __future__ import annotations
 
 import json
+import logging
 
 from kiro_crew.session_summary import (
     STATE_DONE,
@@ -232,6 +233,65 @@ class TestNormalizePayload:
             max_constraints=0,
         )
         assert payload["constraints"] == []
+
+    def test_trimming_intents_is_reported(self, caplog):
+        """A bound rail is the only record that anything was discarded.
+
+        The trim runs before the sidecar is written, so no later reader can tell a
+        session that produced 20 intents from one that produced 3. Without this
+        line the loss leaves no trace anywhere.
+        """
+        raw = {"intents": [{"title": f"i{n}", "ranges": [[n, n]]} for n in range(1, 21)]}
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_summary"):
+            normalize_payload(raw, max_intents=3)
+        assert "dropping 17 of 20 intents" in caplog.text
+
+    def test_trimming_project_notes_is_reported(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_summary"):
+            normalize_payload(
+                {
+                    "intents": [{"title": "t", "ranges": [[1, 1]]}],
+                    "constraints": ["a", "b", "c", "d"],
+                },
+                max_constraints=2,
+            )
+        assert "dropping 2 of 4 project notes" in caplog.text
+
+    def test_the_suppress_the_section_setting_does_not_warn(self, caplog):
+        """`max_constraints=0` is a documented setting, not a bound rail.
+
+        It means "suppress the section entirely", so discarding notes is what the
+        operator asked for. Warning there would fire on every regeneration of
+        every session that emits a note -- the routine noise the warning exists
+        to avoid being, and the reason the quiet case is tested at all.
+        """
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_summary"):
+            payload = normalize_payload(
+                {
+                    "intents": [{"title": "t", "ranges": [[1, 1]]}],
+                    "constraints": ["a", "b"],
+                },
+                max_constraints=0,
+            )
+        assert payload["constraints"] == []
+        assert caplog.records == []
+
+    def test_a_rail_that_does_not_bind_stays_quiet(self, caplog):
+        """The counterpart that keeps the warning meaningful.
+
+        A line that fires on every ordinary session is one an operator learns to
+        ignore, which would cost exactly the signal this is here to provide.
+        """
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session_summary"):
+            normalize_payload(
+                {
+                    "intents": [{"title": "t", "ranges": [[1, 1]]}],
+                    "constraints": ["a"],
+                },
+                max_intents=50,
+                max_constraints=50,
+            )
+        assert caplog.records == []
 
     def test_next_steps_accept_strings_and_objects(self):
         payload = normalize_payload(

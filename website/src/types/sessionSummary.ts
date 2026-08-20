@@ -87,8 +87,14 @@ export interface TriageItem extends IntentNextStep {
  *
  *  Two sources, in this order: an intent whose derived state is `needs-you`
  *  (completed but unverified — the case a reader forgets), then the open next
- *  steps of the most recently touched intents. Ordering follows the intent
- *  ordering, so the block never disagrees with the list below it. */
+ *  steps of intents still `in-progress`. Ordering follows the intent ordering,
+ *  so the block never disagrees with the list below it.
+ *
+ *  `done` and `dropped` contribute nothing. The block answers "does this need
+ *  me?" and a finished-and-verified intent does not — whatever next steps it
+ *  still carries are residue. Counting them inflates the header chip on
+ *  precisely the long sessions where the storage rail lets many finished
+ *  intents accumulate, which is where the chip most needs to be trusted. */
 /** How many open items the block RENDERS. The count beside the heading is
  *  deliberately NOT capped by this — a chip reading "3 open items" for a session
  *  with seven of them understates exactly the busiest sessions, and the reader
@@ -109,7 +115,7 @@ export function collectTriage(
     }
   }
   for (const intent of intents) {
-    if (intent.state === 'needs-you' || intent.state === 'dropped') continue
+    if (intent.state !== 'in-progress') continue
     for (const step of intent.next_steps) {
       out.push({ ...step, fromIntent: intent.title })
       if (out.length >= limit) return out

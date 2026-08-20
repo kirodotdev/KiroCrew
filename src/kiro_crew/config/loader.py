@@ -3402,21 +3402,26 @@ class SessionSummaryConfig:
         ),
     )
     max_intents: int = field(
-        default=8,
+        default=50,
         metadata=_meta(
             "Maximum Intents",
-            "Upper bound on intents kept per session (>=1). Beyond this the oldest "
-            "closed intents are dropped, since the panel collapses them anyway.",
+            "Safety ceiling on intents stored per session (>=1). This is a storage "
+            "rail, not a display limit: the panel renders every intent it receives, "
+            "collapsing all but the most recently touched one. Trimming runs before "
+            "the sidecar is written, so whatever exceeds this is dropped from the "
+            "record rather than hidden -- which is why the ceiling sits high enough "
+            "that reaching it is unusual rather than routine.",
         ),
     )
     max_constraints: int = field(
-        default=5,
+        default=50,
         metadata=_meta(
             "Maximum Project Notes",
-            "Upper bound on session-level operational notes -- the recurring facts "
-            "about how this project is run (>=0). Kept small on purpose: a long "
-            "list stops being read, and durable cross-session preferences belong "
-            "in lessons rather than here.",
+            "Safety ceiling on session-level operational notes -- the recurring facts "
+            "about how this project is run (>=0). A storage rail, not a display limit: "
+            "how many are worth writing at all is governed by the generation prompt, "
+            "and the panel bounds the expanded list's height rather than its length. "
+            "Durable cross-session preferences belong in lessons rather than here.",
         ),
     )
     assistant_excerpt_chars: int = field(
@@ -6887,9 +6892,9 @@ class KiroCrewConfig:
                 regenerate_after_turns=_safe_int(
                     session_summary_data.get("regenerate_after_turns", 1), 1),
                 max_intents=_safe_int(
-                    session_summary_data.get("max_intents", 8), 8),
+                    session_summary_data.get("max_intents", 50), 50),
                 max_constraints=_safe_int(
-                    session_summary_data.get("max_constraints", 5), 5),
+                    session_summary_data.get("max_constraints", 50), 50),
                 assistant_excerpt_chars=_safe_int(
                     session_summary_data.get("assistant_excerpt_chars", 400), 400),
             ),

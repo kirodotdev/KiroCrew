@@ -27,8 +27,8 @@ class TestSessionSummaryDefaults:
         cfg = SessionSummaryConfig()
         assert cfg.min_user_turns == 2
         assert cfg.regenerate_after_turns == 1
-        assert cfg.max_intents == 8
-        assert cfg.max_constraints == 5
+        assert cfg.max_intents == 50
+        assert cfg.max_constraints == 50
         assert cfg.assistant_excerpt_chars == 400
 
     def test_every_field_carries_ui_metadata(self):
@@ -109,7 +109,7 @@ class TestSessionSummaryParsing:
         cfg = self._load(
             tmp_path, monkeypatch, {"max_intents": "lots", "assistant_excerpt_chars": None}
         )
-        assert cfg.session_summary.max_intents == 8
+        assert cfg.session_summary.max_intents == 50
         assert cfg.session_summary.assistant_excerpt_chars == 400
 
     def test_out_of_range_values_from_disk_are_clamped(self, tmp_path, monkeypatch):

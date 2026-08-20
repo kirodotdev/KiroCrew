@@ -93,11 +93,15 @@ describe('collectTriage', () => {
     expect(items).toEqual([])
   })
 
-  it('includes steps from done intents only via the recent pass, not the needs-you pass', () => {
+  it('never hoists from a done intent', () => {
+    // The block answers "does this need me?". Work that finished AND was
+    // verified does not, so whatever next steps it still carries are residue.
+    // Counting them would inflate the header chip on precisely the long
+    // sessions that accumulate finished intents.
     const items = collectTriage([
       intent({ title: 'shipped', state: 'done', next_steps: [step('optional polish')] }),
     ])
-    expect(items.map(i => i.what)).toEqual(['optional polish'])
+    expect(items).toEqual([])
   })
 
   it('respects the limit so the block cannot grow unbounded', () => {
