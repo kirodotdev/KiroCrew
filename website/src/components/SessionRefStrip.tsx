@@ -17,12 +17,17 @@ import type { SessionRef } from '../utils/sessionRefs'
  * fake itself with a transparent mirror layer; a chip strip has no such limit
  * and can carry an icon and a secondary line.
  *
- * Height must stay in sync with `SESSION_REF_STRIP_H` in ChatInput, which the
- * manual-resize floor adds when refs are staged.
+ * The composer reserves space for this strip by MEASURING it (`rootRef`, wired
+ * to `useMeasuredHeight` in ChatInput) rather than by predicting its height from
+ * these classes. Change the padding or the chip's type scale freely: the
+ * reservation follows. It used to be a hand-computed constant that had to be
+ * edited in step with this file, and nothing enforced that.
  */
-export default function SessionRefStrip({ refs, onRemove }: {
+export default function SessionRefStrip({ refs, onRemove, rootRef }: {
   refs: SessionRef[]
   onRemove?: (key: string) => void
+  /** Measured by the composer to reserve the strip's height. */
+  rootRef?: (node: HTMLDivElement | null) => void
 }) {
   const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
   // Chips are staged and removed while the strip stays mounted, and the
@@ -35,8 +40,7 @@ export default function SessionRefStrip({ refs, onRemove }: {
     // The wrapper exists for the edge cues: absolutely-positioned children of
     // the scroller itself would travel with the scrolled content, so the fades
     // anchor to a non-scrolling parent, same shape as the sibling strips.
-    <div className="relative">
-      {/* NOTE: rendered height must match SESSION_REF_STRIP_H, update both together */}
+    <div className="relative" ref={rootRef}>
       <div
         ref={attachScroller}
         className="flex gap-2 px-4 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-center"
