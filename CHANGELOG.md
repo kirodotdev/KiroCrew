@@ -700,6 +700,14 @@ All notable changes to KiroCrew are documented in this file.
   stops resolving; the file itself is untouched and still reachable under its
   canonical key, but the stored reference has to be re-pointed. (#3369)
 
+- **Dashboard auto-speak now reads the right config flag.** `GET/PUT
+  /api/voice/config`'s `autoSpeak` field was aliased to the primary voice
+  `enabled` switch instead of the dedicated `auto_speak` setting, so toggling
+  "Auto-speak Responses" off in Settings could silently disable voice
+  entirely (including the manual 🔊 Speak button), and a config with
+  `enabled: false, auto_speak: true` never spoke replies automatically. The
+  two are now read, written, and persisted independently. (#3331)
+
 - **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
   whose launcher exited without signalling it (a torn-down `pytest` run, for
   example) used to stay resident forever — invisible to every sweep, ~27 MB
