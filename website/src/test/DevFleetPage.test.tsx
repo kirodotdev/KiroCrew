@@ -1113,6 +1113,39 @@ describe('DevFleetPage', () => {
     expect(pop.style.top).toBe('')
   })
 
+  /* ─── Row-actions menu: focus containment (#2533) ─── */
+  // ConfirmBtn's half of #2533 landed separately (see the confirm-dialog
+  // role=dialog/Escape test above); MenuBtn was left with Escape-only
+  // handling, so all three parts — focus entry, Tab containment, and focus
+  // return — are implemented here for the menu.
+
+  it('row-actions menu moves focus onto the first item when it opens, and Tab wraps within it', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('More actions'))
+    const menu = await screen.findByRole('menu')
+    const menuItems = within(menu).getAllByRole('button')
+    expect(menuItems[0]).toHaveFocus()
+    menuItems[menuItems.length - 1].focus()
+    fireEvent.keyDown(menu, { key: 'Tab' })
+    expect(menuItems[0]).toHaveFocus()
+    fireEvent.keyDown(menu, { key: 'Tab', shiftKey: true })
+    expect(menuItems[menuItems.length - 1]).toHaveFocus()
+  })
+
+  it('selecting a row-actions menu item returns focus to the trigger', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByLabelText('More actions')
+    fireEvent.click(trigger)
+    const menu = await screen.findByRole('menu')
+    fireEvent.click(within(menu).getAllByRole('button')[0])
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(trigger).toHaveFocus()
+  })
+
   /* ─── Provision progress: expandable log panel + failure persistence ─── */
   // 'unprov' is the only non-main has_dist:false row, so it renders the single
   // "Provision" button. Provision polling uses real 2s sleeps, hence the

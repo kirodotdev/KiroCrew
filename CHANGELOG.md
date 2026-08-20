@@ -3,6 +3,16 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **Dev Fleet's row-actions menu now traps keyboard focus properly.** It is a
+  `role="menu"` portal to `<body>`, which tells assistive technology that
+  focus is managed — but it never moved focus in on open, contained
+  Tab/Shift-Tab while open, or returned focus to the trigger when an item was
+  selected, so a keyboard user could Tab straight out of an open menu and land
+  somewhere behind it with no obvious way back. Escape already returned focus
+  and still does; outside-click and scroll still close WITHOUT moving focus,
+  since the user's focus is already elsewhere by their own action there. The
+  sibling confirm popover got the equivalent trap separately, so only the menu
+  is changed here. (#2533)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
