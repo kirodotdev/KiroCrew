@@ -3,6 +3,16 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The dashboard file endpoints share one security envelope.** `api_file_raw`
+  and `api_file_download` each spelled out validate → sensitive-path check →
+  `O_NOFOLLOW` open → fstat size cap → read independently, and the copies had
+  already drifted: they called different bindings of `is_sensitive_path`, so an
+  override applied to one was invisible to the other. Divergent copies of a
+  security boundary mean a future hardening fix lands in one and silently
+  leaves the other on the old posture — the shape that already bit the
+  zip-vetting surfaces. Both now route through one `_open_checked` helper, with
+  per-endpoint policy (size cap, how many header bytes to sniff) passed in
+  rather than copied. (#4031)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
