@@ -361,7 +361,19 @@ cd "$KIROCREW_APP_DIR"
 # ── Frontend (npm + vite) ──
 # Vite emits to website/dist; we stage it into src/kiro_crew/static/dist
 # where setup.py copies it into the package at install time.
-if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
+# A launch that ships the prebuilt bundle (kirocrew cloud launch injects it
+# into the source tarball) skips this step entirely — the on-box npm build is
+# the fallback path. The skip is gated on KIROCREW_REQUIRE_FRONTEND=1 (exported
+# by the CFn template) so it only fires on cloud boxes: a LOCAL checkout also
+# has a staged static/dist (a symlink on source installs), and skipping there
+# would freeze the dashboard on whatever was built last. A cloud box that ends
+# up with no dist is failed by the existing gates: KIROCREW_REQUIRE_FRONTEND=1
+# makes a build failure fatal below, and the template's own DIST_INDEX check
+# fails the stack before the gateway starts. Local installs stay non-fatal.
+if [ "${KIROCREW_REQUIRE_FRONTEND:-0}" = "1" ] \
+    && [ -f "$KIROCREW_APP_DIR/src/kiro_crew/static/dist/index.html" ]; then
+    ok "Frontend shipped pre-built — skipping npm build"
+elif has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     info "Building frontend (website/)…"
     _fe_log="$(mktemp)"
     (

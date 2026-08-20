@@ -73,7 +73,7 @@ claim that a hostile in-process agent is fully contained.
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM, plus `logout` — the account switch. `login` short-circuits on an existing session, so `logout` is what makes a different Kiro account reachable without a hand-run SSM command. It kills any still-polling background `kiro-cli login` **and** any live `kiro-cli acp` runtime **before** signing out (otherwise the login re-authenticates the old account, and an ACP runtime keeps serving the old account's in-memory credential until its next 401), removes the login log/PID/FIFO (they hold the previous device-code URL + code, which must never be re-shown as a fresh prompt), and confirms the result with `is_logged_in` rather than the exit code — `kiro-cli logout` exits non-zero when there was no session to drop, which is still the requested state. That confirmation fails CLOSED: it requires a positive signed-out sentinel (`__NOAUTH__`), so an SSM timeout or transport error — where the session may still be active — reports failure rather than a false "signed out". The same fail-closed applies to the cleanup command itself: if that SSM invocation doesn't return `Success`, the kills it was meant to do can't be trusted and logout reports failure without probing. The CLI warns the operator that in-flight chats/cron sessions are stopped (their runtimes are killed). |
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. |
-| `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
+| `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. `_inject_dist` extracts only `website/` from that already-filtered archive into an isolated temporary root, runs lockfile-exact `npm ci --ignore-scripts` plus the stock build there, and appends the resulting frontend. It never reads the gitignored checkout `static/dist`, so a bundle left by another branch cannot override the source being shipped; edition composition variables are removed so an external composition root cannot enter the build. The built dist must be a real tree contained by the isolated root. Members are then admitted through four gates: the secret filter (`allow_dist_under` exempts only the literal destination `dist` component for that exact prefix — every other excluded dir still refuses the member; `.env`/`.pem`/credential-name checks still apply), a **type allowlist** (`_DIST_ALLOWED_SUFFIXES` — only build-artifact extensions ship), the hardened nolink read gate (`hooks.safe_read_file_bytes_nolink`: O_NOFOLLOW + same-fd fstat rejects symlinks/hardlinks/non-regular files race-free, fd-real-path containment), and a bounded text-content scan using the shared credential redactor as a detector. The content scan covers UTF-8 HTML, JavaScript, CSS, source maps, JSON/manifests, and SVG; it blocks distinctive/plaintext and encoded credentials plus exact 40-character bare AWS secret keys, while ignoring the redactor's bare-secret warning for longer base64-shaped runs because real minified bundles and data URIs trigger that heuristic. Shipping is **atomic over one hardened-read byte snapshot**: the scanner and index-reference check inspect the same bytes written to the archive, and any build, containment, read/content, or referenced-chunk rejection aborts injection entirely — the original archive ships unchanged and the box uses its required npm-build fallback, so a partial dist never rides. Diagnostics repr-escape untrusted filenames and index references before logging or terminal display. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
 | `config.py` | Persisted profile / region / tag (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` — bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
 | `ui.py` / `wizard.py` | Terminal UI + the interactive launch flow. `_deploy_with_progress` runs the blocking deploy on a daemon thread and captures the `aws cloudformation deploy` child via a `proc_sink`, so a Ctrl+C on the main (poll) thread terminates it instead of orphaning it (~1800s). An unknown `--size`/`size_key` on the public `launch()` entrypoint yields a clean rc=1 + message, not an uncaught `KeyError`. Resuming a saved stack (`launch` after `stop`) first calls `_ensure_running_and_ssm_ready` — starts a `stopped` instance and waits for SSM `Online` before sign-in/tunnel (which are SSM-only and would otherwise fail); a `terminated` instance fails clean pointing at `--new`. `last_tag` is persisted (`cfg.save()`) **only after** a deploy confirms healthy — a failed first launch leaves no saved pointer, so the next `launch` retries clean instead of resuming a rolled-back/instance-less stack; `_saved_launch_is_usable` additionally ignores a stale saved tag (from an older build) whose stack is in a `_FAILED_STATES` status or has no instance. |
@@ -84,9 +84,12 @@ claim that a hostile in-process agent is fully contained.
 CloudFormation stack, one `aws cloudformation deploy` (change-set based), atomic
 rollback, one-command `delete-stack` teardown. AMI resolves from the public
 `resolve:ssm` Amazon-Linux-2023 alias per arch (no hardcoded AMI ids). A
-`WaitCondition` + `cfn-signal` blocks the deploy until the gateway is healthy; a
-failed bootstrap folds the on-box setup-log tail into the signal reason so the
-cause survives the rollback.
+`WaitCondition` + `cfn-signal` blocks the deploy until the gateway is healthy —
+where healthy means the root URL answers **and** its body lacks the gateway's
+"Dashboard HTML not found" marker (the dashboard-less fallback page is still
+HTTP 200, so a bare status check would bless a frontend-less box). A failed
+bootstrap folds the on-box setup-log tail into the signal reason so the cause
+survives the rollback.
 
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
@@ -100,7 +103,17 @@ role (`s3:GetObject` scoped to the single object). Wheel and desktop installs
 have no checkout to package, so `ec2.deploy` omits `SourceBucket` by default and
 the template clones the public repository/ref instead. An explicit
 `ship_source=True` remains fail-closed rather than packaging an unrelated
-`site-packages` ancestor.
+`site-packages` ancestor. Packaging builds the stock frontend from the exact
+filtered source archive in a temporary root, with dependency lifecycle scripts
+disabled, and injects only the admitted result. It never reads or mutates the
+checkout's live `website/dist` or gitignored `static/dist`; this binds shipped
+same-origin JavaScript to the source tarball even after a branch switch. If that
+isolated build fails, the original archive ships unchanged and the box builds
+with npm. `install.sh` skips the on-box npm build only when the source-bound
+bundle is present. A cloud box that still ends up without a dist is failed by
+the template's existing gates (`KIROCREW_REQUIRE_FRONTEND=1` makes an on-box
+build failure fatal, and the bootstrap's dist check fails the stack before the
+gateway starts); local installs stay non-fatal.
 
 `discover_network` is **egress-kind-aware**, not just "has a default route":
 `_subnet_egress_kinds` classifies each subnet's effective route table (explicit
