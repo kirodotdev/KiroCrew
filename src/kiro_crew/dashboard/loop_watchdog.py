@@ -67,6 +67,8 @@ import time
 import typing
 from collections.abc import Callable
 
+from kiro_crew.dashboard.stall_enrichment import collect_stall_enrichment
+
 logger = logging.getLogger("kiro_crew.dashboard.loop_watchdog")
 
 
@@ -161,6 +163,20 @@ class LoopStallWatchdog:
             Defaults to :func:`_default_arm_later`.
         cancel_later: Cancels the armed timer, injectable for tests.  Defaults
             to :func:`_default_cancel_later`.
+        enrich_after: Seconds of heartbeat silence before the daemon thread
+            emits stall enrichment (stall UTC timestamp + this process's
+            established TCP sockets with rx/tx queue depths) to the logger at
+            WARNING.  Must sit below ``exit_after`` so the capture lands
+            *before* the armed timer's dump-then-exit — with the 5s poll
+            cadence, 15s triggers on the 15–20s tick, ahead of the 25s exit.
+            Never written into ``dump_file``: that file is the boot-time
+            crash sentinel (line-count classified), so an append would make a
+            recovered stall read as a fatal crash on the next startup.  Both
+            production stalls to date froze the loop inside websocket frame
+            parsing; this records *which* socket without needing a repro.
+        enrich: Enrichment collector ``silence_secs -> lines``, injectable for
+            tests.  Defaults to
+            :func:`kiro_crew.dashboard.stall_enrichment.collect_stall_enrichment`.
         log: Logger, injectable for tests.
     """
 
@@ -175,6 +191,8 @@ class LoopStallWatchdog:
         arm_later: Callable[[float], None] | None = None,
         cancel_later: Callable[[], None] | None = None,
         dump_file: "typing.IO[str] | typing.Any | None" = None,
+        enrich_after: float = 15.0,
+        enrich: "Callable[[float], list[str]] | None" = None,
         log: logging.Logger | None = None,
     ) -> None:
         self._stall_after = stall_after
@@ -185,6 +203,9 @@ class LoopStallWatchdog:
         self._dump = dump or (lambda: _default_dump(dump_file))
         self._arm_later = arm_later or (lambda t: _default_arm_later(t, dump_file))
         self._cancel_later = cancel_later or _default_cancel_later
+        self._enrich_after = enrich_after
+        self._enrich = enrich or collect_stall_enrichment
+        self._enriched = False
         self._log = log or logger
         self._last_beat = now()
         self._dumped = False
@@ -219,8 +240,34 @@ class LoopStallWatchdog:
 
         Pure and synchronous so tests can step it with a fake clock.  Emits at
         most one dump per stall episode and re-arms when the loop recovers.
+
+        Stages by silence duration (defaults): **enrichment** at
+        ``enrich_after`` (15s) — stall timestamp + socket table emitted to the
+        logger at WARNING while the armed 25s dump-then-exit timer is still
+        pending — then the **soft dump** at ``stall_after`` (30s), reachable
+        only when the armed timer is off/failed.
+
+        Enrichment deliberately never touches ``dump_file``: that file is the
+        boot-time crash sentinel (``crash_dump_store._is_header_only`` counts
+        lines), so a watchdog-side append would make a *recovered* 15–25s
+        stall read as a fatal crash on the next startup.  Only faulthandler
+        writes stacks into it.  The journal WARNING survives both outcomes —
+        the process lives to keep logging on recovery, and journald has
+        already persisted the line when ``_exit`` fires on a fatal stall.
         """
         silence = self._now() - self._last_beat
+        if silence >= self._enrich_after and not self._enriched:
+            self._enriched = True
+            try:
+                lines = self._enrich(silence)
+            except Exception:  # pragma: no cover - collector already degrades; belt & braces
+                self._log.exception("loop watchdog stall enrichment failed")
+                lines = ["=== STALL ENRICHMENT FAILED (collector raised) ==="]
+            self._log.warning(
+                "event loop silent %.1fs — stall enrichment captured:\n%s",
+                silence,
+                "\n".join(lines),
+            )
         if silence >= self._stall_after:
             if not self._dumped:
                 self._dumped = True
@@ -236,12 +283,22 @@ class LoopStallWatchdog:
                     self._log.exception("loop watchdog stack dump failed")
                 return True
             return False
-        # Healthy / recovered.
+        if silence >= self._enrich_after:
+            # Mid-episode: enriched but below the soft-dump threshold.  Keep the
+            # episode flags so neither capture repeats within one stall.
+            return False
+        # Healthy / recovered — silence is back below the first threshold.
         if self._dumped:
             self._log.warning(
                 "event loop recovered after stall (last beat %.1fs ago)", silence
             )
+        if self._enriched and not self._dumped:
+            self._log.warning(
+                "event loop recovered after stall enrichment (last beat %.1fs ago)",
+                silence,
+            )
         self._dumped = False
+        self._enriched = False
         return False
 
     def _run(self) -> None:
@@ -272,11 +329,22 @@ class LoopStallWatchdog:
             target=self._run, name="loop-stall-watchdog", daemon=True
         )
         self._thread.start()
+        if self._exit_after is not None and self._enrich_after >= self._exit_after:
+            # Not fatal — enrichment just never lands before the exit.  Flag it
+            # so a tuned exit budget doesn't silently disable the capture.
+            self._log.warning(
+                "loop watchdog enrich_after (%.0fs) >= exit_after (%.0fs); "
+                "stall enrichment will not be captured before dump-then-exit",
+                self._enrich_after,
+                self._exit_after,
+            )
         self._log.info(
-            "loop stall watchdog armed (stall_after=%.0fs, poll=%.0fs, exit_after=%s)",
+            "loop stall watchdog armed (stall_after=%.0fs, poll=%.0fs, exit_after=%s, "
+            "enrich_after=%.0fs)",
             self._stall_after,
             self._poll_interval,
             f"{self._exit_after:.0f}s" if self._exit_after is not None else "off",
+            self._enrich_after,
         )
 
     def stop(self, timeout: float | None = 2.0) -> None:
