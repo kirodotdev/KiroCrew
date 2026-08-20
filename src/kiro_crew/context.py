@@ -633,6 +633,7 @@ _RUNTIME_DISPLAY = {
     "telegram": "Telegram",
     "wecom": "WeCom",
     "weixin": "Weixin",
+    "feishu": "Feishu",
     "webex": "Webex",
     "teams": "Microsoft Teams",
 }
@@ -676,6 +677,7 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
             "telegram",
             "wecom",
             "weixin",
+            "feishu",
             "webex",
             "teams",
             "slack",

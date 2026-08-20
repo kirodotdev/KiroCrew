@@ -86,6 +86,7 @@ _CHANNEL_LABELS: dict[str, str] = {
     "wecom": "WeCom",
     "teams": "Teams",
     "weixin": "Weixin",
+    "feishu": "Feishu",
     "unified": "Direct message",
 }
 

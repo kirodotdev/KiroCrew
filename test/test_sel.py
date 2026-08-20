@@ -356,6 +356,7 @@ class TestInferSource:
         ("telegram:456", "telegram"),
         ("wecom:c1", "wecom"),
         ("weixin:c1", "weixin"),
+        ("feishu:c1", "feishu"),
         ("webex:c1", "webex"),
         ("teams:c1", "teams"),
         ("slack:C08:thread", "slack"),

@@ -40,7 +40,16 @@ def _install(policy_body):
 
 
 # The canonical members, derived from the transports' channel_type attrs.
-EXPECTED_MEMBERS = {"slack", "discord", "telegram", "webex", "wecom", "teams", "weixin"}
+EXPECTED_MEMBERS = {
+    "slack",
+    "discord",
+    "telegram",
+    "webex",
+    "wecom",
+    "teams",
+    "weixin",
+    "feishu",
+}
 
 
 class TestChannelMembers:

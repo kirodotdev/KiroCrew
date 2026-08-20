@@ -217,7 +217,6 @@ src/kiro_crew/cloud/launch_engine.py
 src/kiro_crew/cloud/launch_job.py
 src/kiro_crew/computer_use/macos_skylight.py
 src/kiro_crew/computer_use/overlay_proc.py
-src/kiro_crew/config/loader.py
 src/kiro_crew/config/paths.py
 src/kiro_crew/config/schema.py
 src/kiro_crew/config/validation.py

@@ -2988,6 +2988,58 @@ class TestConfigEditToolBlocked:
         assert result.action != "deny"
 
 
+class TestFeishuConfigCoercionFailsClosed:
+    """A malformed feishu section must degrade to deny, never open a gate.
+
+    Two layers hold this: the schema type check rejects a wrong-typed value and
+    substitutes the field default, and the per-channel parse uses ``_safe_bool``
+    / ``_coerce_opaque_str_ids`` rather than raw ``bool()`` and comprehensions.
+    These tests pin the OBSERVABLE end state, so the guarantee survives either
+    layer being refactored.
+    """
+
+    def test_string_false_does_not_open_the_group_gate(self) -> None:
+        cfg = _load_from_dict(
+            {
+                "feishu": {
+                    "enabled": "true",
+                    "allow_group": "false",
+                    "allowed_group_ids": ["oc_g1"],
+                }
+            }
+        )
+        assert cfg.feishu.allow_group is False
+        assert cfg.feishu.enabled is False
+
+    def test_real_bools_are_preserved(self) -> None:
+        cfg = _load_from_dict({"feishu": {"enabled": True, "allow_group": True}})
+        assert cfg.feishu.enabled is True
+        assert cfg.feishu.allow_group is True
+
+    def test_null_id_lists_do_not_crash_config_load(self) -> None:
+        # A null or non-list value must yield the deny-everybody default rather
+        # than reaching an iteration that would raise during gateway startup.
+        cfg = _load_from_dict(
+            {"feishu": {"allowed_open_ids": None, "allowed_group_ids": "oc_g1"}}
+        )
+        assert cfg.feishu.allowed_open_ids == []
+        assert cfg.feishu.allowed_group_ids == []
+
+    def test_opaque_ids_survive_and_are_deduped(self) -> None:
+        # Feishu ids are opaque (ou_/oc_ prefixes), so a digit-only filter would
+        # drop every entry and lock out the intended senders.
+        cfg = _load_from_dict(
+            {
+                "feishu": {
+                    "allowed_open_ids": ["ou_abc123", "  ou_abc123 ", "", "ou_zzz"],
+                    "allowed_group_ids": ["oc_g1"],
+                }
+            }
+        )
+        assert cfg.feishu.allowed_open_ids == ["ou_abc123", "ou_zzz"]
+        assert cfg.feishu.allowed_group_ids == ["oc_g1"]
+
+
 class TestTelegramAllowedUserIdsGuard:
     """Finding: a non-list allowed_user_ids must not iterate char-by-char."""
 

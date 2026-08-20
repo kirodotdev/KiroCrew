@@ -148,6 +148,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "webex",
         "wecom",
         "weixin",
+        "feishu",
         "teams",
         "dashboard",
         "tunnel",
@@ -192,6 +193,8 @@ CRED_MICROSOFT_APP_ID = "MICROSOFT_APP_ID"
 CRED_MICROSOFT_APP_PASSWORD = "MICROSOFT_APP_PASSWORD"
 CRED_MICROSOFT_APP_TENANT_ID = "MICROSOFT_APP_TENANT_ID"
 CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR flow
+CRED_FEISHU_APP_ID = "FEISHU_APP_ID"  # Feishu custom-app id (developer console)
+CRED_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
 CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
 # kiro-cli's OWN model credential. Unlike the gateway-owned channel tokens
 # above, its rightful consumer is the agent subprocess itself (and the whoami
@@ -212,6 +215,8 @@ _CREDENTIAL_KEYS = (
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
     CRED_WEIXIN_TOKEN,
+    CRED_FEISHU_APP_ID,
+    CRED_FEISHU_APP_SECRET,
     CRED_JIRA_API_TOKEN,
     CRED_KIRO_API_KEY,
 )
@@ -1106,9 +1111,7 @@ def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str,
     (exact on POSIX, case-folded on Windows) so a differently-cased Windows
     spelling cannot slip past. Mutates *env* in place and returns it.
     """
-    matched = [
-        k for k in env if platform_compat.env_key_allowed(k, _KIRO_API_KEY_ONLY)
-    ]
+    matched = [k for k in env if platform_compat.env_key_allowed(k, _KIRO_API_KEY_ONLY)]
     for k in matched:
         del env[k]
     return env
@@ -3400,9 +3403,7 @@ class SessionSummaryConfig:
             logger.warning("min_user_turns %d < 1, using 1", self.min_user_turns)
             object.__setattr__(self, "min_user_turns", 1)
         if self.regenerate_after_turns < 1:
-            logger.warning(
-                "regenerate_after_turns %d < 1, using 1", self.regenerate_after_turns
-            )
+            logger.warning("regenerate_after_turns %d < 1, using 1", self.regenerate_after_turns)
             object.__setattr__(self, "regenerate_after_turns", 1)
         if self.max_intents < 1:
             logger.warning("max_intents %d < 1, using 1", self.max_intents)
@@ -4612,10 +4613,7 @@ class InstancesConfig:
                 _MINT_TIMEOUT_FLOOR,
             )
             object.__setattr__(self, "mint_timeout_secs", None)
-        elif (
-            self.mint_timeout_secs is not None
-            and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING
-        ):
+        elif self.mint_timeout_secs is not None and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING:
             logger.warning(
                 "instances.mint_timeout_secs %s > %s, clamping to %s",
                 self.mint_timeout_secs,
@@ -4843,6 +4841,71 @@ class WeComConfig:
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
             tags=["wecom"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Clamp thresholds to [0, 100] and guarantee soft <= hard so a misconfig
+        # (e.g. hard=50, soft=95, or an out-of-range value) can't make the soft
+        # nudge unreachable -- _maybe_notice checks ``pct >= hard`` first.
+        self.soft_threshold_pct = max(0, min(100, self.soft_threshold_pct))
+        self.hard_threshold_pct = max(0, min(100, self.hard_threshold_pct))
+        if self.soft_threshold_pct > self.hard_threshold_pct:
+            self.soft_threshold_pct = self.hard_threshold_pct
+
+
+@dataclass
+class FeishuConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the Feishu (Lark/飞书) channel. Requires FEISHU_APP_ID and "
+            "FEISHU_APP_SECRET environment variables to be set.",
+            tags=["feishu"],
+        ),
+    )
+    allowed_open_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Open IDs",
+            "Feishu open_ids allowed to DM the bot (deny-by-default: empty list "
+            "authorises nobody). Find your open_id via the Feishu developer console.",
+            tags=["feishu"],
+        ),
+    )
+    allow_group: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Group Chat",
+            "Serve messages from group chats whose chat_id is in allowed_group_ids. "
+            "The bot must be @-mentioned in a group to receive the message.",
+            tags=["feishu"],
+        ),
+    )
+    allowed_group_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Group IDs",
+            "Feishu group chat_ids allowed to drive a turn (requires allow_group=true).",
+            tags=["feishu"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a conversation's context passes this, prompt the user to /compact "
+            "or /new instead of auto-compacting.",
+            tags=["feishu"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this so the window never overflows.",
+            tags=["feishu"],
         ),
     )
 
@@ -5655,6 +5718,14 @@ class KiroCrewConfig:
             "WeChat", "Weixin (iLink personal WeChat) integration settings.", tags=["weixin"]
         ),
     )
+    feishu: FeishuConfig = field(
+        default_factory=FeishuConfig,
+        metadata=_meta(
+            "Feishu",
+            "Feishu (Lark/飞书) channel configuration.",
+            tags=["feishu"],
+        ),
+    )
     discord: DiscordConfig = field(
         default_factory=DiscordConfig,
         metadata=_meta("Discord", "Discord bot integration settings.", tags=["discord"]),
@@ -5891,6 +5962,9 @@ class KiroCrewConfig:
         weixin_data = data.get("weixin", {})
         if not isinstance(weixin_data, dict):
             weixin_data = {}
+        feishu_data = data.get("feishu", {})
+        if not isinstance(feishu_data, dict):
+            feishu_data = {}
         discord_data = data.get("discord", {})
         if not isinstance(discord_data, dict):
             discord_data = {}
@@ -6074,9 +6148,7 @@ class KiroCrewConfig:
                 ),
                 session_sharing=bool(agent_data.get("session_sharing", True)),
                 max_subagents=agent_data.get("max_subagents", 0),
-                max_stop_hook_nudges=_safe_int(
-                    agent_data.get("max_stop_hook_nudges", 100), 100, 0
-                ),
+                max_stop_hook_nudges=_safe_int(agent_data.get("max_stop_hook_nudges", 100), 100, 0),
                 subagent_mem_buffer_pct=_safe_int(
                     agent_data.get("subagent_mem_buffer_pct", 20), 20
                 ),
@@ -6434,6 +6506,18 @@ class KiroCrewConfig:
                 soft_threshold_pct=_safe_int(wecom_data.get("soft_threshold_pct", 80), 80),
                 hard_threshold_pct=_safe_int(wecom_data.get("hard_threshold_pct", 95), 95),
             ),
+            feishu=FeishuConfig(
+                enabled=_safe_bool(feishu_data.get("enabled"), False),
+                allowed_open_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_open_ids")),
+                # Shape-safe coercion rather than bool() / a raw comprehension:
+                # the schema type check already substitutes the default for a
+                # wrong-typed value, and these helpers keep the guarantee local
+                # to the parse (and dedupe + strip the opaque ou_/oc_ ids).
+                allow_group=_safe_bool(feishu_data.get("allow_group"), False),
+                allowed_group_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_group_ids")),
+                soft_threshold_pct=_safe_int(feishu_data.get("soft_threshold_pct", 80), 80),
+                hard_threshold_pct=_safe_int(feishu_data.get("hard_threshold_pct", 95), 95),
+            ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
                 tailscale=_tailscale_config_from(dashboard_data.get("tailscale")),
@@ -6538,9 +6622,7 @@ class KiroCrewConfig:
                 # (809M vs 74M, but much better latency).
                 model=stt_data.get("model", "turbo"),
                 mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
-                parakeet_model=stt_data.get(
-                    "parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"
-                ),
+                parakeet_model=stt_data.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"),
                 device=stt_data.get("device", "cpu"),
                 timeout_secs=stt_data.get("timeout_secs", 300),
                 transcribe_region=stt_data.get("transcribe_region", "us-east-1"),
@@ -6748,16 +6830,15 @@ class KiroCrewConfig:
             ),
             session_summary=SessionSummaryConfig(
                 enabled=bool(session_summary_data.get("enabled", False)),
-                min_user_turns=_safe_int(
-                    session_summary_data.get("min_user_turns", 2), 2),
+                min_user_turns=_safe_int(session_summary_data.get("min_user_turns", 2), 2),
                 regenerate_after_turns=_safe_int(
-                    session_summary_data.get("regenerate_after_turns", 1), 1),
-                max_intents=_safe_int(
-                    session_summary_data.get("max_intents", 8), 8),
-                max_constraints=_safe_int(
-                    session_summary_data.get("max_constraints", 5), 5),
+                    session_summary_data.get("regenerate_after_turns", 1), 1
+                ),
+                max_intents=_safe_int(session_summary_data.get("max_intents", 8), 8),
+                max_constraints=_safe_int(session_summary_data.get("max_constraints", 5), 5),
                 assistant_excerpt_chars=_safe_int(
-                    session_summary_data.get("assistant_excerpt_chars", 400), 400),
+                    session_summary_data.get("assistant_excerpt_chars", 400), 400
+                ),
             ),
             slack_channels={
                 ch_id: ChannelConfig.from_dict(ch_data)
@@ -6835,6 +6916,7 @@ class KiroCrewConfig:
             "webex": asdict(self.webex),
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
+            "feishu": asdict(self.feishu),
             "teams": asdict(self.teams),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
@@ -7033,9 +7115,7 @@ class KiroCrewConfig:
         for k, v in creds.items():
             if not v:
                 continue
-            if scrubbed and (
-                k in _CREDENTIAL_KEYS or _JIRA_TOKEN_RE.match(k)
-            ):
+            if scrubbed and (k in _CREDENTIAL_KEYS or _JIRA_TOKEN_RE.match(k)):
                 continue
             os.environ.setdefault(k, v)
 
@@ -7562,9 +7642,7 @@ def resolve_crew_identity(
         # The line exists so a kiro-template name that collides with a crew
         # key (which would silently inherit that crew's watchdog windows) is
         # diagnosable from logs.
-        logger.debug(
-            "crew_agent %r resolved by crew-namespace fallback", agent
-        )
+        logger.debug("crew_agent %r resolved by crew-namespace fallback", agent)
         return agent
     return ""
 

@@ -434,6 +434,8 @@ class TestLoadCredentialsEnvPropagation:
             "MICROSOFT_APP_PASSWORD",
             "MICROSOFT_APP_TENANT_ID",
             "WEIXIN_TOKEN",
+            "FEISHU_APP_ID",
+            "FEISHU_APP_SECRET",
             "JIRA_API_TOKEN",
             "KIRO_API_KEY",
         )

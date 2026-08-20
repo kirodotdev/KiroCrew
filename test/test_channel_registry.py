@@ -25,7 +25,7 @@ from kiro_crew.messaging.registry import ChannelDescriptor
 
 
 class TestRegistryRoster:
-    def test_the_seven_builtin_channels_are_registered(self) -> None:
+    def test_the_eight_builtin_channels_are_registered(self) -> None:
         members = registry.governed_members(builtin_channel_descriptors())
         assert set(members) == {
             "slack",
@@ -35,11 +35,13 @@ class TestRegistryRoster:
             "wecom",
             "teams",
             "weixin",
+            "feishu",
         }
 
     def test_channel_type_matches_each_transport_class(self) -> None:
         """The descriptor id and the transport's channel_type must be ONE fact."""
         from kiro_crew.discord.transport import DiscordTransport
+        from kiro_crew.feishu.transport import FeishuTransport
         from kiro_crew.slack.transport import SlackTransport
         from kiro_crew.teams.transport import TeamsTransport
         from kiro_crew.telegram.transport import TelegramTransport
@@ -57,6 +59,7 @@ class TestRegistryRoster:
                 WeComTransport,
                 TeamsTransport,
                 WeixinTransport,
+                FeishuTransport,
             )
         }
         for desc in builtin_channel_descriptors():
@@ -75,7 +78,7 @@ class TestRegistryRoster:
         by_type = {d.channel_type: d for d in descs}
         assert by_type["slack"].start is None
         assert "slack" not in {d.channel_type for d in registry.bootable(descs)}
-        assert len(registry.bootable(descs)) == 6
+        assert len(registry.bootable(descs)) == 7
 
 
 class TestRegistryBootLoop:

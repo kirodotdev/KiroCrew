@@ -35,7 +35,7 @@ index, first-time setup, and connecting messaging channels.
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
-| Chat Channels | DM-based chat with tool approval — [Slack](slack-integration.md), [Discord](discord-integration.md), [Telegram](telegram-integration.md), [Teams](teams-integration.md), [Webex](webex-integration.md), [WeCom](wecom-integration.md), [WeChat](weixin-integration.md); per-channel capabilities in each guide |
+| Chat Channels | DM-based chat with tool approval — [Slack](slack-integration.md), [Discord](discord-integration.md), [Telegram](telegram-integration.md), [Teams](teams-integration.md), [Webex](webex-integration.md), [WeCom](wecom-integration.md), [WeChat](weixin-integration.md), [Feishu](feishu-integration.md); per-channel capabilities in each guide |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
 | [Skills](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows |
 
@@ -60,7 +60,8 @@ Besides the dashboard and CLI, Kiro Crew ships channel integrations for
 [Slack](slack-integration.md), [Discord](discord-integration.md),
 [Telegram](telegram-integration.md), [Teams](teams-integration.md),
 [Webex](webex-integration.md), [WeCom](wecom-integration.md), and
-[Weixin](weixin-integration.md). They share one channel-neutral core, described
+[Weixin](weixin-integration.md), and [Feishu](feishu-integration.md). They
+share one channel-neutral core, described
 in [Messaging Transport](messaging-transport.md).
 
 ## Guides
