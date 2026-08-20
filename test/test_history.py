@@ -2567,6 +2567,48 @@ class TestStopEventContextInjection:
         assert result == ""
 
 
+class TestCancelledTurnPreambleInstruction:
+    """The restore block must not invite a standalone cancellation ack.
+
+    The model reads the cancelled-turn preamble verbatim; an instruction that
+    permits acknowledging the cancellation makes it emit a synthetic
+    "Response was interrupted" message styled like a real response. The
+    wording must forbid any standalone acknowledgment, and the bracket
+    markers must stay byte-identical because context_blocks.py parses them.
+    """
+
+    def test_preamble_forbids_standalone_acknowledgment(self, tmp_path):
+        import json
+
+        from kiro_crew.context import build_cancelled_turn_preamble
+
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("sess1", "user", "please refactor the parser")
+        log.append("sess1", "assistant", "Starting on the parser")
+        log.append("sess1", "system", json.dumps({
+            "kind": "stop_event",
+            "id": "stop-abc",
+            "state": "stopped",
+            "outcome": "soft",
+        }))
+
+        result = build_cancelled_turn_preamble(log, "sess1")
+        # Markers parsed by context_blocks.py stay byte-identical.
+        assert result.startswith(
+            "[PREVIOUS TURN WAS CANCELLED BY THE USER \u2014 context restore]"
+        )
+        assert result.endswith("[END PREVIOUS TURN]")
+        # The instruction forbids a standalone acknowledgment and directs
+        # the model to the current request instead.
+        assert "Do not emit any standalone acknowledgment" in result
+        assert "respond only to the current user request" in result
+        # No wording that invites acknowledging the cancellation.
+        assert "Acknowledge it" not in result
+        # Restored context is still carried.
+        assert "please refactor the parser" in result
+        assert "Starting on the parser" in result
+
+
 class TestAutoSkillHelpers:
     """Module-level helpers for auto-skill eligibility."""
 

@@ -1205,7 +1205,10 @@ def build_cancelled_turn_preamble(
     lines = [
         "[PREVIOUS TURN WAS CANCELLED BY THE USER — context restore]",
         "The following user request was interrupted mid-response. "
-        "Acknowledge it only if the current request refers to it.",
+        "Do not emit any standalone acknowledgment of the cancellation. "
+        "Use this restored context silently and respond only to the current "
+        "user request, referencing the interrupted work only when the "
+        "current request depends on it.",
         "",
         f"Cancelled user request:\n{user_text}",
     ]
