@@ -11041,6 +11041,7 @@
         "sound": "Suono",
         "sources": "Origini",
         "test": "Prova",
+        "test_sound": "Prova il suono",
         "use_default": "Usa il predefinito",
         "volume": "Volume",
         "preset_pulse": "Pulsazione"

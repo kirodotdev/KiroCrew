@@ -11041,6 +11041,7 @@
         "sound": "Som",
         "sources": "Fontes",
         "test": "Testar",
+        "test_sound": "Testar som",
         "use_default": "Usar o padrão",
         "volume": "Volume",
         "preset_pulse": "Pulso"

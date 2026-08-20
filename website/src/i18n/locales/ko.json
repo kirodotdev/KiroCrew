@@ -10805,6 +10805,7 @@
         "sound": "소리",
         "sources": "소스",
         "test": "테스트",
+        "test_sound": "소리 테스트",
         "use_default": "기본값 사용",
         "volume": "음량"
       },

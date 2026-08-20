@@ -10793,6 +10793,7 @@
         "sound": "提示音",
         "sources": "来源",
         "test": "测试",
+        "test_sound": "测试提示音",
         "use_default": "使用默认",
         "volume": "音量",
         "preset_pulse": "脉冲"

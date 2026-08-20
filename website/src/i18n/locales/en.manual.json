@@ -4162,7 +4162,8 @@
         "preset_pop": "Pop",
         "preset_pulse": "Pulse",
         "priority_for": "Priority for {{name}}",
-        "use_default": "Use default"
+        "use_default": "Use default",
+        "test_sound": "Test sound"
       },
       "securityPanel": {
         "all_allowed": "All allowed",

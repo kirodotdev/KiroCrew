@@ -1,7 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, fireEvent, screen } from '@testing-library/react'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
-import { __resetForTests } from '../hooks/useNotificationSound'
+import { __resetForTests, playPreset } from '../hooks/useNotificationSound'
+
+// Mock only playPreset: the panel's Test buttons and dropdown previews call it,
+// and the assertions below need to observe the (preset, volume) pair without
+// touching the Web Audio API. Everything else (loadSoundSettings, persistence)
+// stays real so the tests exercise the actual settings round-trip.
+vi.mock('../hooks/useNotificationSound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useNotificationSound')>()
+  return { ...actual, playPreset: vi.fn() }
+})
 
 const STORAGE_KEY = 'mc-notification-sound'
 
@@ -9,6 +18,7 @@ const STORAGE_KEY = 'mc-notification-sound'
 beforeEach(() => {
   localStorage.clear()
   __resetForTests()
+  vi.mocked(playPreset).mockClear()
   ;(window as unknown as { AudioContext: unknown }).AudioContext = vi.fn(() => ({
     state: 'running',
     currentTime: 0,
@@ -89,5 +99,47 @@ describe('NotificationsPanel', () => {
     const testBtns = screen.getAllByRole('button', { name: 'Test' })
     expect(testBtns.length).toBeGreaterThan(0)
     testBtns.forEach(btn => expect((btn as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('Test sound button plays the fallback preset at the current volume', () => {
+    render(<NotificationsPanel />)
+    const btn = screen.getByRole('button', { name: 'Test sound' })
+    expect((btn as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(btn)
+    expect(playPreset).toHaveBeenCalledTimes(1)
+    expect(playPreset).toHaveBeenCalledWith('chime', 0.35)
+  })
+
+  it('Test sound button uses the user-selected fallback preset and volume', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      enabled: true,
+      volume: 0.6,
+      perCategory: { all: 'ding' },
+    }))
+    render(<NotificationsPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'Test sound' }))
+    expect(playPreset).toHaveBeenCalledWith('ding', 0.6)
+  })
+
+  it('Test sound button is disabled when sound is off, volume is 0, or fallback is none', () => {
+    // Sound disabled
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: false, volume: 0.35, perCategory: { all: 'chime' } }))
+    const first = render(<NotificationsPanel />)
+    expect((screen.getByRole('button', { name: 'Test sound' }) as HTMLButtonElement).disabled).toBe(true)
+    first.unmount()
+
+    // Volume at 0
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: true, volume: 0, perCategory: { all: 'chime' } }))
+    const second = render(<NotificationsPanel />)
+    expect((screen.getByRole('button', { name: 'Test sound' }) as HTMLButtonElement).disabled).toBe(true)
+    second.unmount()
+
+    // Fallback preset set to none
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ enabled: true, volume: 0.35, perCategory: { all: 'none' } }))
+    render(<NotificationsPanel />)
+    const btn = screen.getByRole('button', { name: 'Test sound' }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    fireEvent.click(btn)
+    expect(playPreset).not.toHaveBeenCalled()
   })
 })

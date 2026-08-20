@@ -11042,6 +11042,7 @@
         "sound": "Son",
         "sources": "Sources",
         "test": "Tester",
+        "test_sound": "Tester le son",
         "use_default": "Utiliser la valeur par défaut",
         "volume": "Volume",
         "preset_pulse": "Pulsion"

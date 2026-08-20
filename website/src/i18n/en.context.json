@@ -186,6 +186,7 @@
     "pages.settings.aboutPanel.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.settings.instancesPanel.20h": "A preset retention/timeout duration of 20 hours. The number is data; only the unit letter is translatable, and most locales keep `h`.",
     "pages.settings.notificationsPanel.app": "\"app\" as a notification-delivery target, meaning the desktop application itself rather than Slack or Discord.",
+    "pages.settings.notificationsPanel.test_sound": "Button in the Sound settings card that plays a sample of the current fallback notification sound at the current volume. \"Test\" is the VERB (try it out); phrase as an imperative action like the sibling per-category \"Test\" buttons. It only plays a tone \u2014 no notification is created or delivered, which is why the English says \"sound\".",
     "pages.settings.notificationsPanel.preset_pop": "Name of a notification sound preset — a short percussive 'pop'. One of several sound names in a picker; it names the sound, so translate only if the language has a natural onomatopoeia, otherwise keep it.",
     "pages.settings.securityPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.settings.securityPanel.off": "State value meaning disabled. Not the preposition or the adverb.",

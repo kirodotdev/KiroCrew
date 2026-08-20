@@ -10917,6 +10917,7 @@
         "sound": "Ton",
         "sources": "Quellen",
         "test": "Testen",
+        "test_sound": "Ton testen",
         "use_default": "Standard verwenden",
         "volume": "Lautstärke",
         "preset_pulse": "Puls"

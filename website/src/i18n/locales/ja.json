@@ -10794,6 +10794,7 @@
         "sound": "サウンド",
         "sources": "ソース",
         "test": "テスト",
+        "test_sound": "サウンドをテスト",
         "use_default": "デフォルトを使用",
         "volume": "ボリューム"
       },
