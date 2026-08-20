@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import urllib.error
 import urllib.request
@@ -1099,6 +1100,114 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     print("               Fix: add swap, enable systemd-oomd, or install earlyoom.")
 
 
+# ── kiro-cli installer residue ────────────────────────────────────────────────
+# kiro-cli runs its auto-update check on STARTUP — the ``app.disableAutoupdates``
+# setting is documented as "Disable automatic updates on startup" — and Crew
+# spawns a FRESH kiro-cli per session (``AcpRuntime`` is constructed per session
+# in ``providers/acp.py`` and ``session.py``, and again per Code Review Sage
+# worker). So that check runs once per process START, not once per host per
+# release.
+#
+# On Windows the running executable cannot be replaced, so the downloaded
+# installer can never be applied while a Crew ACP child holds the binary — and
+# the "update pending" state is not cleared after an upgrade either
+# (kirodotdev/Kiro#9825). Nothing in that loop is self-limiting: one installer is
+# left behind per process start. A reporting user cleared ~80 GB of them.
+#
+# Crew cannot fix the updater, and must NOT disable updates on the user's behalf:
+# ``app.disableAutoupdates`` is a per-user setting shared with their own
+# interactive CLI, so setting it silently would suppress their security updates.
+# What Crew can do is stop the residue being invisible, since it is Crew's
+# per-session spawning that turns a stale flag into tens of gigabytes.
+# Upstream fix requested in kirodotdev/Kiro#10970.
+_CLI_INSTALLER_GLOB = "kiro-installer*"
+
+# One file can be a download still in flight; two or more is residue, because a
+# failed apply leaves the file behind and the next process start fetches another.
+_CLI_INSTALLER_RESIDUE_MIN = 2
+
+# The temp dir is shared with every other process on the host and can hold a very
+# large number of entries, so a diagnostic must not walk it unbounded.
+# Non-recursive by design: the installer lands at the top level.
+_CLI_INSTALLER_SCAN_CAP = 512
+
+
+def _scan_cli_installer_residue(temp_dir: Path) -> tuple[int, int]:
+    """Return ``(count, total_bytes)`` for leftover kiro-cli installers in *temp_dir*.
+
+    Bounded and non-raising: the scan stops at :data:`_CLI_INSTALLER_SCAN_CAP`
+    matches, and an entry that vanishes mid-scan — another process cleaning up,
+    or the updater itself — is skipped rather than aborting the whole doctor run.
+    An unreadable temp dir reports "nothing found" for the same reason.
+    """
+    count = 0
+    total = 0
+    try:
+        for entry in temp_dir.glob(_CLI_INSTALLER_GLOB):
+            try:
+                if not entry.is_file():
+                    continue
+                total += entry.stat().st_size
+            except OSError:
+                # Raced with a delete, or unreadable: one bad entry must not
+                # abort a diagnostic.
+                continue
+            count += 1
+            if count >= _CLI_INSTALLER_SCAN_CAP:
+                break
+    except OSError:
+        return (0, 0)
+    return (count, total)
+
+
+def _doctor_cli_installer_residue(issues: list[str]) -> None:
+    """Report leftover kiro-cli auto-update installers piling up in the temp dir.
+
+    Silent on a healthy host — the common case, and every case on a platform that
+    can replace a running binary — so a normal doctor run gains no noise. This
+    speaks only when residue is actually present, which is why it is not gated on
+    ``platform.system() == "Windows"``: the gate is the evidence on disk, so the
+    check still fires if this failure mode ever appears on another platform.
+    """
+    # gettempdir() itself probes candidate directories and raises when none is
+    # usable, so it must be inside the guard too: a host with a full or
+    # unwritable temp volume is exactly the host most in need of the rest of the
+    # doctor run, and must not get a traceback instead of it.
+    try:
+        temp_dir = Path(tempfile.gettempdir())
+    except OSError:
+        return
+    count, total = _scan_cli_installer_residue(temp_dir)
+    if count < _CLI_INSTALLER_RESIDUE_MIN:
+        return
+
+    # Capped scans undercount, so say so rather than printing a precise-looking
+    # number that is actually a floor. This applies to the SIZE as well: the scan
+    # stopped summing at the cap, so the total is a floor exactly as the count is,
+    # and rendering it as exact next to a "512+" count would contradict itself.
+    capped = count >= _CLI_INSTALLER_SCAN_CAP
+    count_label = f"{count}+" if capped else str(count)
+    if total >= 1073741824:
+        size_label = f"{total / 1073741824:.2f} GiB"
+    else:
+        size_label = f"{total / 1048576:.1f} MiB"
+    if capped:
+        size_label = f"≥ {size_label}"
+
+    print("\nkiro-cli installer residue")
+    print(f"  files:       ⚠️  {count_label} in {temp_dir}")
+    print(f"  reclaimable: {size_label}")
+    print("               Auto-update downloads that could not be applied while")
+    print("               kiro-cli was running, and are not cleaned up. Crew starts")
+    print("               a kiro-cli per session, so one accumulates per start.")
+    print(f"               Fix: delete {_CLI_INSTALLER_GLOB} from {temp_dir}, then stop")
+    print("               the gateway and run `kiro-cli update` deliberately.")
+    print("               To stop the downloads: `kiro-cli settings")
+    print("               app.disableAutoupdates true` — note this is per-user, so it")
+    print("               also pauses updates for your own interactive kiro-cli.")
+    issues.append("kiro-cli installer residue in temp")
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -1492,6 +1601,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Memory pressure preparedness (swap / userspace OOM killer) ──
     _doctor_memory_pressure(issues)
+
+    # ── kiro-cli installer residue (silent unless residue is on disk) ──
+    _doctor_cli_installer_residue(issues)
 
     # ── MCP Tools ──
     print("\nMCP Tools")

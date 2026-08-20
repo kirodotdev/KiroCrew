@@ -1007,3 +1007,156 @@ class TestSourceCheckout:
         # the environment.
         monkeypatch.setattr(cli_doctor, "_WINDOWS_GIT_DIRS", ("Z:\\nonexistent\\Git\\cmd",))
         assert cli_doctor._windows_git_bin() is None
+
+
+class TestCliInstallerResidue:
+    """Detection of leftover kiro-cli auto-update installers in the temp dir.
+
+    kiro-cli checks for updates on every process start, and Crew spawns a fresh
+    kiro-cli per session. On Windows the running binary cannot be replaced, so
+    each check leaves an installer behind that is never cleaned up (upstream
+    kirodotdev/Kiro#10970). These guard the doctor surface that makes the
+    resulting disk usage visible.
+    """
+
+    def _installer(self, directory: Path, name: str, size: int = 1024) -> Path:
+        path = directory / name
+        path.write_bytes(b"\0" * size)
+        return path
+
+    def test_scan_counts_matching_files_and_sums_bytes(self, tmp_path: Path) -> None:
+        self._installer(tmp_path, "kiro-installer-2.14.0.msi", size=2048)
+        self._installer(tmp_path, "kiro-installer-2.15.0.msi", size=1024)
+        assert cli_doctor._scan_cli_installer_residue(tmp_path) == (2, 3072)
+
+    def test_scan_ignores_unrelated_files(self, tmp_path: Path) -> None:
+        # Must not sweep in every temp file that happens to mention kiro.
+        self._installer(tmp_path, "kiro-installer-2.14.0.msi")
+        self._installer(tmp_path, "kiro-log.txt")
+        self._installer(tmp_path, "some-other-installer.msi")
+        count, _ = cli_doctor._scan_cli_installer_residue(tmp_path)
+        assert count == 1
+
+    def test_scan_ignores_directories(self, tmp_path: Path) -> None:
+        # A directory whose name matches must not be counted as a reclaimable
+        # file, nor make stat() sizes meaningless.
+        (tmp_path / "kiro-installer-dir").mkdir()
+        assert cli_doctor._scan_cli_installer_residue(tmp_path) == (0, 0)
+
+    def test_scan_is_non_recursive(self, tmp_path: Path) -> None:
+        # The installer lands at the top level; descending would make the scan
+        # unbounded over a shared temp dir.
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        self._installer(nested, "kiro-installer-2.14.0.msi")
+        assert cli_doctor._scan_cli_installer_residue(tmp_path) == (0, 0)
+
+    def test_scan_returns_zero_for_missing_dir(self, tmp_path: Path) -> None:
+        # Note: glob() on a missing directory yields nothing rather than
+        # raising, so this pins the missing-dir OUTCOME, not the OSError
+        # handler — that branch is covered by the unreadable-dir test below.
+        assert cli_doctor._scan_cli_installer_residue(tmp_path / "gone") == (0, 0)
+
+    def test_scan_returns_zero_for_unreadable_dir(self, tmp_path: Path, monkeypatch) -> None:
+        # A temp dir the process cannot list (permissions, or a racing rmtree)
+        # must degrade to "nothing found" rather than crashing the doctor run.
+        def boom(self: Path, _pattern: str):  # type: ignore[no-untyped-def]
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "glob", boom)
+        assert cli_doctor._scan_cli_installer_residue(tmp_path) == (0, 0)
+
+    def test_scan_skips_entry_that_races_a_delete(self, tmp_path: Path, monkeypatch) -> None:
+        # The updater (or a cleanup script) can remove a file mid-scan; one
+        # unreadable entry must not abort the diagnostic.
+        self._installer(tmp_path, "kiro-installer-a.msi", size=512)
+        self._installer(tmp_path, "kiro-installer-b.msi", size=512)
+        real_stat = Path.stat
+
+        def flaky_stat(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+            if self.name == "kiro-installer-a.msi":
+                raise OSError("vanished")
+            return real_stat(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "stat", flaky_stat)
+        assert cli_doctor._scan_cli_installer_residue(tmp_path) == (1, 512)
+
+    def test_scan_stops_at_cap(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(cli_doctor, "_CLI_INSTALLER_SCAN_CAP", 3)
+        for i in range(6):
+            self._installer(tmp_path, f"kiro-installer-{i}.msi", size=10)
+        count, _ = cli_doctor._scan_cli_installer_residue(tmp_path)
+        assert count == 3
+
+    def test_single_file_is_silent(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        # One file can be a download still in flight — not residue.
+        self._installer(tmp_path, "kiro-installer-2.14.0.msi")
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", lambda: str(tmp_path))
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        assert issues == []
+        assert capsys.readouterr().out == ""
+
+    def test_clean_host_is_silent(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", lambda: str(tmp_path))
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        assert issues == []
+        assert capsys.readouterr().out == ""
+
+    def test_residue_is_reported_and_recorded(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        self._installer(tmp_path, "kiro-installer-2.14.0.msi", size=1048576)
+        self._installer(tmp_path, "kiro-installer-2.15.0.msi", size=1048576)
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", lambda: str(tmp_path))
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        out = capsys.readouterr().out
+        assert "kiro-cli installer residue" in out
+        assert "2 in" in out
+        assert "2.0 MiB" in out
+        # The remedy must name the setting AND its cost, so a user is not talked
+        # into silently disabling their own security updates.
+        assert "app.disableAutoupdates true" in out
+        assert "per-user" in out
+        assert issues == ["kiro-cli installer residue in temp"]
+
+    def test_unusable_temp_volume_does_not_crash_doctor(self, monkeypatch, capsys) -> None:
+        # gettempdir() raises when no candidate temp dir is usable. A diagnostic
+        # must degrade to silence rather than abort the whole doctor run with a
+        # traceback on exactly the host that most needs the rest of it.
+        def boom() -> str:
+            raise FileNotFoundError("No usable temporary directory found")
+
+        monkeypatch.setattr(cli_doctor.tempfile, "gettempdir", boom)
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        assert issues == []
+        assert capsys.readouterr().out == ""
+
+    def test_large_total_renders_gib(self, monkeypatch, capsys) -> None:
+        # Formatting only: writing gigabytes to disk in a test is not acceptable.
+        monkeypatch.setattr(
+            cli_doctor, "_scan_cli_installer_residue", lambda _d: (700, 80 * 1073741824)
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        out = capsys.readouterr().out
+        assert "80.00 GiB" in out
+        # 700 is past the cap, so BOTH the count and the size are floors: the scan
+        # stopped summing at the cap, so an exact-looking size would contradict
+        # the "700+" beside it.
+        assert "700+" in out
+        assert "≥ 80.00 GiB" in out
+
+    def test_uncapped_size_is_not_marked_as_a_floor(self, monkeypatch, capsys) -> None:
+        # Below the cap the scan saw everything, so the figure is exact and must
+        # NOT be hedged -- otherwise every host reads as approximate.
+        monkeypatch.setattr(
+            cli_doctor, "_scan_cli_installer_residue", lambda _d: (4, 4 * 1048576)
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_cli_installer_residue(issues)
+        out = capsys.readouterr().out
+        assert "4.0 MiB" in out
+        assert "≥" not in out
+        assert "4+" not in out
