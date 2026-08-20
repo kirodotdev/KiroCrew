@@ -4,7 +4,7 @@ import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -548,26 +548,6 @@ export default function SidePanel({
           not a flat bordered bar. side-panel-strip punches the strip out of the
           Electron window-drag region (see index.css) so chips receive events. */}
       <div className="side-panel-strip flex items-center gap-1.5 shrink-0 p-2 rounded-tl-xl bg-bg-elevated">
-        {/* Collapse the panel (far-left), separated from the tabs by a hairline. */}
-        <button
-          className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-          onClick={onClose}
-          title={i18nT('pages.chat.sidePanel.close_panel')}
-          aria-label={i18nT('pages.chat.sidePanel.close_panel')}
-        >
-          <PanelRightLight size={15} />
-        </button>
-        {canDockBottom && !isMobile && (
-          <button
-            className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-            onClick={() => setDock(isBottom ? 'right' : 'bottom')}
-            title={isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}
-            aria-label={isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}
-          >
-            {isBottom ? <PanelRight size={15} /> : <PanelBottom size={15} />}
-          </button>
-        )}
-        <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. Wrapped in a
             tight-gap group so the three sit closer together than the strip's
@@ -585,7 +565,7 @@ export default function SidePanel({
           values={dynamicTabs}
           onReorder={(next) => setOrder([...pinnedTabs, ...next])}
           role="tablist"
-          className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
+          className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
         >
           {dynamicTabs.map((t, i) => (
             <DraggableTabItem
@@ -640,6 +620,45 @@ export default function SidePanel({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Flexible gap: the tabs and + hug the leading edge; this absorbs the
+            slack so the panel chrome sits at the trailing edge. */}
+        <div aria-hidden="true" className="flex-1 min-w-0" />
+        {/* Panel chrome, trailing edge. Collapse (frequent) stays a one-tap
+            button; the rarely-used dock toggle moves into a ⋯ menu so the two
+            panel-square glyphs are never adjacent look-alikes. */}
+        <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
+        <div className="flex items-center gap-0.5 shrink-0">
+        {canDockBottom && !isMobile && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="flex items-center justify-center w-7 h-7 shrink-0 rounded-md text-muted hover:text-text hover:bg-bg-hover data-[state=open]:bg-bg-hover data-[state=open]:text-text transition-colors bg-transparent border-none cursor-pointer"
+                title={i18nT('pages.chatSidebar.more_options')}
+                aria-label={i18nT('pages.chatSidebar.more_options')}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+              <DropdownMenuItem
+                className="gap-2.5 py-2"
+                onSelect={() => setDock(isBottom ? 'right' : 'bottom')}
+              >
+                <span className="text-muted shrink-0">{isBottom ? <PanelRight size={16} /> : <PanelBottom size={16} />}</span>
+                <span className="flex-1">{isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        <button
+          className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+          onClick={onClose}
+          title={i18nT('pages.chat.sidePanel.close_panel')}
+          aria-label={i18nT('pages.chat.sidePanel.close_panel')}
+        >
+          <PanelRightLight size={15} />
+        </button>
+        </div>
       </div>
 
       {/* Body — render every doc/terminal tab mounted (hidden when inactive) so
