@@ -396,6 +396,16 @@ def _compact_result_wait_secs(elapsed: float) -> float:
 # broken /compact does not fire on every subsequent turn.
 _COMPACT_FAILURE_COOLDOWN_SECS = 60.0
 
+# A compaction that completes but frees less than this many percentage points
+# of the context window made no meaningful progress: the next turn-end check
+# would re-trigger immediately and each attempt costs a real model-generated
+# summarization. Such an INEFFECTIVE compaction keeps (rather than clears) the
+# failure cooldown above, damping the retry loop. Measured as a drop in
+# ``context_usage_pct()`` across the attempt — a drop, not "still above the
+# threshold", because a legitimately good compaction of a very long turn can
+# land above ``autocompact_pct`` while still having freed real headroom.
+_COMPACT_MIN_EFFECT_PCT_POINTS = 5.0
+
 
 class _CompactCallback(Protocol):
     async def __call__(self, key: str, pct: float, *, success: bool) -> None: ...  # noqa: E704
@@ -892,6 +902,11 @@ class SessionManager:
         # cold-start).
         self._recycling: dict[str, "_Session"] = {}
         self._compact_cooldown_until: dict[str, float] = {}
+        # Compactions whose effect could not be measured at completion time
+        # (post-compaction stats reset to unknown, or telemetry not refreshed
+        # yet): key -> the pct that triggered the attempt. Settled by the
+        # first CONFIRMED reading in check_context_usage.
+        self._compact_pending_verdict: dict[str, float] = {}
         # Per-session channel conversation to send unattended output to (the
         # auto-compact notice). In-memory on purpose: see set_origin_link.
         self._origin_links: dict[str, ChannelLink] = {}
@@ -3113,6 +3128,7 @@ class SessionManager:
             # The new process is a fresh start — drop any stale failure
             # cooldown so it isn't inherited.
             self._compact_cooldown_until.pop(key, None)
+            self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         if session:
             # Capture PID and child tree before shutdown clears them
@@ -3211,6 +3227,15 @@ class SessionManager:
         if session:
             session.prompt_count += 1
 
+        # Settle a deferred compaction verdict on the first CONFIRMED reading
+        # after the attempt (see _settle_compact_cooldown). Runs BEFORE the
+        # trigger decision below so an ineffective compaction's cooldown
+        # suppresses the immediate re-trigger in this very call.
+        baseline = self._compact_pending_verdict.get(key)
+        if baseline is not None and not _context_pct_is_unknown(provider):
+            del self._compact_pending_verdict[key]
+            self._judge_compact_effect(key, baseline, pct)
+
         # CC per_session handles its own compaction natively — skip KiroCrew's
         _is_cc_persistent = (
             ClaudeCodeProvider is not None
@@ -3300,8 +3325,8 @@ class SessionManager:
 
         - ``_compacting`` set: dedup concurrent triggers; an in-flight
           compaction blocks new triggers until it completes.
-        - ``_compact_cooldown_until``: after a failed compact, suppress
-          re-triggers until the cooldown elapses.
+        - ``_compact_cooldown_until``: after a failed OR ineffective compact,
+          suppress re-triggers until the cooldown elapses.
 
         The actual work runs in a fire-and-forget task so the caller's
         response path is never blocked.
@@ -3311,9 +3336,10 @@ class SessionManager:
             return
         cooldown_until = self._compact_cooldown_until.get(key, 0.0)
         if cooldown_until > time.monotonic():
-            # Last compact failed. Skip until the cooldown elapses so a broken
-            # /compact does not fire on every subsequent turn. Log at INFO —
-            # the original failure was already logged at exception level.
+            # Last compact failed or made no progress. Skip until the cooldown
+            # elapses so a broken or ineffective /compact does not fire on
+            # every subsequent turn. Log at INFO — the original outcome was
+            # already logged at exception/warning level.
             logger.info(
                 "Session %s compaction skipped — cooldown active for %.0fs more",
                 key,
@@ -3374,8 +3400,9 @@ class SessionManager:
                     )
                     await self._fire_compact_callback(key, pct, success=False)
                     return
-                # Success: clear any prior cooldown so subsequent triggers work.
-                self._compact_cooldown_until.pop(key, None)
+                # Completed: decide the cooldown from the measured effect —
+                # an ineffective compaction keeps it, an effective one clears it.
+                self._settle_compact_cooldown(key, claude_session.provider, pct)
                 logger.info("Compacted session %s (context overflow)", key)
                 await self._fire_compact_callback(key, pct, success=True)
                 return
@@ -3453,7 +3480,9 @@ class SessionManager:
 
         Returns:
         - ``"ok"``: compaction completed; session (and its process) survives.
-          The success callback has been fired and the cooldown cleared.
+          The success callback has been fired and the cooldown settled from
+          the measured effect (cleared when effective, armed when
+          ineffective, deferred when not yet measurable).
         - ``"busy"``: the turn semaphore could not be acquired within
           ``COMPACT_WAIT_TIMEOUT_SECS`` — a turn is still running. Nothing was
           attempted; the caller must NOT recycle (no mid-turn kill).
@@ -3544,10 +3573,84 @@ class SessionManager:
             return "recycled"
         finally:
             session.semaphore.release()
-        self._compact_cooldown_until.pop(key, None)
+        self._settle_compact_cooldown(key, session.provider, pct)
         logger.info("Compacted session %s in place (context overflow)", key)
         await self._fire_compact_callback(key, pct, success=True)
         return "ok"
+
+    def _settle_compact_cooldown(self, key: str, provider: LLMProvider, pct_before: float) -> None:
+        """Set, clear, or defer the failure cooldown from a compaction's effect.
+
+        Re-reads ``context_usage_pct()`` and compares it with *pct_before* (the
+        reading that triggered the attempt). A completed compaction that freed
+        less than ``_COMPACT_MIN_EFFECT_PCT_POINTS`` is INEFFECTIVE: without a
+        cooldown the next turn-end ``check_context_usage`` re-triggers at once
+        and every "successful" attempt pays another model-generated
+        summarization. Reusing the failure cooldown (rather than a second
+        constant or counter) keeps one damping mechanism for both outcomes.
+
+        The verdict is only made on a reading that demonstrably describes the
+        compacted conversation. Two normal paths cannot provide one here:
+
+        - kiro-cli, terminal status observed MID-TURN: the stream handler ran
+          ``reset_after_compaction`` (pct 0.0, flagged unknown) and no
+          post-compaction metadata drain has run yet — the reading is unknown.
+        - a backend whose stats were never reset by the compaction: the
+          reading still shows the PRE-compaction value, so a fully successful
+          compaction would compute a zero drop and be damped by mistake.
+
+        Both defer: the trigger pct is stashed in ``_compact_pending_verdict``
+        and ``check_context_usage`` settles it at the first CONFIRMED reading
+        (that reading includes the following turn's own growth, so a very
+        large turn can under-measure the drop and arm one spurious cooldown —
+        bounded at ``_COMPACT_FAILURE_COOLDOWN_SECS``). Any cooldown already
+        running is left to expire on its own while a verdict is pending.
+
+        The compaction callback still fires ``success=True`` for an
+        ineffective attempt: the compaction genuinely completed and rewrote
+        the conversation, so skill-context reinjection (gated on success in
+        ``_fire_compact_callback``) must run, and the failure notice
+        ("will retry after cooldown — run /compact manually") would
+        misdescribe an attempt that ran to completion. The warning below
+        carries the ineffectiveness signal.
+        """
+        pct_after = provider.context_usage_pct()
+        unknown = _context_pct_is_unknown(provider)
+        if unknown or pct_after >= pct_before:
+            self._compact_pending_verdict[key] = pct_before
+            logger.info(
+                "Session %s compaction effect not measurable yet "
+                "(%.1f%% -> %.1f%%%s) — verdict deferred to the next confirmed reading",
+                key,
+                pct_before,
+                pct_after,
+                ", unconfirmed" if unknown else "",
+            )
+            return
+        self._compact_pending_verdict.pop(key, None)
+        self._judge_compact_effect(key, pct_before, pct_after)
+
+    def _judge_compact_effect(self, key: str, pct_before: float, pct_after: float) -> None:
+        """Arm the cooldown on an ineffective measured drop; clear it otherwise.
+
+        The test is the measured drop, not "still above the threshold": a
+        legitimately good compaction of a very long turn can land above
+        ``autocompact_pct`` while still having freed real headroom, and what
+        the cooldown damps is the no-progress case.
+        """
+        if pct_before - pct_after < _COMPACT_MIN_EFFECT_PCT_POINTS:
+            self._compact_cooldown_until[key] = time.monotonic() + _COMPACT_FAILURE_COOLDOWN_SECS
+            logger.warning(
+                "Session %s compaction ineffective — context %.1f%% -> %.1f%% "
+                "(freed %.1f < %.1f points); cooldown applied",
+                key,
+                pct_before,
+                pct_after,
+                pct_before - pct_after,
+                _COMPACT_MIN_EFFECT_PCT_POINTS,
+            )
+            return
+        self._compact_cooldown_until.pop(key, None)
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Invoke ``_on_compacted`` if registered, swallowing exceptions."""
@@ -3597,6 +3700,7 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         if session:
             await session.provider.shutdown()
@@ -3629,6 +3733,7 @@ class SessionManager:
                 return False
             del self._sessions[key]
             self._compact_cooldown_until.pop(key, None)
+            self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         await session.provider.shutdown()
         await self.release_subagent_runtime(key)
@@ -3645,6 +3750,7 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            self._compact_pending_verdict.pop(key, None)
         try:
             if session:
                 await session.provider.shutdown()
@@ -3672,6 +3778,7 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            self._compact_pending_verdict.pop(key, None)
         try:
             if session:
                 await session.provider.shutdown()
@@ -3909,6 +4016,7 @@ class SessionManager:
             sessions = dict(self._sessions)
             self._sessions.clear()
             self._compact_cooldown_until.clear()
+            self._compact_pending_verdict.clear()
 
         # Bound concurrent shutdowns: each provider.shutdown() -> _kill_process()
         # enqueues 2-3 subprocess_executor tasks (child scan, record capture,

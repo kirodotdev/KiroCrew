@@ -3505,10 +3505,12 @@ class TestCooldownPruning:
         await mgr.get_or_create("k1")
         mgr.release("k1")
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
+        mgr._compact_pending_verdict["k1"] = 92.0
 
         await mgr.remove("k1")
 
         assert "k1" not in mgr._compact_cooldown_until
+        assert "k1" not in mgr._compact_pending_verdict
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -3517,10 +3519,12 @@ class TestCooldownPruning:
         await mgr.get_or_create("k1")
         mgr.release("k1")
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
+        mgr._compact_pending_verdict["k1"] = 92.0
 
         await mgr.destroy("k1")
 
         assert "k1" not in mgr._compact_cooldown_until
+        assert "k1" not in mgr._compact_pending_verdict
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -3529,10 +3533,12 @@ class TestCooldownPruning:
         await mgr.get_or_create("k1")
         mgr.release("k1")
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
+        mgr._compact_pending_verdict["k1"] = 92.0
 
         await mgr.reset("k1")
 
         assert "k1" not in mgr._compact_cooldown_until
+        assert "k1" not in mgr._compact_pending_verdict
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -3542,10 +3548,12 @@ class TestCooldownPruning:
         mgr.release("k1")
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
         mgr._compact_cooldown_until["k2"] = time.monotonic() + 60.0
+        mgr._compact_pending_verdict["k1"] = 92.0
 
         await mgr.close_all()
 
         assert mgr._compact_cooldown_until == {}
+        assert mgr._compact_pending_verdict == {}
 
 
 class TestCloseAllPersistence:
@@ -4244,4 +4252,262 @@ class TestLoadRecoveryHistoryReplay:
         await mgr.get_or_create("thread1")
         sess = next(iter(mgr._sessions.values()))
         assert sess.provider_switch_replay is False
+        await mgr.close_all()
+
+
+class TestIneffectiveCompactionCooldown:
+    """A compaction that completes but frees no meaningful headroom keeps the
+    failure cooldown instead of clearing it — otherwise every "successful"
+    no-progress attempt re-triggers on the next turn end and each retry pays
+    another model-generated summarization (#4687)."""
+
+    @staticmethod
+    def _inplace_factory(pct_after: float):
+        """kiro-cli-style provider whose /compact completes and whose
+        post-compaction ``context_usage_pct()`` reads *pct_after*."""
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            m = AsyncMock()
+            m.start = AsyncMock()
+            m.shutdown = AsyncMock()
+            m.context_usage_pct = lambda: pct_after
+
+            async def _stream(_cmd):
+                return
+                yield  # pragma: no cover — make this an async generator
+
+            m.stream_command = MagicMock(side_effect=_stream)
+            m.wait_for_compaction = AsyncMock(return_value={"type": "completed"})
+            return m
+
+        return factory
+
+    # ── (a) effective compaction clears the cooldown ──
+
+    @pytest.mark.asyncio
+    async def test_inplace_effective_clears_cooldown(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=self._inplace_factory(pct_after=40.0))
+        await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        mgr._compact_cooldown_until["dashboard:chat-1"] = time.monotonic() + 999
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        assert "dashboard:chat-1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_claude_effective_clears_cooldown(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.compact = AsyncMock()
+        provider.context_usage_pct = lambda: 40.0
+        mgr._compact_cooldown_until["k1"] = time.monotonic() + 999
+
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+            await mgr._compact_session("k1", 92.0)
+
+        assert "k1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_unknown_post_compaction_pct_defers_verdict(self, cfg):
+        """kiro-cli's mid-turn terminal status resets the stats to 0.0/unknown
+        before any post-compaction metadata lands. An unknown reading must not
+        be judged (a 0.0 would read as a huge drop and mask #4687 entirely);
+        the verdict is deferred to the first confirmed reading."""
+        mgr = SessionManager(cfg, provider_factory=self._inplace_factory(pct_after=0.0))
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        provider.context_usage_unknown = lambda: True
+        mgr._compact_cooldown_until["dashboard:chat-1"] = time.monotonic() + 999
+
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        # No verdict yet: the running cooldown is left to expire on its own
+        # and the trigger pct is stashed for the next confirmed reading.
+        assert "dashboard:chat-1" in mgr._compact_cooldown_until
+        assert mgr._compact_pending_verdict["dashboard:chat-1"] == 92.0
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_deferred_verdict_effective_clears_cooldown(self, cfg):
+        """First confirmed reading shows a real drop: the deferred verdict is
+        effective and the cooldown clears."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        mgr._compact_pending_verdict["dashboard:chat-1"] = 92.0
+        mgr._compact_cooldown_until["dashboard:chat-1"] = time.monotonic() + 999
+        provider.context_usage_pct = lambda: 40.0
+
+        mgr.check_context_usage("dashboard:chat-1", provider)
+
+        assert "dashboard:chat-1" not in mgr._compact_pending_verdict
+        assert "dashboard:chat-1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_deferred_verdict_ineffective_arms_cooldown_and_suppresses_trigger(
+        self, cfg, caplog
+    ):
+        """First confirmed reading is still within the no-progress band: the
+        deferred verdict arms the cooldown BEFORE the same call's trigger
+        decision, so the immediate re-trigger is suppressed."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        mgr._compact_pending_verdict["dashboard:chat-1"] = 92.0
+        provider.context_usage_pct = lambda: 91.0  # >= autocompact_pct (90)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            mgr.check_context_usage("dashboard:chat-1", provider)
+
+        assert "dashboard:chat-1" not in mgr._compact_pending_verdict
+        assert mgr._compact_cooldown_until.get("dashboard:chat-1", 0.0) > time.monotonic()
+        assert any("ineffective" in r.message for r in caplog.records)
+        # The 91% reading is above the trigger threshold, but the just-armed
+        # cooldown suppressed the re-trigger: no compaction task started.
+        assert "dashboard:chat-1" not in mgr._compacting
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_deferred_verdict_waits_for_confirmed_reading(self, cfg):
+        """An unknown reading does not consume the pending verdict."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        mgr._compact_pending_verdict["dashboard:chat-1"] = 92.0
+        provider.context_usage_pct = lambda: 0.0
+        provider.context_usage_unknown = lambda: True
+
+        mgr.check_context_usage("dashboard:chat-1", provider)
+
+        assert mgr._compact_pending_verdict["dashboard:chat-1"] == 92.0
+        assert "dashboard:chat-1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_claude_stale_reading_defers_instead_of_damping_success(self, cfg):
+        """The claude branch can return from compact() before any telemetry
+        refresh, so the re-read still shows the PRE-compaction value. Judging
+        that stale reading would arm the cooldown on a compaction that in
+        fact succeeded — it must defer instead, and the next confirmed
+        reading (showing the real drop) must clear cleanly."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.compact = AsyncMock()
+        provider.context_usage_pct = lambda: 92.0  # unchanged: stats never reset
+
+        with patch("kiro_crew.session._is_claude_backend", return_value=True):
+            await mgr._compact_session("k1", 92.0)
+
+        # Deferred, not damped: a successful compaction must not be punished.
+        assert "k1" not in mgr._compact_cooldown_until
+        assert mgr._compact_pending_verdict["k1"] == 92.0
+        # Next turn's confirmed reading shows the real drop — verdict clears.
+        provider.context_usage_pct = lambda: 40.0
+        mgr.check_context_usage("k1", provider)
+        assert "k1" not in mgr._compact_pending_verdict
+        assert "k1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    # ── (b) effective but still above the trigger threshold is NOT ineffective ──
+
+    @pytest.mark.asyncio
+    async def test_inplace_effective_above_threshold_not_damped(self, cfg):
+        """A good compaction of a very long turn can land above
+        ``autocompact_pct`` while still having freed real headroom. The
+        ineffective test is the measured drop, not the absolute level."""
+        mgr = SessionManager(cfg, provider_factory=self._inplace_factory(pct_after=92.0))
+        await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        assert 92.0 >= cfg.session.autocompact_pct  # still above the trigger
+
+        await mgr._compact_session("dashboard:chat-1", 99.0)
+
+        assert "dashboard:chat-1" not in mgr._compact_cooldown_until
+        await mgr.close_all()
+
+    # ── (c) ineffective compaction arms the cooldown and suppresses the next trigger ──
+
+    @pytest.mark.asyncio
+    async def test_inplace_ineffective_sets_cooldown_and_suppresses_retrigger(self, cfg, caplog):
+        mgr = SessionManager(cfg, provider_factory=self._inplace_factory(pct_after=91.0))
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._compact_session("dashboard:chat-1", 92.0)
+
+        assert mgr._compact_cooldown_until.get("dashboard:chat-1", 0.0) > time.monotonic()
+        assert any("ineffective" in r.message for r in caplog.records)
+        # The compaction DID complete and rewrote the conversation: the
+        # callback stays success=True (reinjection must run; the failure
+        # notice would misdescribe a completed attempt).
+        cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
+        # The immediate next trigger is suppressed by the cooldown.
+        mgr._trigger_compaction("dashboard:chat-1", "context 92%", 92.0)
+        assert "dashboard:chat-1" not in mgr._compacting
+        provider.stream_command.assert_called_once()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_claude_ineffective_sets_cooldown(self, cfg, caplog):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.compact = AsyncMock()
+        provider.context_usage_pct = lambda: 91.0
+        cb = AsyncMock()
+        mgr.set_compact_callback(cb)
+
+        with (
+            patch("kiro_crew.session._is_claude_backend", return_value=True),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.session"),
+        ):
+            await mgr._compact_session("k1", 92.0)
+
+        assert mgr._compact_cooldown_until.get("k1", 0.0) > time.monotonic()
+        assert any("ineffective" in r.message for r in caplog.records)
+        cb.assert_awaited_once_with("k1", 92.0, success=True)
+        assert mgr.has_session("k1")  # in place: the session survives
+        await mgr.close_all()
+
+    # ── (d) repeated ineffective compactions and the circuit breaker ──
+
+    @pytest.mark.asyncio
+    async def test_repeated_ineffective_keeps_damping_until_breaker_resets(self, cfg):
+        """Each ineffective attempt re-arms the one existing cooldown (no
+        second counter), so nothing masks the repetition from the existing
+        circuit breaker: when the stuck session's turns keep failing,
+        ``record_failure`` trips at ``_CIRCUIT_BREAKER_THRESHOLD`` and the
+        forced reset clears the cooldown along with the session."""
+        from kiro_crew.session import _CIRCUIT_BREAKER_THRESHOLD
+
+        mgr = SessionManager(cfg, provider_factory=self._inplace_factory(pct_after=91.0))
+        await mgr.get_or_create("dashboard:chat-1")
+        mgr.release("dashboard:chat-1")
+
+        # Two ineffective attempts (the second simulating a post-cooldown
+        # retry) each re-arm the same cooldown.
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+        first = mgr._compact_cooldown_until["dashboard:chat-1"]
+        await mgr._compact_session("dashboard:chat-1", 92.0)
+        assert mgr._compact_cooldown_until["dashboard:chat-1"] >= first
+
+        # The session is still stuck at high context, so its turns fail; the
+        # existing breaker observes that repetition and force-resets.
+        tripped = False
+        for _ in range(_CIRCUIT_BREAKER_THRESHOLD):
+            tripped = await mgr.record_failure("dashboard:chat-1")
+        assert tripped
+        assert not mgr.has_session("dashboard:chat-1")
+        # The forced reset clears the cooldown too — the fresh session starts
+        # with no inherited damping.
+        assert "dashboard:chat-1" not in mgr._compact_cooldown_until
         await mgr.close_all()
