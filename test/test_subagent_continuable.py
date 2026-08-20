@@ -15,6 +15,7 @@ Covers the hibernate-first lifecycle slice:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -455,6 +456,90 @@ class TestKeepTranscript:
         await manager._teardown_run_session(info, "subagent:sh1")
         shared.set_keep_transcript.assert_called_once_with(True)
         shared.shutdown.assert_awaited_once()
+
+    # ── cancellation ──
+    #
+    # `AcpRuntime.terminate_session` swallows `Exception` and unregisters the
+    # queue in a `finally`, precisely because `asyncio.CancelledError` is a
+    # `BaseException` that would otherwise slip past its `except Exception`.
+    # `destroy()` awaits it and then unlinks the transcript, so before the fix
+    # that same cancellation carried straight out of the await and skipped the
+    # unlink -- on gateway shutdown and abandoned turns, which is where most
+    # ephemeral sessions are torn down. Nothing else deletes an ephemeral
+    # session's transcript, so each skipped unlink leaks a file permanently.
+    #
+    # These drive the real `_cleanup_transcript` against a real sessions dir
+    # rather than asserting on a mock, so they measure the file, not the call.
+
+    def _handle_with_transcript(self, tmp_path, sid="sid-cancel"):  # type: ignore[no-untyped-def]
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
+        with patch.object(AcpSessionHandle, "__init__", lambda self: None):
+            h = AcpSessionHandle()  # type: ignore[call-arg]
+        h._session_id = sid
+        h.keep_transcript = False
+        h._runtime = MagicMock()
+        sessions = tmp_path / "sessions" / "cli"
+        sessions.mkdir(parents=True)
+        files = [sessions / f"{sid}.json", sessions / f"{sid}.jsonl"]
+        for f in files:
+            f.write_text("{}", encoding="utf-8")
+        return h, sessions, files
+
+    @pytest.mark.asyncio
+    async def test_destroy_deletes_transcript_when_terminate_is_cancelled(
+        self, tmp_path
+    ) -> None:
+        """A cancelled teardown must still unlink; the cancellation must propagate."""
+        h, sessions, files = self._handle_with_transcript(tmp_path)
+        h._runtime.terminate_session = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with patch(
+            "kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await h.destroy()
+
+        assert [f for f in files if f.exists()] == [], (
+            "a cancelled teardown leaked this session's transcript; nothing else "
+            "deletes it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_destroy_deletes_transcript_when_terminate_raises(
+        self, tmp_path
+    ) -> None:
+        """Same for an ordinary exception escaping the runtime call."""
+        h, sessions, files = self._handle_with_transcript(tmp_path, sid="sid-raise")
+        h._runtime.terminate_session = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch(
+            "kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions
+        ):
+            with pytest.raises(RuntimeError):
+                await h.destroy()
+
+        assert [f for f in files if f.exists()] == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_teardown_still_honours_keep_transcript(
+        self, tmp_path
+    ) -> None:
+        """The `finally` must not override the subagent resume guard."""
+        h, sessions, files = self._handle_with_transcript(tmp_path, sid="sid-keep")
+        h.keep_transcript = True
+        h._runtime.terminate_session = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with patch(
+            "kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await h.destroy()
+
+        assert all(f.exists() for f in files), (
+            "keep_transcript=True is the subagent resume material and must "
+            "survive a cancelled teardown too"
+        )
 
 
 class TestPersistenceGuards:

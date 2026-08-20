@@ -1555,7 +1555,9 @@ class AcpSessionHandle:
         a finished session's state stays resident in the multiplexed process
         forever, so RSS climbs with cumulative sessions (the background-runtime
         unbounded-growth bug). ``terminate_session`` is best-effort + bounded and
-        ALWAYS unregisters the queue, so teardown neither hangs nor raises.
+        ALWAYS unregisters the queue, so teardown neither hangs nor fails on a
+        dead or slow runtime -- but see the `finally` below for the one
+        exception it cannot swallow.
 
         Each session on a shared runtime (a ``_bg`` op or a session-sharing
         subagent) is a distinct ``session/new`` with its own persisted
@@ -1574,9 +1576,19 @@ class AcpSessionHandle:
         still runs unconditionally: it is the RSS reclaim on the multiplexed
         process; only the unlink is deferred.
         """
-        await self._runtime.terminate_session(self._session_id)
-        if not getattr(self, "keep_transcript", False):
-            self._cleanup_transcript()
+        # The unlink runs in a `finally`, for the same reason
+        # `terminate_session` unregisters the queue in one: that method swallows
+        # `Exception`, but `asyncio.CancelledError` is a `BaseException` and
+        # propagates straight out of the await. Cancellation is exactly when
+        # teardown runs -- gateway shutdown, an abandoned turn -- so the
+        # sequential form skipped the cleanup on the path that produces the most
+        # of these files, and every survivor is permanent: nothing else deletes
+        # an ephemeral session's transcript.
+        try:
+            await self._runtime.terminate_session(self._session_id)
+        finally:
+            if not getattr(self, "keep_transcript", False):
+                self._cleanup_transcript()
 
     def _cleanup_transcript(self) -> None:
         """Best-effort delete of this session's kiro-cli transcript files.
