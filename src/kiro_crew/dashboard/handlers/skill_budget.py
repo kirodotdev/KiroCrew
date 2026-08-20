@@ -71,7 +71,13 @@ def _compute_budget(
 
     Runs on the discovery executor, off the event loop.
     """
-    skill_pairs = skills_loader._iter()
+    # `_iter` yields (name, path, confine_root). The root is KEPT: this view reads
+    # each skill's frontmatter below, and a project skill must be read confined to
+    # the directory the operator granted -- not unconfined just because this screen
+    # only reports sizes.
+    skill_items = skills_loader._iter()
+    skill_pairs = [(name, path) for name, path, _root in skill_items]
+    confine_by_key = {name: root for name, _path, root in skill_items}
     ledger: SkillUsageLedger | None = skills_loader._usage
 
     # Build the alias map via the loader's public method (cached on key set).
@@ -115,11 +121,9 @@ def _compute_budget(
         # because its write callers must abort rather than rewrite a file with
         # metadata they failed to read.
         try:
-            meta = skills_loader._cached_frontmatter(skill_file)
+            meta = skills_loader._cached_frontmatter(skill_file, within=confine_by_key.get(key))
         except (OSError, ValueError):
-            logger.warning(
-                "skill-budget: unreadable frontmatter for %s", key, exc_info=True
-            )
+            logger.warning("skill-budget: unreadable frontmatter for %s", key, exc_info=True)
             meta = {}
 
         is_always = meta.get("always", "").lower() == "true"
@@ -198,9 +202,7 @@ def _compute_budget(
             "size_bytes": size_bytes,
             "deliveries": deliveries,
             "chars": chars,
-            "inject_on_trigger": (
-                meta.get("inject_on_trigger", "").strip().lower() != "false"
-            ),
+            "inject_on_trigger": (meta.get("inject_on_trigger", "").strip().lower() != "false"),
             "always": is_always,
             "owned": owned,
             "source": source,

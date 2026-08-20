@@ -6450,11 +6450,32 @@
       "triggers": "Trigger",
       "what_this_skill_does_and_when_the_agent_should_u": "Cosa fa questa skill e quando l'agente dovrebbe usarla"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} proviene dalla cartella .kiro/skills di questo progetto.",
+      "confirm": "Considera attendibile questa cartella",
+      "consequence": "Se consideri attendibile questa cartella, i suoi file di skill possono entrare nel contesto di questa chat, dove possono istruire l’agente a eseguire comandi. Considera attendibili solo i progetti che riconosci.",
+      "decline": "Non ora",
+      "decline_consequence": "Se rifiuti, non viene caricato nulla e il tuo messaggio resta come l’hai scritto.",
+      "grant_failed": "Non è stato possibile registrare l’attendibilità di questa cartella.",
+      "title": "Considerare attendibili le skill di questo progetto?",
+      "withdraw_hint": "Puoi revocarla più tardi dalla pagina delle impostazioni Skill.",
+      "working": "Impostazione dell’attendibilità…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Questa cartella non esiste più.",
+      "hint": "Queste cartelle di progetto possono caricare i propri skill in una chat. Revoca una cartella per non caricarne più gli skill.",
+      "revoke": "Revoca",
+      "revoke_failed": "Non è stato possibile revocare la fiducia per questa cartella.",
+      "revoking": "Revoca in corso…",
+      "title": "Cartelle di progetto attendibili"
+    },
     "skillPickerMenu": {
       "loading_skills": "Caricamento delle skill…",
       "no_matching_skills": "Nessuna skill corrispondente",
       "no_matching_skills_ctrl_enter_sends": "Nessuna skill corrispondente — Ctrl+Invio invia il messaggio",
-      "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio"
+      "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio",
+      "trust_needed_badge": "Richiede attendibilità",
+      "trust_needed_hint": "Da questo progetto. Selezionala per esaminarla e considerare attendibile la cartella."
     },
     "slashCommandMenu": {
       "desc_agent": "Cambia o gestisci l’agente attivo",

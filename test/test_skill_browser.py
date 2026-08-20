@@ -969,3 +969,130 @@ class TestSessionScopedSkillResolution:
             assert keyed.status == 200
             keyless = await client.get(path)
             assert keyless.status == 404  # two projects, no key -> fail closed
+
+    @pytest.mark.asyncio
+    async def test_app_skill_catalog_requires_positive_slot_ownership(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        """An app permission is not authority to select another app's project.
+
+        The session header chooses which project contributes workspace skill
+        metadata. An app caller must therefore own that exact slot; a foreign,
+        unscoped, missing, or absent slot key is indistinguishable from missing.
+        """
+        from kiro_crew.dashboard.handlers import prompts
+
+        project = tmp_path / "foreign-project"
+        _write_skill(
+            project / ".kiro" / "skills",
+            "foreign-skill",
+            description="foreign metadata",
+        )
+        state = MagicMock(
+            _slots={
+                "foreign": MagicMock(project=str(project), _app="app-B"),
+                "unscoped": MagicMock(project=str(project), _app=""),
+                "owned": MagicMock(project=str(project), _app="app-A"),
+            },
+            context_builder=None,
+        )
+        audit = MagicMock()
+        monkeypatch.setattr(prompts, "_sel", lambda: audit)
+        monkeypatch.setattr(
+            prompts,
+            "collect_skills_blocking",
+            lambda _skills, _package, project_dir: [
+                {"key": "kiro-workspace/foreign-skill", "project": str(project_dir)}
+            ],
+        )
+        app = _make_app(state)
+
+        @web.middleware
+        async def inject_app(request, handler):
+            request["app"] = "app-A"
+            return await handler(request)
+
+        app.middlewares.insert(0, inject_app)
+        async with TestClient(TestServer(app)) as client:
+            for session_key in ("foreign", "unscoped", "missing", ""):
+                headers = {"X-Session-Key": session_key} if session_key else {}
+                response = await client.get("/api/skills", headers=headers)
+                assert response.status == 404, session_key
+                assert (await response.json())["code"] == "slot_not_found"
+
+            response = await client.get("/api/skills", headers={"X-Session-Key": "owned"})
+            assert response.status == 200
+            assert "kiro-workspace/foreign-skill" in {row["key"] for row in await response.json()}
+
+        denied = [
+            call
+            for call in audit.log_api_access.call_args_list
+            if call.kwargs.get("outcome") == "denied"
+        ]
+        assert len(denied) == 4
+        assert all(call.kwargs["source"] == "app_isolation" for call in denied)
+        allowed = [
+            call
+            for call in audit.log_api_access.call_args_list
+            if call.kwargs.get("outcome") == "allowed"
+        ]
+        assert len(allowed) == 1
+        assert allowed[0].kwargs == {
+            "caller": "app-A",
+            "operation": "skills_list",
+            "outcome": "allowed",
+            "source": "app_isolation",
+            "resources": "slot=owned",
+        }
+
+    @pytest.mark.asyncio
+    async def test_app_projectless_slot_cannot_fall_back_to_foreign_project(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        """An owned slot without a project must not inherit another slot's project."""
+        from kiro_crew.dashboard.handlers import api_skill_detail, prompts
+        from kiro_crew.skills import SkillsLoader
+
+        project = tmp_path / "foreign-project"
+        _write_skill(project / ".kiro" / "skills", "foreign-skill")
+        state = MagicMock(
+            _slots={
+                "foreign": MagicMock(project=str(project), _app="app-B"),
+                "owned-projectless": MagicMock(
+                    project="", project_dir="", _app="app-A"
+                ),
+            },
+            context_builder=None,
+        )
+        state._standalone_skills = SkillsLoader(install_builtins=False)
+        audit = MagicMock()
+        monkeypatch.setattr(prompts, "_sel", lambda: audit)
+        app = _make_app(state)
+        app.router.add_get("/api/skills/{name:.+}", api_skill_detail)
+
+        @web.middleware
+        async def inject_app(request, handler):
+            request["app"] = "app-A"
+            return await handler(request)
+
+        app.middlewares.insert(0, inject_app)
+        headers = {"X-Session-Key": "owned-projectless"}
+        paths = (
+            "/api/skills",
+            "/api/skills/kiro-workspace/foreign-skill/-/tree",
+            "/api/skills/kiro-workspace/foreign-skill/-/file?path=SKILL.md",
+            "/api/skills/kiro-workspace/foreign-skill",
+        )
+        async with TestClient(TestServer(app)) as client:
+            for path in paths:
+                response = await client.get(path, headers=headers)
+                assert response.status == 404, path
+                assert (await response.json())["code"] == "slot_not_found"
+
+        denied = [
+            call
+            for call in audit.log_api_access.call_args_list
+            if call.kwargs.get("outcome") == "denied"
+        ]
+        assert len(denied) == len(paths)
+        assert all(call.kwargs["source"] == "app_isolation" for call in denied)

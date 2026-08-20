@@ -20,8 +20,10 @@ const SKILLS = [
 /** Harness: gives the menu a real anchored element (it reads getBoundingClientRect)
  *  and a QueryClientProvider (the menu reads the shared ['skills'] cache).
  *  Pass `client` to drive the cache from the test (e.g. trigger a refetch). */
-function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn(), client, sendOnEnter }: {
-  query: string; open: boolean; onSelect?: (i: { leaf: string; key: string }) => void; onClose?: () => void; client?: QueryClient; sendOnEnter?: 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
+function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn(), client, sendOnEnter, slotKey, project, onTrustRequest }: {
+  query: string; open: boolean; onSelect?: (i: { leaf: string; key: string }) => void; onClose?: () => void
+  client?: QueryClient; sendOnEnter?: 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
+  slotKey?: string; project?: string; onTrustRequest?: (i: { leaf: string; key: string }) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const qc = client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -29,7 +31,11 @@ function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn(), client, s
     <QueryClientProvider client={qc}>
       <div>
         <div ref={ref} data-testid="anchor">anchor</div>
-        <SkillPickerMenu query={query} anchorRef={ref} open={open} onSelect={onSelect} onClose={onClose} sendOnEnter={sendOnEnter} />
+        <SkillPickerMenu
+          query={query} anchorRef={ref} open={open} onSelect={onSelect} onClose={onClose}
+          sendOnEnter={sendOnEnter} slotKey={slotKey} project={project}
+          onTrustRequest={onTrustRequest}
+        />
       </div>
     </QueryClientProvider>
   )
@@ -37,6 +43,7 @@ function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn(), client, s
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  vi.clearAllMocks()
   mockApi.skills.mockResolvedValue(SKILLS)
 })
 
@@ -186,7 +193,7 @@ describe('SkillPickerMenu', () => {
     // never-settling fetch — the mount refetch is the in-flight window.
     mockApi.skills.mockImplementation(() => new Promise(() => {}))
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    qc.setQueryData(['skills'], [])
+    qc.setQueryData(['skills', null, null], [])
     await qc.invalidateQueries({ queryKey: ['skills'], refetchType: 'none' })
     const onSelect = vi.fn()
     const onClose = vi.fn()
@@ -216,5 +223,124 @@ describe('SkillPickerMenu', () => {
     render(<Harness query="zzznope" open sendOnEnter="ctrl-enter" />)
     expect(await screen.findByText(/Ctrl\+Enter sends the message/)).toBeInTheDocument()
     expect(screen.queryByText(/— Enter sends the message/)).not.toBeInTheDocument()
+  })
+})
+
+/* ── Project-skills trust gate ──
+ * A workspace skill is listed before consent but must not behave like a usable
+ * one: its $token cannot resolve until the operator trusts the directory, so
+ * choosing it has to route to consent rather than insert a dead token. */
+describe('SkillPickerMenu — project-skills trust', () => {
+  const UNTRUSTED = [
+    {
+      key: 'kiro-workspace/oncall-handover', name: 'oncall-handover',
+      description: 'Handover report', source: 'kiro-workspace', trusted: false,
+    },
+  ]
+  const TRUSTED = [
+    {
+      key: 'kiro-workspace/oncall-handover', name: 'oncall-handover',
+      description: 'Handover report', source: 'kiro-workspace', trusted: true,
+    },
+  ]
+
+  it('sends the real slot key so the server resolves THIS chat project', async () => {
+    render(<Harness query="" open slotKey="dashboard:chat-7" />)
+    await waitFor(() => expect(mockApi.skills).toHaveBeenCalledWith('dashboard:chat-7'))
+  })
+
+  it('refetches when the same slot switches projects', async () => {
+    mockApi.skills
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a' }])
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b' }])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <Harness
+        query=""
+        open
+        slotKey="dashboard:chat-7"
+        project="/work/project-a"
+        client={client}
+      />,
+    )
+    expect(await screen.findByText('$project-a')).toBeInTheDocument()
+
+    view.rerender(
+      <Harness
+        query=""
+        open
+        slotKey="dashboard:chat-7"
+        project="/work/project-b"
+        client={client}
+      />,
+    )
+
+    expect(await screen.findByText('$project-b')).toBeInTheDocument()
+    expect(mockApi.skills).toHaveBeenCalledTimes(2)
+  })
+
+  it('refetches on reopen when the caller cannot provide project identity', async () => {
+    mockApi.skills
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a' }])
+      .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b' }])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(
+      <Harness query="" open slotKey="dashboard:chat-7" client={client} />,
+    )
+    expect(await screen.findByText('$project-a')).toBeInTheDocument()
+
+    view.rerender(
+      <Harness query="" open={false} slotKey="dashboard:chat-7" client={client} />,
+    )
+    view.rerender(
+      <Harness query="" open slotKey="dashboard:chat-7" client={client} />,
+    )
+
+    expect(await screen.findByText('$project-b')).toBeInTheDocument()
+    expect(mockApi.skills).toHaveBeenCalledTimes(2)
+  })
+
+  it('marks an untrusted project skill as needing trust', async () => {
+    mockApi.skills.mockResolvedValue(UNTRUSTED)
+    render(<Harness query="" open slotKey="dashboard:chat-7" onTrustRequest={vi.fn()} />)
+    expect(await screen.findByText('Needs trust')).toBeInTheDocument()
+    // The raw source badge is replaced by the trust state, not shown alongside.
+    expect(screen.queryByText('kiro-workspace')).not.toBeInTheDocument()
+  })
+
+  it('routes an untrusted project skill to consent instead of inserting a token', async () => {
+    mockApi.skills.mockResolvedValue(UNTRUSTED)
+    const onSelect = vi.fn()
+    const onTrustRequest = vi.fn()
+    render(<Harness query="" open slotKey="dashboard:chat-7" onSelect={onSelect} onTrustRequest={onTrustRequest} />)
+    fireEvent.mouseDown(await screen.findByText('$oncall-handover'))
+    expect(onTrustRequest).toHaveBeenCalledWith({
+      leaf: 'oncall-handover', key: 'kiro-workspace/oncall-handover',
+    })
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('inserts normally once the project is trusted', async () => {
+    mockApi.skills.mockResolvedValue(TRUSTED)
+    const onSelect = vi.fn()
+    const onTrustRequest = vi.fn()
+    render(<Harness query="" open slotKey="dashboard:chat-7" onSelect={onSelect} onTrustRequest={onTrustRequest} />)
+    fireEvent.mouseDown(await screen.findByText('$oncall-handover'))
+    expect(onSelect).toHaveBeenCalledWith({
+      leaf: 'oncall-handover', key: 'kiro-workspace/oncall-handover',
+    })
+    expect(onTrustRequest).not.toHaveBeenCalled()
+    expect(screen.queryByText('Needs trust')).not.toBeInTheDocument()
+  })
+
+  it('Enter on an untrusted row also routes to consent', async () => {
+    mockApi.skills.mockResolvedValue(UNTRUSTED)
+    const onSelect = vi.fn()
+    const onTrustRequest = vi.fn()
+    render(<Harness query="" open slotKey="dashboard:chat-7" onSelect={onSelect} onTrustRequest={onTrustRequest} />)
+    await screen.findByText('$oncall-handover')
+    fireEvent.keyDown(document, { key: 'Enter' })
+    expect(onTrustRequest).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
   })
 })

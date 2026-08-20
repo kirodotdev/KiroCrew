@@ -3073,7 +3073,7 @@ def _expand_dollar_skills(
         return message, 0
     skills = _get_skills(state)
     try:
-        resolved = skills.resolve_dollar_skills(message)
+        resolved = skills.resolve_dollar_skills(message, slot.project or None)
     except Exception:
         logger.exception("dollar-skill resolution failed")
         # Audit the failed resolution attempt — the security-controls guideline
@@ -5207,7 +5207,16 @@ async def _run_chat(
         # Skipped for slash commands; _prompt_depth<1 blocks the recursive _run_chat
         # path. Token is left literal; resolved bodies are appended.
         if "$" in message and not is_slash and not prompt_expanded and _prompt_depth < 1:
-            message, _n_skills = _expand_dollar_skills(message, state, slot, session_key)
+            # Offloaded: expansion walks the skills tree(s) and reads skill
+            # bodies, which is filesystem work that must not run on the event
+            # loop — a large tree would stall the gateway heartbeat and every
+            # other chat. The walk predates project-aware resolution; adding a
+            # trusted project's own root made an existing on-loop cost worse
+            # rather than introducing it, so the fix is to move the whole call
+            # off the loop instead of narrowing what it may discover.
+            message, _n_skills = await asyncio.to_thread(
+                _expand_dollar_skills, message, state, slot, session_key
+            )
             if _n_skills:
                 sel().log_tool_invocation(
                     session_key=session_key,

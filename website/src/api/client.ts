@@ -1164,7 +1164,8 @@ function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Respon
 const projectHeader = (projectKey?: string): HeadersInit | undefined =>
   projectKey ? { 'X-Steering-Project': projectKey } : undefined
 
-const get = (url: string) => fetch(url, { headers: { ..._sk } })
+const get = (url: string, sessionKey?: string) =>
+  fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) } })
 const post = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
   trackArtifactWrite(url, fetch(url, {
     method: 'POST',
@@ -2037,7 +2038,26 @@ export const api = {
   prompts: () => fetch('/api/prompts').then(j),
   promptDetail: (name: string) => fetch('/api/prompts/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
   // Skills
-  skills: () => fetch('/api/skills').then(j),
+  // sessionKey names the REAL chat slot so the server can resolve THIS chat's
+  // project and include its `<project>/.kiro/skills`. Without it the shared
+  // `dashboard:ui` placeholder makes the server fall back to "the one project
+  // every slot shares", so workspace skills leak between chats on different
+  // projects and vanish entirely when two chats disagree (#2457, #3551).
+  skills: (sessionKey?: string) => get('/api/skills', sessionKey).then(j),
+  /** Project-skills trust: this chat's grant state plus every stored grant. */
+  skillTrust: (sessionKey?: string) => get('/api/skills/-/trust', sessionKey).then(j),
+  /** Grant trust to THIS chat's project. The server takes the directory from
+   *  the slot, not from us — a caller-supplied path would let any caller
+   *  consent for a directory the operator never opened. */
+  // expectedKey is the canonical identity returned by the consent snapshot. It
+  // is a confirmation, not a selector: the server still derives the directory
+  // from the requesting slot and refuses when the current key differs.
+  grantSkillTrust: (sessionKey: string | undefined, expectedKey: string) =>
+    post('/api/skills/-/trust', { expected_key: expectedKey }, sessionKey).then(j),
+  /** Revoke a grant. `path` is optional — omitted revokes this chat's project. */
+  revokeSkillTrust: (path?: string, sessionKey?: string) =>
+    del('/api/skills/-/trust' + (path ? '?path=' + encodeURIComponent(path) : ''),
+        undefined, sessionKey).then(j),
   skill: (name: string) => fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
   /** List the file tree under a skill's directory.  The ``/-/`` separator
    *  disambiguates from a nested skill whose last segment is ``tree``. */

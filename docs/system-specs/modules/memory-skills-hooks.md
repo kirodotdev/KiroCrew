@@ -654,6 +654,220 @@ Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill n
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
+**Project skills (`<project>/.kiro/skills`) — a different source from the one above.**
+`$KIROCREW_PROJECT_DIR/skills/` is a *sync* source: its contents are copied into
+`~/.kiro/crew/skills/` and thereafter are ordinary local skills. `<project>/.kiro/skills`
+is *discovered in place* for the session whose slot is bound to that project, and is
+never copied. A skill found there is reported with source `kiro-workspace`.
+
+The project reaches the loader through its public entry points (`_iter`,
+`get_triggered_skills`, `get_context`, `load_skill`, `resolve_dollar_skills`,
+`list_skills`), not through `SkillsLoader.__init__`. There are a dozen construction
+sites, none of which knows a session's project; threading the constructor would have
+required every one of them to learn about a concept only the chat paths have. A caller
+that wants project skills passes `project_dir`; every other caller is unchanged and
+sees exactly the previous behaviour. The `_iter` cache is keyed per project, so two
+chats on different projects cannot serve each other's skills from a shared entry.
+
+**Consent (`skill_trust.py`).** A SKILL.md is prose, but it enters the agent's context
+and can instruct the agent to run anything, so loading one out of whatever repository
+happens to be open is an execution-adjacent decision. Project skills are therefore
+gated on an explicit per-directory grant, recorded at
+`<data home>/trust/project-skills.json` (mode `0o600`). That directory is a
+whole-directory entry on the keystone deny list, so the agent's own file tools can
+neither read the store nor forge a grant; like every other keystone reader, the module
+opens the path directly rather than through the agent file gate. Creating the trust
+directory is followed by a fail-loud owner-only lockdown; a platform ACL or permission
+failure refuses store access rather than leaving a permissive directory usable.
+
+Grants are keyed on the **canonical** directory (`os.path.realpath`), because the
+directory *is* the resource. Keying on a softer identity would leave the unkeyed
+component forgeable: a second name aliasing one directory would carry its own trust,
+and a rename would orphan the record. A symlink therefore resolves to the same grant as
+its target, and cannot manufacture a new one.
+
+The grant store is bounded. An idempotent grant for an existing directory still
+succeeds at the bound, but a new directory is refused rather than evicting an older
+consent silently; the operator must revoke a stored grant first. The API reports this
+as HTTP 409 with `code: "skill_trust_store_full"`.
+
+Every unknown resolves toward untrusted: an unreadable store, a malformed store, a
+schema version newer than this build, a relative path, a path that does not exist, and a
+path naming a file all yield no grant. Refusing to load a skill costs a click; loading
+one the operator never consented to cannot be undone. The enforcement memo keys on
+content time, metadata-change time, size, inode, and mode, so a permission or ACL change
+invalidates cached grants and exercises the unreadable-store path again.
+
+Grant and revoke writes normalize filesystem, atomic-replace, and owner-lockdown failures
+to the same unreadable-store error as lock and read failures. The dashboard therefore
+returns HTTP 409 with `code: "skill_trust_store_unreadable"` instead of an unstructured
+500 when the trust volume is full, read-only, or cannot enforce its owner-only ACL.
+
+`skills.project_skills_enabled` (`SkillsConfig`, default true) is the operator's hard off
+switch — independent of any grant, so a directory carrying one still loads nothing when
+it is false. Only a missing value or the boolean `true` enables the feature; malformed
+truthy values such as the string `"false"`, and a malformed `skills` section itself,
+fail closed to disabled. A present `config.json` or `config.local.json` that cannot be
+read, parsed, or interpreted as an object also disables project skills: an unreadable
+source may contain the operator's hard-off switch and cannot be treated as absent.
+
+**Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
+`/api/skills/{name}` catch-all. All three require the configured dashboard owner: the
+read reveals consented filesystem paths, while grant and revoke are human security
+decisions that authenticated non-owners and app tokens cannot make. A successful owner
+authorization emits an allowed dashboard API-access event to the SEL. A refusal is HTTP
+403 with `code: "dashboard_owner_required"` and emits the corresponding denied event.
+The grant derives its directory from the
+requesting chat slot, never from a client-supplied path, so no caller can consent on
+behalf of a directory the operator never opened. `DELETE` accepts an explicit `path` so
+a grant whose directory has since disappeared stays revocable —
+`list_trusted_projects` reports stored rows rather than the enforced set for the same
+reason, since an invisible grant could not be withdrawn. The consent snapshot returns
+both the readable project path and its canonical `project_key`. The dialog displays the
+former and must echo the latter as `expected_key`; grant canonicalizes the current slot
+project once inside the grant primitive, requires an exact match, and persists that same
+resolution without resolving even the canonical name again. Missing keys fail closed.
+Client-supplied text is never resolved, so a UNC/device key cannot trigger a Windows
+network probe, while a project symlink retargeted between GET and POST — or a canonical
+directory name replaced after comparison — cannot redirect consent to an unreviewed
+directory. Revoke first matches
+the supplied text against stored keys, so a vanished network grant remains removable;
+an unmatched UNC/device path is rejected before any filesystem resolution.
+
+**One project-resolution rule, and it is the strict one.** The catalog
+(`GET /api/skills`), the trust read and the grant all resolve their directory with
+`requesting_slot_project()` — the project bound to *that* chat slot, with no
+cross-slot fallback — because that is what `SkillsLoader` resolves from
+(`slot.project` verbatim). The neighbouring `active_project_dir()` additionally falls
+back to "the single project some open slot has", which is right for a global settings
+page and wrong here in two ways: a grant issued from a chat with no project would
+record consent against *another* chat's project, and the catalog would advertise a
+skill whose `$token` expands to nothing because the loader sees no project. Revoke
+keeps the permissive helper, since revoking only ever narrows what loads. The loader
+is deliberately the strict side: teaching it the fallback would inject one project's
+skills into a chat not bound to it.
+
+**Consent is confined to the consented directory.** A grant names one directory, and
+the project walk never resolves a descendant by path. On platforms with POSIX
+directory-descriptor support, the canonical project root and every component down
+through `.kiro/skills` are opened one at a time with `O_DIRECTORY | O_NOFOLLOW`, each
+relative to the prior handle. Descendants are scanned by directory descriptor and
+opened relative to that same pinned handle, so a directory swapped for a link between
+enumeration and descent fails the open without resolving its target. Linked directories
+and linked `SKILL.md` files are excluded even when their targets remain inside the
+project. Traversal stops after 64 directories below `.kiro/skills`; files at that depth
+remain eligible, while deeper paths are ignored so hostile nesting cannot exhaust the
+Python call stack for a chat turn. Global provider trees retain link traversal for app
+registration.
+
+Python does not expose an equivalent handle-relative no-reparse traversal on Windows.
+Project skills therefore fail closed as unsupported there: canonicalization returns no
+project key before touching the supplied path, so catalog, consent, and loading cannot
+initiate SMB authentication through a raced UNC junction. This is intentionally a
+capability check, not a best-effort `lstat` sequence; a pre-check followed by a path-based
+scan leaves the same swap window. Project skills remain available on macOS and Linux,
+where every traversed component stays pinned to a no-follow directory descriptor.
+
+**One enforcement point for every enumerated read.** Enumeration is TTL-cached, so a
+path vetted while genuine can be replaced by a link out of the granted directory before
+anything reads it — and the root that made it acceptable is only known at enumeration
+time. So `_iter_uncached` records, per path, the root it was vetted against, and
+`SkillsLoader._read_enumerated_skill_bytes` is the only place an enumerated skill file is
+read: it re-checks that root on the *descriptor it opened* (`O_NOFOLLOW` + `fstat`), not
+on the path string. Both the body read and the frontmatter/metadata read go through it,
+and a guard test fails if either stops doing so.
+
+That guard exists because the two drifted apart once: the body read was hardened while
+the metadata read of the same cached paths stayed unchecked, which is not a cosmetic gap
+— frontmatter `description` is rendered verbatim into the injected skills index, and
+`triggers` / `always` / `inject_on_trigger` decide what loads on every turn. A path with
+no recorded root (the global skills dir, `extra_paths`, edition roots) is read
+unconfined, which is what keeps an app's registered symlink into its own tree working;
+confinement applies to project paths only. An oversized file is skipped with a warning
+rather than raised, because the global path applies no cap at all and a chat turn must
+not die on a checked-out file. A confined refusal is never reopened: replacement or
+removal after enumeration also degrades to no metadata/body rather than propagating an
+open error into a chat turn. Confined read-only metadata uses replacement decoding for
+malformed UTF-8 so one project skill cannot abort context assembly. Unconfined metadata
+reads remain strict because they also serve writers that must never overwrite metadata
+they could not decode.
+
+No confined project path is rendered into agent-facing context. Both the legacy and
+budgeted initial skills blocks inject admitted project skills as bodies through
+`load_skill(..., project_dir)` and reserve path summaries for unconfined skills. The
+trigger split and pointer-hint renderer enforce the same rule later in a turn. This
+prevents a checkout from replacing an already-enumerated `SKILL.md` with an escaping link
+and persuading the agent to reopen it directly after the descriptor-confined read. Session
+start and post-compaction callers also pass the skills section cap as a confined-body
+budget even when lazy loading is off. Bodies that fit are injected whole; bodies that do
+not fit are omitted rather than exposed as unsafe paths. The loader checks the enumerated
+size before opening and passes the remaining budget into the descriptor-pinned read, so a
+replacement race or many large project skills cannot materialize more body text than the
+section can retain.
+
+The mutable trust-store reader likewise refuses a non-object grant row instead of
+filtering it: grant and revoke must never rewrite a partially unknown store and silently
+destroy rows a future or hand-edited schema may understand. Read-only enforcement may
+still ignore malformed rows because it never writes them back and fails toward no trust.
+
+The dashboard's skill *browse* endpoints are deliberately **not** trust-gated: reading a
+`SKILL.md` is how the operator decides whether to grant trust, so requiring the grant to
+view the file would make that decision blind. The boundary that matters — an unconsented
+project skill never reaching the agent's context — is enforced in `SkillsLoader`.
+This does not widen App Kit visibility: an app caller that asks the catalog for a
+session-scoped project, or browses a `kiro-workspace` skill, must positively own the slot
+named by `X-Session-Key`, and that owned slot must itself name a project. Foreign,
+unscoped, projectless, missing, and absent slot identities all return the same 404 and
+emit a denied `app_isolation` API-access record. A successful ownership and project-binding
+decision emits an allowed `app_isolation` record naming the selected slot. This prevents
+the shared-project fallback used by owner dashboard browsing from lending another slot's
+project to an app-owned, projectless slot.
+
+**Enforcement is audited, on first use rather than per message.** Granting and revoking
+consent are audited `critical=True` where the operator acts. The decision that *uses* that
+authority — admitting a project's skills into a session — is audited too, or the log would
+show who consented but never that it took effect. It is recorded once per (canonical
+directory, outcome) per process, because `_trusted_project_key` runs on every message: one
+governance event per message would bury the events that matter and put an SEL write on the
+per-message path. A new directory, or the same directory after `project_skills_enabled` is
+flipped, is recorded again. Refusals are recorded on the same basis, because "this project's
+skills were not loaded" is what an operator debugging a dead `$token` needs. `critical=False`
+deliberately: this is a record of an outcome, not an audit-or-deny gate, so an unwritable SEL
+must not fail a chat turn — the authority it refers to was already written synchronously when
+consent was given. A failed SEL write is not entered into the per-process de-duplication set;
+the next enforcement retries it, and only a successful write suppresses later duplicates.
+
+**Untrusted skills are listed, not hidden.** Catalog rows for `kiro-workspace` carry
+`trusted: bool`. A silently absent skill is indistinguishable from one that does not
+exist, so the picker shows an untrusted project skill with a "needs trust" marker and
+choosing it opens the consent dialog instead of inserting a `$token` the loader would
+refuse to resolve. The pre-consent catalog asks the loader for a containment-only set
+of project-origin names: it does not exercise or audit trust, but it does retain the
+normal path validation and first-wins precedence. It also builds the rows and reads
+their metadata through the loader's descriptor-pinned confined reader; the legacy
+workspace scanner is used only for global Kiro skills, so a linked project target is
+never touched merely to construct a row. Genuine untrusted rows therefore remain
+visible while escaped paths and project rows shadowed by global skills stay hidden.
+Because the description and repository scope are checked-out, untrusted text rendered by
+the dashboard, both are passed through the exfiltration-URL and credential redactors before
+leaving the backend.
+Audit records may retain the canonical path, but a failed audit write never
+copies that path into the ordinary application log.
+The dialog snapshots the requesting chat slot, current project, and a monotonic request
+identity with the selected skill. If the operator switches chats or projects, closes the
+dialog, or starts another consent request while a grant is pending, the grant may finish
+for its original slot but its stale completion cannot close the newer prompt or insert a
+token into the current draft.
+The picker and its focus prefetch cache by both slot key and current project, because a
+slot may change projects without changing identity; a project switch therefore cannot
+serve the prior project's fresh catalog for the cache TTL. Both production composers
+provide that project identity. A caller that cannot provide it gets a zero-staleness
+fallback, so closing and reopening the picker revalidates the ambiguous cache key.
+
+**`search_skills` stays project-blind.** Only a session key reaches that boundary and
+resolving a project from it needs a seam that does not exist yet, so the MCP tool
+continues to search locally installed skills only.
+
 The bundled `session-summaries` skill is on-demand, guidance-only: it explains the
 chat session summary panel (see [session-summary](session-summary.md)) — what it
 shows, its token cost, and how to make a session summarize well — so the agent can
@@ -668,7 +882,7 @@ re-synced by `rmtree` + `copytree` on upgrade.
 Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can `cd` and run them.
 
 **Lazy-load (`skills.lazy_load`, default false — loader `SkillsConfig`):** controls how `get_context(budget)` (`skills.py`) injects the on-demand set.
-- **OFF** (`get_context(budget=None)`): the byte-for-byte legacy full dump — every on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`.
+- **OFF** (`get_context(budget=None)`): the legacy global-skill dump — every unconfined on-demand skill summarized, unranked and untruncated, under the flat 165k `_CONTEXT_BUDGET_BASE`; confined project bodies retain their independent skills-section cap.
 - **ON** (`get_context(budget)`): `always: true` pinned skills are injected in full, plus a usage-ranked **top-K** of on-demand skills filled up to `budget`. Ranking is by `_rank_key` (`skills.py`) — `(usage_hits, effective_recency)` from the `SkillUsageLedger`, with a recency boost so freshly-added skills escape cold start. The long tail is left discoverable via the `skill_search` tool, the `$skillname` inline token, `cat`, and the per-message trigger auto-loader.
 
 **Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
@@ -806,6 +1020,14 @@ name, truncated description, `SKILL.md` path, containing dir — rendered by
 affordance `## Available Skills` already directs it to. `split_triggered()`
 partitions one match into bodies and pointers, so a mixed match emits both.
 
+That opt-out applies only to unconfined installed and provider skills. A project skill
+always goes through full-body injection even if its frontmatter says
+`inject_on_trigger: false`, and the catalog reports that effective behavior. Otherwise
+the pointer would invite the agent to reopen a mutable checkout path directly after the
+descriptor-confined metadata read, letting a link swap bypass the confined reader.
+`split_triggered()` therefore forces every row with a confinement root into the body
+partition, and `trigger_hint()` independently refuses to render confined paths.
+
 Why the knob is worth having: a body is 8k–34k chars, and word-overlap matching
 pulls in large unrelated skills often enough that body price per match makes
 `loaded_skill` the largest single block of assembled context — ~48% of it on a
@@ -871,8 +1093,12 @@ the event loop; the authoritative resolved check stays at the write boundary in
 `set_inject_on_trigger`. A path differing only by a symlink therefore reads as
 owned in the listing and is still refused on write — the failure mode is a toggle
 that reports an error, never a foreign file being rewritten. For the same reason
-`size_bytes` reuses the stat the frontmatter cache already needed for its mtime,
-so the listing costs the same one stat per skill it did before the field existed.
+`size_bytes` reuses the stat the frontmatter cache already needed for an unconfined
+skill's mtime, so those rows still cost one stat. A confined project row never stats
+its cached path: a checkout can replace that name with a Windows UNC link after
+enumeration, and a stat would initiate the outbound connection before confinement ran.
+Its size and content-digest cache token instead come from bytes admitted by the
+descriptor-pinned no-link reader.
 
 The dashboard's structured skill editor rebuilds the frontmatter block from its
 own fields, so it must carry every key it does not model. It re-emits those keys'

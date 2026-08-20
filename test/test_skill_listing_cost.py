@@ -338,8 +338,8 @@ class TestListingStaysCheapOnTheEventLoop:
         # tree and parse each skill's frontmatter through the mtime cache.
         loader._invalidate_iter_cache()
         calls.clear()
-        for _, skill_file in loader._iter():
-            loader._cached_frontmatter(skill_file)
+        for _, skill_file, _within in loader._iter():
+            loader._cached_frontmatter(skill_file, within=None)
         control = len(calls)
 
         loader._invalidate_iter_cache()
@@ -366,7 +366,7 @@ class TestListingStaysCheapOnTheEventLoop:
             return real_stat(self, *a, **kw)  # type: ignore[arg-type]
 
         monkeypatch.setattr(Path, "stat", counting_stat)
-        meta = loader._cached_frontmatter(path, mtime=mtime)
+        meta = loader._cached_frontmatter(path, mtime=mtime, within=None)
 
         assert meta["name"] == "one"
         assert calls == []

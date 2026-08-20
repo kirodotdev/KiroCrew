@@ -6450,11 +6450,32 @@
       "triggers": "Déclencheurs",
       "what_this_skill_does_and_when_the_agent_should_u": "Ce que fait cette compétence et quand l'agent doit l'utiliser"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} provient du dossier .kiro/skills propre à ce projet.",
+      "confirm": "Approuver ce dossier",
+      "consequence": "Approuver ce dossier permet à ses fichiers de compétence d’entrer dans le contexte de ce chat, où ils peuvent demander à l’agent d’exécuter des commandes. N’approuve qu’un projet que tu reconnais.",
+      "decline": "Pas maintenant",
+      "decline_consequence": "Si tu refuses, rien n’est chargé et ton message reste tel que tu l’as saisi.",
+      "grant_failed": "Impossible d’enregistrer l’approbation de ce dossier.",
+      "title": "Approuver les compétences de ce projet ?",
+      "withdraw_hint": "Tu peux la retirer plus tard depuis la page de paramètres Compétences.",
+      "working": "Approbation…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Ce dossier n'existe plus.",
+      "hint": "Ces dossiers de projet peuvent charger leurs propres skills dans une conversation. Retire un dossier pour que ses skills ne soient plus chargés.",
+      "revoke": "Retirer",
+      "revoke_failed": "Impossible de retirer la confiance accordée à ce dossier.",
+      "revoking": "Retrait en cours…",
+      "title": "Dossiers de projet approuvés"
+    },
     "skillPickerMenu": {
       "loading_skills": "Chargement des compétences…",
       "no_matching_skills": "Aucune compétence correspondante",
       "no_matching_skills_ctrl_enter_sends": "Aucune compétence correspondante — Ctrl+Enter envoie le message",
-      "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message"
+      "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message",
+      "trust_needed_badge": "Approbation requise",
+      "trust_needed_hint": "De ce projet. Sélectionne-la pour l’examiner et approuver le dossier."
     },
     "slashCommandMenu": {
       "desc_agent": "Changer ou gérer l’agent actif",

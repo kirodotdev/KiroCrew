@@ -238,6 +238,8 @@ export default function ChatPane({
     } catch (e) {
       // Same failure surface as switchAgent above: the shared notice toast.
       dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+      // Keep the rejected backend value available in developer diagnostics.
+      // eslint-disable-next-line no-console
       console.error('[ChatPane] switchModel failed', e)
     }
   }, [dispatch, slotKey])
@@ -614,6 +616,7 @@ export default function ChatPane({
           onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect) => { setModelBtnRect(rect); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
+          project={paneSlot?.project ?? ''}
           onUploadFiles={uploadFiles}
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
@@ -625,8 +628,12 @@ export default function ChatPane({
 
         {/* Agent picker portal — anchored to the input-bar agent button. */}
         {agentDD.open && agentBtnRect && createPortal(
+          /* The labeled dialog owns roving-focus key handling for its descendants. */
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
           <div
             ref={agentDD.dropdownRef}
+            role="dialog"
+            aria-label={i18nT('components.chatPane.agent_list')}
             tabIndex={-1}
             onKeyDown={onAgentListKeyDown}
             className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up"
@@ -636,6 +643,7 @@ export default function ChatPane({
               <input
                 ref={agentDD.inputRef}
                 type="text"
+                aria-label={i18nT('components.chatPane.type_to_filter')}
                 placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={agentDD.filter}
                 onChange={(e) => agentDD.setFilter(e.target.value)}
@@ -654,8 +662,12 @@ export default function ChatPane({
 
         {/* Model picker portal — anchored to the input-bar model button. */}
         {modelDD.open && modelBtnRect && createPortal(
+          /* The labeled dialog owns roving-focus key handling for its descendants. */
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
           <div
             ref={modelDD.dropdownRef}
+            role="dialog"
+            aria-label={i18nT('components.chatPane.model_list')}
             tabIndex={-1}
             onKeyDown={onModelListKeyDown}
             className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[252px] max-w-[348px] flex flex-col p-1 gap-0.5 animate-slide-up"
@@ -665,6 +677,7 @@ export default function ChatPane({
               <input
                 ref={modelDD.inputRef}
                 type="text"
+                aria-label={i18nT('components.chatPane.type_to_filter')}
                 placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={modelDD.filter}
                 onChange={(e) => modelDD.setFilter(e.target.value)}

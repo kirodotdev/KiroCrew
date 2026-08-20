@@ -1925,7 +1925,8 @@
         "pending_ttl_days": 30,
         "generate_scripts": true,
         "judge_model": "auto",
-        "extra_paths": []
+        "extra_paths": [],
+        "project_skills_enabled": true
       }
     },
     {
@@ -2137,6 +2138,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "skills.project_skills_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Project Skills",
+      "help": "Whether a chat session may load skills from its own project's <project>/.kiro/skills directory. Enabled by default, but a project's skills are still only loaded after the operator grants that specific directory trust, because a SKILL.md enters the agent's context and can instruct it to run anything. Set false to make project skills impossible regardless of any grant already recorded.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "session_summary",

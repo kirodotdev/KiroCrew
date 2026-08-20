@@ -21,6 +21,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
 from kiro_crew.skills import skills_dir
 from kiro_crew.slack.handler import (
     _hydrate_conv_flags,
@@ -358,9 +359,7 @@ def _canonical_skill_roots() -> list[Path]:
         # ``skill://`` URI would then resolve against whatever cwd the next
         # kiro-cli session starts in — silently loading a different skill, or
         # none. A skill root must be a stable absolute location.
-        out.extend(
-            Path(p).expanduser().resolve() for p in KiroCrewConfig.load().skills.extra_paths
-        )
+        out.extend(Path(p).expanduser().resolve() for p in KiroCrewConfig.load().skills.extra_paths)
     except Exception:
         logger.debug("failed to load extra skill paths from config", exc_info=True)
     return out
@@ -481,9 +480,7 @@ def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -
     return None
 
 
-def active_project_state(
-    state: DashboardState, session_key: str = ""
-) -> tuple[Path | None, str]:
+def active_project_state(state: DashboardState, session_key: str = "") -> tuple[Path | None, str]:
     """Resolve the workspace project AND why it is absent when it is.
 
     Returns ``(project, state)`` where *state* is one of:
@@ -544,8 +541,39 @@ def active_project_dir(state: DashboardState, session_key: str = "") -> Path | N
     the wrong project.  Failing closed makes the caller surface the ambiguity
     instead — :func:`active_project_state` reports which of the two "no answer"
     cases produced the ``None``.
+
+    Step 2 is what makes this the WRONG helper for a per-chat resource. It
+    answers for a chat that has no project of its own, so a caller that must
+    agree with what one chat will actually load — the skills catalog, and the
+    consent grant that admits those skills — would resolve a directory that chat
+    is not bound to. Those callers use :func:`requesting_slot_project` instead.
+    Reach for this one only when the resource really is global.
     """
     return _resolve_active_project(state, session_key)
+
+
+def requesting_slot_project(state: DashboardState, session_key: str = "") -> Path | None:
+    """The project bound to THIS chat slot, with no cross-slot fallback.
+
+    :func:`active_project_dir` answers "which project should a global surface
+    act on", and falls back to the single project shared by the open slots.
+    This answers the narrower question the skills loader asks: "which project
+    is THIS chat bound to". ``SkillsLoader`` resolves project skills from
+    ``_ChatSlot.project`` verbatim, so a caller that must agree with what the
+    loader will actually load -- the catalog, and the consent grant that admits
+    it -- has to ask the same question, not the broader one.
+
+    Returns ``None`` when this slot has no project, which is a meaningful
+    answer: there is no directory for this chat to list, trust, or load from.
+    """
+    slots = getattr(state, "_slots", {}) or {}
+    if not session_key:
+        return None
+    slot_name = session_key.split(":", 1)[-1] if ":" in session_key else session_key
+    slot = slots.get(slot_name)
+    if slot is None:
+        return None
+    return _slot_project(slot)
 
 
 def _resolve_active_project(state: DashboardState, session_key: str) -> Path | None:
@@ -647,15 +675,17 @@ def list_kiro_skills(project_dir: Path | None = None) -> list[dict[str, Any]]:
             if not skill_md.is_file():
                 continue
             desc, always = _parse_skill_description(skill_md)
-            out.append({
-                "key": f"{source}/{entry.name}",
-                "name": entry.name,
-                "description": desc,
-                "path": str(skill_md),
-                "dir": str(entry),
-                "always": always,
-                "source": source,
-            })
+            out.append(
+                {
+                    "key": f"{source}/{entry.name}",
+                    "name": entry.name,
+                    "description": desc,
+                    "path": str(skill_md),
+                    "dir": str(entry),
+                    "always": always,
+                    "source": source,
+                }
+            )
     return out
 
 
@@ -740,9 +770,7 @@ def _agents_loading_skill(
     """Return names of agents whose pre-expanded globs match *skill_md*."""
     target = str(skill_md)
     return [
-        name
-        for name, globs in expanded_agents
-        if any(fnmatch.fnmatch(target, g) for g in globs)
+        name for name, globs in expanded_agents if any(fnmatch.fnmatch(target, g) for g in globs)
     ]
 
 
@@ -839,10 +867,10 @@ def collect_skills_blocking(
     This is the synchronous core behind ``GET /api/skills``. It performs
     every filesystem-heavy step in one call so the caller can offload the
     whole thing to a thread via ``run_in_executor``. ``list_skills()`` (os.walk +
-    per-file frontmatter reads) and ``list_kiro_skills()`` (per-skill resolve +
-    read) are filesystem-heavy enough to stall the event loop past the
-    loop-stall watchdog on large catalogs, so they run in the thread too rather
-    than inline.
+    per-file frontmatter reads), ``list_kiro_skills()`` (per-skill resolve +
+    read), and the confined project catalog are filesystem-heavy enough to
+    stall the event loop past the loop-stall watchdog on large catalogs, so
+    they run in the thread too rather than inline.
 
     Steps, in the same order the handler used inline:
 
@@ -850,7 +878,8 @@ def collect_skills_blocking(
     2. ``package_skills`` — edition/package skills already fetched (structured
        rows) from ``CapabilityManager.list_skills()``; the manager owns their
        parsing, so nothing is parsed here.
-    3. ``list_kiro_skills(project_dir)`` — open-standard kiro-cli skills.
+    3. Global open-standard kiro-cli skills plus project rows from the loader's
+       confined no-follow catalog.
     4. ``annotate_skills_with_agents(...)`` — ``loaded_by_agents`` per skill.
 
     The capability-manager fetch is intentionally NOT done here (it is async);
@@ -861,7 +890,34 @@ def collect_skills_blocking(
         s.setdefault("source", "kirocrew")
     _warn_skills_outside_roots(package_skills)
     result.extend(package_skills)
-    result.extend(list_kiro_skills(project_dir))
+    # The legacy scanner is valid for the operator-owned global Kiro directory,
+    # but it resolves and reads project link targets before containment can be
+    # checked. Never pass the project to it: pre-consent project rows must come
+    # from the loader's confined no-follow enumeration below.
+    workspace_rows = list_kiro_skills()
+    if project_dir is not None:
+        # A workspace row is LISTABLE without consent but only USABLE with it:
+        # $token expansion and context injection both resolve through
+        # SkillsLoader, which gates the project root on the operator's grant.
+        # Marking the row lets the picker offer that consent instead of handing
+        # back a token that silently expands to nothing.
+        trusted = _is_project_trusted(project_dir)
+
+        # The loader's containment-only catalog IS the definition of what
+        # consent could make loadable. It intentionally bypasses trust
+        # enforcement so genuine untrusted rows remain visible, while its
+        # confined no-follow read keeps linked targets untouched.
+        try:
+            project_rows = skills_loader.catalog_project_skills(project_dir)
+        except Exception:  # noqa: BLE001 — a listing must not die on enumeration
+            logger.warning("skills catalog: enumeration failed; listing no workspace rows")
+            project_rows = []
+        for row in project_rows:
+            row["key"] = f"kiro-workspace/{row.get('key', '')}"
+            row["source"] = "kiro-workspace"
+            row["trusted"] = trusted
+        workspace_rows.extend(project_rows)
+    result.extend(workspace_rows)
     annotate_skills_with_agents(result)
     return result
 
@@ -942,6 +998,13 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         root = Path.home() / ".kiro" / "skills"
     elif name.startswith("kiro-workspace/"):
         rel = name[len("kiro-workspace/") :]
+        # NOT trust-gated, deliberately: reading a SKILL.md is how the operator
+        # decides whether to grant trust in the first place, so requiring the
+        # grant to view the file would make the consent decision blind. The
+        # boundary that matters -- an unconsented project skill never reaching the
+        # agent's context -- is enforced in SkillsLoader. Uses the permissive
+        # resolver so the documented keyless single-project fallback and the
+        # #2457 two-project behaviour stay as they are.
         proj = active_project_dir(state, session_key)
         if proj is None:
             return None

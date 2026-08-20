@@ -3434,6 +3434,18 @@ class SkillsConfig:
             "Local ~/.kiro/crew/skills/ takes precedence for duplicate names.",
         ),
     )
+    project_skills_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Skills",
+            "Whether a chat session may load skills from its own project's "
+            "<project>/.kiro/skills directory. Enabled by default, but a project's "
+            "skills are still only loaded after the operator grants that specific "
+            "directory trust, because a SKILL.md enters the agent's context and can "
+            "instruct it to run anything. Set false to make project skills "
+            "impossible regardless of any grant already recorded.",
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.max_triggered < 0:
@@ -3995,6 +4007,37 @@ def _clamp_security_bounds(data: dict) -> None:
                 TOOL_APPROVAL_TIMEOUT_MIN,
                 budget,
             )
+
+
+def _fail_closed_project_skills_config(
+    data: dict, *, config_source_unreadable: bool = False
+) -> None:
+    """Preserve the project-skills off-switch's fail-closed semantics.
+
+    Optional JSON Schema validation removes invalid fields before dataclass
+    construction. Normalizing this security switch first keeps an invalid
+    value distinct from an absent value, whose documented default is enabled.
+    """
+    if config_source_unreadable:
+        skills = data.get("skills")
+        if not isinstance(skills, dict):
+            skills = {}
+            data["skills"] = skills
+        skills["project_skills_enabled"] = False
+        return
+
+    if "skills" not in data:
+        return
+
+    skills = data["skills"]
+    if not isinstance(skills, dict):
+        data["skills"] = {"project_skills_enabled": False}
+        return
+
+    if "project_skills_enabled" in skills and not isinstance(
+        skills["project_skills_enabled"], bool
+    ):
+        skills["project_skills_enabled"] = False
 
 
 def _config_fingerprint() -> tuple:
@@ -6205,6 +6248,7 @@ class KiroCrewConfig:
             pre_read_fp = _config_fingerprint()
             data = {}
             loaded_base = False
+            config_source_unreadable = False
             if path.exists():
                 try:
                     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -6212,8 +6256,10 @@ class KiroCrewConfig:
                         data = raw
                         loaded_base = True
                     else:
+                        config_source_unreadable = True
                         logger.warning("Config is not a JSON object, using defaults")
                 except (json.JSONDecodeError, OSError) as e:
+                    config_source_unreadable = True
                     logger.warning("Failed to load config from %s: %s", path, e)
 
             # Report -- never correct -- a stored BASE value that still holds a
@@ -6243,12 +6289,22 @@ class KiroCrewConfig:
                     if isinstance(raw_local, dict):
                         local_data = raw_local
                     else:
+                        config_source_unreadable = True
                         logger.warning("config.local.json is not a JSON object, ignoring")
                 except (json.JSONDecodeError, OSError) as e:
+                    config_source_unreadable = True
                     logger.warning("Failed to load config.local.json: %s", e)
 
             if local_data:
                 data = _deep_merge(data, local_data)
+
+            # A present source that cannot be read or parsed may contain the
+            # operator's hard-off switch. Preserve that unknown as disabled
+            # before either the defaults return or schema normalization can
+            # turn it into the enabled-by-default missing-field case.
+            _fail_closed_project_skills_config(
+                data, config_source_unreadable=config_source_unreadable
+            )
 
             # Return defaults only if neither file was successfully loaded. Seed
             # the default "kirocrew" agent in-memory (matching the on-disk
@@ -6259,6 +6315,9 @@ class KiroCrewConfig:
             # (existence checks only, no read/parse/validate).
             if not loaded_base and not local_data:
                 cfg = cls()
+                cfg.skills.project_skills_enabled = (
+                    data.get("skills", {}).get("project_skills_enabled", True) is True
+                )
                 kiro = cfg.agent.default_agent or "kirocrew"
                 cfg.agents["default"] = KiroCrewAgentConfig(
                     kiro_agent=kiro,
@@ -6268,6 +6327,8 @@ class KiroCrewConfig:
                 cfg.default_agent = "default"
                 return cfg
 
+            # Preserve fail-closed security semantics before advisory schema
+            # validation can replace malformed input with a missing-field default.
             # Validate against JSON Schema (advisory — never fatal)
             _validate_config_data(data)
             # Clamp security-relevant resource-limit knobs to their API ceilings
@@ -7219,6 +7280,9 @@ class KiroCrewConfig:
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
                 ],
+                # Security off-switch: malformed values must not become truthy
+                # through Python coercion (for example, the string "false").
+                project_skills_enabled=(skills_data.get("project_skills_enabled", True) is True),
             ),
             session_summary=SessionSummaryConfig(
                 enabled=bool(session_summary_data.get("enabled", False)),

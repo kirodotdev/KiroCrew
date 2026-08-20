@@ -2355,6 +2355,7 @@ class ContextBuilder:
                 budget=caps.skills if lazy_skills else None,
                 only=skill_globs or None,
                 project_dir=project,
+                project_body_budget=caps.skills,
             )
             if skills_ctx:
                 if lazy_skills and len(skills_ctx) > caps.skills:
@@ -2688,6 +2689,7 @@ class ContextBuilder:
                     budget=caps.skills if lazy_skills else None,
                     only=_globs or None,
                     project_dir=project,
+                    project_body_budget=caps.skills,
                 )
                 if skills_ctx:
                     if lazy_skills and len(skills_ctx) > caps.skills:
@@ -2896,16 +2898,18 @@ class ContextBuilder:
 
         # Triggered skills (on-demand, any message) — skip for custom agents.
         # A match injects the skill's full body by DEFAULT, unchanged. A skill
-        # that declares itself an offer rather than a mandate opts out with
-        # `inject_on_trigger: false` and contributes a pointer line instead:
-        # word-overlap matching pulls in large unrelated skills often enough
-        # that body price per match is the largest single block of assembled
-        # context, and ACP replays native history so a body already sent earlier
-        # in the conversation is still in the window.
+        # unconfined skill that declares itself an offer rather than a mandate
+        # opts out with `inject_on_trigger: false` and contributes a pointer line
+        # instead. Confined project skills always take the body path so every
+        # read stays behind descriptor confinement. Word-overlap matching pulls
+        # in large unrelated skills often enough that body price per match is
+        # the largest single block of assembled context, and ACP replays native
+        # history so a body already sent earlier in the conversation is still
+        # in the window.
         if not is_custom and not minimal_context:
             triggered = self.skills.get_triggered_skills(text, project_dir=project)
             if triggered:
-                enforced, pointer_only = self.skills.split_triggered(triggered)
+                enforced, pointer_only = self.skills.split_triggered(triggered, project)
                 # Log the split, not just the match: a pointed-at skill the
                 # agent declines to read leaves no other trace, so without this
                 # "the skill stopped being followed" is indistinguishable from
@@ -2917,7 +2921,13 @@ class ContextBuilder:
                     ", ".join(pointer_only) or "-",
                 )
                 for name in enforced:
-                    content = self.skills.load_skill(name)
+                    # project_dir, not project-blind: get_triggered_skills and
+                    # split_triggered above are both project-aware, so a trusted
+                    # project's skill can reach here -- and loading it blind
+                    # returned None, making a matched skill contribute nothing at
+                    # all. The project branch reads through the containment-checked
+                    # reader, so this is confined like every other project read.
+                    content = self.skills.load_skill(name, project)
                     if content:
                         stripped = self.skills.strip_frontmatter(content)
                         parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
@@ -2926,7 +2936,7 @@ class ContextBuilder:
                         # positive, pointer-only, or undelivered) must not earn
                         # ranking weight in the lazy-load hotness ledger.
                         self.skills._record_use(name)
-                hint = self.skills.trigger_hint(pointer_only)
+                hint = self.skills.trigger_hint(pointer_only, project)
                 if hint:
                     parts.append(hint)
 
