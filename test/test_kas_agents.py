@@ -9,11 +9,13 @@ the one the operator configured.
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
 
 from kiro_crew import config as kiro_crew_config
+from kiro_crew.acp import kas_agents
 from kiro_crew.acp.kas_agents import (
     _KAS_FALLBACK_PROMPT,
     KAS_MAX_CUSTOM_AGENTS,
@@ -22,6 +24,11 @@ from kiro_crew.acp.kas_agents import (
     resolve_prompt,
     to_client_custom_agent,
 )
+
+
+def _rule(policy, capability):
+    """The single rule for ``capability`` in a projected policy."""
+    return next(r for r in policy["rules"] if r["capability"] == capability)
 
 
 def _spec(**over):
@@ -93,11 +100,12 @@ class TestDeliberateOmissions:
     """Fields left out on purpose; each would misbehave if projected.
 
     ``mcpServers`` would double-register against the session-level injection,
-    ``model`` would compete with the dedicated model verb, and ``permissions``
-    would require guessing KAS's capability identifiers.
+    and ``model`` would compete with the dedicated model verb. ``permissions``
+    is NOT in this list — see :class:`TestPermissionsProjection`; it is absent
+    only when the spec gives nothing to derive it from.
     """
 
-    @pytest.mark.parametrize("key", ["mcpServers", "model", "permissions", "welcomeMessage"])
+    @pytest.mark.parametrize("key", ["mcpServers", "model", "welcomeMessage"])
     def test_key_is_not_projected(self, key):
         assert key not in to_client_custom_agent("a", _spec(), "p")
 
@@ -128,20 +136,196 @@ class TestOptionalPassThrough:
         assert "excludedTools" not in out
 
 
-class TestUnsupportedKeysAreLoud:
-    """A dropped capability must be visible in the log, not silent."""
+class TestPermissionsProjection:
+    """``allowedTools`` has no slot on the wire; its MEANING travels as a policy.
 
-    def test_dropped_keys_are_named(self, caplog):
-        spec = _spec(allowedTools=["fs_read"], toolsSettings={"x": 1})
-        with caplog.at_level("WARNING"):
+    Omitting the field is not neutral: with no policy KAS resolves every request
+    to ``ask``, so an injected agent would prompt for the whole list its kiro-cli
+    twin auto-approves. The translation itself is pinned in
+    ``test_kas_permissions.py``; here we pin only that it is wired in, and that a
+    hand-written block outranks it.
+    """
+
+    def test_the_allowlist_is_translated_rather_than_dropped(self):
+        out = to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
+        assert out["permissions"] == {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+
+    def test_the_cli_only_key_itself_never_goes_on_the_wire(self):
+        out = to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
+        assert "allowedTools" not in out
+
+    def test_a_spec_with_nothing_to_derive_omits_the_field(self):
+        """Absent says "this spec never described auto-approval", which is true."""
+        assert "permissions" not in to_client_custom_agent("a", _spec(), "p")
+
+    def test_an_unclassifiable_allowlist_omits_the_field(self):
+        out = to_client_custom_agent("a", _spec(allowedTools=["introspect"]), "p")
+        assert "permissions" not in out
+
+    def test_a_hand_written_policy_is_not_relayed(self):
+        """The wire carries only what passed Crew's governance ceiling.
+
+        Forwarding an author block would be one line and it is already in KAS's
+        vocabulary — which is the trap. ``allowedTools`` is the only auto-approve
+        input the ceiling (``_may_auto_approve``) has seen, so relaying a block
+        from the file would hand any editor of it a grant the ceiling never
+        reviewed. An auto-approved call never reaches Crew's permission callback,
+        so the deny-list and the audit trail would be skipped with it.
+        """
+        mine = {"rules": [{"capability": "shell", "effect": "allow"}]}
+        out = to_client_custom_agent("a", _spec(allowedTools=["web_fetch"], permissions=mine), "p")
+        assert out["permissions"] == {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+
+    def test_a_hand_written_policy_cannot_smuggle_a_grant_past_the_allowlist(self):
+        """The sharp case: the block grants a capability the allowlist withholds."""
+        mine = {"rules": [{"capability": "shell", "effect": "allow"}]}
+        out = to_client_custom_agent("a", _spec(allowedTools=[], permissions=mine), "p")
+        assert "permissions" not in out
+
+    def test_the_derivation_tracks_the_allowlist_not_the_stored_block(self):
+        """So a block that has gone stale on disk cannot resurrect an old grant."""
+        out = to_client_custom_agent(
+            "a",
+            _spec(
+                allowedTools=["web_fetch"],
+                permissions={"rules": [{"capability": "web_search", "effect": "allow"}]},
+            ),
+            "p",
+        )
+        assert out["permissions"]["rules"] == [{"capability": "web_fetch", "effect": "allow"}]
+
+
+class TestTheCeilingIsReAskedAtProjectionTime:
+    """The write-time ceiling check is not enough, because projection READS a file.
+
+    The five writers of an ``allowedTools`` list consult the ceiling when they
+    write, so a freshly rebuilt spec is already clean. A spec written on an
+    ungoverned host, restored from a backup, or edited by hand is not — and
+    projection is the last place to notice before the grant reaches the backend.
+    """
+
+    def test_a_withheld_entry_is_dropped_from_the_projected_policy(self, monkeypatch):
+        monkeypatch.setattr(
+            kas_agents, "may_skip_gate_now", lambda ref: ref != "@denied-srv"
+        )
+        out = to_client_custom_agent(
+            "a", _spec(allowedTools=["@denied-srv", "@ok-srv"]), "p"
+        )
+        assert _rule(out["permissions"], "mcp")["match"] == ["ok-srv/*"]
+
+    def test_withholding_everything_omits_the_field(self, monkeypatch):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        out = to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
+        assert "permissions" not in out
+
+    def test_the_withholding_is_reported_so_a_missing_grant_is_explainable(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        with caplog.at_level("INFO", logger="kiro_crew.acp.kas_agents"):
+            to_client_custom_agent("kirocrew", _spec(allowedTools=["web_fetch"]), "p")
+        assert "withholds auto-approval for web_fetch" in caplog.text
+
+    def test_an_ungoverned_host_keeps_every_grant(self, monkeypatch):
+        """``may_skip_gate_now`` answers True with no ceiling installed."""
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        out = to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
+        assert out["permissions"]["rules"] == [{"capability": "web_fetch", "effect": "allow"}]
+
+    def test_the_withhold_is_recorded_in_the_security_event_log(self, monkeypatch):
+        """A permission decision, so it belongs in SEL and not only in a log line.
+
+        The other three writers that produce this state (app-agent
+        materialization, the host shared-MCP sync, doctor's auto-fix) all emit the
+        same ``mcp_auto_approve_withheld`` event. Projection is the one whose
+        input is a file it did not write, so a stale grant is likeliest to be
+        withheld here — the path that most needs the trail must not be the one
+        without it.
+        """
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        events: list[dict] = []
+        monkeypatch.setattr(
+            kas_agents,
+            "sel",
+            lambda: types.SimpleNamespace(
+                log_api_access=lambda **kw: events.append(kw)
+            ),
+        )
+
+        to_client_custom_agent("kirocrew", _spec(allowedTools=["@denied-srv"]), "p")
+
+        assert len(events) == 1
+        assert events[0]["operation"] == "mcp_auto_approve_withheld"
+        assert events[0]["source"] == "kas_agent_projection"
+        assert "@denied-srv" in events[0]["resources"]
+        assert "kirocrew" in events[0]["resources"]
+
+    def test_nothing_withheld_emits_no_event(self, monkeypatch):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
+        events: list[dict] = []
+        monkeypatch.setattr(
+            kas_agents,
+            "sel",
+            lambda: types.SimpleNamespace(
+                log_api_access=lambda **kw: events.append(kw)
+            ),
+        )
+
+        to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
+
+        assert events == []
+
+    def test_an_audit_failure_does_not_undo_the_withhold(self, monkeypatch):
+        """The withhold has already happened and is the safe direction.
+
+        Failing the projection because the audit sink is unavailable would turn a
+        missing log line into a session that cannot start.
+        """
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+
+        def _broken():
+            raise RuntimeError("no sink")
+
+        monkeypatch.setattr(kas_agents, "sel", _broken)
+
+        out = to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
+        assert "permissions" not in out
+
+
+class TestKeysTheWireCannotCarry:
+    """A key with no slot in the schema is reported — and only reported once.
+
+    The wording matters as much as the level: the previous message said "no KAS
+    equivalent", which reads as "KAS cannot do this" and sends a reader looking
+    for a missing feature. ``hooks`` in particular IS a KAS feature; what is
+    missing is a way to deliver it on an agent injected over the wire.
+
+    Every ``at_level`` here names the logger. Left to the root logger it passes
+    alone and fails in the full suite (something else has raised the package
+    level by then), and the negative assertions would pass VACUOUSLY.
+    """
+
+    def test_the_keys_are_named(self, caplog):
+        spec = _spec(hooks={"postToolUse": []}, toolsSettings={"x": 1})
+        with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
             to_client_custom_agent("kirocrew", spec, "p")
-        msg = caplog.text
-        assert "allowedTools" in msg and "toolsSettings" in msg
+        assert "toolsSettings" in caplog.text
+
+    def test_it_does_not_warn_on_every_session(self, caplog):
+        """Constant payload on a per-session path: at WARNING it is pure noise."""
+        with caplog.at_level("WARNING"):
+            to_client_custom_agent("kirocrew", _spec(toolsSettings={"x": 1}), "p")
+        assert caplog.text.strip() == ""
+
+    def test_the_translated_key_is_not_reported_as_lost(self, caplog):
+        with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
+            to_client_custom_agent("kirocrew", _spec(allowedTools=["web_fetch"]), "p")
+        assert "allowedTools" not in caplog.text
 
     def test_nothing_logged_when_the_spec_has_none(self, caplog):
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("DEBUG", logger="kiro_crew.acp.kas_agents"):
             to_client_custom_agent("kirocrew", _spec(), "p")
-        assert "no KAS equivalent" not in caplog.text
+        assert "cannot carry" not in caplog.text
 
 
 class TestPromptResolution:

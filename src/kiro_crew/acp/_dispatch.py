@@ -87,8 +87,31 @@ def build_session_new_params(
     if claude_meta:
         params["_meta"] = {"claudeCode": {"options": {}}}
     if kas_custom_agents:
-        params["_meta"] = {"kiro": {"customAgents": kas_custom_agents}}
+        attach_kas_custom_agents(params, kas_custom_agents)
     return params
+
+
+def attach_kas_custom_agents(
+    params: dict[str, Any],
+    agents: list[dict[str, Any]] | None,
+) -> None:
+    """Put agent definitions in the ``_meta`` envelope KAS reads them from.
+
+    Shared by ``session/new`` and ``session/load`` so the envelope's shape has
+    one owner: a resumed session needs the same definitions a new one gets, and
+    two hand-built copies of the same nesting would be free to drift.
+
+    Merges into any existing ``_meta`` rather than replacing it. Today's other
+    writer is a kiro-cli-only transcript path, so in practice they never both
+    apply — but a future third writer should not be able to silently drop one.
+    """
+    if not agents:
+        return
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        params["_meta"] = meta
+    meta["kiro"] = {"customAgents": agents}
 
 
 def set_mode_params(session_id: str, agent: str) -> dict[str, Any]:

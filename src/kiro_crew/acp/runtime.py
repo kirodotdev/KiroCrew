@@ -29,6 +29,7 @@ from typing import Any, Callable, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.acp._dispatch import (
+    attach_kas_custom_agents,
     build_session_new_params,
     parse_session_modes,
     redact_text,
@@ -2543,8 +2544,9 @@ class AcpRuntime:
         # silently un-pooling the session for the rest of its life. Resolved off
         # the event loop — the overlay lookup stats and reads files. Empty when
         # the shared gateway is disabled, so non-pooled installs still send [].
+        active_agent = agent or self._agent
         mcp_servers = await asyncio.to_thread(
-            pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
+            pooled_session_servers, self._mcp_gateway_overlay, active_agent
         )
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
@@ -2556,6 +2558,29 @@ class AcpRuntime:
             # the session itself from sessionId is called with an empty path, and
             # sending the field anyway would advertise a path that does not exist.
             load_params["_meta"] = {"_kiro.dev/session_file": session_file}
+        # Re-inject the agent definition, for the same reason create_session()
+        # does: KAS registers client agents per session and has no --agent flag,
+        # so a resumed session that is not handed them again advertises only the
+        # modes it can find on disk. That set is NOT a superset of what
+        # session/new had — KAS skips an agent profile written for kiro-cli — so
+        # omitting this made the requested mode genuinely absent on resume, and
+        # Guard A below then refused the load rather than run the backend default.
+        #
+        # Guarded on the backend rather than relying on _kas_custom_agents()
+        # answering None, so the kiro resume path reaches a comparison and stops:
+        # no awaited step, nothing to unwind, no shared coroutine that could grow
+        # a failure mode later. create_session() enters the same seam
+        # unconditionally, which is the shape this one deliberately does NOT copy
+        # — reading a backend and stopping is the smallest non-zero delta the kiro
+        # path can take for KAS behaviour to exist here at all, and it is the
+        # positive `== ACP_BACKEND_KAS` dispatch harness-parity H5 asks for (see
+        # _deliver_kas_access_token, and six other call sites in this file).
+        # H13 governs the REGISTRATION seam — ProviderRegistry and
+        # create_provider_factory, per its own row in harness-parity.md — not
+        # per-request dispatch inside the runtime; a reading that reached here
+        # would forbid those seven shipped call sites too.
+        if self._acp_backend == ACP_BACKEND_KAS:
+            attach_kas_custom_agents(load_params, await self._kas_custom_agents(active_agent))
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
         loaded_session_id = ""

@@ -25,11 +25,17 @@ rediscover:
   name regardless of where it was declared.
 * ``model`` — the model is set through its own protocol verb, so it has exactly
   one owner rather than being pinned in two places that can disagree.
-* ``permissions`` — KAS's inline policy is keyed by ITS capability vocabulary,
-  not by tool names, so translating Crew's auto-approve list would mean guessing
-  identifiers. A wrong guess either no-ops or over-allows, and over-allowing is
-  not a risk worth taking for a convenience feature; omitting the field leaves
-  KAS's own default policy in force. Auto-approval parity is a follow-up.
+
+``permissions`` IS projected, and is the one field that changes behaviour rather
+than just describing it. KAS's policy is keyed by its own capability vocabulary
+instead of by tool name, so it is not a rename of Crew's ``allowedTools`` — see
+:mod:`kiro_crew.acp.kas_permissions` for the mapping and for why an entry it
+cannot classify is left to prompt. Omitting the field is not the neutral choice
+it looks like: with no policy, KAS resolves every request to ``ask``, so a spec
+that auto-approves a dozen tools on kiro-cli would prompt for all of them here.
+It is derived from ``allowedTools`` and from nothing else: a ``permissions``
+block already in the spec is NOT relayed, because ``allowedTools`` is the only
+auto-approve input Crew's governance ceiling has filtered.
 """
 
 from __future__ import annotations
@@ -39,7 +45,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +60,19 @@ _PROMPT_FILE_SCHEME = "file://"
 #: Pseudo-filesystems whose contents are process/kernel state, not documents.
 _PSEUDO_FS_ROOTS = ("/proc", "/sys", "/dev")
 
-#: Spec keys Crew writes that KAS's ``ClientCustomAgent`` has no home for.
-#: Dropped with a named warning so a lost capability shows up in the log instead
-#: of being discovered as missing behaviour later.
+#: Spec keys with no slot in KAS's ``ClientCustomAgent`` wire schema.
+#:
+#: "No slot on the wire" is NOT "no such capability in KAS" — conflating the two
+#: is what kept ``hooks`` written off as unsupported. KAS runs pre/post-tool-use
+#: hooks natively and loads them from an agent profile ON DISK (it even accepts
+#: Crew's object form), so what is lost here is a delivery path, not a feature:
+#: an agent injected over the wire cannot carry them.
+#:
+#: ``allowedTools`` is deliberately NOT in this set. It has no slot either, but
+#: :mod:`kiro_crew.acp.kas_permissions` translates it into ``permissions``, so
+#: the capability survives under another name.
 UNSUPPORTED_SPEC_KEYS = frozenset(
     {
-        "allowedTools",
         "hooks",
         "slashCommand",
         "toolsSettings",
@@ -208,6 +224,65 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     return []
 
 
+def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
+    """``allowedTools`` with every entry the governance ceiling withholds removed.
+
+    The five writers of an ``allowedTools`` list already consult the ceiling when
+    they WRITE, so on a freshly rebuilt spec this changes nothing. It is here
+    because projection READS a file, and the file can predate the ceiling that now
+    governs it: a spec written on an ungoverned host, restored from a backup, or
+    edited by hand carries grants nobody ever cleared. Re-asking at the moment of
+    projection is the same shape as the final sanitizer pass ``rebuild_agent_config``
+    runs over ``mcpServers`` — the last chance to withhold, taken deliberately.
+
+    ``may_skip_gate_now`` fails closed (an unreadable ceiling withholds), which is
+    the direction that matters: what is dropped here keeps prompting.
+    """
+    if not isinstance(allowed_tools, list):
+        return []
+    permitted: list[str] = []
+    withheld: list[str] = []
+    for raw in allowed_tools:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        entry = raw.strip()
+        if may_skip_gate_now(entry):
+            permitted.append(entry)
+        else:
+            withheld.append(entry)
+    if withheld:
+        names = ", ".join(sorted(withheld))
+        logger.info(
+            "agent %r: the governance ceiling withholds auto-approval for %s; "
+            "projecting no rule for them, so they keep prompting",
+            agent_id,
+            names,
+        )
+        # A withhold is a permission DECISION, and the other writers that reach
+        # this state — app-agent materialization, the host shared-MCP sync,
+        # doctor's auto-fix — all record it in the security event log. Projection
+        # is the fourth, and the only one whose input is a file it did not write,
+        # so a stale grant is likelier to be withheld HERE than anywhere else;
+        # leaving it at a log line would make the most likely case the one with no
+        # audit trail. Never fail the projection on an audit error: the withhold
+        # itself has already happened and is the safe direction.
+        try:
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_auto_approve_withheld",
+                outcome="ok",
+                source="kas_agent_projection",
+                resources=(
+                    f"{names} projected without auto-approve "
+                    f"(governance ceiling) for agent {agent_id or '?'}; "
+                    "calls go through the approval gate"
+                ),
+            )
+        except Exception:  # noqa: BLE001 — audit must not break projection
+            logger.debug("SEL audit unavailable for KAS projection withhold", exc_info=True)
+    return permitted
+
+
 def to_client_custom_agent(
     agent_id: str,
     spec: dict[str, Any],
@@ -224,8 +299,14 @@ def to_client_custom_agent(
 
     dropped = sorted(k for k in UNSUPPORTED_SPEC_KEYS if spec.get(k))
     if dropped:
-        logger.warning(
-            "agent %r: dropping spec keys with no KAS equivalent: %s",
+        # Says WHY the key is dropped, because the previous wording ("no KAS
+        # equivalent") reads as "KAS cannot do this" and sent readers looking for
+        # a missing feature instead of a missing wire field. Debug, not warning:
+        # this fires on every session/new with a constant payload, so at WARNING
+        # it drowns the log without ever telling anyone something new.
+        logger.debug(
+            "agent %r: spec keys the customAgents wire schema cannot carry, "
+            "so an injected agent runs without them: %s",
             agent_id,
             ", ".join(dropped),
         )
@@ -235,6 +316,23 @@ def to_client_custom_agent(
         "prompt": prompt,
         "tools": _project_tools(spec, agent_id),
     }
+
+    # Derived from `allowedTools` and from nothing else. A `permissions` block
+    # sitting in the spec is deliberately NOT forwarded, even though it is already
+    # in KAS's vocabulary and forwarding it would be one line: it has not passed
+    # Crew's governance ceiling, so projecting one would hand any editor of the
+    # file a grant the ceiling never saw — and an auto-approved call never reaches
+    # Crew's permission callback, so the deny-list and the audit trail are skipped
+    # with it. One governed input, one derivation.
+    #
+    # A hand-written block is not ignored, just not Crew's to relay: it lives in
+    # the profile on disk, which the backend reads itself when Crew is not
+    # injecting an agent over the wire.
+    permissions = allowed_tools_to_permissions(
+        _ceiling_permitted(spec.get("allowedTools"), agent_id), agent_id=agent_id
+    )
+    if permissions:
+        out["permissions"] = permissions
 
     description = spec.get("description")
     if isinstance(description, str) and description:

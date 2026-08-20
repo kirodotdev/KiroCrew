@@ -2709,6 +2709,55 @@ def _strip_ungoverned_auto_approve(servers: dict[str, Any]) -> dict[str, Any]:
     return dict(strip_ungoverned_auto_approve(servers))
 
 
+def _seed_kas_permissions(config: dict[str, Any]) -> None:
+    """Give the spec a KAS ``permissions`` block if it has none. Never edit one.
+
+    Two things ride on this field, and the second is the surprising one:
+
+    1. It is how the auto-approve list reaches the KAS backend at all, since
+       ``allowedTools`` is a kiro-cli-only field there.
+    2. Its mere PRESENCE is what makes KAS load this file. KAS classifies a JSON
+       agent profile carrying kiro-cli-only fields and no KAS field as written
+       for the other runtime and skips it outright — so without ``permissions``
+       the agent is not among the modes KAS advertises, and anything that asks
+       for it by name (a resumed session, notably) fails to find it.
+
+    That second point is why an empty policy is still written when nothing
+    qualifies for auto-approve: ``{"rules": []}`` says "no tool is
+    pre-approved", which is both true and enough to keep the file loadable.
+    Dropping the key instead would silently un-register the agent. (The wire
+    projection makes the opposite choice and omits the field entirely — there,
+    presence buys nothing and absence is the honest report.)
+
+    **Seed, never refresh.** Once the key exists it belongs to whoever edits the
+    file, and this function does not touch it again. The obvious alternative —
+    recognising Crew's own output by its shape and regenerating that — was
+    written first and removed: the shapes overlap (a blanket ``allow`` is exactly
+    what a user writes too), so the rule that keeps a derived policy current is
+    the same rule that silently overwrites a hand-written one, and losing a
+    user's policy is the worse failure. What it costs is staleness: a policy
+    written before ``allowedTools`` changed keeps describing the old list. That
+    is bounded, because the wire projection derives afresh from ``allowedTools``
+    on every session and outranks the file — the block on disk is what applies
+    when Crew is NOT injecting an agent.
+    """
+    if config.get("permissions") is not None:
+        return
+
+    # circular import: `kiro_crew.acp.__init__` pulls in the runtime, which reaches
+    # back into config/agent — and it is also the whole ACP stack, which this
+    # module has no business dragging onto the gateway boot path just to write one
+    # JSON field. The imported module itself depends on nothing in the package.
+    from kiro_crew.acp.kas_permissions import (  # noqa: PLC0415
+        allowed_tools_to_permissions,
+    )
+
+    derived = allowed_tools_to_permissions(
+        config.get("allowedTools"), agent_id=Path(AGENT_FILENAME).stem
+    )
+    config["permissions"] = derived if derived is not None else {"rules": []}
+
+
 def _may_auto_approve(ref: str) -> bool:
     """Whether ``ref`` may go on an auto-approve list, per the governance ceiling.
 
@@ -3555,6 +3604,10 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
 
     def _finalize_and_write() -> None:
         servers_map = config.get("mcpServers")
+        # Runs here, at the single funnel every write path goes through, and AFTER
+        # the passes that mutate `allowedTools` (managed/shared MCP sync) — a policy
+        # seeded before them would describe a list that no longer exists.
+        _seed_kas_permissions(config)
         if isinstance(servers_map, dict):
             # LAST governance pass over the assembled server map. `autoApprove` can
             # arrive from an app manifest, a per-agent policy, a managed spec or an
