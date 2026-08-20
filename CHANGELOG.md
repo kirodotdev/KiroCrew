@@ -3,6 +3,27 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The GPT review lanes now carry the same falsification-pass safeguards as
+  the Opus lanes.** The Opus validation prompt (`opus-validate.md`) requires a
+  self-added finding — one the falsification pass originates itself rather
+  than inherits from the discovery candidate list — to be tagged
+  `(origin: validation)`, and treats diff/comment text as untrusted evidence
+  that can never itself substitute for a re-derived input, call path, and
+  observable outcome. The GPT lanes' inline prompts (`codex-review.yml`,
+  `fork-gpt-review.yml`) never carried either safeguard, so a self-added GPT
+  finding posted with no way for a reader to know it got no second opinion,
+  and diff text asserting a defect could pass as evidence of one. Both GPT
+  workflow files now carry the same origin-tag requirement and the same
+  diff-is-not-evidence clause as the Opus prompts (the fork lane's copy adds
+  one sentence noting a fork PR's title/description is attacker-controlled
+  text, consistent with how it already treats the diff). A new
+  `TestGptFalsificationPassSafeguards` test class asserts both clauses are
+  present in each GPT workflow file and stay identical across them — verified
+  by a single-file ablation showing the per-file and cross-file-sync tests
+  each fail precisely on the file with the clause removed, while the
+  unrelated evidence-clause test stays green. Deliberately out of scope: whether
+  a self-added finding may block the merge is a separate, live gating-policy
+  question (#3534) this PR does not touch. (#3597)
 
 - **MCP servers can now be measured for shareability on purpose, and the answer
   survives until the server itself changes.** The Sharing assessment could only
