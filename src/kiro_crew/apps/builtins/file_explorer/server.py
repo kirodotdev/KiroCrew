@@ -831,22 +831,37 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), fmt % args)
 
     # ----- routing -----
-    def _authorized_or_health(self, method: str) -> bool:
+    def _authorized_or_health(self, method: str, body: bytes = b"") -> bool:
         """Verify the gateway's X-KiroCrew-Proxy HMAC before dispatch (CWE-306).
 
         The health endpoint stays unauthenticated because the gateway's own
         liveness probe (apps/backend.py) hits the backend directly, unsigned.
         A read-only GET carries no body, so the signed body hash is sha256(b"").
+
+        The signature is accepted over either of two request-target forms:
+
+        1. The raw wire bytes (``self.path``) — the historical behavior.
+        2. The DECODED path+query. The gateway signs the decoded target
+           (aiohttp's ``match_info`` / ``request.query_string``), then sends a
+           plain-str URL that yarl re-encodes — so the wire bytes differ from
+           the signed form whenever the decoded text is not requote-stable.
+           A space is the common case: signed as ``' '`` but sent as ``'+'``,
+           so every request for a path like ``~/My Documents`` failed
+           verification and the UI showed a silently empty tree. Every
+           aiohttp-based app backend verifies the decoded form; this mirrors
+           them.
         """
         route = urllib.parse.urlparse(self.path).path.rstrip("/")
         if route in ("", "/health", "/api", "/api/health"):
             return True
-        if verify_proxy_request(
-            self.headers.get("X-KiroCrew-Proxy", ""),
-            method=method,
-            target=self.path,
-            body=b"",
-        ):
+        header = self.headers.get("X-KiroCrew-Proxy", "")
+        if verify_proxy_request(header, method=method, target=self.path, body=body):
+            return True
+        split = urllib.parse.urlsplit(self.path)
+        decoded = urllib.parse.unquote(split.path)
+        if split.query:
+            decoded += "?" + urllib.parse.unquote_plus(split.query)
+        if verify_proxy_request(header, method=method, target=decoded, body=body):
             return True
         _sel_audit("proxy_auth_failed", self.path, outcome="denied")
         self._json(401, {"error": "unauthorized"})
