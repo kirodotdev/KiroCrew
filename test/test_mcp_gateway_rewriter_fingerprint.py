@@ -83,6 +83,18 @@ _AMBIENT_READ_ALLOWLIST = frozenset(
         ("_rewrite_inputs_fingerprint", "os.environ:PATH"),
         ("_rewrite_inputs_fingerprint", "os.environ:PATHEXT"),
         ("_rewrite_inputs_fingerprint", "sys.executable"),
+        # Output-AFFECTING: the filtered source view whose values are written
+        # into the env sidecar (credential-keyed names removed so an
+        # agent-writable spec cannot dereference a secret under a benign key).
+        # Deliberately NOT fingerprinted -- encountering a placeholder marks the
+        # pass uncacheable instead (see test_env_placeholder_pass_is_never_cached
+        # and test_a_spec_without_placeholders_still_caches), so a resolved value
+        # is re-resolved on every boot and can never be served stale.
+        ("_placeholder_source_env", "os.environ:<dynamic>"),
+        # Output-NEUTRAL: distinguishes a credential-filtered refusal from a
+        # plain typo purely to pick the log message; the substitution result is
+        # the literal ``${VAR}`` either way.
+        ("_expand_env_placeholders", "os.environ:<dynamic>"),
         # Output-AFFECTING since issue #3495: decides whether an env-declaring
         # server is pooled at all. Read once per pass in rewrite_agents and
         # fingerprinted as "forward_declared_env" (see
@@ -273,7 +285,13 @@ def test_rewrite_pass_ambient_reads_match_pinned_allowlist() -> None:
     )
 
 
-def _mk_tree(root: Path, *, n_agents: int = 2, with_env: bool = True) -> Path:
+def _mk_tree(
+    root: Path,
+    *,
+    n_agents: int = 2,
+    with_env: bool = True,
+    env: dict[str, Any] | None = None,
+) -> Path:
     src = root / "agents"
     src.mkdir(parents=True, exist_ok=True)
     settings = root / "settings"
@@ -292,7 +310,7 @@ def _mk_tree(root: Path, *, n_agents: int = 2, with_env: bool = True) -> Path:
             "srv": {"command": _CMD, "args": [f"a{i}"], "poolable": True}
         }
         if with_env:
-            servers["srv"]["env"] = {"K": "v"}
+            servers["srv"]["env"] = {"K": "v"} if env is None else dict(env)
         (src / f"agent-{i}.json").write_text(
             json.dumps({"name": f"agent-{i}", "mcpServers": servers})
         )
@@ -429,6 +447,56 @@ def test_pool_identity_env_change_invalidates(
     # into the pool identity, so it is no longer withheld and 'srv' pools too.
     assert after[0]["agent-0.json"] == 2
     assert before != after
+
+
+def test_env_placeholder_pass_is_never_cached(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared ``${env:VAR}`` re-resolves on every boot.
+
+    The resolved value is baked into the sidecar at write time (so the stub and
+    gatewayd hash one agreed source), which makes the VARIABLE an input the
+    stat-based fingerprint cannot see. Rather than fingerprint the environment,
+    the pass is left uncacheable -- otherwise a rotated credential would keep
+    serving the OLD value for as long as no file changed.
+    """
+    monkeypatch.setenv("WH_TOKEN", "first")
+    _mk_tree(tmp_path, n_agents=1, env={"TOKEN": "${env:WH_TOKEN}"})
+    _rewrite(tmp_path)
+    sidecar_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
+    assert any("first" in p.read_text() for p in sidecar_dir.glob("*.json"))
+
+    # No fingerprint is left behind, so nothing can be served from cache.
+    fp = tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME
+    assert not fp.exists(), "a placeholder pass must not store a fingerprint"
+
+    before = rewrite_counter["n"]
+    monkeypatch.setenv("WH_TOKEN", "second")
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] > before, "a changed env value must be re-resolved"
+    assert any("second" in p.read_text() for p in sidecar_dir.glob("*.json"))
+    assert not any("first" in p.read_text() for p in sidecar_dir.glob("*.json"))
+
+
+def test_a_spec_without_placeholders_still_caches(
+    tmp_path: Path, rewrite_counter: dict[str, int]
+) -> None:
+    """The placeholder opt-out must not disable the cache for everyone else.
+
+    Pins the blast radius of ``env_placeholder_seen``: a declared env with no
+    ``${...}`` reference is unaffected and an unchanged boot is still served
+    from cache.
+    """
+    _mk_tree(tmp_path, n_agents=1, env={"K": "literal-value"})
+    _rewrite(tmp_path)
+    fp = tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME
+    assert fp.is_file(), "a placeholder-free pass must still cache"
+
+    before = rewrite_counter["n"]
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == before, "an unchanged boot must serve the cache"
 
 
 def test_source_content_change_invalidates(

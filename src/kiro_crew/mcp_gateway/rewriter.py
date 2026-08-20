@@ -26,13 +26,14 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Collection
+from typing import Any, Collection, Mapping
 
 from kiro_crew import __version__, platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -42,6 +43,7 @@ from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_utils import mcp_server_alias
+from kiro_crew.sandbox import scrub_agent_denied_env
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,16 @@ class _RewritePassNotes:
     cache-hit path re-runs exactly these probes and compares — a disagreement
     in either direction forces the full rewrite.
 
+    ``env_placeholder_seen`` records that a declared env contained a
+    ``${VAR}``/``${env:VAR}`` reference. The resolved VALUE lands in the
+    sidecar, so it is an input the stat-based fingerprint cannot see — an
+    exported variable changing between boots would otherwise keep serving a
+    sidecar expanded against the old environment (a rotated credential would
+    silently keep flowing the old value for as long as no file changed).
+    Rather than fingerprint the environment, such a pass is simply not cached:
+    the placeholder case re-resolves on every boot and cannot go stale, while
+    every spec without a placeholder keeps the cache untouched.
+
     ``sidecar_write_failed`` and ``source_read_failed`` mark transient I/O
     faults: the produced output set is incomplete for reasons that can clear
     without any fingerprinted input changing, so the run must not be cached
@@ -81,6 +93,7 @@ class _RewritePassNotes:
     """
 
     which_results: dict[str, str] = field(default_factory=dict)
+    env_placeholder_seen: bool = False
     sidecar_write_failed: bool = False
     source_read_failed: bool = False
 
@@ -243,6 +256,94 @@ def _withheld_env_count(
     )
 
 
+# Expand ${VAR}/${env:VAR} in a brokered server's declared env, matching
+# kiro-cli's expander (crates/agent/src/agent/util/mod.rs). Needed because the
+# broker spawns the stub, not the real server, so kiro-cli never expands the
+# declared env; gatewayd/the stub spawn the backend from the sidecar written
+# below. Resolving once at write time keeps that sidecar the single hash source
+# both the stub's effective_env_hash and gatewayd's coherence re-hash read, so
+# the PoolKey gate holds.
+_ENV_VAR_PLACEHOLDER = re.compile(r"\$\{(?:env:)?([^}]+)\}")
+
+
+def _placeholder_source_env() -> dict[str, str]:
+    """The environment view a placeholder may dereference.
+
+    The rewrite pass runs in the gateway parent process, whose ``os.environ``
+    holds the channel tokens ``load_credentials()`` seeds plus the operator's
+    raw shell env — and agent specs are agent-writable, so an unfiltered lookup
+    lets ``{"TOKEN": "${env:AWS_SECRET_ACCESS_KEY}"}`` smuggle a credential
+    VALUE past the key-name forwarding filters into a pooled backend.
+
+    Dropping :func:`is_secret_env_key` + :func:`is_credential_env_key` names
+    mirrors the declared-KEY double filter (``gatewayd._declared_non_secret_env``),
+    so a value the forwarder would refuse under its own name cannot ride in
+    under another. Dropping :func:`scrub_agent_denied_env` keys matches what
+    kiro-cli's own expander sees: the ACP spawn scrubs those before kiro-cli
+    starts, so they are misses there and must be misses here too.
+    """
+    return scrub_agent_denied_env(
+        {
+            k: v
+            for k, v in os.environ.items()
+            if not (is_secret_env_key(k) or is_credential_env_key(k))
+        }
+    )
+
+
+def _expand_env_placeholders(
+    value: str,
+    *,
+    notes: _RewritePassNotes | None = None,
+    source: Mapping[str, str] | None = None,
+) -> str:
+    """Resolve ``${VAR}`` / ``${env:VAR}`` from *source* (default: the filtered
+    :func:`_placeholder_source_env` view), leaving an unresolved reference as a
+    literal ``${VAR}`` (kiro-cli parity, including dropping the ``env:`` prefix
+    on a miss). A reference to a credential-filtered name is the same miss,
+    logged so the operator can tell a refusal from a typo.
+
+    Encountering any reference marks the pass uncacheable via *notes* (see
+    ``_RewritePassNotes.env_placeholder_seen``) — the environment is not a
+    fingerprinted input, so a resolved value must never be served from cache.
+    """
+    env_view = _placeholder_source_env() if source is None else source
+
+    def _sub(match: "re.Match[str]") -> str:
+        name = match.group(1)
+        if notes is not None:
+            notes.env_placeholder_seen = True
+        resolved = env_view.get(name)
+        if resolved is None:
+            if name in os.environ:
+                logger.warning(
+                    "declared env placeholder ${%s} names a credential-filtered "
+                    "variable; left as a literal",
+                    name,
+                )
+            return f"${{{name}}}"
+        return resolved
+
+    return _ENV_VAR_PLACEHOLDER.sub(_sub, value)
+
+
+def _expand_env_map(
+    env_pairs: dict[str, Any], *, notes: _RewritePassNotes | None = None
+) -> dict[str, Any]:
+    """Expand placeholders in string values only; non-str values pass through
+    (both readers ``str()``-coerce them identically, keeping the PoolKey hash
+    coherent). The source view is built once for the whole map."""
+    source = _placeholder_source_env()
+    return {
+        k: (
+            _expand_env_placeholders(v, notes=notes, source=source)
+            if isinstance(v, str)
+            else v
+        )
+        for k, v in env_pairs.items()
+    }
+
+
 def _build_stub_entry(
     *,
     stubs_dir: Path,
@@ -359,7 +460,13 @@ def _build_stub_entry(
                     # double-close (and does close it when an earlier step
                     # raised).
                     fd_owned = False
-                    fh.write(json.dumps(env_pairs, sort_keys=True))
+                    # Resolve placeholders here (see _expand_env_map): the backend
+                    # is spawned from this sidecar, not by kiro-cli.
+                    fh.write(
+                        json.dumps(
+                            _expand_env_map(env_pairs, notes=notes), sort_keys=True
+                        )
+                    )
                 os.replace(tmp, env_file)
                 wrote_sidecar = True
             finally:
@@ -1502,6 +1609,14 @@ def rewrite_agents(
         uncacheable = "env sidecar write failure(s)"
     elif overlay_write_failed:
         uncacheable = "overlay write failure(s)"
+    elif notes.env_placeholder_seen:
+        # Not a fault: a declared env carried a ${VAR}/${env:VAR} reference, so
+        # a sidecar's contents depend on the ENVIRONMENT as well as the spec
+        # files. The environment is not a fingerprinted input, so caching this
+        # pass would serve a sidecar expanded against a since-changed variable
+        # (a rotated credential silently kept flowing the old value). Re-resolve
+        # on every boot instead; specs with no placeholder still cache normally.
+        uncacheable = "declared env contains ${VAR} placeholder(s)"
     if uncacheable:
         logger.debug("rewriter: %s; not caching this rewrite", uncacheable)
         # Remove any fingerprint from an earlier successful run: it could

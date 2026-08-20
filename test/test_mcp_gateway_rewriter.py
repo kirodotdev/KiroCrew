@@ -10,16 +10,25 @@ guard in ``_injectable_settings_servers``).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
+from kiro_crew.mcp_gateway import rewriter
+from kiro_crew.mcp_gateway.hashing import is_secret_env_key
+from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.rewriter import (
     _WRAPPER_MARKER,
+    _expand_env_map,
+    _expand_env_placeholders,
     _injectable_settings_servers,
     _rewrite_single_spec,
+    env_sidecar_dir_for_stubs,
+    env_sidecar_name,
 )
+from kiro_crew.sandbox import scrub_agent_denied_env
 
 
 class TestSettingsRelocationMatchesInjection:
@@ -854,3 +863,118 @@ def test_stub_fingerprint_is_the_module_on_the_launch_line(tmp_path: Path) -> No
     # Both cmdline matchers must be that same string, not a private copy.
     assert session_memory._STUB_MARKER == STUB_MODULE
     assert subagent.STUB_MODULE == STUB_MODULE
+
+
+# -- Env-var placeholder expansion (parity with kiro-cli's MCP expander) --
+#
+# When the broker is active, kiro-cli spawns the stub rather than the real
+# stdio server, so kiro-cli's own ${env:VAR}/${VAR} expansion never runs over
+# the declared env. The rewriter must resolve placeholders itself before
+# writing the sidecar the brokered backend is spawned from, or the server gets
+# the literal placeholder string.
+
+
+def test_expand_env_placeholders_resolves_both_forms(monkeypatch) -> None:
+    monkeypatch.setenv("MYVAR", "resolved-value")
+    assert _expand_env_placeholders("${MYVAR}") == "resolved-value"
+    assert _expand_env_placeholders("${env:MYVAR}") == "resolved-value"
+    assert (
+        _expand_env_placeholders("Bearer ${env:MYVAR} / ${MYVAR}")
+        == "Bearer resolved-value / resolved-value"
+    )
+
+
+def test_expand_env_placeholders_unresolved_stays_literal_without_prefix(monkeypatch) -> None:
+    """An unresolved reference is left literal, and the optional ``env:`` prefix
+    is dropped on the miss -- matching kiro-cli's fallback."""
+    monkeypatch.delenv("NOPE", raising=False)
+    assert _expand_env_placeholders("${NOPE}") == "${NOPE}"
+    assert _expand_env_placeholders("${env:NOPE}") == "${NOPE}"
+
+
+def test_expand_env_placeholders_empty_value_is_substituted(monkeypatch) -> None:
+    """An env var set to empty resolves to empty (kiro-cli parity: std::env::var
+    returns Ok("") not a miss)."""
+    monkeypatch.setenv("EMPTY", "")
+    assert _expand_env_placeholders("${EMPTY}") == ""
+
+
+def test_expand_env_map_expands_values_only(monkeypatch) -> None:
+    monkeypatch.setenv("TOK", "abc123")
+    out = _expand_env_map({"AUTH": "${env:TOK}", "PLAIN": "keep", "NUM": 5})
+    assert out == {"AUTH": "abc123", "PLAIN": "keep", "NUM": 5}
+    # Keys are never treated as placeholders.
+    assert _expand_env_map({"${env:TOK}": "v"}) == {"${env:TOK}": "v"}
+
+
+def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) -> None:
+    """End-to-end (write side): a stubbed server with env forwarding on has its
+    ${env:VAR} resolved into the 0600 sidecar gatewayd/the stub spawn the backend
+    from; an unresolved reference stays literal. This is the only path that
+    writes an env sidecar — an env-declaring server is otherwise left unwrapped
+    (see the forward_env-off behaviour), so kiro-cli launches it and expands the
+    env itself."""
+    monkeypatch.setenv("MYVAR", "s3cr3t-token")
+    monkeypatch.delenv("MISSING", raising=False)
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "srv": {
+                "command": sys.executable,
+                "env": {"AUTH": "${env:MYVAR}", "OTHER": "${MISSING}"},
+            },
+        },
+    }
+    _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+
+    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name("agent-a", "srv")
+    written = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert written["AUTH"] == "s3cr3t-token"  # resolved
+    assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
+
+
+@pytest.mark.parametrize(
+    "var",
+    [
+        # One representative per filter the source view composes:
+        "AWS_SECRET_ACCESS_KEY",  # hashing.is_secret_env_key (ENV_SCRUB_PREFIXES)
+        "AWS_ACCESS_KEY_ID",  # manager.is_credential_env_key
+        "SSH_AUTH_SOCK",  # manager.is_credential_env_key (sandbox set)
+        "SLACK_BOT_TOKEN",  # sandbox.scrub_agent_denied_env (channel tokens)
+    ],
+)
+def test_expand_env_refuses_credential_source_names(monkeypatch, var) -> None:
+    """A credential value cannot be smuggled under a benign declared key.
+
+    Agent specs are agent-writable, so ``{"TOKEN": "${env:AWS_SECRET_...}"}``
+    would carry a secret VALUE past the key-name forwarding filters into a
+    pooled backend. A protected source name is a miss: the literal stays,
+    exactly as if the variable were unset.
+    """
+    monkeypatch.setenv(var, "real-secret-value")
+    assert _expand_env_placeholders(f"${{env:{var}}}") == f"${{{var}}}"
+    out = _expand_env_map({"TOKEN": f"${{env:{var}}}"})
+    assert out == {"TOKEN": f"${{{var}}}"}
+    assert "real-secret-value" not in json.dumps(out)
+
+
+def test_placeholder_source_env_mirrors_the_forwarder_filters(monkeypatch) -> None:
+    """Pins the composition: the dereference view drops exactly the names the
+    declared-key filters would refuse plus the channel-credential scrub, and
+    keeps everything else. Guards against the two sides drifting apart."""
+    monkeypatch.setenv("PLAIN_VAR", "ok")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "t")
+    view = rewriter._placeholder_source_env()
+    assert view["PLAIN_VAR"] == "ok"
+    for name in view:
+        assert not is_secret_env_key(name)
+        assert not is_credential_env_key(name)
+    assert "SLACK_BOT_TOKEN" not in view
+    assert view == scrub_agent_denied_env(
+        {
+            k: v
+            for k, v in os.environ.items()
+            if not (is_secret_env_key(k) or is_credential_env_key(k))
+        }
+    )
