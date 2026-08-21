@@ -464,3 +464,40 @@ class TestOutbound:
             )
             await c.send_message("conv-1", "hi", "https://smba.example.com/")
             assert slept[-1] == expected, f"{headers} -> expected {expected}, got {slept[-1]}"
+
+
+class TestLifecycle:
+    @pytest.mark.asyncio
+    async def test_close_awaits_cancelled_handler_before_returning(self) -> None:
+        """Mirrors the Webex/WeCom close() contract: cancel every in-flight
+        handler task and await it before releasing downstream resources, so a
+        handler's ``finally`` has run by the time close() returns."""
+        started = asyncio.Event()
+        cleaned_up = asyncio.Event()
+
+        async def _handler() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()  # block until cancelled
+            finally:
+                cleaned_up.set()
+
+        c = TeamsClient(app_id=_APP_ID, app_password="pw")
+        task = asyncio.ensure_future(_handler())
+        c._handler_tasks.add(task)
+        task.add_done_callback(c._handler_tasks.discard)
+        await started.wait()
+
+        await c.close()
+
+        assert cleaned_up.is_set()
+        assert task.done()
+        assert task.cancelled()
+        assert c._handler_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_close_with_no_handlers_still_closes_session(self) -> None:
+        c = TeamsClient(app_id=_APP_ID, app_password="pw")
+        c._session = _FakeSession([])
+        await c.close()
+        assert c._session is None
