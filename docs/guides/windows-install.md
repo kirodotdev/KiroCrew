@@ -251,6 +251,22 @@ security-warning handlers in each caller fire — a naive `if IS_POSIX: os.chmod
 guard would silently no-op on Windows, leaving secrets group/world-readable
 under NTFS.
 
+`restrict_to_owner` is file-shaped by design: its grants are deliberately
+non-inheritable (inheritance flags mean nothing on a file). A **directory**
+holding secrets must instead go through `platform_compat.restrict_dir_to_owner`
+— the directory twin — whose grants carry `(OI)(CI)` so files and
+subdirectories created inside it inherit the owner-only DACL, and which uses
+`0o700` on POSIX (a directory needs the execute bit to be traversable, which
+the file helper's `0o600` drops). `make_owner_only_dir` wraps creation
+(with parents) plus a best-effort tighten for the common case. Calling the
+file helper on a directory tightens only the directory node itself and leaves
+every file later created inside on the creating token's default DACL — the
+runtime logs a warning when it detects that misuse. Inheritance governs only
+what is created from then on: a file that already existed inside keeps its own
+DACL and — because Windows grants *Bypass Traverse Checking* to Everyone by
+default — stays reachable through the tightened parent, so repairing an
+existing install needs a per-file pass, not a parent tighten.
+
 ## File locking on Windows
 
 `platform_compat.file_lock` / `acquire_lock` provide a genuine *blocking*
