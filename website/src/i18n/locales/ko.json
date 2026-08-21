@@ -11654,7 +11654,9 @@
       "was_value": "이전 {{value}}",
       "window_last": "OTEL 섹션 · 기간: 최근",
       "window_tokens_col": "윈도(토큰)",
-      "off_body": "<settingRef/>로 활성화하세요. 메트릭은 로컬(<metricsDir/>)에 유지되며 이 컴퓨터를 벗어나지 않습니다."
+      "off_body": "<settingRef/>로 활성화하세요. 메트릭은 로컬(<metricsDir/>)에 유지되며 이 컴퓨터를 벗어나지 않습니다.",
+      "gauges": "게이지",
+      "gauges_latest": "최신 샘플"
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",

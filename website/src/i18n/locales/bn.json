@@ -11784,7 +11784,9 @@
       "was_value": "আগে {{value}}",
       "window_last": "OTEL বিভাগ · উইন্ডো: গত",
       "window_tokens_col": "উইন্ডো (টোকেন)",
-      "off_body": "সক্রিয় করুন <settingRef/> দিয়ে। মেট্রিক্স স্থানীয় থাকে (<metricsDir/>) — এই মেশিন থেকে কিছুই বের হয় না।"
+      "off_body": "সক্রিয় করুন <settingRef/> দিয়ে। মেট্রিক্স স্থানীয় থাকে (<metricsDir/>) — এই মেশিন থেকে কিছুই বের হয় না।",
+      "gauges": "গেজ",
+      "gauges_latest": "সর্বশেষ নমুনা"
     },
     "terminalPopoutFrame": {
       "return": "ডকে ফিরে যান",

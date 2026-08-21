@@ -23,11 +23,13 @@ Percentiles are interpolated from the histogram buckets (the DELTA-temporality
 exporter + the explicit-bucket View in ``provider.py`` make this meaningful and
 day-additive). mean/min/max are exact from the data point.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import math
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -91,9 +93,7 @@ _OTHER_SPLIT_ATTRS = frozenset({"warm"})
 # cross-module test enforces that, so a dead entry (e.g. a "cancelled" label
 # nothing ever emitted — user cancels map to "error") cannot linger and
 # mislead readers about what fault_rate counts.
-_TERMINAL_FAULT_OUTCOMES = frozenset(
-    {"error", "timeout", "unknown", "stall_exhausted"}
-)
+_TERMINAL_FAULT_OUTCOMES = frozenset({"error", "timeout", "unknown", "stall_exhausted"})
 
 # (shard-fingerprint, TTL) cache — shards are append-only, so a change to any
 # shard's (mtime, size) invalidates the cache exactly when needed (same pattern
@@ -185,9 +185,7 @@ def _shards_in_window(directory: Path, days: int) -> list[Path]:
     return out
 
 
-def _pct_from_buckets(
-    bucket_counts: list[int], bounds: list[float], q: float
-) -> float:
+def _pct_from_buckets(bucket_counts: list[int], bounds: list[float], q: float) -> float:
     """Interpolate the q-quantile (0..1) from explicit histogram buckets.
 
     ``bucket_counts`` has one more element than ``bounds`` (the trailing +Inf
@@ -374,9 +372,14 @@ class _Hist:
         g = self._dominant()
         if g is None:
             return {
-                "count": 0, "mean_ms": 0.0, "p50_ms": 0.0,
-                "p90_ms": 0.0, "min_ms": 0.0, "max_ms": 0.0,
-                "other_generations": 0, "total_count": 0,
+                "count": 0,
+                "mean_ms": 0.0,
+                "p50_ms": 0.0,
+                "p90_ms": 0.0,
+                "min_ms": 0.0,
+                "max_ms": 0.0,
+                "other_generations": 0,
+                "total_count": 0,
             }
         cnt = int(g["count"])
         return {
@@ -391,6 +394,25 @@ class _Hist:
             "other_generations": self.other_generations,
             "total_count": self.total_count,
         }
+
+
+def _finite(raw: Any) -> float | None:
+    """Coerce a shard scalar to a finite float, or None.
+
+    THE single entry point for scalar reads in ``_aggregate``. Shards are
+    external input and Python's ``json`` accepts ``Infinity``/``NaN``
+    literals, so a bare ``float(...)`` admits values that poison sums and an
+    ``int(float(...))`` timestamp conversion raises ``OverflowError`` — four
+    review rounds landed in this branch before this invariant: every scalar
+    passes through here, and anything non-numeric or non-finite becomes None.
+    """
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
 
 
 def _day_of(dp: dict[str, Any], fallback: str) -> str:
@@ -419,10 +441,29 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     # name -> "attr=value" -> _Hist, for _OTHER_SPLIT_ATTRS only
     other_split: dict[str, dict[str, _Hist]] = {}
     other_ctr: dict[str, dict[str, Any]] = {}  # name -> {total, by_attr}
+    # name -> (pid, attr-signature) -> (time_unix_nano, value): newest sample
+    # wins WITHIN one process. Shards are per-PID and several kirocrew
+    # processes (gateway, MCP daemons) can export the same gauge names
+    # concurrently — collapsing them on timestamp alone would show whichever
+    # process exported last as "the" process state.
+    other_gauge: dict[str, dict[tuple[str, str], tuple[int, float]]] = {}
+    # CUMULATIVE sums (observable counters): per (pid, attrs) stream, track
+    # (banked, current_segment_max) with counter-RESET detection — a value
+    # dropping below its own segment max marks a process boundary (PID reuse,
+    # restart), banking the finished segment. Re-emitted snapshots >= the max
+    # are no-ops, so provider rebuilds (telemetry off/on) stay idempotent and
+    # a reused PID cannot overwrite an earlier process's total. Stream total =
+    # banked + live segment; cross-process total = sum over streams.
+    other_cum: dict[str, dict[tuple[str, str], tuple[float, float | None]]] = {}
     turn = _Hist()
 
     for p in shard_paths:
         shard_day = "-".join(p.stem.split("-")[1:4])
+        # Canonical shard names are metrics-YYYY-MM-DD-<pid>[-rotated…].jsonl;
+        # the PID scopes gauge samples to their owning process. A stem that
+        # doesn't carry one aggregates under "" rather than being dropped.
+        stem_parts = p.stem.split("-")
+        shard_pid = stem_parts[4] if len(stem_parts) > 4 and stem_parts[4].isdigit() else ""
         try:
             with p.open(encoding="utf-8") as fh:
                 for line in fh:
@@ -478,9 +519,7 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                     elif name == _TURN_METRIC and is_hist:
                                         turn.add(
                                             dp,
-                                            outcome=str(
-                                                attrs.get("outcome", "unknown")
-                                            ),
+                                            outcome=str(attrs.get("outcome", "unknown")),
                                         )
                                     elif is_hist:
                                         other_hist.setdefault(name, _Hist()).add(dp)
@@ -488,23 +527,90 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                                             if ak not in attrs:
                                                 continue
                                             sig = f"{ak}={str(attrs[ak]).lower()}"
-                                            other_split.setdefault(
-                                                name, {}
-                                            ).setdefault(sig, _Hist()).add(dp)
+                                            other_split.setdefault(name, {}).setdefault(
+                                                sig, _Hist()
+                                            ).add(dp)
                                     elif "value" in dp:
-                                        rec = other_ctr.setdefault(
-                                            name, {"total": 0.0, "by_attr": {}}
+                                        # Shards are external input and this
+                                        # parser's contract is tolerate-garbage
+                                        # (guarded json.loads above, _Hist.add's
+                                        # TypeError/ValueError guards for
+                                        # histograms). The scalar branch follows
+                                        # the same invariant: every field read
+                                        # coerces defensively — a garbage value
+                                        # skips the point, a garbage timestamp
+                                        # sorts oldest — so one bad record can
+                                        # never 500 the endpoint.
+                                        fval = _finite(dp.get("value"))
+                                        if fval is None:
+                                            continue
+                                        val = fval
+                                        fts = _finite(dp.get("time_unix_nano") or 0)
+                                        ts = int(fts) if fts is not None else 0
+                                        # A Sum's data block carries
+                                        # aggregation_temporality/is_monotonic;
+                                        # a Gauge's carries neither. DELTA sums
+                                        # (regular counters) accumulate across
+                                        # cycles. CUMULATIVE sums (observable
+                                        # counters: CPU seconds, GC stats) re-
+                                        # emit a process-lifetime snapshot every
+                                        # cycle, so summing them would multiply
+                                        # by cycle count — and exporting them as
+                                        # DELTA was reverted because an in-
+                                        # process provider rebuild (telemetry
+                                        # off/on) resets the delta baseline and
+                                        # re-emits the lifetime total once. So:
+                                        # keep the newest snapshot per (PID,
+                                        # attrs) — idempotent under rebuilds —
+                                        # and sum across PIDs at output. Gauges
+                                        # keep the newest sample per attribute
+                                        # set.
+                                        is_sum = (
+                                            "aggregation_temporality" in data
+                                            or "is_monotonic" in data
                                         )
-                                        val = float(dp.get("value", 0.0) or 0.0)
-                                        rec["total"] += val
-                                        if attrs:
-                                            key = ",".join(
-                                                f"{k}={attrs[k]}"
-                                                for k in sorted(attrs)
+                                        try:
+                                            # OTel JSON: DELTA=1, CUMULATIVE=2.
+                                            cumulative = (
+                                                int(data.get("aggregation_temporality") or 0) == 2
                                             )
-                                            rec["by_attr"][key] = (
-                                                rec["by_attr"].get(key, 0.0) + val
+                                        except (TypeError, ValueError):
+                                            cumulative = False
+                                        key = (
+                                            ",".join(f"{k}={attrs[k]}" for k in sorted(attrs))
+                                            if attrs
+                                            else ""
+                                        )
+                                        if is_sum and cumulative:
+                                            cm = other_cum.setdefault(name, {})
+                                            ckey = (shard_pid, key)
+                                            banked, seg = cm.get(ckey, (0.0, None))
+                                            if seg is not None and val < seg:
+                                                # Counter reset: the stream
+                                                # restarted below its own max
+                                                # (PID reuse, process restart).
+                                                # Bank the finished segment.
+                                                cm[ckey] = (banked + seg, val)
+                                            else:
+                                                cm[ckey] = (
+                                                    banked,
+                                                    val if seg is None else max(seg, val),
+                                                )
+                                        elif is_sum:
+                                            rec = other_ctr.setdefault(
+                                                name, {"total": 0.0, "by_attr": {}}
                                             )
+                                            rec["total"] += val
+                                            if attrs:
+                                                rec["by_attr"][key] = (
+                                                    rec["by_attr"].get(key, 0.0) + val
+                                                )
+                                        else:
+                                            g = other_gauge.setdefault(name, {})
+                                            gkey = (shard_pid, key)
+                                            prev = g.get(gkey)
+                                            if prev is None or ts >= prev[0]:
+                                                g[gkey] = (ts, val)
         except (OSError, UnicodeDecodeError):
             continue
 
@@ -539,6 +645,71 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
                 "by_attr": {k: round(v, 3) for k, v in rec["by_attr"].items()},
             }
         )
+    for name in sorted(other_cum):
+        cum_samples = other_cum[name]
+        # Per-stream total = banked segments + live segment; per-attr values
+        # sum the same way across PIDs.
+        cum_attrs: dict[str, float] = {}
+        cum_total = 0.0
+        for (_, csig), (banked, seg) in cum_samples.items():
+            cval = banked + (seg or 0.0)
+            if csig:
+                cum_attrs[csig] = cum_attrs.get(csig, 0.0) + cval
+            else:
+                cum_total += cval
+        if cum_total == 0.0 and cum_attrs:
+            cum_total = sum(cum_attrs.values())
+        other.append(
+            {
+                "name": name,
+                "kind": "counter",
+                "total": round(cum_total, 3),
+                "by_attr": {a: round(x, 3) for a, x in cum_attrs.items()},
+            }
+        )
+    for name in sorted(other_gauge):
+        samples = other_gauge[name]
+        pids = {pid for pid, _ in samples}
+        if len(pids) <= 1:
+            # One process in the window (the common case): same shape as before.
+            latest = next((v for (_, k), v in samples.items() if k == ""), None)
+            by_attr = {k: round(v[1], 3) for (_, k), v in samples.items() if k}
+            headline = (
+                latest[1] if latest is not None else max(samples.values(), key=lambda t: t[0])[1]
+            )
+        else:
+            # Concurrent processes exported this gauge. The headline is the
+            # newest process's reading (after a restart that is the live one),
+            # and by_attr carries every process's own newest sample under a
+            # pid= key so no process masquerades as another.
+            newest_pid = max(
+                pids,
+                key=lambda pid: max(v[0] for (p, _), v in samples.items() if p == pid),
+            )
+            latest = next(
+                (v for (p, k), v in samples.items() if p == newest_pid and k == ""),
+                None,
+            )
+            headline = (
+                latest[1]
+                if latest is not None
+                else max(
+                    (v for (p, _), v in samples.items() if p == newest_pid),
+                    key=lambda t: t[0],
+                )[1]
+            )
+            by_attr = {}
+            for (pid, k), v in sorted(samples.items()):
+                sig = f"pid={pid or 'unknown'}" + (f",{k}" if k else "")
+                by_attr[sig] = round(v[1], 3)
+        other.append(
+            {
+                "name": name,
+                "kind": "gauge",
+                "latest": round(headline, 3),
+                "by_attr": by_attr,
+            }
+        )
 
     turn_outcome = turn.outcomes
     turn_total = sum(turn_outcome.values())
@@ -563,15 +734,11 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             # Internal phase split (kiro backend): spawn_init, session_new,
             # set_model. Deliberately outside the startup totals above — these
             # are components of one startup, not startups.
-            "phases": [
-                {"name": n, **phases[n].stats()} for n in sorted(phases)
-            ],
+            "phases": [{"name": n, **phases[n].stats()} for n in sorted(phases)],
             # Startup cost grouped by conversation source, so a slow surface can
             # be identified directly instead of being inferred by correlating
             # export windows against the gateway log.
-            "by_channel": [
-                {"name": n, **by_channel[n].stats()} for n in sorted(by_channel)
-            ],
+            "by_channel": [{"name": n, **by_channel[n].stats()} for n in sorted(by_channel)],
         },
         "turn": turn_block,
         "other": other,
@@ -588,9 +755,7 @@ def _parse_startup_metrics() -> dict[str, Any]:
         return {"startup": None, "turn": None, "other": [], "shard_count": 0}
 
     try:
-        key = tuple(
-            sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shards)
-        )
+        key = tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shards))
     except OSError:
         key = None
     now = time.time()
@@ -691,9 +856,7 @@ async def api_context_trace(request: web.Request) -> web.Response:
     """
     slot = (request.query.get("slot") or "").strip()
     if not slot:
-        return web.json_response(
-            {"error": "slot is required", "code": "slot_required"}, status=400
-        )
+        return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
     trace = await asyncio.to_thread(context_trace, slot, _WINDOW_DAYS)
     return web.json_response(trace)
 
@@ -790,9 +953,7 @@ async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) 
 
     conversation_log = getattr(state, "conversation_log", None)
     if unresolved and conversation_log is not None:
-        titles.update(
-            await asyncio.to_thread(_persisted_titles, conversation_log, unresolved)
-        )
+        titles.update(await asyncio.to_thread(_persisted_titles, conversation_log, unresolved))
 
     rows = []
     for row in conversations:

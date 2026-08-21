@@ -11913,7 +11913,9 @@
       "was_value": "avant {{value}}",
       "window_last": "Sections OTEL · fenêtre : derniers",
       "window_tokens_col": "Fenêtre (tokens)",
-      "off_body": "Activer avec <settingRef/>. Les métriques restent locales (<metricsDir/>) — rien ne quitte cette machine."
+      "off_body": "Activer avec <settingRef/>. Les métriques restent locales (<metricsDir/>) — rien ne quitte cette machine.",
+      "gauges": "Jauges",
+      "gauges_latest": "dernier échantillon"
     },
     "terminalPopoutFrame": {
       "return": "Revenir au dock",

@@ -7629,7 +7629,9 @@
       "was_value": "was {{value}}",
       "window_last": "OTEL sections · window: last",
       "window_tokens_col": "Window (tokens)",
-      "off_body": "Enable with <settingRef/>. Metrics stay local (<metricsDir/>) — nothing leaves this machine."
+      "off_body": "Enable with <settingRef/>. Metrics stay local (<metricsDir/>) — nothing leaves this machine.",
+      "gauges": "Gauges",
+      "gauges_latest": "latest sample"
     },
     "terminalPopoutFrame": {
       "return": "Return to dock",

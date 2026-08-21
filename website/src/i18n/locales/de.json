@@ -11783,7 +11783,9 @@
       "was_value": "vorher {{value}}",
       "window_last": "OTEL-Abschnitte · Fenster: letzte",
       "window_tokens_col": "Fenster (Token)",
-      "off_body": "Aktivieren mit <settingRef/>. Metriken bleiben lokal (<metricsDir/>) — nichts verlässt diesen Rechner."
+      "off_body": "Aktivieren mit <settingRef/>. Metriken bleiben lokal (<metricsDir/>) — nichts verlässt diesen Rechner.",
+      "gauges": "Messwerte",
+      "gauges_latest": "letzter Messwert"
     },
     "terminalPopoutFrame": {
       "return": "Zurück zum Dock",

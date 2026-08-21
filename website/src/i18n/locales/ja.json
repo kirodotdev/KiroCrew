@@ -11654,7 +11654,9 @@
       "was_value": "前回 {{value}}",
       "window_last": "OTELセクション · ウィンドウ: 直近",
       "window_tokens_col": "ウィンドウ (トークン)",
-      "off_body": "<settingRef/> で有効にします。メトリクスはローカルに保存されます (<metricsDir/>) — このマシンの外には何も送信されません。"
+      "off_body": "<settingRef/> で有効にします。メトリクスはローカルに保存されます (<metricsDir/>) — このマシンの外には何も送信されません。",
+      "gauges": "ゲージ",
+      "gauges_latest": "最新サンプル"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",

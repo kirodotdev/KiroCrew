@@ -45,7 +45,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
-from opentelemetry.sdk.metrics import Counter, Histogram, UpDownCounter
+from opentelemetry.sdk.metrics import (
+    Counter,
+    Histogram,
+    UpDownCounter,
+)
 from opentelemetry.sdk.metrics.export import (
     AggregationTemporality,
     MetricExporter,
@@ -69,8 +73,7 @@ _BYTES_PER_MB = 1024 * 1024
 # positive time_ns field. Retention must never treat a merely prefix-matching
 # user file as exporter-owned when telemetry.local_dir points at a shared dir.
 _SHARD_NAME_RE = re.compile(
-    r"metrics-(?P<day>\d{4}-\d{2}-\d{2})-(?P<pid>[1-9]\d*)"
-    r"(?:-(?P<rotation>[1-9]\d*))?\.jsonl"
+    r"metrics-(?P<day>\d{4}-\d{2}-\d{2})-(?P<pid>[1-9]\d*)" r"(?:-(?P<rotation>[1-9]\d*))?\.jsonl"
 )
 
 
@@ -109,6 +112,17 @@ class JsonlMetricExporter(MetricExporter):
         # bucket counts across cycles and PIDs, and stays correct across process
         # restarts and day boundaries (cumulative snapshots would double-count
         # and misattribute a PID's counts to the wrong day).
+        #
+        # OBSERVABLE counters are deliberately ABSENT from this map and keep the
+        # SDK default (CUMULATIVE). DELTA was tried and reverted: the delta
+        # baseline lives in the provider, and the recorder is rebuilt in-process
+        # whenever telemetry consent changes (see provider._maybe_rebuild), so
+        # the first post-rebuild collection would re-emit the entire
+        # process-lifetime total as one giant delta and inflate daily sums. A
+        # cumulative snapshot is idempotent under the aggregator's
+        # keep-newest-per-PID rule (handlers/telemetry.py classifies temporality
+        # from the record itself), so provider rebuilds are harmless. Gauges
+        # carry no temporality and never belong here.
         super().__init__(
             preferred_temporality={
                 Counter: AggregationTemporality.DELTA,
@@ -166,9 +180,7 @@ class JsonlMetricExporter(MetricExporter):
             return
         if current_size <= 0 or current_size + incoming_bytes <= self._max_total_bytes:
             return
-        rotated = target.with_name(
-            f"{target.stem}-{time.time_ns()}{target.suffix}"
-        )
+        rotated = target.with_name(f"{target.stem}-{time.time_ns()}{target.suffix}")
         try:
             target.replace(rotated)
             self._chmod(rotated, 0o600)
@@ -190,9 +202,7 @@ class JsonlMetricExporter(MetricExporter):
                 lock_fd.write(b"\0")
                 lock_fd.flush()
             self._chmod(lock_path, 0o600)
-            acquired = platform_compat.try_acquire_lock(
-                lock_fd.fileno(), exclusive=True
-            )
+            acquired = platform_compat.try_acquire_lock(lock_fd.fileno(), exclusive=True)
             if not acquired:
                 yield False
                 return
@@ -249,9 +259,7 @@ class JsonlMetricExporter(MetricExporter):
         try:
             with self._directory_lock() as acquired:
                 if not acquired:
-                    logger.debug(
-                        "metrics directory lock busy; skipping prune cycle"
-                    )
+                    logger.debug("metrics directory lock busy; skipping prune cycle")
                     return
                 self._last_prune = now
                 self._prune()
@@ -270,9 +278,8 @@ class JsonlMetricExporter(MetricExporter):
         if mtime_ns >= recent_cutoff:
             return True
         current_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return (
-            match.group("day") == current_day
-            and platform_compat.pid_exists(int(match.group("pid")))
+        return match.group("day") == current_day and platform_compat.pid_exists(
+            int(match.group("pid"))
         )
 
     def _prune(self) -> None:

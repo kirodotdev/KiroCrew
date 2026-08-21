@@ -11654,7 +11654,9 @@
       "was_value": "此前 {{value}}",
       "window_last": "OTEL 部分 · 窗口：最近",
       "window_tokens_col": "窗口（tokens）",
-      "off_body": "使用 <settingRef/> 启用。指标保留在本地 (<metricsDir/>) — 不会离开此计算机。"
+      "off_body": "使用 <settingRef/> 启用。指标保留在本地 (<metricsDir/>) — 不会离开此计算机。",
+      "gauges": "仪表",
+      "gauges_latest": "最新采样"
     },
     "terminalPopoutFrame": {
       "return": "返回停靠面板",

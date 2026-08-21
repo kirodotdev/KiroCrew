@@ -12042,7 +12042,9 @@
       "was_value": "было {{value}}",
       "window_last": "Разделы OTEL · окно: последние",
       "window_tokens_col": "Окно (токены)",
-      "off_body": "Включить через <settingRef/>. Метрики остаются локальными (<metricsDir/>) — ничего не покидает эту машину."
+      "off_body": "Включить через <settingRef/>. Метрики остаются локальными (<metricsDir/>) — ничего не покидает эту машину.",
+      "gauges": "Датчики",
+      "gauges_latest": "последнее значение"
     },
     "terminalPopoutFrame": {
       "return": "Вернуть в док",

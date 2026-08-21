@@ -276,7 +276,6 @@ src/kiro_crew/dashboard/handlers/source_providers.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
 src/kiro_crew/dashboard/handlers/taskrunner.py
-src/kiro_crew/dashboard/handlers/telemetry.py
 src/kiro_crew/dashboard/handlers/terminal.py
 src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
@@ -413,7 +412,6 @@ src/kiro_crew/messaging/link.py
 src/kiro_crew/messaging/queue_receipt.py
 src/kiro_crew/messaging/renderer.py
 src/kiro_crew/metrics/http_metrics.py
-src/kiro_crew/metrics/local_exporter.py
 src/kiro_crew/metrics/provider.py
 src/kiro_crew/metrics/recorder.py
 src/kiro_crew/metrics/schema.py
@@ -507,7 +505,6 @@ test/metrics/test_mcp_gateway_metrics.py
 test/metrics/test_provider_bucket_views.py
 test/metrics/test_schema.py
 test/metrics/test_startup_channel_attrs.py
-test/metrics/test_telemetry_handler.py
 test/metrics/test_telemetry_titles.py
 test/metrics/test_turn_metric.py
 test/metrics/test_watchdog_metrics.py
