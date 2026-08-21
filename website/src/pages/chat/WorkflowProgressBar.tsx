@@ -73,9 +73,25 @@ const WorkflowProgressBar = memo(function WorkflowProgressBar({ slot }: { slot: 
 
   if (visible.length === 0) return null
 
+  // This band sits BETWEEN the virtualized transcript and the composer, and is
+  // not a shrinkable flex item — so an unbounded expanded body (phase tree +
+  // result + View source, easily taller than the viewport) grows the band until
+  // the composer is clipped out of view entirely. Cap it and scroll internally,
+  // the same way the sibling TaskProgressBar caps its expanded list.
+  // Applied only while something is expanded so the collapsed one-liner keeps
+  // its exact previous rendering and never shows a stray scrollbar.
+  // overscroll-contain stops a scroll that bottoms out here from chaining into
+  // the transcript behind it.
+  const anyExpanded = visible.some(r => expanded[r.run_id])
+
   return (
     <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <div className="mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up overflow-hidden">
+      <div
+        data-testid="workflow-progress-bar"
+        className={`mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up ${
+          anyExpanded ? 'max-h-[45vh] overflow-y-auto overflow-x-hidden overscroll-contain' : 'overflow-hidden'
+        }`}
+      >
         {visible.map(r => (
           <ExpandableRunRow
             key={r.run_id}
