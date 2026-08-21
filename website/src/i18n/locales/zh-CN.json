@@ -11550,6 +11550,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "搜索设置",
+        "no_results": "无匹配的设置",
+        "placeholder": "搜索设置…"
+      },
       "settings": "设置"
     },
     "systemPage": {

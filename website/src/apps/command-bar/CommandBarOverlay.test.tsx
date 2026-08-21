@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
 import { settingsSubtitle, settingsTabLabel } from '../../components/commandPalette/settingsTabLabel'
 import { i18nT } from '../../i18n/t'
 import CommandBarOverlay from './CommandBarOverlay'
@@ -51,9 +52,10 @@ function mount(onClose = vi.fn()) {
 const rowByText = (text: string) =>
   screen.getByText(text).closest('[role="option"]') as HTMLElement
 
-/** The title the overlay renders for a settings entry: catalog string when keyed. */
+/** The title the overlay renders for a settings entry — the shared resolver
+ *  (localized + fan-out suffix), same as the component. */
 const renderedTitle = (entry: (typeof SETTINGS_REGISTRY)[number]) =>
-  entry.labelKey ? i18nT(entry.labelKey) : entry.label
+  localizedSettingLabel(entry)
 
 const channelsEntry = SETTINGS_REGISTRY.find(e => e.tab === 'channels')!
 

@@ -11801,6 +11801,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "Buscar ajustes",
+        "no_results": "No hay ajustes coincidentes",
+        "placeholder": "Buscar ajustes…"
+      },
       "settings": "Ajustes"
     },
     "systemPage": {

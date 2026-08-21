@@ -7521,6 +7521,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "Search settings",
+        "no_results": "No matching settings",
+        "placeholder": "Search settings…"
+      },
       "settings": "Settings"
     },
     "systemPage": {

@@ -764,7 +764,9 @@ function YoloDurationCard() {
           <Clock size={12} className="shrink-0" />{activeNote}
         </div>
       )}
-      <div className="flex flex-col gap-1.5" role="radiogroup" aria-label={i18nT('pages.settings.securityPanel.yolo_duration_title')}>
+      {/* data-setting-label: deep-link anchor for the manual registry entry
+          (settingsManual.ts) — the highlight hook queries the rendered label. */}
+      <div className="flex flex-col gap-1.5" role="radiogroup" aria-label={i18nT('pages.settings.securityPanel.yolo_duration_title')} data-setting-label={i18nT('pages.settings.securityPanel.yolo_duration_title')}>
         {YOLO_DURATION_KEYS.map(k => {
           const selected = current === k
           const disabled = k === 'until_shutdown' && !untilShutdownPermitted
@@ -901,7 +903,9 @@ function TailnetOriginCard() {
 
   return (
     <SettingsCard>
-      <div className="flex items-start justify-between py-1.5 gap-4">
+      {/* data-setting-label: deep-link anchor for the manual registry entry
+          (settingsManual.ts) — the highlight hook queries the rendered label. */}
+      <div className="flex items-start justify-between py-1.5 gap-4" data-setting-label={i18nT('pages.settings.securityPanel.tailnet_title')}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <Network size={14} className="lucide-inline text-muted shrink-0" />
@@ -1097,7 +1101,9 @@ function GovernancePolicyViewer() {
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.governance_policy')}>
       <SettingsCard>
-        <div className="flex items-start gap-3 pb-1">
+        {/* data-setting-label: deep-link anchor for the manual registry entry
+            (settingsManual.ts) — the highlight hook queries the rendered label. */}
+        <div className="flex items-start gap-3 pb-1" data-setting-label={i18nT('pages.settings.securityPanel.governance_policy')}>
           <div className="mt-0.5 shrink-0 w-7 h-7 rounded-md bg-accent-subtle flex items-center justify-center text-accent">
             <Gavel size={14} className="lucide-inline" />
           </div>
@@ -1260,6 +1266,11 @@ function PostureSection() {
 
   return (
     <SettingsSection title={i18nT('pages.settings.securityPanel.live_security_posture')}>
+      {/* data-setting-label: deep-link anchor for the manual registry entry
+        * (settingsManual.ts `security.live-security-posture`) — the section is
+        * raw markup the extractor cannot see, so without this the highlight
+        * would querySelector a label no element carries and silently no-op. */}
+      <div data-setting-label={i18nT('pages.settings.securityPanel.live_security_posture')}>
       <SettingsCard>
         {/* Non-expandable rows: single-valued modes, not counted sets. */}
         <StatusRow icon={<Lock size={14} />} label={i18nT('pages.settings.securityPanel.process_sandbox')} value={i18nT('pages.settings.securityPanel.standard')} variant="ok"
@@ -1340,6 +1351,7 @@ function PostureSection() {
           )}
         </div>
       </SettingsCard>
+      </div>
     </SettingsSection>
   )
 }
@@ -1480,7 +1492,9 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
     <SettingsSection title={i18nT('pages.settings.securityPanel.denied_commands')}>
       {/* Card A — Built-in denies */}
       <SettingsCard>
-        <div className="flex items-center justify-between py-1.5">
+        {/* data-setting-label: deep-link anchor for the manual registry entry
+            (settingsManual.ts) — the highlight hook queries the rendered label. */}
+        <div className="flex items-center justify-between py-1.5" data-setting-label={i18nT('pages.settings.securityPanel.denied_commands')}>
           <div className="flex-1 min-w-0 mr-4">
             <div className="flex items-center gap-1.5">
               <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.disable_all_built_in_denies')}</span>

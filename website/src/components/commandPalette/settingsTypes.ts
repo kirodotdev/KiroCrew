@@ -22,6 +22,14 @@ export interface SettingEntry {
    * it can match the label rendered in the active locale.
    */
   labelKey?: string
+  /**
+   * Fan-out disambiguator (e.g. 'Discord') for entries a multi-target panel
+   * emits once per channel. `label` already carries it in English as
+   * `<label> (<labelSuffix>)`; a localized display re-appends it to the
+   * resolved `labelKey` string, which is un-suffixed by design so highlight
+   * DOM lookup still matches the rendered text.
+   */
+  labelSuffix?: string
   /** Optional description from the JSX prop. */
   description?: string
   /** Which settings tab this belongs to (matches SettingsPage TABS key). */
@@ -48,4 +56,16 @@ export interface SettingEntry {
    * Undefined for settings that don't map to a single config path.
    */
   configKey?: string
+}
+
+/**
+ * A hand-curated entry in settingsManual.ts. Key-only by construction: the
+ * i18n gate forbids English prose literals in hand-written source, so manual
+ * entries carry catalog KEYS and generation (`mergeManualEntries`) resolves
+ * `label`/`description` from the English catalogs — the same strings the
+ * panel renders, which keeps `data-setting-label` highlighting exact.
+ */
+export type ManualSettingEntry = Omit<SettingEntry, 'label' | 'labelKey' | 'description'> & {
+  labelKey: string
+  descriptionKey?: string
 }

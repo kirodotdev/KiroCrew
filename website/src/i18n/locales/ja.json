@@ -11550,6 +11550,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "設定を検索",
+        "no_results": "一致する設定がありません",
+        "placeholder": "設定を検索…"
+      },
       "settings": "設定"
     },
     "systemPage": {

@@ -11676,6 +11676,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "सेटिंग्स खोजें",
+        "no_results": "कोई मेल खाती सेटिंग नहीं",
+        "placeholder": "सेटिंग्स खोजें…"
+      },
       "settings": "सेटिंग्स"
     },
     "systemPage": {

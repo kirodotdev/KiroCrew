@@ -48,6 +48,62 @@ describe('createSettingsProvider — search', () => {
     expect(titles.some(t => t.includes('Theme') || t === 'Mode')).toBe(true)
   })
 
+  it('ranks an exact keyword hit above scattered label subsequences', async () => {
+    // Regression: "yolo" is y-o-l-o scattered through "Your Role", whose label
+    // subsequence used to outrank the auto-approve entry that carries the
+    // literal keyword "yolo" — so Enter took the wrong destination on the
+    // feature's own flagship query. Whole-word keyword hits rank WITH labels.
+    const { nav } = navigate()
+    const p = createSettingsProvider(nav)
+    const arr = await run(p, 'yolo')
+    expect(arr.length).toBeGreaterThan(0)
+    expect(arr[0].id).toBe('settings:security.how-long-auto-approve-stays-on')
+  })
+
+  it('ranks a whole-word hit inside a multi-word keyword at label rank', async () => {
+    // "until shutdown" is a keyword of the same entry; the query aligns with
+    // its second word, which must qualify (not just keyword-prefix queries).
+    const { nav } = navigate()
+    const p = createSettingsProvider(nav)
+    const arr = await run(p, 'shutdown')
+    expect(arr.length).toBeGreaterThan(0)
+    expect(arr[0].id).toBe('settings:security.how-long-auto-approve-stays-on')
+  })
+
+  it('an exact LABEL beats an exact keyword on a tie', async () => {
+    // "theme" is both the Theme setting's exact label and a curated keyword of
+    // Mode. Equal raw scores + the alphabetical tiebreak used to put Mode on
+    // top; the 1-point keyword edge keeps the row that IS the term first.
+    const { nav } = navigate()
+    const p = createSettingsProvider(nav)
+    const arr = await run(p, 'theme')
+    expect(arr[0].title).toBe('Theme')
+    expect(arr.some(r => r.title === 'Mode')).toBe(true)
+  })
+
+  it('promotes a query aligned after a hyphen in a keyword', async () => {
+    // 'sans-serif' is a keyword of Font Family; fuzzyMatch treats '-' as a
+    // word boundary, so the promotion predicate must too — space-only
+    // matching left every hyphenated synonym in the discounted tier.
+    const { nav } = navigate()
+    const p = createSettingsProvider(nav)
+    const arr = await run(p, 'serif')
+    expect(arr.length).toBeGreaterThan(0)
+    expect(arr[0].id).toBe('settings:display.font-family')
+  })
+
+  it('does not match subsequences scattered across fields', async () => {
+    // Parts are matched individually: "yolo" used to hit rows like the
+    // cursor-motion toggle by scattering letters across
+    // label+description+keywords in the joined corpus, burying real hits.
+    const { nav } = navigate()
+    const p = createSettingsProvider(nav)
+    const arr = await run(p, 'yolo')
+    const titles = arr.map(r => r.title)
+    expect(titles).not.toContain('Show cursor motion')
+    expect(titles).not.toContain('Auto-submit when I finish speaking')
+  })
+
   it('shows breadcrumb subtitle in "Tab › Label" format', async () => {
     const { nav } = navigate()
     const p = createSettingsProvider(nav)
@@ -74,7 +130,8 @@ describe('createSettingsProvider — search', () => {
     const { nav, spy } = navigate()
     const p = createSettingsProvider(nav)
     const arr = await run(p, 'slash command')
-    const hit = arr.find(r => r.title === 'Slash command')
+    // Channel-panel rows carry the fan-out suffix in their display label.
+    const hit = arr.find(r => r.title === 'Slash command (Slack)')
     expect(hit).toBeDefined()
     hit!.onActivate()
     const url = spy.mock.calls[0][0] as string
@@ -92,7 +149,7 @@ describe('createSettingsProvider — search', () => {
     // now collapsed into one); it must keep scoping instead of falling
     // through to a full-corpus query that matches nothing.
     const arr = await run(p, 'slack: slash')
-    const hit = arr.find(r => r.title === 'Slash command')
+    const hit = arr.find(r => r.title === 'Slash command (Slack)')
     expect(hit).toBeDefined()
   })
 

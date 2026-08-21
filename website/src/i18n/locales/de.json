@@ -11675,6 +11675,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "Einstellungen durchsuchen",
+        "no_results": "Keine passenden Einstellungen",
+        "placeholder": "Einstellungen durchsuchen…"
+      },
       "settings": "Einstellungen"
     },
     "systemPage": {

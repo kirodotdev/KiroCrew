@@ -29,10 +29,21 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'chat.default-model': 'chat.fallback-model',
 }
 
+/** Current registry ids, for fail-safe legacy rewrites below. */
+const REGISTRY_IDS = new Set(SETTINGS_REGISTRY.map(e => e.id))
+
 /** Rewrite a legacy highlight id to its current form (identity for current ids). */
 export function resolveLegacyHighlightId(id: string): string {
   if (LEGACY_ID_EXACT[id]) return LEGACY_ID_EXACT[id]
-  if (id.startsWith('slack.')) return `channels.${id.slice('slack.'.length)}`
+  if (id.startsWith('slack.')) id = `channels.${id.slice('slack.'.length)}`
+  // Per-channel rows gained a "(<Channel>)" label suffix so their ids are
+  // channel-qualified and order-stable. Every pre-suffix `channels.*` id in a
+  // bookmark was a SlackPanel row (the only channels panel the extractor
+  // mapped before the fan-out), so retarget those to the `-slack` form —
+  // fail-safe: only when the bare id no longer resolves and the slack form does.
+  if (id.startsWith('channels.') && !REGISTRY_IDS.has(id) && REGISTRY_IDS.has(`${id}-slack`)) {
+    return `${id}-slack`
+  }
   return id
 }
 

@@ -9,6 +9,7 @@ import { useAppDispatch } from '../../store'
 import { createSlot } from '../../store/chatSlice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
 import { settingsRoute } from '../../components/commandPalette/settingsRoute'
 import { settingsSubtitle } from '../../components/commandPalette/settingsTabLabel'
 import { usePaletteActions } from '../../components/commandPalette/paletteActions'
@@ -214,7 +215,10 @@ export default function CommandBarOverlay({
     for (const entry of SETTINGS_REGISTRY) {
       rows.push({
         id: `setting:${entry.id}`,
-        title: entry.labelKey ? i18nT(entry.labelKey) : entry.label,
+        // The shared resolver, not a bare labelKey lookup: resolving the key
+        // alone drops the fan-out suffix ("Bot Token (Discord)" → "Bot
+        // Token"), rendering per-channel rows as indistinguishable titles.
+        title: localizedSettingLabel(entry),
         subtitle: settingsSubtitle(entry),
         group: 'settings',
         kind: 'navigate',
