@@ -30,24 +30,40 @@ class TestPrepareMirrorMsg:
     def test_context_not_in_mirror_when_saved_before_prepend(self):
         """Simulate the chat_runner logic: _user_msg_for_mirror is captured
         BEFORE _pending_context is prepended to message, so context never
-        reaches _prepare_mirror_msg."""
+        reaches _prepare_mirror_msg.
+
+        The context block comes from the REAL ``drain_pending_context`` (not a
+        hand-built literal), so a frame change — e.g. the #4780 silent-
+        consumption contract line — flows through this assertion instead of
+        leaving it green against a stale copy. (The snapshot ORDER itself is
+        replicated here, not exercised; that would need a _run_chat-level
+        test.)
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.chat_runner import drain_pending_context
+
         user_msg = "Hello, please investigate"
 
         # --- Replicate chat_runner.py logic ---
         message = user_msg
 
-        # Line 635: save raw message for mirror BEFORE context prepend
+        # Save raw message for mirror BEFORE context prepend
         _user_msg_for_mirror = message
 
-        # Lines 638+: prepend pending context to message (for LLM)
-        context_block = (
-            '[Background context from "ticket-dispatch"]\n'
-            "SECRET BRIEFING: investigate ticket V123\n"
-            "[End of background context]\n"
+        # Prepend pending context to message (for LLM) — real drain output.
+        slot = SimpleNamespace(
+            _pending_context=[
+                {
+                    "content": "SECRET BRIEFING: investigate ticket V123",
+                    "source": "ticket-dispatch",
+                }
+            ]
         )
+        context_block = drain_pending_context(slot)
         message = context_block + "\n" + message
 
-        # Line 755: prepare mirror from saved raw message
+        # Prepare mirror from saved raw message
         mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
 
         # The LLM message includes context

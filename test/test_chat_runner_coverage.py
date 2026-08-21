@@ -218,6 +218,61 @@ class TestDrainPendingContext:
 
         assert chat_runner.drain_pending_context(slot) == ""
 
+    def test_frame_carries_silent_consumption_contract(self):
+        """Every drained block instructs the agent to consume it silently.
+
+        Regression for #4780: the feature-request seed (and any other
+        pending-context producer) was framed with a bare source label and no
+        consumption contract, so on a fresh session the agent recited the
+        injected workflow verbatim as its visible reply. The contract line
+        must sit INSIDE the frame (between the opening delimiter and the
+        content) so it binds per-block, for every producer, and must both
+        forbid echoing and redirect the reply to the user's visible message.
+        """
+        slot = _slot()
+        slot._pending_context = [
+            {"content": "WORKFLOW: greet the user", "source": "feature-request"},
+        ]
+
+        out = chat_runner.drain_pending_context(slot)
+
+        opening = out.index('[Background context from "feature-request"]')
+        contract = out.index(chat_runner._CONTEXT_FRAME_CONTRACT)
+        content = out.index("WORKFLOW: greet the user")
+        closing = out.index("[End of background context]")
+        assert opening < contract < content < closing
+        # The two load-bearing clauses, pinned as text so a rewording that
+        # drops either fails here rather than in production transcripts.
+        assert "never quote, echo" in chat_runner._CONTEXT_FRAME_CONTRACT
+        assert "user's visible message" in chat_runner._CONTEXT_FRAME_CONTRACT
+
+    def test_every_block_gets_its_own_contract_line(self):
+        """Multi-entry drains repeat the contract per frame — a single leading
+        notice would detach from later blocks when a consumer reorders or
+        truncates, so the contract is part of each frame, not a preamble."""
+        slot = _slot()
+        slot._pending_context = [
+            {"content": "first", "source": "a"},
+            {"content": "second", "source": "b"},
+        ]
+
+        out = chat_runner.drain_pending_context(slot)
+
+        assert out.count(chat_runner._CONTEXT_FRAME_CONTRACT) == 2
+
+    def test_empty_source_attributes_to_app(self):
+        """api_chat_slot_context always writes ``source`` — as "" when the
+        caller omitted it — so a dict-default alone never fires and the header
+        would read [Background context from ""]: an unattributed block under
+        the frame's "not authored by the user" claim."""
+        slot = _slot()
+        slot._pending_context = [{"content": "x", "source": ""}]
+
+        out = chat_runner.drain_pending_context(slot)
+
+        assert '[Background context from "app"]' in out
+        assert 'from ""' not in out
+
 
 # ── turn metric ───────────────────────────────────────────────────────────
 

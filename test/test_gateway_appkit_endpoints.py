@@ -456,7 +456,18 @@ class TestContextDrain:
     """Verify pending context is drained and formatted correctly."""
 
     def test_drain_formats_context(self):
-        """Pending context entries are formatted with source labels."""
+        """Pending context entries are formatted with source labels.
+
+        Calls the real ``drain_pending_context`` (this test previously
+        simulated the drain inline, so it kept passing while the production
+        frame changed underneath it — e.g. the #4780 silent-consumption
+        contract line would never have shown up here).
+        """
+        from kiro_crew.dashboard.chat_runner import (
+            _CONTEXT_FRAME_CONTRACT,
+            drain_pending_context,
+        )
+
         slot = _ChatSlot("s1")
         slot._pending_context = [
             {
@@ -466,26 +477,12 @@ class TestContextDrain:
                 "injectedAt": time.time(),
             },
         ]
-        # Simulate the drain logic from chat.py
-        now = time.time()
-        ctx_parts: list[str] = []
-        for entry in slot._pending_context:
-            max_age = entry.get("maxAge")
-            if max_age is not None:
-                injected_at = entry.get("injectedAt", 0)
-                if injected_at + max_age < now:
-                    continue
-            source = entry.get("source", "app")
-            ctx_parts.append(
-                f'[Background context from "{source}"]\n'
-                f'{entry["content"]}\n'
-                f"[End of background context]\n"
-            )
-        slot._pending_context.clear()
 
-        assert len(ctx_parts) == 1
-        assert 'from "watch-check"' in ctx_parts[0]
-        assert "CR approved" in ctx_parts[0]
+        out = drain_pending_context(slot)
+
+        assert 'from "watch-check"' in out
+        assert "CR approved" in out
+        assert _CONTEXT_FRAME_CONTRACT in out
         assert len(slot._pending_context) == 0
 
     def test_expired_entries_discarded(self):
