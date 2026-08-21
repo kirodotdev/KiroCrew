@@ -5592,7 +5592,15 @@
       "split_down": "Nach unten teilen",
       "split_right": "Nach rechts teilen",
       "split_right_d": "Nach rechts teilen (⌘D)",
-      "type_to_filter": "Zum Filtern tippen…"
+      "type_to_filter": "Zum Filtern tippen…",
+      "forked_from_options": "Fork von {{name}} — Optionen",
+      "merged_open_parent": "Übergeordnete Sitzung öffnen",
+      "merged_readonly_bar": "Diese Sitzung wurde in ihre übergeordnete Sitzung zurückgeführt",
+      "merge_back": "Zurückführen",
+      "merge_back_confirm": "Die Zusammenfassung dieses Forks in „{{name}}“ zurückführen und den Fork archivieren? Der Fork wird schreibgeschützt.",
+      "merge_back_merging": "Wird zurückgeführt…",
+      "merge_back_title": "Die Zusammenfassung dieses Forks in {{name}} zurückführen und den Fork archivieren",
+      "pane_actions": "Bereichsaktionen"
     },
     "cliPanel": {
       "copied": "Kopiert",
@@ -7953,7 +7961,19 @@
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
-      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
+      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten.",
+      "merge_back_failed": "Zurückführen fehlgeschlagen. Die übergeordnete Sitzung ist möglicherweise nicht mehr vorhanden oder das Gateway nicht erreichbar; versuchen Sie es erneut.",
+      "merge_back_failed_already_merged": "Dieser Fork wurde bereits in seine übergeordnete Sitzung zurückgeführt.",
+      "merge_back_failed_archive": "Die Zusammenfassung wurde in die übergeordnete Sitzung übernommen, aber der Fork konnte nicht archiviert werden. Klicken Sie erneut auf „Zurückführen“, um den Vorgang abzuschließen.",
+      "merge_back_failed_no_summary": "Dieser Fork konnte nicht zusammengefasst werden — möglicherweise gibt es zu wenige Runden zum Zurückführen.",
+      "merge_back_failed_parent_missing": "Die übergeordnete Sitzung ist geschlossen oder existiert nicht mehr. Öffnen Sie sie zuerst über den Verlauf erneut.",
+      "merge_back_failed_fork_flush": "Die letzten Runden des Forks konnten vor der Zusammenfassung nicht gespeichert werden. Es ging nichts verloren – versuchen Sie es erneut.",
+      "merge_back_failed_non_persistent": "Dies ist eine private (Inkognito-)Sitzung, die nicht in eine übergeordnete Sitzung zurückgeführt werden kann.",
+      "merge_back_failed_parent_save": "Die zusammengeführte Zusammenfassung konnte nicht in der übergeordneten Sitzung gespeichert werden; es wurde nichts übernommen. Versuchen Sie es erneut.",
+      "merge_back_failed_running": "Dieser Fork hat eine laufende Runde. Versuchen Sie es erneut, wenn er inaktiv ist.",
+      "merge_back_failed_parent_busy": "Die übergeordnete Sitzung hat eine laufende Runde. Versuchen Sie es erneut, sobald sie abgeschlossen ist.",
+      "merge_back_failed_nothing": "Dieser Fork hat noch keine eigene Arbeit zum Zurückführen. Senden Sie ihm zuerst eine Nachricht und führen Sie ihn dann zurück.",
+      "merge_back_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",
@@ -9371,6 +9391,14 @@
         "copy_text_failed": "Kopieren fehlgeschlagen",
         "copy_text_unavailable": "Die Zwischenablage ist hier blockiert. Dein Beitragstext ist markiert — drücke Strg+C / ⌘C. Bearbeiteten Kartentext kopierst du direkt aus der Karte.",
         "export_failed": "Die Share-Karte konnte nicht erzeugt werden"
+      },
+      "mergedSummaryCard": {
+        "gap_note_one": "Der Parent ist seit diesem Fork um {{count}} Nachricht vorangeschritten; am aktuellen Ende zusammengeführt.",
+        "gap_note_other": "Der Parent ist seit diesem Fork um {{count}} Nachrichten vorangeschritten; am aktuellen Ende zusammengeführt.",
+        "merged_from_a_fork": "Aus einem Fork zusammengeführt",
+        "merged_from_fork": "Aus {{name}} zusammengeführt",
+        "summary_covers_full_fork": "Zusammenfassung der gesamten Fork-Sitzung",
+        "summary_of_forks_work": "Zusammenfassung der Arbeit des Forks"
       }
     },
     "chatPage": {

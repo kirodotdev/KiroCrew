@@ -5681,7 +5681,15 @@
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",
       "split_right_d": "Diviser vers la droite (⌘D)",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "forked_from_options": "Bifurcation de {{name}} — options",
+      "merged_open_parent": "Ouvrir la session parente",
+      "merged_readonly_bar": "Cette session a été réintégrée dans sa session parente",
+      "merge_back": "Réintégrer",
+      "merge_back_confirm": "Réintégrer le résumé de cette bifurcation dans « {{name}} » et archiver la bifurcation ? La bifurcation passera en lecture seule.",
+      "merge_back_merging": "Réintégration…",
+      "merge_back_title": "Réintégrer le résumé de cette bifurcation dans {{name}} et archiver la bifurcation",
+      "pane_actions": "Actions du volet"
     },
     "cliPanel": {
       "copied": "Copié",
@@ -8059,7 +8067,19 @@
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
+      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard.",
+      "merge_back_failed": "Échec de la réintégration. La session parente a peut-être disparu ou la passerelle est injoignable ; réessayez.",
+      "merge_back_failed_already_merged": "Cette bifurcation a déjà été réintégrée dans sa session parente.",
+      "merge_back_failed_archive": "Le résumé a été réintégré dans la session parente, mais la bifurcation n'a pas pu être archivée. Cliquez à nouveau sur Réintégrer pour terminer.",
+      "merge_back_failed_no_summary": "Impossible de résumer cette bifurcation — elle a peut-être trop peu de tours pour être réintégrée.",
+      "merge_back_failed_parent_missing": "La session parente est fermée ou n'existe plus. Rouvrez-la d'abord depuis l'historique.",
+      "merge_back_failed_fork_flush": "Impossible d'enregistrer les derniers tours du fork avant de le résumer. Rien n'a été perdu — réessayez.",
+      "merge_back_failed_non_persistent": "Il s'agit d'une session privée (navigation privée), qui ne peut pas être fusionnée dans une session parente.",
+      "merge_back_failed_parent_save": "Impossible d'enregistrer le résumé dans la session parente ; rien n'a été réintégré. Réessayez.",
+      "merge_back_failed_running": "Cette bifurcation a un tour en cours. Réessayez lorsqu’elle est inactive.",
+      "merge_back_failed_parent_busy": "La session parente a un tour en cours. Réessayez quand il sera terminé.",
+      "merge_back_failed_nothing": "Cette bifurcation n'a pas encore de travail propre à réintégrer. Envoyez-lui d'abord un message, puis réintégrez-la.",
+      "merge_back_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponible",
@@ -9504,6 +9524,15 @@
         "copy_text_failed": "Échec de la copie",
         "copy_text_unavailable": "Le presse-papiers est bloqué ici. Le texte de ta publication est sélectionné — appuie sur Ctrl+C / ⌘C. Le texte de la carte que tu as modifié se copie depuis la carte elle-même.",
         "export_failed": "Impossible de générer la carte de partage"
+      },
+      "mergedSummaryCard": {
+        "gap_note_one": "Le parent a avancé de {{count}} message depuis cette bifurcation ; fusionné à la fin actuelle.",
+        "gap_note_other": "Le parent a avancé de {{count}} messages depuis cette bifurcation ; fusionné à la fin actuelle.",
+        "merged_from_a_fork": "Fusionné depuis une bifurcation",
+        "merged_from_fork": "Fusionné depuis {{name}}",
+        "summary_covers_full_fork": "Résumé de la session complète de la bifurcation",
+        "summary_of_forks_work": "Résumé du travail de la bifurcation",
+        "gap_note_many": "Le parent a avancé de {{count}} messages depuis cette bifurcation ; fusionné à la fin actuelle."
       }
     },
     "chatPage": {

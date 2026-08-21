@@ -5681,7 +5681,15 @@
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",
       "split_right_d": "Dividir à direita (⌘D)",
-      "type_to_filter": "Digite para filtrar…"
+      "type_to_filter": "Digite para filtrar…",
+      "forked_from_options": "Fork de {{name}} — opções",
+      "merged_open_parent": "Abrir sessão principal",
+      "merged_readonly_bar": "Esta sessão foi mesclada na sessão principal",
+      "merge_back": "Mesclar de volta",
+      "merge_back_confirm": "Mesclar o resumo deste fork de volta em “{{name}}” e arquivar o fork? O fork ficará somente leitura.",
+      "merge_back_merging": "Mesclando…",
+      "merge_back_title": "Mesclar o resumo deste fork de volta em {{name}} e arquivar o fork",
+      "pane_actions": "Ações do painel"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -8059,7 +8067,19 @@
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
-      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat.",
+      "merge_back_failed": "Falha ao mesclar de volta. A sessão pai pode ter desaparecido ou o gateway está inacessível; tente novamente.",
+      "merge_back_failed_already_merged": "Este fork já foi mesclado de volta em sua sessão pai.",
+      "merge_back_failed_archive": "O resumo foi mesclado na sessão pai, mas o fork não pôde ser arquivado. Clique em Mesclar de volta novamente para concluir.",
+      "merge_back_failed_no_summary": "Não foi possível resumir este fork — ele pode ter poucos turnos para mesclar de volta.",
+      "merge_back_failed_parent_missing": "A sessão pai está fechada ou não existe mais. Reabra-a primeiro no Histórico.",
+      "merge_back_failed_fork_flush": "Não foi possível salvar os últimos turnos do fork antes de resumir. Nada foi perdido — tente novamente.",
+      "merge_back_failed_non_persistent": "Esta é uma sessão privada (anônima), que não pode ser mesclada de volta em uma sessão pai.",
+      "merge_back_failed_parent_save": "Não foi possível salvar o resumo mesclado na sessão pai; nada foi mesclado. Tente novamente.",
+      "merge_back_failed_running": "Este fork tem um turno em andamento. Tente novamente quando estiver ocioso.",
+      "merge_back_failed_parent_busy": "A sessão principal tem um turno em andamento. Tente novamente quando ele terminar.",
+      "merge_back_failed_nothing": "Este fork ainda não tem trabalho próprio para mesclar. Envie uma mensagem primeiro e depois mescle.",
+      "merge_back_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponível",
@@ -9504,6 +9524,15 @@
         "copy_text_failed": "Falha ao copiar",
         "copy_text_unavailable": "A área de transferência está bloqueada aqui. O texto da sua publicação está selecionado — pressione Ctrl+C / ⌘C. O texto do cartão que você editou, copie do próprio cartão.",
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
+      },
+      "mergedSummaryCard": {
+        "gap_note_one": "O pai avançou {{count}} mensagem desde este fork; mesclado no final atual.",
+        "gap_note_other": "O pai avançou {{count}} mensagens desde este fork; mesclado no final atual.",
+        "merged_from_a_fork": "Mesclado de um fork",
+        "merged_from_fork": "Mesclado de {{name}}",
+        "summary_covers_full_fork": "Resumo da sessão completa do fork",
+        "summary_of_forks_work": "Resumo do trabalho do fork",
+        "gap_note_many": "O pai avançou {{count}} mensagens desde este fork; mesclado no final atual."
       }
     },
     "chatPage": {

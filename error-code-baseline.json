@@ -5,7 +5,7 @@
     "opaque_body": 18,
     "dynamic_status": 43
   },
-  "_compliant": 1628,
+  "_compliant": 1641,
   "files": {
     "apps/builtins/auto_research/handlers.py": {
       "dynamic_status": 1,

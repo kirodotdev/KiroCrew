@@ -26,6 +26,7 @@ import { type FileChangeEntry } from '../components/FileChangeChips'
 import UserMessage from '../pages/chat/UserMessage'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
+import MergedSummaryCard from '../pages/chat/MergedSummaryCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
@@ -242,6 +243,18 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         onFileOpen={ctx.onFileOpen}
         disclosureKey={ctx.key}
       />,
+      true,
+    ),
+  },
+  {
+    id: 'merged_summary',
+    // Fork merge-back summary (#3816): a persisted transcript row the merge
+    // endpoint appends to the parent, so raw-snapshot surfaces (app embeds,
+    // side sessions) draw it too. Folder-open is a host affordance the embed
+    // context does not carry; the card renders read-only without it.
+    roles: ['merged_summary'],
+    render: (m, ctx) => ctx.row(
+      <MergedSummaryCard key={ctx.key} message={m} onFileOpen={ctx.onFileOpen} />,
       true,
     ),
   },

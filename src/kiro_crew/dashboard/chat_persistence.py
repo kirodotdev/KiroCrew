@@ -1006,6 +1006,8 @@ def _rehydrate_slot_from_history(
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
             slot._channel_folder_filed = True
+        if meta.get("merged"):
+            slot._merged = True
         if meta.get("app"):
             slot._app = meta["app"]
         # Re-validate the companion binding against the slug grammar on restore
@@ -1050,6 +1052,13 @@ def _rehydrate_slot_from_history(
             state._restricted_keys.add(f"dashboard:{slot_name}")
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
+        if meta.get("merged"):
+            # A merged fork restored from History stays read-only + archived:
+            # the flag is what the turn path checks to reject a new turn, and
+            # missing it here would silently make a merged session writable
+            # again (the ``merged``→``closed`` fold keeps it non-continuable, but
+            # a History resume adopts a closed session deliberately).
+            slot._merged = True
         if meta.get("linked_session_key"):
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
@@ -2841,6 +2850,12 @@ def _save_slot_to_history(
                         # "crashed mid-turn" on reload. Nested under the binding
                         # because it is meaningless without one.
                         fields["relay_in_flight"] = True
+                if getattr(slot, "_merged", False):
+                    # Monotonic like the once-flags below, mirroring the full
+                    # save's meta_line (#3816): a merged fork never unmerges,
+                    # so it is written only when set — and the merge cannot
+                    # delete a key anyway.
+                    fields["merged"] = True
                 if getattr(slot, "_tab_id", None):
                     fields["tab_id"] = slot._tab_id
                 if getattr(slot, "_auto_tagged", False):
@@ -2914,6 +2929,7 @@ def _save_slot_to_history(
         and len(window) <= slot._resumed_count
         and not slot._dirty
         and not closed
+        and not getattr(slot, "_merged", False)
         and not force
         and not rewrite
     ):
@@ -3059,6 +3075,20 @@ def _save_slot_to_history(
             # default closes the class instead of enumerating one more field to
             # rescue. Applied after the slot fields below so an inherited value can
             # never shadow the slot's own state.
+            # A merged fork is archived: it must become non-continuable, which
+            # the restore paths already enforce for a ``closed`` session. Fold
+            # merge into close so the merged fork inherits that skip with no new
+            # restore-path code, then record the merge provenance alongside.
+            # Read from the slot, not a parameter (First Principles round 6:
+            # the one archiving caller sets ``slot._merged`` before saving, so
+            # a ``merged`` parameter only ever duplicated it): a periodic
+            # flush of a History-resumed merged fork takes this same branch,
+            # and since ``closed`` is slot-owned (absence means cleared) that
+            # save would otherwise drop the closed marker while keeping
+            # ``merged`` — reviving the archived fork as an open tab on the
+            # next restart (GPT review).
+            if getattr(slot, "_merged", False):
+                closed = True
             if closed:
                 meta_line["closed"] = True
                 # Epoch stamp of WHEN the tab was closed. The channel-slot
@@ -3176,6 +3206,20 @@ def _save_slot_to_history(
                 meta_line["human_seen"] = True
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
+            if getattr(slot, "_merged", False):
+                # Archive provenance for a merged-back fork. Written from the
+                # in-memory flag (the one archiving caller sets it before
+                # saving — FP round 6 retired the parameter twin) so a steady
+                # flush of an already-merged slot — or a restore that set the
+                # flag — cannot silently drop the marker and revive the fork
+                # as continuable. The parent is NOT named by a separate key:
+                # ``forked_from`` (written above, restored on the same paths)
+                # already carries it, and a ``merged_into`` twin always equalled
+                # it (First Principles review).
+                meta_line["merged"] = True
+                # The merge instant feeds ``closed_at`` (the archiving caller
+                # passes it as such); a separate meta key would have zero
+                # readers (FP review), so none is written.
             if slot.linked_session_key:
                 # The slot's conversation lives on another session (a channel
                 # thread, a cron job). Nothing recreates that binding on

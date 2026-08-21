@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, GitMerge } from 'lucide-react'
+import { parentSlotKeyFromForkedFrom } from '../utils/openMergedParent'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -92,7 +93,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMode, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMode, copyLink, move, reload, close, mergeBack, mergeBackPending } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -148,6 +149,31 @@ export default function SessionActionsMenu({
       <Item key="mode" onSelect={() => toggleMode(slotKey)}>
         <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,
+      // Merge back, on the SINGLE-SESSION surface (UX round 17 BLOCK): the
+      // split-view fork breadcrumb was the only trigger, and Split View is
+      // opt-in default-off — on a stock install the feature did not exist.
+      // Same hook, same confirm, same copy as ChatPane's breadcrumb item, so
+      // the two surfaces cannot drift. Guarded exactly like the breadcrumb:
+      // fork provenance present and not already merged.
+      !!slot?.forked_from && !slot?.merged && (() => {
+        const parentKey = parentSlotKeyFromForkedFrom(slot.forked_from)
+        return (
+          <Item
+            key="merge-back"
+            disabled={mergeBackPending}
+            onSelect={() => {
+              if (mergeBackPending) return
+              if (confirm(i18nT('components.chatPane.merge_back_confirm', { name: parentKey })))
+                mergeBack(slotKey)
+            }}
+          >
+            <GitMerge size={13} className="shrink-0 text-muted" />{' '}
+            {mergeBackPending
+              ? i18nT('components.chatPane.merge_back_merging')
+              : i18nT('components.chatPane.merge_back')}
+          </Item>
+        )
+      })(),
       folders.length > 0 && (
         <FolderMoveSubmenu
           key="move"

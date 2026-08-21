@@ -27,6 +27,16 @@ import { i18nT } from '../i18n/t'
 export interface SessionActions {
   /** Fork/duplicate a session. */
   duplicate: (slotKey: string) => void
+  /** Merge a fork's summary back into its parent, then archive the fork (#3816).
+   *  `onMerged(parentKey)` fires after a successful merge — split-view panes
+   *  use it to refill the acting pane's leaf with the parent (the archived fork
+   *  drops out of the slot list, so the pane would otherwise go dead; grid pane
+   *  focus never routes through Redux activeSlot, which the hook's own
+   *  switchSlot dispatch targets). */
+  mergeBack: (slotKey: string, onMerged?: (parentKey: string) => void) => void
+  /** True while a merge-back is in flight — the summarization pass can take
+   * 10–30s, so callers disable the affordance and show progress (UX review). */
+  mergeBackPending: boolean
   /** Toggle read/unread. */
   toggleRead: (slotKey: string) => void
   /** Toggle pinned. */
@@ -55,6 +65,61 @@ export function useSessionActions(mode?: string): SessionActions {
         queryClient.invalidateQueries({ queryKey: ['slots'] })
         dispatch(switchSlot(data.key))
       }
+    },
+  })
+
+  // Merge a fork's summary back into its parent, then archive the fork (#3816).
+  // On success we switch to the PARENT (where the merged block now lives), not
+  // the fork, which is closed. Failure must not be silent — the machine-readable
+  // code distinguishes the cases the user can act on (wait for a running turn,
+  // already merged) from a generic failure, mirroring reload's error copy.
+  const mergeBackMutation = useMutation({
+    mutationFn: ({ slot }: { slot: string; onMerged?: (parentKey: string) => void }) => api.mergeBackChatSlot(slot),
+    onSuccess: (data, vars) => {
+      if (data?.ok && data.parent_key) {
+        queryClient.invalidateQueries({ queryKey: ['slots'] })
+        // Split-view panes ignore Redux activeSlot, so switchSlot alone leaves
+        // the acting pane bound to the now-archived fork (a dead pane). The
+        // caller's onMerged refills that pane's leaf with the parent; the
+        // switchSlot below still drives the single-chat surface.
+        vars.onMerged?.(data.parent_key)
+        dispatch(switchSlot(data.parent_key))
+      }
+    },
+    onError: (err) => {
+      const body = err instanceof ApiError ? err.body : ''
+      // archive_failed means the merge COMMITTED (the block is durably in the
+      // parent) and only the fork's archive save failed — the generic "parent
+      // may be gone" copy would misstate a merge that succeeded (UX review).
+      // not_found is also in-hand (a second tab merging a fork the first
+      // already merged and popped), so it gets the already-merged copy rather
+      // than the hedged fallback (UX review).
+      const keyName = body.includes('summary_turn_running')
+        ? 'hooks.useSessionActions.merge_back_failed_running'
+        : body.includes('merge_in_progress')
+          ? 'hooks.useSessionActions.merge_back_failed_running'
+          : body.includes('slot_subagents_running')
+            ? 'hooks.useSessionActions.merge_back_failed_subagents'
+            : body.includes('parent_busy')
+            ? 'hooks.useSessionActions.merge_back_failed_parent_busy'
+            : body.includes('already_merged') || body.includes('not_found')
+              ? 'hooks.useSessionActions.merge_back_failed_already_merged'
+              : body.includes('summary_unavailable')
+                ? 'hooks.useSessionActions.merge_back_failed_no_summary'
+                : body.includes('nothing_to_merge')
+                  ? 'hooks.useSessionActions.merge_back_failed_nothing'
+                  : body.includes('archive_failed')
+                    ? 'hooks.useSessionActions.merge_back_failed_archive'
+                    : body.includes('parent_save_failed')
+                      ? 'hooks.useSessionActions.merge_back_failed_parent_save'
+                      : body.includes('parent_missing')
+                        ? 'hooks.useSessionActions.merge_back_failed_parent_missing'
+                        : body.includes('fork_flush_failed')
+                          ? 'hooks.useSessionActions.merge_back_failed_fork_flush'
+                          : body.includes('non_persistent_session')
+                            ? 'hooks.useSessionActions.merge_back_failed_non_persistent'
+                            : 'hooks.useSessionActions.merge_back_failed'
+      alert(i18nT(keyName))
     },
   })
 
@@ -109,11 +174,14 @@ export function useSessionActions(mode?: string): SessionActions {
   // Destructure the stable `mutate` fns so the action callbacks below aren't
   // recreated on every render (the mutation result objects are new each render).
   const { mutate: forkMutate } = forkMutation
+  const { mutate: mergeBackMutate, isPending: mergeBackPending } = mergeBackMutation
   const { mutate: pinMutate } = pinMutation
   const { mutate: modeMutate } = modeMutation
   const { mutate: reloadMutate } = reloadMutation
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
+
+  const mergeBack = useCallback((slotKey: string, onMerged?: (parentKey: string) => void) => { mergeBackMutate({ slot: slotKey, onMerged }) }, [mergeBackMutate])
 
   const toggleRead = useCallback((slotKey: string) => {
     const isUnread = store.getState().dashboard.unreadSlots.includes(slotKey)
@@ -150,5 +218,5 @@ export function useSessionActions(mode?: string): SessionActions {
     if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
+  return { duplicate, mergeBack, mergeBackPending, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
 }

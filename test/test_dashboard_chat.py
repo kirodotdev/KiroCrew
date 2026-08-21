@@ -25,6 +25,7 @@ from chat_test_helpers import (
 )
 
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
@@ -20035,6 +20036,1348 @@ class TestForkSlotTail:
         new_slot = state._slots.get(data["key"])
         visible = [m for m in new_slot.messages if m["role"] in ("user", "assistant")]
         assert visible[-1]["content"] == "reply1"
+
+
+# ── Merge-back endpoint (POST /api/chat/slots/{slot}/merge-back) ──
+
+
+class TestMergeBackSlot:
+    """Tests for POST /api/chat/slots/{slot}/merge-back.
+
+    Mirrors TestForkSlot's fixtures (``_make_state`` / ``_make_app``). The
+    summarizer is ALWAYS stubbed — no live LLM call — by patching
+    ``generate_session_summary`` with a helper that writes a real intent-summary
+    sidecar the endpoint then reads back, exactly as production does.
+    """
+
+    @staticmethod
+    def _stub_summarizer(intents=None):
+        """An async stand-in for ``generate_session_summary`` that writes a
+        valid sidecar for the fork's transcript, so ``read_intent_summary``
+        returns a fresh payload the same way a real pass would. No LLM call."""
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        payload_intents = (
+            intents
+            if intents is not None
+            else [
+                {
+                    "title": "Investigate the retry bug",
+                    "status": "completed",
+                    "progress": ["Root-caused the off-by-one in the backoff loop"],
+                },
+            ]
+        )
+
+        async def _fake(state, slot, *, cfg=None, force=False):
+            log = state.conversation_log
+            key = slot_history_key(slot)
+            sig = log.session_mtime(key)
+            gen = log.rotation_generation(key)
+            if sig is None:
+                return False
+            log.set_cached_intent_summary(
+                key,
+                {"intents": payload_intents, "constraints": []},
+                sig,
+                gen,
+            )
+            return True
+
+        return _fake
+
+    async def _make_fork(self, state, parent_name="parent"):
+        """Create a parent slot with a small transcript, fork it (head-fork),
+        and return (parent_slot, fork_slot). Uses the real fork endpoint so the
+        fork carries a genuine ``forked_from`` and a copied transcript."""
+        parent = state.get_or_create_slot(parent_name)
+        parent.title = "Parent Chat"
+        parent._titled = True
+        parent.append("user", "start", "msg msg-u")
+        parent.append("assistant", "ok", "msg msg-a")
+        parent.drain()
+        await save_slot_off_loop(state, parent, force=True)
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/chat/slots/{parent_name}/fork", json={})
+            assert resp.status == 200
+            data = await resp.json()
+        fork = state._slots.get(data["key"])
+        # Give the fork a divergent tail so it has post-fork content of its own.
+        fork.append("user", "new question", "msg msg-u")
+        fork.append("assistant", "new answer", "msg msg-a")
+        fork.drain()
+        await save_slot_off_loop(state, fork, force=True)
+        return parent, fork
+
+    @pytest.mark.asyncio
+    async def test_merge_back_head_fork_happy_path(self, tmp_path):
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["ok"] is True
+        assert data["parent_key"] == parent.key
+        # Response is deliberately minimal (FP review): everything else lives
+        # in the block's persisted meta, asserted below.
+        assert set(data) == {"ok", "parent_key"}
+        # Parent gained exactly one merged_summary block at its tail.
+        block = parent.messages[-1]
+        assert block["role"] == "merged_summary"
+        assert block["meta"]["kind"] == "merged_summary"
+        assert block["meta"]["merged_from"] == "dashboard:" + fork.key
+        # The receipt's identity is the content-keyed merge_key; no positional
+        # range is persisted (First Principles review — zero readers).
+        assert block["meta"]["merge_key"]
+        assert "message_range" not in block["meta"]
+        assert "Investigate the retry bug" in block["content"]
+        # Fork is archived + read-only, and popped from the open slots. The
+        # parent is named by forked_from (no merged_into twin).
+        assert fork._merged is True
+        assert fork.forked_from == "dashboard:" + parent.key
+        assert fork.key not in state._slots
+
+    @pytest.mark.asyncio
+    async def test_merge_back_tail_fork_range_covers_tail(self, tmp_path):
+        # A tail-fork shares no prefix with the parent, so the whole fork
+        # transcript is post-fork: start == 0.
+        state = _make_state(tmp_path)
+        parent = state.get_or_create_slot("p2")
+        parent.append("user", "a", "msg msg-u")
+        parent.append("assistant", "b", "msg msg-a")
+        parent.drain()
+        await save_slot_off_loop(state, parent, force=True)
+        # Build a fork slot by hand with a divergent-only transcript + forked_from.
+        fork = state.get_or_create_slot("f2")
+        fork.forked_from = "dashboard:p2"
+        fork.append("user", "only-tail", "msg msg-u")
+        fork.append("assistant", "only-tail-reply", "msg msg-a")
+        fork.drain()
+        await save_slot_off_loop(state, fork, force=True)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/f2/merge-back", json={})
+                assert resp.status == 200
+        # The block carries its content-keyed receipt (the response is minimal).
+        assert parent.messages[-1]["meta"]["merge_key"]
+
+    @pytest.mark.asyncio
+    async def test_merge_back_not_a_fork_409(self, tmp_path):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("root")
+        slot.append("user", "hi", "msg msg-u")
+        slot.append("assistant", "yo", "msg msg-a")
+        slot.drain()
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/root/merge-back", json={})
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["code"] == "not_a_fork"
+
+    @pytest.mark.asyncio
+    async def test_merge_back_not_found_404(self, tmp_path):
+        state = _make_state(tmp_path)
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/nope/merge-back", json={})
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_merge_back_parent_missing_404(self, tmp_path):
+        state = _make_state(tmp_path)
+        fork = state.get_or_create_slot("orphan")
+        fork.forked_from = "dashboard:gone"  # parent never existed
+        fork.append("user", "q", "msg msg-u")
+        fork.append("assistant", "a", "msg msg-a")
+        fork.drain()
+        await save_slot_off_loop(state, fork, force=True)
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/orphan/merge-back", json={})
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["code"] == "parent_missing"
+
+    @pytest.mark.asyncio
+    async def test_merge_back_double_merge_rejected(self, tmp_path):
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p3")
+        fork_key = fork.key
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+                # The fork was popped from _slots on success; put it back
+                # (still carrying _merged=True) to exercise the idempotency gate
+                # the way a History-resumed merged fork would.
+                state._slots[fork_key] = fork
+                resp2 = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp2.status == 409
+                data = await resp2.json()
+                assert data["code"] == "already_merged"
+
+    @pytest.mark.asyncio
+    async def test_merge_back_summary_unavailable_409(self, tmp_path):
+        # Summarizer produces nothing (no sidecar written) → 409.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p4")
+
+        async def _no_summary(state, slot, *, cfg=None, force=False):
+            return False
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _no_summary,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["code"] == "summary_unavailable"
+        # Fork was NOT archived on the failure path.
+        assert fork._merged is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_running_fork_409(self, tmp_path):
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p5")
+
+        # ``running`` is a read-only property derived from an in-flight task, so
+        # simulate a turn in progress by attaching a task that has not resolved.
+        async def _never_ends():
+            await asyncio.sleep(3600)
+
+        fork.task = asyncio.ensure_future(_never_ends())
+        try:
+            app = _make_app(state)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["code"] == "summary_turn_running"
+        finally:
+            fork.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_merge_back_subagent_children_409(self, tmp_path):
+        # An idle fork with a running/queued sub-agent child (or an in-flight
+        # completion delivery) must not be summarized + archived without that
+        # work (GPT review). Reuses the reload/continue children guard.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p5c")
+
+        class _Subs:
+            def running_agents_for(self, key):
+                return ["agent-1"]
+
+            def _queued_depth(self, key):
+                return 0
+
+        state.subagents = _Subs()
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["code"] == "slot_subagents_running"
+        assert fork._merged is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_queued_work_409(self, tmp_path):
+        # Work already staged in the turn queue would be archived unsummarized;
+        # the locked re-check rejects it (GPT review).
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p5q")
+        fork._queue.append({"id": "q1", "content": "queued question"})
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["code"] == "summary_turn_running"
+        assert fork._merged is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_stale_block_appends_fresh(self, tmp_path):
+        # After a failed archive + restart the fork can revive un-merged and gain
+        # turns. The idempotency scan must NOT accept the old block as current —
+        # that would archive the newer work behind a summary that omits it (GPT
+        # review). A fresh block covering the current transcript is appended.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p5s")
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        old_block = parent.messages[-1]
+
+        # Simulate the revive: restart lost the merged flag, fork gains turns.
+        fork._merged = False
+        state._slots[fork.key] = fork
+        fork.append("user", "post-revival question", "msg msg-u")
+        fork.append("assistant", "post-revival answer", "msg msg-a")
+        fork.drain()
+        await save_slot_off_loop(state, fork, force=True)
+
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        fresh_block = parent.messages[-1]
+        assert fresh_block is not old_block
+        assert fresh_block["meta"]["kind"] == "merged_summary"
+        # The fresh block is a different snapshot: its receipt key differs.
+        assert fresh_block["meta"]["merge_key"] != old_block["meta"]["merge_key"]
+
+    @pytest.mark.asyncio
+    async def test_merge_back_succeeds_with_summaries_disabled(self, tmp_path):
+        # ``session_summary.enabled`` defaults to False and ``force`` does not
+        # lift it — without the one-shot lift the advertised merge action could
+        # never succeed on a default install (GPT review). The stub records the
+        # cfg it received to prove the lift happened.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p5d")
+        seen_cfg: list = []
+        inner = self._stub_summarizer()
+
+        async def _recording(state_, slot_, *, cfg=None, force=False):
+            seen_cfg.append(cfg)
+            return await inner(state_, slot_, cfg=cfg, force=force)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _recording,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        assert seen_cfg and seen_cfg[0].session_summary.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_merge_back_non_persistent_400(self, tmp_path):
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p6")
+        fork.memory_mode = "incognito"
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_merge_back_archives_fork_persisted_merged(self, tmp_path):
+        # After a merge, the fork's persisted metadata carries merged + closed,
+        # so a rehydrate skips it (non-continuable) unless adopt_closed.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p7")
+        fork_key = fork.key
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        meta = state.conversation_log.get_metadata(_history_key_for(fork_key))
+        assert meta.get("merged") is True
+        assert meta.get("closed") is True
+        # The parent is named by the persisted forked_from (no merged_into twin).
+        assert meta.get("forked_from") == "dashboard:" + parent.key
+
+    @pytest.mark.asyncio
+    async def test_merge_back_parent_advanced_gap_note(self, tmp_path):
+        # Parent grows after the fork is taken; the block carries a gap note.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p8")
+        # Advance the parent past the fork point.
+        parent.append("user", "later question", "msg msg-u")
+        parent.append("assistant", "later answer", "msg msg-a")
+        parent.drain()
+        await save_slot_off_loop(state, parent, force=True)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        block = parent.messages[-1]
+        # Structured count only, rendered localized client-side; no persisted
+        # English fallback string (First Principles review — no shipped block
+        # can lack ``advanced``, so the fallback covered a past that never
+        # existed while baking English into 12-language transcripts).
+        assert "gap_note" not in block["meta"]
+        assert block["meta"]["advanced"] == 2
+
+    @pytest.mark.asyncio
+    async def test_merge_back_parent_not_open_rehydrates(self, tmp_path):
+        # Parent tab is closed (popped from _slots) but persisted on disk; the
+        # merge rehydrates it and persists the block to its transcript.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p9")
+        parent_key = parent.key
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        parent_hist = _history_key_for(parent_key)
+        # Simulate a closed parent tab: drop it from the open slots.
+        state._slots.pop(parent_key, None)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        # The block reached the parent's transcript on disk.
+        rows = state.conversation_log.read_messages_chained(parent_hist)
+        assert any(r.get("role") == "merged_summary" for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_merge_back_source_save_failure_503(self, tmp_path):
+        from unittest.mock import AsyncMock
+
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p10")
+        failing = AsyncMock(side_effect=RuntimeError("lock timeout"))
+        app = _make_app(state)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                self._stub_summarizer(),
+            ),
+            patch("kiro_crew.dashboard.chat_merge_back.save_slot_off_loop", failing),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 503
+        # Fork not archived on the persist-failure path.
+        assert fork._merged is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_archive_failure_retry_archives_without_duplicate(self, tmp_path):
+        # If the parent block persists but the fork's ARCHIVE teardown fails, the
+        # merge fact stands: ``_merged`` stays True and a retry re-runs only the
+        # archive — the parent must never gain a second merged block.
+        from kiro_crew.dashboard.chat_handlers import save_slot_off_loop as real_save
+
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p11")
+        fork_key = fork.key
+        fail_archive = {"on": True}
+
+        async def flaky(state_, slot_, *args, **kwargs):
+            # The archive save is the fork's save AFTER ``_merged`` is set —
+            # since GPT round 8 it runs inside the shared ``close_slot``
+            # teardown, so the interceptor patches chat_handlers' namespace
+            # (the pre-merge dirty flush still goes through chat_merge_back's
+            # and is untouched).
+            if slot_ is fork and getattr(slot_, "_merged", False) and fail_archive["on"]:
+                raise RuntimeError("disk full")
+            return await real_save(state_, slot_, *args, **kwargs)
+
+        def merged_blocks():
+            return [
+                m for m in parent.messages if (m.get("meta") or {}).get("kind") == "merged_summary"
+            ]
+
+        app = _make_app(state)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                self._stub_summarizer(),
+            ),
+            patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", flaky),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 503
+                data = await resp.json()
+                assert data["code"] == "archive_failed"
+                # The merge fact stands and the retry marker is set.
+                assert fork._merged is True
+                assert fork._archive_pending is True
+                # The retry window is CLIENT-VISIBLE (GPT round 11): the slot
+                # snapshot must carry archive_pending so the Merge back retry
+                # affordance stays reachable instead of hiding on `merged`.
+                snapshot = fork.to_dict()
+                assert snapshot["merged"] is True
+                assert snapshot["archive_pending"] is True
+                assert fork_key in state._slots
+                assert len(merged_blocks()) == 1
+
+                fail_archive["on"] = False
+                resp2 = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp2.status == 200
+                data2 = await resp2.json()
+                # Same shape as the main path (First Principles review: the
+                # which-step-retried marker had no consumer).
+                assert data2 == {"ok": True, "parent_key": parent.key}
+                # Archived for real now; still exactly ONE block on the parent.
+                assert fork_key not in state._slots
+                assert len(merged_blocks()) == 1
+
+    @pytest.mark.asyncio
+    async def test_merge_reservation_blocks_slot_recreation(self, tmp_path):
+        # GPT ROUND 15 (fenced): during the fork's archival close a same-key
+        # recreate landing in ``save_slot_off_loop``'s executor window is born
+        # bare (``_merged=False``) — its next full save drops the archived
+        # fork's ``merged``/``closed`` markers and revives it. Creation must
+        # consult the same reservation set the deletion paths already do.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p15")
+        fork_key = fork.key
+        blocked: dict = {}
+
+        real_stub = self._stub_summarizer()
+
+        async def _recreating_summarizer(state_, slot_, *, cfg=None, force=False):
+            # Mid-reservation (the summarizer runs inside the reserved window):
+            # a bare recreate of the FORK's key must be refused retryably.
+            state._slots.pop(fork_key, None)  # simulate the popped-fork window
+            try:
+                state.get_or_create_slot(fork_key)
+            except ValueError as exc:
+                blocked["error"] = str(exc)
+            state._slots[fork_key] = fork
+            return await real_stub(state_, slot_, cfg=cfg, force=force)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _recreating_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+        assert "reserved by an in-flight merge" in blocked["error"]
+        # Reservation released with the merge: the same create now succeeds.
+        assert not state.merge_reserved_keys
+        replacement = state.get_or_create_slot(fork_key)
+        assert replacement is not None
+
+    @pytest.mark.asyncio
+    async def test_merge_back_archive_failure_pushes_retry_flag(self, tmp_path):
+        # GPT ROUND 15 (non-blocking F3): ``close_slot``'s failure rollback
+        # broadcasts BEFORE ``_archive_pending`` is set, so that frame carries
+        # ``merged=True, archive_pending=False`` and a client acting on it
+        # hides the retry affordance. The handler must push again after the
+        # flag is set.
+        from kiro_crew.dashboard.chat_handlers import save_slot_off_loop as real_save
+
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p15b")
+        fork_key = fork.key
+        pushes: list[bool] = []
+        real_push = state.push_slots_update
+
+        def spy_push(*args, **kwargs):
+            pushes.append(bool(getattr(fork, "_archive_pending", False)))
+            return real_push(*args, **kwargs)
+
+        async def failing_archive(state_, slot_, *args, **kwargs):
+            if slot_ is fork and getattr(slot_, "_merged", False):
+                raise RuntimeError("disk full")
+            return await real_save(state_, slot_, *args, **kwargs)
+
+        app = _make_app(state)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                self._stub_summarizer(),
+            ),
+            patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", failing_archive),
+            patch.object(state, "push_slots_update", spy_push),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 503
+        # At least one broadcast happened AFTER the flag was set, so clients
+        # received a frame carrying archive_pending=True.
+        assert any(pushes), pushes
+
+    @pytest.mark.asyncio
+    async def test_merge_back_post_removal_teardown_exception_is_success(self, tmp_path):
+        # GPT round 14: ``close_slot`` can raise AFTER its durable work — the
+        # closed save committed and the slot popped from ``state._slots`` (e.g.
+        # a post-save session-shutdown failure). Marking THAT retryable is a
+        # trap: the slot is gone, so the advertised retry can only 404. The pop
+        # is the observable boundary — slot no longer registered means the
+        # archive already happened, so the response is SUCCESS, not a 503.
+        from kiro_crew.dashboard.chat_handlers import close_slot as real_close
+
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p14")
+        fork_key = fork.key
+
+        async def close_then_shutdown_raises(state_, slot_, name_, *args, **kwargs):
+            result = await real_close(state_, slot_, name_, *args, **kwargs)
+            if slot_ is fork:
+                # The durable work (save + pop) is done; a late shutdown step
+                # blows up afterwards.
+                raise RuntimeError("session shutdown failed after removal")
+            return result
+
+        app = _make_app(state)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                self._stub_summarizer(),
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.close_slot",
+                close_then_shutdown_raises,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+                data = await resp.json()
+                assert data == {"ok": True, "parent_key": parent.key}
+                # Durably archived: gone from state, and NOT marked retryable —
+                # a retry here could only 404 against the removed slot.
+                assert fork_key not in state._slots
+                assert fork._archive_pending is False
+                assert fork._merged is True
+
+    @pytest.mark.asyncio
+    async def test_merge_back_rejects_parent_owned_by_another_app(self, tmp_path):
+        # GPT round 11: `forked_from` carries a KEY, and a key can be re-minted
+        # onto a session owned by another app. The resolved parent must pass
+        # the same app-ownership gate as the fork (404, not 403 — CWE-204),
+        # or App A's merge persists its summary into App B's transcript.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p13")
+        fork._app = "app-a"
+        parent._app = "app-b"
+        fork_key = fork.key
+        before = len(parent.messages)
+
+        # aiohttp middleware populates request["app"]; test injects via middleware.
+        @web.middleware
+        async def inject_app(request, handler):
+            request["app"] = "app-a"
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, inject_app)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["code"] == "not_found"
+        # No merge side effects: parent untouched, fork still open and unmerged.
+        assert len(parent.messages) == before
+        assert fork._merged is False
+        assert fork_key in state._slots
+
+    @pytest.mark.asyncio
+    async def test_merge_back_foreign_persisted_parent_denied_without_rehydration(self, tmp_path):
+        # GPT round 13: rehydration is a PUBLICATION (get_or_create_slot →
+        # slots broadcast), so a closed parent owned by another app must be
+        # refused from its persisted metadata BEFORE rehydrating — otherwise
+        # App B's slot reaches App A's SSE stream despite the eventual 404.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p14")
+        fork._app = "app-a"
+        parent._app = "app-b"
+        parent_key = parent.key
+        fork_key = fork.key
+        # Persist the parent (meta carries app-b), then drop it from live
+        # state so the merge path takes the rehydration branch.
+        parent.drain()
+        await save_slot_off_loop(state, parent, force=True)
+        state._slots.pop(parent_key)
+
+        @web.middleware
+        async def inject_app(request, handler):
+            request["app"] = "app-a"
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, inject_app)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["code"] == "not_found"
+        # The decisive assertion: the foreign parent was never rehydrated
+        # into shared state, so nothing was published to any SSE stream.
+        assert parent_key not in state._slots
+        assert fork._merged is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_stale_summary_rejected_409(self, tmp_path):
+        # A sidecar whose signature predates newer persisted turns is stale;
+        # merging it would archive the fork behind an incomplete summary, so
+        # the endpoint refuses rather than committing it.
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="p12")
+
+        async def _stale_summarizer(state_, slot_, *, cfg=None, force=False):
+            log = state_.conversation_log
+            key = slot_history_key(slot_)
+            gen = log.rotation_generation(key)
+            # A signature that can never match the current session mtime.
+            log.set_cached_intent_summary(
+                key,
+                {"intents": [{"title": "old", "status": "completed"}], "constraints": []},
+                -1.0,
+                gen,
+            )
+            return False
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _stale_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["code"] == "summary_unavailable"
+        # Nothing merged, nothing archived.
+        assert fork._merged is False
+        assert not any(
+            (m.get("meta") or {}).get("kind") == "merged_summary" for m in parent.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_merged_flag_folds_into_closed_on_periodic_save(self, tmp_path):
+        # A periodic flush of a History-resumed merged fork passes merged=False;
+        # since ``closed`` is slot-owned (absence means cleared) the save must
+        # still fold the in-memory ``_merged`` into ``closed`` or the archived
+        # fork is revived as an open tab on the next restart.
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("mfold")
+        slot.append("user", "hello", "msg msg-u")
+        slot.drain()
+        slot._merged = True
+        slot.forked_from = "dashboard:someparent"
+        # Periodic-style save: no explicit merged/closed arguments.
+        await save_slot_off_loop(state, slot, force=True)
+        meta = state.conversation_log.get_metadata(_history_key_for(slot.key))
+        assert meta.get("merged") is True
+        assert meta.get("closed") is True
+
+    @pytest.mark.asyncio
+    async def test_merge_back_busy_parent_409_before_summarize(self, tmp_path):
+        # RESTRUCTURE ROUND (B1): merging into a running parent would land the
+        # block inside its streamed turn. The parent quiescence check runs
+        # BEFORE the token-spending summarization — the summarizer must never
+        # be called for a busy parent.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pbusy")
+        # ``running`` is derived from an unfinished task.
+        parent.task = asyncio.get_running_loop().create_future()
+        calls = []
+
+        async def _counting_summarizer(state_, slot_, *, cfg=None, force=False):
+            calls.append(1)
+            return True
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _counting_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["code"] == "parent_busy"
+        assert calls == []  # rejected before the summarization spend
+        assert fork._merged is False
+        # The reservation was never left behind.
+        assert parent._merging is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_parent_reserved_rejects_sends_mid_transition(self, tmp_path):
+        # RESTRUCTURE ROUND (B1): while the transition holds the parent, a
+        # send answers 409 merge_in_progress and the parent's write gate holds.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pres")
+        seen: dict = {}
+
+        real_stub = self._stub_summarizer()
+
+        async def _probing_summarizer(state_, slot_, *, cfg=None, force=False):
+            # Mid-transition: the parent must be reserved right now (the
+            # parent-side ``_merge_reserved`` flag — GPT round 6 split it from
+            # the fork's ``_merging`` so background delivery appends pass).
+            seen["parent_reserved"] = parent._merge_reserved
+            return await real_stub(state_, slot_, cfg=cfg, force=force)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _probing_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        assert seen["parent_reserved"] is True
+        # Released on completion.
+        assert parent._merge_reserved is False
+
+    @pytest.mark.asyncio
+    async def test_merge_back_reserved_parent_accepts_background_delivery_append(self, tmp_path):
+        # GPT ROUND 6 (B1): the parent's reservation blocks TURNS, not one-shot
+        # background delivery appends — a cron/subagent result landing
+        # mid-reservation must append cleanly instead of raising
+        # SlotMergedError (whose failure handler would count a successful run
+        # as failed and drop its transcript row).
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pbg")
+        seen: dict = {}
+
+        real_stub = self._stub_summarizer()
+
+        async def _delivering_summarizer(state_, slot_, *, cfg=None, force=False):
+            # Mid-reservation: a broadcast (live) append to the parent — the
+            # shape a cron/subagent result delivery uses — must succeed.
+            parent.append("inject", "[background delivery mid-merge]", "cls-inject")
+            seen["delivered"] = True
+            return await real_stub(state_, slot_, cfg=cfg, force=force)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _delivering_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        assert seen["delivered"] is True
+        assert any(m.get("content") == "[background delivery mid-merge]" for m in parent.messages)
+
+    @pytest.mark.asyncio
+    async def test_merge_back_reserves_both_history_key_spellings(self, tmp_path):
+        # GPT ROUND 6 (B2): the History surface addresses sessions by the
+        # sanitized filename stem (``dashboard_x``) while ``slot_history_key``
+        # yields the colon spelling (``dashboard:x``); the reservation must
+        # cover BOTH or a History delete mid-merge slips past the guard and
+        # the transition's save resurrects it.
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+        from kiro_crew.history import transcript_stem
+
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pspell")
+        seen: dict = {}
+
+        real_stub = self._stub_summarizer()
+
+        async def _probing_summarizer(state_, slot_, *, cfg=None, force=False):
+            seen["reserved"] = set(state.merge_reserved_keys)
+            return await real_stub(state_, slot_, cfg=cfg, force=force)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _probing_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        reserved = seen["reserved"]
+        for colon_key in (slot_history_key(parent), slot_history_key(fork)):
+            assert colon_key in reserved
+            assert transcript_stem(colon_key) in reserved
+        # Cleared on completion.
+        assert not state.merge_reserved_keys
+
+    @pytest.mark.asyncio
+    async def test_merge_back_reserved_parent_rejects_close(self, tmp_path):
+        # GPT ROUND 7: closing the PARENT mid-reservation must answer 409
+        # merge_in_progress — the merge's later durable save persists the
+        # parent without ``closed``, so a close raced against it is silently
+        # undone and the dismissed session reappears after restart.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pclose")
+        seen: dict = {}
+
+        real_stub = self._stub_summarizer()
+        app = _make_app(state)
+
+        async def _closing_summarizer(state_, slot_, *, cfg=None, force=False):
+            async with TestClient(TestServer(app)) as inner:
+                resp = await inner.delete(f"/api/chat/slots/{parent.key}")
+                seen["status"] = resp.status
+                seen["code"] = (await resp.json()).get("code")
+            return await real_stub(state_, slot_, cfg=cfg, force=force)
+
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _closing_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        assert seen["status"] == 409
+        assert seen["code"] == "merge_in_progress"
+        # The parent survived the attempted close and is still live.
+        assert state.get_slot(parent.key) is parent
+
+    @pytest.mark.asyncio
+    async def test_merge_back_delete_won_parent_save_aborts_with_rollback(self, tmp_path):
+        # GPT ROUND 8: ``save_slot_off_loop`` returns ``False`` (raising
+        # nothing) when the target session was permanently deleted while the
+        # save awaited the lock — a clean return does NOT prove a committed
+        # write. Ignoring it broadcast + archived against a deleted parent,
+        # losing the merged summary. The False return must take the same
+        # rollback + 503 path as a raised save failure.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pdel")
+
+        from kiro_crew.dashboard.chat_merge_back import save_slot_off_loop as real_save
+
+        async def delete_won(state_, slot_, *args, **kwargs):
+            if slot_ is parent:
+                return False  # the delete-won skip: no exception, no write
+            return await real_save(state_, slot_, *args, **kwargs)
+
+        def merged_blocks():
+            return [
+                m for m in parent.messages if (m.get("meta") or {}).get("kind") == "merged_summary"
+            ]
+
+        app = _make_app(state)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                self._stub_summarizer(),
+            ),
+            patch("kiro_crew.dashboard.chat_merge_back.save_slot_off_loop", delete_won),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 503
+                assert (await resp.json())["code"] == "parent_save_failed"
+        # Rolled back: no phantom block in memory, fork untouched and retryable.
+        assert merged_blocks() == []
+        assert fork._merged is False
+        assert fork.key in state._slots
+
+    @pytest.mark.asyncio
+    async def test_merge_back_archive_retires_fork_nudge_loop(self, tmp_path):
+        # GPT ROUND 8: the archive used to bare-pop the fork from the slot
+        # table, skipping the tab-close teardown — an armed auto-nudge loop
+        # survived, fired later, and rehydrated the archived fork
+        # (``adopt_closed=True``), resurrecting a read-only tab whose appends
+        # raise SlotMergedError. The archive must run the shared ``close_slot``
+        # teardown, whose FIRST await is the nudge-loop retirement.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pnudge")
+        retired: list = []
+
+        async def recording_retire(name_):
+            retired.append(name_)
+            return None  # no loop was armed; nothing to retire
+
+        app = _make_app(state)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                self._stub_summarizer(),
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_handlers._retire_slot_nudge_loop",
+                recording_retire,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        # The teardown retired (or verified absent) the fork's nudge loop
+        # before the pop — the bare ``_slots.pop`` never did.
+        assert fork.key in retired
+        assert state.get_slot(fork.key) is None
+
+    @pytest.mark.asyncio
+    async def test_merge_back_refuses_fork_reserved_as_a_parent(self, tmp_path):
+        # GPT ROUND 9 (nested chains): a fork can itself be the PARENT of a
+        # deeper fork whose merge is in flight (child→middle running while
+        # middle→root is requested). Merging middle out mid-reservation would
+        # snapshot it BEFORE the child's summary lands — root persists a
+        # pre-child summary and the child's conclusion never reaches it. The
+        # locked re-check must refuse on the slot's own ``_merge_reserved``.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pnest")
+        # The fork is mid-transition as a PARENT: a child fork's merge into it
+        # reserved it (the flag chat_merge_back sets on the receiving side).
+        fork._merge_reserved = True
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "merge_in_progress"
+        # Nothing merged, nothing archived: retryable once the child settles.
+        assert fork._merged is False
+        assert fork.key in state._slots
+        assert not any(
+            (m.get("meta") or {}).get("kind") == "merged_summary" for m in parent.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_merged_fork_resume_from_history_replays_readonly(self, tmp_path):
+        # OPUS ROUND 7: resume used to set ``_merged`` BEFORE the replay loop,
+        # so the loop's broadcast appends hit the write gate and the first row
+        # raised SlotMergedError — a merged fork opened from History was
+        # permanently unreadable. The flag must land AFTER the replay, and the
+        # resumed slot must still be read-only.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="prsm")
+        fork_key = fork.key
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        history_key = slot_history_key(fork)
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+                # The merged fork was archived out of the live set; resume it
+                # from History the way the History surface does (the body
+                # carries the transcript's own key).
+                assert state.get_slot(fork_key) is None
+                resp = await client.post(
+                    f"/api/chat/slots/{fork_key}/resume", json={"key": history_key}
+                )
+                assert resp.status == 200, await resp.text()
+                body = await resp.json()
+                assert body.get("ok") is True
+                assert body.get("total", 0) >= 4
+                # Replayed rows made it back (readable), and the slot is
+                # read-only again: the merged flag landed after the replay.
+                resumed = state.get_slot(fork_key)
+                assert resumed is not None
+                assert resumed.messages
+                assert resumed._merged is True
+
+    @pytest.mark.asyncio
+    async def test_merge_back_enqueues_summary_into_parent_pending_context(self, tmp_path):
+        # GPT/DESIGN ROUND 6 (F3): the persisted ``merged_summary`` role is
+        # presentation-only (live providers forward just the new user message;
+        # cold replay recalls user/assistant/inject) — the summary must ALSO
+        # ride the pending-context path so the parent's next turn learns the
+        # conclusion the user paid tokens to produce.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pctx")
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 200
+        entries = list(parent._pending_context)
+        assert len(entries) == 1
+        block = next(
+            m for m in parent.messages if (m.get("meta") or {}).get("kind") == "merged_summary"
+        )
+        # Same summary the visible card renders, framed for the model.
+        assert entries[0]["content"] == block["content"]
+        assert "merged fork" in entries[0]["source"]
+
+    @pytest.mark.asyncio
+    async def test_merge_back_receipt_reuse_skips_summarizer_and_append(self, tmp_path):
+        # RESTRUCTURE ROUND (B2): after a merge whose archive failed and a
+        # restart that lost the in-memory retry marker, an UNCHANGED fork's
+        # retry recognizes the durable signed receipt: no second summarizer
+        # pass, no second block — archive only.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="prcpt")
+        fork_key = fork.key
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            with patch(
+                "kiro_crew.dashboard.chat_merge_back._archive_fork",
+                AsyncMock(
+                    return_value=web.json_response(
+                        {"error": "x", "code": "archive_failed"}, status=503
+                    )
+                ),
+            ):
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                    assert resp.status == 503
+
+        # Simulate the restart: the in-memory merge state is gone, the fork is
+        # addressable again, but the parent durably carries the signed receipt.
+        fork._merged = False
+        fork._merging = False
+        fork._archive_pending = False
+
+        calls = []
+
+        async def _counting_summarizer(state_, slot_, *, cfg=None, force=False):
+            calls.append(1)
+            return True
+
+        blocks = lambda: [  # noqa: E731
+            m for m in parent.messages if (m.get("meta") or {}).get("kind") == "merged_summary"
+        ]
+        assert len(blocks()) == 1
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _counting_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+        assert calls == []  # receipt recognized — no second summarization
+        assert len(blocks()) == 1  # and no second block
+        assert fork_key not in state._slots  # archived this time
+
+    @pytest.mark.asyncio
+    async def test_merge_back_same_count_rewrite_gets_fresh_receipt(self, tmp_path):
+        # RESTRUCTURE ROUND (B2): identity is the content signature, never the
+        # positional count. A fork revived after a failed archive whose
+        # transcript was REWRITTEN at the same message count must not be
+        # suppressed by the old block — the changed content is a different
+        # snapshot and gets its own receipt.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="prw")
+        fork_key = fork.key
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+
+        # Revive the fork (restart-style) and rewrite its last answer IN PLACE:
+        # same message count, different content.
+        fork._merged = False
+        fork._merging = False
+        state._slots[fork_key] = fork
+        fork.messages[-1]["content"] = "a completely different conclusion"
+        await save_slot_off_loop(state, fork, force=True)
+
+        blocks = lambda: [  # noqa: E731
+            m for m in parent.messages if (m.get("meta") or {}).get("kind") == "merged_summary"
+        ]
+        assert len(blocks()) == 1
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            self._stub_summarizer(
+                [{"title": "Revised conclusion", "status": "completed", "progress": []}]
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 200
+        # The same-count rewrite produced a SECOND receipt — the old block did
+        # not suppress it — and the two receipts carry different merge keys.
+        bl = blocks()
+        assert len(bl) == 2
+        keys = {(b.get("meta") or {}).get("merge_key") for b in bl}
+        assert len(keys) == 2 and None not in keys
+
+    @pytest.mark.asyncio
+    async def test_merged_fork_turn_and_rewrite_endpoints_409(self, tmp_path):
+        # RESTRUCTURE ROUND (B4): a History-resumed merged fork is read-only
+        # through EVERY turn-producing / transcript-rewriting endpoint, not
+        # just send — regenerate, variant switch, edit/resend, rewind and
+        # continue all answer 409 session_merged from the shared gate.
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("mro")
+        slot.append("user", "q", "msg msg-u")
+        slot.append("assistant", "a", "msg msg-a")
+        slot.drain()
+        slot._merged = True
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            for path, body in [
+                (f"/api/chat/slots/{slot.key}/regenerate", {}),
+                (f"/api/chat/slots/{slot.key}/switch-variant", {"index": 1, "variant": 0}),
+                (f"/api/chat/slots/{slot.key}/edit-resend", {"index": 0, "content": "x"}),
+                (f"/api/chat/slots/{slot.key}/rewind", {"index": 0, "content": "x"}),
+                (f"/api/chat/slots/{slot.key}/continue", {}),
+            ]:
+                resp = await client.post(path, json=body)
+                assert resp.status == 409, path
+                data = await resp.json()
+                assert data.get("code") == "session_merged", path
+
+    def test_append_write_gate_refuses_live_rows_on_merged_slot(self, tmp_path):
+        # RESTRUCTURE ROUND (B3/B4 backstop): the mutation boundary itself
+        # refuses a live append on a merged or merging fork, so a work source
+        # no endpoint gate enumerated (crew ingress, a future injector) fails
+        # closed instead of writing into an archived transcript. Replays
+        # (broadcast=False) stay allowed — History hydration re-appends rows
+        # to merged slots by design.
+        from kiro_crew.dashboard.state import SlotMergedError
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("gate")
+        slot.append("user", "before", "msg msg-u")
+
+        slot._merged = True
+        with pytest.raises(SlotMergedError):
+            slot.append("user", "live write", "msg msg-u")
+        slot.append("assistant", "replay", "msg msg-a", broadcast=False)  # allowed
+
+        slot._merged = False
+        slot._merging = True
+        with pytest.raises(SlotMergedError):
+            slot.append("user", "live write", "msg msg-u")
+        slot._merging = False
+        slot.append("user", "after", "msg msg-u")  # gate released
+
+    @pytest.mark.asyncio
+    async def test_merge_back_reserved_parent_rejects_sibling_merge(self, tmp_path):
+        # ROUND 5 (B1): the parent reservation is EXCLUSIVE — a parent already
+        # reserved by a sibling fork's merge (or itself merged) answers 409
+        # before the summarization spend, so two child merges can never
+        # interleave snapshot/save and lose a summary.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pexcl")
+        calls = []
+
+        async def _counting_summarizer(state_, slot_, *, cfg=None, force=False):
+            calls.append(1)
+            return True
+
+        app = _make_app(state)
+        with patch(
+            "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+            _counting_summarizer,
+        ):
+            async with TestClient(TestServer(app)) as client:
+                parent._merging = True  # sibling merge holds the reservation
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "parent_busy"
+                parent._merging = False
+                parent._merged = True  # parent itself is an archived fork
+                resp = await client.post(f"/api/chat/slots/{fork.key}/merge-back", json={})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "parent_busy"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_delete_refused_while_merge_reservation_held(self, tmp_path):
+        # ROUND 5 (B3): deleting either participant mid-transition would be
+        # undone by the transition's durable save (resurrecting removed data),
+        # so the slot DELETE endpoint refuses while the reservation is held.
+        state = _make_state(tmp_path)
+        parent, fork = await self._make_fork(state, parent_name="pdel")
+        fork._merging = True
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.delete(f"/api/chat/slots/{fork.key}")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "merge_in_progress"
+        fork._merging = False
+        assert fork.key in state._slots  # nothing was deleted
+
+    @pytest.mark.asyncio
+    async def test_merge_back_pure_prefix_fork_nothing_to_merge(self, tmp_path):
+        # Design review: a fork whose visible transcript is entirely the
+        # copied parent prefix has nothing post-fork to fold back — refuse
+        # with a distinct code before the summary spend.
+        state = _make_state(tmp_path)
+        parent = state.get_or_create_slot("pnull")
+        parent.title = "Parent"
+        parent._titled = True
+        parent.append("user", "start", "msg msg-u")
+        parent.append("assistant", "ok", "msg msg-a")
+        parent.drain()
+        await save_slot_off_loop(state, parent, force=True)
+        app = _make_app(state)
+        calls = []
+
+        async def _counting_summarizer(state_, slot_, *, cfg=None, force=False):
+            calls.append(1)
+            return True
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/pnull/fork", json={})
+            assert resp.status == 200
+            fork_key = (await resp.json())["key"]
+            fork = state._slots[fork_key]
+            await save_slot_off_loop(state, fork, force=True)
+            with patch(
+                "kiro_crew.dashboard.chat_merge_back.generate_session_summary",
+                _counting_summarizer,
+            ):
+                resp = await client.post(f"/api/chat/slots/{fork_key}/merge-back", json={})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "nothing_to_merge"
+        assert calls == []
+        assert fork._merged is False
 
 
 # ── Session reload endpoint (POST /api/chat/slots/{slot}/reload) ──

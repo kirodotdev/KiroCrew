@@ -37,6 +37,7 @@ import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './Work
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import SubagentCompletionCard from './SubagentCompletionCard'
+import MergedSummaryCard from './MergedSummaryCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './subagentCompletion'
 import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
@@ -148,6 +149,25 @@ export function createTranscriptRenderers(
 
   return [
     // ── Shape-matched rows, ahead of anything keyed only by role ──
+    {
+      // The visible block a merge-back appends to a parent (issue #3816). Keyed
+      // on the dedicated role AND the meta.kind so a history reload — which
+      // re-derives rows from the persisted meta line — draws the same card as a
+      // live append.
+      id: 'merged_summary',
+      roles: ['merged_summary'],
+      match: m => m.role === 'merged_summary' || m.meta?.kind === 'merged_summary',
+      render: (m, ctx) => ctx.row(
+        <MergedSummaryCard
+          key={ctx.key}
+          message={m}
+          onFileOpen={o.onFileOpen}
+          onFolderOpen={o.onFolderOpen}
+          slotKey={o.slot}
+        />,
+        true,
+      ),
+    },
     {
       // Replaces the default: same card, but wired to open a folder and the
       // side panel the way the single-chat surface does.

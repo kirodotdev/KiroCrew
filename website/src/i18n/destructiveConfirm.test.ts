@@ -193,6 +193,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
+  'components.chatPane.merge_back_confirm', // parent-session title operand, quoted per locale #4821
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',
   'pages.artifactDeployPage.remove_profile_confirm',

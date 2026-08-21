@@ -5681,7 +5681,15 @@
       "split_down": "Dividi in basso",
       "split_right": "Dividi a destra",
       "split_right_d": "Dividi a destra (⌘D)",
-      "type_to_filter": "Digita per filtrare…"
+      "type_to_filter": "Digita per filtrare…",
+      "forked_from_options": "Diramazione di {{name}} — opzioni",
+      "merged_open_parent": "Apri sessione principale",
+      "merged_readonly_bar": "Questa sessione è stata reintegrata nella sessione principale",
+      "merge_back": "Reintegra",
+      "merge_back_confirm": "Reintegrare il riepilogo di questo fork in «{{name}}» e archiviare il fork? Il fork diventerà di sola lettura.",
+      "merge_back_merging": "Reintegrazione…",
+      "merge_back_title": "Reintegra il riepilogo di questo fork in {{name}} e archivia il fork",
+      "pane_actions": "Azioni del riquadro"
     },
     "cliPanel": {
       "copied": "Copiato",
@@ -8059,7 +8067,19 @@
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passare alla modalità pilota automatico? I messaggi successivi useranno il comportamento del pilota automatico (pianifica → approva → esegui).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Passare alla modalità chat normale? I messaggi successivi useranno il comportamento standard della chat.",
+      "merge_back_failed": "Reintegrazione non riuscita. La sessione principale potrebbe non esistere più o il gateway non è raggiungibile; riprova.",
+      "merge_back_failed_already_merged": "Questo fork è già stato reintegrato nella sessione principale.",
+      "merge_back_failed_archive": "Il riepilogo è stato reintegrato nella sessione principale, ma non è stato possibile archiviare il fork. Fai clic di nuovo su Reintegra per completare.",
+      "merge_back_failed_no_summary": "Impossibile riepilogare questo fork: potrebbe avere troppi pochi turni per essere reintegrato.",
+      "merge_back_failed_parent_missing": "La sessione principale è chiusa o non esiste più. Riaprila prima dalla Cronologia.",
+      "merge_back_failed_fork_flush": "Non è stato possibile salvare gli ultimi turni del fork prima di riepilogare. Nulla è andato perso: riprova.",
+      "merge_back_failed_non_persistent": "Questa è una sessione privata (in incognito) e non può essere unita a una sessione principale.",
+      "merge_back_failed_parent_save": "Impossibile salvare il riepilogo nella sessione principale; non è stato reintegrato nulla. Riprova.",
+      "merge_back_failed_running": "Questo fork ha un turno in corso. Riprova quando è inattivo.",
+      "merge_back_failed_parent_busy": "La sessione principale ha un turno in corso. Riprova quando sarà terminato.",
+      "merge_back_failed_nothing": "Questo fork non ha ancora lavoro proprio da unire. Inviagli prima un messaggio, poi unisci.",
+      "merge_back_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet non disponibile",
@@ -9504,6 +9524,15 @@
         "copy_text_failed": "Copia non riuscita",
         "copy_text_unavailable": "Gli appunti sono bloccati qui. Il testo del tuo post è selezionato: premi Ctrl+C / ⌘C. Il testo della card che hai modificato va copiato dalla card stessa.",
         "export_failed": "Impossibile generare la scheda di condivisione"
+      },
+      "mergedSummaryCard": {
+        "gap_note_one": "Il parent è avanzato di {{count}} messaggio da questo fork; unito alla coda attuale.",
+        "gap_note_other": "Il parent è avanzato di {{count}} messaggi da questo fork; unito alla coda attuale.",
+        "merged_from_a_fork": "Unito da un fork",
+        "merged_from_fork": "Unito da {{name}}",
+        "summary_covers_full_fork": "Riepilogo dell'intera sessione del fork",
+        "summary_of_forks_work": "Riepilogo del lavoro del fork",
+        "gap_note_many": "Il parent è avanzato di {{count}} messaggi da questo fork; unito alla coda attuale."
       }
     },
     "chatPage": {

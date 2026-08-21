@@ -432,6 +432,23 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # here, so an app cannot forge attendance for its own worker.
         slot._human_seen = True
 
+    # A fork that was merged back into its parent is archived and read-only,
+    # and a fork mid-merge-transition is temporarily so (a turn landing
+    # mid-merge would be omitted from the summary yet archived with the fork).
+    # Shared 409s via merged_slot_response; the merged case additionally logs.
+    merged_409 = merged_slot_response(slot)
+    if merged_409 is not None:
+        if getattr(slot, "_merged", False):
+            sel().log_api_access(
+                caller=request_app or "dashboard",
+                operation="chat_send",
+                outcome="denied",
+                source="dashboard",
+                resources=f"slot={slot.key}",
+                error="session merged into parent",
+            )
+        return merged_409
+
     if slot.agent not in (None, ""):
         # Slot already has an agent — only reject explicit mismatches (non-empty different agent).
         # Empty agent in request means "use existing" (e.g. follow-up messages from frontend).
@@ -3034,6 +3051,31 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
         logger.info("Stop: cancelled %d pending question(s) on slot %s", cancelled, slot.key)
 
 
+def merged_slot_response(slot: "_ChatSlot") -> web.Response | None:
+    """The shared 409 for a turn/transcript mutation on a merged(-ing) fork.
+
+    One helper instead of per-endpoint copies (restructure round): a merged
+    fork is read-only and a fork mid-merge-transition is temporarily so, and
+    every endpoint that produces a turn or rewrites the transcript — send,
+    continue, regenerate, variant switch, edit/resend, rewind — must answer
+    the same two codes. The mutation-boundary gates (``_ChatSlot.append`` and
+    ``_run_chat``'s entry check) are the fail-closed backstop for callers
+    that skip this; this helper exists so deliberate callers fail with a
+    clean 409 instead of tripping the backstop.
+    """
+    if getattr(slot, "_merged", False):
+        return web.json_response(
+            {"error": "this session was merged into its parent", "code": "session_merged"},
+            status=409,
+        )
+    if getattr(slot, "_merging", False) or getattr(slot, "_merge_reserved", False):
+        return web.json_response(
+            {"error": "a merge back is in progress for this session", "code": "merge_in_progress"},
+            status=409,
+        )
+    return None
+
+
 def _subagents_attached_response(
     state: DashboardState, slot: _ChatSlot, session_key: str, operation: str
 ) -> web.Response | None:
@@ -3776,6 +3818,11 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
             )
+        # A merged fork is read-only; a merging one temporarily so (restructure
+        # round — continue dispatches a real agent turn, same as send).
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
         if slot._in_stage_execution:
             # An autopilot plan reads `running` False BETWEEN stages while it is
             # still mid-plan, so `running` alone would let a Continue dispatch
@@ -4641,6 +4688,18 @@ async def close_slot(
     re-raises, exactly like the persist-failure path. The human ✕ path passes
     ``None`` — the person owns the tab and closes it unconditionally.
     """
+    # A slot involved in a merge transition cannot be closed mid-flight: the
+    # fork being summarized (``_merging``) would have its close stripped by the
+    # transition's later archive save, and the RESERVED PARENT
+    # (``_merge_reserved``, GPT round 7) has the merged row's durable save
+    # still ahead — a close raced against it is silently undone when that save
+    # persists the parent without ``closed``, so a dismissed session reappears
+    # after restart. The reservation lasts seconds; the caller retries after
+    # it clears.
+    if getattr(slot, "_merging", False) or getattr(slot, "_merge_reserved", False):
+        raise SlotCloseError(
+            "a merge back is in progress for this session", code="merge_in_progress"
+        )
     # Synchronous tombstone, BEFORE any await: a channel-slot reconcile pass
     # whose snapshot predates this close reads these after its last await, so
     # it cannot re-surface the tab this handler is dismissing (see
@@ -5009,7 +5068,12 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     try:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
-        # Every failure `close_slot` raises is a server-side 500 (nudge retire /
+        # A merge-reservation refusal is the one RETRYABLE refusal: the
+        # transition lasts seconds and the caller simply retries. Literal
+        # status per the contract-gate note below.
+        if exc.code == "merge_in_progress":
+            return web.json_response({"error": exc.message, "code": exc.code}, status=409)
+        # Every other failure `close_slot` raises is a server-side 500 (nudge retire /
         # app hook / history save); a literal status keeps the error-code contract
         # gate able to verify the `code` statically (a `status=<expr>` would read
         # as an un-verifiable dynamic-status response). The pre-pop re-check that
@@ -8153,7 +8217,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if meta.get("folder_id"):
         folder_checked_id = meta["folder_id"]
         folder_unhidden = await _unhide_folder(state, folder_checked_id)
-    if meta.get("closed"):
+    if meta.get("closed") and not meta.get("merged"):
+        # A merged-back fork must stay closed + archived (Risk 3): clearing its
+        # closed flag would revive it as continuable and defeat the archive.
+        # Non-merged sessions proceed to the normal clear below.
+        #
         # Clear the closed flag so the session restores on the next gateway restart.
         # Offloaded because clear_closed takes the per-session cross-process lock,
         # which fails fast on the loop under contention. Best-effort: resume anyway.
@@ -8569,6 +8637,17 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         carry_provenance(slot.messages[-1], m)
         _attach_variants(slot, m)
     slot.drain()
+    # A merged-back fork resumed from History stays read-only + archived (Risk
+    # 3): set the flag the turn path checks. Set AFTER the replay loop, not
+    # before it (Opus round 7): the loop's ``slot.append`` calls run with the
+    # default ``broadcast=True``, and the append-level write gate refuses live
+    # appends on a merged slot — flag-first made every merged fork answer 409
+    # ``session_merged`` on the first replayed row, permanently unreadable
+    # from History. The replay is synchronous on the event loop, so no turn
+    # can start in the window before the flag lands. The matching "do not
+    # clear the closed flag" guard lives on the early compare-and-clear above.
+    if meta.get("merged"):
+        slot._merged = True
     slot._resumed_count = len(slot.messages)
     # Loaded window is the on-disk window region; older lines (in
     # _disk_older_count above) are the frozen prefix saves never rewrite,

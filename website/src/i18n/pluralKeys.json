@@ -123,6 +123,7 @@
   "pages.channelPage.reply_2",
   "pages.chat.assistantMessage.needs_earlier_history_count",
   "pages.chat.collapsibleToolGroup.tool_call",
+  "pages.chat.mergedSummaryCard.gap_note",
   "pages.chat.sessionSummary.open_items",
   "pages.chat.sideChat.turn",
   "pages.chat.subagentProgressBar.tool",
