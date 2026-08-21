@@ -316,6 +316,14 @@ class JsonRpcMessage:
     result: Any = None
     error: Any = None
     params: Any = None
+    #: Set by ``AcpRuntime._reader_loop`` when this frame carried no
+    #: ``sessionId`` and so was fanned out to MORE THAN ONE registered session.
+    #: Such a frame names no owner: at most one of the recipients produced it and
+    #: nothing says which, so a consumer must not read it as its own activity.
+    #: False for a routed frame, and False for a fanout to a lone session (which
+    #: IS the sole owner). Not part of the wire format -- ``from_dict`` never
+    #: sets it.
+    fanout_no_owner: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "JsonRpcMessage":
@@ -472,6 +480,14 @@ class AcpEvent:
     oauth_url: str = ""
     # Native subagent list (EVENT_SUBAGENT_LIST) — kiro-cli per-subagent state.
     subagents: list[dict[str, Any]] | None = None
+    #: True when the frame behind this event named no owner and was fanned out to
+    #: several sessions on one runtime (see ``JsonRpcMessage.fanout_no_owner``).
+    #: A consumer must not read such an event as ITS OWN activity -- it is
+    #: another tenant's traffic. Only the roster broadcast sets this today; the
+    #: same event kind reached through a routed ``session/update`` (the KAS
+    #: sub-agent lifecycle path) leaves it False, because that frame belongs to
+    #: exactly one session.
+    runtime_global: bool = False
     # Owning sub-agent session id (EVENT_SUBAGENT_ACTIVITY) — ties a tool call
     # to a specific native sub-agent card.
     sub_session_id: str = ""

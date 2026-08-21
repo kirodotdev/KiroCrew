@@ -25,8 +25,8 @@ from kiro_crew.subagent import SubagentManager
 
 def _stream(*_a: object, **_k: object):
     async def _gen():
-        yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="done")
-        yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn")
+        yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text="done", runtime_global=False)
+        yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
 
     return _gen()
 

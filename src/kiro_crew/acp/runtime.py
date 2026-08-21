@@ -1834,7 +1834,16 @@ class AcpRuntime:
                 if self._session_queues:
                     # Snapshot: `await queue.put` yields, and a concurrent
                     # unregister_session() could pop mid-iteration otherwise.
-                    for queue in list(self._session_queues.values()):
+                    _queues = list(self._session_queues.values())
+                    # Fanning one ownerless frame out to SEVERAL sessions means
+                    # at most one recipient produced it and nothing says which,
+                    # so mark it: a consumer that measures its own activity (the
+                    # subagent idle-stall clock) must not count another tenant's
+                    # traffic. A lone session IS the sole owner, so it is left
+                    # unmarked and keeps reading the frame as its own.
+                    if len(_queues) > 1:
+                        msg.fanout_no_owner = True
+                    for queue in _queues:
                         await queue.put(msg)
                 else:
                     # Same unbounded shape as the unknown-session branch: with

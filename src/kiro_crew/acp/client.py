@@ -4371,6 +4371,9 @@ class AcpClient:
                     len(_subs) if isinstance(_subs, list) else "n/a",
                 )
                 if isinstance(_subs, list):
+                    # No runtime_global marking here: AcpClient owns a dedicated
+                    # process with a single session, so an ownerless frame from
+                    # it is this session's own roster, never a co-tenant's.
                     yield AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=_subs)
             elif action == "subagent_activity":
                 # _kiro.dev/session/update: a sub-agent session's own update,

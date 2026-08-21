@@ -2104,7 +2104,17 @@ class AcpSessionHandle:
                     params = msg.params or {}
                     subs = params.get("subagents")
                     if isinstance(subs, list):
-                        yield AcpEvent(kind=EVENT_SUBAGENT_LIST, subagents=subs)
+                        # The roster notification carries no sessionId, so the
+                        # runtime fans it out to every co-tenant. Carry that
+                        # provenance through: a subagent consumer needs to tell
+                        # it apart from the SAME event kind produced by the
+                        # routed KAS lifecycle path below, which does belong to
+                        # this session.
+                        yield AcpEvent(
+                            kind=EVENT_SUBAGENT_LIST,
+                            subagents=subs,
+                            runtime_global=msg.fanout_no_owner,
+                        )
                 elif action == "subagent_activity":
                     params = msg.params or {}
                     ssid = str(params.get("sessionId") or "")

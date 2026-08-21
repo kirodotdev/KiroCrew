@@ -1217,6 +1217,7 @@ class AcpProvider(LLMProvider):
             server_name=e.server_name,
             oauth_url=e.oauth_url,
             subagents=e.subagents,
+            runtime_global=e.runtime_global,
             sub_session_id=e.sub_session_id,
             is_shell=e.is_shell,
             # Canonical, non-model-authored tool identity (_meta.kiro). The

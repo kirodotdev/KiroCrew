@@ -5492,12 +5492,39 @@ class SubagentManager:
         # waited for this turn.
         _turn_t0 = time.monotonic()
         async for event in _stream_with_transient_retry():
-            # Refresh the activity clock for EVERY event kind (thinking chunks,
-            # tool-call updates, etc.) before dispatch, so idle-stall detection
-            # only trips on a genuine no-event hang — not on an event kind this
-            # switch does not special-case. Approval waits stay exempt via
+            # Refresh the activity clock for every event kind that BELONGS to
+            # this session (thinking chunks, tool-call updates, etc.) before
+            # dispatch, so idle-stall detection only trips on a genuine no-event
+            # hang -- not on an event kind this switch does not special-case.
+            #
+            # ``runtime_global`` events are the one exclusion: the frame behind
+            # them carried no ``sessionId`` and the runtime fanned it out to
+            # several sessions sharing one kiro-cli process, so it is another
+            # tenant's traffic. Under ``agent.session_sharing`` (default true)
+            # co-tenant subagents are separate sessions on the parent's runtime,
+            # and counting the roster broadcast as activity reset
+            # ``last_activity`` for a whole batch of wedged subagents at the same
+            # instant, cleared their "stalled" badge and restarted the idle count
+            # on agents that had made no progress -- so the badge flapped and the
+            # reported ``idle_secs`` measured time since an unrelated agent's
+            # roster churn. Field data: three co-tenants flagged in one reaper
+            # sweep at idle 214s/214s/215s (one shared refresh instant) while
+            # their elapsed was 1445s/1447s/1538s.
+            #
+            # Deliberately a PROVENANCE test, not an event-kind test: the same
+            # kind reached through a routed frame (the KAS sub-agent lifecycle
+            # path) is this session's own progress and must still count, or a
+            # working agent gets falsely badged. Approval waits stay exempt via
             # _awaiting_approval.
-            await self._touch_activity(info)
+            #
+            # Plain attribute access: every provider yields ``LLMEvent`` (an
+            # alias of ``AcpEvent``), which declares the field, so there is no
+            # shape here that could raise. A hop that forgets to carry the flag
+            # degrades to the default False, i.e. "counts as activity" -- the
+            # fail-open direction, which can only delay a badge, never invent
+            # one.
+            if not event.runtime_global:
+                await self._touch_activity(info)
             if event.kind == EVENT_TEXT_CHUNK:
                 result_text += event.text
                 write_result_chunk(info.id, event.text)

@@ -43,14 +43,14 @@ _TURN_SLEEP_SECS = 0.03
 
 
 def _text_event(text: str) -> SimpleNamespace:
-    return SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=text)
+    return SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=text, runtime_global=False)
 
 
 def _complete_event(usage: TurnUsage | None = None) -> SimpleNamespace:
     """An EVENT_COMPLETE. With no ``usage`` it mirrors the real acp stream,
     where nothing assigns ``duration_ms`` and the row must fall back to the
     caller's ``elapsed_ms``."""
-    ev = SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn")
+    ev = SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
     if usage is not None:
         ev.usage = usage
     return ev
