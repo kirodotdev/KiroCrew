@@ -159,6 +159,25 @@ def test_requires_python_falls_back_when_pyproject_declares_it_dynamic(repo):
     assert dep_sync.requires_python(repo) == ">=3.10"
 
 
+def test_requires_python_reads_a_static_omission_as_no_floor_at_all(repo):
+    """The same fallthrough as the console script, at the other field it owns.
+
+    A `[project]` table that declares `requires-python` statically is the whole
+    answer, so a table that omits it declares no floor. setup.cfg's copy is one
+    setuptools ignores here, and enforcing a stale copy can only over-refuse a
+    revision that is in fact installable. No sentinel is needed, unlike the
+    console-script answer: "no floor declared" and "the floor could not be read"
+    both leave this gate not firing, which is the same safe outcome.
+    """
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\ndynamic = ["dependencies"]\n',
+        encoding="utf-8",
+    )
+
+    # setup.cfg still says >=3.10; the static omission means it is not consulted.
+    assert dep_sync.requires_python(repo) is None
+
+
 def test_python_floor_breach_reports_the_highest_unmet_floor():
     assert dep_sync.python_floor_breach(">=3.10", (3, 12, 0)) is None
     assert dep_sync.python_floor_breach(">=3.13", (3, 10, 0)) == "3.13.0"
@@ -179,6 +198,17 @@ def test_python_floor_breach_reads_every_spelling_that_declares_a_floor():
     assert dep_sync.python_floor_breach(">3.10", (3, 10, 0)) == "3.10.0"
     assert dep_sync.python_floor_breach(">3.10", (3, 10, 1)) is None
     assert dep_sync.python_floor_breach(">=3.10", (3, 10, 0)) is None
+    # An equality clause pins the version it names, so that version is the floor
+    # too. `==3.12.*` is the spelling a revision uses to require one minor
+    # series; read as no floor at all, it would install on 3.10 and then fail to
+    # import. `===` is arbitrary equality and pins just as hard.
+    assert dep_sync.python_floor_breach("==3.12.*", (3, 10, 0)) == "3.12.0"
+    assert dep_sync.python_floor_breach("==3.12.*", (3, 12, 4)) is None
+    assert dep_sync.python_floor_breach("===3.10.5", (3, 10, 0)) == "3.10.5"
+    assert dep_sync.python_floor_breach("===3.10.5", (3, 10, 5)) is None
+    # `===` is read as one operator, not as `==` with a stray `=` in front, so
+    # its floor is the version it names rather than a missed match.
+    assert dep_sync._PY_FLOOR.search("===3.10.5").group("op") == "==="
 
 
 def test_dependency_authority_moved_detects_a_migration_to_pyproject(repo):
@@ -230,6 +260,58 @@ def test_console_script_target_falls_back_to_setup_cfg(repo):
     (repo / "setup.cfg").write_text(
         _SETUP_CFG + "\n\n[options.entry_points]\nconsole_scripts =\n"
         "    kirocrew = kiro_crew.old:main\n",
+        encoding="utf-8",
+    )
+
+    assert dep_sync.console_script_target(repo, "kirocrew") == "kiro_crew.old:main"
+
+
+def test_console_script_target_reports_a_removal_rather_than_reading_a_stale_copy(repo):
+    """A static `[project.scripts]` that omits the script means it was REMOVED.
+
+    Falling through to setup.cfg here is what hides the removal: this repository
+    carries the same entry point in both files, so the stale copy AGREES with the
+    installed wrapper and the comparison reports success on a script the revision
+    deleted -- the wrapper left dispatching to a target that may no longer exist.
+    """
+    (repo / "setup.cfg").write_text(
+        _SETUP_CFG + "\n\n[options.entry_points]\nconsole_scripts =\n"
+        "    kirocrew = kiro_crew.old:main\n",
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\ndynamic = ["dependencies"]\n\n'
+        '[project.scripts]\nsomething-else = "kiro_crew.other:main"\n',
+        encoding="utf-8",
+    )
+
+    assert dep_sync.console_script_target(repo, "kirocrew") == dep_sync.SCRIPT_REMOVED
+
+
+def test_console_script_target_reads_no_scripts_table_as_a_removal_too(repo):
+    """No `scripts` and not dynamic is the same statement: setuptools builds none."""
+    (repo / "setup.cfg").write_text(
+        _SETUP_CFG + "\n\n[options.entry_points]\nconsole_scripts =\n"
+        "    kirocrew = kiro_crew.old:main\n",
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\ndynamic = ["dependencies"]\n',
+        encoding="utf-8",
+    )
+
+    assert dep_sync.console_script_target(repo, "kirocrew") == dep_sync.SCRIPT_REMOVED
+
+
+def test_console_script_target_still_reads_setup_cfg_when_scripts_is_dynamic(repo):
+    """A field listed as dynamic is still setup.cfg's to declare."""
+    (repo / "setup.cfg").write_text(
+        _SETUP_CFG + "\n\n[options.entry_points]\nconsole_scripts =\n"
+        "    kirocrew = kiro_crew.old:main\n",
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\ndynamic = ["dependencies", "scripts"]\n',
         encoding="utf-8",
     )
 
@@ -456,6 +538,37 @@ def test_main_reports_a_repointed_console_script_after_installing(repo, capsys):
     err = capsys.readouterr().err
     assert "kiro_crew.new:main" in err
     assert "kiro_crew.old:main" in err
+    assert "No dependency was installed" not in err
+
+
+def test_main_reports_a_removed_console_script_as_a_removal(repo, capsys):
+    """A removal is a different sentence from a repoint, and must read as one.
+
+    The sentinel is a phrase, not a `module:attr`, so splicing it into the repoint
+    wording would report the script as "repointed to removed by the merged
+    revision" -- an operator cannot act on that.
+    """
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+
+    _origin_inside.repo = repo
+
+    with (
+        patch.object(dep_sync, "console_script_target", return_value=dep_sync.SCRIPT_REMOVED),
+        patch.object(
+            dep_sync, "installed_console_script_target", return_value="kiro_crew.old:main"
+        ),
+        patch.object(dep_sync.subprocess, "run", return_value=_Proc()),
+    ):
+        rc = dep_sync.main([str(repo), "py"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no longer declared" in err
+    assert "kiro_crew.old:main" in err
+    assert "repointed to" not in err
     assert "No dependency was installed" not in err
 
 

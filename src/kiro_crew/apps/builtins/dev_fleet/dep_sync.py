@@ -80,9 +80,14 @@ _PROJECT = "kirocrew"
 #: makes the merged tree unimportable under this interpreter. Upper bounds and
 #: exclusions are left to pip on the next real reinstall rather than
 #: reimplemented here without a PEP 440 parser. ``~=`` is included because a
-#: compatible-release clause declares its own lower bound, and ``>`` is kept
-#: distinct from ``>=`` because it excludes the version it names.
-_PY_FLOOR = re.compile(r"(?P<op>~=|>=|>)\s*(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<micro>\d+))?")
+#: compatible-release clause declares its own lower bound, ``==`` and ``===`` are
+#: included because an equality clause pins the version it names and so declares
+#: that version as the floor, and ``>`` is kept distinct from ``>=`` because it
+#: excludes the version it names. ``===`` precedes ``==`` in the alternation so
+#: the longer operator wins; ``>=`` precedes ``>`` for the same reason.
+_PY_FLOOR = re.compile(
+    r"(?P<op>===|==|~=|>=|>)\s*(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<micro>\d+))?"
+)
 
 #: A plain PEP 508 distribution name -- letters, digits, and the separators PEP
 #: 503 normalizes. Anything else at the head of a requirement is not a name: a
@@ -240,17 +245,23 @@ def requires_python(repo: Path) -> str | None:
     build backend ignores is how this gate would silently stop firing.
 
     setup.cfg remains the fallback for a checkout with no ``[project]`` table, or
-    one that declares the field dynamic.
+    one that declares the field dynamic. A ``[project]`` table that declares the
+    field statically is the whole answer, so a table that OMITS it declares no
+    floor -- reading setup.cfg's ``python_requires`` there would enforce a copy
+    setuptools itself ignores, and a stale one can only over-refuse a revision
+    that is in fact installable. Unlike the console-script answer this needs no
+    sentinel: "no floor declared" and "the floor could not be read" both mean the
+    same thing to the caller, which is that this gate does not fire.
     """
     text = read_text(repo, "pyproject.toml")
     if text is not None:
         table = project_table(repo)
         if table is not None:
-            spec = table.get("requires-python")
-            if isinstance(spec, str) and "requires-python" not in _as_str_list(
-                table.get("dynamic")
-            ):
-                return spec.strip() or None
+            if "requires-python" not in _as_str_list(table.get("dynamic")):
+                spec = table.get("requires-python")
+                if isinstance(spec, str) and spec.strip():
+                    return spec.strip()
+                return None
         else:
             project = _section(text, "[project]")
             if "requires-python" not in _dynamic_fields(project):
@@ -299,10 +310,11 @@ def python_floor_breach(spec: str, version: tuple[int, int, int]) -> str | None:
     check and the gate has to be applied here or the merged revision becomes
     unimportable under the interpreter that has to import it.
 
-    Three spellings all declare a floor and all have to be read as one, because a
+    Four spellings all declare a floor and all have to be read as one, because a
     floor this misses is a gate that does not fire: ``>=`` names the floor
-    directly, ``~=`` (compatible release) names it as its own lower bound, and
-    ``>`` names a floor the interpreter must EXCEED rather than merely meet.
+    directly, ``~=`` (compatible release) names it as its own lower bound, ``==``
+    and ``===`` pin the version they name and so make it the floor too, and ``>``
+    names a floor the interpreter must EXCEED rather than merely meet.
     Comparison is at three components, so ``>=3.10.5`` is not truncated to the
     minor and then passed by a 3.10.0 interpreter.
     """
@@ -435,22 +447,53 @@ def _section(toml_text: str, header: str) -> str:
     return "\n".join(out)
 
 
+#: What :func:`console_script_target` returns when the authoritative declaration
+#: EXISTS and does not name the script: the entry point is REMOVED as of the
+#: merged revision. Distinct from ``None``, which means the declaration could not
+#: be read at all -- collapsing the two would let a removal pass silently, and a
+#: wrapper left dispatching to a target the revision deleted is exactly the
+#: mismatch this comparison exists to report. A truthy string that can never be a
+#: valid ``module:attr`` (it contains spaces), so the comparison in :func:`main`
+#: treats a removal like any other disagreement.
+SCRIPT_REMOVED = "removed by the merged revision"
+
+
 def console_script_target(repo: Path, script: str) -> str | None:
     """The ``module:attr`` *script* is declared to dispatch to, or ``None``.
 
     pyproject's ``[project.scripts]`` is read FIRST because that is what setuptools
     builds the wrapper from whenever ``scripts`` is not listed as dynamic; setup.cfg
     is the fallback for a checkout that still declares them there.
+
+    setup.cfg is consulted only where setuptools itself would consult it: a
+    checkout with no ``[project]`` table (pre-PEP 621 metadata), or one that
+    declares ``scripts`` dynamic. A ``[project]`` table that declares ``scripts``
+    statically is the whole answer, so a table that does not name *script* means
+    the entry point was removed rather than that it should be looked for
+    elsewhere -- reading setup.cfg's copy anyway would compare a stale
+    declaration against the installed wrapper, agree with it, and report success
+    on a script the revision deleted. That case returns
+    :data:`SCRIPT_REMOVED`.
+
+    The removal answer is only reached on the parsed path. The text fallback (3.10
+    without ``tomli``, per :func:`project_table`) cannot tell an absent
+    ``[project.scripts]`` table from an empty one, and cannot see the inline-table
+    or dotted-key spellings of the same declaration, so it would report a removal
+    for a script that is declared. It keeps the older best-effort behaviour of
+    falling through to setup.cfg instead: a missed removal there is the same gap
+    that path already has on every other question, and is preferable to refusing a
+    sync over a declaration it merely failed to read.
     """
     pyproject = read_text(repo, "pyproject.toml")
     if pyproject:
         table = project_table(repo)
         if table is not None:
-            scripts = table.get("scripts")
-            if isinstance(scripts, dict):
-                target = scripts.get(script)
+            if "scripts" not in _as_str_list(table.get("dynamic")):
+                scripts = table.get("scripts")
+                target = scripts.get(script) if isinstance(scripts, dict) else None
                 if isinstance(target, str) and target.strip():
                     return target.strip()
+                return SCRIPT_REMOVED
         else:
             scripts_text = _section(pyproject, "[project.scripts]")
             match = re.search(
@@ -598,17 +641,27 @@ def main(argv: list[str] | None = None) -> int:
             return proc.returncode
 
     # The one thing a dependency-only install cannot deliver: if the merged
-    # revision REPOINTED the console script, the wrapper on disk still dispatches
-    # to the old target and no amount of dependency installing refreshes it. The
-    # dependencies are installed by now, so this reports rather than refuses.
+    # revision REPOINTED the console script -- or dropped it -- the wrapper on
+    # disk still dispatches to the old target and no amount of dependency
+    # installing refreshes it. The dependencies are installed by now, so this
+    # reports rather than refuses.
     declared = console_script_target(repo, _SCRIPT)
     installed = installed_console_script_target(target_py, _SCRIPT)
     if declared and installed and declared != installed:
+        if declared == SCRIPT_REMOVED:
+            disagreement = (
+                f"script is no longer declared by the merged revision, while the "
+                f"installed wrapper still calls {installed}"
+            )
+        else:
+            disagreement = (
+                f"script is repointed to {declared} by the merged revision while "
+                f"the installed wrapper still calls {installed}"
+            )
         print(
             f"dep-sync: dependencies are installed, but the {_SCRIPT!r} console "
-            f"script is repointed to {declared} by the merged revision while the "
-            f"installed wrapper still calls {installed}. That wrapper cannot be "
-            "rewritten while a process is running from it: stop the gateway and run "
+            f"{disagreement}. That wrapper cannot be "
+            f"rewritten while a process is running from it: stop the gateway and run "
             f'"{target_py}" -m pip install -e "{repo}" before restarting.',
             file=sys.stderr,
         )
