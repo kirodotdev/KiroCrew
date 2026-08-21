@@ -1189,6 +1189,24 @@ Examples:
     cron_trigger = cron_sub.add_parser("trigger", help="Trigger a cron job immediately")
     cron_trigger.add_argument("job_id", help="Job ID to trigger")
 
+    cron_adopt = cron_sub.add_parser(
+        "adopt",
+        help="Give a cron job an owning chat session, so that session can manage it and receives its results",
+    )
+    cron_adopt.add_argument("job_id", help="Job ID to adopt")
+    adopt_target = cron_adopt.add_mutually_exclusive_group(required=True)
+    adopt_target.add_argument(
+        "--session-of",
+        metavar="SESSION",
+        help='Dashboard slot name ("chat-3-1712793600") or a fully-qualified '
+        'session key ("dashboard:chat-3-1712793600"); see `kirocrew cron list`',
+    )
+    adopt_target.add_argument(
+        "--release",
+        action="store_true",
+        help="Clear the owning session, returning the job to CLI/dashboard-only management",
+    )
+
     cron_preview = cron_sub.add_parser(
         "preview",
         help="Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered",

@@ -183,6 +183,72 @@ Via Dashboard: toggle "Strict schedule" when creating or editing a job.
 | Pause | Pause button | `cron pause <id>` | — |
 | Resume | Resume button | `cron resume <id>` | — |
 | Delete | Delete button | `cron remove <id>` | `kirocrew cron remove <id>` |
+| Adopt / release | — | — | `kirocrew cron adopt <id> --session-of <slot>` / `--release` |
+
+### Which chat session owns a job
+
+A job's `session_key` names the chat session it belongs to, and that one field
+carries one meaning: it is also where the job's output is delivered
+(`session="origin"` sends and script results both resolve a slot from it). A job
+created outside a chat — `kirocrew cron add`, the dashboard Schedule page, an
+onboarding import — therefore has no owning session, which is truthful rather
+than a defect: there is no chat to deliver into.
+
+The consequence is worth stating plainly, because it is easy to read as a job
+that disappeared. A job with no owning session is outside every chat session's
+scope: `cron_list` from chat does not list it, and the mutating cron tools answer
+a deliberately vague `job not found` so the reply cannot be used to enumerate
+jobs the caller may not see. Those jobs are managed from the operator surfaces
+instead: `kirocrew cron list`, which is the only surface that shows *who* owns a
+job, and the dashboard Schedule page, which lists and manages every job regardless
+of owner but does not yet display ownership (its API payload does not carry
+`session_key`).
+
+`kirocrew cron adopt` is the way across that line, in both directions:
+
+```
+kirocrew cron adopt <id> --session-of chat-3-1712793600   # hand it to a session
+kirocrew cron adopt <id> --session-of dashboard:chat-3-1712793600
+kirocrew cron adopt <id> --release                        # back to operator-only
+```
+
+`--session-of` takes either a bare dashboard slot name or a fully-qualified
+session key; a bare name gets the `dashboard:` namespace added. There is no
+separate flag for the qualified form, because a key carrying no namespace at all
+could never match any session's own key and so could only ever produce a job
+nobody can own.
+
+Adopting makes that session able to manage the job **and** the destination for
+its results — for this field those are the same fact. Ownership is asserted by
+the operator, so the CLI is deliberately the only surface that can write it: the
+MCP `cron_update` tool and the dashboard `PATCH` cannot, or a session could
+repoint where another job's output lands.
+
+Because an agent can reach the CLI through bash, that restriction is enforced
+rather than assumed: `cron adopt` is covered by the `self-protection-cron-adopt`
+denied-command rule, so a session cannot claim a job for itself by shelling out.
+Like every built-in rule it is default-ON and can be turned off in
+Settings → Security.
+
+That rule is **best-effort against a shell-capable agent, not an invariant**. It
+guards the command; it does not guard the store. `crons.json` is not among the
+protected leaves, so a direct edit of the file sets the same field without the
+rule ever matching, and the regex tier cannot see a spelling the shell has yet to
+expand (`$K cron adopt`) any more than it can for the rest of the catalog. The
+control that does not depend on spelling is the structural one: `session_key` is
+not writable through MCP `cron_update` or the dashboard `PATCH` at all.
+
+Ownership and delivery do not have the same reach. A job can be owned by any
+session namespace -- a Slack or Telegram session can own and manage one -- but
+only a `dashboard:` key resolves to a slot results are injected into, so adopting
+into another namespace transfers management without delivery, and the command
+says so.
+
+If the key names no recorded session the command still succeeds but warns: a
+brand-new tab that has logged nothing yet is a legitimate target (delivery
+resolves a live slot first), so the unknown case cannot be refused — but a typo
+would otherwise leave the job delivering to nobody, which is the state this
+command exists to undo.
 
 ## Reliability
 

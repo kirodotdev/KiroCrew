@@ -61,6 +61,7 @@ from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
+from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
@@ -838,6 +839,97 @@ def _cron(args: argparse.Namespace) -> None:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule)
             print(f"  {status} {j.id}  {j.name}  ({sched})  {j.message[:60]}")
+            # Ownership is printed because it decides which surfaces can manage
+            # the job at all: a job with no owning session is outside every chat
+            # session's scope, so `cron_list` from chat does not list it and the
+            # mutating tools answer a deliberately vague "job not found". That is
+            # the intended boundary, but with the field invisible here the CLI
+            # was the only place the state existed and nothing showed it -- which
+            # is what made a normal, correct state read as a job that had
+            # vanished. `cron adopt` is the way back.
+            owner = j.session_key or ""
+            provenance = j.created_by or ""
+            if owner:
+                detail = f"owner: {owner}"
+            else:
+                detail = "owner: none (manage from CLI or the dashboard Schedule page)"
+            if provenance:
+                detail += f"  created by: {provenance}"
+            print(f"      {detail}")
+
+    elif action == "adopt":
+        job_id = args.job_id
+        if getattr(args, "release", False):
+            session_key = ""
+        else:
+            # One flag, two accepted spellings of the same target. A bare slot
+            # name gets the `dashboard:` namespace the delivery consumers strip
+            # back off (messaging.py / the Slack gateway both
+            # removeprefix("dashboard:")), so adding it here is their exact
+            # inverse and needs no lookup. An already-namespaced key passes
+            # through untouched -- there is no second flag for that case,
+            # because a key with no namespace at all could never equal any
+            # caller's session key and so could only ever produce a row nobody
+            # can own.
+            target = (getattr(args, "session_of", None) or "").strip()
+            if not target:
+                print("Error: --session-of requires a session", file=sys.stderr)
+                sys.exit(1)
+            session_key = target if ":" in target else f"dashboard:{target}"
+        if not svc.adopt_job(job_id, session_key):
+            print(f"Error: job not found: {job_id}", file=sys.stderr)
+            sys.exit(1)
+        sel().log_api_access(
+            caller="cli",
+            operation="cron.adopt",
+            outcome="allowed",
+            source="cli",
+            resources=f"job_id={job_id} session_key={session_key or '(released)'}",
+        )
+        if session_key:
+            # Ownership and delivery do not have the same reach. `_owned_by`
+            # matches any namespace, so a Slack or Telegram session can own and
+            # manage a job -- but only a `dashboard:` key resolves to a slot the
+            # delivery path can inject into (both consumers reach a slot with
+            # removeprefix("dashboard:")). Saying "results are delivered there"
+            # for a `slack:` key would be a promise the code does not keep.
+            if session_key.startswith("dashboard:"):
+                print(
+                    f"Job {job_id} now belongs to {session_key}: that session can manage it "
+                    f"and its results are delivered there."
+                )
+                # A typo'd key is accepted by the store but resolves to no slot,
+                # so the job's output would go nowhere -- the same
+                # invisible-delivery state this command exists to recover from.
+                # Warn rather than refuse: the delivery path resolves a live slot
+                # first and only falls back to rehydrating from history, so a
+                # brand-new tab that has not logged anything yet is a legitimate
+                # target and absence of a log does not prove the key is wrong.
+                slot = session_key.removeprefix("dashboard:")
+                try:
+                    known = ConversationLog().has_log(slot)
+                except Exception:
+                    known = True  # cannot tell -> stay quiet rather than cry wolf
+                if not known:
+                    print(
+                        f"Warning: no recorded session named {slot!r}. If that is a typo, "
+                        f"the job's results will not reach anyone -- re-run with the right "
+                        f"key, or `--release` to undo.",
+                        file=sys.stderr,
+                    )
+            else:
+                print(f"Job {job_id} now belongs to {session_key}: that session can manage it.")
+                print(
+                    f"Note: results are not injected into a chat for a "
+                    f"{session_key.split(':', 1)[0]!r} owner -- only a dashboard session is "
+                    f"resolved as a delivery target. Ownership transferred; delivery did not.",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                f"Job {job_id} released: no owning session, so manage it from the CLI or "
+                f"the dashboard Schedule page."
+            )
 
     elif action == "add":
         every = getattr(args, "every", None)

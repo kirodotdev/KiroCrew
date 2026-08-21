@@ -36,9 +36,9 @@ class TestCatalog:
         # 130 patterns ported byte-exact from the retired agent-config
         # deniedCommands list + 7 legacy security.py globs (secret-fetch tool
         # names + boto3 underscore destructive forms) restored as regexes.
-        assert len(BUILTIN_DENIED_RULES) == 139
+        assert len(BUILTIN_DENIED_RULES) == 140
         ids = [r.id for r in BUILTIN_DENIED_RULES]
-        assert len(set(ids)) == 139
+        assert len(set(ids)) == 140
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
@@ -176,7 +176,7 @@ class TestCatalog:
     def test_patterns_match_manifest_verbatim(self):
         golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
         golden_by_id = {g["id"]: g for g in golden}
-        assert len(golden_by_id) == 139
+        assert len(golden_by_id) == 140
         for rule in BUILTIN_DENIED_RULES:
             g = golden_by_id[rule.id]
             assert rule.pattern == g["pattern"]
@@ -190,7 +190,7 @@ class TestCatalog:
 
     def test_builtin_denied_rules_accessor_returns_dicts(self):
         rules = builtin_denied_rules()
-        assert len(rules) == 139
+        assert len(rules) == 140
         first = rules[0]
         assert set(first.keys()) == {"id", "pattern", "category", "description"}
         assert isinstance(first["id"], str)

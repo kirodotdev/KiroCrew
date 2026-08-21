@@ -109,7 +109,7 @@ destructive-command deny rules, `~/.aws` / `~/.ssh` path blocking, the SEL audit
   agent config granted it. The evaluator is scope-name-agnostic, so adding a scope
   is a `SCOPE_CATALOG` data change, never an evaluator edit.
 - **`CONTRACT_VERSION` stays pinned at 1 pre-launch.**
-- **Denied commands** are `DeniedCommandRule` records (`BUILTIN_DENIED_RULES`, 139 rules)
+- **Denied commands** are `DeniedCommandRule` records (`BUILTIN_DENIED_RULES`)
   enforced only at the `hooks.py` PreToolUse gate. Never restate the rule count in
   prose: `test/test_denied_commands_security.py` pins it, and a restated count goes
   stale silently.

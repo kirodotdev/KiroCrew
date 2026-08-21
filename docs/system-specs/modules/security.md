@@ -20,7 +20,7 @@ KiroCrew implements defense-in-depth security across multiple layers: OS-level p
 | Fail-open owner lock | `KIROCREW_OWNER_ID` unset → no check | Deny-by-default: refuse connect + reject messages |
 | MCP input injection | Malformed/oversized tool inputs from LLM | Centralized schema validation (`validation.py`) |
 | MCP response DoS | Unbounded tool output fills memory | Response truncation at 100K |
-| Destructive CLI commands | LLM runs `rm -rf /`, `git push --force` | 130 built-in denied-command rules (`BUILTIN_DENIED_RULES`, default-on / user-disableable) enforced at the hooks PreToolUse gate + governance `commands` force-deny (enterprise, un-opt-out-able) + 55 suspicious bash patterns with per-segment matching (`security.py`) |
+| Destructive CLI commands | LLM runs `rm -rf /`, `git push --force` | Built-in denied-command rules (`BUILTIN_DENIED_RULES`, default-on / user-disableable) enforced at the hooks PreToolUse gate + governance `commands` force-deny (enterprise, un-opt-out-able) + 55 suspicious bash patterns with per-segment matching (`security.py`) |
 | Frontend XSS | `dangerouslySetInnerHTML` with unsanitized content | DOMPurify + safe DOM APIs + Mermaid `securityLevel: 'strict'` (iframe sandbox) |
 | Widget postMessage forged turn | LLM-emitted `<script>` in a sandboxed `<mcwidget>` iframe calls `parent.postMessage({type:'mc-widget-action'})`, bypassing the in-iframe `isTrusted` click guard | Frontend requires a human gesture: a widget action only PRE-FILLS the composer (never auto-submits) and tags the resulting user-initiated send `meta.origin='widget'`. Backend deny-by-default: `api_chat` refuses the sole chat-text-reachable privilege escalation — orchestrator `go`/`go all` auto-run — for `origin='widget'` turns (SEL `auto_run_denied`), letting the text fall through to a normal fully-gated turn. Mode changes and tool approvals are on separate endpoints the iframe cannot reach |
 | YOLO mode abuse | Unbounded auto-approve window | Time-limited safety override: Slack 30min, dashboard 6h, config 24h (no permanent mode). Re-auth required after expiry. SEL audit on every lifecycle event |
@@ -428,7 +428,7 @@ than an automatic readiness failure.
 
 ### Denied Commands (`security.py` + `hooks.py`)
 
-138 first-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at KiroCrew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). ada credential patterns are NOT in KiroCrew's denied commands — kiro-cli has its own built-in deny list for `ada credentials` that cannot be overridden via agent config.
+First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). ada credential patterns are NOT in Kiro Crew's denied commands — kiro-cli has its own built-in deny list for `ada credentials` that cannot be overridden via agent config.
 
 **Credential exfiltration blocks**:
 - `.*echo.*\$AWS_SECRET.*`, `.*echo.*\$AWS_ACCESS.*`, `.*echo.*\$AWS_SESSION.*` — env var echo
@@ -510,7 +510,7 @@ than an automatic readiness failure.
 SEL audit key), `pattern: str` (a Python regex matched via `re.search`,
 case-insensitive), `category: str`, and `description: str` (one human sentence
 for the UI). `BUILTIN_DENIED_RULES: list[DeniedCommandRule]` is the canonical
-default-ON catalog of **130** rules across categories `aws-destructive`,
+default-ON catalog spanning the categories `aws-destructive`,
 `credential-exfil`, `iac-teardown`, `local-destructive`, `pipe-to-shell`, `sql`,
 `self-protection`, `git-publish`, `reverse-shell`, and `sensitive-file-read`.
 `BUILTIN_DENY_PATTERNS` is retained as a derived alias
@@ -620,7 +620,7 @@ once at init — so a just-disabled built-in or just-added user deny reaches
 unattended heartbeat sessions without a gateway restart (cross-surface
 consistency).
 
-**Defense-in-depth nuance** — ~45 of the 130 rules overlap an independent,
+**Defense-in-depth nuance** — roughly a third of the rules overlap an independent,
 always-on keystone control (sensitive-file reads, IMDS, git-publish, cred-env
 dumps). Most rules are disableable, but disabling a rule does **not** disable
 its keystone control — such a command stays blocked by defense-in-depth. The

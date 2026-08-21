@@ -2054,6 +2054,46 @@ class CronService:
             self._arm_timer()
         return removed
 
+    def adopt_job(self, job_id: str, session_key: str) -> bool:
+        """Point ``job_id`` at ``session_key`` as its originating chat session.
+
+        ``session_key`` names the chat session a job belongs to, and it is ONE
+        field with ONE meaning: every consumer reads it as the delivery target
+        (``session="origin"`` resolution and script-result injection both strip
+        the ``dashboard:`` prefix off it to get a slot). So adopting a job also
+        makes its output arrive in that session -- that is what being the
+        originating session IS, not a side effect the caller has to be warned
+        about separately. Pass ``""`` to release the job back to the operator
+        surfaces (CLI and the dashboard Schedule page), which is the state every
+        job created outside a chat legitimately starts in.
+
+        Deliberately NOT a branch in :meth:`_update_job_locked`: that path is
+        reachable from MCP ``cron_update`` and the dashboard ``PATCH``, and a
+        ``session_key`` branch there would hand both surfaces the power to
+        repoint where any job delivers. Ownership is asserted by the operator,
+        so the CLI -- the one surface that is not a session -- is its only
+        writer.
+
+        Returns ``False`` when the id is absent. Raises :class:`CronStoreBusy`
+        on lock contention. Synchronous only: the CLI is its sole caller and has
+        no event loop, so an async sibling would be dead code.
+        """
+        ok = self._adopt_job_locked(job_id, session_key)
+        if ok:
+            self._arm_timer()
+        return ok
+
+    def _adopt_job_locked(self, job_id: str, session_key: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`adopt_job` (no timer work)."""
+        with self._file_lock():
+            self._sync()
+            for job in self._jobs:
+                if job.id == job_id:
+                    job.session_key = session_key
+                    self._save()
+                    return True
+        return False
+
     def enable_job(self, job_id: str, enabled: bool = True) -> bool:
         """Enable or disable a job by ID.
 

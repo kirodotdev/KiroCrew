@@ -985,7 +985,7 @@ class TestPolicyCli:
         ):
             cc._policy(_ns(policy_action="show"))
         out = capsys.readouterr().out
-        assert "commands.denied: 139 rules in 10 categories" in out
+        assert "commands.denied: 140 rules in 10 categories" in out
         assert "aws-destructive(47)" in out
         # Counts only by default -- rule ids are the --ids opt-in.
         assert "aws-destructive-ec2-terminate-instances" not in out
