@@ -867,6 +867,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # classification as the other ``asyncio.run`` sites in this list.
         "connections/l0_probe.py::_run_record",
         "connections/l0_probe.py::main",
+        # Same classification as l0_probe: a CLI entry point driving an
+        # in-process aiohttp sweep with asyncio.run.
+        "connections/l1_smoke.py::main",
         "cloud/source.py::_git_tracked_files",
         "cloud/source.py::_tracked_tree_is_dirty",
         "cloud/source.py::_use_git_archive",

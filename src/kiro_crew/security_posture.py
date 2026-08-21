@@ -938,6 +938,18 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "written into the archive.",
     ),
     (
+        "Connections L1 smoke report",
+        "connections/l1_smoke.py",
+        "The authorized-grant sweep's JSON verdict report: written to disk by "
+        "`_persist_report`, echoed to stdout by `_echo`, and uploaded by the "
+        "nightly lane as a build artifact — so it reaches CI logs and every "
+        "reader of the repository, not just the operator who ran it. The "
+        "credential-bearing part is the provider's own error text, scrubbed by "
+        "`redact_mcp_error` as it enters a verdict row (both site-wide scanners "
+        "plus the configured header-value pass), at the write rather than at a "
+        "read, because the report outlives the process that made it.",
+    ),
+    (
         "Tag definitions (HTTP + auto-tag)",
         "dashboard/chat_tags.py",
         "Tag names supplied by both the POST /api/chat/tags HTTP handler and the "

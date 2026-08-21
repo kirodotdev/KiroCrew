@@ -704,6 +704,11 @@ class TestRedactionSinkRegistry:
             "redact_and_truncate",
             "redact_via_context",
             "display_safe",
+            # redact_mcp_error runs redact_exfiltration_urls THEN redact_credentials
+            # (mcp_discovery.py) and then scrubs the exact configured header values
+            # the generic scanners cannot know about — strictly more than either
+            # scanner alone, so a sink using it is fully covered.
+            "redact_mcp_error",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
