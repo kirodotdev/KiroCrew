@@ -16,6 +16,7 @@ const {
 } = require("./bundle-integrity");
 const { findConfiguredDashboardPort } = require("./data-home");
 const { createTokenRetryHandler } = require("./token-retry");
+const { createRendererRecovery } = require("./renderer-recovery");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { shouldRetryLocalTokenMint, tokenMintRetryDelayMs, TOKEN_MINT_MAX_RETRIES } = require("./token-acquire");
@@ -2049,6 +2050,69 @@ function createWindow() {
   });
   mainWindow.webContents.on("did-navigate", (_e, _url, httpCode) => {
     onNavigate(httpCode).catch((err) => console.error("Token retry failed:", err));
+  });
+
+  // Renderer-crash self-healing. Without this a dead renderer leaves the window
+  // mapped but permanently BLACK — the SPA and its top tab strip both lived in
+  // that process, so the user is left with no UI and no way back short of
+  // quitting. Re-load through the same fresh-token path `did-navigate` uses, so
+  // recovery also survives a gateway secret that rotated while we were down.
+  // Bounded (see renderer-recovery.js): repeated deaths inside the window stop
+  // the loop instead of spinning on a broken build.
+  const rendererRecovery = createRendererRecovery({
+    isQuitting: () => isQuitting,
+    log: glog,
+    // Snapshot every Electron process at the moment of death. A macOS crash
+    // report names the thread that aborted but NOT what the process had grown
+    // to, so without this a post-mortem cannot tell "renderer hit a memory
+    // ceiling" from "renderer was pegged on CPU" — the two hypotheses this
+    // window's black-screen crashes leave open. Totals plus the worst offender
+    // keep it to one log line.
+    describeProcesses: () => {
+      const metrics = app.getAppMetrics() || [];
+      let totalCpu = 0;
+      let totalMb = 0;
+      let worst = null;
+      for (const m of metrics) {
+        const cpu = (m.cpu && m.cpu.percentCPUUsage) || 0;
+        const mb = ((m.memory && m.memory.workingSetSize) || 0) / 1024;
+        totalCpu += cpu;
+        totalMb += mb;
+        if (!worst || mb > worst.mb) worst = { type: m.type, pid: m.pid, mb, cpu };
+      }
+      const parts = [
+        `procs=${metrics.length}`,
+        `totalCpu=${totalCpu.toFixed(1)}%`,
+        `totalWorkingSet=${Math.round(totalMb)}MB`,
+      ];
+      if (worst) {
+        parts.push(
+          `largest=${worst.type}:${worst.pid}@${Math.round(worst.mb)}MB/${worst.cpu.toFixed(1)}%`
+        );
+      }
+      return parts.join(" ");
+    },
+    reload: () => {
+      if (mainWindow.isDestroyed()) return;
+      (async () => {
+        let token = await fetchLocalToken(BACKEND_URL);
+        if (!token) ({ token } = await fetchRemoteToken(PORT));
+        if (mainWindow.isDestroyed()) return;
+        mainWindow.webContents.loadURL(
+          token ? `${BACKEND_URL}?token=${token}` : BACKEND_URL
+        );
+      })().catch((err) => glog(`renderer recovery reload failed: ${err && err.message}`));
+    },
+    onGiveUp: ({ reason }) => {
+      // Deliberately log-only. Reloading again is the thing we must NOT do here
+      // (that is the loop this budget exists to stop), and the window is already
+      // showing the failure — it is blank. The log line is what tells a human
+      // WHY it stayed blank, which a silent give-up would not.
+      glog(`renderer recovery exhausted (reason=${reason}); leaving the window as-is`);
+    },
+  });
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    rendererRecovery.handleGone(details || {});
   });
 
   mainWindow.on("close", (e) => {

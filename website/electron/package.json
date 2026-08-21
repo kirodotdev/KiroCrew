@@ -158,6 +158,7 @@
       "global-hotkey.js",
       "gateway-liveness.js",
       "gateway-recovery.js",
+      "renderer-recovery.js",
       "pyspy-dump.js",
       "perf-metrics.js",
       "host-config.js",
