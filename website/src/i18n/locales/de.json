@@ -10350,6 +10350,18 @@
       "uptime": "Laufzeit"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "Auf dem Mobilgerät anmelden",
+        "create_a_one_time_link_for_mobile_or_another_browser": "Erstellen Sie einen kurzlebigen Anmeldelink für ein Mobilgerät oder einen anderen Browser. Er läuft nach 5 Minuten ab.",
+        "creating_link": "Link wird erstellt…",
+        "create_mobile_sign_in_link": "Mobilen Anmeldelink erstellen",
+        "mobile_sign_in_link": "Mobiler Anmeldelink",
+        "copy_sign_in_link": "Anmeldelink kopieren",
+        "link_copied": "Link kopiert",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "Senden Sie den kopierten Link an Ihr Mobilgerät und öffnen Sie ihn dort.",
+        "could_not_create_a_sign_in_link_try_again": "Anmeldelink konnte nicht erstellt werden. Versuchen Sie es erneut.",
+        "copy_failed_select_the_link_and_copy_it_manually": "Kopieren fehlgeschlagen. Wählen Sie den Link aus und kopieren Sie ihn manuell."
+      },
       "aboutPanel": {
         "a_new_version": "Eine neue Version",
         "a_newer_version_is_available": "Eine neuere Version ist verfügbar.",

@@ -2505,6 +2505,7 @@ async def start_dashboard(
     await asyncio.to_thread(state.load_chat_pins)
     state.load_tags()
     app["port"] = port
+    app["dashboard_url"] = dashboard_url
 
     # Route pull-request status deltas to owner websockets. Extracted so the
     # register + shutdown-cleanup contract is unit-testable without booting the

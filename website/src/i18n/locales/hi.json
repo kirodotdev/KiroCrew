@@ -10351,6 +10351,18 @@
       "uptime": "अपटाइम"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "मोबाइल पर साइन इन करें",
+        "create_a_one_time_link_for_mobile_or_another_browser": "मोबाइल या दूसरे ब्राउज़र के लिए अल्पकालिक साइन-इन लिंक बनाएँ। यह 5 मिनट में समाप्त हो जाएगा।",
+        "creating_link": "लिंक बनाया जा रहा है…",
+        "create_mobile_sign_in_link": "मोबाइल साइन-इन लिंक बनाएँ",
+        "mobile_sign_in_link": "मोबाइल साइन-ইন লিংক",
+        "copy_sign_in_link": "साइन-इन लिंक कॉपी करें",
+        "link_copied": "लिंक कॉपी हो गया",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "कॉपी किया गया लिंक अपने मोबाइल पर भेजें, फिर वहाँ खोलें।",
+        "could_not_create_a_sign_in_link_try_again": "साइन-इन लिंक बनाया नहीं जा सका। फिर से कोशिश करें।",
+        "copy_failed_select_the_link_and_copy_it_manually": "कॉपी नहीं हो सका। लिंक चुनें और उसे मैन्युअल रूप से कॉपी करें।"
+      },
       "aboutPanel": {
         "a_new_version": "एक नया संस्करण",
         "a_newer_version_is_available": "एक नया संस्करण उपलब्ध है।",
