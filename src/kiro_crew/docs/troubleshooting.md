@@ -36,6 +36,13 @@ kiro-cli login
 `kirocrew doctor` reports the binary and the login state on separate lines, so
 check both.
 
+**macOS desktop app:** if a command resolves in Terminal but not inside the
+app, the cause is usually launchd's minimal `PATH`, which a shell rc file
+never changes. The fix is `launchctl setenv PATH "$PATH"` plus a full quit and
+relaunch — see the
+[macOS troubleshooting guide](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/macos-troubleshooting.md)
+for the recipe and how to persist it across reboots.
+
 ### Dashboard asks for sign-in but `kiro-cli` is already authenticated
 
 Typical on a headless host that authenticates `kiro-cli` with an API key rather
