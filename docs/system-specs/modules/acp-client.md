@@ -501,6 +501,18 @@ handshake: it issues `session/load` directly under the original sessionId and
 registers the session queue **after** the load response so replayed transcript
 frames are dropped rather than counted against the current turn.
 
+**An ownerless server→client request is answered ONCE, at connection level.**
+An inbound frame carrying an `id` **and** a `method` but no `params.sessionId`
+is a request that names no session — it expects exactly one response, so the
+reader answers it itself with `-32601 Method not found`
+(`_answer_ownerless_request`, run off the reader loop like the KAS auth
+callback) and never broadcasts it. Broadcasting would hand it to every
+registered session's dispatch loop, each of which would reply `-32601` on the
+shared stdin — one request id, N responses, widening with session sharing. Only
+true notifications (method, no id) broadcast. The routed case — an unknown
+request **with** a `sessionId` — still gets its single per-session reply from
+that session's dispatch loop (`server_request_unknown`).
+
 **Unroutable frames are counted, not logged per frame.** The reader drops any
 frame it cannot route; the drop itself is correct and unchanged, but logging one
 `DEBUG` line per dropped frame is a log-retention hazard on a multiplexed

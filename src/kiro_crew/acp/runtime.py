@@ -142,6 +142,10 @@ _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 # _send_and_await timeout — naming what was in flight at the drop makes that
 # timeout attributable instead of a mystery. Capped so the line stays bounded.
 _DROP_IDS_IN_LOG = 8
+# JSON-RPC 2.0 "Method not found" — the reader loop answers an ownerless
+# server→client request with this itself (see _answer_ownerless_request);
+# mirrors the private constant AcpClient keeps for its own dispatch sites.
+_JSONRPC_METHOD_NOT_FOUND = -32601
 _INIT_TIMEOUT = 30.0
 _REQUEST_TIMEOUT = 30.0
 # Session start (session/new, session/load) gets its own budget because kiro-cli
@@ -1560,7 +1564,9 @@ class AcpRuntime:
           1. Response with id in _pending_requests → resolve Future
           2. Response with id in _routed_requests → put in session queue
           3. Notification with params.sessionId → session queue
-          4. No sessionId → broadcast to all queues
+          4. Request (method + id) with no sessionId → answered ONCE at
+             connection level (-32601), never broadcast
+          5. No sessionId → broadcast to all queues
         """
         assert self._process and self._process.stdout
         stdout = self._process.stdout
@@ -1830,6 +1836,34 @@ class AcpRuntime:
                         self._note_dropped_frame(session_id, msg.method)
                     continue
 
+                # No sessionId. An id-carrying frame that still has a method is
+                # a server→client REQUEST that names no session — it expects
+                # exactly ONE response, so the runtime answers it at connection
+                # level (same shape as the KAS auth callback above) instead of
+                # broadcasting. Broadcasting would hand it to EVERY registered
+                # session's dispatch loop, each of which replies -32601 on the
+                # shared stdin: one id, N responses — a JSON-RPC protocol
+                # violation that widens with session sharing. Frames with an id
+                # but NO method are responses (e.g. a result of null slips past
+                # the result/error check above); their handling is unchanged.
+                if msg.id is not None and msg.method is not None:
+                    # Same volume bound as the permission auto-answers: each
+                    # reply can block on stdin drain() against a backend that
+                    # floods frames while never reading, so the task must be
+                    # retained (a bare ensure_future can be GC'd mid-flight)
+                    # and counted. Past the cap the frame takes the counted-
+                    # drop path — the flooding backend hangs on its own
+                    # unanswered request instead of growing the task set.
+                    if len(self._answer_tasks) >= self._max_answer_tasks:
+                        self._note_dropped_frame(_DROP_NO_SESSION, msg.method)
+                        continue
+                    _t = asyncio.ensure_future(
+                        self._answer_ownerless_request(msg.id, msg.method)
+                    )
+                    self._answer_tasks.add(_t)
+                    _t.add_done_callback(self._answer_tasks.discard)
+                    continue
+
                 # No sessionId → genuinely global notification; broadcast to all.
                 if self._session_queues:
                     # Snapshot: `await queue.put` yields, and a concurrent
@@ -1863,6 +1897,29 @@ class AcpRuntime:
             # crash) so a trickle that never reached the interval is still
             # accounted for instead of vanishing with the task.
             self._flush_dropped_frames()
+
+    async def _answer_ownerless_request(
+        self, request_id: int | str, method: str
+    ) -> None:
+        """Answer a server→client request that names no session with -32601.
+
+        Runs OFF the reader loop (same shape as the KAS auth callback) so a
+        stalled stdin drain cannot block stdout demux for every multiplexed
+        session. The routed case — an unknown request WITH a sessionId — is
+        deliberately not handled here: it is delivered to that session's queue
+        and answered once by its dispatch loop (``server_request_unknown``).
+        """
+        logger.debug(
+            "Ownerless server request answered -32601 — method=%s id=%r",
+            method,
+            request_id,
+        )
+        try:
+            await self.send_error(
+                request_id, _JSONRPC_METHOD_NOT_FOUND, "Method not found"
+            )
+        except AcpRuntimeDead:
+            pass
 
     async def _answer_get_access_token(self, request_id: int | str) -> None:
         """Answer KAS's ``_kiro/auth/getAccessToken`` callback (see :mod:`kas_auth`).
