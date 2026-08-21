@@ -72,7 +72,7 @@ import {
   isWithinRecentWindow,
 } from './recentWindow'
 import { loadChatConfig, saveChatConfig } from './chat/ChatSettings'
-import { focusSiblingSessionRow } from './chat/sessionRowNav'
+import { focusSiblingSessionRow, SESSION_ROW_SELECTOR } from './chat/sessionRowNav'
 import { focusComposer } from './chat/composerFocus'
 import { compareBySort, comparePinnedThenSort, fmtRelativeTime, slotActivityTs } from './chat/sessionOrder'
 import type { SortKey } from './chat/sessionOrder'
@@ -2558,16 +2558,48 @@ function ChatSidebar({
     })
   }, [filteredSlots, folderFilterActive, filterHiddenSubtree, slotFolders])
 
-  // The order the chat-jump/cycle shortcuts should follow — what this sidebar
-  // displays. Flat view: the flat lane's exact row order. Folder tree and
-  // column layouts: filteredSlots (pinned-first + the user's sort); folder
-  // grouping can visually interleave rows, so those views rely on the held-
-  // modifier badges below to make the digit mapping visible rather than on a
-  // full tree walk here.
-  const shortcutOrderKeys = useMemo(
-    () => (flatView && folders.length > 0 ? flatSlots : filteredSlots).map(s => s.key),
-    [flatView, folders.length, flatSlots, filteredSlots],
-  )
+  // The order the chat-jump/cycle shortcuts should follow — the rows AS
+  // RENDERED, read back from the DOM after every commit. Reading the render
+  // output (instead of re-deriving each lane's composition) means the
+  // published order can never drift from what the user sees: folder tree
+  // order, collapsed folders (children absent), filters, flat view and board
+  // columns all fall out of document order for free. Every session row is
+  // stamped data-session-row={key} in exactly one place (renderSessionRow);
+  // history rows use a separate renderer and are never captured. The no-deps
+  // effect runs after every commit but is double-guarded: setState bails on
+  // an order-identical array, and an empty read (sidebar collapsed, or a
+  // filter matching nothing) keeps the last-known order. For an unmounted
+  // sidebar that preserves the pre-existing behavior; for a rendered sidebar
+  // whose filter matches nothing it is a deliberate change from the old
+  // memo (which published the empty list, falling back to store order) —
+  // stale keys are dropped by both consumers, while backend insertion order
+  // would be actively wrong.
+  const [shortcutOrderKeys, setShortcutOrderKeys] = useState<string[]>([])
+  useEffect(() => {
+    const root = sidebarRootRef.current
+    if (!root) return
+    const rawKeys = Array.from(root.querySelectorAll(SESSION_ROW_SELECTOR))
+      // A row inside a collapsed folder stays MOUNTED (FolderBody animates
+      // height rather than unmounting) but is marked aria-hidden + inert —
+      // the component's own visibility contract. Rows a user cannot see or
+      // click must not be digit targets; the jump handler appends them after
+      // the published list so cycling still reaches them. [inert] alone is
+      // the canonical "hidden row" spelling (matching sessionRowsInScope);
+      // FolderBody always sets it together with aria-hidden.
+      .filter(el => !el.closest('[inert]'))
+      .map(el => el.getAttribute('data-session-row') ?? '')
+      .filter(Boolean)
+    // Board view renders a multi-tag session once per matching column, so the
+    // same key can appear several times in document order. Dedupe to FIRST
+    // occurrence: the jump handler (orderSlotsBySidebar) already collapses to
+    // first-wins, and the badge map must number the same list or a duplicated
+    // row's badge and its digit's target drift apart.
+    const keys = Array.from(new Set(rawKeys))
+    if (keys.length === 0) return
+    setShortcutOrderKeys(prev =>
+      prev.length === keys.length && prev.every((v, i) => v === keys[i]) ? prev : keys,
+    )
+  })
   // Freeze the shortcut order while the jump modifier is held. Under a
   // last-activity sort, background agent events (touchSlotActivity recency
   // bumps) re-sort the list at any moment; without the freeze, the digits

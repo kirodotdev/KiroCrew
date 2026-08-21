@@ -129,6 +129,37 @@ describe('chat sidebar — published shortcut order', () => {
     const { store } = renderSidebar()
     expect(store.getState().dashboard.sidebarOrder).toEqual(['k-oldest', 'k-middle', 'k-newest'])
   })
+
+  it('tree view: publishes the RENDERED order (folder children first, ungrouped after), not the pinned+sort list', () => {
+    // Under date-desc the pinned+sort list is [k-b, k-c, k-a], but the tree
+    // renders folder Alpha's children first (k-c, k-a in sort order within
+    // the folder) and the ungrouped k-b below the folders. Digit 1 must hit
+    // the row the user sees at the top: k-c.
+    const { store } = renderSidebar(
+      [
+        { key: 'k-a', title: 'A', messages: 1, running: false, modified: 1000, folder_id: 'f1' },
+        { key: 'k-b', title: 'B', messages: 1, running: false, modified: 3000 },
+        { key: 'k-c', title: 'C', messages: 1, running: false, modified: 2000, folder_id: 'f1' },
+      ],
+      [{ id: 'f1', name: 'Alpha', order: 0 }] as ChatFolder[],
+    )
+    expect(store.getState().dashboard.sidebarOrder).toEqual(['k-c', 'k-a', 'k-b'])
+  })
+
+  it('tree view: a collapsed folder\'s sessions drop out of the published order', () => {
+    // Collapsed children are not rendered, so they cannot be digit targets —
+    // the jump handler appends them after the published list for cycling,
+    // but digits 1..9 belong to visible rows only.
+    const { store } = renderSidebar(
+      [
+        { key: 'k-a', title: 'A', messages: 1, running: false, modified: 1000, folder_id: 'f1' },
+        { key: 'k-b', title: 'B', messages: 1, running: false, modified: 3000 },
+        { key: 'k-c', title: 'C', messages: 1, running: false, modified: 2000, folder_id: 'f1' },
+      ],
+      [{ id: 'f1', name: 'Alpha', order: 0, collapsed: true }] as ChatFolder[],
+    )
+    expect(store.getState().dashboard.sidebarOrder).toEqual(['k-b'])
+  })
 })
 
 describe('chat sidebar — held-modifier digit badges', () => {

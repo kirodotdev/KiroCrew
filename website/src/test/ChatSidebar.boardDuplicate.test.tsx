@@ -78,6 +78,7 @@ const REVIEW = '22222222-2222-2222-2222-222222222222'
 const COL_PLANNED_BLOCKED = 'col-aaaa'
 const COL_REVIEW = 'col-bbbb'
 const SLOT_KEY = 'chat-cdf-1'
+const SINGLE_KEY = 'chat-single-2'
 
 const tags: ChatTag[] = [
   { id: BLOCKED, name: 'Blocked', color: '#e11', order: 0, status: true },
@@ -96,35 +97,40 @@ const dualTagSlot = {
   running: false, tags: [BLOCKED, REVIEW], created: '', last_ts: '',
 }
 
-function renderSidebar(activeSlot: string | null = null, opts: { foldered?: boolean } = {}) {
+function renderSidebar(activeSlot: string | null = null, opts: { foldered?: boolean; extraSlot?: boolean } = {}) {
   // Foldered: put the slot in a folder that exists in both columns, so each
   // column renders the slot via the renderColumnFolder path (scope
   // `${columnId}:${folder.id}`) instead of the ungrouped path (scope col.id).
   const slot = opts.foldered ? { ...dualTagSlot, folder_id: FOLDER_ID } : dualTagSlot
+  // extraSlot: a second, single-tag session that renders exactly once, so a
+  // test can observe digit assignment AFTER the duplicated session.
+  const slots = opts.extraSlot
+    ? [slot, { key: SINGLE_KEY, title: 'Single Tag', running: false, tags: [REVIEW], created: '', last_ts: '' }]
+    : [slot]
   const folders: ChatFolder[] = opts.foldered
     ? [{ id: FOLDER_ID, name: 'CDF', order: 0 }]
     : []
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [slot], approvalMode: 'normal',
+      status: {}, connected: false, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
     } as RootState['dashboard'],
     chat: { activeSlot } as RootState['chat'],
   })
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   // Seed board config directly so no api round-trip is needed.
   qc.setQueryData(['chat-tags'], tags)
   qc.setQueryData(['tag-columns'], columns)
   qc.setQueryData(['chat-folders'], folders)
-  return render(
+  const result = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={[slot]} activeSlot={activeSlot} unreadSlots={[]}
+              slots={slots} activeSlot={activeSlot} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
             />
           </MemoryRouter>
@@ -132,6 +138,7 @@ function renderSidebar(activeSlot: string | null = null, opts: { foldered?: bool
       </Provider>
     </QueryClientProvider>,
   )
+  return { ...result, store }
 }
 
 beforeEach(() => localStorage.clear())
@@ -182,5 +189,30 @@ describe('multi-tag session in two columns', () => {
       const row = copy.querySelector('.session-row')
       expect(row?.className).toContain('session-active')
     }
+  })
+
+  it('dedupes the duplicated key in the published shortcut order and keeps digit badges compact', async () => {
+    const { container, store } = renderSidebar(null, { extraSlot: true })
+    const { act, fireEvent } = await import('@testing-library/react')
+    // Flush post-mount effects; staleTime: Infinity keeps the seeded board
+    // config from being clobbered by the mocked api's empty refetch.
+    await act(async () => {})
+    // Precondition: the dual-tag session really renders twice in document order.
+    expect(container.querySelectorAll(`[data-session-row="${SLOT_KEY}"]`)).toHaveLength(2)
+    // The published order must carry each key ONCE, first occurrence winning —
+    // matching orderSlotsBySidebar's first-wins collapse in the jump handler.
+    expect(store.getState().dashboard.sidebarOrder).toEqual([SLOT_KEY, SINGLE_KEY])
+    // Badges: hold the modifier — the single-tag session must badge "2", not
+    // "3". Pre-fix, the duplicate burned a digit (set(k,1) then set(k,2)),
+    // numbering the single-tag row 3 while the handler's digit 2 targeted it.
+    act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
+    const badges = Array.from(container.querySelectorAll('[data-testid="digit-jump-badge"]'))
+    const byRowKey = new Map(
+      badges.map(b => [b.closest('[data-session-row]')?.getAttribute('data-session-row'), b.textContent]),
+    )
+    expect(byRowKey.get(SINGLE_KEY)).toBe('2')
+    // Both rendered copies of the dual-tag session badge as 1 (map is keyed
+    // by session, so every copy shows the same digit).
+    expect(byRowKey.get(SLOT_KEY)).toBe('1')
   })
 })
