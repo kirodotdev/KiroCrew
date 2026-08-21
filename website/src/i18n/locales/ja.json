@@ -6725,6 +6725,7 @@
       "group_panel_navigation": "パネルナビゲーション",
       "group_remote_crews": "リモートクルー",
       "jump_to_chat": "チャット {{n}} にジャンプ",
+      "jump_to_chat_letters": "チャット 10 以降にジャンプ（文字は各行に表示されるバッジに従います）",
       "last_visited_chat_mru": "最後にアクセスしたチャット（MRU）",
       "next_chat": "次のチャット",
       "notifications_panel": "通知パネル",

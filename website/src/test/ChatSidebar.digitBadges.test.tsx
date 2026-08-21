@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { jumpLetters } from '../hooks/useKeyboardShortcuts'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { ChatFolder } from '../types'
 
@@ -180,13 +181,54 @@ describe('chat sidebar — held-modifier digit badges', () => {
     expect(queryAllByTestId('digit-jump-badge')).toHaveLength(0)
   })
 
-  it('badges only the first nine rows', () => {
+  it('rows 10+ get letter badges from the shared jump sequence', () => {
     const many = Array.from({ length: 12 }, (_, i) => ({
       key: `k-${i}`, title: `S${i}`, messages: 1, running: false, modified: 10_000 - i,
     }))
     const { getAllByTestId } = renderSidebar(many)
     act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
-    expect(getAllByTestId('digit-jump-badge')).toHaveLength(9)
+    const byRow = getAllByTestId('digit-jump-badge').map(b => [b.closest('[data-session-row]')?.getAttribute('data-session-row'), b.textContent])
+    expect(byRow).toHaveLength(12)
+    expect(byRow).toContainEqual(['k-8', '9'])
+    // 10th/11th/12th rows: letters b, e, h (a/c/d/f are excluded — select-all,
+    // panel nav, split pane, and find own them).
+    expect(byRow).toContainEqual(['k-9', 'b'])
+    expect(byRow).toContainEqual(['k-10', 'e'])
+    expect(byRow).toContainEqual(['k-11', 'h'])
+  })
+
+  it('keeps LETTER badges visible while focus is in a text field (clicking a row autofocuses the composer — the overlay must not lose letters)', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      key: `k-${i}`, title: `S${i}`, messages: 1, running: false, modified: 10_000 - i,
+    }))
+    const { getAllByTestId } = renderSidebar(many)
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    try {
+      // Focus the composer BEFORE holding the modifier — the common flow
+      // (selecting a session autofocuses the composer, so this is the state
+      // the sidebar is in almost always).
+      act(() => { textarea.focus(); fireEvent.focusIn(textarea) })
+      act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
+      const byRow = getAllByTestId('digit-jump-badge').map(b => b.textContent)
+      // Full addressable range badges: digits AND letters.
+      expect(byRow).toHaveLength(12)
+      expect(byRow).toContain('9')
+      expect(byRow).toContain('b')
+      expect(byRow).toContain('e')
+    } finally {
+      textarea.remove()
+    }
+  })
+
+  it('badges stop at the end of the addressable range', () => {
+    const cap = 9 + jumpLetters().length
+    const many = Array.from({ length: cap + 3 }, (_, i) => ({
+      key: `k-${i}`, title: `S${i}`, messages: 1, running: false, modified: 100_000 - i,
+    }))
+    const { getAllByTestId } = renderSidebar(many)
+    act(() => { fireEvent.keyDown(window, { altKey: true, location: 1 }) })
+    expect(getAllByTestId('digit-jump-badge')).toHaveLength(cap)
   })
 
   it('freezes digits and the published order while held: a background recency bump neither renumbers badges nor moves the jump targets until release', () => {

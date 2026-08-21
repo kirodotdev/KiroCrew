@@ -2369,7 +2369,8 @@
       "switch_to_remote_crew": "Switch to remote crew {{n}}",
       "walk_back_mru_history": "Walk back MRU history",
       "stop_speaking": "Stop speaking",
-      "toggle_focus_mode": "Toggle focus mode"
+      "toggle_focus_mode": "Toggle focus mode",
+      "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",

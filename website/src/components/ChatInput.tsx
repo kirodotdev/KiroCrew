@@ -27,6 +27,7 @@ import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import BusySendButton, { useBusySendMode } from './BusySendButton'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -401,6 +402,9 @@ interface ChatInputProps {
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode
   /** When this key changes, focus the textarea (e.g. on chat session switch). */
+  /** Focus-on-switch key. Any new consumer of this prop must honor the
+   *  composerFocus one-shot (consumeComposerRelease) or macOS keyboard
+   *  switches will autofocus through the release — see composerFocus.ts. */
   autoFocusKey?: string | null
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
@@ -1243,6 +1247,14 @@ function ChatInput({
   const prevAutoFocusKeyRef = useRef<typeof autoFocusKey>(undefined)
   useEffect(() => {
     if (autoFocusKey == null || autoFocusKey === prevAutoFocusKeyRef.current) {
+      prevAutoFocusKeyRef.current = autoFocusKey
+      return
+    }
+    // A keyboard-driven switch released the composer (macOS chord chaining —
+    // see releaseComposerForKeyboardSwitch): consume the one-shot and skip
+    // this transition's autofocus entirely. The ref advances so the
+    // disabled-retry path cannot resurrect the skipped focus later.
+    if (consumeComposerRelease()) {
       prevAutoFocusKeyRef.current = autoFocusKey
       return
     }

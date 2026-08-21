@@ -6814,6 +6814,7 @@
       "group_panel_navigation": "Panel-Navigation",
       "group_remote_crews": "Remote-Crews",
       "jump_to_chat": "Zu Chat {{n}} springen",
+      "jump_to_chat_letters": "Zu Chat 10 und weiteren springen (Buchstaben folgen dem Badge auf jeder Zeile)",
       "last_visited_chat_mru": "Zuletzt besuchter Chat (MRU)",
       "next_chat": "Nächster Chat",
       "notifications_panel": "Benachrichtigungs-Panel",

@@ -95,3 +95,50 @@ export function revealComposer(): void {
 export function focusComposerAfter(created: Promise<unknown>): void {
   void created.then(focusComposer).catch(() => {})
 }
+
+/**
+ * One-shot "keyboard switch: leave the composer alone" signal.
+ *
+ * On macOS, letter jump chords are input-gated (Ctrl+A/E/K are Cocoa readline
+ * bindings inside text fields; Option+letter composes characters), and every
+ * session switch autofocuses the composer via ChatInput's autoFocusKey effect.
+ * Together those made keyboard navigation self-terminating: jump once, focus
+ * lands in the composer, and the next letter chord is dead until the user
+ * clicks the chat to release focus.
+ *
+ * A keyboard-driven switch (jump digit/letter, ⌘brackets, Alt+arrows, MRU)
+ * calls `releaseComposerForKeyboardSwitch()` on macOS: it blurs the composer
+ * if the keystroke came from inside it, and arms this flag so the autofocus
+ * effect skips exactly one key transition. Chords then chain indefinitely;
+ * `/` (or a click) focuses the composer when the user wants to type. Pointer
+ * switches never call this, so click-a-row still means type-immediately.
+ *
+ * A module-level flag, not store state: the producer (keydown handler) and
+ * consumer (effect on the very next commit) are synchronous within one
+ * switch, and routing it through the store would re-render every composer
+ * for what is a single-frame handshake.
+ */
+let composerReleaseArmedAt = 0 // 0 = unarmed; else Date.now() at arming
+
+/**
+ * The legitimate consumer (ChatInput's autoFocusKey effect) runs in the same
+ * commit as the switch dispatch — milliseconds. A flag older than this is by
+ * definition leaked: some surface armed it with no mounted consumer whose
+ * autoFocusKey transitions (e.g. split view, where panes bind a fixed slot
+ * key and the top-level ChatInput is unmounted). Expiring it here closes the
+ * whole no-consumer class instead of enumerating each such surface.
+ */
+const COMPOSER_RELEASE_TTL_MS = 1500
+
+export function releaseComposerForKeyboardSwitch(): void {
+  composerReleaseArmedAt = Date.now()
+  const ae = document.activeElement
+  if (ae instanceof HTMLTextAreaElement && ae.hasAttribute('data-composer-input')) ae.blur()
+}
+
+/** Consume the one-shot release. True = the autofocus effect must skip this transition. */
+export function consumeComposerRelease(): boolean {
+  const armedAt = composerReleaseArmedAt
+  composerReleaseArmedAt = 0
+  return armedAt !== 0 && Date.now() - armedAt < COMPOSER_RELEASE_TTL_MS
+}

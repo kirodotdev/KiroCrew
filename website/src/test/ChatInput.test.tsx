@@ -2,6 +2,7 @@ import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { safeSetItem } from '../utils/safeStorage'
 import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
@@ -1108,6 +1109,20 @@ describe('ChatInput', () => {
       ta.blur()
       rerender(<ChatInput {...defaultProps} autoFocusKey="A" />)
       expect(ta).not.toHaveFocus()
+    })
+
+    it('skips exactly one autofocus after a keyboard-driven switch released the composer (macOS chord chaining)', () => {
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} autoFocusKey="A" />)
+      const ta = screen.getByLabelText('Message input')
+      ta.blur()
+      // A keyboard jump armed the release: this switch's autofocus is
+      // skipped so the next chord is not input-gated dead on macOS.
+      releaseComposerForKeyboardSwitch()
+      rerender(<ChatInput {...defaultProps} autoFocusKey="B" />)
+      expect(ta).not.toHaveFocus()
+      // One-shot: the next switch (pointer-driven — no release) focuses again.
+      rerender(<ChatInput {...defaultProps} autoFocusKey="C" />)
+      expect(ta).toHaveFocus()
     })
 
     it('does not focus on a touch device, even when the key changes', () => {

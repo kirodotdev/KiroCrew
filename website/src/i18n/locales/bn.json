@@ -6814,6 +6814,7 @@
       "group_panel_navigation": "প্যানেল নেভিগেশন",
       "group_remote_crews": "রিমোট ক্রু",
       "jump_to_chat": "চ্যাট {{n}}-এ যাওয়া",
+      "jump_to_chat_letters": "চ্যাট 10 এবং তার পরে যাওয়া (অক্ষরগুলি প্রতিটি সারিতে দেখানো ব্যাজ অনুসরণ করে)",
       "last_visited_chat_mru": "সর্বশেষ দেখা চ্যাট (MRU)",
       "next_chat": "পরের চ্যাট",
       "notifications_panel": "নোটিফিকেশন প্যানেল",

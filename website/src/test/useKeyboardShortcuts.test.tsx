@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, act } from '@testing-library/react'
-import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld } from '../hooks/useKeyboardShortcuts'
+import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld, jumpLetters, jumpLabelFor, jumpIndexForCode } from '../hooks/useKeyboardShortcuts'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
+import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import ShortcutsModal from '../components/ShortcutsModal'
@@ -759,6 +760,215 @@ describe('chat jump + cycle follow the sidebar display order', () => {
     // slot-1 is the LAST displayed row; stepping forward wraps to the top row.
     fireEvent.keyDown(document, { code: 'ArrowRight', altKey: true })
     expect(store.getState().chat.activeSlot).toBe('slot-3')
+  })
+})
+
+describe('letter jumps reach sessions 10+', () => {
+  const manySlots = Array.from({ length: 12 }, (_, i) => ({
+    key: `slot-${i + 1}`, title: `S${i + 1}`, messages: 0, running: false,
+  }))
+  const order = manySlots.map(s => s.key)
+
+  function setupMany() {
+    const chatInitial = chatReducer(undefined, { type: '@@test/init' })
+    const dashInitial = dashboardReducer(undefined, { type: '@@test/init' })
+    const store = createTestStore({
+      dashboard: { ...dashInitial, slots: manySlots, sidebarOrder: order } as RootState['dashboard'],
+      chat: { ...chatInitial, activeSlot: null, slotHistory: [] } as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn() }),
+      { store },
+    )
+    return store
+  }
+
+  it('the letter sequence skips every letter another chord owns', () => {
+    const letters = jumpLetters()
+    for (const reserved of ['a', 'c', 'd', 'f', 'g', 'k', 'n', 'p', 's', 't', 'w']) {
+      expect(letters).not.toContain(reserved)
+    }
+    // First letters after the exclusions: b, e, h (a = list select-all,
+    // c = panel nav, d = split pane, f = find-in-page owners).
+    expect(letters.slice(0, 3)).toEqual(['b', 'e', 'h'])
+    expect(jumpLabelFor(8)).toBe('9')
+    expect(jumpLabelFor(9)).toBe('b')
+    expect(jumpLabelFor(11)).toBe('h')
+    expect(jumpLabelFor(9 + letters.length)).toBeNull()
+    expect(jumpIndexForCode('KeyB')).toBe(9)
+    expect(jumpIndexForCode('KeyC')).toBe(-1)
+    // Ctrl/Cmd+A (list select-all) and Ctrl/Cmd+D (split pane) own their
+    // letters: never jump indices, on any platform.
+    expect(jumpIndexForCode('KeyA')).toBe(-1)
+    expect(jumpIndexForCode('KeyD')).toBe(-1)
+    // Ctrl/Cmd+F (find), Ctrl/Cmd+T/W (file-explorer tabs) own theirs too —
+    // all reach hasCommandModifier via plain Ctrl on macOS (XOR modifier).
+    expect(jumpIndexForCode('KeyF')).toBe(-1)
+    expect(jumpIndexForCode('KeyT')).toBe(-1)
+    expect(jumpIndexForCode('KeyW')).toBe(-1)
+    expect(jumpIndexForCode('Digit1')).toBe(0)
+  })
+
+  it('Alt+B picks the 10th displayed row', () => {
+    const store = setupMany()
+    fireEvent.keyDown(document, { code: 'KeyB', altKey: true })
+    expect(store.getState().chat.activeSlot).toBe('slot-10')
+  })
+
+  it('Alt+H picks the 12th displayed row (letter sequence skips excluded letters)', () => {
+    const store = setupMany()
+    fireEvent.keyDown(document, { code: 'KeyH', altKey: true })
+    expect(store.getState().chat.activeSlot).toBe('slot-12')
+  })
+
+  it('letter jumps fire even while focus is in an input on non-Mac (session switch autofocuses the composer — chained jumps must survive it)', () => {
+    // jsdom has IS_MAC=false (same convention as the Ctrl+digit gating test
+    // above): this pins the Windows/Linux behavior. On macOS legacy Option
+    // mode the (!isInput || !IS_MAC) guard keeps letters input-gated, because
+    // Option+letter composes characters (Option+A = å).
+    const store = setupMany()
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    try {
+      textarea.focus()
+      fireEvent.keyDown(textarea, { code: 'KeyB', altKey: true, bubbles: true })
+      // 'b' is the first letter target (index 9) — the 10th displayed row.
+      expect(store.getState().chat.activeSlot).toBe('slot-10')
+    } finally {
+      textarea.remove()
+    }
+  })
+
+  it('letter jumps never fire from inside an embedded terminal (Alt+B/F are readline word motions on the shell line)', () => {
+    const store = setupMany()
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const helper = document.createElement('textarea')
+    term.appendChild(helper)
+    document.body.appendChild(term)
+    try {
+      helper.focus()
+      fireEvent.keyDown(helper, { code: 'KeyB', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBeNull()
+    } finally {
+      term.remove()
+    }
+  })
+
+  it('macOS: a keyboard jump releases the composer, so the NEXT chord fires without clicking the chat', () => {
+    // The reported bug: switch via a chord -> the switch autofocuses the
+    // composer -> on macOS the letter gate kills the next chord until the
+    // user clicks the chat (manually releasing focus). A keyboard-driven
+    // switch must do that release itself. kbSwitch reads isMacPlatform()
+    // live, so setPlatform works here even though IS_MAC froze at load.
+    const prevPlatform = navigator.platform
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+    const store = setupMany()
+    const composer = document.createElement('textarea')
+    composer.setAttribute('data-composer-input', '')
+    document.body.appendChild(composer)
+    try {
+      composer.focus()
+      // Digit jumps fire from inside inputs on every platform.
+      fireEvent.keyDown(composer, { code: 'Digit2', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+      // The switch released the composer: focus is out, and the one-shot
+      // autofocus skip is armed for ChatInput's autoFocusKey effect.
+      expect(document.activeElement).not.toBe(composer)
+      expect(consumeComposerRelease()).toBe(true)
+      // With focus released, the follow-up LETTER jump chains — the exact
+      // press that used to be dead.
+      fireEvent.keyDown(document.body, { code: 'KeyB', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBe('slot-10')
+      expect(consumeComposerRelease()).toBe(true)
+    } finally {
+      composer.remove()
+      Object.defineProperty(navigator, 'platform', { value: prevPlatform, configurable: true })
+    }
+  })
+
+  it('macOS: a SAME-key jump (already-active session) neither blurs the composer nor arms the one-shot', () => {
+    // Opus/Design finding on 5b24ef561: switchSlot(sameKey) produces no
+    // autoFocusKey transition, so ChatInput's effect never consumes the
+    // one-shot — an unconditional release would blur with no refocus and the
+    // leaked flag would eat the NEXT pointer-driven switch's autofocus.
+    const prevPlatform = navigator.platform
+    Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
+    const store = setupMany()
+    const composer = document.createElement('textarea')
+    composer.setAttribute('data-composer-input', '')
+    document.body.appendChild(composer)
+    try {
+      // Land on slot-2 first (real transition: arms the one-shot; consume it).
+      fireEvent.keyDown(document.body, { code: 'Digit2', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+      expect(consumeComposerRelease()).toBe(true)
+      // The real app autofocuses the composer after a switch — simulate.
+      composer.focus()
+      // Self-jump: Digit2 again while slot-2 is already active.
+      fireEvent.keyDown(composer, { code: 'Digit2', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+      // No transition: focus stays put, and the one-shot is NOT armed.
+      expect(document.activeElement).toBe(composer)
+      expect(consumeComposerRelease()).toBe(false)
+    } finally {
+      composer.remove()
+      Object.defineProperty(navigator, 'platform', { value: prevPlatform, configurable: true })
+    }
+  })
+
+  it('non-Mac: a keyboard jump keeps composer focus (letters fire in inputs there — type-after-jump survives)', () => {
+    const prevPlatform = navigator.platform
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true })
+    const store = setupMany()
+    const composer = document.createElement('textarea')
+    composer.setAttribute('data-composer-input', '')
+    document.body.appendChild(composer)
+    try {
+      composer.focus()
+      fireEvent.keyDown(composer, { code: 'Digit2', altKey: true, bubbles: true })
+      expect(store.getState().chat.activeSlot).toBe('slot-2')
+      expect(document.activeElement).toBe(composer)
+      expect(consumeComposerRelease()).toBe(false)
+    } finally {
+      composer.remove()
+      Object.defineProperty(navigator, 'platform', { value: prevPlatform, configurable: true })
+    }
+  })
+
+  it('an excluded letter falls through to its owning chord (Alt+C = panel nav, no jump)', () => {
+    const store = setupMany()
+    fireEvent.keyDown(document, { code: 'KeyC', altKey: true })
+    // Panel navigation handled it (navigate mock); no session switch happened.
+    expect(store.getState().chat.activeSlot).toBeNull()
+  })
+
+  it('an UNMAPPED letter is not claimed — no preventDefault, so the browser keeps its own Alt+letter chords', () => {
+    // Only 3 sessions: every letter (index 9+) is beyond the session list.
+    const chatInitial = chatReducer(undefined, { type: '@@test/init' })
+    const dashInitial = dashboardReducer(undefined, { type: '@@test/init' })
+    const few = manySlots.slice(0, 3)
+    const store = createTestStore({
+      dashboard: { ...dashInitial, slots: few, sidebarOrder: few.map(s => s.key) } as RootState['dashboard'],
+      chat: { ...chatInitial, activeSlot: null, slotHistory: [] } as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn() }),
+      { store },
+    )
+    // Alt+E would be the 11th row — unmapped with 3 sessions. The event must
+    // NOT be claimed (preventDefault not called): on Windows/Linux Alt+E
+    // opens the browser menu, and swallowing it would kill a chord the
+    // browser owns while jumping nowhere.
+    const event = new KeyboardEvent('keydown', { code: 'KeyE', altKey: true, cancelable: true, bubbles: true })
+    const claimed = !document.dispatchEvent(event)
+    expect(claimed).toBe(false)
+    expect(store.getState().chat.activeSlot).toBeNull()
+    // A mapped digit in the same store IS still claimed (pre-existing behavior).
+    const digitEvent = new KeyboardEvent('keydown', { code: 'Digit2', altKey: true, cancelable: true, bubbles: true })
+    const digitClaimed = !document.dispatchEvent(digitEvent)
+    expect(digitClaimed).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
   })
 })
 

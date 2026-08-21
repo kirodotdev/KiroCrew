@@ -23,7 +23,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { focusComposer, focusComposerAfter, queryComposer, revealComposer } from '../pages/chat/composerFocus'
+import { focusComposer, focusComposerAfter, queryComposer, revealComposer, releaseComposerForKeyboardSwitch, consumeComposerRelease } from '../pages/chat/composerFocus'
 
 let touch = false
 vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => touch }))
@@ -283,5 +283,50 @@ describe('no site queries the translated label (class ratchet)', () => {
   it('no production source targets the composer via its aria-label', () => {
     const offenders = walk(SRC).filter(f => SELECTOR_FORM.test(readFileSync(f, 'utf-8')))
     expect(offenders).toEqual([])
+  })
+})
+
+describe('releaseComposerForKeyboardSwitch / consumeComposerRelease', () => {
+  afterEach(() => { consumeComposerRelease() }) // never leak an armed one-shot into other suites
+
+  it('blurs the focused composer and arms a one-shot release', () => {
+    composer.focus()
+    expect(document.activeElement).toBe(composer)
+    releaseComposerForKeyboardSwitch()
+    expect(document.activeElement).not.toBe(composer)
+    expect(consumeComposerRelease()).toBe(true)
+    // One-shot: a second consume finds nothing.
+    expect(consumeComposerRelease()).toBe(false)
+  })
+
+  it('arms without blurring when focus is outside the composer (only the composer we own is released)', () => {
+    const other = document.createElement('input')
+    document.body.appendChild(other)
+    try {
+      other.focus()
+      releaseComposerForKeyboardSwitch()
+      expect(document.activeElement).toBe(other)
+      expect(consumeComposerRelease()).toBe(true)
+    } finally {
+      other.remove()
+    }
+  })
+
+  it('a leaked release EXPIRES: a flag no consumer collected cannot suppress a later autofocus', () => {
+    // Opus finding on aa05ae203: in split view no mounted ChatInput transitions
+    // autoFocusKey, so an armed flag survives until split exit and eats the
+    // first legitimate autofocus there. The consumer runs within the same
+    // commit (ms); anything older than the TTL is a leak and must read false.
+    vi.useFakeTimers()
+    try {
+      releaseComposerForKeyboardSwitch()
+      vi.advanceTimersByTime(2000) // well past the 1.5s TTL
+      expect(consumeComposerRelease()).toBe(false)
+      // A fresh arming right after still consumes normally.
+      releaseComposerForKeyboardSwitch()
+      expect(consumeComposerRelease()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

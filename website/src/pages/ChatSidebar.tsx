@@ -18,7 +18,7 @@ import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../componen
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal } from '../store/chatSlice'
 import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
-import { useDigitModifierHeld } from '../hooks/useKeyboardShortcuts'
+import { useDigitModifierHeld, jumpLabelFor } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
@@ -2629,26 +2629,35 @@ function ChatSidebar({
     dispatch(setSidebarOrder(effectiveOrderKeys))
   }, [effectiveOrderKeys, dispatch])
 
-  // First nine sessions in shortcut order → their digit, shown as row badges
-  // while the jump modifier is held (Ctrl on Mac in Ctrl+digit mode, Alt
-  // elsewhere — mirrors the Digit1..9 chords).
+  // First sessions in shortcut order → their jump label ('1'–'9', then the
+  // letter sequence — see jumpLabelFor), shown as row badges while the jump
+  // modifier is held (Ctrl on Mac in Ctrl+digit mode, Alt elsewhere —
+  // mirrors the jump chords).
   const shortcutDigitByKey = useMemo(() => {
     // Compact the frozen order exactly like the jump handler's
     // orderSlotsBySidebar does — drop keys whose session no longer exists —
-    // BEFORE assigning digits. If a session closes mid-hold, the handler's
-    // digit N targets the Nth surviving frozen key; numbering the raw frozen
-    // list instead would leave a row visibly badged "3" that digit 2 picks —
+    // BEFORE assigning labels. If a session closes mid-hold, the handler's
+    // label N targets the Nth surviving frozen key; numbering the raw frozen
+    // list instead would leave a row visibly badged "3" that chord 2 picks —
     // the exact badge/target drift this feature exists to prevent. The
     // `slots` prop is the existence basis (mirrors the handler's store
     // lookup), not the display list, so a mid-hold visibility change cannot
     // desynchronize the two consumers either.
     const live = new Set(slots.map(s => s.key))
-    const m = new Map<string, number>()
-    let digit = 1
+    const m = new Map<string, string>()
+    let idx = 0
     for (const k of effectiveOrderKeys) {
-      if (digit > 9) break
+      const label = jumpLabelFor(idx)
+      if (label === null) break
       if (!live.has(k)) continue
-      m.set(k, digit++)
+      // Letters badge unconditionally, including while a text field is
+      // focused. Clicking a sidebar row autofocuses the composer, so a
+      // typing-focus gate here made letters vanish the moment a session was
+      // selected — the held-modifier overlay must always show the full
+      // addressable range. (Letter CHORDS remain input-gated in the handler:
+      // Ctrl+A/E/K are readline bindings on macOS and typing always wins.)
+      m.set(k, label)
+      idx++
     }
     return m
   }, [effectiveOrderKeys, slots])
