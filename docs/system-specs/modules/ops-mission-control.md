@@ -1121,14 +1121,45 @@ defense-in-depth on top of it, not the boundary. Two tests pin both halves: the 
 are denied, and the `chr()`/two-step forms are the acknowledged gap.
 The STDIN forms are the same escape with no operand at all: `python -` and a bare interpreter
 read the program from stdin, so `python - <<'PY' … PY` and `echo '…' | python -` reach the CLI
-with the payload nowhere in argv. When that program text is visible on the command line — a
-heredoc body (later tokens) or a pipe producer (earlier tokens) — the import is matched across
-the whole frame and denied; when it is not (a file redirect, a bare `python -` fed by an unseen
-producer) there is nothing to match and the residual is noted rather than claimed as covered.
-`_python_reads_stdin` is precise (it consumes operand-flags and heredoc tags) so `python
-script.py`, `python -c …`, and `cat kiro_crew_notes.txt | python -` do not trip it, and the
-inline-program scan bails at the interpreter's first positional so the ReDoS-resistance budget
-still holds on spam input. Found in review (GPT 5.6).
+with the payload nowhere in argv. When that program text is visible on the command line the
+import is matched in the tokens that actually CARRY it, and nowhere else in the frame. The
+carriers are enumerated from the shell grammar rather than by example: a heredoc body
+(`<<TAG` / `<<-TAG`), a here-string operand (`<<<WORD`, whose word IS the program), a redirected
+file (`<WORD`), a process substitution (`< <(cmd)`, whose command text spans tokens to its
+closing paren), and a pipe producer. A redirection may appear ANYWHERE in a simple command, the
+program name included, so the whole frame is walked in ONE pass and a redirect glued to a word is
+classified from its first `<` onward — `<<'PY' python -`, `<prog.py python3 -`, `python3<<<'…'`
+and `<<EOF python - … EOF` (marker and body straddling the program name) are all ordinary bash
+reaching the identical mint. Only redirect OPERANDS are yielded, so a neighbouring command's
+ordinary argument is still never program text. `<&N` carries no text on the
+command line and is a stated residual. A heredoc's body ends at the LAST token equal to its
+tag: bash closes a heredoc only on a line holding the delimiter ALONE, and line structure does
+not survive tokenizing, so a body line that merely CONTAINS the word (`# EOF`, an ordinary
+comment) closed it early and left the real payload unscanned. A redirect OPERAND that opens a
+substitution (`$( )`, `<( )`, `${ }`, backticks) is one shell WORD whose text carries
+whitespace, so it too spans tokens — to the LAST matching closer, because `normalize_shell_command`
+strips quoting before this code runs, so a quoted delimiter is indistinguishable from a real one
+and balancing the count is not decidable. `_python_reads_stdin` consumes redirect operands
+through the same helper, so the detector and the carrier scope agree on where an operand ends;
+it also now answers True for `python < prog.py`, which does read its program from that file.
+Scanning the whole frame was a false-positive source: a frame is not split on a newline, so a
+neighbouring command naming the package in a FILE PATH (`isort src/kiro_crew/mcp_core.py`
+followed by any harmless heredoc) read as a mint with no `token` word present (#2660). The pipe
+is detected as a CHARACTER left of or glued into the interpreter token, not as a standalone `|`
+word: the tokenizer splits on whitespace only, so `echo '…'|python -` hands the operator over
+glued to a neighbour and `_program_basename` resolves the program from the last control-operator
+segment. Any pipe to the left qualifies the whole left side — a deliberate over-block, since a
+missed producer is a bypass while an extra token is a visible refusal. When the program text is
+NOT on the command line (a bare `python -` fed by an unseen producer, or a file written earlier
+and then redirected in) there is nothing to match and the residual is noted rather than claimed
+as covered — the same residual the written-then-run script form already has.
+`_python_reads_stdin` is precise (it consumes operand-flags and skips a heredoc's marker, body
+and closing tag, and a here-string's operand, read off the raw token because the operand
+normaliser strips a redirection to the empty string; a heredoc's closing tag ENDS the command,
+so a following `echo ok` is not read as this interpreter's script) so `python script.py`,
+`python -c …`, and `cat kiro_crew_notes.txt | python -`
+do not trip it, and the inline-program scan bails at the interpreter's first positional so the
+ReDoS-resistance budget still holds on spam input. Found in review (GPT 5.6).
 
 **There is deliberately NO migration from `config.json`, and adding one is the trap.** An
 interim revision had `migrate_from_config_if_needed`: on first read, if no keystone file

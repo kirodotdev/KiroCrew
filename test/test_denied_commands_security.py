@@ -118,8 +118,9 @@ class TestCatalog:
             'python -X dev -c "import kiro_crew.cli"',
             # STDIN forms: `python -` and a bare interpreter read the program from stdin, so a
             # heredoc body or a pipe producer reaches the CLI with nothing in argv. The program
-            # text is visible on the command line (heredoc body → later tokens; pipe source →
-            # earlier tokens), and matching the import there is the same fail-closed call.
+            # text is visible on the command line, and matching the import THERE -- in the
+            # heredoc body, the redirected file, or the pipe producer, and nowhere else in the
+            # frame (see TestStdinProgramTextScoping) -- is the same fail-closed call.
             "python - <<'PY'\nfrom kiro_crew.cli import main; main()\nPY",
             "python3 - <<EOF\nimport kiro_crew.cli\nEOF",
             "echo 'from kiro_crew.cli import main; main()' | python -",
@@ -3147,3 +3148,225 @@ class TestSelfFloorShortCircuit:
         )
         # And the floor's verdict survives the gate: still denied end-to-end.
         assert security._is_credential_mint(cmd)
+
+
+class TestStdinProgramTextScoping:
+    """A stdin-reading interpreter is judged on its PROGRAM, not on its neighbours.
+
+    Regression for #2660.  ``normalize_shell_command`` does not split a frame on a
+    newline, so a multi-line script arrives as ONE token frame.  The stdin branch of
+    ``_has_self_importing_inline_program`` used to search that whole frame for the
+    import name, which made an unrelated neighbour's FILE PATH satisfy the check --
+    a benign ``python - <<'PY' … PY`` in the same script as any command naming a
+    ``kiro_crew`` path read as a credential mint, with no ``token`` word anywhere.
+    """
+
+    # Every one of these is read-only or a formatter run, and none carries the mint
+    # verb.  The product name appears ONLY as a file path handed to another program.
+    BENIGN_NEIGHBOUR = (
+        # The report's own case 2, reduced: format two source files, then edit one
+        # through a heredoc whose payload does not import anything.
+        "isort src/kiro_crew/mcp_core.py\npython3 - <<'PY'\nprint(1)\nPY",
+        # The same shape behind the other two separators a frame preserves.
+        "isort src/kiro_crew/x.py && python3 -",
+        "black src/kiro_crew/security.py; python3 - <<'PY'\nprint(2)\nPY",
+        # Order does not matter: the neighbour may follow the interpreter too.
+        "python3 - <<PY\nprint(1)\nPY\nisort src/kiro_crew/x.py",
+        # A here-string whose payload is harmless, next to a product-named path.
+        "isort src/kiro_crew/x.py\npython3 - <<<'print(1)'",
+        # A substitution operand whose text is harmless, next to a product-named path.
+        "isort src/kiro_crew/x.py\npython3 - <<<$(printf %s 'print(1)')",
+        # A stdin redirect belonging to ANOTHER command, with no interpreter in play.
+        "isort src/kiro_crew/x.py\ncat < notes.txt",
+        # A pipe that does NOT feed this interpreter (it consumes its output).
+        "python3 - <<PY\nprint(1)\nPY\n| grep kiro_crew",
+    )
+
+    # Every way the shell can put a PROGRAM on a simple command's stdin, at every
+    # position it is allowed to appear.  Enumerated from the shell grammar rather than
+    # grown one review round at a time: the first revision covered only the heredoc,
+    # here-string and post-program spellings, and every omission was a real bypass.
+    REAL_STDIN_REACH = (
+        # Heredoc body, in every spelling of the marker.
+        "python3 - <<'PY'\nimport kiro_crew\nPY",
+        "python3 - <<-PY\nimport kiro_crew\nPY",
+        "python3 - << PY\nimport kiro_crew\nPY",
+        "python << 'PY'\nimport kiro_crew\nPY",
+        # An unterminated heredoc runs to the end of the frame (over-block, not under).
+        "python3 - <<PY\nimport kiro_crew\n",
+        # A body LINE that merely CONTAINS the tag word is not a closing delimiter:
+        # bash closes only on a line holding it ALONE, and line structure does not
+        # survive tokenizing, so the body must end at the LAST occurrence of the tag.
+        # `# EOF` is an ordinary Python comment and was enough to close it early.
+        "python3 - <<EOF\n# EOF\nimport kiro_crew\nEOF",
+        "python3 - <<EOF\nx = 1  # EOF\nimport kiro_crew\nEOF",
+        "python3 - <<PY\nprint('PY')\nimport kiro_crew\nPY",
+        # A command AFTER the closing tag is a NEW command, not this interpreter's
+        # script argument -- reading it as one made the detector answer False and
+        # skipped the branch entirely, leaving the heredoc payload unscanned.
+        "python3 <<PY\nimport kiro_crew\nPY\necho ok",
+        "python3 - <<PY\nimport kiro_crew\nPY; echo ok",
+        "python3 - <<PY\nimport kiro_crew\nPY && echo ok",
+        # HERE-STRING: the operand itself is the program on stdin. `<<<` also starts with
+        # `<<`, so reading it as a heredoc made the payload a delimiter and dropped it.
+        "python3 - <<<'import kiro_crew'",
+        "python3 -<<<'import kiro_crew'",
+        "python3 <<<'import kiro_crew'",
+        "python3 - <<< 'import kiro_crew'",
+        "python3 - <<<$'import kiro_crew'",
+        # Pipe producer -- the left side writes this interpreter's stdin.  Every
+        # spacing spelling, because the tokenizer splits on whitespace only, so the
+        # operator glues into a neighbouring word and `|` is often NOT its own token.
+        "echo 'import kiro_crew' | python3 -",
+        "echo 'import kiro_crew'|python3 -",
+        "echo 'import kiro_crew' |python3 -",
+        "echo 'import kiro_crew'| python3 -",
+        "cat src/kiro_crew/cli.py | python3 -",
+        "cat src/kiro_crew/cli.py|python3 -",
+        "printf 'import kiro_crew'|python3",
+        "echo 'import kiro_crew' | python3",
+        # Stdin redirect -- the file's CONTENT becomes the program.
+        "python3 - < src/kiro_crew/cli.py",
+        "python3 -<src/kiro_crew/cli.py",
+        "python3 - 0< src/kiro_crew/cli.py",
+        # Process substitution and command substitution -- the operand is one shell WORD
+        # whose text carries whitespace, so it spans tokens to its closing delimiter.
+        "python3 - < <(echo 'import kiro_crew')",
+        'python3 - <<<$(printf %s "import kiro_crew")',
+        "python3 - <<<`printf %s 'import kiro_crew'`",
+        'python3 - <<<"${x:-import kiro_crew}"',
+        'python3 - < $(printf %s "src/kiro_crew/cli.py")',
+        "python3 - <<<$(cat src/kiro_crew/cli.py)",
+        # A QUOTED delimiter inside the substitution: quoting is stripped before this
+        # code sees the tokens, so balancing the count is not decidable and the operand
+        # must span to the LAST closer.
+        "python3 - <<<$(true ')'; printf %s \"import kiro_crew\")",
+        'python3 - <<<$(echo ")" ; printf %s "import kiro_crew")',
+        # A split operand with NO `-`, where the detector must consume the whole operand
+        # rather than read the substitution's second token as a script path.
+        'python <<< $(printf %s "import kiro_crew")',
+        'python3 <<< $(printf %s "import kiro_crew")',
+        'python3 < $(printf %s "src/kiro_crew/cli.py")',
+        # A redirection may appear ANYWHERE in a simple command, before the program
+        # name included.  These are ordinary bash and reach the identical mint.
+        "<<'PY' python -\nimport kiro_crew\nPY",
+        "<<PY python3 -\nimport kiro_crew\nPY",
+        "<src/kiro_crew/cli.py python3 -",
+        "< src/kiro_crew/cli.py python3 -",
+        "<<<'import kiro_crew' python3 -",
+        # ... a marker and its BODY may straddle the program name, so the carrier walk
+        # cannot be split per side of the interpreter without losing the association.
+        "<<EOF python -\nimport kiro_crew\nEOF",
+        "<<EOF python3 -\nimport kiro_crew\nEOF",
+        "<< EOF python -\nimport kiro_crew\nEOF",
+        # ... including GLUED to the program name with no space at all, which is one
+        # single token: `python3<<<'…'`.  Excluding the interpreter's own token from the
+        # walk is what missed these.
+        'python3<<<"import kiro_crew"',
+        "python3<<<'import kiro_crew'",
+        "python3<src/kiro_crew/cli.py",
+        "python3<<PY\nimport kiro_crew\nPY",
+        "python3<<-PY\nimport kiro_crew\nPY",
+        "python<<<'import kiro_crew'",
+        "python<<EOF\nimport kiro_crew\nEOF",
+        "python3<<EOF\nimport kiro_crew\nEOF",
+    )
+
+    def test_benign_neighbour_no_longer_reads_as_a_mint(self):
+        from kiro_crew import security
+
+        for cmd in self.BENIGN_NEIGHBOUR:
+            assert not security._is_credential_mint(cmd.lower()), f"frame contamination: {cmd!r}"
+            assert security.is_denied(cmd) is None, f"frame contamination: {cmd!r}"
+
+    def test_real_stdin_reach_stays_denied(self):
+        from kiro_crew import security
+
+        for cmd in self.REAL_STDIN_REACH:
+            assert security.is_denied(cmd) is not None, f"stdin reach not blocked: {cmd!r}"
+
+    def test_carriers_are_the_only_search_space(self):
+        """The helper yields program text and nothing else.
+
+        Asserted on the helper directly, so the SCOPE is pinned rather than only its
+        effect on one deny verdict.
+        """
+        from kiro_crew import security
+
+        tokens = security.normalize_shell_command(
+            "isort src/kiro_crew/mcp_core.py\npython3 - <<'PY'\nprint(1)\nPY"
+        )
+        i = tokens.index("python3")
+        assert list(security._stdin_program_text(tokens, i)) == ["print(1)"]
+
+        piped = security.normalize_shell_command("echo 'import kiro_crew' | python3 -")
+        j = piped.index("python3")
+        assert "import kiro_crew" in list(security._stdin_program_text(piped, j))
+
+    def test_bare_interpreter_with_a_heredoc_is_recognised_as_reading_stdin(self):
+        """``python << 'PY' … PY`` (no ``-``) really does read its program from stdin.
+
+        ``_python_reads_stdin`` classified this FALSE: it consulted
+        ``_normalize_operand``, which strips a redirection to the empty string, so its
+        heredoc branch was unreachable and the first word of the BODY read as a script
+        path.  The form was denied anyway, but only by accident -- the closing tag
+        ``PY`` matched ``_PYTHON_PROGRAM_RE`` and the old frame-wide scan then found
+        the import anywhere in the frame.  Once the scan is scoped to real carriers
+        that accident stops covering it, so the detector has to be right.
+        """
+        from kiro_crew import security
+
+        for cmd, expect_stdin in (
+            ("python << 'PY'\nimport kiro_crew\nPY", True),
+            ("python <<PY\nimport kiro_crew\nPY", True),
+            ("python <<-PY\nimport kiro_crew\nPY", True),
+            ("python <<<'import kiro_crew'", True),
+            ("python <<< 'import kiro_crew'", True),
+            ('python <<< $(printf %s "import kiro_crew")', True),
+            ("python < prog.py", True),
+            ("python script.py", False),
+            ("python script.py < input.txt", False),
+            ("python -c 'print(1)'", False),
+            ("python -m kiro_crew gateway", False),
+        ):
+            frame = security.normalize_shell_command(cmd)
+            i = next(
+                k
+                for k, t in enumerate(frame)
+                if security._PYTHON_PROGRAM_RE.match(security._program_basename(t.lower()))
+            )
+            assert security._python_reads_stdin(frame[i + 1 :]) is expect_stdin, cmd
+
+    def test_a_pipe_anywhere_left_is_a_known_over_block(self):
+        """The producer branch over-yields on a pipe that does not feed the interpreter.
+
+        ``a | b; python -`` pipes into ``b``, not into the interpreter, yet the whole
+        left side is still treated as program text.  Pinned as a KNOWN over-block
+        rather than tightened: the alternative -- requiring the pipe to be adjacent --
+        is what let all four no-space spellings through, because the tokenizer glues
+        the operator into a neighbouring word.  A missed producer is a bypass; an extra
+        token is a visible refusal.  If this assertion ever flips, the tightening that
+        did it must be checked against the no-space spellings above.
+        """
+        from kiro_crew import security
+
+        assert security.is_denied("grep kiro_crew src | head; python3 -") is not None
+
+    def test_rule_does_not_fire_on_its_own_pattern_text(self):
+        """Quoting this rule must not trip it.
+
+        ``credential-exfil-kirocrew-token``'s code comment claims this exemption
+        ("a regex LITERAL quoting this very rule ... from reading as a mint"), and
+        #2660 reported the claim failing in practice.  Pin it so discussing,
+        documenting or testing the rule by quoting it stays possible.
+        """
+        from kiro_crew import security
+
+        rule = next(
+            r for r in security.BUILTIN_DENIED_RULES if r.id == "credential-exfil-kirocrew-token"
+        )
+        for cmd in (
+            f'grep -n "{rule.pattern}" notes.txt',
+            f"echo {rule.pattern!r} >> notes.txt",
+        ):
+            assert security.is_denied(cmd) is None, f"rule fires on its own text: {cmd!r}"
