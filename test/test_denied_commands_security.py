@@ -167,6 +167,128 @@ class TestCatalog:
                 allowed, denied_regexes=effective
             ), f"false positive on {allowed!r}"
 
+    def test_self_protection_commands_are_blocked_with_global_cli_options(self):
+        commands_by_id = {
+            "self-protection-restart": "restart",
+            "self-protection-update": "update",
+            "self-protection-cloud": "cloud destroy",
+            "self-protection-gateway-restart": "gateway restart",
+        }
+        rules = [rule for rule in BUILTIN_DENIED_RULES if rule.id in commands_by_id]
+        assert {rule.id for rule in rules} == set(commands_by_id)
+
+        for rule in rules:
+            for option in ("-v", "-vv", "--verbose", "--no-jail"):
+                command = f"kirocrew {option} {commands_by_id[rule.id]}"
+                reason = is_denied(command, denied_regexes=[rule.pattern])
+                assert reason is not None, command
+                assert reason.startswith(
+                    f"Blocked by security policy: {rule.pattern}"
+                ), command
+
+    def test_self_protection_commands_are_blocked_after_shell_quoting(self):
+        commands_by_id = {
+            "self-protection-restart": ("restart",),
+            "self-protection-update": ("update",),
+            "self-protection-cloud": ("cloud", "destroy"),
+            "self-protection-gateway-restart": ("gateway", "restart"),
+        }
+        rules = [rule for rule in BUILTIN_DENIED_RULES if rule.id in commands_by_id]
+        assert {rule.id for rule in rules} == set(commands_by_id)
+
+        for rule in rules:
+            words = commands_by_id[rule.id]
+            quoted_word_forms = [
+                " ".join(f"{quote}{word}{quote}" for word in words)
+                for quote in ('"', "'")
+            ]
+            commands = [f"kirocrew {form}" for form in quoted_word_forms]
+            commands.extend(f"kirocrew -v {form}" for form in quoted_word_forms)
+            for option in ("-v", "-vv", "--verbose", "--no-jail"):
+                for quote in ('"', "'"):
+                    commands.append(f"kirocrew {quote}{option}{quote} {' '.join(words)}")
+                    commands.extend(
+                        f"kirocrew {quote}{option}{quote} {form}"
+                        for form in quoted_word_forms
+                    )
+            for command in commands:
+                reason = is_denied(command, denied_regexes=[rule.pattern])
+                assert reason is not None, command
+                assert reason.startswith(
+                    f"Blocked by security policy: {rule.pattern}"
+                ), command
+
+    def test_self_protection_module_invocations_are_blocked(self):
+        commands_by_id = {
+            "self-protection-restart": ("restart",),
+            "self-protection-update": ("update",),
+            "self-protection-cloud": ("cloud", "destroy"),
+            "self-protection-gateway-restart": ("gateway", "restart"),
+        }
+        rules = [rule for rule in BUILTIN_DENIED_RULES if rule.id in commands_by_id]
+        assert {rule.id for rule in rules} == set(commands_by_id)
+
+        # These launcher spellings come from security._PYTHON_PROGRAM_RE and the
+        # documented ``python -m kiro_crew`` entrypoint.  ``py -3.12`` is the
+        # Windows launcher form; the version selector is an interpreter flag.
+        launchers = (
+            "python -m kiro_crew",
+            "python3 -B -m kiro_crew",
+            "python3.12 -X dev -m kiro_crew",
+            "py -3.12 -m kiro_crew",
+            "python -mkiro_crew",
+        )
+        global_options = ("", "-v", "-vv", "--verbose", "--no-jail")
+        for rule in rules:
+            for launcher in launchers:
+                for option in global_options:
+                    for quote in ('"', "'"):
+                        command = " ".join(
+                            part
+                            for part in (
+                                launcher,
+                                option,
+                                " ".join(
+                                    f"{quote}{word}{quote}"
+                                    for word in commands_by_id[rule.id]
+                                ),
+                            )
+                            if part
+                        )
+                        reason = is_denied(command, denied_regexes=[rule.pattern])
+                        assert reason is not None, command
+                        assert reason.startswith(
+                            f"Blocked by security policy: {rule.pattern}"
+                        ), command
+
+    def test_self_lifecycle_rules_do_not_over_match_nearby_subcommands(self):
+        """A lifecycle word AFTER an unrelated subcommand is not a lifecycle command.
+
+        Guards both halves of the union (regex tier and argv floor) through the
+        public gate: neither may scan past the first subcommand word.
+        """
+        rules = [
+            rule
+            for rule in BUILTIN_DENIED_RULES
+            if rule.id
+            in {
+                "self-protection-restart",
+                "self-protection-update",
+                "self-protection-cloud",
+                "self-protection-gateway-restart",
+            }
+        ]
+        patterns = [rule.pattern for rule in rules]
+        for command in (
+            "kirocrew doctor restart",
+            "kirocrew gateway status restart",
+            "kirocrew cloud status destroy",
+            "python -m kiro_crew doctor restart",
+            "python -m kiro_crew gateway status restart",
+            "python -m kiro_crew cloud status destroy",
+        ):
+            assert is_denied(command, denied_regexes=patterns) is None, command
+
     def test_rules_are_frozen_dataclass_with_four_fields(self):
         rule = BUILTIN_DENIED_RULES[0]
         assert isinstance(rule, DeniedCommandRule)
@@ -1158,6 +1280,19 @@ class TestUserRegexReDoSGate:
     def test_is_safe_user_regex_rejects_catastrophic(self):
         for pat in self._CATASTROPHIC:
             assert not is_safe_user_regex(pat), pat
+
+    def test_wrapped_builtin_flag_run_gets_no_user_regex_exemption(self):
+        """A USER regex embedding a built-in flag-run fragment verbatim must not
+        inherit the built-in scrub: wrapping the fragment in an outer quantifier
+        nests its ``*`` and backtracks catastrophically.  Only a COMPLETE
+        built-in pattern is exempt."""
+        from kiro_crew.security import (
+            _DANGEROUS_AWS_FLAG_RUN,
+            _LINEARIZED_AWS_FLAG_RUN,
+        )
+
+        for fragment in (_DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN):
+            assert not is_safe_user_regex("(?:" + fragment + ")+Z")
 
     def test_is_safe_user_regex_rejects_malformed(self):
         assert not is_safe_user_regex("(unclosed")
