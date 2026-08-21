@@ -807,6 +807,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # third party — the redaction is defensive so a credential-bearing
         # installer error cannot leak into the log ring / /api/logs stream.
         "platform/update_provider.py",
+        # Same shape: redacts the unparseable LLM decomposition response before
+        # writing the diagnostic ERROR line to the gateway log. Defensive log
+        # hygiene so a response echoing a credential or exfiltration URL cannot
+        # leak into the log ring / /api/logs stream; not an egress boundary.
+        "task_planner.py",
         # The shared recursive redactor helper itself — a pure scrubber, not an
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.

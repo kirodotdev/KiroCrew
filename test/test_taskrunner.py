@@ -142,6 +142,126 @@ class TestParseSteps:
         assert len(steps) == 1
         assert steps[0].title == "has title"
 
+    def test_prose_preamble_before_json_object(self) -> None:
+        # Reporter's real shape: a one-line preamble before a complete
+        # {"steps": [...]} object, despite the prompt demanding bare JSON.
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        body = json.dumps(
+            {
+                "steps": [
+                    {"title": "Set up scaffolding", "description": "Init the repo"},
+                    {"title": "Implement feature", "description": "Write the code"},
+                ]
+            }
+        )
+        text = "Here is the decomposed task plan you asked for:\n" + body
+        steps = runner._parse_tasks(text)
+        assert len(steps) == 2
+        assert steps[0].title == "Set up scaffolding"
+        assert steps[1].index == 2
+
+    def test_prose_preamble_and_suffix_around_json_array(self) -> None:
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        text = 'Sure! Plan below.\n[{"title": "A"}, {"title": "B"}]\nLet me know if you need more.'
+        steps = runner._parse_tasks(text)
+        assert [s.title for s in steps] == ["A", "B"]
+
+    def test_preamble_with_stray_brace_still_finds_body(self) -> None:
+        # A brace in the preamble prose must not mask the real JSON body.
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        text = 'Note: use {placeholder} syntax.\n{"steps": [{"title": "A"}]}'
+        steps = runner._parse_tasks(text)
+        assert len(steps) == 1
+        assert steps[0].title == "A"
+
+    def test_preamble_json_with_braces_inside_strings(self) -> None:
+        # Braces/brackets inside string values must not end the span early.
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        body = json.dumps({"steps": [{"title": 'Fix "{}" rendering', "description": "x]}"}]})
+        steps = runner._parse_tasks("Plan:\n" + body)
+        assert len(steps) == 1
+        assert steps[0].title == 'Fix "{}" rendering'
+
+    def test_genuinely_unparseable_returns_empty(self) -> None:
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        assert runner._parse_tasks("no json here at all") == []
+        assert runner._parse_tasks("broken { not json [ anywhere") == []
+
+    def test_json_like_token_in_preamble_does_not_mask_body(self) -> None:
+        # A trivial parseable span in the preamble (here "[1]") must not win
+        # over the plan-shaped body that follows it.
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        text = 'Steps use depends_on: [1] for ordering.\n{"steps": [{"title": "Real task"}]}'
+        steps = runner._parse_tasks(text)
+        assert len(steps) == 1
+        assert steps[0].title == "Real task"
+
+    def test_empty_plan_snippet_in_preamble_does_not_mask_body(self) -> None:
+        # An empty-plan example in the preamble (e.g. '{"steps": []}') must not
+        # be selected over the real title-bearing plan that follows it.
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        text = 'The shape is {"steps": []} with items like:\n{"steps": [{"title": "Real task"}]}'
+        steps = runner._parse_tasks(text)
+        assert len(steps) == 1
+        assert steps[0].title == "Real task"
+
+    def test_nested_example_snippet_in_preamble_does_not_starve_scan(self) -> None:
+        # A deeply nested example plus stray prose braces before the body must
+        # not exhaust the extractor (raw_decode skips past each parsed value).
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        text = (
+            'Example: {"a": {"b": {"c": [1, 2, {"d": []}]}}} and tokens {x} {y} {z}.\n'
+            '{"steps": [{"title": "Real task"}]}'
+        )
+        steps = runner._parse_tasks(text)
+        assert len(steps) == 1
+        assert steps[0].title == "Real task"
+
+    def test_two_different_plans_is_ambiguous_and_fails_safe(self) -> None:
+        # A title-bearing worked EXAMPLE before the real plan is ambiguous: the
+        # parser cannot know which plan is real, and executing a guess is worse
+        # than failing. Two different plan-shaped values -> [] (logged).
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        text = (
+            'For example {"steps": [{"title": "Example task"}]} — here is the plan:\n'
+            '{"steps": [{"title": "Real task"}]}'
+        )
+        assert runner._parse_tasks(text) == []
+
+    def test_identical_restated_plan_is_not_ambiguous(self) -> None:
+        # A model restating the SAME payload twice is not ambiguity.
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        body = '{"steps": [{"title": "Real task"}]}'
+        steps = runner._parse_tasks(f"Plan:\n{body}\nAgain, the plan is:\n{body}")
+        assert len(steps) == 1
+        assert steps[0].title == "Real task"
+
+    def test_unparseable_error_log_is_bounded_and_redacted(self, caplog) -> None:
+        import logging
+
+        sessions = _make_mock_sessions()
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        secret = "ghp_" + "a" * 36
+        text = "totally not json " + secret + " " + "x" * 5000
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.task_planner"):
+            assert runner._parse_tasks(text) == []
+        record = next(r for r in caplog.records if "Failed to parse tasks JSON" in r.getMessage())
+        message = record.getMessage()
+        assert secret not in message
+        assert str(len(text)) in message
+        # Payload slice is bounded so one record cannot evict the log window.
+        assert len(message) < 700
+
 
 # ── Build step prompt ──
 

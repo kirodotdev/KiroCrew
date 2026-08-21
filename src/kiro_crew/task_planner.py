@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_DENY
+from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.task_models import (
     SESSION_PREFIX,
@@ -138,12 +140,34 @@ def normalize_cross_group_deps(tasks: list[Task]) -> list[Task]:
 # ── Task Parsing ──
 
 
+def _plan_shaped(parsed: Any) -> bool:
+    """True when a parsed JSON value carries at least one title-bearing task.
+
+    Mirrors the key precedence in ``parse_tasks``: a dict's ``tasks``/``steps``
+    list, or a bare list. An empty or title-less plan is NOT plan-shaped — an
+    example snippet like ``{"steps": []}`` in the preamble must not be selected
+    over the real body that follows. A genuinely empty plan as the whole
+    response is still honored through the extractor's first-match fallback.
+    """
+    if isinstance(parsed, dict):
+        parsed = parsed.get("tasks", parsed.get("steps"))
+    if not isinstance(parsed, list):
+        return False
+    return any(isinstance(item, dict) and "title" in item for item in parsed)
+
+
 def parse_tasks(text: str) -> list[Task]:
     """Parse LLM output into Task objects.
 
     Accepts either:
     - A JSON object with "steps" key (preferred)
     - A plain JSON array of tasks (backward compat)
+
+    Tolerates a prose preamble/suffix around the JSON body: when the direct
+    parse fails, the shared prose-tolerant extractor finds the embedded JSON,
+    preferring a plan-shaped value so a trivial parseable token in the
+    preamble (e.g. ``[1]`` or an example ``{"steps": []}``) cannot mask the
+    real body.
     """
     text = text.strip()
     if not text:
@@ -153,10 +177,21 @@ def parse_tasks(text: str) -> list[Task]:
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
     try:
-        parsed = json.loads(text)
+        parsed: Any = json.loads(text)
     except json.JSONDecodeError:
-        logger.error("Failed to parse tasks JSON: %.200s", text)
-        return []
+        parsed = _extract_json_of_type(text, (dict, list), prefer=_plan_shaped)
+        if parsed is None:
+            # Bound the payload: an uncapped ERROR record would evict the
+            # rotating gateway.log window other subsystems tail, and the raw
+            # LLM text can echo credentials or exfiltration URLs, so redact
+            # before the bounded slice is written to log surfaces. URLs are
+            # redacted FIRST: replacing a credential embedded in a URL would
+            # split the URL so the URL redactor no longer matches it, leaving
+            # the rest of its sensitive query string in the log.
+            snippet, _ = redact_exfiltration_urls(text)
+            snippet, _ = redact_credentials(snippet)
+            logger.error("Failed to parse tasks JSON (%d chars): %.500s", len(text), snippet)
+            return []
 
     if isinstance(parsed, dict):
         data = parsed.get("tasks", parsed.get("steps", []))

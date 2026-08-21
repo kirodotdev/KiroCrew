@@ -1333,7 +1333,11 @@ async def _resolve_permission(
 _JSON_DECODER = json.JSONDecoder()
 
 
-def _extract_json_of_type(text: str, expected_type: type) -> dict | list | None:
+def _extract_json_of_type(
+    text: str,
+    expected_type: type | tuple[type, ...],
+    prefer: Callable[[Any], bool] | None = None,
+) -> dict | list | None:
     """Extract the first top-level JSON value of *expected_type* embedded in prose.
 
     Scans successive ``{`` (dict) or ``[`` (list) offsets and uses the stdlib
@@ -1347,7 +1351,17 @@ def _extract_json_of_type(text: str, expected_type: type) -> dict | list | None:
     ``{`` nested inside an earlier-starting ``[ ... ]`` is consumed by that
     array's decode, so a dict request never digs a nested object out of a
     surrounding array.
+
+    When *prefer* is given, a preferred value is returned only when the choice
+    is UNAMBIGUOUS: all preferred matches in the text must be equal (a model
+    restating the same payload twice is not ambiguity). Two or more DIFFERENT
+    preferred matches return None — the caller cannot know which one is the
+    real payload, and guessing (e.g. executing a worked example that precedes
+    the actual plan) is worse than failing. When no preferred match exists,
+    the first type-matching value is returned as a fallback.
     """
+    preferred: list[dict | list] = []
+    fallback: dict | list | None = None
     i = 0
     n = len(text)
     while i < n:
@@ -1367,10 +1381,20 @@ def _extract_json_of_type(text: str, expected_type: type) -> dict | list | None:
             i += 1
             continue
         if isinstance(data, expected_type):
-            return data  # type: ignore[return-value]
-        # Valid JSON of the wrong type — skip past its full extent.
+            if prefer is None:
+                return data  # type: ignore[return-value]
+            if prefer(data):
+                preferred.append(data)
+            elif fallback is None:
+                fallback = data  # type: ignore[assignment]
+        # Valid JSON that is not an immediate result — skip past its full extent.
         i = end
-    return None
+    if preferred:
+        first = preferred[0]
+        if all(candidate == first for candidate in preferred[1:]):
+            return first
+        return None
+    return fallback
 
 
 def _parse_llm(text: str, expected_type: type) -> dict | list | None:
