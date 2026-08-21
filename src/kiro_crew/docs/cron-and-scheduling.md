@@ -252,9 +252,15 @@ command exists to undo.
 
 ## Reliability
 
-- **Failure dedup** — repeated failures with the same error are suppressed
-  after the first Slack notification (dashboard-only after that). Re-alerts
-  after 1 hour or when the error changes. Success clears the failure state.
+- **Failure alerts** — a failed run delivers its REASON to the dashboard bell
+  and (when Slack is configured) to the job's channel or the owner's DM, not
+  only to the gateway log. Covers all three job kinds and a fire-time policy
+  denial, which is otherwise invisible.
+- **Failure dedup** — a repeat of the same reason withholds the Slack DM and
+  marks the bell as suppressed; a different reason alerts in full, and the DM
+  returns after an hour. A `silent: true` job alerts nowhere. Both still count
+  toward auto-pause: dedup silences the DM, never the evidence. Success clears
+  the failure state, so a relapse alerts fresh.
 - **Zombie reaper** — a periodic sweep (60s interval, 30 min deadline)
   force-kills cron jobs whose agent process has become an orphan.
   Prevents resource leaks from stuck jobs.

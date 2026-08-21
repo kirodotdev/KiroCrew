@@ -379,8 +379,18 @@ class CronJob:
         A job the user paused stays paused: ``user_paused`` is never mutated by
         execution, so it is the discriminator here, and re-enabling THAT is the
         user's action (``enable_job``).
+
+        Also clears the failure-alert dedup fields, and is the ONE owner of that
+        reset. A success means the job recovered, so the next failure must alert
+        fresh rather than be suppressed as a duplicate of the pre-recovery one --
+        and every success path (gate verdict, script, command, the scheduler
+        backstop) routes through here, so putting the reset at any single call
+        site would silence a relapse on the others for up to
+        ``_FAILURE_REMINDER_SECS``.
         """
         self.consecutive_failures = 0
+        self.last_failure_hash = ""
+        self.last_failure_at = 0.0
         if self.auto_paused:
             self.auto_paused = False
             if not self.user_paused:

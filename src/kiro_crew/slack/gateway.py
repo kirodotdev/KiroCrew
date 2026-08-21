@@ -210,6 +210,7 @@ from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.format import (
     build_cron_ack_block,
     build_options_blocks,
+    escape_mrkdwn,
     extract_options,
     render_for_slack,
 )
@@ -417,6 +418,10 @@ _EPOCH_RE = re.compile(r"\b\d{10,13}\b")
 _EPOCH_WINDOW_SECS = 300  # strip epoch values within ±5 min of now
 _SUCCESS_REMINDER_SECS = 86400  # post "still succeeding w/ same result" reminder every 24h
 _FAILURE_REMINDER_SECS = 3600  # re-alert still-failing cron every 1h (louder than success dedup)
+# Cap on the failure reason carried into a user-facing alert. Matches the cap
+# _apply_gate_verdict already puts on job.last_error, so the bell and the cron
+# row cannot disagree about how much of a long traceback the user is shown.
+_CRON_FAILURE_DETAIL_CAP = 500
 
 
 # Tool-name prefixes treated as read-only by the --approval reads flag.
@@ -754,9 +759,8 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
         return True
     # Clear failure dedup on any success, regardless of whether the success
     # result itself is a dup. A successful run means the job recovered — next
-    # failure should always alert fresh.
-    job.last_failure_hash = ""
-    job.last_failure_at = 0.0
+    # failure should always alert fresh. record_success() owns the reset now, so
+    # every kind's success path gets it rather than only this one.
     job.record_success()
     return False
 
@@ -2510,6 +2514,164 @@ class GatewayOrchestrator:
                         job.name,
                     )
 
+        async def _alert_cron_failure(job: CronJob, detail: str, *, denied: bool = False) -> None:
+            """Tell the user WHY a script/command cron run failed or was denied.
+
+            The script and command paths signal failure by mutating the job
+            (``last_status="error"`` + ``last_error``) and returning normally, so
+            they never reached the message path's failure alert below — the reason
+            existed only in the gateway log and in a dashboard field nobody is
+            watching when the notification they expected simply never arrives. A
+            job whose every run dies on a startup-time ``RuntimeError`` therefore
+            looked idle rather than broken.
+
+            Deliberately NOT a delivery of the run's *result*: this is a bell plus
+            a DM carrying the reason, never an injected turn like
+            :func:`_deliver_script_result`. A job failing on its own schedule must
+            not spend a model turn per failure, and an injected turn is exactly how
+            a failing cron would amplify itself.
+
+            Contract, so the two failure surfaces cannot drift:
+
+            * ``record_failure()`` is NOT called here. Every call site already
+              counted the run (or deliberately did not, for a policy denial), and
+              the counter has one owner per run — see :func:`_apply_gate_verdict`.
+              Callers therefore alert AFTER counting, so ``consecutive_failures``
+              reads true if a future body wants it.
+            * Dedup reuses the SAME ``last_failure_hash`` / ``last_failure_at``
+              fields as the message path. A job is exactly one kind, so the two
+              writers never interleave on one job, and a run that fails
+              identically every minute alerts once per
+              ``_FAILURE_REMINDER_SECS`` instead of once per fire.
+            * Never raises. Every call site is inside an ``except`` block whose
+              exception is the real story; an alert that failed must not replace
+              it. Cancellation still propagates (``CancelledError`` is a
+              ``BaseException``).
+            """
+            try:
+                if job.silent:
+                    # Silent jobs still execute and still count toward auto-pause;
+                    # only the user-facing surfaces are suppressed.
+                    return
+                text = redact(detail or "")
+                text, _ = redact_exfiltration_urls(text)
+                text, _ = redact_credentials(text)
+                text = text.strip()[:_CRON_FAILURE_DETAIL_CAP] or "no reason reported"
+                # job.name is user-controlled and the reason can carry subprocess
+                # output, so both are scrubbed once, ahead of either surface and
+                # of either branch below.
+                label = redact(job.name)
+                label, _ = redact_exfiltration_urls(label)
+                label, _ = redact_credentials(label)
+                mark = "⛔" if denied else "❌"
+                headline = "Blocked by policy" if denied else "Run failed"
+                # Denials and failures hash apart so a policy denial does not read
+                # as a dup of a same-worded crash (and vice versa).
+                fh = _result_hash(f"{'denied' if denied else 'failed'}:{text}")
+                if (
+                    fh == job.last_failure_hash
+                    and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS
+                ):
+                    logger.info(
+                        "Cron '%s': duplicate failure alert suppressed (%s)",
+                        job.name,
+                        "denied" if denied else "failed",
+                    )
+                    # Same split the message path draws: the LOCAL bell still
+                    # rings (marked suppressed, so a user watching the feed sees
+                    # the job is still down) and only the Slack DM is withheld.
+                    try:
+                        if self.dashboard_state:
+                            self.dashboard_state.notify(
+                                "cron",
+                                f"🔇 Cron: {label} (repeat)",
+                                f"{mark} Still failing (suppressed — same reason):\n{text}",
+                                meta={"job_id": job.id, "failure_hash": fh},
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Dashboard notify failed in cron run-failure suppress path",
+                            exc_info=True,
+                        )
+                    return
+                try:
+                    if self.dashboard_state:
+                        self.dashboard_state.notify(
+                            "cron",
+                            f"Cron: {label}",
+                            f"{mark} {headline}:\n{text}",
+                            meta={"job_id": job.id, "failure_hash": fh},
+                        )
+                except Exception:
+                    logger.debug(
+                        "Dashboard notify failed in cron run-failure alert path", exc_info=True
+                    )
+                slack_failed = False  # real delivery exceptions only
+                if self.slack:
+                    # Name the machine for the same reason the message path does:
+                    # a laptop and a cloud desktop can both run Kiro Crew, and the
+                    # DM is the only place the user learns which one failed.
+                    host = socket.gethostname().split(".")[0]
+                    # Slack PARSES entity markup in a message's text, and both
+                    # halves of this one are attacker-shaped: the job name is
+                    # user-authored and the reason carries subprocess output. A job
+                    # named `<!channel>` would notify every member of the channel
+                    # the moment it failed. Escape at the Slack-facing sink only --
+                    # the dashboard body above is not a mrkdwn sink, and escaping
+                    # there would show a literal `&lt;`.
+                    safe_label = escape_mrkdwn(label)
+                    # Escaping does not neutralize a fence: three backticks inside
+                    # the reason would close this one early and hand the remainder
+                    # to the mrkdwn parser as markup.
+                    safe_text = escape_mrkdwn(text).replace("```", "'''")
+                    msg = (
+                        f"⏰ *Cron: {safe_label}* {mark} "
+                        f"_{headline} on {escape_mrkdwn(host)}_\n```{safe_text}```"
+                    )
+                    msg, _ = redact_exfiltration_urls(msg)
+                    msg, _ = redact_credentials(msg)
+                    try:
+                        channel = job.channel
+                        if not channel and (job.created_by or self._owner_id):
+                            channel = await self._open_dm_with_retry(
+                                job.created_by or self._owner_id, job.name
+                            )
+                        if channel:
+                            await self.slack.post_message(channel, msg)
+                        else:
+                            logger.warning(
+                                "Cron '%s': no channel resolved for run-failure alert", job.name
+                            )
+                    except Exception:
+                        slack_failed = True
+                        logger.error(
+                            "Cron '%s': Slack run-failure alert delivery failed",
+                            job.name,
+                            exc_info=True,
+                        )
+                # Advance dedup only once the reason actually reached someone.
+                # "No channel available" counts as delivered (the bell rang), the
+                # same skip-vs-failure split the message path draws — otherwise a
+                # Slack-less install re-notifies the dashboard on every fire.
+                if not slack_failed:
+                    job.last_failure_hash = fh
+                    job.last_failure_at = time.time()
+                try:
+                    sel().log_tool_invocation(
+                        session_key=f"cron:{job.id}",
+                        tool_name="cron_run_failure_alert",
+                        outcome="denied" if denied else "alerted",
+                        downstream_service="slack" if self.slack else "none",
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed in cron run-failure alert path", exc_info=True
+                    )
+            except Exception:
+                logger.warning(
+                    "Cron '%s': run-failure alert failed", job.name, exc_info=True
+                )
+
         async def _cron_callback(job: CronJob) -> str | None:
             # True once ANY prompt has been handed to the provider this
             # invocation. The whole-callback transient retry below is only
@@ -2579,6 +2741,7 @@ class GatewayOrchestrator:
                                 "SEL logging failed in cron command fire-time deny path",
                                 exc_info=True,
                             )
+                        await _alert_cron_failure(job, gate_reason, denied=True)
                         return None
                     cmd_timeout = job.timeout or 300
                     result = await asyncio.wait_for(
@@ -2612,6 +2775,7 @@ class GatewayOrchestrator:
                                 f"non-ok status with no output (status={result.get('status')})"
                             )
                             job.record_failure()
+                            await _alert_cron_failure(job, job.last_error)
                         return None  # no output = no delivery
                     job.set_run_result(redact(output))
                     job.last_error = ""
@@ -2633,6 +2797,10 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron command result path", exc_info=True
                         )
+                    if job.last_status == "error":
+                        # A non-zero exit DOES produce output, and that output is
+                        # the reason — carry it, not just the exit code.
+                        await _alert_cron_failure(job, f"{job.last_error}\n{output}")
                     return job.last_result
                 except asyncio.TimeoutError:
                     job.clear_carried_result()
@@ -2650,6 +2818,7 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron command timeout path", exc_info=True
                         )
+                    await _alert_cron_failure(job, f"command {job.last_error}")
                     return None
                 except Exception as exc:
                     logger.exception("Command cron '%s' failed: %s", job.name, exc)
@@ -2667,6 +2836,7 @@ class GatewayOrchestrator:
                         )
                     except Exception:
                         logger.debug("SEL logging failed in cron command error path", exc_info=True)
+                    await _alert_cron_failure(job, f"{type(exc).__name__}: {exc}")
                     return None
                 finally:
                     self._running_script_ids.discard(job.id)
@@ -2720,6 +2890,7 @@ class GatewayOrchestrator:
                                 "SEL logging failed in cron script fire-time deny path",
                                 exc_info=True,
                             )
+                        await _alert_cron_failure(job, gate_reason, denied=True)
                         return None
                     # Run in sandboxed subprocess via wrap_argv()
                     script_timeout = job.timeout or 30
@@ -2852,6 +3023,7 @@ class GatewayOrchestrator:
                         logger.debug(
                             "SEL logging failed in cron script timeout path", exc_info=True
                         )
+                    await _alert_cron_failure(job, f"script {job.last_error}")
                     return None
                 except Exception as exc:
                     logger.exception("Script cron '%s' failed: %s", job.name, exc)
@@ -2876,6 +3048,11 @@ class GatewayOrchestrator:
                         )
                     except Exception:
                         logger.debug("SEL logging failed in cron script error path", exc_info=True)
+                    # The reason a script cron dies is often environmental (a
+                    # startup RuntimeError, a missing dependency) and identical on
+                    # every fire, so it read as an idle job rather than a broken
+                    # one until this alert carried the reason out.
+                    await _alert_cron_failure(job, f"{type(exc).__name__}: {exc}")
                     return None
                 finally:
                     self._running_script_ids.discard(job.id)
@@ -2907,6 +3084,7 @@ class GatewayOrchestrator:
                     logger.debug(
                         "SEL logging failed in cron message fire-time deny path", exc_info=True
                     )
+                await _alert_cron_failure(job, gate_reason, denied=True)
                 return None
 
             def _cron_extra_env() -> dict[str, str] | None:
@@ -3576,7 +3754,15 @@ class GatewayOrchestrator:
                         alert_title = f"Cron: {job.name}"
                         alert_title, _ = redact_exfiltration_urls(alert_title)
                         alert_title, _ = redact_credentials(alert_title)
-                        self.dashboard_state.notify("cron", alert_title, "❌ Job failed")
+                        # Carry the reason, matching the suppressed-duplicate body
+                        # below: without it the FIRST alert — the one the user
+                        # actually reads — was the least informative of the two.
+                        self.dashboard_state.notify(
+                            "cron",
+                            alert_title,
+                            f"❌ Job failed:\n{exc_summary[:_CRON_FAILURE_DETAIL_CAP]}",
+                            meta={"job_id": job.id, "failure_hash": fh},
+                        )
                 except Exception:
                     logger.debug(
                         "Dashboard notify failed in cron failure alert path", exc_info=True
@@ -3588,17 +3774,35 @@ class GatewayOrchestrator:
                 # credential failure), so the machine name must come from here,
                 # not from inside the cron prompt.
                 host = socket.gethostname().split(".")[0]
+                # Slack PARSES entity markup here, and job.name is user-authored:
+                # a job named `<!channel>` notifies the whole channel on failure.
+                # Same sink and same source as the script/command alert above, so
+                # it gets the same escaping rather than being left as the one
+                # unescaped Slack interpolation of a cron name.
+                safe_name = escape_mrkdwn(job.name)
+                # Carry the reason here too. The dashboard body above and the
+                # script/command DM both do, so leaving this one at "check logs"
+                # made the DM the only failure surface that still withheld what
+                # the caller already knows. Escaped and fence-neutralized for the
+                # same reasons as the script/command alert.
+                safe_reason = escape_mrkdwn(exc_summary[:_CRON_FAILURE_DETAIL_CAP]).replace(
+                    "```", "'''"
+                )
                 if is_dup:
                     # +1: this run's failure is recorded below, after the
                     # awaited Slack attempt, so the display count must include
                     # it explicitly.
                     fail_msg = (
-                        f"⏰ *Cron: {job.name}* ❌ _Job still failing on {host}"
+                        f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
                         f" ({job.consecutive_failures + 1} consecutive failures)"
-                        f" — check logs._"
+                        f" — check logs._\n```{safe_reason}```"
                     )
                 else:
-                    fail_msg = f"⏰ *Cron: {job.name}* ❌ _Job failed on {host} — check logs._"
+                    fail_msg = (
+                        f"⏰ *Cron: {safe_name}* ❌ "
+                        f"_Job failed on {escape_mrkdwn(host)} — check logs._\n"
+                        f"```{safe_reason}```"
+                    )
                 # Never trust interpolated content (job.name is user-controlled):
                 # scrub exfiltration URLs + credentials before it reaches Slack,
                 # mirroring the dashboard alert_title redaction above.
