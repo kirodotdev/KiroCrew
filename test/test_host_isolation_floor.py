@@ -126,6 +126,245 @@ class TestTheDataHomeIsPinnedForEveryTestpath:
         assert config_dir().resolve() == mine.resolve()
 
 
+class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
+    """The agent specs decide which MCP servers the operator's real agent has.
+
+    A third axis, and the reason it needs one: ``kiro_agents_dir()`` is a LAZY
+    resolver (``kiro_home()`` -> ``$KIRO_HOME`` or ``Path.home()/.kiro``), so the data
+    home does not reach it and neither does ``_SHARED_KIRO_PATHS`` -- whose own ratchet
+    docstring records lazy resolvers as outside its scope. Before this floor part
+    existed, a suite run inside a throwaway clone rewrote the machine-wide
+    ``kirocrew.json`` with that clone's venv and a per-test data home in ``env``, and
+    every new session on the machine then failed ``internal_auth_mismatch`` once both
+    were deleted (#4912).
+    """
+
+    def test_the_spec_write_target_is_not_the_operators_real_home(self) -> None:
+        from kiro_crew import agent
+
+        target = agent.kiro_agents_dir_path().resolve()
+
+        assert not _inside_a_guarded_root(target), (
+            f"the agent-spec write target is a real home path: {target}"
+        )
+
+    def test_every_seam_in_the_tables_is_actually_pinned(self) -> None:
+        """A table entry nobody patches is documentation, not isolation.
+
+        Resolver bindings are checked only when their module is loaded, matching the
+        fixture's own tolerance: an unimported module has no bound name to reach.
+        """
+        unpinned = []
+        for module, attr in _root._AGENT_SPEC_HOOKS:
+            mod = sys.modules.get(module)
+            if mod is None:
+                unpinned.append(f"{module} not imported, so {attr} could not be set")
+                continue
+            value = getattr(mod, attr, None)
+            if value is None or _inside_a_guarded_root(pathlib.Path(value).resolve()):
+                unpinned.append(f"{module}.{attr} = {value!r}")
+        for module, attr in _root._AGENT_SPEC_RESOLVER_BINDINGS:
+            mod = sys.modules.get(module)
+            if mod is None:
+                continue
+            resolved = getattr(mod, attr)()
+            if _inside_a_guarded_root(pathlib.Path(resolved).resolve()):
+                unpinned.append(f"{module}.{attr}() -> {resolved}")
+
+        assert not unpinned, "these agent-spec seams still resolve a real home:\n" + "\n".join(
+            f"    {entry}" for entry in unpinned
+        )
+
+    def test_the_hook_modules_are_imported_so_the_table_can_reach_them(self) -> None:
+        """The session fixture's whole job: patching cannot precede importing.
+
+        Distinct from the assertion above, which would also pass if a module simply
+        happened to be imported by collection. This one is what makes the four write
+        seams' coverage independent of collection order.
+        """
+        missing = [
+            module for module, _attr in _root._AGENT_SPEC_HOOKS if sys.modules.get(module) is None
+        ]
+
+        assert not missing, f"hook modules never imported, so their seams leak: {missing}"
+
+    def test_one_directory_is_shared_across_the_seams(self) -> None:
+        """A spec written through one seam has to be readable through another."""
+        from kiro_crew import agent, agent_discovery
+
+        assert agent.KIRO_AGENTS_DIR == agent_discovery._KIRO_AGENTS_DIR
+
+    def test_the_guards_ambient_reference_is_left_resolving_the_real_home(self) -> None:
+        """``agent.kiro_agents_dir`` must NOT be pinned, and this says why in a test.
+
+        It is the AMBIENT reference ``_decline_shared_agent_home`` compares the target
+        against. Leaving it real is what makes the pinned hook read as a privately
+        redirected target, which returns early and allows the write. Pin it too and
+        target == ambient, so the guard falls through to its ephemerality check and
+        declines from a linked git worktree -- green in CI, red on a developer machine,
+        which is the setup this repo mandates.
+        """
+        from kiro_crew import agent
+
+        assert _inside_a_guarded_root(agent.kiro_agents_dir().resolve()), (
+            "agent.kiro_agents_dir was pinned; the write guard can no longer tell a "
+            "redirected target from the shared one"
+        )
+        assert agent._decline_shared_agent_home(audit=False) is None, (
+            "the floor's pinned target is being treated as the shared agent home"
+        )
+
+    def test_a_test_can_still_override_the_seams_itself(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor is a safety net, not a cage."""
+        from kiro_crew import agent
+
+        mine = tmp_path / "my-own-agents"
+        monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", mine)
+
+        assert agent.kiro_agents_dir_path() == mine
+
+
+class TestTheAgentSpecSeamRatchet:
+    """A NEW agents-dir consumer must not land unpinned.
+
+    Same contract as the shared-path ratchet above: an entry is either pinned by one of
+    the two tables or excluded with a stated reason, so adding a consumer forces a
+    decision. Covers the two shapes that actually leak -- a module-level
+    ``KIRO_AGENTS_DIR`` hook, and a module-level ``from ... import kiro_agents_dir``
+    whose bound name the resolver patch cannot reach.
+    """
+
+    #: Agents-dir bindings that deliberately need no redirect.
+    #:
+    #: The large group is READ-ONLY consumers, excluded for one shared reason worth
+    #: stating once: this floor's remit is host MUTATION, and the dominant isolation
+    #: idiom in this suite is ``patch("<module>.Path.home", ...)`` followed by a read
+    #: through that same module's resolver. Redirecting the bound name silently
+    #: overrides that, so a test that carefully built its own tree reads an empty
+    #: directory instead -- the same trap ``_isolate_kirocrew_home`` documents for
+    #: ``KIRO_HOME``. A read that resolves the operator's real specs can still make a
+    #: test's outcome depend on the operator's machine; that is a determinism concern
+    #: rather than host mutation, and it is not what this file is for.
+    _EXCLUDED: dict[tuple[str, str], str] = {
+        # The guard's AMBIENT reference, not a write target: `agent` writes exclusively
+        # through `kiro_agents_dir_path()`, which reads the hook. Pinning this one makes
+        # target == ambient inside `_decline_shared_agent_home`, so the guard stops
+        # seeing a privately redirected target and declines from a linked worktree.
+        ("kiro_crew/agent.py", "kiro_agents_dir"): "the write guard's ambient reference",
+        # NOT a resolved path -- the RELATIVE string `.kiro/agents`, used as a security
+        # MATCHER. Same reasoning the home-binding ratchet applies to its anchors: a
+        # redirected value would make the guard stop matching the thing it protects.
+        # `test_a_security_matcher_is_not_mistaken_for_a_path_binding` pins the shape so
+        # an edit that turns it into a real path comes back through this table.
+        ("kiro_crew/security.py", "_KIRO_AGENTS_DIR"): "security matcher: a relative string",
+        # Covered by their own hook, which the fixture pins: every call site in these
+        # three routes through a private `_kiro_agents_dir()` that prefers it.
+        ("kiro_crew/agent_discovery.py", "kiro_agents_dir"): "covered by its own hook",
+        ("kiro_crew/apps/bridges.py", "kiro_agents_dir"): "covered by its own hook",
+        ("kiro_crew/cli_doctor.py", "kiro_agents_dir"): "covered by its own hook",
+        # Read-only consumers: see the note above this table.
+        ("kiro_crew/config/loader.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/context.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/cron_script.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/mcp_discovery.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/acp/runtime.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/dashboard/handlers/_shared.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/dashboard/handlers/sessions.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/slack/events.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/slack/gateway.py", "kiro_agents_dir"): "read-only consumer",
+        ("kiro_crew/slack/handler.py", "kiro_agents_dir"): "read-only consumer",
+        (
+            "kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py",
+            "kiro_agents_dir",
+        ): "read-only consumer",
+    }
+
+    @staticmethod
+    def _agents_dir_bindings() -> dict[tuple[str, str], int]:
+        """Module-level ``KIRO_AGENTS_DIR`` hooks and bound ``kiro_agents_dir`` names.
+
+        Parsed rather than grepped for the same reason as the home-binding ratchet: a
+        name imported inside a FUNCTION body is re-resolved per call and so already
+        follows the patched resolver, and only the module-level shape freezes a
+        reference a test can reach.
+        """
+        found: dict[tuple[str, str], int] = {}
+        for path in sorted(_SRC.rglob("*.py")):
+            if "_vendor" in path.parts or "/tests/" in path.as_posix():
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):  # pragma: no cover - unreadable source
+                continue
+            rel = path.relative_to(_REPO_ROOT / "src").as_posix()
+            pending: list[ast.stmt] = list(tree.body)
+            while pending:
+                node = pending.pop(0)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                pending.extend(
+                    child for child in ast.iter_child_nodes(node) if isinstance(child, ast.stmt)
+                )
+                if isinstance(node, ast.ImportFrom):
+                    for alias in node.names:
+                        if alias.name == "kiro_agents_dir":
+                            found[(rel, alias.asname or alias.name)] = node.lineno
+                    continue
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id.endswith("KIRO_AGENTS_DIR"):
+                        found[(rel, target.id)] = node.lineno
+        return found
+
+    def test_every_agents_dir_binding_is_pinned_or_excluded(self) -> None:
+        pinned = {
+            (module.replace(".", "/") + ".py", attr)
+            for module, attr in _root._AGENT_SPEC_HOOKS + _root._AGENT_SPEC_RESOLVER_BINDINGS
+        }
+        # The definition itself is the resolver, not a consumer's frozen reference.
+        pinned.add(("kiro_crew/config/paths.py", "kiro_agents_dir"))
+        unhandled = {
+            key: line
+            for key, line in self._agents_dir_bindings().items()
+            if key not in pinned and key not in self._EXCLUDED
+        }
+
+        assert not unhandled, (
+            "these agents-dir bindings are neither pinned by the rootdir conftest's "
+            "_AGENT_SPEC_HOOKS / _AGENT_SPEC_RESOLVER_BINDINGS nor excluded with a "
+            "reason:\n"
+            + "\n".join(
+                f"    {mod}:{line} {attr}" for (mod, attr), line in sorted(unhandled.items())
+            )
+            + "\nA test that reaches one of these resolves the operator's real agent "
+            "specs. Pin it, or exclude it and say why."
+        )
+
+    def test_the_exclusion_list_has_not_gone_stale(self) -> None:
+        """An exclusion for a binding that no longer exists hides the next one."""
+        bindings = self._agents_dir_bindings()
+        stale = [key for key in self._EXCLUDED if key not in bindings]
+
+        assert not stale, f"_EXCLUDED names bindings that no longer exist: {stale}"
+
+    def test_a_security_matcher_is_not_mistaken_for_a_path_binding(self) -> None:
+        """``security._KIRO_AGENTS_DIR`` is the relative string ``.kiro/agents``.
+
+        It is a MATCHER, not a resolved path, so it must never be redirected -- the
+        same reasoning the home-binding ratchet applies to its security anchors. Pinned
+        here because the name matches this ratchet's suffix rule, so a future edit that
+        turns it into a real path has to come back through this test.
+        """
+        from kiro_crew import security
+
+        assert security._KIRO_AGENTS_DIR == ".kiro/agents"
+        assert not isinstance(security._KIRO_AGENTS_DIR, pathlib.Path)
+
+
 class TestTheSharedKiroPathsArePinned:
     """``~/.kiro`` is kiro-cli's own home -- machine-wide, shared with the real agent.
 

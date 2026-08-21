@@ -204,7 +204,7 @@ def test_host_scoped_verbs_are_refused(verb):
         rt.require_pod_safe_verb([verb], "wt-feature")
 
 
-def test_app_is_refused_because_it_rewrites_the_host_agent_registry():
+def test_app_is_refused_because_it_rewrites_the_host_agent_registry(unpinned_agent_spec_home):
     """`apps/bridges.py` symlinks app agents into `Path.home()/.kiro/agents` and
     edits `~/.kiro/settings/mcp.json` — the HOST registry. A pod install/uninstall
     would replace or delete symlinks the live gateway depends on."""
@@ -215,6 +215,10 @@ def test_app_is_refused_because_it_rewrites_the_host_agent_registry():
     # directly would assert the override rather than the path bridges actually
     # writes to. The claim under test is unchanged -- bridges targets the
     # machine-wide HOST registry, which is why a pod may not run `app`.
+    #
+    # ``unpinned_agent_spec_home`` because that override is exactly what the rootdir
+    # floor now sets for every test: leaving it pinned would assert that bridges
+    # targets a per-test tmp dir, which is the opposite of the claim.
     assert bridges._kiro_agents_dir() == Path.home() / ".kiro" / "agents"
     assert "app" not in rt._POD_SAFE_VERBS
 

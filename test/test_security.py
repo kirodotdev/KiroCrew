@@ -4714,7 +4714,9 @@ class TestKiroAgentsDirWriteProtection:
     write-protected leaves it mirrors.
     """
 
-    def test_directory_is_tail_of_kiro_agents_dir(self, monkeypatch) -> None:
+    def test_directory_is_tail_of_kiro_agents_dir(
+        self, monkeypatch, unpinned_agent_spec_home
+    ) -> None:
         # Drift guard: the literal in security.py must stay the home-relative tail
         # of config.paths.kiro_agents_dir() (kept a literal only to avoid a
         # config->security import cycle). If kiro-cli's layout moves, this fails
@@ -4724,6 +4726,10 @@ class TestKiroAgentsDirWriteProtection:
         # override case), and ``relative_to(Path.home())`` raises ValueError then.
         # The literal is the home-relative default tail, so the assertion is about
         # the default home; clear the overrides to make it deterministic.
+        #
+        # ``unpinned_agent_spec_home`` for the same reason: the rootdir floor points
+        # the resolver at a per-test tmp dir, which has no home-relative tail to
+        # compare. The claim under test is about the REAL default layout.
         monkeypatch.delenv("KIRO_HOME", raising=False)
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         from kiro_crew.config.paths import kiro_agents_dir

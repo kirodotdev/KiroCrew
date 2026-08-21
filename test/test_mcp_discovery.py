@@ -149,6 +149,11 @@ class TestListServers:
         installed = {"mcpServers": {"kirocrew-cron": {"command": "kirocrew", "args": ["mcp-cron"]}}}
         (kiro_dir / "kirocrew.json").write_text(json.dumps(installed))
         monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        # The installed-config branch resolves ``kiro_agents_dir()``, which reads
+        # ``Path.home`` in ``config.paths`` -- NOT the name patched above. Point the
+        # binding this module holds at the tmp tree instead, or the assertion below is
+        # answered by whatever the operator's own ~/.kiro/agents happens to contain.
+        monkeypatch.setattr("kiro_crew.mcp_discovery.kiro_agents_dir", lambda: kiro_dir)
         monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "nope.json",))
         servers = list_servers()
         names = {s.name for s in servers}

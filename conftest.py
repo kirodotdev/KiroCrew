@@ -13,7 +13,7 @@ test collected from any testpath, because what they protect is the
 developer's machine rather than the correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
-The floor has four parts, and each one exists because the "remember to isolate
+The floor has five parts, and each one exists because the "remember to isolate
 this" contract failed at least once:
 
 * **Services.** ``$XDG_CONFIG_HOME`` is redirected and the stdlib spawn funnels
@@ -25,6 +25,12 @@ this" contract failed at least once:
   under ``src/kiro_crew/apps/builtins/*/tests/`` -- which see this conftest and no
   other -- write the operator's live ``~/.kiro/crew`` the moment they touch
   ``config_dir()``.
+* **The agent-spec home.** ``kiro_agents_dir()`` is a LAZY resolver, so neither of
+  the two above reaches it, and a test that reaches the spec write path rewrites
+  the machine-wide ``<kiro home>/agents/kirocrew.json`` -- the file that decides
+  which MCP servers the operator's real agent has (issue #4912). The per-module
+  override seams are pinned instead of ``KIRO_HOME``, which cannot be pinned
+  without overriding ~35 tests' own ``Path.home()`` isolation.
 * **The system temp directory.** ``tempfile``'s base is redirected to a per-run
   directory for the whole process, so a bare ``mkdtemp()`` whose cleanup is missing
   or skipped leaves its directory somewhere this run owns and removes, instead of
@@ -1486,6 +1492,183 @@ def _isolate_subagents_dir(_isolation_dirs, monkeypatch):
         "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
         _isolation_dirs("subagents"),
     )
+
+
+#: Modules carrying the documented ``KIRO_AGENTS_DIR`` override hook (``None`` = live).
+#: Each is ``(module, attribute)``; the fixture below points them all at ONE per-test
+#: directory, so the hook production already offers "a caller (test/tooling)" is set
+#: by default instead of per test.
+_AGENT_SPEC_HOOKS: tuple[tuple[str, str], ...] = (
+    ("kiro_crew.agent", "KIRO_AGENTS_DIR"),
+    ("kiro_crew.agent_discovery", "_KIRO_AGENTS_DIR"),
+    ("kiro_crew.apps.bridges", "KIRO_AGENTS_DIR"),
+    ("kiro_crew.cli_doctor", "KIRO_AGENTS_DIR"),
+)
+
+#: Modules that WRITE through a bound ``config.paths.kiro_agents_dir`` name, which no
+#: hook reaches. Deliberately short: this file's remit is the host-MUTATION floor, and
+#: redirecting a read-only consumer's bound name costs more than it protects -- the
+#: dominant isolation idiom in this suite is ``patch("<module>.Path.home", ...)`` and
+#: then reading through that module's own resolver, which a redirect silently overrides.
+#: Every read-only consumer is therefore listed as excluded, with that reason, in
+#: ``test_host_isolation_floor.py``'s ratchet rather than pinned here.
+#:
+#: ``kiro_crew.config.paths`` is the DEFINITION, and patching it is what reaches a writer
+#: that imports the name inside a function body -- ``auto_improvement.spine.agent_runner``
+#: copies agent specs that way, so no module-level binding exists to pin.
+#:
+#: ``kiro_crew.agent.kiro_agents_dir`` is deliberately ABSENT, and adding it would break
+#: the suite on the setup this repo mandates for development. That binding is not a
+#: write target -- ``agent`` writes exclusively through ``kiro_agents_dir_path()``, which
+#: reads the hook above -- it is the AMBIENT reference
+#: ``_decline_shared_agent_home`` compares the target against to decide whether the
+#: target is shared at all. Leaving it resolving the real home is what makes the pinned
+#: hook read as "a caller redirected this somewhere the ambient environment would never
+#: produce", which returns early and allows the write. Patch it too and target ==
+#: ambient, so the guard falls through to its ephemerality check and DECLINES from a
+#: linked git worktree -- every test that reaches ``rebuild_agent_config`` would then
+#: pass in CI and fail on a developer's machine.
+_AGENT_SPEC_RESOLVER_BINDINGS: tuple[tuple[str, str], ...] = (
+    ("kiro_crew.config.paths", "kiro_agents_dir"),
+    ("kiro_crew.dashboard.handlers.mcp", "kiro_agents_dir"),
+)
+
+
+@pytest.fixture(scope="session")
+def _agent_spec_seam_modules():
+    """Import the HOOK modules once per worker process.
+
+    Ordering is what this buys: the per-test fixture below can only patch a module that
+    is already imported, and these four carry the write seams #4912 names, so "whatever
+    collection happened to import" is not a strong enough guarantee for them.
+
+    Scoped to the hook table on purpose. The resolver-binding table is far wider and
+    includes the heaviest modules in the repo (``slack.gateway``), which no worker should
+    import to protect a binding that module cannot reach unless a test imported it
+    anyway. Those keep the patch-if-imported tolerance ``_isolate_shared_kiro_paths``
+    uses.
+
+    ``ImportError`` is tolerated per module, matching the convention the other fixtures
+    here follow: a partial checkout must not break collection, and a module that cannot
+    import has no binding to leak.
+    """
+    for module, _attr in _AGENT_SPEC_HOOKS:
+        try:
+            importlib.import_module(module)
+        except ImportError:  # pragma: no cover - partial checkout
+            continue
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_spec_home(_agent_spec_seam_modules, _isolation_dirs, monkeypatch):
+    """Pin the AGENT-SPEC home to a per-test tmp dir, for EVERY testpath.
+
+    A third isolation axis, distinct from both the data home and the import-time
+    ``~/.kiro`` bindings above. The agent specs are the file kiro-cli reads to learn
+    which MCP servers exist, and ``kiro_agents_dir()`` is a LAZY resolver
+    (``kiro_home()`` -> ``$KIRO_HOME`` or ``Path.home()/.kiro``), so neither
+    ``KIROCREW_HOME`` nor ``_SHARED_KIRO_PATHS`` reaches it -- the shared-path ratchet's
+    own docstring records that lazy resolvers are outside its scope.
+
+    Without this, any test reaching the write path (``rebuild_agent_config`` and the
+    per-agent writers around it, ``apps.bridges._register_agents``) rewrites the
+    operator's machine-wide ``<kiro home>/agents/kirocrew.json``. Confirmed live
+    (#4912): a suite run inside a throwaway clone left every managed server's
+    ``command`` pointing into that clone's venv and pinned the per-test data home into
+    their ``env``, because ``_managed_mcp_env`` stamps the WRITER's paths. Both stop
+    existing when the run ends, so afterwards every new session on the machine spawned
+    ``kirocrew-core`` from a deleted venv against a data home recreated empty ->
+    ``read_local_secret()`` returned "" -> every internal HTTP call failed
+    ``internal_auth_mismatch`` (``received=absent``), killing ``spawn_run``,
+    ``learn_add`` and ``cron_*`` while in-process tools kept working. A gateway restart
+    healed it, and the next suite run re-broke it, which is what made it look
+    intermittent and unfixable.
+
+    ``KIRO_HOME`` is NOT the lever used here, deliberately -- see
+    ``_isolate_kirocrew_home`` for why pinning that variable is refused: ~35 tests
+    isolate ``kiro_home()`` the other way round with
+    ``patch("pathlib.Path.home", ...)``, and an env pin overrides their own isolation
+    so they read an empty directory instead of the tree they just built. Pinning the
+    per-module seams instead leaves both of those levers untouched.
+
+    One directory for every entry, not one each: production resolves a single agents
+    dir, so a test that writes a spec through one seam and reads it through another
+    (``rebuild_agent_config`` then ``agent_discovery``) has to see the same tree.
+
+    Unlike ``_isolate_shared_kiro_paths``, the HOOK half does not settle for patching
+    whatever happens to be in ``sys.modules``. That fixture's residual hole -- a module
+    first imported inside a test's own body, after the fixture already ran -- is
+    tolerable for a path that is only read, and not for these: ``rebuild_agent_config``
+    and ``apps.bridges._register_agents`` WRITE, and a test that imports its subject in
+    its own body is a normal shape here. ``_agent_spec_seam_modules`` therefore imports
+    those four once per worker process. MEASURED cold on this tree: agent 177 ms,
+    cli_doctor 87 ms, bridges 33 ms, agent_discovery 19 ms -- ~315 ms per worker for a
+    whole session, against a shard that runs for minutes. Per-TEST import would have
+    been the unaffordable shape, which is what that other fixture's tolerance is really
+    about.
+
+    The resolver-binding half keeps the patch-if-imported tolerance: it is wide and
+    includes the repo's heaviest modules, and a module nobody imported has no bound name
+    for a test to reach.
+
+    Creates nothing -- an absent agents dir is the normal fresh-install state, and
+    every writer ``mkdir(parents=True)`` first.
+
+    A test that sets its own value still wins, through EITHER lever. ``monkeypatch``
+    applied later in setup overrides the seams directly; and a test that sets
+    ``KIRO_HOME`` -- the documented env override, which several tests use to place the
+    agents dir under their own ``tmp_path`` -- is deferred to by the replacement
+    resolver installed here. Deferring is safe because the variable is CLEARED first,
+    so anything visible afterwards was chosen by the test rather than exported by the
+    operator (whose value would name another real home).
+    """
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    root = _isolation_dirs("kiro-agents")
+    paths = sys.modules.get("kiro_crew.config.paths")
+    real = getattr(paths, "kiro_agents_dir", None) if paths is not None else None
+
+    def _pinned_agents_dir() -> pathlib.Path:
+        """The per-test dir, unless this test chose a kiro home of its own."""
+        if os.environ.get("KIRO_HOME") and real is not None:
+            return real()
+        return root
+
+    for module, attr in _AGENT_SPEC_HOOKS:
+        mod = sys.modules.get(module)
+        if mod is not None:
+            monkeypatch.setattr(mod, attr, root, raising=False)
+    for module, attr in _AGENT_SPEC_RESOLVER_BINDINGS:
+        mod = sys.modules.get(module)
+        if mod is not None:
+            monkeypatch.setattr(mod, attr, _pinned_agents_dir, raising=False)
+    return real
+
+
+@pytest.fixture
+def unpinned_agent_spec_home(_isolate_agent_spec_home, monkeypatch):
+    """Opt out of the agent-spec pin, for a test that ASSERTS on the real layout.
+
+    Two drift guards need the real resolution rather than an isolated copy: one checks
+    that ``security``'s ``.kiro/agents`` literal is still the home-relative tail of
+    ``kiro_agents_dir()``, the other that ``apps.bridges`` still targets the
+    machine-wide registry (which is why a pod may not run ``app``). Pinned to a tmp
+    path, both assert about a path that does not ship -- weakening the guard to satisfy
+    an isolation fixture, which is backwards. Same call the shared-path ratchet's
+    ``_EXCLUDED`` makes for its security anchors.
+
+    READ-ONLY use only. This hands back the real machine-wide location, so a test that
+    WRITES through it edits the operator's live agent. Nothing here stops that; the
+    two current users only assert.
+    """
+    for module, attr in _AGENT_SPEC_HOOKS:
+        mod = sys.modules.get(module)
+        if mod is not None:
+            monkeypatch.setattr(mod, attr, None, raising=False)
+    for module, attr in _AGENT_SPEC_RESOLVER_BINDINGS:
+        mod = sys.modules.get(module)
+        if mod is not None and _isolate_agent_spec_home is not None:
+            monkeypatch.setattr(mod, attr, _isolate_agent_spec_home, raising=False)
+    return _isolate_agent_spec_home
 
 
 @pytest.fixture(autouse=True)
