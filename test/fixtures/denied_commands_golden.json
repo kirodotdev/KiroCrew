@@ -751,25 +751,25 @@
   },
   {
     "id": "self-protection-restart",
-    "pattern": ".*kiro.?crew restart.*",
+    "pattern": ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+restart.*",
     "category": "self-protection",
     "description": "Blocks 'kirocrew restart' so the agent cannot restart its own gateway process and disrupt the running session or evade in-flight controls."
   },
   {
     "id": "self-protection-update",
-    "pattern": ".*kiro.?crew update.*",
+    "pattern": ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+update.*",
     "category": "self-protection",
     "description": "Blocks 'kirocrew update' so the agent cannot self-update (git pull + rebuild + execv restart) and swap out its own running code without operator oversight."
   },
   {
     "id": "self-protection-cloud",
-    "pattern": ".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|log(in|out)).*",
+    "pattern": ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|log(in|out)).*",
     "category": "self-protection",
     "description": "Blocks 'kirocrew cloud' lifecycle subcommands (destroy/stop/start/launch/connect/tunnel/login/logout) so the agent cannot tear down, provision, re-authenticate, or sign out its own cloud instance."
   },
   {
     "id": "self-protection-gateway-restart",
-    "pattern": ".*kiro.?crew gateway restart.*",
+    "pattern": ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+gateway restart.*",
     "category": "self-protection",
     "description": "Blocks 'kirocrew gateway restart' so the agent cannot bounce its own gateway server and interrupt the active session or supervision."
   },

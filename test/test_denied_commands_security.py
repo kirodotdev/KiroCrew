@@ -166,6 +166,126 @@ class TestCatalog:
                 allowed, denied_regexes=effective
             ), f"false positive on {allowed!r}"
 
+    def test_self_protection_commands_are_blocked_with_global_cli_options(self):
+        commands_by_id = {
+            "self-protection-restart": "restart",
+            "self-protection-update": "update",
+            "self-protection-cloud": "cloud destroy",
+            "self-protection-gateway-restart": "gateway restart",
+        }
+        rules = [rule for rule in BUILTIN_DENIED_RULES if rule.id in commands_by_id]
+        assert {rule.id for rule in rules} == set(commands_by_id)
+
+        for rule in rules:
+            for option in ("-v", "-vv", "--verbose", "--no-jail"):
+                command = f"kirocrew {option} {commands_by_id[rule.id]}"
+                assert is_denied(command, denied_regexes=[rule.pattern]) == (
+                    f"Blocked by security policy: {rule.pattern}"
+                )
+
+    def test_self_protection_commands_are_blocked_after_shell_quoting(self):
+        commands_by_id = {
+            "self-protection-restart": ("restart",),
+            "self-protection-update": ("update",),
+            "self-protection-cloud": ("cloud", "destroy"),
+            "self-protection-gateway-restart": ("gateway", "restart"),
+        }
+        rules = [rule for rule in BUILTIN_DENIED_RULES if rule.id in commands_by_id]
+        assert {rule.id for rule in rules} == set(commands_by_id)
+
+        for rule in rules:
+            words = commands_by_id[rule.id]
+            quoted_word_forms = [
+                " ".join(f"{quote}{word}{quote}" for word in words)
+                for quote in ('"', "'")
+            ]
+            commands = [f"kirocrew {form}" for form in quoted_word_forms]
+            commands.extend(f"kirocrew -v {form}" for form in quoted_word_forms)
+            for option in ("-v", "-vv", "--verbose", "--no-jail"):
+                for quote in ('"', "'"):
+                    commands.append(f"kirocrew {quote}{option}{quote} {' '.join(words)}")
+                    commands.extend(
+                        f"kirocrew {quote}{option}{quote} {form}"
+                        for form in quoted_word_forms
+                    )
+            for command in commands:
+                assert is_denied(command, denied_regexes=[rule.pattern]) == (
+                    f"Blocked by security policy: {rule.pattern}"
+                )
+
+    def test_self_protection_module_invocations_are_blocked(self):
+        commands_by_id = {
+            "self-protection-restart": ("restart",),
+            "self-protection-update": ("update",),
+            "self-protection-cloud": ("cloud", "destroy"),
+            "self-protection-gateway-restart": ("gateway", "restart"),
+        }
+        rules = [rule for rule in BUILTIN_DENIED_RULES if rule.id in commands_by_id]
+        assert {rule.id for rule in rules} == set(commands_by_id)
+
+        # These launcher spellings come from security._PYTHON_PROGRAM_RE and the
+        # documented ``python -m kiro_crew`` entrypoint.  ``py -3.12`` is the
+        # Windows launcher form; the version selector is an interpreter flag.
+        launchers = (
+            "python -m kiro_crew",
+            "python3 -B -m kiro_crew",
+            "python3.12 -X dev -m kiro_crew",
+            "py -3.12 -m kiro_crew",
+            "python -mkiro_crew",
+        )
+        global_options = ("", "-v", "-vv", "--verbose", "--no-jail")
+        for rule in rules:
+            for launcher in launchers:
+                for option in global_options:
+                    for quote in ('"', "'"):
+                        command = " ".join(
+                            part
+                            for part in (
+                                launcher,
+                                option,
+                                " ".join(
+                                    f"{quote}{word}{quote}"
+                                    for word in commands_by_id[rule.id]
+                                ),
+                            )
+                            if part
+                        )
+                        assert is_denied(command, denied_regexes=[rule.pattern]) == (
+                            f"Blocked by security policy: {rule.pattern}"
+                        )
+
+    def test_self_lifecycle_module_floor_avoids_python_false_positives(self):
+        from kiro_crew.security import _SELF_LIFECYCLE_FLOOR_BY_ID, _is_self_lifecycle
+
+        for command in (
+            "python kiro_crew restart",
+            "python script.py kiro_crew restart",
+            "python -m pytest kiro_crew restart",
+            "python -c \"print('kiro_crew restart')\"",
+            "python -m kiro_crew doctor restart",
+            "python -m kiro_crew gateway status restart",
+            "python -m kiro_crew cloud status destroy",
+            "echo python -m kiro_crew restart",
+        ):
+            assert not any(
+                _is_self_lifecycle(command, command_words)
+                for command_words in _SELF_LIFECYCLE_FLOOR_BY_ID.values()
+            )
+
+    def test_self_lifecycle_floor_does_not_scan_past_the_subcommand(self):
+        from kiro_crew.security import _SELF_LIFECYCLE_FLOOR_BY_ID, _is_self_lifecycle
+
+        for command in (
+            "echo kirocrew restart",
+            "kirocrew doctor restart",
+            "kirocrew gateway status restart",
+            "kirocrew cloud status destroy",
+        ):
+            assert not any(
+                _is_self_lifecycle(command, command_words)
+                for command_words in _SELF_LIFECYCLE_FLOOR_BY_ID.values()
+            )
+
     def test_rules_are_frozen_dataclass_with_four_fields(self):
         rule = BUILTIN_DENIED_RULES[0]
         assert isinstance(rule, DeniedCommandRule)
@@ -880,6 +1000,10 @@ class TestUserRegexReDoSGate:
     def test_is_safe_user_regex_rejects_catastrophic(self):
         for pat in self._CATASTROPHIC:
             assert not is_safe_user_regex(pat), pat
+
+    def test_self_protection_flag_fragment_gets_no_user_regex_exemption(self):
+        pattern = r'''(?:(?:\s+["']?--?[a-z-]+["']?(?:[= ]\S+)?)*)+Z'''
+        assert not is_safe_user_regex(pattern)
 
     def test_is_safe_user_regex_rejects_malformed(self):
         assert not is_safe_user_regex("(unclosed")
