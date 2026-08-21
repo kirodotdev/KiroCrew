@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew import platform_compat as _pc
 from kiro_crew.config.loader import SttConfig
+from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
 from kiro_crew.transcribe import (
     _THREAD_ENV_VARS,
     _WHISPER_THREAD_CEILING,
@@ -360,6 +361,23 @@ class TestWhisperThreadCap:
         )
         assert "PYTHONPATH" not in env
         assert "PYTHONHOME" not in env
+
+    def test_every_shared_python_env_prefix_is_stripped(self, monkeypatch):
+        """The scrub tracks sandbox._PYTHON_ENV_PREFIXES, not a hand-kept copy.
+
+        Iterating the shared list is the point: when a new interpreter env var
+        joins the agent-spawn scrub, this test covers it here with no edit —
+        the drift this wiring exists to eliminate. The list's semantics are
+        PREFIXES (sandbox.scrub_env matches via startswith), so a var that
+        merely starts with an entry must be stripped too, exactly as the
+        sandbox scrub would strip it.
+        """
+        preset = {var: f"/opt/kirocrew/{var.lower()}" for var in _PYTHON_ENV_PREFIXES}
+        preset.update({f"{var}_SUFFIX": "x" for var in _PYTHON_ENV_PREFIXES})
+        env = self._env(monkeypatch, cpus=32, preset=preset)
+        for var in _PYTHON_ENV_PREFIXES:
+            assert var not in env
+            assert f"{var}_SUFFIX" not in env
 
     def test_unrelated_environment_survives(self, monkeypatch):
         # ffmpeg is found via PATH, so the env must be a copy, not a clean slate.

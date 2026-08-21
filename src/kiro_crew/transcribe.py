@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
 
 # Transcribe-path deps are an OPTIONAL 'aws' extra (amazon-transcribe + boto3).
 # The module MUST stay importable when they're absent (default install, partial
@@ -687,9 +688,12 @@ def _whisper_thread_count() -> int:
 def _thread_capped_env() -> dict[str, str]:
     """Return the subprocess environment with intra-op threads bounded.
 
-    Also strips ``PYTHONPATH``/``PYTHONHOME``: the Whisper CLIs are installed
+    Also strips every var matching a prefix in
+    :data:`sandbox._PYTHON_ENV_PREFIXES` (``PYTHONPATH``/``PYTHONHOME``/…): the Whisper CLIs are installed
     out-of-band and run under their own interpreter, so Kiro Crew's bundled
-    packages (numpy, torch) must not leak into their runtime.
+    packages (numpy, torch) must not leak into their runtime. Reusing the
+    shared list instead of hand-listing keys keeps this scrub site from
+    drifting when the interpreter-env set grows.
 
     An operator who has set ANY of :data:`_THREAD_ENV_VARS` is left completely
     alone — all of them, not just the one they set. Someone who pins
@@ -700,8 +704,12 @@ def _thread_capped_env() -> dict[str, str]:
     setting.
     """
     env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
+    # Prefix match, not exact-name match: sandbox consumes _PYTHON_ENV_PREFIXES
+    # via startswith (scrub_env), so this site must too or a genuine prefix
+    # entry added to the list would be scrubbed there and missed here.
+    python_env_prefixes = tuple(_PYTHON_ENV_PREFIXES)
+    for key in [k for k in env if k.startswith(python_env_prefixes)]:
+        del env[key]
     if any(env.get(var) for var in _THREAD_ENV_VARS):
         return env
     threads = str(_whisper_thread_count())
