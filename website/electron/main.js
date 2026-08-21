@@ -2,11 +2,12 @@ const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Me
 const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
-const { spawn, execFile } = require("child_process");
+const { spawn, execFile, execFileSync } = require("child_process");
 const path = require("path");
 const http = require("http");
 
 const { findKirocrewBin } = require("./find-bin");
+const { resolveGatewayPath } = require("./mac-env");
 const {
   findMissingBundleParts,
   describeIncompleteBundle,
@@ -874,6 +875,27 @@ function spawnGateway(resolve) {
         // served on.
         const { KIROCREW_PORT: _ignored, ...cleanEnv } = process.env;
 
+        // macOS: a GUI-launched .app inherits launchd's minimal environment, so
+        // cleanEnv.PATH is typically /usr/bin:/bin:/usr/sbin:/sbin. Recover the
+        // user's configured PATH from the launchd user domain and APPEND the
+        // directories it adds, so agent shell tools and MCP servers can resolve
+        // user-installed CLIs instead of reporting "command not found" for a
+        // binary that works in Terminal (issue #2367). No-op off darwin, when
+        // the domain is unset, or when it adds nothing — in which case
+        // gatewayPath is null and the inherited environment is left untouched.
+        //
+        // This only fixes the environment of a Gateway spawned FROM HERE.
+        // Already-running Gateway/ACP/MCP children keep the environment they
+        // were started with, so changing the domain still needs a Gateway
+        // restart to take effect.
+        const gatewayPath = resolveGatewayPath({
+          execFileSync,
+          basePath: cleanEnv.PATH || "",
+        });
+        if (gatewayPath) {
+          glog(`PATH recovered from launchd domain: +${gatewayPath.added.length} dir(s) appended`);
+        }
+
         // Tee the child's stdout+stderr straight to the launch log via a file
         // descriptor — no JS pipe to drain, no backpressure on a long-running
         // child. This is what surfaces a Python traceback / dylib load error /
@@ -936,6 +958,10 @@ function spawnGateway(resolve) {
           windowsHide: true,
           env: {
             ...cleanEnv,
+            // Overrides the inherited PATH only when the launchd domain
+            // actually contributed a directory (see resolveGatewayPath above);
+            // otherwise this spreads nothing and cleanEnv.PATH stands.
+            ...(gatewayPath ? { PATH: gatewayPath.path } : {}),
             // Windows source layout puts agents/ + skills/ at the repo root
             // (two levels up from electron/), so resolve by markers there.
             // macOS/Linux keep the original one-level-up path unchanged.
