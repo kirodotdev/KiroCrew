@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2447,6 +2448,52 @@ class TestAppAgentDispatchGuard:
         assert _errors(slot) == []
 
     @pytest.mark.asyncio
+    async def test_app_slot_recovers_from_source_after_rescan_miss(self, tmp_path):
+        # The snapshot RESCAN misses (spec never materialized though source is
+        # intact), so the self-heal escalates: re-register this app's agents FROM
+        # SOURCE (refresh_app_agents) then re-resolve — which now succeeds.
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+        slot = _slot()
+        slot._app = "myapp"
+        slot.agent = "my-app-agent"
+
+        cold = _bindings(
+            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
+        )
+        warm = _bindings(
+            kiro_agent="my-app-agent",
+            resolved_alias="my-app-agent",
+            requested_resolved=True,
+        )
+        refresh = MagicMock()
+        reregister = MagicMock(return_value=["my-app-agent"])
+        with patch.object(
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, warm]
+        ) as resolve, patch.object(
+            chat_runner, "refresh_materialized_agents", refresh
+        ), patch(
+            "kiro_crew.apps.bridges.register_app", reregister
+        ), patch(
+            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)
+        ), patch.object(
+            chat_runner, "subprocess_executor", MagicMock(return_value=None)
+        ), patch.object(
+            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        ):
+            await _drive(state, slot)
+
+        # Rescan missed, so the from-source re-registration ran for THIS app,
+        # and the resolver was consulted a third time.
+        refresh.assert_called_once()
+        reregister.assert_called_once_with("myapp")
+        assert resolve.call_count == 3
+        # The healed agent — not the default — was dispatched, and no error card.
+        state.sessions.get_or_create.assert_awaited()
+        assert state.sessions.get_or_create.await_args.kwargs["agent"] == "my-app-agent"
+        assert _errors(slot) == []
+
+    @pytest.mark.asyncio
     async def test_still_cold_app_slot_fails_loud_and_never_runs_default(self, tmp_path):
         state, client = _runner_state(tmp_path)
         slot = _slot()
@@ -2457,10 +2504,15 @@ class TestAppAgentDispatchGuard:
             kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
         )
         refresh = MagicMock()
+        reregister = MagicMock(return_value=[])
         with patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold]
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
         ) as resolve, patch.object(
             chat_runner, "refresh_materialized_agents", refresh
+        ), patch(
+            "kiro_crew.apps.bridges.register_app", reregister
+        ), patch(
+            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)
         ), patch.object(
             chat_runner, "subprocess_executor", MagicMock(return_value=None)
         ), patch.object(
@@ -2468,14 +2520,103 @@ class TestAppAgentDispatchGuard:
         ):
             await _drive(state, slot)
 
-        # Self-heal was attempted (warm + re-resolve) but the agent stayed cold.
+        # Self-heal was fully attempted (rescan + re-register-from-source + three
+        # re-resolves) but the agent stayed cold.
         refresh.assert_called_once()
-        assert resolve.call_count == 2
+        reregister.assert_called_once_with("myapp")
+        assert resolve.call_count == 3
         # Fail-loud: the default agent is NEVER dispatched...
         state.sessions.get_or_create.assert_not_awaited()
         # ...and a clear card names the requested agent.
         errors = _errors(slot)
         assert any("my-app-agent" in e and "isn't loaded yet" in e for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_disabled_app_slot_skips_source_recovery_and_fails_loud(self, tmp_path):
+        # A DISABLED app whose slot still gets a turn must NOT have its
+        # deregistered agent re-materialized: the from-source recovery is gated on
+        # is_app_enabled (under the app lifecycle lock), so refresh_app_agents is
+        # never called and the turn fails loud instead of reactivating a disabled
+        # app's agent.
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._app = "myapp"
+        slot.agent = "my-app-agent"
+
+        cold = _bindings(
+            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
+        )
+        reregister = MagicMock(return_value=["my-app-agent"])
+        with patch.object(
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
+        ), patch.object(
+            chat_runner, "refresh_materialized_agents", MagicMock()
+        ), patch(
+            "kiro_crew.apps.bridges.register_app", reregister
+        ), patch(
+            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=False)
+        ), patch.object(
+            chat_runner, "subprocess_executor", MagicMock(return_value=None)
+        ), patch.object(
+            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        ):
+            await _drive(state, slot)
+
+        # Disabled -> recovery skipped: refresh_app_agents never ran...
+        reregister.assert_not_called()
+        # ...the default agent was NOT dispatched, and the turn failed loud.
+        state.sessions.get_or_create.assert_not_awaited()
+        errors = _errors(slot)
+        assert any("my-app-agent" in e and "isn't loaded yet" in e for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_recovery_awaits_register_before_releasing_lock_on_cancel(self, tmp_path):
+        # register_app runs in a non-cancellable executor thread. If the recovery
+        # coroutine is cancelled mid-registration it must WAIT for that thread to
+        # finish before the lifecycle lock releases — otherwise a concurrent
+        # disable could deregister and the still-running thread republish a
+        # now-disabled agent. Prove the cancelled task stays blocked until
+        # register_app completes.
+        import kiro_crew.dashboard.chat_runner as cr
+
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def slow_register(_name):
+            started.set()
+            release.wait(5)
+            finished.set()
+
+        slot = _slot()
+        slot._app = "myapp"
+        slot.agent = "my-app-agent"
+        warm = _bindings(
+            kiro_agent="my-app-agent",
+            resolved_alias="my-app-agent",
+            requested_resolved=True,
+        )
+        with patch.object(cr, "resolve_agent_bindings", return_value=warm), patch.object(
+            cr, "subprocess_executor", MagicMock(return_value=None)
+        ), patch(
+            "kiro_crew.apps.manager.is_app_enabled", MagicMock(return_value=True)
+        ), patch(
+            "kiro_crew.apps.bridges.register_app", slow_register
+        ):
+            task = asyncio.create_task(
+                cr._recover_app_agent_binding(MagicMock(), slot, project=None)
+            )
+            await asyncio.to_thread(started.wait, 5)  # register_app is now running
+            task.cancel()
+            # Shielded: the cancelled task must NOT complete while register_app is
+            # still running — it is blocked awaiting the executor future.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), 0.2)
+            release.set()  # let register_app finish
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert finished.is_set()  # register_app ran to completion before propagating
 
     @pytest.mark.asyncio
     async def test_eager_spawn_bails_for_unresolved_app_slot(self, tmp_path):
@@ -2497,9 +2638,11 @@ class TestAppAgentDispatchGuard:
         with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()), patch.object(
             chat_runner, "_consume_pending_reset", new=AsyncMock()
         ), patch.object(
-            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold]
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold, cold]
         ), patch.object(
             chat_runner, "refresh_materialized_agents", MagicMock()
+        ), patch(
+            "kiro_crew.apps.bridges.register_app", MagicMock(return_value=[])
         ), patch.object(
             chat_runner, "subprocess_executor", MagicMock(return_value=None)
         ):

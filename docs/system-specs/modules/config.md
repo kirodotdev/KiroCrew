@@ -365,16 +365,32 @@ to re-warm the snapshot. `_run_chat` therefore guards the resolve, strictly behi
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
 common hot path — no `_app`, or already resolved):
 
-1. **Self-heal.** Warm the snapshot **off the loop** with the same pattern
-   `server.py` uses at boot —
+1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
+   loop** with the same pattern `server.py` uses at boot —
    `await loop.run_in_executor(subprocess_executor(), refresh_materialized_agents)`
    (`refresh_materialized_agents` never raises, so awaiting it via the executor is
-   safe) — then **re-resolve once** and use the fresh bindings. This recovers an
-   app slot whose only problem was a snapshot not yet warmed on this loop, without
-   waiting for a restart.
+   safe) — then **re-resolve once**. This recovers an app slot whose spec is on
+   disk but whose snapshot was simply not yet warmed on this loop. If the
+   re-resolve *still* misses, the spec was never materialized even though the
+   source is intact, so **re-register this app's resources from source** —
+   `await loop.run_in_executor(subprocess_executor(), register_app, slot._app)`
+   (`register_app`, `apps/bridges.py`, registers the app's MCP servers BEFORE its
+   agents and publishes the snapshot synchronously; imported via a **local** import
+   inside the function to avoid the top-level `apps`↔`dashboard` cycle, mirroring
+   `server.py`'s local import of `reconcile_enabled_app_resources`. `register_app`
+   is used rather than the narrower `refresh_app_agents` because a never-materialized
+   app also has unregistered MCP servers, and re-materializing only the agent would
+   inline an empty server map — recreating an agent whose own `@<app>:<server>` tool
+   refs dangle, i.e. it dispatches but its tools never mount. `register_app` already
+   honors the execution-admission gate, and the recovery call is additionally gated
+   on `is_app_enabled(slot._app)` held under `app_lifecycle_lock(slot._app)`, so a
+   concurrent disable/uninstall cannot race recovery into reactivating a
+   deregistered agent — a disabled app simply falls through to the fail-loud) —
+   then **re-resolve again** and use the fresh bindings. A recovery-step failure
+   only logs a warning; it costs nothing beyond the fail-loud below.
 2. **Fail-loud.** If the slot is app-owned and *still* unresolved after the
-   re-resolve, `_run_chat` does **not** run the default agent. It raises
-   `_AppAgentNotLoaded` (naming `slot.agent`, e.g. *"The app agent
+   from-source re-registration, `_run_chat` does **not** run the default agent. It
+   raises `_AppAgentNotLoaded` (naming `slot.agent`, e.g. *"The app agent
    'my-app-agent' isn't loaded yet — try again in a moment, or restart the
    gateway"*) which a dedicated `except` arm beside the terminal turn-error
    handlers surfaces as a normal `error` card (no `record_failure` — nothing ran).
@@ -382,11 +398,18 @@ common hot path — no `_app`, or already resolved):
    the standard `finally` teardown runs without ever creating a session or
    dispatching an agent.
 
-The eager-spawn pre-warm path mirrors the **self-heal** step only (so the
-speculative session bakes in the app's own agent rather than the default, which a
-first real turn would otherwise have to discard); the **fail-loud** lives on the
-real turn alone, since the eager path is best-effort and tears itself down on any
-miss.
+The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
+re-register-from-source) only (so the speculative session bakes in the app's own
+agent rather than the default, which a first real turn would otherwise have to
+discard); the **fail-loud** lives on the real turn alone, since the eager path is
+best-effort and tears itself down on any miss.
+
+`register_app` (`apps/bridges.py`) backs the from-source recovery with a **visible
+error**: when a manifest declares agents but `_register_agents` materializes none
+(source missing or unreadable) it appends a `"registered 0 of N declared
+agent(s)"` entry to `result.errors` — which `reconcile_enabled_app_resources`
+counts and logs — instead of returning a silent 0-agent success; a partial
+registration (some but not all) logs a warning.
 
 ### Materialized-agent snapshot (`config/loader.py`)
 Rung 2's membership test is a process-global `frozenset` — a pure in-memory lookup

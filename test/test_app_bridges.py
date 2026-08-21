@@ -30,6 +30,7 @@ from kiro_crew.apps.bridges import (
     _safe_link_name,
     deregister_app,
     load_app_cron_defs,
+    refresh_app_agents,
     register_app,
     register_app_crons_with_service,
 )
@@ -697,6 +698,43 @@ class TestTopLevel:
         assert len(result.skills) == 1
         assert len(result.crons) == 1
         assert result.errors == []
+
+    def test_register_app_reports_zero_registered_when_agent_source_missing(
+        self, tmp_path, app_env
+    ):
+        # A manifest that DECLARES agents but whose agent source is absent /
+        # unreadable materializes none. That must surface as a visible error
+        # (which reconcile counts), not a silent 0-agent success.
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        # Drop the declared agent's source from the installed snapshot.
+        (app_env["home"] / "apps" / "test-app" / "agents" / "my-agent.json").unlink()
+
+        result = register_app("test-app")
+
+        assert result.agents == []
+        assert any("0 of" in error and "test-app" in error for error in result.errors)
+
+    def test_refresh_app_agents_denied_scrubs_and_registers_nothing(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        # An app whose execution admission was revoked must NOT be re-materialized
+        # by the from-source recovery path: refresh_app_agents must honor the same
+        # gate register_app does -- scrub any stale agent spec and register nothing
+        # -- or a revoked app's agent (and its merged MCP servers) becomes
+        # dispatchable again.
+        import kiro_crew.apps.execution as execution_mod
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        assert refresh_app_agents("test-app")  # admitted: materializes, returns names
+        assert any(app_env["kiro_agents"].iterdir())
+
+        monkeypatch.setattr(execution_mod, "third_party_execution_allowed", lambda: False)
+        refreshed = refresh_app_agents("test-app")
+
+        assert refreshed == []
+        assert not any(app_env["kiro_agents"].iterdir())
 
     def test_install_while_execution_denied_registers_nothing(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.execution as execution_mod

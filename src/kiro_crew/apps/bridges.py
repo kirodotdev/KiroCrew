@@ -2389,6 +2389,13 @@ def register_app(app_name: str) -> RegistrationResult:
     except Exception as exc:
         result.errors.append(f"agent registration failed: {exc}")
 
+    declared = len(manifest.agents or [])
+    if declared and not result.agents:
+        result.errors.append(
+            f"registered 0 of {declared} declared agent(s) for {app_name!r} "
+            "-- agent source missing or unreadable"
+        )
+
     try:
         result.skills = _register_skills(app_name, manifest, app_root)
     except Exception as exc:
@@ -2425,7 +2432,15 @@ def refresh_app_agents(app_name: str) -> list[str]:
     info = get_app(app_name)
     if info and info.get("resources") == "app":
         return []
-    return _register_agents(app_name, manifest, _app_resource_root(app_name))
+    app_root = _app_resource_root(app_name)
+    # Admission gate — mirror register_app. A re-materialization MUST honor the
+    # same execution decision, or a revoked app's agents (and the MCP servers
+    # merged into them) would be rewritten and become dispatchable again. On
+    # denial, scrub any stale materialized agents and register nothing.
+    if _registration_denied(app_name, action="resource_register", app_root=app_root):
+        _deregister_agents(app_name)
+        return []
+    return _register_agents(app_name, manifest, app_root)
 
 
 def reconcile_enabled_app_resources() -> dict[str, int]:

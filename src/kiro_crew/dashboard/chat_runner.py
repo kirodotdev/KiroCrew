@@ -3164,6 +3164,57 @@ def schedule_eager_spawn(
     return task
 
 
+async def _recover_app_agent_binding(
+    cfg: "KiroCrewConfig", slot: "_ChatSlot", *, project: str | None
+) -> Any:
+    """Re-register an app-owned slot's resources from source, then re-resolve.
+
+    The last recovery rung for an app slot whose agent stayed unresolved after
+    the snapshot rescan: the spec was never materialized even though the source
+    is intact (a plain gateway restart re-materializes every ENABLED app via
+    ``reconcile_enabled_app_resources``, so this is what avoids that restart and
+    heals mid-turn). Uses ``register_app`` — not the narrower
+    ``refresh_app_agents`` — so the app's MCP servers are registered BEFORE its
+    agents; re-materializing only the agent would inline an empty server map and
+    recreate an agent whose own tool refs dangle (dispatches, tools never mount).
+    Gated on ``is_app_enabled`` held under ``app_lifecycle_lock`` so a concurrent
+    disable/uninstall cannot race recovery into reactivating a deregistered
+    agent; a disabled app is left to fail loud. A recovery failure only logs —
+    the re-resolve below then simply returns the still-cold bindings. Returns the
+    freshly resolved bindings; the caller reassigns its own locals from them.
+    """
+    # Local imports mirror server.py's reconcile import to avoid a top-level
+    # apps<->dashboard cycle.
+    from kiro_crew.apps.bridges import register_app
+    from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
+
+    try:
+        loop = asyncio.get_running_loop()
+        async with app_lifecycle_lock(slot._app):
+            if await loop.run_in_executor(subprocess_executor(), is_app_enabled, slot._app):
+                # register_app runs in an executor thread that cannot be
+                # cancelled. Shield the await so cancelling THIS coroutine (e.g.
+                # an eager-spawn task being cancelled) does NOT release the
+                # lifecycle lock while that thread is still writing — a concurrent
+                # disable could otherwise acquire the lock, deregister the app,
+                # and have the still-running thread republish a now-disabled
+                # agent. On cancel, wait for the thread to finish before letting
+                # the lock release, then propagate the cancellation.
+                fut = loop.run_in_executor(subprocess_executor(), register_app, slot._app)
+                try:
+                    await asyncio.shield(fut)
+                except asyncio.CancelledError:
+                    await fut
+                    raise
+    except Exception:  # noqa: BLE001 — a recovery failure only costs the fail-loud
+        logger.warning(
+            "Failed to re-register app resources from source for app slot %s",
+            slot.key,
+            exc_info=True,
+        )
+    return resolve_agent_bindings(cfg, slot.agent or None, project)
+
+
 async def _eager_spawn(
     state: "DashboardState", slot: "_ChatSlot", *, allow_resume: bool = False
 ) -> None:
@@ -3238,11 +3289,15 @@ async def _eager_spawn(
                 # SELF-HEAL mirror of the real turn's guard: an app-owned slot
                 # whose agent read cold from the materialized snapshot would bake
                 # the DEFAULT agent into this speculative session, forcing the
-                # first real turn to discard and cold-start it. Warm off the loop
-                # (never raises) and re-resolve once so the pre-warmed session
-                # carries the app's own agent. No fail-loud here — the eager path
-                # is best-effort and tears itself down on any miss; the real turn
-                # owns the user-facing failure.
+                # first real turn to discard and cold-start it. Recover in two
+                # escalating steps — (1) RESCAN the snapshot off the loop (never
+                # raises) in case the spec is on disk but cold, re-resolve once;
+                # (2) if still unresolved, RE-REGISTER this app's agents FROM
+                # SOURCE off the loop (covers "spec never materialized though
+                # source intact") and re-resolve again — so the pre-warmed
+                # session carries the app's own agent. No fail-loud here — the
+                # eager path is best-effort and tears itself down on any miss;
+                # the real turn owns the user-facing failure.
                 if slot._app and not bindings.requested_resolved:
                     try:
                         await asyncio.get_running_loop().run_in_executor(
@@ -3258,6 +3313,11 @@ async def _eager_spawn(
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
                     agent_model = normalize_agent_model(bindings.model)
+                    if not bindings.requested_resolved:
+                        bindings = await _recover_app_agent_binding(cfg, slot, project=None)
+                        kiro_agent = bindings.kiro_agent
+                        crew_alias = bindings.resolved_alias
+                        agent_model = normalize_agent_model(bindings.model)
                 resolved_ok = bindings.requested_resolved
             except Exception:
                 logger.warning(
@@ -4637,11 +4697,17 @@ async def _run_chat(
             # until the boot / registration warm lands (both run off the loop). A
             # cold read makes the resolver fall back to the default agent with
             # ``requested_resolved=False``, silently running the generic default
-            # with none of the app's MCP tools and NO error. Warm the snapshot off
-            # the loop with the SAME pattern server.py uses at boot (safe to await:
-            # refresh_materialized_agents never raises), then re-resolve ONCE.
-            # Strictly guarded: the common hot path (no ``_app``, or already
-            # resolved) does zero extra work and zero extra I/O.
+            # with none of the app's MCP tools and NO error. Recover in two
+            # escalating steps: (1) RESCAN the snapshot off the loop with the SAME
+            # pattern server.py uses at boot (safe to await: refresh_materialized_
+            # agents never raises) then re-resolve ONCE — covers "spec on disk but
+            # snapshot cold"; (2) if STILL unresolved, RE-REGISTER this app's
+            # agents FROM SOURCE off the loop (refresh_app_agents rewrites the
+            # specs + publishes the snapshot synchronously) then re-resolve again —
+            # covers "spec never materialized though source intact". A residual
+            # miss falls through to the fail-loud below. Strictly guarded: the
+            # common hot path (no ``_app``, or already resolved) does zero extra
+            # work and zero extra I/O.
             if slot._app and not bindings.requested_resolved:
                 try:
                     await asyncio.get_running_loop().run_in_executor(
@@ -4658,6 +4724,14 @@ async def _run_chat(
                 crew_alias = bindings.resolved_alias
                 memory_store = bindings.memory_store_name
                 agent_model = normalize_agent_model(bindings.model)
+                if not bindings.requested_resolved:
+                    bindings = await _recover_app_agent_binding(
+                        cfg, slot, project=slot.project or None
+                    )
+                    kiro_agent = bindings.kiro_agent
+                    crew_alias = bindings.resolved_alias
+                    memory_store = bindings.memory_store_name
+                    agent_model = normalize_agent_model(bindings.model)
             _app_agent_unresolved = bool(slot._app) and not bindings.requested_resolved
         except Exception:
             logger.warning("Failed to resolve agent bindings in _run_chat", exc_info=True)
