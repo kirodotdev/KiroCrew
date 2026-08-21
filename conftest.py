@@ -1503,6 +1503,7 @@ _AGENT_SPEC_HOOKS: tuple[tuple[str, str], ...] = (
     ("kiro_crew.agent_discovery", "_KIRO_AGENTS_DIR"),
     ("kiro_crew.apps.bridges", "KIRO_AGENTS_DIR"),
     ("kiro_crew.cli_doctor", "KIRO_AGENTS_DIR"),
+    ("kiro_crew.doctor_deadpath", "KIRO_AGENTS_DIR"),
 )
 
 #: Modules that WRITE through a bound ``config.paths.kiro_agents_dir`` name, which no

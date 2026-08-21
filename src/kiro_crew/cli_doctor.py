@@ -44,6 +44,7 @@ from kiro_crew.dashboard.origin import (
     machine_hostname,
     parse_dashboard_url,
 )
+from kiro_crew.doctor_deadpath import doctor_dead_paths
 from kiro_crew.embeddings import (
     _LIB_PATH_ENV,
     _load_llama_class,
@@ -1630,6 +1631,20 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── kiro-cli installer residue (silent unless residue is on disk) ──
     _doctor_cli_installer_residue(issues)
+
+    # ── Agent Spec Paths (dead command/args/env paths) ──
+    # Own module + single call so a sibling sweep wiring into doctor rebases
+    # trivially. Walks EVERY spec in the agents dir (not just kirocrew.json),
+    # so it runs unconditionally rather than under the agent_path guard below.
+    # Pass doctor's OWN resolved agents dir so the scan — and any managed repair
+    # it triggers — operate on the same directory doctor is inspecting, never a
+    # re-resolved live home while doctor is pointed elsewhere.
+    #
+    # BEFORE the MCP probe, deliberately: the managed repair rewrites a spec
+    # whose command went dead, and the probe should observe the repaired spec.
+    # Ordered the other way round, the probe records the stale command as a
+    # failure first and a successful repair still exits nonzero.
+    doctor_dead_paths(issues, agents_dir=_agents_dir())
 
     # ── MCP Tools ──
     print("\nMCP Tools")

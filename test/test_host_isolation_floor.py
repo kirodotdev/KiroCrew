@@ -264,6 +264,7 @@ class TestTheAgentSpecSeamRatchet:
         ("kiro_crew/agent_discovery.py", "kiro_agents_dir"): "covered by its own hook",
         ("kiro_crew/apps/bridges.py", "kiro_agents_dir"): "covered by its own hook",
         ("kiro_crew/cli_doctor.py", "kiro_agents_dir"): "covered by its own hook",
+        ("kiro_crew/doctor_deadpath.py", "kiro_agents_dir"): "covered by its own hook",
         # Read-only consumers: see the note above this table.
         ("kiro_crew/config/loader.py", "kiro_agents_dir"): "read-only consumer",
         ("kiro_crew/context.py", "kiro_agents_dir"): "read-only consumer",

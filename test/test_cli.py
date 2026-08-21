@@ -75,7 +75,11 @@ def _healthy_agent_file(path: Path) -> None:
         allowed=refs,
         servers={
             name: {
-                "command": "/usr/local/bin/kirocrew",
+                # sys.executable, not a literal like /usr/local/bin/kirocrew:
+                # doctor's dead-path scan stats every absolute command for real
+                # (no shutil.which stub covers it), so the fixture's "healthy"
+                # spec must name a binary that actually exists on the runner.
+                "command": sys.executable,
                 # The subcommand is the server name minus the "kirocrew-" prefix
                 # ("kirocrew-core" -> "mcp-core"), matching the real invocation.
                 "args": [f"mcp-{name.split('-', 1)[1]}"],
