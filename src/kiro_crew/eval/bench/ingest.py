@@ -58,7 +58,7 @@ from kiro_crew.vector_memory import (
     _contains_injection,
 )
 
-from .corpus import BenchInstance, BenchTurn
+from .corpus import BenchInstance, BenchSession, BenchTurn
 from .errors import BenchRefusal
 
 logger = logging.getLogger(__name__)
@@ -324,8 +324,28 @@ def fragment_text(turn: BenchTurn, *, speaker_prefix: bool) -> str:
     return turn.text
 
 
-def _session_fragment(session_id: str, turns: tuple[BenchTurn, ...], *, speaker_prefix: bool) -> str:
+def _session_fragment(turns: tuple[BenchTurn, ...], *, speaker_prefix: bool) -> str:
     return "\n".join(fragment_text(t, speaker_prefix=speaker_prefix) for t in turns)
+
+
+def _ingest_units(session: BenchSession, cfg: IngestConfig) -> list[tuple[str, str]]:
+    """The ``(unit_id, text)`` pairs one session contributes at *cfg*'s granularity.
+
+    ``"session"`` yields exactly one pair keyed on the SESSION id — which is why
+    :attr:`IngestedInstance.turn_attribution` goes false in that mode; ``"turn"``
+    yields one pair per utterance, keyed on the turn id.
+    """
+    if cfg.granularity == "session":
+        return [
+            (
+                session.session_id,
+                _session_fragment(session.turns, speaker_prefix=cfg.speaker_prefix),
+            )
+        ]
+    return [
+        (t.turn_id, fragment_text(t, speaker_prefix=cfg.speaker_prefix))
+        for t in session.turns
+    ]
 
 
 # ── Ingest ───────────────────────────────────────────────────────────────────
@@ -411,29 +431,16 @@ def ingest_instance(
 
         times, unparsed, span = _session_times(inst, cfg.timeline)
         report.unparsed_timestamps = unparsed
-        report.decay_span_days = span if cfg.timeline != "now" else 0
+        # `"now"` short-circuits before parsing, so `_session_times` already
+        # reports a zero span for it.
+        report.decay_span_days = span
 
         gold_turns = {tid for q in inst.queries for tid in q.gold_turn_ids}
         text_to_turn: dict[str, str] = {}
         dropped_gold: list[str] = []
 
         for session in inst.sessions:
-            if cfg.granularity == "session":
-                units: list[tuple[str, str]] = [
-                    (
-                        session.session_id,
-                        _session_fragment(
-                            session.session_id, session.turns, speaker_prefix=cfg.speaker_prefix
-                        ),
-                    )
-                ]
-            else:
-                units = [
-                    (t.turn_id, fragment_text(t, speaker_prefix=cfg.speaker_prefix))
-                    for t in session.turns
-                ]
-
-            for unit_id, text in units:
+            for unit_id, text in _ingest_units(session, cfg):
                 if not text.strip():
                     continue
                 report.attempted += 1
@@ -472,13 +479,12 @@ def ingest_instance(
                     # None here is an INFERENCE failure, not a benign empty input.
                     # Storing the row anyway leaves a NULL vector that search_episodic
                     # can only reach through the FTS5 keyword fallback, while the
-                    # report still presents its recall as a semantic measurement. The
-                    # previous behaviour counted these and carried on, which surfaced
-                    # a warning -- but a warning does not stop the headline number
-                    # from being published, and this harness refuses rather than
-                    # annotates. `prepare_embedder` already makes that trade at
-                    # startup; a mid-run failure has to make it too, or the guarantee
-                    # covers only the first fragment.
+                    # report still presents its recall as a semantic measurement.
+                    # Counting it and carrying on would surface a warning, and a
+                    # warning does not stop the headline number from being published;
+                    # this harness refuses rather than annotates. `prepare_embedder`
+                    # makes that trade at startup, so a mid-run failure has to make it
+                    # too, or the guarantee covers only the first fragment.
                     raise IngestError(
                         "the embedder returned no vector for a non-empty fragment "
                         f"after readiness was confirmed ({report.attempted} fragments "
@@ -501,8 +507,8 @@ def ingest_instance(
                     report.dropped_fragments += 1
                     # Classify the cause while the text is still to hand. `write_episodic` returns
                     # a bare bool, so re-applying the store's own screen is the only way to report
-                    # WHY. Worth it: the report used to attribute every refusal to dedup or the
-                    # capacity cap, and the one refusal LoCoMo produces is neither.
+                    # WHY. Worth it because the alternative is attributing every refusal to dedup
+                    # or the capacity cap, and the one refusal LoCoMo produces is neither.
                     if _contains_injection(text):
                         report.injection_rejected += 1
                     # `gold_turns` holds TURN ids. In session mode `unit_id` is a
@@ -526,11 +532,11 @@ def ingest_instance(
         # backend is reported separately rather than inferred from this call.
         store.build_faiss_index()
 
-        # No null-embedding warning here any more: the ingest loop refuses on the first
-        # NULL rather than finishing a degraded run, so this point is only reached when
-        # the count is zero. The field is retained on the report (always 0) because it
-        # is a published key -- dropping it would change the report schema and make
-        # existing baselines non-comparable for a cosmetic reason.
+        # No null-embedding warning is emitted here: the ingest loop refuses on the
+        # first NULL rather than finishing a degraded run, so this point is only
+        # reached when the count is zero. The field is retained on the report (always
+        # 0) because it is a published key -- dropping it would change the report
+        # schema and make existing baselines non-comparable for a cosmetic reason.
 
         return IngestedInstance(
             inst,

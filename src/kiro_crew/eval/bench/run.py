@@ -213,12 +213,12 @@ def _production_embedder_id() -> str:
 def _ingest_warnings(reports: list[IngestReport], icfg: IngestConfig) -> list[str]:
     """Caveats a reader needs ABOVE the numbers, derived from the ingest reports.
 
-    A separate function so each warning can be tested without running a retrieval. They
-    were inline until one of them was found attributing a refused gold fragment to
-    "dedup or the capacity cap" when the actual cause was the store's prompt-injection
-    screen, which no dedup setting can change. A warning that sends the reader to a
-    setting that cannot help is worse than a vague one, and an inline warning is one
-    nobody can test.
+    A separate function so each warning can be tested without running a retrieval,
+    which an inline warning cannot be. That matters because the failure mode is a
+    warning whose attribution is wrong — pointing a refused gold fragment at "dedup or
+    the capacity cap" when the cause is the store's prompt-injection screen, which no
+    dedup setting can change. A warning that sends the reader to a setting that cannot
+    help is worse than a vague one.
     """
     warnings: list[str] = []
 
@@ -238,7 +238,7 @@ def _ingest_warnings(reports: list[IngestReport], icfg: IngestConfig) -> list[st
             f"{icfg.dedup_threshold} and the capacity cap; re-run with dedup "
             "disabled to separate 'ranking missed it' from 'it was never stored'."
         )
-    # `null_embeddings` is structurally zero now -- ingest refuses on the first NULL
+    # `null_embeddings` is structurally zero -- ingest refuses on the first NULL
     # embedding instead of completing a degraded run -- so no warning is emitted for it.
     # Kept as a published report key for schema stability.
     span = max((r.decay_span_days for r in reports), default=0)
@@ -381,7 +381,7 @@ def _metric_cell(block: dict, name: str) -> str:
     """The ONLY way this module renders a metric into a table.
 
     Exists so ``block.get(name, 0.0)`` cannot be written: a default is a value to be
-    wrong about, and the per-category block is exactly where that default fabricated
+    wrong about, and the per-category block is exactly where such a default fabricates
     a ``0.000`` recall for categories whose ``@5`` was measurable for nobody.
     """
     value = block.get(name)
@@ -393,11 +393,11 @@ def _metric_cell(block: dict, name: str) -> str:
 def _excluded_phrase(m: RetrievalAggregate) -> str:
     """Name WHY queries were excluded, one clause per reason that occurred.
 
-    The single "with no resolvable gold" clause covered both reasons and was wrong for
-    the bigger one: on LoCoMo the excluded population is overwhelmingly questions that
-    are unanswerable BY DESIGN, where refusal is the correct behaviour and retrieval has
-    nothing to be right about. Printing them as broken records invited the reader to
-    distrust the corpus instead of understanding the denominator.
+    One clause for both reasons would be wrong for the bigger one: on LoCoMo the
+    excluded population is overwhelmingly questions that are unanswerable BY DESIGN,
+    where refusal is the correct behaviour and retrieval has nothing to be right about.
+    Printing those as "no resolvable gold" invites the reader to distrust the corpus
+    instead of understanding the denominator.
     """
     parts: list[str] = []
     if m.unanswerable_queries:
@@ -580,9 +580,9 @@ def _section(report: object, *names: str) -> dict:
     so a malformed report has to reach the not-comparable branch rather than a
     traceback.
 
-    Round 8 put this rule on leaf values (``_measurable_count``) and left the
-    container access unguarded — the same enforcement point at the wrong altitude.
-    Both levels now go through a reader.
+    Both altitudes go through a reader — this one for containers, ``_measurable_count``
+    for leaf values. Guarding only the leaves puts the enforcement point one level
+    below where the ``AttributeError`` is raised.
     """
     node: object = report
     for name in names:
@@ -624,6 +624,24 @@ def _metric_value(block: dict, name: str) -> float | None:
     return value
 
 
+def _not_comparable(k: int, reason: str) -> str:
+    """The one rendering of a refused session-level comparison.
+
+    Every refusal below the config check returns this and nothing else. Emitting a
+    heading plus a delta table would invite exactly the reading the refusal exists
+    to prevent, so "no delta is reported" is part of the shape rather than
+    something each call site remembers to append.
+    """
+    return "\n".join(
+        [
+            f"## session-level @{k} — not comparable",
+            f"- {reason}",
+            "",
+            "No delta is reported.",
+        ]
+    )
+
+
 def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
     """Diff two saved JSON reports, refusing the comparisons that are invalid.
 
@@ -638,10 +656,9 @@ def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
     c_corpus = _section(candidate, "corpus")
     # Presence first, then equality. Comparing by inequality alone makes two reports
     # that BOTH lack a fingerprint compare as compatible -- `None != None` is False --
-    # so an unattributable delta would be published as exact. The old comment below
-    # claimed a missing key could not silently pass; that held for one-sided absence
-    # only, and `_section` returning {} for a malformed report made the two-sided case
-    # easy to reach.
+    # so an unattributable delta would be published as exact. Inequality alone catches
+    # one-sided absence only, and `_section` returning {} for a malformed report puts
+    # the two-sided case well within reach.
     if not b_corpus.get("fingerprint") or not c_corpus.get("fingerprint"):
         problems.append(
             "one or both reports carry no corpus fingerprint, so it cannot be shown "
@@ -651,13 +668,13 @@ def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
         problems.append("corpus fingerprints differ — the two runs read different data")
     b_cfg = _section(baseline, "config")
     c_cfg = _section(candidate, "config")
-    # `embedder` is in this list for a reason that bit once already: a report saved
-    # from a `--toy-embedder` run carried no embedder identity, so it compared as
-    # equivalent to a real run and published an "exact" delta between a hashed
-    # bag-of-words and a language model. Absence is now refused outright rather than
-    # being compared, which covers the case where BOTH sides lack the key.
-    # `environment` joins this list for the reason the list exists: a delta is
-    # only attributable to the code when everything else held still.
+    # `embedder` is in this list because a report saved from a `--toy-embedder` run
+    # carries no embedder identity: comparing by inequality would call it equivalent
+    # to a real run and publish an "exact" delta between a hashed bag-of-words and a
+    # language model. Absence is therefore refused outright rather than compared,
+    # which also covers the case where BOTH sides lack the key. `environment` is in
+    # the list for the reason the list exists: a delta is only attributable to the
+    # code when everything else held still.
     for key in ("ingest", "retrieval", "search_backend", "embedder", "environment"):
         b_val, c_val = b_cfg.get(key), c_cfg.get(key)
         if b_val is None or c_val is None:
@@ -688,15 +705,16 @@ def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
     b_sess = _section(baseline, "metrics", "session")
     c_sess = _section(candidate, "metrics", "session")
 
-    # Two ways a cut-off can be incomparable, and both used to print a number.
+    # Two ways a cut-off can be incomparable, each of which a naive read prints a
+    # number for.
     #
     # 1. ABSENT ON ONE SIDE. A cut-off the retrieval window never exposed is omitted
     #    from the metric dict (that is what makes an unmeasurable k visible rather
-    #    than falsely low). The old `name in b or name in c` with `.get(name, 0.0)`
-    #    turned "the baseline could not measure this" into "the baseline scored zero",
-    #    manufacturing an exact-looking improvement of the full candidate value. This
-    #    hole was created by the fix that added the measurability filter — a new field
-    #    with a default is a new way to be wrong.
+    #    than falsely low). A `name in b or name in c` test paired with
+    #    `.get(name, 0.0)` turns "the baseline could not measure this" into "the
+    #    baseline scored zero", manufacturing an exact-looking improvement of the full
+    #    candidate value — the measurability filter's own omitted keys are what make
+    #    that reachable, so a default here is a new way to be wrong.
     #
     # 2. DIFFERENT POPULATIONS. Even present on both sides, the two means can be over
     #    different query sets: measured on LoCoMo, @5 is measurable for 1977 queries
@@ -753,13 +771,7 @@ def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
             )
 
     if population_note is not None:
-        lines += [
-            f"## session-level @{k} — not comparable",
-            f"- {population_note}",
-            "",
-            "No delta is reported.",
-        ]
-        return "\n".join(lines)
+        return _not_comparable(k, population_note)
 
     rows: list[tuple[str, ...]] = []
     missing: list[str] = []
@@ -776,13 +788,7 @@ def compare_reports(baseline: dict, candidate: dict, *, k: int = 5) -> str:
             missing.append(name)
 
     if not rows:
-        lines += [
-            f"## session-level @{k} — not comparable",
-            "- no metric at this cut-off is present in both reports",
-            "",
-            "No delta is reported.",
-        ]
-        return "\n".join(lines)
+        return _not_comparable(k, "no metric at this cut-off is present in both reports")
 
     lines += [
         f"## session-level @{k}  ({bn} queries in each arm)",
