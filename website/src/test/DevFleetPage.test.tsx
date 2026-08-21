@@ -225,9 +225,12 @@ describe('DevFleetPage', () => {
       const u = typeof url === 'string' ? url : (url as Request).url
       if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
       if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
-      // POST /sync returns "already running" with the in-flight run_id
+      // POST /sync refuses a second concurrent run with HTTP 409, naming the
+      // in-flight run. Mocking this as a 200 made the test vacuous: the client
+      // throws on any non-2xx, so a 200 exercised a branch the backend can
+      // never produce while the real 409 path surfaced a raw JSON error toast.
       if (u.includes('/sync') && opts?.method?.toUpperCase() === 'POST') {
-        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'sync already running', run_id: 'run-inflight-99' }), { status: 200 }))
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'sync already running', run_id: 'run-inflight-99' }), { status: 409 }))
       }
       if (u.includes('/run?id=run-inflight-99')) {
         runPolls++

@@ -2160,7 +2160,6 @@ async def _build_fleet() -> dict:
     staged_path = _staged_target()
     worktrees = await _discover_worktrees()
     cfg = _load_cfg()
-    prov_rids = await _provision_reattach_ids()
     legacy_prefixes = tuple(
         f"{r.split('/')[-1].lower()}-wt-" for r in (_FALLBACK_REPOS or [])
     )
@@ -2247,18 +2246,19 @@ async def _build_fleet() -> dict:
             "legacy": bool(legacy_prefixes) and not is_main
             and name.lower().startswith(legacy_prefixes),
             "last_updated_at": g["last_updated_at"],
-            # Active or failed provision run for this checkout, so the page
-            # can reattach the stepper/log after a reload (mirrors
-            # sync_run_id below). None when there is nothing to reattach.
-            "provision_run_id": prov_rids.get(name),
         })
+    # The run pointers a reloaded page reattaches to -- `sync_run_id` and each
+    # row's `provision_run_id` -- are deliberately NOT set here. This snapshot is
+    # cached and served stale-while-revalidate, so a pointer written at build
+    # time is a frozen answer to a live question; `_with_live_run_pointers`
+    # overlays both at request time instead. One owner, so no reader can pick up
+    # a stale id.
     return {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "worktrees": wts,
         "main_repo": _repo(),
         "main_repo_inferred": MAIN_REPO_INFERRED,
         "base_branch": BASE_BRANCH,
-        "sync_run_id": _SYNC_RID,
         "build_pending": _build_pending(),
         "gateway_service_active": await _gateway_service_active(),
         # Non-null while a cutover is staged but not yet running: the UI renders a
@@ -4222,6 +4222,29 @@ async def _auto_prune_reaper() -> None:
 # aiohttp route handlers
 # =============================================================================
 
+async def _with_live_run_pointers(data: dict) -> dict:
+    """Overlay the request-time run pointers onto a fleet snapshot.
+
+    ``sync_run_id`` and each row's ``provision_run_id`` are how a freshly-mounted
+    page reattaches its progress stepper to a run already in flight, but
+    ``_build_fleet`` bakes them into the snapshot ``_FLEET_CACHE`` then serves
+    stale-while-revalidate. A run started after that snapshot was built therefore
+    stayed invisible for a full cache cycle plus a rebuild: the page showed no
+    progress and left the button inviting a second press. Both pointers are
+    in-memory reads -- a module global, and a dict copy plus ``_RUNS`` lookups --
+    so reading them per request is cheap and always current.
+
+    Copies rather than mutates: ``data`` and its rows are the cache's own
+    objects, shared with every other in-flight request.
+    """
+    prov_rids = await _provision_reattach_ids()
+    rows = [
+        {**wt, "provision_run_id": prov_rids.get(wt.get("name"))}
+        for wt in data.get("worktrees", [])
+    ]
+    return {**data, "worktrees": rows, "sync_run_id": _SYNC_RID}
+
+
 async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
     fresh = request.query.get("fresh") == "1"
     try:
@@ -4242,7 +4265,7 @@ async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
         return web.json_response(
             {"worktrees": [], "error": str(exc)},  # _run_cmd already prefixes
         )
-    return web.json_response(data)
+    return web.json_response(await _with_live_run_pointers(data))
 
 
 async def api_dev_fleet_worktree(request: web.Request) -> web.Response:

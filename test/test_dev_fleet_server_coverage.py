@@ -974,8 +974,45 @@ async def test_fleet_handler_fresh_bypasses_cache(monkeypatch):
     monkeypatch.setattr(mod, "_fleet_refresh", refresh)
     monkeypatch.setattr(mod, "_fleet_cached", AsyncMock(return_value={"worktrees": []}))
     resp = await mod.api_dev_fleet_fleet(make_mocked_request("GET", "/api/fleet?fresh=1"))
-    assert json.loads(resp.text)["worktrees"] == [{"name": "a"}]
+    # The row also carries the request-time `provision_run_id` overlay, which is
+    # authoritative: a provision that finished after the snapshot was built has
+    # no reattachable run, so the pointer must read None rather than the id the
+    # snapshot froze.
+    assert json.loads(resp.text)["worktrees"] == [{"name": "a", "provision_run_id": None}]
     refresh.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fleet_handler_overlays_runs_started_after_snapshot(monkeypatch):
+    """A run started AFTER the cached snapshot was built is still reported.
+
+    The fleet cache is stale-while-revalidate, so a run pointer baked into the
+    snapshot left a freshly-mounted page with nothing to reattach its progress
+    stepper to for a full cache cycle plus a rebuild -- no progress, and a button
+    still inviting a second press. Both pointers share that cause: the sync's,
+    and each row's provision run.
+    """
+    cached = {
+        "worktrees": [
+            {"name": "main", "provision_run_id": None},
+            {"name": "feature-x", "provision_run_id": None},
+        ],
+        "sync_run_id": None,
+    }
+    monkeypatch.setattr(mod, "_fleet_cached", AsyncMock(return_value=cached))
+    monkeypatch.setattr(mod, "_SYNC_RID", "rid-after-snapshot")
+    monkeypatch.setattr(
+        mod, "_provision_reattach_ids", AsyncMock(return_value={"feature-x": "prov-rid-7"})
+    )
+    resp = await mod.api_dev_fleet_fleet(make_mocked_request("GET", "/api/fleet"))
+    body = json.loads(resp.text)
+    assert body["sync_run_id"] == "rid-after-snapshot"
+    rows = {w["name"]: w["provision_run_id"] for w in body["worktrees"]}
+    assert rows == {"main": None, "feature-x": "prov-rid-7"}
+    # The snapshot and its rows are the cache's own objects, shared with every
+    # other in-flight request, so the overlay must copy rather than write through.
+    assert cached["sync_run_id"] is None
+    assert [w["provision_run_id"] for w in cached["worktrees"]] == [None, None]
 
 
 @pytest.mark.asyncio

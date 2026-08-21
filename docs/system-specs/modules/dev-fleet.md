@@ -530,7 +530,16 @@ busy flag is per-worktree; the hazard is process-wide).
 `POST /apps/dev-fleet/api/sync` is single-flight: a second concurrent request is
 refused with **HTTP 409** (`{"ok": false, "error": "sync already running",
 "run_id": …}`) rather than launching a second ~90s fetch → merge → pip install →
-npm ci → npm build + stage. The run script emits a
+npm ci → npm build + stage. That refusal is a **state to act on, not a failure
+to report**: the body names the run already in flight, and the client attaches
+its progress stepper to that run. A second press is a user who cannot see the
+sync, so reporting an error would leave them exactly where they started —
+without progress, and with the button still inviting a third press. Because the
+API client throws on any non-2xx, this path is reachable only through the
+error branch, and the `run_id` reaches it via the parsed body carried on the
+thrown error, never as a returned body.
+
+The run script emits a
 `::step::<idx>::<label>` marker per
 step; the run worker records BOTH the authoritative step index and its **label**
 onto the run entry (`step` / `step_label`), so `/run` can name the CURRENT step
@@ -538,6 +547,27 @@ even after the marker scrolls out of the 60-line output tail window. The
 frontend shows that label beside the "Syncing" spinner. This reuses the
 existing `_RUNS` / `::step::` / `/run` run-tracking mechanism — the same channel
 the provision log panel uses (#320) — rather than adding a second one.
+
+`sync_run_id` — the pointer a freshly-mounted page reattaches that stepper to —
+and each row's `provision_run_id` are read at **request time** and overlaid onto
+the fleet payload, not taken from the cached snapshot. `_FLEET_CACHE` is
+stale-while-revalidate, so a pointer baked into the snapshot made a run started
+after that build invisible for a full cache cycle plus a rebuild, which is the
+same "no progress, press it again" trap from the other end. Both are in-memory
+reads (a module global; a dict copy plus `_RUNS` lookups), so paying for them per
+request is cheap. `_build_fleet` deliberately does **not** write them: one owner,
+so no reader of `_FLEET_CACHE` can pick up a frozen id. The overlay is
+authoritative rather than a fill-in — a provision that finished after the
+snapshot has no reattachable run, so its pointer must read null instead of the id
+a build-time write would have frozen. It copies the snapshot and its rows rather
+than writing through them — the cached objects are shared with every other
+in-flight request.
+
+Note the two refusal conventions this leaves in place: sync refuses with 409 and
+a thrown body, provision refuses with 200 and `ok: false`. Only sync's needs a
+caller-side normalizer, because only a thrown error bypasses the returned-body
+branch. Unifying them is a separate change; nothing here adds a second
+normalizer.
 
 Sync progress is reported as **indeterminate** — a spinner, the current step
 label and elapsed time — and never as a percentage. The step index is a poor
