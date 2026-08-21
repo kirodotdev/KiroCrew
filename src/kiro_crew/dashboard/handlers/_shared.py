@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
+import aiohttp
 from aiohttp import web
 
 from kiro_crew.agent_discovery import (
@@ -100,6 +101,36 @@ async def read_bounded_json(
             {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
         )
     return body, None
+
+
+# Chunk size for draining an OUTBOUND HTTP response to EOF. Matches the
+# bounded-read shape in ``mcp_providers.official._fetch_json``: large enough
+# that a typical body arrives in a handful of iterations, small enough that
+# the over-cap check fires long before an oversized body is buffered whole.
+_RESPONSE_READ_CHUNK_BYTES = 64 * 1024
+
+
+async def read_capped_response(resp: "aiohttp.ClientResponse", cap: int) -> bytes:
+    """Read *resp*'s body to EOF, returning at most ``cap + 1`` bytes.
+
+    A single ``StreamReader.read(n)`` resolves as soon as ANY bytes are
+    buffered -- on a chunked response (no Content-Length) that is the first
+    buffered chunk, so the caller silently works on a truncated body. This
+    drains ``iter_chunked`` chunks until EOF, enforcing the cap against the
+    ACCUMULATED total: reading stops as soon as the total exceeds *cap*, so a
+    hostile oversized body is refused mid-stream rather than buffered whole.
+    The return is clamped to ``cap + 1`` bytes so callers keep the established
+    over-cap sentinel (``len(body) > cap`` means "exceeded the cap"), while a
+    body of exactly *cap* bytes is still delivered complete.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.content.iter_chunked(_RESPONSE_READ_CHUNK_BYTES):
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > cap:
+            break
+    return b"".join(chunks)[: cap + 1]
 
 
 def _audit_admission(surface: str, resource: str, allowed: bool, error: str = "") -> None:

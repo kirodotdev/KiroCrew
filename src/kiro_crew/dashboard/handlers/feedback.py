@@ -53,7 +53,7 @@ from aiohttp import web
 from kiro_crew import beacon
 from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import read_bounded_json, read_capped_response
 from kiro_crew.dashboard.session_pulse_counter import (
     NEW_USER_SESSION_THRESHOLD,
     get_user_session_count,
@@ -176,11 +176,11 @@ def _survey_identity() -> str:
 async def _read_capped_text(resp: aiohttp.ClientResponse) -> str:
     """Read at most ``_MAX_RESP_BYTES`` from *resp*, raising if it exceeds the cap.
 
-    Mirrors ``kiro_usage_api._read_capped``: reads ``_MAX_RESP_BYTES + 1`` bytes
-    and treats an over-cap body as a failure rather than buffering it, so a
-    hostile endpoint cannot OOM the single-threaded gateway.
+    Streams to EOF via ``read_capped_response`` and treats an over-cap body
+    as a failure rather than buffering it, so a hostile endpoint cannot OOM
+    the single-threaded gateway.
     """
-    raw = await resp.content.read(_MAX_RESP_BYTES + 1)
+    raw = await read_capped_response(resp, _MAX_RESP_BYTES)
     if len(raw) > _MAX_RESP_BYTES:
         raise ValueError("aperture response body exceeded cap")
     return raw.decode("utf-8", "replace")

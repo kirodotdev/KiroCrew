@@ -25,6 +25,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
+from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.update_capability import (
     CHECK_DEFERRED,
@@ -733,11 +734,13 @@ async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
     timeout = aiohttp.ClientTimeout(total=_FEED_TIMEOUT_SECS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url) as resp:
-            # +1 byte so an oversized body is DETECTED rather than silently
-            # truncated into a parse error. Mirrors the installer's
-            # --max-filesize on this very document, and is enforced against
-            # RECEIVED bytes rather than a Content-Length claim.
-            return resp.status, await resp.content.read(_FEED_MAX_BYTES + 1)
+            # Streamed to EOF with the cap enforced against RECEIVED bytes
+            # rather than a Content-Length claim; the extra byte lets the
+            # caller detect an over-cap body (mirroring the installer's
+            # --max-filesize on this very document). A single read(n) would
+            # resolve on the first buffered chunk of a chunked feed and hand
+            # back a truncated document.
+            return resp.status, await read_capped_response(resp, _FEED_MAX_BYTES)
 
 
 async def _check_release_feed(capability: UpdateCapability) -> None:

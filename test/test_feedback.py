@@ -20,13 +20,17 @@ _TEST_IDENTITY = "install-abc123"
 
 
 class _FakeContent:
-    """Minimal stand-in for ``aiohttp.StreamReader`` exposing ``read(n)``."""
+    """Minimal stand-in for ``aiohttp.StreamReader``."""
 
     def __init__(self, raw: bytes) -> None:
         self._raw = raw
 
     async def read(self, n: int = -1) -> bytes:
         return self._raw
+
+    async def iter_chunked(self, n: int):
+        for i in range(0, len(self._raw), n):
+            yield self._raw[i : i + n]
 
 
 class _FakeResp:

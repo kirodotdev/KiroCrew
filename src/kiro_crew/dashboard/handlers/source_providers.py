@@ -30,6 +30,7 @@ from aiohttp import web
 
 from kiro_crew import github_runner, platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.handlers._shared import read_capped_response
 
 # Validation policy, well-known install dirs, and the strict-mode toggle are
 # owned by the shared hardened runner (kiro_crew.github_runner) so every
@@ -2418,8 +2419,11 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
                         f"Jira returned HTTP {resp.status} for {issue_key}."
                     )
                 # Bound response size to prevent memory exhaustion from an
-                # oversized or malicious payload before JSON decoding.
-                body = await resp.content.read(_MAX_PAYLOAD_BYTES + 1)
+                # oversized or malicious payload before JSON decoding. Streamed
+                # to EOF: a single read(n) resolves on the first buffered chunk
+                # of a chunked response and would hand json.loads a truncated
+                # document.
+                body = await read_capped_response(resp, _MAX_PAYLOAD_BYTES)
                 if len(body) > _MAX_PAYLOAD_BYTES:
                     raise SourceProviderError(
                         f"Jira response for {issue_key} exceeds the size limit."
