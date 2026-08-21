@@ -156,7 +156,9 @@ test("a stale closed handler does not evict the replacement overlay", () => {
 function stubElectronForOpen() {
   const created = [];
   class FakeWebContents {
-    on() {}
+    constructor() { this.listeners = new Map(); }
+    on(event, callback) { this.listeners.set(event, callback); }
+    emit(event, ...args) { this.listeners.get(event)?.(...args); }
     send() {}
     isDestroyed() { return false; }
     isLoading() { return true; }
@@ -166,6 +168,8 @@ function stubElectronForOpen() {
     constructor(opts) {
       this.opts = opts;
       this.webContents = new FakeWebContents();
+      this.visible = false;
+      this.showInactiveCalls = 0;
       created.push(this);
     }
     setFocusable() {}
@@ -182,9 +186,10 @@ function stubElectronForOpen() {
     setAlwaysOnTop() {}
     setBounds(b) { this.bounds = b; }
     loadURL() {}
-    isVisible() { return false; }
+    isVisible() { return this.visible; }
     isDestroyed() { return false; }
-    showInactive() {}
+    showInactive() { this.visible = true; this.showInactiveCalls += 1; }
+    hide() { this.visible = false; }
     close() {}
     on() {}
   }
@@ -196,12 +201,14 @@ function stubElectronForOpen() {
     bounds: { x: 0, y: 0, width: 1440, height: 900 },
     workArea: { x: 0, y: 25, width: 1440, height: 875 },
   };
+  const displays = [DISPLAY];
   // Display listeners are recorded rather than swallowed: whether they are
   // RELEASED on teardown is the contract behind #4673, and an `on() {}` stub
   // cannot see a leak.
   const displayListeners = [];
   return {
     created,
+    displays,
     displayListeners,
     DISPLAY,
     electron: {
@@ -211,7 +218,7 @@ function stubElectronForOpen() {
       shell: { openExternal() {}, showItemInFolder() {} },
       screen: {
         getPrimaryDisplay: () => DISPLAY,
-        getAllDisplays: () => [DISPLAY],
+        getAllDisplays: () => displays,
         getCursorScreenPoint: () => ({ x: 0, y: 0 }),
         on(event, fn) { displayListeners.push({ event, fn }); },
         removeListener(event, fn) {
@@ -337,6 +344,37 @@ test("a display event while the pet is live still follows the new geometry", () 
       DISPLAY.bounds,
       "the live overlay follows the new display bounds",
     );
+  } finally {
+    mod.closePetWindow();
+  }
+});
+
+test("a display added while hide-all is active stays hidden", () => {
+  const { mod, created, displays, displayListeners } = loadPetOverlays();
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    created[0].webContents.emit("did-finish-load");
+    assert.strictEqual(created[0].isVisible(), true, "the initial overlay is shown");
+
+    mod.hidePetWindow();
+    assert.strictEqual(created[0].isVisible(), false, "hide-all hides the live overlay");
+
+    displays.push({
+      id: 2,
+      bounds: { x: 1440, y: 0, width: 1920, height: 1080 },
+      workArea: { x: 1440, y: 0, width: 1920, height: 1040 },
+    });
+    displayListeners.find((listener) => listener.event === "display-added").fn();
+    assert.strictEqual(created.length, 2, "the new display receives an overlay");
+    created[1].webContents.emit("did-finish-load");
+    assert.strictEqual(
+      created[1].isVisible(),
+      false,
+      "the new overlay must not undo hide-all",
+    );
+
+    mod.showPetWindow();
+    assert.ok(created.every((win) => win.isVisible()), "one restore shows every overlay");
   } finally {
     mod.closePetWindow();
   }
@@ -472,11 +510,16 @@ test("did-navigate delegates to the single navigation handler (no inline retry p
   assert.ok(!idxSrc.includes("setPetReauthProvider"), "index.js must not wire a reauth provider anymore");
 });
 
-test("every showInactive reveal is guarded by the blanked latch", () => {
+test("every showInactive reveal uses the shared hidden/error policy", () => {
   const reveals = fsSrc.match(/win\.showInactive\(\)/g) || [];
-  const guarded = fsSrc.match(/!overlayBlanked\.has\(win\)[\s\S]{0,80}win\.showInactive\(\)/g) || [];
+  const guarded = fsSrc.match(/canRevealOverlay\(win\)[\s\S]{0,80}win\.showInactive\(\)/g) || [];
   assert.ok(reveals.length >= 3, "expected the three overlay reveal sites (handshake, showPetWindow, transfer)");
-  assert.equal(guarded.length, reveals.length, "every showInactive reveal must be latch-guarded");
+  assert.equal(guarded.length, reveals.length, "every showInactive reveal must use the shared policy");
+  assert.match(
+    fsSrc,
+    /return !petWindowsHidden && !overlayBlanked\.has\(win\)/,
+    "the shared policy must preserve hide-all and the error-page latch",
+  );
 });
 
 test("reconcile re-arms with scalar credential values and delivery mode", () => {
@@ -496,4 +539,11 @@ test("reconcile re-arms with scalar credential values and delivery mode", () => 
     "rearm receives scalar token and delivery mode, never the auth record");
   assert.ok(!region.includes('cachedGatewayAuth = { value: "" }'),
     "must NOT clear the credential cache in the rearm path — probe-driven invalidation only, or a persistent non-auth error mints every tick");
+});
+
+test("reconcile synchronizes hide-all before opening overlays", () => {
+  const sync = idxSrc.indexOf("setPetWindowsHidden(mochiWindowsHidden)");
+  const open = idxSrc.indexOf("openPetWindow(mochiPetBaseUrl, mochiPetToken)", sync);
+  assert.ok(sync >= 0, "reconcile must push the authoritative hide-all state down");
+  assert.ok(open > sync, "the reveal policy must be synchronized before overlays open");
 });

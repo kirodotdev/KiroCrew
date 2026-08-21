@@ -726,7 +726,13 @@ async function reconcileMochiAfterCurrent() {
 }
 
 async function reconcileMochi() {
-  const { openPetWindow, closePetWindow, rearmBlankedOverlays, hasBlankedOverlay } = require("./petOverlays");
+  const {
+    openPetWindow,
+    closePetWindow,
+    rearmBlankedOverlays,
+    hasBlankedOverlay,
+    setPetWindowsHidden,
+  } = require("./petOverlays");
   const {
     closeAvatarWindowFromReconcile,
     setAvatarBaseUrl,
@@ -843,6 +849,7 @@ async function reconcileMochi() {
   // (pet right-click > Avatars, or the dashboard Appearance card). The avatar
   // window is now the Avatars gallery, opened on demand rather than at startup.
   closeAvatarWindowFromReconcile();
+  setPetWindowsHidden(mochiWindowsHidden);
   openPetWindow(mochiPetBaseUrl, mochiPetToken);
   // An overlay stuck on a gateway error page (expired cookie or a transient 5xx)
   // has hidden itself; re-arm it with a token that works for the CURRENT target.

@@ -184,6 +184,19 @@ let currentBaseUrl = "";
 let currentToken = "";
 let ipcBound = false;
 let displayListenersBound = false;
+/**
+ * Synchronized hide-all policy; index.js remains authoritative because its
+ * toggle also owns the panel window's visibility.
+ */
+let petWindowsHidden = false;
+
+function canRevealOverlay(win) {
+  return !petWindowsHidden && !overlayBlanked.has(win);
+}
+
+function setPetWindowsHidden(hidden) {
+  petWindowsHidden = Boolean(hidden);
+}
 
 /** @type {{x:number,y:number,w:number,h:number}|null} */
 let petHitbox = null;
@@ -756,11 +769,10 @@ function wireHandshake(win, displayId, pos) {
     };
     send();
     setTimeout(send, 300);
-    // Never reveal an overlay currently hidden on a gateway error page (see the
-    // did-navigate latch): showing it would blanket the display with an
-    // uncloseable page. A healed reload clears the latch and re-fires
-    // did-finish-load, which then shows the pet.
-    if (!overlayBlanked.has(win) && !win.isVisible()) win.showInactive();
+    // Never reveal an overlay while hide-all is active or while it is latched on
+    // a gateway error page. A later restore or healed reload re-fires the shared
+    // reveal policy.
+    if (canRevealOverlay(win) && !win.isVisible()) win.showInactive();
     startHitPoll();
     assertHostStaysInDock();
   });
@@ -927,6 +939,7 @@ function closePetWindow() {
  * screen-saver level can stay above the menu bar even when hidden.
  */
 function hidePetWindow() {
+  petWindowsHidden = true;
   let wasVisible = false;
   for (const win of overlays.values()) {
     if (win.isDestroyed()) continue;
@@ -938,6 +951,7 @@ function hidePetWindow() {
 }
 
 function showPetWindow() {
+  petWindowsHidden = false;
   for (const win of overlays.values()) {
     if (win.isDestroyed()) continue;
     win.setAlwaysOnTop(true, "screen-saver");
@@ -945,7 +959,7 @@ function showPetWindow() {
     // overlay currently hidden on a gateway error page (same guard as the
     // load-finished handler), or CMD+SHIFT+H would bring the uncloseable page
     // back after a persisted auth failure.
-    if (!overlayBlanked.has(win) && !win.isVisible()) win.showInactive();
+    if (canRevealOverlay(win) && !win.isVisible()) win.showInactive();
   }
 }
 
@@ -1029,9 +1043,8 @@ async function transferPetToDisplayById(displayId, localX, localY) {
           resolve(true);
         }, 300);
       });
-      // Do not reveal an overlay hidden on a gateway error page (see the
-      // did-navigate latch); a healed reload clears the latch and shows it.
-      if (!overlayBlanked.has(win) && !win.isVisible()) win.showInactive();
+      // Transfers obey the same hide-all/error-page reveal policy as loads.
+      if (canRevealOverlay(win) && !win.isVisible()) win.showInactive();
     });
   }
 
@@ -1045,6 +1058,7 @@ module.exports = {
   closePetWindow,
   hidePetWindow,
   showPetWindow,
+  setPetWindowsHidden,
   isPetWindowOpen,
   getActiveOverlay,
   getActiveDisplayId,
