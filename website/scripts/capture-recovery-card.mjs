@@ -31,6 +31,7 @@ const REFUSAL = '[Tool refusal — automatic recovery]'
 const STALLED = '[Stalled turn — automatic recovery]'
 const TOOL_STALL = '[Tool stall — automatic recovery]'
 const HOOK = '[Hook continuation — automatic]'
+const PROMISE_ONLY = '[Unfinished action — automatic recovery]'
 
 const refusalBody = [
   REFUSAL,
@@ -71,6 +72,7 @@ const detail = {
     { role: 'inject', ts: t0 + 300, content: `${STALLED}\nYour previous turn was interrupted by a system stall and has been automatically recovered. This was NOT a user action — do not treat it as a cancellation or interruption by the user. The work you already completed is preserved in the conversation above. Continue from where you left off and finish the task; do not restart it or repeat steps that already succeeded.`, meta: {} },
     { role: 'inject', ts: t0 + 600, content: `${TOOL_STALL}\nA tool call in your previous turn stopped producing output and was cancelled by the session watchdog. This was NOT a user action. The command redirected its output to build.log — inspect the tail of that file to see how far it got before re-running anything.`, meta: {} },
     { role: 'inject', ts: t0 + 615, content: `${HOOK}\nYour previous turn ended by offering a choice where one option is a trivial read-only operation. Do not wait for the user: perform the trivial read-only option now, then continue with your work. If the result surfaces a new choice, this hook may fire again — that is intentional (loop until the read path is exhausted).`, meta: {} },
+    { role: 'inject', ts: t0 + 700, content: `${PROMISE_ONLY}\nYour previous turn ended right after you said you would perform an action immediately (for example, opening a PR or running a tool), but the turn yielded before that action was carried out, so nothing actually happened. Carry out that action now by making the tool call you announced.`, meta: {} },
     { role: 'assistant', ts: t0 + 620, content: 'Gates are green: mypy clean on both modules and the baseline regenerated with no diff.' },
   ],
 }
@@ -105,7 +107,9 @@ async function main() {
   }
 
   /**
-   * Toggle the first recovery card.
+   * Toggle the recovery card of a given kind (default: the promise_only card
+   * this PR adds — the expanded shots must show the CHANGED surface's own body,
+   * not a neighbour's).
    *
    * The transcript is virtualized: rows are absolutely positioned and a
    * neighbouring row's box can sit over the card, so Playwright's hit-testing
@@ -113,11 +117,14 @@ async function main() {
    * real React onClick — which is what is under test here — without depending
    * on the virtualizer's stacking.
    */
-  async function toggleFirstCard() {
-    await page.getByTestId('recovery-card-toggle').first().evaluate(el => {
-      el.scrollIntoView({ block: 'center' })
-      el.click()
-    })
+  async function toggleCard(kind = 'promise_only') {
+    await page
+      .locator(`[data-testid="recovery-card"][data-kind="${kind}"] [data-testid="recovery-card-toggle"]`)
+      .first()
+      .evaluate(el => {
+        el.scrollIntoView({ block: 'center' })
+        el.click()
+      })
     await page.waitForTimeout(500)
   }
 
@@ -207,14 +214,14 @@ async function main() {
   await hookShots('dark')
   if (FRAMES) await hookFrames('dark', FRAMES)
 
-  await toggleFirstCard()
+  await toggleCard('promise_only')
   await shot('expanded-dark')
 
   await load('light', RECOVERY_WAIT)
   await expandTurn()
   await shot('collapsed-light')
   await hookShots('light')
-  await toggleFirstCard()
+  await toggleCard('promise_only')
   await shot('expanded-light')
 
   await close()

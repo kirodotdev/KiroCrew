@@ -17,6 +17,7 @@ const EMPTY = '[Empty response — automatic recovery]'
 const BUSY = '[Session busy — automatic recovery]'
 const HOOK = '[Hook continuation — automatic]'
 const HALT = '[Stop-hook nudge cap reached]'
+const PROMISE_ONLY = '[Unfinished action — automatic recovery]'
 
 /** A refusal body shaped the way build_refusal_recovery_prompt() emits it. */
 function refusalBody(items: string[]): string {
@@ -197,6 +198,18 @@ describe('parseRecoveryMessage', () => {
     expect(halt?.body.startsWith('[')).toBe(false)
     expect(halt?.body).not.toContain('#100')
     expect(halt?.body).toContain('already took 100')
+  })
+
+  it('labels a promise-only turn (announced an action, never made the call)', () => {
+    // Verbatim opener from chat_utils._PROMISE_ONLY_CONTINUE_MSG (#2686).
+    const promise = parseRecoveryMessage(
+      `${PROMISE_ONLY}\nYour previous turn ended right after you said you would perform an action immediately.`,
+    )
+    expect(promise?.kind).toBe('promise_only')
+    expect(promise?.title).toBe('Action not taken')
+    expect(promise?.detail).toBe('announced but not done · continuation sent automatically')
+    expect(promise?.chip).toBe('')
+    expect(promise?.body.startsWith('[')).toBe(false)
   })
 })
 

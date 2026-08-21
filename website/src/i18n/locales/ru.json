@@ -8161,6 +8161,8 @@
         "jump_to_this_turn": "Перейти к этому ходу"
       },
       "recoveryCard": {
+        "action_not_taken": "Действие не выполнено",
+        "announced_no_action_continuing": "объявлено, но не выполнено · продолжение отправлено автоматически",
         "backend_error_continuing": "ошибка бэкенда · продолжение отправлено автоматически",
         "cancelled_continuing": "зависший вызов инструмента отменён · продолжение отправлено автоматически",
         "consolidated_summary_requested": "запрошена сводка",

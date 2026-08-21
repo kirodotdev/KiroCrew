@@ -7846,6 +7846,8 @@
         "jump_to_this_turn": "このターンへ移動"
       },
       "recoveryCard": {
+        "action_not_taken": "アクションは実行されませんでした",
+        "announced_no_action_continuing": "宣言のみで未実行 · 継続を自動送信しました",
         "backend_error_continuing": "バックエンドエラー・継続を自動送信しました",
         "cancelled_continuing": "停止したツール呼び出しをキャンセルしました・継続を自動送信しました",
         "consolidated_summary_requested": "統合サマリーを要求しました",

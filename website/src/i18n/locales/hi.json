@@ -7951,6 +7951,8 @@
         "jump_to_this_turn": "इस टर्न पर जाएँ"
       },
       "recoveryCard": {
+        "action_not_taken": "कोई कार्रवाई नहीं की गई",
+        "announced_no_action_continuing": "घोषित किया गया लेकिन नहीं किया गया · जारी रखने का अनुरोध अपने-आप भेज दिया गया",
         "backend_error_continuing": "बैकएंड त्रुटि · जारी रखने का अनुरोध अपने-आप भेज दिया गया",
         "cancelled_continuing": "अटकी हुई टूल कॉल रद्द कर दी गई · जारी रखने का अनुरोध अपने-आप भेज दिया गया",
         "consolidated_summary_requested": "समेकित सारांश मांगा गया",

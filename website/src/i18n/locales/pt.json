@@ -8056,6 +8056,8 @@
         "jump_to_this_turn": "Ir para este turno"
       },
       "recoveryCard": {
+        "action_not_taken": "Ação não realizada",
+        "announced_no_action_continuing": "anunciado mas não realizado · continuação enviada automaticamente",
         "backend_error_continuing": "erro de backend · continuação enviada automaticamente",
         "cancelled_continuing": "chamada de ferramenta paralisada cancelada · continuação enviada automaticamente",
         "consolidated_summary_requested": "resumo consolidado solicitado",

@@ -1026,6 +1026,12 @@ POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 # Prefix on the runner-injected nudge that breaks a repeated empty-generation
 # pattern (the model returned no output twice). Body: _EMPTY_AUTO_CONTINUE_MSG.
 EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
+# Prefix on the runner-injected continuation sent when a turn ended on a
+# PROMISE-ONLY final message: the model announced an immediate action ("I'll do
+# that now") and then yielded without making the tool call, so the work never
+# happened and the turn still billed. Body: _PROMISE_ONLY_CONTINUE_MSG in
+# chat_utils. One bounded attempt (slot._promise_only_retries), never a loop.
+PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
 # Prefix on the continuation injected when the USER pressed Continue on an
 # interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
 # *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
@@ -1451,6 +1457,8 @@ class _ChatSlot:
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
         "_empty_response_retries",
+        "_promise_only_retries",
+        "_promise_only_stop_gen",
         "_batch_rejected",
         "_compaction_fail_streak",
         "_compaction_fail_cooldown_until",
@@ -1779,6 +1787,14 @@ class _ChatSlot:
         # discard loop.
         self._poisoned_reset_used: bool = False
         self._empty_response_retries: int = 0
+        # One bounded synthetic continuation when a turn ended on a promise-only
+        # final message (announced an immediate action, then yielded with no tool
+        # call). Reset like the other per-turn retry budgets on a landed turn.
+        self._promise_only_retries: int = 0
+        # Monotonic _stop_generation snapshot taken when a promise-only continuation
+        # is enqueued; the dispatch-point purge compares against it to catch a Stop
+        # that pressed AND resolved to idle while the continuation waited (#2696).
+        self._promise_only_stop_gen: int = 0
         self._batch_rejected: bool = False
         # Per-turn compaction-status failure tracking (Mesh compaction-spam
         # fix). Distinct from SessionManager._compact_cooldown_until, which

@@ -7951,6 +7951,8 @@
         "jump_to_this_turn": "Zu diesem Zug springen"
       },
       "recoveryCard": {
+        "action_not_taken": "Aktion nicht ausgeführt",
+        "announced_no_action_continuing": "angekündigt, aber nicht ausgeführt · Fortsetzung automatisch gesendet",
         "backend_error_continuing": "Backend-Fehler · Fortsetzung automatisch gesendet",
         "cancelled_continuing": "Festgefahrener Tool-Aufruf abgebrochen · Fortsetzung automatisch gesendet",
         "consolidated_summary_requested": "konsolidierte Zusammenfassung angefordert",

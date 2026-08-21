@@ -7846,6 +7846,8 @@
         "jump_to_this_turn": "跳转到此轮次"
       },
       "recoveryCard": {
+        "action_not_taken": "未执行操作",
+        "announced_no_action_continuing": "已声明但未执行 · 已自动发送续接指令",
         "backend_error_continuing": "后端错误 · 已自动发送续接指令",
         "cancelled_continuing": "已取消停滞的工具调用 · 已自动发送续接指令",
         "consolidated_summary_requested": "已请求汇总摘要",

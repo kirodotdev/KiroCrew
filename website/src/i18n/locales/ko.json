@@ -7846,6 +7846,8 @@
         "jump_to_this_turn": "이 턴으로 이동"
       },
       "recoveryCard": {
+        "action_not_taken": "작업이 실행되지 않음",
+        "announced_no_action_continuing": "예고했지만 실행되지 않음 · 자동으로 후속 요청 전송됨",
         "backend_error_continuing": "백엔드 오류 · 자동으로 후속 요청 전송됨",
         "cancelled_continuing": "중단된 도구 호출 취소됨 · 자동으로 후속 요청 전송됨",
         "consolidated_summary_requested": "통합 요약 요청됨",

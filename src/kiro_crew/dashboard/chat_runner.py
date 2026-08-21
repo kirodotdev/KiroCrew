@@ -222,14 +222,17 @@ logger = logging.getLogger(__name__)
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _EMPTY_AUTO_CONTINUE_MSG,
     _POSTTOKEN_RECOVER_MSG,
+    _PROMISE_ONLY_CONTINUE_MSG,
     _SYNTHETIC_RECOVERY_MSGS,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     RecoveryPayload,
+    is_promise_only_terminal,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     mint_options_token,
     payload_for_replay,
+    should_recover_promise_only,
 )
 
 
@@ -3707,11 +3710,115 @@ def _arm_queued_delivery_settlement(
         logger.debug("Could not arm queued sub-agent delivery settlement", exc_info=True)
 
 
+def _queue_entry_is_orchestration(item: dict) -> bool:
+    """True when a queue entry is runner/system orchestration, not user speech.
+
+    Used only by the promise-only guards (via `_has_user_queued_followup`) to
+    decide "did the USER intervene". A background cron notification or sub-agent
+    completion queued mid-turn is orchestration, not a user "don't do that", so it
+    must NOT block or purge a pending recovery (#2696 GPT round; the R20 fix).
+
+    Classification is PURELY STRUCTURAL — the `kind` tag stamped at enqueue, never
+    the message text. `is_system_injection_item` covers the three orchestration
+    kinds (`CRON_NOTIFICATION_KIND`, `SUBAGENT_COMPLETION_KIND`,
+    `SYNTHETIC_RECOVERY_KIND`); `is_synthetic_payload_item` additionally covers a
+    recovery entry that replays runner-authored text. There is deliberately NO
+    content match: the earlier `CRON_NOTIFY_RE.match` / prefix test was
+    prefix-anchored and therefore spoofable — a user could queue
+    `[Cron notification from "x"]\ndon't delete it` during a promise-only turn and
+    have their intervention silently ignored while the announced action dispatched
+    anyway. A user message carries no enqueue tag, so it now correctly counts as a
+    user follow-up and aborts the pending recovery; real cron / sub-agent events
+    are tagged at their injection sites and stay excluded (#2696 GPT round,
+    blocking)."""
+    return is_synthetic_payload_item(item) or is_system_injection_item(item)
+
+
+def _has_user_queued_followup(slot: "_ChatSlot") -> bool:
+    """True when the slot queue holds a USER-authored follow-up message.
+
+    The promise-only guards use this to decide "did the USER intervene". Every
+    entry that is runner/system orchestration (`_queue_entry_is_orchestration`) is
+    excluded; anything left is user speech, which must block or purge a pending
+    recovery so the user's intent wins (#2696 GPT round, blocking)."""
+    return any(not _queue_entry_is_orchestration(q) for q in getattr(slot, "_queue", []))
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
     if not slot._queue:
         return False
+
+    # B2/B5 (#2696): the promise-only recovery continuation is queue_insert(0)'d at
+    # the promising turn's completion, but a Stop, a queued user follow-up, or a
+    # late steer can intervene afterward. `_requeue_unconsumed_steers` degrades an
+    # unconsumed steer to a queue card at the HEAD in _run_chat's finally BEFORE
+    # this drain, pushing the continuation to position 1: the steer dequeues and
+    # runs first, and the orphaned continuation would then dispatch the announced
+    # action on a LATER drain, when the intervention signal is already gone. So
+    # purge every promise-only continuation from the queue UP FRONT whenever ANY
+    # user intervention is present — a stop, a pending steer, or any non-synthetic
+    # (user-authored) queue item — BEFORE the dequeue, so an orphaned continuation
+    # can never survive a turn to dispatch later. No await before the decision =>
+    # atomic on the single event loop.
+    #
+    # Identity is STRUCTURAL (`is_synthetic_payload_item`), never content alone: a
+    # user who pastes the transcript-visible continuation text verbatim carries no
+    # synthetic payload, so it is never purged; the content check only narrows AMONG
+    # synthetic items to the promise-only one, leaving sibling recovery
+    # continuations (reset/refusal/stall) untouched.
+    #
+    # A Stop pressed AND resolved back to idle in the post-turn awaits (between the
+    # continuation's enqueue and this drain) is invisible to `_should_suppress_requeue`
+    # / `_stopping` (both snap back to idle), so compare the monotonic stop counter
+    # against its value AT ENQUEUE (`_promise_only_stop_gen`): any increment means a
+    # Stop happened while the continuation waited, and the announced action must not
+    # be dispatched (#2696 GPT round, blocking).
+    _cur_stop_gen = getattr(slot, "_stop_generation", 0)
+    _stop_since_enqueue = _cur_stop_gen != getattr(slot, "_promise_only_stop_gen", _cur_stop_gen)
+    _user_input = bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
+    if _should_suppress_requeue(slot) or slot._stopping or _stop_since_enqueue or _user_input:
+        superseded = [
+            q
+            for q in slot._queue
+            if is_synthetic_payload_item(q) and q.get("content") == _PROMISE_ONLY_CONTINUE_MSG
+        ]
+        if superseded:
+            for q in superseded:
+                slot.queue_remove_by_id(q["id"])
+                if _remove_queued_by_id(slot.messages, q["id"]):
+                    state.broadcast_ws(
+                        "queue_pop", {"slot": slot.key, "content": "", "queue_id": q["id"]}
+                    )
+            # The one-shot budget was spent at enqueue but never dispatched — the
+            # episode was aborted; reset it so the user's own next turn keeps its
+            # first legitimate recovery. Reset the stop-gen snapshot too so a stale
+            # value cannot re-trigger this block on a later drain.
+            slot._promise_only_retries = 0
+            slot._promise_only_stop_gen = _cur_stop_gen
+            # The earlier "auto-continuing once" notice and the card's "continuing
+            # automatically" detail now stand uncorrected; append a one-line
+            # correction so the transcript matches what actually ran (#2696 UX review).
+            # Branch on the trigger: only a real user follow-up "takes over"; a Stop
+            # with nothing queued ran nothing (UX review — do not promise a takeover
+            # that never happens).
+            _correction = (
+                "ℹ️ Auto-continue cancelled — your message takes over."
+                if _user_input
+                else "ℹ️ Auto-continue cancelled — the turn was stopped, nothing was run."
+            )
+            slot.append("notice", _correction, "msg msg-info")
+            logger.info(
+                "Purged %d superseded promise-only continuation(s) before dispatch "
+                "for slot %s (user_input=%s stop_since_enqueue=%s)",
+                len(superseded),
+                slot.key,
+                _user_input,
+                _stop_since_enqueue,
+            )
+        if not slot._queue:
+            return False
 
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages
@@ -4352,7 +4459,20 @@ async def _run_chat(
     _auth_required = False
     saw_compaction = False
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
+    # Snapshot of slot._stop_generation at turn start. `_stop_state` snaps back
+    # to "idle" once a Stop resolves, so a Stop pressed AND resolved during the
+    # turn is invisible to a point-in-time state check at completion. This
+    # monotonic counter records the fact regardless of how quickly it resolved,
+    # giving the promise-only guard a turn-window Stop signal (#2696 GPT round 2).
+    # getattr-guarded: the real _ChatSlot always carries it (int), but minimal
+    # test stubs may not, and this runs on every path (matching the idiom of
+    # `getattr(state, "sessions", None)` above).
+    _stop_gen_turn_start = getattr(slot, "_stop_generation", 0)
     _retrying_empty = False
+    # Set when the turn ended on a promise-only final message and we injected one
+    # continuation (see the promise-only guard near turn completion). Like
+    # _retrying_empty it suppresses success-recording for this non-landing turn.
+    _recovering_promise = False
     # Whether THIS turn consumed the one-shot post-compaction re-injection flag.
     # Bound at turn scope, not at the consume site: the consume lives inside the
     # context-builder leg, and the probe/base legs skip it entirely — reading an
@@ -7499,9 +7619,170 @@ async def _run_chat(
                 slot._stage_titles, slot._plan_goal, slot._stage_descriptions = (
                     _extract_and_redact_plan_metadata(_orch_plan_buf)
                 )
+        # Promise-only guard (#2686): the turn ended NORMALLY with visible text
+        # whose FINAL segment only ANNOUNCES an immediate action ("I'll do that
+        # now") without making the tool call, so the work never happened yet the
+        # turn would otherwise land + bill. Inject exactly one continuation that
+        # tells the model to carry out the announced action now. `assistant_text`
+        # here is the post-last-tool segment (reset at each tool boundary), so a
+        # turn that DID call a tool then summarised has a summary — not a promise —
+        # and never matches. A plan turn (`_armed_final`) is a legitimate landing
+        # (the [OPTION] gate is the action), so it is excluded. Bounded to one
+        # attempt via slot._promise_only_retries; a second promise-only ending
+        # falls through and lands normally rather than looping.
+        if not _armed_final and should_recover_promise_only(
+            stop_reason=_stop_reason,
+            end_turn_reason=STOP_REASON_END_TURN,
+            # `_produced_visible_output` is set True ONLY on the paths that reset
+            # assistant_text mid-turn (steer cut, compaction, clear, agent switch);
+            # a normal streamed-text turn leaves it False and is handled by the
+            # `if assistant_text:` branch above instead. But a promise-only turn IS
+            # exactly a normal streamed-text turn, so keying the guard on the flag
+            # alone made it never fire for the #2686 scenario (#2696 GPT round). A
+            # non-empty final segment is itself visible output, so derive it from
+            # the text — the same `assistant_text` the terminal-promise detector
+            # reads below.
+            produced_visible_output=bool(assistant_text.strip()) or _produced_visible_output,
+            final_segment_text=assistant_text,
+            prompt_depth=_prompt_depth,
+            promise_only_retries=slot._promise_only_retries,
+            is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
+            refusal_reasons=_refusal_reasons,
+            # A completed side-effecting tool this turn (e.g. send_message) followed
+            # by trailing promise-shaped text would otherwise let the continuation
+            # REISSUE the action; the promise-only bug is by definition a zero-tool-
+            # call turn, so gate on that count (#2696 GPT round, blocking).
+            turn_tool_calls=_turn_tool_calls,
+            # A soft Stop pressed while the promise streamed can arrive here as a
+            # normal end_turn (cancel race); re-queueing then would dispatch the
+            # stopped action. Gate on the same stop-state every sibling path uses,
+            # PLUS the turn-window monotonic-counter check (catches a Stop that
+            # already resolved back to idle) and a user-follow-up check (respects any
+            # user-queued message rather than jumping ahead of it). A queued cron /
+            # sub-agent event is orchestration, NOT a user intervention, so it does
+            # not count (#2696 GPT round) — see `_has_user_queued_followup`.
+            stop_in_progress=_should_suppress_requeue(slot),
+            stop_generation_unchanged=(
+                getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+            ),
+            queue_empty=not _has_user_queued_followup(slot),
+            # Mid-turn steers live in _pending_steers (a separate channel from
+            # _queue) and are only degraded into queue cards in the finally BELOW,
+            # after this guard. Check them here so a "don't delete" steer aborts
+            # recovery instead of being overridden by the announced action.
+            no_pending_steers=(not getattr(slot, "_pending_steers", None)),
+            # A stage-execution turn (the orchestrator running one plan stage) must
+            # NOT trigger async recovery: the stage loop records the stage complete
+            # and advances before the injected continuation finishes, corrupting
+            # stage attribution. Excluded like `_armed_final` (the plan turn itself)
+            # is (#2696 GPT round, blocking).
+            in_stage_execution=slot._in_stage_execution,
+        ):
+            if state.is_yolo_active() or _slot_is_trusted(slot):
+                # auto-approve downgrade (#2696 UX + design review): with no human
+                # approval between an injected continuation and the tool it triggers,
+                # a terminal-promise detector false-accept could auto-dispatch an
+                # action the user was still deciding on. Downgrade recovery to a
+                # NOTICE here: state what happened and let the user re-send, rather
+                # than auto-continuing unattended. This structurally bounds ANY
+                # detector miss (a missed negation/conditional phrasing) to a safe
+                # non-event, independent of what the regex fails to catch — the
+                # approval path is the load-bearing safety claim, and auto-approve
+                # removes it.
+                #
+                # Gate on BOTH grant sources, not yolo alone (#2696 GPT round,
+                # blocking): approval is granted by `slot_trusted or yolo_active`
+                # (the tool-event branch ORs them), and `_slot_is_trusted` is True
+                # for a per-session trust click or a scoped SafetyOverride grant —
+                # neither of which sets global yolo. Checking yolo alone left every
+                # trusted-but-not-yolo session on the auto-continue path with its
+                # approval gate already removed, i.e. exactly the state this
+                # downgrade exists to refuse.
+                slot.append(
+                    "notice",
+                    "ℹ️ The model ended after saying it would act but didn't. "
+                    "Auto-continue is skipped under auto-approve mode — re-send your "
+                    "request to carry it out.",
+                    "msg msg-info",
+                )
+                # A promise-only turn announced work it never did, so it must NOT
+                # be recorded as a landed success — even in the yolo notice-only
+                # arm, where no continuation is injected. Mark it recovering so the
+                # reset / consolidate / record_success guards below exclude it,
+                # matching the non-yolo arm; otherwise auto-approve mode silently
+                # counts the un-acted turn as a clean land (#2696 GPT round).
+                _recovering_promise = True
+            else:
+                slot._promise_only_retries += 1
+                logger.info(
+                    "Promise-only turn for slot %s — the final message announced an "
+                    "action with no tool call; injecting one continuation "
+                    "(credits=%.4f)",
+                    slot.key,
+                    _turn_credits,
+                )
+                slot.append(
+                    "notice",
+                    "ℹ️ The model ended after saying it would act but didn't — "
+                    "auto-continuing once.",
+                    "msg msg-info",
+                )
+                slot.queue_insert(
+                    0,
+                    _PROMISE_ONLY_CONTINUE_MSG,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                )
+                # Snapshot the monotonic stop counter so the dispatch-point purge can
+                # detect a Stop that pressed AND resolved to idle while the continuation
+                # waited in the queue (invisible to _should_suppress_requeue) — see the
+                # purge block in `_start_next_queued_turn` (#2696 GPT round, blocking).
+                slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
+                _recovering_promise = True
+        elif (
+            not _armed_final
+            and not slot._in_stage_execution
+            and _prompt_depth == 0
+            and slot._promise_only_retries >= 1
+            # Same derivation as the recovery arm above (#2696 GPT round): the raw
+            # `_produced_visible_output` flag is set True only on the reset-to-empty
+            # paths, so a normal streamed-text SECOND promise-only turn left it False
+            # and the give-up notice never surfaced — the #2686 symptom landing
+            # silently, the exact thing this arm exists to prevent. A non-empty final
+            # segment IS visible output.
+            and (bool(assistant_text.strip()) or _produced_visible_output)
+            and _turn_tool_calls == 0
+            and _stop_reason == STOP_REASON_END_TURN
+            and not _refusal_reasons
+            and not _should_suppress_requeue(slot)
+            and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+            and not _has_user_queued_followup(slot)
+            and not getattr(slot, "_pending_steers", None)
+            and is_promise_only_terminal(assistant_text)
+        ):
+            # Spent-budget arm: a SECOND consecutive promise-only turn. The one-shot
+            # recovery above already fired and did not stick, so we do NOT re-queue
+            # (that would loop). But landing it silently reproduces the #2686 symptom
+            # invisibly, so surface a give-up notice — mirroring the empty-response
+            # third-strike arm — telling the user the one auto-retry is spent (#2696
+            # UX review). The turn still lands normally (no _recovering_promise).
+            slot.append(
+                "notice",
+                "ℹ️ The model again ended after saying it would act but didn't. The "
+                "one automatic retry is already spent — send the request again to "
+                "perform the action.",
+                "msg msg-info",
+            )
         # On an empty-response re-queue the turn produced nothing and will
-        # immediately re-run; skip persistence / consolidation / success-recording
-        # so we don't save a spurious empty turn or skew reliability metrics.
+        # immediately re-run; skip persistence entirely so we don't save a
+        # spurious empty turn or skew reliability metrics.
+        #
+        # A PROMISE-ONLY recovery turn is DIFFERENT from an empty re-queue: it
+        # produced visible output and consumed billed credits, so it MUST still
+        # persist those stats + the transcript (otherwise the consumed credits
+        # vanish from the turn record — the very #2686 symptom this fix targets,
+        # reintroduced by skipping the attach). What it must NOT do is record a
+        # success or reset the retry budgets, which stays gated below.
         if not _retrying_empty:
             # Attach per-turn stats (elapsed / credits) to the last assistant
             # message so the footer can show them (parity with kiro-cli).
@@ -7518,13 +7799,13 @@ async def _run_chat(
             _flush_file_changes(slot)
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
-            # Reset ALL retry budgets once the cycle completes (success OR the
-            # terminal second-empty error) so each new user turn gets fresh budgets.
-            # Guarded by _retrying_empty so the empty re-queue iteration preserves
-            # every counter: an empty re-queue is NOT a successful turn, so it must
-            # not reset the pipe-death/busy budgets (otherwise an empty interleaved
-            # between transient failures would extend the intended 3-retry budget).
-            #
+        # Reset ALL retry budgets once the cycle completes (success OR the
+        # terminal second-empty error) so each new user turn gets fresh budgets.
+        # Guarded by _retrying_empty AND _recovering_promise: neither a re-queue
+        # nor a promise-only recovery is a landed turn, so both must preserve the
+        # counters (a promise-only turn that reset budgets would also mask the
+        # transient-failure retry accounting).
+        if not _retrying_empty and not _recovering_promise:
             # A non-zero stall budget reaching this reset on an OK turn is a
             # COMPLETED recovery cycle: the stall branches return early, so the
             # only way here with an armed budget is the synthetic recovery turn
@@ -7550,6 +7831,13 @@ async def _run_chat(
             slot._stale_recovery_exhausted_emitted = False
             slot._tool_stall_exhausted_emitted = False
             slot._transient_5xx_retries = 0
+            # Reset the promise-only one-shot on a LANDED turn so the guard re-arms
+            # per user turn (matching state.py's contract and the sibling budgets).
+            # Without this a single false positive would disarm it for the slot's
+            # whole life, and the "two such turns" case #2686 reported stays only
+            # half-covered. A promise-only recovery turn is NOT landed, so it is
+            # excluded here and the increment it made persists until a real turn lands.
+            slot._promise_only_retries = 0
             # NOTE: the poisoned-conversation streak/one-shot
             # (_prestream_exhausted_cycles / _poisoned_reset_used) are NOT
             # unconditionally reset here: this block also runs for CANCELLED
@@ -7572,12 +7860,21 @@ async def _run_chat(
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
-        elif not _retrying_empty:
+        elif not _retrying_empty and not _recovering_promise:
             _maybe_consolidate(state, slot)
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
-        if _stop_reason != STOP_REASON_CANCELLED and not _retrying_empty:
+        if (
+            _stop_reason != STOP_REASON_CANCELLED
+            and not _retrying_empty
+            and not _recovering_promise
+        ):
+            # A promise-only turn is deliberately NOT recorded as a landed success:
+            # it announced work it never did, so counting it would tell the
+            # reliability metrics (and the poisoned-conversation one-shot) the turn
+            # succeeded. The single injected continuation gets its own turn; if THAT
+            # lands, it records success normally.
             state.sessions.record_success(session_key)
             # A LANDED turn breaks the pre-stream-exhaustion streak and
             # re-arms the poisoned-conversation one-shot: only a prompt that

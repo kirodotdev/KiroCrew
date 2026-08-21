@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ from kiro_crew.dashboard.state import (
     EMPTY_RESPONSE_RECOVERY_PREFIX,
     MANUAL_RESUME_RECOVERY_PREFIX,
     POSTTOKEN_RECOVERY_PREFIX,
+    PROMISE_ONLY_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIXES,
     DashboardState,
     _ChatSlot,
@@ -1401,12 +1403,314 @@ _EMPTY_AUTO_CONTINUE_MSG = (
     "conversation above and respond now — do NOT restart from scratch and do "
     "NOT re-run steps or tools that already completed successfully."
 )
+_PROMISE_ONLY_CONTINUE_MSG = (
+    f"{PROMISE_ONLY_RECOVERY_PREFIX}\n"
+    "Your previous turn ended right after you said you would perform an action "
+    "immediately (for example, opening a PR or running a tool), but the turn "
+    "yielded before that action was carried out, so nothing actually happened. "
+    "Carry out that action now by making the tool call you announced. But if you "
+    "were actually waiting on the user's approval or confirmation, or on a "
+    "condition that is not yet satisfied, do NOT perform the action — say what you "
+    "are waiting for instead. If it turns out you cannot, say what is blocking it "
+    "and what you need instead — do NOT just restate the intention. Do NOT re-run "
+    "any tool that already completed successfully above."
+)
 _SYNTHETIC_RECOVERY_MSGS = (
     _CONN_RECOVER_MSG,
     _BUSY_RECOVER_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    _PROMISE_ONLY_CONTINUE_MSG,
 )
+
+# High-confidence "I will do it right now" endings. Kept deliberately NARROW: a
+# broad natural-language detector risks false positives, duplicate writes, and
+# continuation loops (see #2686 fix direction), so this matches only a terminal
+# first-person commitment to an IMMEDIATE action, with an explicit now/right-away
+# marker. "I'll explain that now: ..." is NOT caught, because the detector also
+# requires that the promise be the LAST thing in the text (nothing substantive
+# follows it) — an announcement followed by the actual content is a normal answer.
+# The immediacy markers are deliberately RESTRICTIVE: only true "right now"
+# adverbs. `next` and `go ahead and` were removed after the #2696 AI review found
+# they matched "I'll do that next week" and permission-seeking closers — `next`
+# is a sequencer, not an immediacy signal. The bare `going to` alternative was
+# also removed (#2696 GPT round): with no first-person subject it matched
+# third-person statements like "The deployment is going to start now", firing an
+# unrelated continuation. Only the subject-bound `i'm going to` form remains.
+_PROMISE_NOW_RE = re.compile(
+    r"\b(?:i(?:'|’)?ll|i\s+will|let\s+me|i(?:'|’)?m\s+going\s+to)\b"
+    r"[^.!?\n]*?"
+    r"\b(?:now|right\s+away|right\s+now|immediately)\b"
+    r"[^.!?\n]*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+# A trailing sentence that is ONLY a promise (no colon-introduced content, no
+# code fence, no list) — used to confirm the promise is terminal, not a preamble.
+_PROMISE_HAS_FOLLOWING_CONTENT_RE = re.compile(r":\s*\S|```|\n\s*[-*\d]")
+# Permission-seeking / no-action closers that a naive immediacy match misfires on
+# (found by the #2696 AI review). These are the OPPOSITE of a promise-to-act: the
+# turn is correctly yielding to the user or explicitly declining to act. If any
+# appears in the final segment, it is never a promise-only turn. "let me know ...
+# now"/"...next" reads as immediate to the regex but is a hand-off; "for now" /
+# "as-is" / "stop here" are explicit non-actions.
+_NO_ACTION_CLOSER_RE = re.compile(
+    r"\blet\s+me\s+know\b"
+    r"|\bfor\s+now\b"
+    r"|\bfor\s+the\s+moment\b"
+    r"|\bas[-\s]is\b"
+    r"|\bstop\s+here\b"
+    r"|\bleave\s+(?:it|that|this)\b",
+    re.IGNORECASE,
+)
+# An APPROVAL-GATED closer keeps the decision with the user, even when the
+# sentence otherwise reads as a promise-to-act ("If that looks good, I'll push
+# it now.", "Just say the word and I'll open the PR right away."). The current
+# no-action list does not cover these because they contain both a real
+# commitment ("I'll ... now") and a conditional opener; auto-continuing them
+# dispatches an unattended action the user was still being asked to approve.
+# Found by the #2696 UX review. Bias, like the negation gate, is toward reject
+# on ambiguous conditionals — a false reject just lands the turn normally
+# (pre-fix behaviour, safe); a false accept executes a possibly-irreversible
+# side effect (push, merge, delete) without consent.
+_APPROVAL_GATED_RE = re.compile(
+    # ANY conditional `if` opener, not just specific pronouns: "If CI passes, I'll
+    # delete it now" is as gated as "If you approve ...". Bias toward reject is
+    # safe here (a false reject just lands normally); the #2696 GPT round widened
+    # this from the pronoun list after "If CI passes ..." slipped through.
+    r"\bif\b"
+    r"|\bjust\s+say\s+the\s+word\b"
+    r"|\bwant\s+me\s+to\b"
+    r"|\bshall\s+i\b"
+    # Consent DEFERRAL: the action is gated on the user's approval/confirmation,
+    # even when the sentence reads as "I'll ... now" ("I'll wait for your approval
+    # before I delete it right now"). The earlier list only caught "with your
+    # approval" and missed the far more common "wait for / for / pending your
+    # approval", "your go-ahead/sign-off/confirmation", "before you approve", and
+    # "you to confirm" forms — auto-continuing any of them dispatches an action the
+    # model explicitly said it would hold for consent (#2696 GPT round, blocking).
+    # The forms are kept PRECISE (a possessive consent-noun, or a deferral verb
+    # bound to you/your) rather than bare "pending"/"await"/"before you", so a
+    # genuine promise like "merge the pending PR now" is not falsely rejected —
+    # closing the consent CLASS without the over-broad reject the design review
+    # warned about. Reject-bias is still safe (a false reject just lands).
+    r"|\byour\s+(?:approval|go[-\s]?ahead|sign[-\s]?off|confirmation|permission|ok(?:ay)?|blessing)\b"
+    r"|\bwait(?:ing)?\s+for\s+(?:you|your|approval|confirmation|sign[-\s]?off|permission|the\s+go[-\s]?ahead)\b"
+    r"|\bbefore\s+you\s+(?:approve|confirm|decide|sign\s+off|review|say|weigh\s+in|ok(?:ay)?)\b"
+    r"|\byou\s+to\s+(?:approve|confirm|decide|sign\s+off|review|weigh\s+in|say|tell)\b"
+    # Temporal/conditional gates in ANY form ("once tests are green", "when the
+    # build passes", "after CI", "until you confirm"), not only "... you ...".
+    # Closes the conditional CLASS in one rule rather than enumerating each noun;
+    # reject-bias is safe.
+    r"|\b(?:once|when|after|as\s+soon\s+as|until)\b"
+    # Remaining subordinating-conditional conjunctions ("Unless you object, I'll
+    # merge now", "Assuming you're fine, I'll push now"). The risky ones are bound
+    # to a following pronoun/complementizer so a benign adjective ("the provided
+    # config", "the given file") is NOT falsely rejected (#2696 GPT/design rounds).
+    r"|\bunless\b"
+    r"|\bassuming\s+(?:you|that|we|it|the|your)\b"
+    r"|\bprovided\s+(?:that|you)\b"
+    r"|\bgiven\s+(?:that|you)\b"
+    r"|\b(?:as|so)\s+long\s+as\b",
+    # NOTE (residual risk, #2696 design review): this is a deny-list, and the
+    # DANGEROUS direction for the consent class is the false ACCEPT (auto-continuing
+    # an action the user was still being asked to approve), which enumeration cannot
+    # fully close — a novel conditional phrasing will always slip through. Two
+    # mitigations bound the blast radius: (1) `_PROMISE_ONLY_CONTINUE_MSG` itself
+    # instructs the model NOT to act if it was waiting on approval/a condition (a
+    # semantic backstop independent of this regex), and (2) recovery only INJECTS a
+    # continuation — the tool call still flows through the normal approval path, so
+    # only auto-approve/yolo turns an escape into an unattended side effect. The
+    # accept-list inversion (fire only on a proven-unconditional commitment) is the
+    # real long-term fix but is a behaviour-changing redesign, out of scope here.
+    # A cheaper structural bound worth considering: skip promise-only recovery (or
+    # downgrade it to the notice-only arm) under auto-approve/yolo, so a detector
+    # false-accept can never become an unattended side effect.
+    re.IGNORECASE,
+)
+# A NEGATED commitment before the immediacy marker ("I'm not going to open the PR
+# now", "I won't do that now", "I can't right now") is the OPPOSITE of a promise
+# to act, but the bare `going to`/`i'll` alternatives above still match it (found
+# by the #2696 GPT review). Reject when a negated-commitment form is followed,
+# within the same sentence, by an immediacy marker. Bias is deliberately toward
+# REJECTING on ambiguous negation: a false reject just lands the turn normally
+# (pre-fix behaviour, safe), whereas a false accept injects an unwanted action.
+_NEGATED_PROMISE_RE = re.compile(
+    r"\b(?:not\s+going\s+to|never\s+going\s+to|won(?:'|’)?t|will\s+not"
+    r"|i(?:'|’)?ll\s+not|can(?:'|’)?t|cannot|not\s+able\s+to|unable\s+to"
+    r"|do(?:es)?n(?:'|’)?t|do(?:es)?\s+not|no\s+longer)\b"
+    r"[^.!?\n]*?"
+    r"\b(?:now|right\s+away|right\s+now|immediately)\b",
+    re.IGNORECASE,
+)
+# The promise gate (`_PROMISE_NOW_RE`) is TERMINAL-ANCHORED (`...$`): any promise
+# it matches lives entirely in the final sentence. The three reject gates must be
+# scoped to that SAME sentence, not `.search()` the whole segment — otherwise an
+# everyday `if`/`when`/`after`/`let me know`/negation in an EARLIER sentence
+# ("When you asked about X, I fixed it. I'll open the PR now.") vetoes a genuine
+# terminal promise, landing the exact #2686 symptom unrecovered (asymmetric-scope
+# false negative, #2696 design review). Splitting on sentence + newline boundaries
+# keeps the reject-bias but only where the promise can actually be.
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n]+")
+
+
+def _terminal_sentence(text: str) -> str:
+    """Return the last sentence of ``text`` — the span the terminal promise gate
+    matches. Reject gates are scoped to this so a subordinate clause earlier in a
+    multi-sentence closer cannot veto a promise that sits only at the end."""
+    parts = [p.strip() for p in _SENTENCE_BOUNDARY_RE.split(text) if p.strip()]
+    return parts[-1] if parts else text
+
+
+def is_promise_only_terminal(final_segment_text: str) -> bool:
+    """True when the turn's FINAL segment is a promise to act immediately, with no
+    action taken and nothing substantive following the promise.
+
+    ``final_segment_text`` MUST be the assistant text emitted AFTER the last tool
+    call of the turn (the runner resets its segment buffer at each tool boundary,
+    so its final ``assistant_text`` already is exactly that). Evaluating only the
+    post-last-tool text is what keeps an already-executed action from being
+    replayed: a turn that DID call the tool and then summarised has a final
+    segment that is a summary, not a promise, so it does not match.
+
+    Narrow by construction (three gates, all required):
+      1. there is a first-person commitment to an immediate action
+         (``I'll ... now`` / ``let me ... now`` / ``going to ... right away``);
+      2. that promise sits at the END of the text (``...now.`` is the last
+         sentence), so ``I'll explain now: <the explanation>`` does NOT match;
+      3. no colon-introduced content, code fence, or list follows — those mean
+         the "promise" was actually a lead-in to delivered content.
+    Returns False on empty/whitespace so a genuinely empty turn stays on the
+    dedicated empty-response path."""
+    text = (final_segment_text or "").strip()
+    if not text:
+        return False
+    # The three reject gates are scoped to the terminal sentence (where a matched
+    # promise must live), NOT the whole segment — see `_SENTENCE_BOUNDARY_RE`.
+    terminal = _terminal_sentence(text)
+    # Gate 0: a permission-seeking or explicit-no-action closer is the OPPOSITE of
+    # a promise-to-act, even when it contains an immediacy word ("let me know what
+    # you'd like to do next", "I'll leave that as-is for now"). Reject up front so
+    # the guard never overrides a user decision point with an unsolicited action.
+    if _NO_ACTION_CLOSER_RE.search(terminal):
+        return False
+    # Gate 0b: a negated commitment ("I'm not going to ... now", "I won't ... now")
+    # is an explicit NON-action, not an unfulfilled promise. Reject it before the
+    # immediacy match, which would otherwise fire on the bare commitment token.
+    if _NEGATED_PROMISE_RE.search(terminal):
+        return False
+    # Gate 0c: an approval-gated closer ("If that looks good, I'll push it now")
+    # leaves the decision with the user; auto-continuing it dispatches the
+    # action the user was still being asked to approve.
+    if _APPROVAL_GATED_RE.search(terminal):
+        return False
+    # Gate 3: a promise that introduces content (colon + text, a fence, a list)
+    # is a preamble to a real answer, not an unfulfilled action. Scanned over the
+    # WHOLE text on purpose: the content that unmasks the promise as a preamble
+    # follows it (a colon tail on the same line, or a fence/list on later lines),
+    # so it is outside the terminal sentence by construction.
+    if _PROMISE_HAS_FOLLOWING_CONTENT_RE.search(text):
+        return False
+    # Gates 1 + 2: an immediate-action commitment that is the terminal sentence.
+    return bool(_PROMISE_NOW_RE.search(text))
+
+
+def should_recover_promise_only(
+    *,
+    stop_reason: str,
+    end_turn_reason: str,
+    produced_visible_output: bool,
+    final_segment_text: str,
+    prompt_depth: int,
+    promise_only_retries: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+    turn_tool_calls: int = 0,
+    in_stage_execution: bool = False,
+    stop_in_progress: bool = False,
+    stop_generation_unchanged: bool = True,
+    queue_empty: bool = True,
+    no_pending_steers: bool = True,
+) -> bool:
+    """Decide whether to inject ONE promise-only continuation.
+
+    All must hold (each guards a failure mode the #2686 fix direction names):
+      * NO Stop is in progress (``stop_in_progress`` is the runner's
+        ``_should_suppress_requeue``). A soft Stop pressed while the promise
+        streamed can lose the cancel race and arrive here as a normal
+        ``end_turn``; re-queueing then would dispatch the very action the user
+        tried to stop. Every sibling recovery path gates on this, so this one
+        must too (#2696 GPT review, blocking);
+      * NO Stop was pressed at ANY point during this turn
+        (``stop_generation_unchanged``: the monotonic ``slot._stop_generation``
+        snapshotted at turn start still matches). A Stop that pressed AND
+        resolved back to idle during the turn is invisible to ``stop_in_progress``
+        but the user still cancelled; do not re-dispatch the announced action
+        (#2696 GPT review round 2, blocking);
+      * NO user follow-up is queued (``queue_empty``). ``queue_insert(0, ...)``
+        would jump the continuation ahead of a user-typed "don't do that" or
+        clarifying message; the user's queued input must process FIRST — respect
+        it by falling through to a normal landing instead of overriding it
+        (#2696 GPT review round 2, blocking);
+      * NO mid-turn steer is pending (``no_pending_steers``). A steer lands in
+        ``slot._pending_steers``, a SEPARATE channel from ``_queue``; it is only
+        degraded into a queue card in ``_run_chat``'s ``finally``, which runs
+        AFTER this guard. So a "don't delete" steer is invisible to
+        ``queue_empty`` here, and firing recovery would schedule the announced
+        action despite the just-arrived revocation. Abort when any user input
+        exists, in either channel (#2696 GPT review round 3, blocking);
+      * the turn ended NORMALLY (``end_turn``), not cancelled/refused/errored —
+        those have their own paths and must stay unchanged;
+      * it produced visible output (a promise IS visible output) and is not the
+        empty-response case (that path owns ``not produced_visible_output``);
+      * the turn made NO tool calls (``turn_tool_calls == 0``). The segment-buffer
+        reset at each tool boundary was the ORIGINAL "never replay an executed
+        action" proxy, but it is not airtight: a turn that completed a side-
+        effecting tool (e.g. ``send_message``) and then emitted trailing
+        promise-shaped text ("I'll send that now") would still match the detector,
+        and the continuation would REISSUE the completed action (duplicate external
+        message). The promise-only bug is by definition a turn that announced an
+        action and made NO tool call, so requiring a zero tool-call count closes the
+        replay hole directly. A turn that ran a read then promised a further action
+        is excluded too — a false negative, which is the safe direction (#2696 GPT
+        review, blocking);
+      * the final segment is a terminal promise-to-act
+        (:func:`is_promise_only_terminal`). Because the runner resets its segment
+        buffer at every tool boundary, ``final_segment_text`` is exactly the text
+        AFTER the last tool call — so a turn that executed a tool and then
+        summarised has a summary here, not a promise; the ``turn_tool_calls`` gate
+        above is the airtight backstop for the same guarantee;
+      * this is NOT a stage-execution turn (``in_stage_execution``). A turn run by
+        the orchestrator's stage loop must not spawn async recovery: the loop
+        records the stage complete and advances before the continuation finishes,
+        corrupting stage attribution (#2696 GPT review, blocking);
+      * this is a top-level turn (``prompt_depth == 0``) and the one-shot budget
+        is unspent (``promise_only_retries < 1``) — bounded to a single attempt,
+        never a loop.
+    Model-agnostic: nothing here keys on a model id.
+
+    Language scope: the terminal-promise detector (``is_promise_only_terminal``)
+    matches English commitment/immediacy tokens only; a non-English promise-only
+    turn falls through and lands normally (pre-fix behaviour). Failure bias is
+    safe (false negative, not false positive)."""
+    if stop_in_progress or not stop_generation_unchanged or not queue_empty:
+        return False
+    if not no_pending_steers:
+        return False
+    if is_cancelled or refusal_reasons:
+        return False
+    if turn_tool_calls != 0:
+        return False
+    if in_stage_execution:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    if not produced_visible_output:
+        return False
+    if prompt_depth != 0 or promise_only_retries >= 1:
+        return False
+    return is_promise_only_terminal(final_segment_text)
+
+
 # Injected when the USER presses Continue on an interrupted turn. Worded to be
 # TRUE in both interruption shapes, which is why the endpoint needs no branch:
 # a turn that streamed partway and one that produced nothing at all read this

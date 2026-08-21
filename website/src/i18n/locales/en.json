@@ -5394,6 +5394,8 @@
         "jump_to_this_turn": "Jump to this turn"
       },
       "recoveryCard": {
+        "action_not_taken": "Action not taken",
+        "announced_no_action_continuing": "announced but not done · continuation sent automatically",
         "backend_error_continuing": "backend error · continuation sent automatically",
         "cancelled_continuing": "stalled tool call cancelled · continuation sent automatically",
         "consolidated_summary_requested": "consolidated summary requested",

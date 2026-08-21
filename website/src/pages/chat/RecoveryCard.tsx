@@ -26,6 +26,7 @@ export type RecoveryKind =
   | 'busy'
   | 'posttoken'
   | 'empty'
+  | 'promise_only'
   | 'manual'
   | 'hook'
   | 'hook_halted'
@@ -55,6 +56,7 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['busy', '[Session busy — automatic recovery]'],
   ['posttoken', '[Interrupted turn — automatic recovery]'],
   ['empty', '[Empty response — automatic recovery]'],
+  ['promise_only', '[Unfinished action — automatic recovery]'],
   // The only USER-initiated entry in this family. Kept here because the row is
   // the same shape (an `inject` continuation the model reads), but its copy must
   // not claim an automatic recovery — a person pressed Continue.
@@ -159,6 +161,19 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       kind,
       title: i18nT('pages.chat.recoveryCard.no_response_returned'),
       detail: i18nT('pages.chat.recoveryCard.empty_output_continuing'),
+      chip: '',
+      body,
+    }
+  }
+
+  if (kind === 'promise_only') {
+    // The turn announced an immediate action ("I'll do that now") then yielded
+    // without doing it. Title states the event; detail names the cause + the one
+    // automatic continuation, matching every sibling's "cause · attempt" shape.
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.action_not_taken'),
+      detail: i18nT('pages.chat.recoveryCard.announced_no_action_continuing'),
       chip: '',
       body,
     }
@@ -326,6 +341,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'busy' ||
     kind === 'posttoken' ||
     kind === 'empty' ||
+    kind === 'promise_only' ||
     kind === 'manual' ||
     kind === 'hook' ||
     kind === 'synthesis' ||
