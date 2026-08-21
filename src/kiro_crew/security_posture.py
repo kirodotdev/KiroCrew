@@ -867,6 +867,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # for memory fields. It owns no output of its own — the handler modules
         # that call it (memory.py, cron.py) are the covered surfaces.
         "dashboard/handlers/_shared.py",
+        # Defensive hygiene on an INTERNAL move, not egress: merge-back scrubs
+        # the fork's title before embedding it in the merged block's metadata on
+        # the parent transcript — same user, same dashboard, same trust domain.
+        # The rendering surfaces that show the block are the registered sinks.
+        "dashboard/chat_merge_back.py",
         # Same shape: applies a redactor the CALLER injects, to scan the form a
         # platform will actually render (markup collapsed, ANSI stripped). It owns
         # no output of its own -- the registered sinks are the modules that call

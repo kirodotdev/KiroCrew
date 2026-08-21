@@ -143,9 +143,12 @@ def _make_app(state: DashboardState) -> web.Application:
         api_chat_plan_action,
         api_chat_slot_approve,
         api_chat_slot_color,
+        api_chat_slot_continue,
         api_chat_slot_delete,
         api_chat_slot_detail,
+        api_chat_slot_edit_resend,
         api_chat_slot_fork,
+        api_chat_slot_merge_back,
         api_chat_slot_regenerate,
         api_chat_slot_rename,
         api_chat_slot_resume,
@@ -184,8 +187,11 @@ def _make_app(state: DashboardState) -> web.Application:
     app.router.add_patch("/api/chat/slots/{slot}/color", api_chat_slot_color)
     app.router.add_post("/api/chat/slots/{slot}/regenerate", api_chat_slot_regenerate)
     app.router.add_post("/api/chat/slots/{slot}/fork", api_chat_slot_fork)
+    app.router.add_post("/api/chat/slots/{slot}/merge-back", api_chat_slot_merge_back)
     app.router.add_post("/api/chat/slots/{slot}/rewind", api_chat_slot_rewind)
     app.router.add_post("/api/chat/slots/{slot}/switch-variant", api_chat_slot_switch_variant)
+    app.router.add_post("/api/chat/slots/{slot}/edit-resend", api_chat_slot_edit_resend)
+    app.router.add_post("/api/chat/slots/{slot}/continue", api_chat_slot_continue)
     app.router.add_post("/api/chat/mode", api_chat_mode)
     app.router.add_post("/api/chat/slots/{slot}/plan-action", api_chat_plan_action)
     return app

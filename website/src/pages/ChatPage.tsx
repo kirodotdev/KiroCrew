@@ -210,6 +210,7 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import StopEventCard from './chat/StopEventCard'
+import MergedSummaryCard from './chat/MergedSummaryCard'
 import NudgeCard, { nudgeMatchesLoop } from './chat/NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './chat/RecoveryCard'
 import { ErrorCard } from './chat/ErrorCard'
@@ -6029,6 +6030,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       return <NudgeCard key={key} message={m} disclosureKey={key} onOpenLoop={ownLoop ? () => setAutoNudgeOpen(true) : undefined} />
     }
     if (m.kind === 'stop_event' || m.meta?.kind === 'stop_event') return <StopEventCard key={m.meta?.id as string ?? key} message={m} />
+    // The visible block a merge-back folds into a parent (issue #3816): its own
+    // card so the reader sees imported fork context, not a stray assistant reply.
+    if (m.role === 'merged_summary' || m.meta?.kind === 'merged_summary') return <MergedSummaryCard key={key} message={m} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} slotKey={activeSlot || ''} />
     // A synthetic turn-recovery continuation (tool refusal / stalled turn /
     // stalled tool) is machine-facing instruction text. It stays in the
     // transcript for auditability, but as a one-line card that names the event

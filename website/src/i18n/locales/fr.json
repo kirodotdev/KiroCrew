@@ -4931,12 +4931,17 @@
       "earlier_messages_open_session": "Messages précédents — ouvrir la session complète (ferme la vue divisée)",
       "earlier_messages_unavailable": "Les messages précédents ne sont plus disponibles dans l’historique de cette session.",
       "forked_from": "Dérivé de {{name}}",
+      "merge_back": "Réintégrer",
+      "merge_back_confirm": "Réintégrer le résumé de cette bifurcation dans {{name}} et archiver la bifurcation ? La bifurcation passera en lecture seule.",
+      "merge_back_merging": "Réintégration…",
+      "merge_back_title": "Réintégrer le résumé de cette bifurcation dans {{name}} et archiver la bifurcation",
       "model_list": "Liste des modèles",
       "session_ready_type_a_message_to_start": "Session prête. Saisissez un message pour commencer.",
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",
       "split_right_d": "Diviser vers la droite (⌘D)",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "pane_actions": "Actions du volet"
     },
     "cliPanel": {
       "copied": "Copié",
@@ -6993,10 +6998,19 @@
     },
     "useSessionActions": {
       "close_this_session": "Fermer cette session ?",
+      "merge_back_failed": "Échec de la réintégration. La session parente a peut-être disparu ou la passerelle est injoignable ; réessayez.",
+      "merge_back_failed_already_merged": "Cette bifurcation a déjà été réintégrée dans sa session parente.",
+      "merge_back_failed_archive": "Le résumé a été réintégré dans la session parente, mais le fork n'a pas pu être archivé. Cliquez à nouveau sur Réintégrer pour terminer.",
+      "merge_back_failed_no_summary": "Impossible de résumer cette bifurcation — elle a peut-être trop peu de tours pour être réintégrée.",
+      "merge_back_failed_parent_missing": "La session parente est fermée ou n'existe plus. Rouvrez-la d'abord depuis l'historique.",
+      "merge_back_failed_parent_save": "Impossible d'enregistrer le résumé dans la session parente ; rien n'a été réintégré. Réessayez.",
+      "merge_back_failed_running": "Cette bifurcation a un tour en cours. Réessayez lorsqu’elle est inactive.",
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
+      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard.",
+      "merge_back_failed_parent_busy": "La session parente a un tour en cours. Réessayez quand il sera terminé.",
+      "merge_back_failed_nothing": "Ce fork n'a pas encore de travail propre à fusionner. Envoyez-lui d'abord un message, puis fusionnez."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponible",
@@ -7916,9 +7930,30 @@
         "acknowledged_this_won_t_be_repeated_in_future_no": "Accusé de réception — cela ne sera pas répété dans les prochaines notifications",
         "delete": "Supprimer"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Charger les messages précédents",
+        "error_retry": "Impossible de charger les messages précédents — réessayer"
+      },
       "errorCard": {
         "continue": "Reprendre",
         "continue_hint": "Reprendre là où ça s’est arrêté. Le travail déjà écrit sur le disque reste intact."
+      },
+      "fileBrowserRail": {
+        "all_files": "Tous les fichiers",
+        "changed": "Modifiés",
+        "close_search": "Fermer la recherche",
+        "filter_placeholder": "Filtrer les fichiers…",
+        "refresh": "Actualiser",
+        "resize": "Redimensionner l'explorateur",
+        "tree_mode": "Mode liste de fichiers"
+      },
+      "filesHome": {
+        "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",
+        "refresh": "Actualiser",
+        "reveal_in_finder": "Afficher dans le gestionnaire de fichiers",
+        "select_file_hint": "Sélectionnez un fichier dans l'arborescence pour l'ouvrir dans un nouvel onglet",
+        "title": "Fichiers",
+        "tree_error": "Impossible de charger l’arborescence des fichiers"
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",
@@ -7972,6 +8007,15 @@
         "remote_gateway_hint": "Sur une passerelle distante, le rappel localhost du navigateur échouera — c'est normal. Copiez l'adresse complète sur laquelle le navigateur a abouti et collez-la ici pour terminer l'autorisation.",
         "requires_authentication": "nécessite une authentification."
       },
+      "mergedSummaryCard": {
+        "gap_note_many": "La session parente a avancé de {{count}} messages depuis ce fork ; réintégré à la fin actuelle.",
+        "gap_note_one": "La session parente a avancé de {{count}} message depuis ce fork ; réintégré à la fin actuelle.",
+        "gap_note_other": "La session parente a avancé de {{count}} messages depuis ce fork ; réintégré à la fin actuelle.",
+        "merged_from_a_fork": "Réintégré depuis une bifurcation",
+        "merged_from_fork": "Réintégré depuis {{name}}",
+        "summary_covers_full_fork": "Résumé de toute la session de la bifurcation",
+        "summary_of_forks_work": "Résumé du travail de la bifurcation"
+      },
       "notificationItem": {
         "acknowledged": "Accusé de réception",
         "delete": "Supprimer"
@@ -7987,6 +8031,24 @@
         "collapse_pinned_prompt": "Réduire le message épinglé",
         "expand_pinned_prompt": "Développer le message épinglé",
         "jump_to_this_turn": "Aller à ce tour"
+      },
+      "pins": {
+        "pinned_messages": "Messages épinglés",
+        "loading": "Chargement…",
+        "no_pinned_messages": "Aucun message épinglé. Survolez un message dans la conversation et cliquez sur l’icône d’épingle pour l’enregistrer ici.",
+        "message_unavailable": "Ce message épinglé n’est plus disponible dans l’historique chargé.",
+        "pin_failed": "Impossible d’épingler le message. Réessayez.",
+        "unpin_failed": "Impossible de désépingler le message. Réessayez.",
+        "you": "Toi",
+        "assistant": "Assistant",
+        "just_now": "À l'instant",
+        "minutes_ago": "il y a {{count}} min",
+        "hours_ago": "il y a {{count}} h",
+        "days_ago": "il y a {{count}} j",
+        "copy_preview": "Copier le texte",
+        "copy_link": "Copier le lien vers le message",
+        "unpin": "Désépingler",
+        "jump_to_message": "Aller au message"
       },
       "recoveryCard": {
         "action_not_taken": "Action non effectuée",
@@ -8026,6 +8088,48 @@
         "new_chat": "Nouveau chat",
         "recent_sessions": "Sessions récentes",
         "show_all_sessions": "Afficher toutes les sessions"
+      },
+      "sessionSummary": {
+        "empty_body": "Le résumé est écrit à la fin d'un tour. Envoyez un message pour en obtenir un pour cette session.",
+        "empty_generate_body": "Cette session n'a pas encore été résumée.",
+        "empty_title": "Pas encore de résumé",
+        "empty_too_few": "Envoyez d'abord quelques messages — il n'y a pas encore assez de matière à résumer.",
+        "failed": "Réessayez, ou rechargez la page si l'échec persiste.",
+        "failed_title": "Impossible de charger le résumé",
+        "from_intent": "Fait partie de {{intent}}",
+        "generate": "Résumer",
+        "generate_failed": "Impossible de résumer cette session. Réessayez dans un instant.",
+        "generate_in_flight": "Un résumé est déjà en cours d'écriture.",
+        "generate_turn_running": "Impossible de résumer pendant qu'un tour est en cours. Attendez la fin de ce tour.",
+        "generating": "Résumé en cours…",
+        "loading": "Chargement du résumé…",
+        "most_recent_first": "Le plus récemment travaillé en premier",
+        "not_generated": "Pas encore généré",
+        "nothing_outstanding": "Rien en attente.",
+        "off_body": "Une fois activés, les nouveaux tours sont résumés ; les tours précédents ne sont pas rattrapés.",
+        "off_title": "Les résumés de session sont désactivés",
+        "open_items_heading": "Éléments ouverts",
+        "open_items_many": "{{count}} éléments ouverts",
+        "open_items_less": "Afficher moins",
+        "open_items_more": "+{{n}} de plus",
+        "open_items_one": "{{count}} élément ouvert",
+        "open_items_other": "{{count}} éléments ouverts",
+        "pivoted_from_turn": "Est né de votre question au tour {{turn}}",
+        "project_notes": "Comment fonctionne ce projet",
+        "reload": "Vérifier à nouveau",
+        "retry": "Réessayer",
+        "returned_to": "Reprise ×{{times}}",
+        "state_active": "En cours",
+        "state_done": "Terminé",
+        "state_dropped": "Abandonné",
+        "state_needs_you": "À traiter",
+        "suggested_next": "Prochaines étapes suggérées",
+        "title": "Résumé",
+        "turns": "tours {{ranges}}",
+        "updated": "Mis à jour",
+        "updated_behind": "Mis à jour {{when}} — en retard sur la conversation",
+        "where_it_stands": "Où cela en est",
+        "you_asked_for": "Ce que vous avez demandé"
       },
       "sideChat": {
         "ago": "auparavant",
@@ -8208,87 +8312,6 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossible de charger l'instantané :",
         "events": "événements"
-      },
-      "pins": {
-        "pinned_messages": "Messages épinglés",
-        "loading": "Chargement…",
-        "no_pinned_messages": "Aucun message épinglé. Survolez un message dans la conversation et cliquez sur l’icône d’épingle pour l’enregistrer ici.",
-        "message_unavailable": "Ce message épinglé n’est plus disponible dans l’historique chargé.",
-        "pin_failed": "Impossible d’épingler le message. Réessayez.",
-        "unpin_failed": "Impossible de désépingler le message. Réessayez.",
-        "you": "Toi",
-        "assistant": "Assistant",
-        "just_now": "À l'instant",
-        "minutes_ago": "il y a {{count}} min",
-        "hours_ago": "il y a {{count}} h",
-        "days_ago": "il y a {{count}} j",
-        "copy_preview": "Copier le texte",
-        "copy_link": "Copier le lien vers le message",
-        "unpin": "Désépingler",
-        "jump_to_message": "Aller au message"
-      },
-      "earlierMessagesBar": {
-        "load_earlier_messages": "Charger les messages précédents",
-        "error_retry": "Impossible de charger les messages précédents — réessayer"
-      },
-      "sessionSummary": {
-        "empty_body": "Le résumé est écrit à la fin d'un tour. Envoyez un message pour en obtenir un pour cette session.",
-        "empty_generate_body": "Cette session n'a pas encore été résumée.",
-        "empty_title": "Pas encore de résumé",
-        "empty_too_few": "Envoyez d'abord quelques messages — il n'y a pas encore assez de matière à résumer.",
-        "failed": "Réessayez, ou rechargez la page si l'échec persiste.",
-        "failed_title": "Impossible de charger le résumé",
-        "from_intent": "Fait partie de {{intent}}",
-        "generate": "Résumer",
-        "generate_failed": "Impossible de résumer cette session. Réessayez dans un instant.",
-        "generate_in_flight": "Un résumé est déjà en cours d'écriture.",
-        "generate_turn_running": "Impossible de résumer pendant qu'un tour est en cours. Attendez la fin de ce tour.",
-        "generating": "Résumé en cours…",
-        "loading": "Chargement du résumé…",
-        "most_recent_first": "Le plus récemment travaillé en premier",
-        "not_generated": "Pas encore généré",
-        "nothing_outstanding": "Rien en attente.",
-        "off_body": "Une fois activés, les nouveaux tours sont résumés ; les tours précédents ne sont pas rattrapés.",
-        "off_title": "Les résumés de session sont désactivés",
-        "open_items_heading": "Éléments ouverts",
-        "open_items_many": "{{count}} éléments ouverts",
-        "open_items_less": "Afficher moins",
-        "open_items_more": "+{{n}} de plus",
-        "open_items_one": "{{count}} élément ouvert",
-        "open_items_other": "{{count}} éléments ouverts",
-        "pivoted_from_turn": "Est né de votre question au tour {{turn}}",
-        "project_notes": "Comment fonctionne ce projet",
-        "reload": "Vérifier à nouveau",
-        "retry": "Réessayer",
-        "returned_to": "Reprise ×{{times}}",
-        "state_active": "En cours",
-        "state_done": "Terminé",
-        "state_dropped": "Abandonné",
-        "state_needs_you": "À traiter",
-        "suggested_next": "Prochaines étapes suggérées",
-        "title": "Résumé",
-        "turns": "tours {{ranges}}",
-        "updated": "Mis à jour",
-        "updated_behind": "Mis à jour {{when}} — en retard sur la conversation",
-        "where_it_stands": "Où cela en est",
-        "you_asked_for": "Ce que vous avez demandé"
-      },
-      "fileBrowserRail": {
-        "all_files": "Tous les fichiers",
-        "changed": "Modifiés",
-        "close_search": "Fermer la recherche",
-        "filter_placeholder": "Filtrer les fichiers…",
-        "refresh": "Actualiser",
-        "resize": "Redimensionner l'explorateur",
-        "tree_mode": "Mode liste de fichiers"
-      },
-      "filesHome": {
-        "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",
-        "refresh": "Actualiser",
-        "reveal_in_finder": "Afficher dans le gestionnaire de fichiers",
-        "select_file_hint": "Sélectionnez un fichier dans l'arborescence pour l'ouvrir dans un nouvel onglet",
-        "title": "Fichiers",
-        "tree_error": "Impossible de charger l’arborescence des fichiers"
       }
     },
     "chatPage": {

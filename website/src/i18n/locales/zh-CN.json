@@ -4785,12 +4785,17 @@
       "earlier_messages_open_session": "更早的消息 — 打开完整会话（关闭分屏）",
       "earlier_messages_unavailable": "更早的消息在此会话的历史记录中不再可用。",
       "forked_from": "分叉自 {{name}}",
+      "merge_back": "合并回原会话",
+      "merge_back_confirm": "将此分支的摘要合并回 {{name}} 并归档该分支？该分支将变为只读。",
+      "merge_back_merging": "正在合并…",
+      "merge_back_title": "将此分支的摘要合并回 {{name}} 并归档该分支",
       "model_list": "模型列表",
       "session_ready_type_a_message_to_start": "会话就绪。输入消息即可开始。",
       "split_down": "向下分屏",
       "split_right": "向右分屏",
       "split_right_d": "向右分屏（⌘D）",
-      "type_to_filter": "输入以筛选…"
+      "type_to_filter": "输入以筛选…",
+      "pane_actions": "窗格操作"
     },
     "cliPanel": {
       "copied": "已复制",
@@ -6815,10 +6820,19 @@
     },
     "useSessionActions": {
       "close_this_session": "关闭此会话？",
+      "merge_back_failed": "合并回原会话失败。父会话可能已不存在，或网关无法访问；请重试。",
+      "merge_back_failed_already_merged": "该分支已经合并回其父会话。",
+      "merge_back_failed_archive": "摘要已合并到父会话，但分叉未能归档。请再次点击“合并回原会话”以完成。",
+      "merge_back_failed_no_summary": "无法为该分支生成摘要——可能轮次太少，无法合并回原会话。",
+      "merge_back_failed_parent_missing": "父会话已关闭或不再存在。请先从历史记录中重新打开它。",
+      "merge_back_failed_parent_save": "无法将合并的摘要保存到父会话；未合并任何内容。请重试。",
+      "merge_back_failed_running": "该分支有一个轮次正在进行。请在其空闲时重试。",
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
-      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
+      "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。",
+      "merge_back_failed_parent_busy": "父会话正在进行一个轮次。请等它完成后重试。",
+      "merge_back_failed_nothing": "此分叉尚无自己的工作可合并。请先发送一条消息，然后再合并。"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet 不可用",
@@ -7712,9 +7726,30 @@
         "acknowledged_this_won_t_be_repeated_in_future_no": "已确认 — 后续通知中不会再重复",
         "delete": "删除"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "加载更早的消息",
+        "error_retry": "无法加载更早的消息 — 重试"
+      },
       "errorCard": {
         "continue": "继续",
         "continue_hint": "从中断处继续。已经写入磁盘的改动都还在。"
+      },
+      "fileBrowserRail": {
+        "all_files": "全部文件",
+        "changed": "已更改",
+        "close_search": "关闭搜索",
+        "filter_placeholder": "筛选文件…",
+        "refresh": "刷新",
+        "resize": "调整文件浏览器大小",
+        "tree_mode": "文件列表模式"
+      },
+      "filesHome": {
+        "no_project_dir": "此聊天未设置项目目录",
+        "refresh": "刷新",
+        "reveal_in_finder": "在文件管理器中显示",
+        "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
+        "title": "文件",
+        "tree_error": "无法加载文件树"
       },
       "folderPanel": {
         "clear_search": "清除搜索",
@@ -7768,6 +7803,13 @@
         "remote_gateway_hint": "在远程网关上，浏览器的 localhost 回调会失败——这是预期行为。请复制浏览器最终到达的完整地址并粘贴到此处，以完成授权。",
         "requires_authentication": "需要认证。"
       },
+      "mergedSummaryCard": {
+        "gap_note_other": "自该分叉以来，父会话推进了 {{count}} 条消息；已合并至当前末尾。",
+        "merged_from_a_fork": "从分支合并",
+        "merged_from_fork": "从 {{name}} 合并",
+        "summary_covers_full_fork": "整个分支会话的摘要",
+        "summary_of_forks_work": "分支工作的摘要"
+      },
       "notificationItem": {
         "acknowledged": "已确认",
         "delete": "删除"
@@ -7783,6 +7825,24 @@
         "collapse_pinned_prompt": "收起置顶提示",
         "expand_pinned_prompt": "展开置顶提示",
         "jump_to_this_turn": "跳转到此轮次"
+      },
+      "pins": {
+        "pinned_messages": "已置顶消息",
+        "loading": "加载中…",
+        "no_pinned_messages": "还没有置顶消息。把鼠标移到聊天中的某条消息上，点击图钉图标即可保存到这里。",
+        "message_unavailable": "此置顶消息在已加载的历史记录中不再可用。",
+        "pin_failed": "无法置顶消息，请重试。",
+        "unpin_failed": "无法取消置顶消息，请重试。",
+        "you": "你",
+        "assistant": "助手",
+        "just_now": "刚刚",
+        "minutes_ago": "{{count}}分钟前",
+        "hours_ago": "{{count}}小时前",
+        "days_ago": "{{count}}天前",
+        "copy_preview": "复制文本",
+        "copy_link": "复制消息链接",
+        "unpin": "取消置顶",
+        "jump_to_message": "跳转到消息"
       },
       "recoveryCard": {
         "action_not_taken": "未执行操作",
@@ -7822,6 +7882,46 @@
         "new_chat": "新建聊天",
         "recent_sessions": "最近的会话",
         "show_all_sessions": "显示所有会话"
+      },
+      "sessionSummary": {
+        "empty_body": "摘要在一轮对话结束时生成。发送一条消息即可为此会话生成摘要。",
+        "empty_generate_body": "此会话尚未生成摘要。",
+        "empty_title": "还没有摘要",
+        "empty_too_few": "先发送几条消息，目前内容太少，无法生成摘要。",
+        "failed": "请重试；如果持续失败，请重新加载页面。",
+        "failed_title": "无法加载摘要",
+        "from_intent": "属于“{{intent}}”",
+        "generate": "生成摘要",
+        "generate_failed": "无法为此会话生成摘要。请稍后重试。",
+        "generate_in_flight": "已有一份摘要正在生成中。",
+        "generate_turn_running": "当前轮次进行中，无法生成摘要。请等待本轮结束。",
+        "generating": "正在生成摘要…",
+        "loading": "正在加载摘要…",
+        "most_recent_first": "最近处理的排在前面",
+        "not_generated": "尚未生成",
+        "nothing_outstanding": "没有待办事项。",
+        "off_body": "启用后将为新的对话轮次生成摘要，之前的轮次不会补全。",
+        "off_title": "会话摘要已关闭",
+        "open_items_heading": "待处理项",
+        "open_items_less": "收起",
+        "open_items_more": "还有 {{n}} 项",
+        "open_items_other": "{{count}} 项待处理",
+        "pivoted_from_turn": "由你在第 {{turn}} 轮的提问转向而来",
+        "project_notes": "这个项目的运作方式",
+        "reload": "重新检查",
+        "retry": "重试",
+        "returned_to": "重新开始 ×{{times}}",
+        "state_active": "进行中",
+        "state_done": "已完成",
+        "state_dropped": "已放弃",
+        "state_needs_you": "需要你处理",
+        "suggested_next": "建议的下一步",
+        "title": "摘要",
+        "turns": "第 {{ranges}} 轮",
+        "updated": "更新于",
+        "updated_behind": "{{when}}更新，落后于当前对话",
+        "where_it_stands": "当前进展",
+        "you_asked_for": "你的要求"
       },
       "sideChat": {
         "ago": "前",
@@ -8002,85 +8102,6 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "无法加载快照：",
         "events": "个事件"
-      },
-      "pins": {
-        "pinned_messages": "已置顶消息",
-        "loading": "加载中…",
-        "no_pinned_messages": "还没有置顶消息。把鼠标移到聊天中的某条消息上，点击图钉图标即可保存到这里。",
-        "message_unavailable": "此置顶消息在已加载的历史记录中不再可用。",
-        "pin_failed": "无法置顶消息，请重试。",
-        "unpin_failed": "无法取消置顶消息，请重试。",
-        "you": "你",
-        "assistant": "助手",
-        "just_now": "刚刚",
-        "minutes_ago": "{{count}}分钟前",
-        "hours_ago": "{{count}}小时前",
-        "days_ago": "{{count}}天前",
-        "copy_preview": "复制文本",
-        "copy_link": "复制消息链接",
-        "unpin": "取消置顶",
-        "jump_to_message": "跳转到消息"
-      },
-      "earlierMessagesBar": {
-        "load_earlier_messages": "加载更早的消息",
-        "error_retry": "无法加载更早的消息 — 重试"
-      },
-      "sessionSummary": {
-        "empty_body": "摘要在一轮对话结束时生成。发送一条消息即可为此会话生成摘要。",
-        "empty_generate_body": "此会话尚未生成摘要。",
-        "empty_title": "还没有摘要",
-        "empty_too_few": "先发送几条消息，目前内容太少，无法生成摘要。",
-        "failed": "请重试；如果持续失败，请重新加载页面。",
-        "failed_title": "无法加载摘要",
-        "from_intent": "属于“{{intent}}”",
-        "generate": "生成摘要",
-        "generate_failed": "无法为此会话生成摘要。请稍后重试。",
-        "generate_in_flight": "已有一份摘要正在生成中。",
-        "generate_turn_running": "当前轮次进行中，无法生成摘要。请等待本轮结束。",
-        "generating": "正在生成摘要…",
-        "loading": "正在加载摘要…",
-        "most_recent_first": "最近处理的排在前面",
-        "not_generated": "尚未生成",
-        "nothing_outstanding": "没有待办事项。",
-        "off_body": "启用后将为新的对话轮次生成摘要，之前的轮次不会补全。",
-        "off_title": "会话摘要已关闭",
-        "open_items_heading": "待处理项",
-        "open_items_less": "收起",
-        "open_items_more": "还有 {{n}} 项",
-        "open_items_other": "{{count}} 项待处理",
-        "pivoted_from_turn": "由你在第 {{turn}} 轮的提问转向而来",
-        "project_notes": "这个项目的运作方式",
-        "reload": "重新检查",
-        "retry": "重试",
-        "returned_to": "重新开始 ×{{times}}",
-        "state_active": "进行中",
-        "state_done": "已完成",
-        "state_dropped": "已放弃",
-        "state_needs_you": "需要你处理",
-        "suggested_next": "建议的下一步",
-        "title": "摘要",
-        "turns": "第 {{ranges}} 轮",
-        "updated": "更新于",
-        "updated_behind": "{{when}}更新，落后于当前对话",
-        "where_it_stands": "当前进展",
-        "you_asked_for": "你的要求"
-      },
-      "fileBrowserRail": {
-        "all_files": "全部文件",
-        "changed": "已更改",
-        "close_search": "关闭搜索",
-        "filter_placeholder": "筛选文件…",
-        "refresh": "刷新",
-        "resize": "调整文件浏览器大小",
-        "tree_mode": "文件列表模式"
-      },
-      "filesHome": {
-        "no_project_dir": "此聊天未设置项目目录",
-        "refresh": "刷新",
-        "reveal_in_finder": "在文件管理器中显示",
-        "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
-        "title": "文件",
-        "tree_error": "无法加载文件树"
       }
     },
     "chatPage": {

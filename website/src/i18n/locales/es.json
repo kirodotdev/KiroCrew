@@ -4931,12 +4931,17 @@
       "earlier_messages_open_session": "Mensajes anteriores — abrir la sesión completa (cierra la vista dividida)",
       "earlier_messages_unavailable": "Los mensajes anteriores ya no están disponibles en el historial de esta sesión.",
       "forked_from": "Bifurcado de {{name}}",
+      "merge_back": "Reintegrar",
+      "merge_back_confirm": "¿Reintegrar el resumen de este fork en {{name}} y archivar el fork? El fork quedará en solo lectura.",
+      "merge_back_merging": "Reintegrando…",
+      "merge_back_title": "Reintegrar el resumen de este fork en {{name}} y archivar el fork",
       "model_list": "Lista de modelos",
       "session_ready_type_a_message_to_start": "Sesión lista. Escribe un mensaje para empezar.",
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
       "split_right_d": "Dividir a la derecha (⌘D)",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "pane_actions": "Acciones del panel"
     },
     "cliPanel": {
       "copied": "Copiado",
@@ -6993,10 +6998,19 @@
     },
     "useSessionActions": {
       "close_this_session": "¿Cerrar esta sesión?",
+      "merge_back_failed": "Falló la reintegración. La sesión principal puede haber desaparecido o el gateway no está accesible; inténtelo de nuevo.",
+      "merge_back_failed_already_merged": "Este fork ya se ha reintegrado en su sesión principal.",
+      "merge_back_failed_archive": "El resumen se reintegró en la sesión principal, pero no se pudo archivar el fork. Haga clic en Reintegrar de nuevo para terminar.",
+      "merge_back_failed_no_summary": "No se pudo resumir este fork: puede tener muy pocos turnos para reintegrarlo.",
+      "merge_back_failed_parent_missing": "La sesión principal está cerrada o ya no existe. Vuelva a abrirla desde el Historial primero.",
+      "merge_back_failed_parent_save": "No se pudo guardar el resumen en la sesión principal; no se reintegró nada. Inténtelo de nuevo.",
+      "merge_back_failed_running": "Este fork tiene un turno en curso. Inténtelo de nuevo cuando esté inactivo.",
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
-      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
+      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar.",
+      "merge_back_failed_parent_busy": "La sesión principal tiene un turno en curso. Inténtalo de nuevo cuando termine.",
+      "merge_back_failed_nothing": "Esta bifurcación aún no tiene trabajo propio que fusionar. Envíale primero un mensaje y luego fusiona."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet no disponible",
@@ -7916,9 +7930,30 @@
         "acknowledged_this_won_t_be_repeated_in_future_no": "Confirmado — esto no se repetirá en futuras notificaciones",
         "delete": "Eliminar"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Cargar mensajes anteriores",
+        "error_retry": "No se pudieron cargar los mensajes anteriores — reintentar"
+      },
       "errorCard": {
         "continue": "Continuar",
         "continue_hint": "Reanudar donde se detuvo. El trabajo ya escrito en disco no se altera."
+      },
+      "fileBrowserRail": {
+        "all_files": "Todos los archivos",
+        "changed": "Modificados",
+        "close_search": "Cerrar búsqueda",
+        "filter_placeholder": "Filtrar archivos…",
+        "refresh": "Actualizar",
+        "resize": "Cambiar tamaño del explorador",
+        "tree_mode": "Modo de lista de archivos"
+      },
+      "filesHome": {
+        "no_project_dir": "Este chat no tiene un directorio de proyecto",
+        "refresh": "Actualizar",
+        "reveal_in_finder": "Mostrar en el gestor de archivos",
+        "select_file_hint": "Selecciona un archivo del árbol para abrirlo en una nueva pestaña",
+        "title": "Archivos",
+        "tree_error": "No se pudo cargar el árbol de archivos"
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",
@@ -7972,6 +8007,15 @@
         "remote_gateway_hint": "En una puerta de enlace remota, la llamada de retorno a localhost del navegador fallará; es lo esperado. Copia la dirección completa a la que llegó el navegador y pégala aquí para terminar la autorización.",
         "requires_authentication": "requiere autenticación."
       },
+      "mergedSummaryCard": {
+        "gap_note_many": "La sesión principal avanzó {{count}} mensajes desde este fork; reintegrado al final actual.",
+        "gap_note_one": "La sesión principal avanzó {{count}} mensaje desde este fork; reintegrado al final actual.",
+        "gap_note_other": "La sesión principal avanzó {{count}} mensajes desde este fork; reintegrado al final actual.",
+        "merged_from_a_fork": "Reintegrado desde un fork",
+        "merged_from_fork": "Reintegrado desde {{name}}",
+        "summary_covers_full_fork": "Resumen de toda la sesión del fork",
+        "summary_of_forks_work": "Resumen del trabajo del fork"
+      },
       "notificationItem": {
         "acknowledged": "Confirmado",
         "delete": "Eliminar"
@@ -7987,6 +8031,24 @@
         "collapse_pinned_prompt": "Contraer mensaje fijado",
         "expand_pinned_prompt": "Expandir mensaje fijado",
         "jump_to_this_turn": "Ir a este turno"
+      },
+      "pins": {
+        "pinned_messages": "Mensajes fijados",
+        "loading": "Cargando…",
+        "no_pinned_messages": "Aún no hay mensajes fijados. Coloca el cursor sobre un mensaje del chat y haz clic en el icono de chincheta para guardarlo aquí.",
+        "message_unavailable": "Este mensaje fijado ya no está disponible en el historial cargado.",
+        "pin_failed": "No se pudo fijar el mensaje. Inténtalo de nuevo.",
+        "unpin_failed": "No se pudo desfijar el mensaje. Inténtalo de nuevo.",
+        "you": "Tú",
+        "assistant": "Asistente",
+        "just_now": "Ahora mismo",
+        "minutes_ago": "hace {{count}} min",
+        "hours_ago": "hace {{count}} h",
+        "days_ago": "hace {{count}} d",
+        "copy_preview": "Copiar texto",
+        "copy_link": "Copiar enlace al mensaje",
+        "unpin": "Desfijar",
+        "jump_to_message": "Ir al mensaje"
       },
       "recoveryCard": {
         "action_not_taken": "Acción no realizada",
@@ -8026,6 +8088,48 @@
         "new_chat": "Nuevo chat",
         "recent_sessions": "Sesiones recientes",
         "show_all_sessions": "Mostrar todas las sesiones"
+      },
+      "sessionSummary": {
+        "empty_body": "El resumen se escribe cuando termina un turno. Envía un mensaje para obtener uno de esta sesión.",
+        "empty_generate_body": "Esta sesión aún no se ha resumido.",
+        "empty_title": "Aún no hay resumen",
+        "empty_too_few": "Envía un par de mensajes primero — aquí no hay suficiente para resumir.",
+        "failed": "Inténtalo de nuevo o recarga la página si sigue fallando.",
+        "failed_title": "No se pudo cargar el resumen",
+        "from_intent": "Parte de {{intent}}",
+        "generate": "Resumir",
+        "generate_failed": "No se pudo resumir esta sesión. Inténtalo de nuevo en un momento.",
+        "generate_in_flight": "Ya se está escribiendo un resumen.",
+        "generate_turn_running": "No se puede resumir mientras un turno está en curso. Espera a que termine este turno.",
+        "generating": "Resumiendo…",
+        "loading": "Cargando el resumen…",
+        "most_recent_first": "Lo trabajado más recientemente primero",
+        "not_generated": "Aún sin generar",
+        "nothing_outstanding": "Nada pendiente.",
+        "off_body": "Al activarlos se resumen los turnos nuevos; los anteriores no se rellenan.",
+        "off_title": "Los resúmenes de sesión están desactivados",
+        "open_items_heading": "Elementos abiertos",
+        "open_items_many": "{{count}} elementos abiertos",
+        "open_items_less": "Mostrar menos",
+        "open_items_more": "+{{n}} más",
+        "open_items_one": "{{count}} elemento abierto",
+        "open_items_other": "{{count}} elementos abiertos",
+        "pivoted_from_turn": "Surgió de tu pregunta en el turno {{turn}}",
+        "project_notes": "Cómo funciona este proyecto",
+        "reload": "Comprobar de nuevo",
+        "retry": "Intentar de nuevo",
+        "returned_to": "Reanudado ×{{times}}",
+        "state_active": "Activo",
+        "state_done": "Hecho",
+        "state_dropped": "Abandonado",
+        "state_needs_you": "Requiere atención",
+        "suggested_next": "Siguientes pasos sugeridos",
+        "title": "Resumen",
+        "turns": "turnos {{ranges}}",
+        "updated": "Actualizado",
+        "updated_behind": "Actualizado {{when}} — por detrás de la conversación",
+        "where_it_stands": "Cómo va",
+        "you_asked_for": "Lo que pediste"
       },
       "sideChat": {
         "ago": "atrás",
@@ -8208,87 +8312,6 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "No se pudo cargar la instantánea:",
         "events": "eventos"
-      },
-      "pins": {
-        "pinned_messages": "Mensajes fijados",
-        "loading": "Cargando…",
-        "no_pinned_messages": "Aún no hay mensajes fijados. Coloca el cursor sobre un mensaje del chat y haz clic en el icono de chincheta para guardarlo aquí.",
-        "message_unavailable": "Este mensaje fijado ya no está disponible en el historial cargado.",
-        "pin_failed": "No se pudo fijar el mensaje. Inténtalo de nuevo.",
-        "unpin_failed": "No se pudo desfijar el mensaje. Inténtalo de nuevo.",
-        "you": "Tú",
-        "assistant": "Asistente",
-        "just_now": "Ahora mismo",
-        "minutes_ago": "hace {{count}} min",
-        "hours_ago": "hace {{count}} h",
-        "days_ago": "hace {{count}} d",
-        "copy_preview": "Copiar texto",
-        "copy_link": "Copiar enlace al mensaje",
-        "unpin": "Desfijar",
-        "jump_to_message": "Ir al mensaje"
-      },
-      "earlierMessagesBar": {
-        "load_earlier_messages": "Cargar mensajes anteriores",
-        "error_retry": "No se pudieron cargar los mensajes anteriores — reintentar"
-      },
-      "sessionSummary": {
-        "empty_body": "El resumen se escribe cuando termina un turno. Envía un mensaje para obtener uno de esta sesión.",
-        "empty_generate_body": "Esta sesión aún no se ha resumido.",
-        "empty_title": "Aún no hay resumen",
-        "empty_too_few": "Envía un par de mensajes primero — aquí no hay suficiente para resumir.",
-        "failed": "Inténtalo de nuevo o recarga la página si sigue fallando.",
-        "failed_title": "No se pudo cargar el resumen",
-        "from_intent": "Parte de {{intent}}",
-        "generate": "Resumir",
-        "generate_failed": "No se pudo resumir esta sesión. Inténtalo de nuevo en un momento.",
-        "generate_in_flight": "Ya se está escribiendo un resumen.",
-        "generate_turn_running": "No se puede resumir mientras un turno está en curso. Espera a que termine este turno.",
-        "generating": "Resumiendo…",
-        "loading": "Cargando el resumen…",
-        "most_recent_first": "Lo trabajado más recientemente primero",
-        "not_generated": "Aún sin generar",
-        "nothing_outstanding": "Nada pendiente.",
-        "off_body": "Al activarlos se resumen los turnos nuevos; los anteriores no se rellenan.",
-        "off_title": "Los resúmenes de sesión están desactivados",
-        "open_items_heading": "Elementos abiertos",
-        "open_items_many": "{{count}} elementos abiertos",
-        "open_items_less": "Mostrar menos",
-        "open_items_more": "+{{n}} más",
-        "open_items_one": "{{count}} elemento abierto",
-        "open_items_other": "{{count}} elementos abiertos",
-        "pivoted_from_turn": "Surgió de tu pregunta en el turno {{turn}}",
-        "project_notes": "Cómo funciona este proyecto",
-        "reload": "Comprobar de nuevo",
-        "retry": "Intentar de nuevo",
-        "returned_to": "Reanudado ×{{times}}",
-        "state_active": "Activo",
-        "state_done": "Hecho",
-        "state_dropped": "Abandonado",
-        "state_needs_you": "Requiere atención",
-        "suggested_next": "Siguientes pasos sugeridos",
-        "title": "Resumen",
-        "turns": "turnos {{ranges}}",
-        "updated": "Actualizado",
-        "updated_behind": "Actualizado {{when}} — por detrás de la conversación",
-        "where_it_stands": "Cómo va",
-        "you_asked_for": "Lo que pediste"
-      },
-      "fileBrowserRail": {
-        "all_files": "Todos los archivos",
-        "changed": "Modificados",
-        "close_search": "Cerrar búsqueda",
-        "filter_placeholder": "Filtrar archivos…",
-        "refresh": "Actualizar",
-        "resize": "Cambiar tamaño del explorador",
-        "tree_mode": "Modo de lista de archivos"
-      },
-      "filesHome": {
-        "no_project_dir": "Este chat no tiene un directorio de proyecto",
-        "refresh": "Actualizar",
-        "reveal_in_finder": "Mostrar en el gestor de archivos",
-        "select_file_hint": "Selecciona un archivo del árbol para abrirlo en una nueva pestaña",
-        "title": "Archivos",
-        "tree_error": "No se pudo cargar el árbol de archivos"
       }
     },
     "chatPage": {

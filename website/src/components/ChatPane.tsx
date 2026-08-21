@@ -1,7 +1,10 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, GitMerge, ChevronDown, MoreVertical } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from './ui/dropdown-menu'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
@@ -17,6 +20,7 @@ import ModelDropdownList from './ModelDropdownList'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
+import { useSessionActions } from '../hooks/useSessionActions'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
@@ -109,6 +113,10 @@ export default function ChatPane({
   const parentTitle = useAppSelector((s) =>
     parentKey ? s.dashboard.slots.find((x) => x.key === parentKey)?.title : undefined,
   )
+  // A fork that hasn't yet been merged back can be folded into its parent
+  // (#3816). Once merged the backend archives it, so the affordance hides.
+  const isMerged = paneSlot?.merged === true
+  const { mergeBack, mergeBackPending } = useSessionActions()
   const approvalMode = useAppSelector((s) => s.dashboard.approvalMode)
   const title = paneSlot?.title || slotKey
   const displayMode = approvalMode === 'yolo' ? 'yolo' : paneSlot?.trust ? 'trust' : paneSlot?.trust_reads ? 'trust_reads' : 'normal'
@@ -487,7 +495,7 @@ export default function ChatPane({
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
-          {parentKey && (
+          {parentKey && isMerged && (
             <span
               className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
               title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
@@ -495,22 +503,119 @@ export default function ChatPane({
               ↳ {parentTitle || parentKey}
             </span>
           )}
+          {parentKey && !isMerged && (
+            /* Unmerged fork: the breadcrumb pill doubles as the overflow menu
+               holding "Merge back" (AUTOSDE max-two-buttons-per-row — the
+               header row cannot take another sibling button; the maintainer's
+               #3816 ruling homes the affordance on the fork breadcrumb, and
+               the pill IS the breadcrumb). */
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="shrink-0 inline-flex items-center gap-0.5 text-[10px] text-accent bg-accent/10 hover:bg-accent/20 rounded-full px-1.5 py-0.5 truncate max-w-[38%] cursor-pointer border-none transition-colors"
+                  title={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
+                  aria-label={i18nT('components.chatPane.forked_from', { name: parentTitle || parentKey })}
+                  aria-busy={mergeBackPending}
+                >
+                  <span className="truncate">
+                    {mergeBackPending
+                      ? i18nT('components.chatPane.merge_back_merging')
+                      : <>↳ {parentTitle || parentKey}</>}
+                  </span>
+                  <ChevronDown size={10} className="lucide-inline shrink-0" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-[160px]">
+                <DropdownMenuItem
+                  disabled={mergeBackPending}
+                  aria-label={i18nT('components.chatPane.merge_back')}
+                  title={i18nT('components.chatPane.merge_back_title', { name: parentTitle || parentKey })}
+                  onSelect={() => {
+                    if (mergeBackPending) return
+                    if (confirm(i18nT('components.chatPane.merge_back_confirm', { name: parentTitle || parentKey })))
+                      mergeBack(slotKey)
+                  }}
+                >
+                  <GitMerge size={12} className="lucide-inline" aria-hidden="true" />
+                  {mergeBackPending
+                    ? i18nT('components.chatPane.merge_back_merging')
+                    : i18nT('components.chatPane.merge_back')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <span className="flex-1" />
           {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
-          {onSplitRight && (
-            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
-              <SplitGlyph />
-            </button>
-          )}
-          {onSplitDown && (
-            <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
-              <SplitGlyph down />
-            </button>
-          )}
-          {onRemove && (
-            <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
-              <X size={15} />
-            </button>
+          {parentKey && !isMerged && (onSplitRight || onSplitDown || onRemove) ? (
+            /* FORK panes only (AUTOSDE max-two-buttons-per-row + Design review):
+               the breadcrumb dropdown trigger is a header-row control, so the
+               three direct action icons would make four — fold them into one
+               overflow trigger, capping the row at two. Non-fork panes keep
+               their grandfathered three direct one-click actions: collapsing
+               them too would trade everyday ergonomics across all of Split
+               View to solve a control-count problem only fork panes have. */
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  title={i18nT('components.chatPane.pane_actions')}
+                  aria-label={i18nT('components.chatPane.pane_actions')}
+                  className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
+                >
+                  <MoreVertical size={15} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[160px]">
+                {onSplitRight && (
+                  <DropdownMenuItem
+                    onSelect={onSplitRight}
+                    aria-label={i18nT('components.chatPane.split_right')}
+                    title={i18nT('components.chatPane.split_right_d')}
+                  >
+                    <SplitGlyph />
+                    {i18nT('components.chatPane.split_right')}
+                  </DropdownMenuItem>
+                )}
+                {onSplitDown && (
+                  <DropdownMenuItem
+                    onSelect={onSplitDown}
+                    aria-label={i18nT('components.chatPane.split_down')}
+                    title={i18nT('components.chatPane.split_down')}
+                  >
+                    <SplitGlyph down />
+                    {i18nT('components.chatPane.split_down')}
+                  </DropdownMenuItem>
+                )}
+                {onRemove && (
+                  <DropdownMenuItem
+                    onSelect={onRemove}
+                    aria-label={i18nT('components.chatPane.close_pane')}
+                    title={i18nT('components.chatPane.close_pane')}
+                    className="text-danger focus:text-danger"
+                  >
+                    <X size={12} className="lucide-inline" aria-hidden="true" />
+                    {i18nT('components.chatPane.close_pane')}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <>
+              {onSplitRight && (
+                <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+                  <SplitGlyph />
+                </button>
+              )}
+              {onSplitDown && (
+                <button onClick={onSplitDown} title={i18nT('components.chatPane.split_down')} aria-label={i18nT('components.chatPane.split_down')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+                  <SplitGlyph down />
+                </button>
+              )}
+              {onRemove && (
+                <button onClick={onRemove} title={i18nT('components.chatPane.close_pane')} aria-label={i18nT('components.chatPane.close_pane')} className="shrink-0 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer p-1 transition-colors bg-transparent border-none">
+                  <X size={15} />
+                </button>
+              )}
+            </>
           )}
         </div>
 

@@ -4258,6 +4258,22 @@ async def _run_chat(
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
+    # TURN GATE (merge-back invariant, restructure round): every turn — send,
+    # continue, regenerate, edit/resend, queue dispatch, synthetic
+    # continuation, auto-nudge — funnels through here, so this one check makes
+    # "a merged fork runs no turns" true without each endpoint having to
+    # remember its own guard. Returning (not raising) keeps the fail mode of a
+    # background task graceful; the endpoints that reach this deliberately
+    # answer 409 from their own pre-checks first. getattr, not attribute
+    # access: test harnesses drive _run_chat with minimal slot stubs.
+    if getattr(slot, "_merged", False) or getattr(slot, "_merging", False):
+        logger.warning(
+            "run_chat: refusing turn on %s slot %s",
+            "merged" if getattr(slot, "_merged", False) else "merging",
+            slot.key,
+        )
+        return
+
     # Capture before any await: a Stop can complete while pre-turn setup is
     # suspended and reset _stop_state to idle before continuation processing.
     # The monotonic generation preserves that user intent across the whole call.

@@ -74,6 +74,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slots_model,
     api_recent_projects,
 )
+from kiro_crew.dashboard.chat_merge_back import api_chat_slot_merge_back  # noqa: F401
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,
     api_chat_slot_mirror_link,

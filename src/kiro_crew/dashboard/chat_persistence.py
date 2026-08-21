@@ -107,9 +107,7 @@ def _rehydrate_slot_title(
     slot.title = safe_title
     slot._titled = titled
     slot._title_origin = _rehydrate_title_origin(titled, metadata.get("title_origin"))
-    slot._title_refresh_mark = _rehydrate_title_refresh_mark(
-        metadata.get("title_refresh_mark")
-    )
+    slot._title_refresh_mark = _rehydrate_title_refresh_mark(metadata.get("title_refresh_mark"))
 
 
 _MAX_HISTORY_CHARS = 8000
@@ -290,9 +288,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
         # separators; reject any that do, warn so an attempted breakout is
         # visible, and keep restoring the rest.
         if "/" in raw or "\\" in raw:
-            logger.warning(
-                "restore_open_slots: rejecting key with path separators: %r", raw
-            )
+            logger.warning("restore_open_slots: rejecting key with path separators: %r", raw)
             continue
         # Fold to the canonical (filename-charset) key. Snapshots written
         # before slot-key normalization landed may carry a raw display-style
@@ -312,9 +308,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
             # This read MUST stay inside the per-tab guard. restore_open_slots_async
             # has no except at its call site, so anything escaping here aborts
             # dashboard startup and costs every LATER tab too, not just this one.
-            meta, readable = state.conversation_log.get_metadata_status(
-                slot_transcript_key(raw)
-            )
+            meta, readable = state.conversation_log.get_metadata_status(slot_transcript_key(raw))
             if readable:
                 slot = _rehydrate_slot_from_history(
                     state, raw, kiro_model_map=kiro_model_map, _prefetched_meta=meta
@@ -467,8 +461,10 @@ def _rehydrate_slot_from_history(
     # loop-affine: it broadcasts through ``asyncio.Queue.put_nowait`` and
     # ``Event.set``, neither of which is thread-safe. Omit them and the reads
     # happen inline, which is what the synchronous callers want.
-    meta = _prefetched_meta if _prefetched_meta is not None else (
-        state.conversation_log.get_metadata(history_key)
+    meta = (
+        _prefetched_meta
+        if _prefetched_meta is not None
+        else (state.conversation_log.get_metadata(history_key))
     )
     # No metadata → session was never persisted. Don't create a phantom slot.
     if not meta:
@@ -508,8 +504,7 @@ def _rehydrate_slot_from_history(
             # ``channel_slot_reconciler`` instead, which sets the flag -- and the
             # first save then persists it, so later boots need no inference.
             channel_origin=(
-                bool(meta.get("channel_origin"))
-                or bool(meta.get("linked_session_key"))
+                bool(meta.get("channel_origin")) or bool(meta.get("linked_session_key"))
             ),
             # Restore the persisted origin. Re-deriving it here would relabel
             # every rehydrated slot on restart, so a cron slot would come back
@@ -564,7 +559,9 @@ def _rehydrate_slot_from_history(
                 kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
                 slot.model = kiro_model_map.get(kiro_name, "")
             except Exception:
-                logger.debug("Failed to resolve model for rehydrated slot %s", slot_name, exc_info=True)
+                logger.debug(
+                    "Failed to resolve model for rehydrated slot %s", slot_name, exc_info=True
+                )
         if meta.get("reasoning_effort"):
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
         if meta.get("workspace"):
@@ -621,6 +618,13 @@ def _rehydrate_slot_from_history(
             state._restricted_keys.add(f"dashboard:{slot_name}")
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
+        if meta.get("merged"):
+            # A merged fork restored from History stays read-only + archived:
+            # the flag is what the turn path checks to reject a new turn, and
+            # missing it here would silently make a merged session writable
+            # again (the ``merged``→``closed`` fold keeps it non-continuable, but
+            # a History resume adopts a closed session deliberately).
+            slot._merged = True
         if meta.get("linked_session_key"):
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
@@ -668,9 +672,7 @@ def _rehydrate_slot_from_history(
             # returns the identical window whether it is written before or after.
             # Kept off the loop because update_metadata enters _locked (flock +
             # os.close), a blocking-on-loop-prohibited op.
-            update_metadata_off_loop(
-                state.conversation_log, history_key, {"tab_id": tab_id}
-            )
+            update_metadata_off_loop(state.conversation_log, history_key, {"tab_id": tab_id})
         # Only the recent window is loaded into memory; older on-disk lines become
         # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
         # therefore count those older lines so the save model preserves them.
@@ -989,6 +991,13 @@ def _restore_recent_sessions_steps(
             state._restricted_keys.add(f"dashboard:{slot_name}")
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
+        if meta.get("merged"):
+            # A merged fork restored from History stays read-only + archived:
+            # the flag is what the turn path checks to reject a new turn, and
+            # missing it here would silently make a merged session writable
+            # again (the ``merged``→``closed`` fold keeps it non-continuable, but
+            # a History resume adopts a closed session deliberately).
+            slot._merged = True
         if meta.get("linked_session_key"):
             slot.linked_session_key = str(meta["linked_session_key"])
         elif is_channel_session_key(key) and state.sessions:
@@ -1005,9 +1014,7 @@ def _restore_recent_sessions_steps(
             # restore_recent_sessions runs during on_startup (event loop live)
             # — keep the _locked flock/os.close off the loop via the off-loop
             # backfill helper.
-            update_metadata_off_loop(
-                state.conversation_log, key, {"tab_id": tab_id}
-            )
+            update_metadata_off_loop(state.conversation_log, key, {"tab_id": tab_id})
         slot._tab_id = tab_id
         messages = state.conversation_log.read_messages_chained(key)
         slot._disk_older_count = max(0, len(messages) - 500)
@@ -1262,8 +1269,7 @@ def _build_message_entry(m: dict) -> dict | None:
         _entry_cache[key] = (entry, size)
         _entry_cache_bytes += size
         while _entry_cache and (
-            len(_entry_cache) > _ENTRY_CACHE_MAX
-            or _entry_cache_bytes > _ENTRY_CACHE_MAX_BYTES
+            len(_entry_cache) > _ENTRY_CACHE_MAX or _entry_cache_bytes > _ENTRY_CACHE_MAX_BYTES
         ):
             _, (_evicted_entry, evicted_size) = _entry_cache.popitem(last=False)
             _entry_cache_bytes -= evicted_size
@@ -1482,12 +1488,7 @@ def _frozen_prefix_and_foreign_appends(
     except OSError:
         return ("", [], [])
     cache = slot._frozen_prefix_cache
-    if (
-        cache is not None
-        and cache[0] == mtime
-        and cache[1] == size
-        and cache[2] == disk_older
-    ):
+    if cache is not None and cache[0] == mtime and cache[1] == size and cache[2] == disk_older:
         # File is byte-identical to our last write → prefix AND the foreign
         # lines that write preserved are both served from cache. Returning the
         # cached foreign lines (a copy, so the caller cannot mutate the cache)
@@ -1660,6 +1661,8 @@ def _save_slot_to_history(
     *,
     closed: bool = False,
     closed_at: float | None = None,
+    merged: bool = False,
+    merged_at: float | None = None,
     force: bool = False,
     rewrite: bool = False,
 ) -> None:
@@ -1748,9 +1751,7 @@ def _save_slot_to_history(
         history_key = slot_history_key(slot)
         if getattr(slot, "linked_session_key", "") == routing:
             break
-    kept = [
-        m for m in window if not _note_authorized_elsewhere(m.get("meta"), note_auth_key)
-    ]
+    kept = [m for m in window if not _note_authorized_elsewhere(m.get("meta"), note_auth_key)]
     dropped_notes = len(window) - len(kept)
     window = kept
     if dropped_notes:
@@ -1792,6 +1793,7 @@ def _save_slot_to_history(
         and len(window) <= slot._resumed_count
         and not slot._dirty
         and not closed
+        and not merged
         and not force
         and not rewrite
     ):
@@ -1831,6 +1833,20 @@ def _save_slot_to_history(
             # default closes the class instead of enumerating one more field to
             # rescue. Applied after the slot fields below so an inherited value can
             # never shadow the slot's own state.
+            # A merged fork is archived: it must become non-continuable, which
+            # the restore paths already enforce for a ``closed`` session. Fold
+            # merge into close so the merged fork inherits that skip with no new
+            # restore-path code, then record the merge provenance alongside.
+            # Read the in-memory flag too, not only the explicit arg: a periodic
+            # flush of a History-resumed merged fork passes ``merged=False``,
+            # and since ``closed`` is slot-owned (absence means cleared) that
+            # save would otherwise drop the closed marker while keeping
+            # ``merged`` — reviving the archived fork as an open tab on the
+            # next restart (GPT review).
+            if merged or getattr(slot, "_merged", False):
+                closed = True
+                if closed_at is None:
+                    closed_at = merged_at
             if closed:
                 meta_line["closed"] = True
                 # Epoch stamp of WHEN the tab was closed. The channel-slot
@@ -1927,6 +1943,19 @@ def _save_slot_to_history(
                 meta_line["human_seen"] = True
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
+            if merged or getattr(slot, "_merged", False):
+                # Archive provenance for a merged-back fork. Written from the
+                # in-memory flag too (not only the explicit ``merged`` arg) so a
+                # steady flush of an already-merged slot — or a restore that set
+                # the flag — cannot silently drop the marker and revive the fork
+                # as continuable. The parent is NOT named by a separate key:
+                # ``forked_from`` (written above, restored on the same paths)
+                # already carries it, and a ``merged_into`` twin always equalled
+                # it (First Principles review).
+                meta_line["merged"] = True
+                # ``merged_at`` itself feeds ``closed_at`` above; a separate
+                # meta key would have zero readers (FP review), so none is
+                # written.
             if slot.linked_session_key:
                 # The slot's conversation lives on another session (a channel
                 # thread, a cron job). Nothing recreates that binding on
@@ -2001,14 +2030,10 @@ def _save_slot_to_history(
                 or _approx_window_payload_bytes(window) > _ENTRY_CACHE_MAX_BYTES
                 else _build_message_entry
             )
-            window_entries = [
-                e for m in window if (e := build_entry(m)) is not None
-            ]
+            window_entries = [e for m in window if (e := build_entry(m)) is not None]
             window_lines = [json.dumps(e) + "\n" for e in window_entries]
-            frozen_prefix, foreign_lines, dedup_dropped = (
-                _frozen_prefix_and_foreign_appends(
-                    slot, path, disk_older, window_entries, collect_foreign=not rewrite
-                )
+            frozen_prefix, foreign_lines, dedup_dropped = _frozen_prefix_and_foreign_appends(
+                slot, path, disk_older, window_entries, collect_foreign=not rewrite
             )
             # A fresh-``ts`` disk copy folded into the window by the bounded
             # (role, content) tiebreak is redundant with a window entry, so the
@@ -2018,22 +2043,18 @@ def _save_slot_to_history(
             # the trade-off loses no data permanently.
             if dedup_dropped:
                 try:
-                    base = (
-                        state.conversation_log._dir
-                        if state.conversation_log
-                        else None
-                    )
-                    _archive_lines(
-                        history_key, dedup_dropped, reason="foreign-dedup", base=base
-                    )
+                    base = state.conversation_log._dir if state.conversation_log else None
+                    _archive_lines(history_key, dedup_dropped, reason="foreign-dedup", base=base)
                 except Exception:
                     logger.warning(
                         "Failed to archive foreign-dedup drops for %s",
                         history_key,
                         exc_info=True,
                     )
-            payload = meta_str + frozen_prefix + "".join(
-                _interleave_foreign_lines(window_entries, window_lines, foreign_lines)
+            payload = (
+                meta_str
+                + frozen_prefix
+                + "".join(_interleave_foreign_lines(window_entries, window_lines, foreign_lines))
             )
 
             # Refresh the slot's ordering floor from what is actually going to
@@ -2148,6 +2169,8 @@ async def save_slot_off_loop(
     *,
     closed: bool = False,
     closed_at: float | None = None,
+    merged: bool = False,
+    merged_at: float | None = None,
     force: bool = False,
     rewrite: bool = False,
     best_effort: bool = True,
@@ -2186,6 +2209,8 @@ async def save_slot_off_loop(
             messages,
             closed=closed,
             closed_at=closed_at,
+            merged=merged,
+            merged_at=merged_at,
             force=force,
             rewrite=rewrite,
         )

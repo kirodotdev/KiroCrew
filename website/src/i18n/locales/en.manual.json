@@ -1356,7 +1356,12 @@
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
       "earlier_messages_open_session": "Earlier messages — open full session (closes split)",
       "earlier_messages_unavailable": "Earlier messages are no longer available in this session's history.",
-      "forked_from": "Forked from {{name}}"
+      "forked_from": "Forked from {{name}}",
+      "merge_back": "Merge back",
+      "merge_back_confirm": "Merge this fork’s summary back into {{name}} and archive the fork? The fork will become read-only.",
+      "merge_back_merging": "Merging…",
+      "merge_back_title": "Merge this fork’s summary back into {{name}} and archive the fork",
+      "pane_actions": "Pane actions"
     },
     "cliPanel": {
       "copied": "Copied",
@@ -2402,10 +2407,19 @@
     },
     "useSessionActions": {
       "close_this_session": "Close this session?",
+      "merge_back_failed": "Merge back failed. The parent may be gone or the gateway unreachable; try again.",
+      "merge_back_failed_already_merged": "This fork has already been merged back into its parent.",
+      "merge_back_failed_archive": "The summary was merged into the parent, but the fork could not be archived. Click Merge back again to finish.",
+      "merge_back_failed_no_summary": "Could not summarize this fork — it may have too few turns to merge back.",
+      "merge_back_failed_parent_missing": "The parent session is closed or no longer exists. Reopen it from History first.",
+      "merge_back_failed_parent_save": "Could not save the merged summary into the parent; nothing was merged. Try again.",
+      "merge_back_failed_running": "This fork has a turn in progress. Try again when it is idle.",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
-      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior.",
+      "merge_back_failed_parent_busy": "The parent session has a turn in progress. Try again when it finishes.",
+      "merge_back_failed_nothing": "This fork has no work of its own to merge back yet. Send it a message first, then merge."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",
@@ -2750,6 +2764,27 @@
       "chatNavPanel": {
         "link": "Link"
       },
+      "collapsibleToolGroup": {
+        "collapse": "Collapse",
+        "expand": "Expand"
+      },
+      "fileBrowserRail": {
+        "all_files": "All files",
+        "changed": "Changed",
+        "close_search": "Close search",
+        "filter_placeholder": "Filter files…",
+        "refresh": "Refresh",
+        "resize": "Resize file browser",
+        "tree_mode": "File list mode"
+      },
+      "filesHome": {
+        "no_project_dir": "No project directory is set for this chat",
+        "refresh": "Refresh",
+        "reveal_in_finder": "Reveal in file manager",
+        "select_file_hint": "Select a file from the tree to open it in a new tab",
+        "title": "Files",
+        "tree_error": "Couldn't load the file tree"
+      },
       "folderPanel": {
         "clear_search": "Clear search",
         "empty_folder": "Empty folder",
@@ -2781,6 +2816,14 @@
       "mcpOAuthBanner": {
         "mcp_server": "MCP server"
       },
+      "mergedSummaryCard": {
+        "gap_note_one": "Parent advanced {{count}} message since this fork; merged at the current tail.",
+        "gap_note_other": "Parent advanced {{count}} messages since this fork; merged at the current tail.",
+        "merged_from_a_fork": "Merged from a fork",
+        "merged_from_fork": "Merged from {{name}}",
+        "summary_covers_full_fork": "Summary of the full fork session",
+        "summary_of_forks_work": "Summary of the fork’s work"
+      },
       "notificationItem": {
         "acknowledged": "Acknowledged"
       },
@@ -2789,6 +2832,47 @@
         "auto_nudge_cycle": "Auto-nudge · cycle {{count}}",
         "hide_nudge_instructions": "Hide nudge instructions",
         "show_nudge_instructions": "Show nudge instructions"
+      },
+      "sessionSummary": {
+        "empty_body": "A summary is written when a turn finishes. Send a message to get one for this session.",
+        "empty_generate_body": "This session has not been summarized yet.",
+        "empty_title": "No summary yet",
+        "empty_too_few": "Send a couple of messages first — there is not enough here to summarize.",
+        "failed": "Try again, or reload the page if it keeps failing.",
+        "failed_title": "Could not load the summary",
+        "from_intent": "Part of {{intent}}",
+        "generate": "Summarize",
+        "generate_failed": "Could not summarize this session. Try again in a moment.",
+        "generate_in_flight": "A summary is already being written.",
+        "generate_turn_running": "Cannot summarize while a turn is running. Wait for this turn to finish.",
+        "generating": "Summarizing…",
+        "loading": "Loading summary…",
+        "most_recent_first": "Most recently worked first",
+        "not_generated": "Not generated yet",
+        "nothing_outstanding": "Nothing outstanding.",
+        "off_body": "Turning them on summarizes new turns; earlier turns are not backfilled.",
+        "off_title": "Session summaries are off",
+        "open_items_heading": "Open items",
+        "open_items_less": "Show less",
+        "open_items_more": "+{{n}} more",
+        "open_items_one": "{{count}} open item",
+        "open_items_other": "{{count}} open items",
+        "pivoted_from_turn": "Pivoted here from your question at turn {{turn}}",
+        "project_notes": "How this project works",
+        "reload": "Check again",
+        "retry": "Try again",
+        "returned_to": "Resumed ×{{times}}",
+        "state_active": "Active",
+        "state_done": "Done",
+        "state_dropped": "Dropped",
+        "state_needs_you": "Needs you",
+        "suggested_next": "Suggested next",
+        "title": "Summary",
+        "turns": "turns {{ranges}}",
+        "updated": "Updated",
+        "updated_behind": "Updated {{when}} — behind the conversation",
+        "where_it_stands": "Where it stands",
+        "you_asked_for": "You asked for"
       },
       "sideChat": {
         "ask_a_side_question_2": "Ask a side question…",
@@ -2867,22 +2951,6 @@
         "hide_reasoning": "Hide reasoning",
         "show_reasoning": "Show reasoning"
       },
-      "toolDetails": {
-        "details_unavailable_for_historical_tool_calls": "Details unavailable for historical tool calls.",
-        "formatted": "Formatted",
-        "no_input_or_output_captured_for_this_tool_call": "No input or output captured for this tool call.",
-        "raw": "Raw",
-        "render_escaped_whitespace_as_real_line_breaks": "Render escaped whitespace as real line breaks",
-        "show_the_exact_payload_escaping_preserved": "Show the exact payload, escaping preserved"
-      },
-      "workflowCompletionCard": {
-        "hide_result": "Hide result",
-        "show_result": "Show result"
-      },
-      "collapsibleToolGroup": {
-        "collapse": "Collapse",
-        "expand": "Expand"
-      },
       "toolCallLine": {
         "aria_hide_diff": "Hide diff",
         "diff_truncated": "diff truncated",
@@ -2897,63 +2965,17 @@
         "wait_remaining": "{{time}} left",
         "wait_status": "Waiting"
       },
-      "sessionSummary": {
-        "empty_body": "A summary is written when a turn finishes. Send a message to get one for this session.",
-        "empty_generate_body": "This session has not been summarized yet.",
-        "empty_title": "No summary yet",
-        "empty_too_few": "Send a couple of messages first — there is not enough here to summarize.",
-        "failed": "Try again, or reload the page if it keeps failing.",
-        "failed_title": "Could not load the summary",
-        "from_intent": "Part of {{intent}}",
-        "generate": "Summarize",
-        "generate_failed": "Could not summarize this session. Try again in a moment.",
-        "generate_in_flight": "A summary is already being written.",
-        "generate_turn_running": "Cannot summarize while a turn is running. Wait for this turn to finish.",
-        "generating": "Summarizing…",
-        "loading": "Loading summary…",
-        "most_recent_first": "Most recently worked first",
-        "not_generated": "Not generated yet",
-        "nothing_outstanding": "Nothing outstanding.",
-        "off_body": "Turning them on summarizes new turns; earlier turns are not backfilled.",
-        "off_title": "Session summaries are off",
-        "open_items_heading": "Open items",
-        "open_items_less": "Show less",
-        "open_items_more": "+{{n}} more",
-        "open_items_one": "{{count}} open item",
-        "open_items_other": "{{count}} open items",
-        "pivoted_from_turn": "Pivoted here from your question at turn {{turn}}",
-        "project_notes": "How this project works",
-        "reload": "Check again",
-        "retry": "Try again",
-        "returned_to": "Resumed ×{{times}}",
-        "state_active": "Active",
-        "state_done": "Done",
-        "state_dropped": "Dropped",
-        "state_needs_you": "Needs you",
-        "suggested_next": "Suggested next",
-        "title": "Summary",
-        "turns": "turns {{ranges}}",
-        "updated": "Updated",
-        "updated_behind": "Updated {{when}} — behind the conversation",
-        "where_it_stands": "Where it stands",
-        "you_asked_for": "You asked for"
+      "toolDetails": {
+        "details_unavailable_for_historical_tool_calls": "Details unavailable for historical tool calls.",
+        "formatted": "Formatted",
+        "no_input_or_output_captured_for_this_tool_call": "No input or output captured for this tool call.",
+        "raw": "Raw",
+        "render_escaped_whitespace_as_real_line_breaks": "Render escaped whitespace as real line breaks",
+        "show_the_exact_payload_escaping_preserved": "Show the exact payload, escaping preserved"
       },
-      "fileBrowserRail": {
-        "all_files": "All files",
-        "changed": "Changed",
-        "close_search": "Close search",
-        "filter_placeholder": "Filter files…",
-        "refresh": "Refresh",
-        "resize": "Resize file browser",
-        "tree_mode": "File list mode"
-      },
-      "filesHome": {
-        "no_project_dir": "No project directory is set for this chat",
-        "refresh": "Refresh",
-        "reveal_in_finder": "Reveal in file manager",
-        "select_file_hint": "Select a file from the tree to open it in a new tab",
-        "title": "Files",
-        "tree_error": "Couldn't load the file tree"
+      "workflowCompletionCard": {
+        "hide_result": "Hide result",
+        "show_result": "Show result"
       }
     },
     "chatPage": {
