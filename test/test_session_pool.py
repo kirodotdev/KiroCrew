@@ -1332,7 +1332,22 @@ class TestDiscardReaping:
         wedged.shutdown = _never_returns
         self._expired_entry(mgr, wedged)
 
-        with patch("kiro_crew.session._sync_kill_provider") as mock_kill:
+        # Give the hard-kill offload a PRIVATE executor. Production dispatches it
+        # to `subprocess_executor()`, a process-wide 8-worker singleton shared by
+        # every test in this xdist worker, and a started run_in_executor future
+        # cannot be cancelled — so a sibling test holding those threads (a wedged
+        # PTY close, a real `taskkill` on Windows) makes this offload queue behind
+        # them. That queue wait is unbounded and is NOT covered by
+        # `_POOL_DISCARD_TIMEOUT`, so it could consume the 5s budget below and
+        # fail with a TimeoutError naming the wedged shutdown — the one thing this
+        # test had already bounded, to 0.05s. A dedicated executor keeps the
+        # assertion about escalation ordering instead of about the shared pool's
+        # spare capacity.
+        with ThreadPoolExecutor(max_workers=1) as private_executor, patch(
+            "kiro_crew.session._sync_kill_provider"
+        ) as mock_kill, patch(
+            "kiro_crew.session.subprocess_executor", return_value=private_executor
+        ):
             pooled = await asyncio.wait_for(mgr._drain_and_claim("kirocrew"), timeout=5)
 
         assert pooled is None
