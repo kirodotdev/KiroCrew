@@ -68,15 +68,22 @@
 // adoption.
 //
 // The decision carries one obligation. Height truth spans the DOM, `HeightCache`,
-// `OffsetIndex` and the memos derived from them, and stays coherent by convention
-// — a version counter in the memo deps, plus a session guard held separately by
-// the cache and by the offset tree — rather than by construction. Collapsing that
-// to a single seam, with `OffsetIndex` the only read surface for heights and
-// `HeightCache` purely its persistence backend, is the standing follow-through.
+// `OffsetIndex` and the memos derived from them. Collapsing that to a single seam
+// is the standing follow-through, and it is HALF DONE:
+//   - Done: `HeightIndex` owns the cache and the offset tree and is the only
+//     surface this hook reads heights through, so the two-readers seam and the
+//     duplicated per-structure session guard are gone (one guard, and the tree
+//     can no longer outlive its cache).
+//   - Remaining: the memo invalidation is still a hand-bumped `heightVersion`
+//     token, because a memo cannot observe a mutation of the (stable-identity)
+//     owner. Deriving it from the owner instead is the other half, deliberately
+//     left to its own change -- unlike the read consolidation, a missed bump
+//     fails SILENTLY (stale offsets, no error, no failing test), so it is worth
+//     reviewing on its own rather than alongside a mechanical redirect.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { isRailSettling, RAIL_SETTLE_MS } from '../useRailWidth'
-import { HeightCache } from './HeightCache'
+import { HeightIndex } from './HeightIndex'
 import {
   loadScrollAnchor,
   saveScrollAnchor,
@@ -91,7 +98,6 @@ import {
   expandWindowDown,
   getOffset as getOffsetFn,
   getTotalHeight,
-  OffsetIndex,
 } from './WindowCalculator'
 import {
   computeAtBottom,
@@ -390,25 +396,10 @@ export function useVirtualChat<T>(
 
   // ---- Persistent state ----
 
-  // HeightCache is created once per sessionId and disposed when sessionId changes.
-  const cacheRef = useRef<HeightCache | null>(null)
-  const cacheSessionRef = useRef<string | null>(null)
-  if (cacheRef.current === null || cacheSessionRef.current !== sessionId) {
-    cacheRef.current?.flush()
-    // Seed the row count so the eviction cap is size-aware from the first
-    // measurement: a session longer than the baseline floor must be allowed to
-    // retain its oldest heights, or scrolling back to the top re-enters
-    // all-estimate territory even on a revisit. `itemCount` is legitimately 0
-    // here when a slot switch changes sessionId before the transcript loads;
-    // HeightCache treats that as "unknown" and sizes the cap from the persisted
-    // blob instead, so no measurements are discarded before the real count
-    // arrives via setRowCount() below.
-    cacheRef.current = new HeightCache(sessionId, { rowCount: itemCount })
-    cacheSessionRef.current = sessionId
-  } else {
-    // Transcripts grow while mounted; keep the cap in step with the row count.
-    cacheRef.current.setRowCount(itemCount)
-  }
+  // The height owner (HeightIndex) is created further down, immediately before
+  // the height lookup that reads it: its key resolver reads `itemsRef` /
+  // `getKeyRef`, which are assigned just below, so constructing it up here would
+  // put those refs in scope before they hold anything.
 
   // One shared ResizeObserver; Element → index map resolves heights cheaply.
   const elIndexRef = useRef<Map<Element, number>>(new Map())
@@ -645,60 +636,76 @@ export function useVirtualChat<T>(
     stickRef.current = pendingRestoreRef.current ? false : followOutput
   }
 
-  // ---- Height lookup ----
-  const getH = useCallback(
-    (i: number) => {
-      const it = itemsRef.current[i]
-      if (!it) return estimatedHeight
-      const k = getKeyRef.current(it, i)
-      const cache = cacheRef.current!
-      // peek(), not get(): this closure feeds the BULK scans (OffsetIndex.sync,
-      // window/offset math), which touch every row. Promoting on those reads
-      // would rewrite LRU order into transcript-index order and evict rows the
-      // user just viewed. Genuine access is recorded by set() on measurement.
-      const cached = cache.peek(k)
-      // Math.max(h, 1) so zero-height items still register with IO.
-      if (cached !== undefined) return Math.max(cached, 1)
-      // Unmeasured row: estimate from the running mean of MEASURED heights,
-      // capped by MAX_MEAN_PX so one pathological row cannot inflate every
-      // unmeasured historical row. averageHeight() falls back to the
-      // configured estimate only while nothing has been measured at all — it
-      // deliberately does NOT hold back for a minimum sample, because measuring
-      // that gate in a browser made the drift ~7.5x worse (see HeightCache).
-      return cache.averageHeight(estimatedHeight)
-    },
-    [estimatedHeight],
-  )
-
-  // ---- Offset index (O(log N) prefix-sum tree over row heights) ----
+  // ---- Height owner (single read surface for row heights) ----
+  //
+  // `HeightIndex` holds the persisted `HeightCache` AND the O(log N) prefix-sum
+  // tree, and is the only thing this hook asks about heights. Nothing below
+  // reads `HeightCache` directly -- see HeightIndex's own doc for why the read
+  // surface is three methods (resolved height vs measurement-or-undefined, and
+  // promoting vs not) rather than one.
   //
   // The hot paths (per-rAF scroll window recompute, offset/total spacers, the
-  // 120ms streaming tick) would each walk all N rows via the O(N) free functions
-  // (getOffset / getTotalHeight / computeWindow), which dominates scroll frames
-  // on 5000+ row transcripts. `OffsetIndex` answers the same questions in
-  // O(log N) / O(1). It is the authoritative tree, synced HERE on an itemCount
-  // (or getH) change so the offset memos have fresh data on the same render,
-  // and additionally on height changes by `scheduleHeightSync` (the 120ms tick
-  // — the sync point OffsetIndex's own doc prescribes). It is NOT synced on the
-  // per-rAF scroll path (a same-count sync still O(N)-scans the prefix).
+  // 120ms streaming tick) would otherwise walk all N rows via the O(N) free
+  // functions (getOffset / getTotalHeight / computeWindow), which dominates
+  // scroll frames on 5000+ row transcripts. The tree is synced HERE on an
+  // itemCount / estimate change so the offset memos have fresh data on the same
+  // render, and additionally on height changes by `scheduleHeightSync` (the
+  // 120ms tick). It is NOT synced on the per-rAF scroll path (a same-count sync
+  // still O(N)-scans the prefix).
   //
-  // `sessionId` is a dependency because the tree caches heights read through
-  // the (session-scoped) HeightCache: switching to a different session with the
-  // SAME item count changes neither itemCount nor getH's identity, so without
-  // this the tree would keep serving the previous transcript's heights and
-  // render wrong spacers until the next measurement tick corrected it. A
-  // session change invalidates every height, so rebuild rather than sync.
-  const offsetIndexRef = useRef<OffsetIndex | null>(null)
-  const offsetIndexSessionRef = useRef<string | null>(null)
+  // ONE session guard, and ONE record of session identity. Previously the cache
+  // and the tree each carried their own guard and both had to agree: switching to
+  // a different session with the SAME item count changes neither itemCount nor
+  // the getter's identity, so a guard on only one of them left the tree serving
+  // the previous transcript's heights -- a transcript opening at the wrong scroll
+  // position. Because the owner holds both, the tree cannot outlive its cache.
+  //
+  // The guard reads the session off the OWNER rather than a parallel ref beside
+  // it. A second spelling of the same identity is the very pattern this change
+  // exists to remove, and it could drift from the owner it describes; asking the
+  // owner what session it holds cannot. `?.` covers the first render, where the
+  // absent owner reads as "not this session" and constructs.
+  const heightIndexRef = useRef<HeightIndex | null>(null)
+  if (heightIndexRef.current?.sessionId !== sessionId) {
+    heightIndexRef.current?.flush()
+    // Seed the row count so the eviction cap is size-aware from the first
+    // measurement: a session longer than the baseline floor must be allowed to
+    // retain its oldest heights, or scrolling back to the top re-enters
+    // all-estimate territory even on a revisit. `itemCount` is legitimately 0
+    // here when a slot switch changes sessionId before the transcript loads;
+    // HeightCache treats that as "unknown" and sizes the cap from the persisted
+    // blob instead, so no measurements are discarded before the real count
+    // arrives via setRowCount() below.
+    heightIndexRef.current = new HeightIndex(sessionId, {
+      rowCount: itemCount,
+      estimate: estimatedHeight,
+      // Late-bound on purpose: resolved at call time from the live refs, so a
+      // steered bubble's rewritten `ts` cannot orphan its measurement.
+      keyAt: (i) => {
+        const it = itemsRef.current[i]
+        return it ? getKeyRef.current(it, i) : null
+      },
+    })
+  } else {
+    // Transcripts grow while mounted; keep the cap in step with the row count.
+    heightIndexRef.current.setRowCount(itemCount)
+    heightIndexRef.current.setEstimate(estimatedHeight)
+  }
+  const heightIndex = heightIndexRef.current
+
+  // ---- Height lookup ----
+  // Kept as a stable getter because the O(N) free functions still take one.
+  const getH = heightIndex.getHeight
+
   const offsetIndex = useMemo(() => {
-    if (offsetIndexRef.current === null || offsetIndexSessionRef.current !== sessionId) {
-      offsetIndexRef.current = new OffsetIndex(itemCount, getH)
-      offsetIndexSessionRef.current = sessionId
-    } else {
-      offsetIndexRef.current.sync(itemCount, getH)
-    }
-    return offsetIndexRef.current
-  }, [itemCount, getH, sessionId])
+    heightIndex.sync(itemCount)
+    return heightIndex
+    // `estimatedHeight` is an intentional invalidation key, not a value this body
+    // reads: a changed estimate must re-sync so still-unmeasured rows pick up the
+    // new placeholder height. eslint cannot see that because the estimate reaches
+    // the tree through the owner (setEstimate above) rather than this closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heightIndex, itemCount, estimatedHeight])
 
   // Debounced height→memo sync. Cache writes (RO re-measure, measureRef seed)
   // call this instead of bumping heightVersion directly. The bump (which
@@ -736,9 +743,9 @@ export function useVirtualChat<T>(
   const lastSyncedTotalRef = useRef(-1)
   const heightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncHeightsNow = useCallback(() => {
-    const idx = offsetIndexRef.current
+    const idx = heightIndexRef.current
     if (!idx) return
-    idx.sync(itemsRef.current.length, getH)
+    idx.sync(itemsRef.current.length)
     const total = idx.totalHeight()
     if (Math.abs(total - lastSyncedTotalRef.current) > 1) {
       lastSyncedTotalRef.current = total
@@ -760,7 +767,11 @@ export function useVirtualChat<T>(
       }
       setHeightVersion((v) => v + 1)
     }
-  }, [getH, scrollerRef])
+    // No `getH` dependency: the owner is read from its ref inside, and the tree
+    // sync no longer takes a getter. Listing it here would tie this callback's
+    // identity to the owner's, which the imperative writers must NOT rely on for
+    // freshness (they resolve the owner at call time instead).
+  }, [scrollerRef])
   const scheduleHeightSync = useCallback((immediate = false) => {
     if (heightSyncTimerRef.current) {
       clearTimeout(heightSyncTimerRef.current)
@@ -865,7 +876,7 @@ export function useVirtualChat<T>(
     const el = scrollerRef.current
     if (!el) return
     const count = itemsRef.current.length
-    const idx = offsetIndexRef.current
+    const idx = heightIndexRef.current
     // Window bounds in O(log N) via the OffsetIndex prefix-sum tree rather than
     // the O(N) computeWindow linear scan — this is the per-rAF scroll hot path.
     // Fall back to computeWindow only if the tree is somehow absent.
@@ -1221,10 +1232,19 @@ export function useVirtualChat<T>(
         const it = itemsRef.current[idx]
         if (!it) continue
         const newH = measureBorderBoxHeight(entry.target as HTMLElement)
-        const k = getKeyRef.current(it, idx)
-        const prevH = cacheRef.current!.get(k)
+        // Resolved at call time, never captured: a callback that closed over the
+        // owner would keep writing into the PREVIOUS session's heights after a
+        // slot switch -- the same wrong-transcript class this owner exists to
+        // close, reintroduced through a stale closure.
+        const hi = heightIndexRef.current
+        if (!hi) continue
+        // readMeasured (promoting): this row is mounted, so the read is genuine
+        // access. `undefined` MUST stay reachable here -- the branch below tells
+        // a first mount apart from a genuine resize by exactly that, so a
+        // resolved height would classify every scroll-driven mount as a resize.
+        const prevH = hi.readMeasured(idx)
         if (prevH !== newH) {
-          cacheRef.current!.set(k, newH)
+          hi.setMeasured(idx, newH)
           // First-mount (prev undefined) happens during scroll-driven window
           // expansion; re-pinning then would interrupt the user's scroll. Only
           // genuine resizes (streaming growth, widget load) drive the pin —
@@ -1608,7 +1628,7 @@ export function useVirtualChat<T>(
       // guard must classify the resulting scroll event as self-scroll rather
       // than user input (stick is already false; recording the position does
       // not re-arm it — evaluateAutoPin never pins with stick released).
-      const idxTree = offsetIndexRef.current
+      const idxTree = heightIndexRef.current
       const off = idxTree ? idxTree.offsetOf(index) : getOffsetFn(index, count, getH)
       const target = Math.max(0, off - anchor.top)
       writeScrollTop(el, target, 'auto', 'pin')
@@ -1767,10 +1787,12 @@ export function useVirtualChat<T>(
         // the offset memos keep a stale height and leave a phantom spacer.
         const it = itemsRef.current[index]
         if (it) {
-          const k = getKeyRef.current(it, index)
           const h = measureBorderBoxHeight(el)
-          if (h > 0 && cacheRef.current!.get(k) !== h) {
-            cacheRef.current!.set(k, h)
+          // Owner resolved at call time, not captured -- see the ResizeObserver
+          // callback above for why a closed-over owner is a wrong-session write.
+          const hi = heightIndexRef.current
+          if (hi && h > 0 && hi.readMeasured(index) !== h) {
+            hi.setMeasured(index, h)
             // Eager (per the option): this branch fires at most once per row
             // (the guard above skips re-attaches whose height is already
             // cached), so it cannot be the render storm the debounce guards
@@ -1901,7 +1923,12 @@ export function useVirtualChat<T>(
     const emit = (i: number) => {
       const it = items[i]
       const key = getKey(it, i)
-      const cached = cacheRef.current!.get(key)
+      // readMeasured (promoting): this row is rendering, which is genuine
+      // access. The unmeasured fallback stays the FLAT `estimatedHeight` rather
+      // than the running mean the offset math uses -- preserved verbatim; the
+      // two disagreeing for an unmeasured row is a pre-existing divergence, not
+      // something this refactor should quietly change.
+      const cached = heightIndex.readMeasured(i)
       const height = cached !== undefined ? Math.max(cached, 1) : estimatedHeight
       out.push({ data: it, index: i, key, mounted: true, height })
     }
@@ -1917,7 +1944,19 @@ export function useVirtualChat<T>(
       if ((i >= start && i < end) || isSticky(items[i], i)) emit(i)
     }
     return out
-  }, [items, itemCount, windowRange.start, windowRange.end, getKey, estimatedHeight, isSticky])
+    // `heightIndex` is a real dependency: its identity changes on a session
+    // switch, and the emitted placeholder heights must be re-derived from the
+    // new session's measurements rather than the previous transcript's.
+  }, [
+    heightIndex,
+    items,
+    itemCount,
+    windowRange.start,
+    windowRange.end,
+    getKey,
+    estimatedHeight,
+    isSticky,
+  ])
 
   // ---- Debug probe (zero behavior change) ----
   // Exposes window.__vcSnapshot() for diagnosing scroll/geometry bugs (e.g.
@@ -1930,11 +1969,15 @@ export function useVirtualChat<T>(
       const el = scrollerRef.current
       const count = itemsRef.current.length
       // Mounted rows: read true DOM height vs what the cache believes.
+      // peekMeasured, NOT readMeasured: this probe is a devtools observer and
+      // must not perturb the LRU order it is reporting on. (Before the read
+      // surface named promotion explicitly, this path promoted -- the one
+      // deliberate behaviour change here, devtools-only and unreachable in
+      // normal operation.)
       const rows: { index: number; cached: number | undefined; dom: number; delta: number }[] = []
+      const hi = heightIndexRef.current
       for (const [node, idx] of elIndexRef.current.entries()) {
-        const it = itemsRef.current[idx]
-        const key = it ? getKeyRef.current(it, idx) : ''
-        const cached = key ? cacheRef.current!.get(key) : undefined
+        const cached = hi?.peekMeasured(idx)
         const dom = (node as HTMLElement).offsetHeight
         rows.push({ index: idx, cached, dom, delta: dom - (cached ?? estimatedHeight) })
       }
@@ -1942,8 +1985,7 @@ export function useVirtualChat<T>(
       // How many of ALL items have a real measurement vs fall back to estimate.
       let measured = 0
       for (let i = 0; i < count; i++) {
-        const it = itemsRef.current[i]
-        if (it && cacheRef.current!.get(getKeyRef.current(it, i)) !== undefined) measured++
+        if (hi?.peekMeasured(i) !== undefined) measured++
       }
       // Direct children of the scroller (header / spacers / footer) so we can
       // see exactly what occupies space below the last mounted row.
@@ -2007,7 +2049,7 @@ export function useVirtualChat<T>(
         clearTimeout(anchorSaveTimerRef.current)
         anchorSaveTimerRef.current = null
       }
-      cacheRef.current?.flush()
+      heightIndexRef.current?.flush()
     }
   }, [detachSmoothAbort])
 
