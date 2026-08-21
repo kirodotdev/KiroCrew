@@ -97,7 +97,10 @@ class TestEpisodicTextHashDedup:
 
 
 class TestMemoryInjectionAllAgents:
-    """Memory, lessons, critical rules, and hooks must be injected for ALL agents."""
+    """Memory, lessons, and hooks are injected for ALL agents; the dashboard
+    critical-rules contract is injected by default for every agent, and a custom
+    agent may opt out of it (and the dashboard tool nudges) via
+    ``includeCrewContext: false``."""
 
     def test_kirocrew_agent_gets_everything(self, tmp_path: Path) -> None:
         ws = tmp_path / "ws"
@@ -117,11 +120,113 @@ class TestMemoryInjectionAllAgents:
         assert "dark mode" in ctx
         assert "[Memory" in ctx
 
-    def test_custom_agent_gets_critical_rules(self, tmp_path: Path) -> None:
+    def test_plain_custom_agent_includes_critical_rules(self, tmp_path: Path, monkeypatch) -> None:
+        # OPT-OUT default: a plain custom agent with no ``includeCrewContext``
+        # flag (here, no materialized spec at all) STILL gets the dashboard
+        # critical-rules block — reproducing the pre-opt-out behavior. Only an
+        # explicit ``includeCrewContext: false`` suppresses it.
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
+        monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
         builder = _builder(tmp_path)
         ctx = builder.build_session_context(agent="my-custom-agent")
         assert "[CRITICAL RULES" in ctx
-        assert "diff" in ctx
+
+    def test_opted_out_custom_agent_omits_critical_rules(self, tmp_path: Path, monkeypatch) -> None:
+        # A custom app agent that declares ``includeCrewContext: false`` ships its
+        # own output contract, so the kirocrew assistant's critical-rules block
+        # (diff blocks, [OPTIONS:] footer, absolute-path rule) must NOT be injected
+        # on top of it — that both conflicts with the agent's contract and, on a
+        # safety-tuned model, reads as an identity override the model refuses.
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "opted-out-agent.json").write_text(
+            json.dumps({"name": "opted-out-agent", "includeCrewContext": False})
+        )
+        monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
+        monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
+        builder = _builder(tmp_path)
+        ctx = builder.build_session_context(agent="opted-out-agent")
+        assert "[CRITICAL RULES" not in ctx
+        # The built-in agent still gets it (see test_kirocrew_agent_gets_everything).
+
+    def test_plain_custom_agent_keeps_dashboard_nudges(self, tmp_path: Path, monkeypatch) -> None:
+        # No ``includeCrewContext`` flag ⇒ the dashboard tool nudges
+        # (ask_question / suggest_followup) are still injected on a dashboard slot.
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
+        monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
+        monkeypatch.setattr("kiro_crew.context.has_dashboard_surface", lambda key: True)
+        builder = _builder(tmp_path)
+        msg, _ = builder.build_message(
+            "hello",
+            is_new_session=False,
+            session_key="dashboard:plain",
+            agent="my-custom-agent",
+            interactive=True,
+        )
+        assert "ask_question" in msg
+        assert "suggest_followup" in msg
+
+    def test_opted_out_custom_agent_omits_dashboard_nudges(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # ``includeCrewContext: false`` also suppresses the dashboard tool nudges,
+        # but NOT the provider-agnostic [OPTIONS:] reminder (that only tells the
+        # agent how to render options it chooses to emit, and every surface parses
+        # the tag regardless).
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "opted-out-agent.json").write_text(
+            json.dumps({"name": "opted-out-agent", "includeCrewContext": False})
+        )
+        monkeypatch.setattr("kiro_crew.context.kiro_agents_dir", lambda: agents_dir)
+        monkeypatch.setattr("kiro_crew.context._INCLUDE_CREW_CONTEXT_CACHE", {})
+        monkeypatch.setattr("kiro_crew.context.has_dashboard_surface", lambda key: True)
+        builder = _builder(tmp_path)
+        msg, _ = builder.build_message(
+            "hello",
+            is_new_session=False,
+            session_key="dashboard:opted",
+            agent="opted-out-agent",
+            interactive=True,
+        )
+        assert "ask_question" not in msg
+        assert "suggest_followup" not in msg
+        assert "OPTIONS" in msg
+
+    def test_invalidate_clears_the_include_crew_context_cache(self, monkeypatch) -> None:
+        # The per-agent flag cache must be droppable: an app upgrade rewrites its
+        # agent JSON mid-process, so a value cached before that write would stay
+        # wrong until gateway restart otherwise.
+        import kiro_crew.context as ctx
+
+        monkeypatch.setattr(ctx, "_INCLUDE_CREW_CONTEXT_CACHE", {"a": True, "b": False})
+        ctx.invalidate_include_crew_context_cache()
+        assert ctx._INCLUDE_CREW_CONTEXT_CACHE == {}
+
+    def test_refresh_materialized_agents_invalidates_flag_cache(self, monkeypatch) -> None:
+        # Wiring: rescanning the materialized-agent snapshot MUST invalidate the
+        # flag cache, so a flipped includeCrewContext takes effect without a
+        # gateway restart (the restart-heals class this PR removes).
+        import kiro_crew.context as ctx
+        from kiro_crew.config import loader
+
+        hit = {}
+        monkeypatch.setattr(
+            ctx, "invalidate_include_crew_context_cache", lambda: hit.setdefault("v", True)
+        )
+        monkeypatch.setattr(loader, "_scan_materialized_agents", lambda d: frozenset())
+        saved = loader._MATERIALIZED_AGENTS
+        saved_ready = loader._MATERIALIZED_AGENTS_READY
+        try:
+            loader.refresh_materialized_agents()
+            assert hit.get("v") is True
+        finally:
+            loader._MATERIALIZED_AGENTS = saved
+            loader._MATERIALIZED_AGENTS_READY = saved_ready
 
     def test_custom_agent_skips_skills(self, tmp_path: Path) -> None:
         skills_dir = tmp_path / "skills" / "test"

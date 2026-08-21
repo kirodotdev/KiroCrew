@@ -46,6 +46,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     data_home,
     normalize_agent_model,
+    refresh_materialized_agents,
     resolve_agent_bindings,
 )
 from kiro_crew.connections import get_visible_providers
@@ -149,7 +150,7 @@ from kiro_crew.dashboard.turn_dispatch import (
     spawn_guarded_turn,
     tool_approval_timeout_secs,
 )
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import run_in_embed_pool, subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
@@ -3193,18 +3194,56 @@ async def _eager_spawn(
             # would be discarded by passing "" here.
             crew_alias = slot.agent or ""
             agent_model = ""
+            resolved_ok = False
             try:
                 cfg = KiroCrewConfig.load()
                 bindings = resolve_agent_bindings(cfg, slot.agent or None)
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
                 agent_model = normalize_agent_model(bindings.model)
+                # SELF-HEAL mirror of the real turn's guard: an app-owned slot
+                # whose agent read cold from the materialized snapshot would bake
+                # the DEFAULT agent into this speculative session, forcing the
+                # first real turn to discard and cold-start it. Warm off the loop
+                # (never raises) and re-resolve once so the pre-warmed session
+                # carries the app's own agent. No fail-loud here — the eager path
+                # is best-effort and tears itself down on any miss; the real turn
+                # owns the user-facing failure.
+                if slot._app and not bindings.requested_resolved:
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(
+                            subprocess_executor(), refresh_materialized_agents
+                        )
+                    except Exception:  # noqa: BLE001 — warm failure only costs a re-resolve miss
+                        logger.warning(
+                            "Eager spawn: failed to warm materialized agents for slot %s",
+                            slot.key,
+                            exc_info=True,
+                        )
+                    bindings = resolve_agent_bindings(cfg, slot.agent or None)
+                    kiro_agent = bindings.kiro_agent
+                    crew_alias = bindings.resolved_alias
+                    agent_model = normalize_agent_model(bindings.model)
+                resolved_ok = bindings.requested_resolved
             except Exception:
                 logger.warning(
                     "Eager spawn: failed to resolve agent bindings for slot %s",
                     slot.key,
                     exc_info=True,
                 )
+            # Fail-safe mirror of the real turn's guard: if an app-owned slot
+            # STILL did not resolve (self-heal missed, or the resolve threw), do
+            # NOT register a speculative session — resolve_agent_bindings returns
+            # the DEFAULT agent on a cold miss, so registering here would bind the
+            # wrong agent and the first real turn could reuse that session instead
+            # of hitting its own _AppAgentNotLoaded guard. Bail; the first real
+            # turn self-heals and, if still cold, fails loud.
+            if slot._app and not resolved_ok:
+                logger.info(
+                    "Eager spawn: app slot %s unresolved after warm; leaving to first turn",
+                    slot.key,
+                )
+                return
             _t0 = time.monotonic()
             try:
                 # speculative=True keeps the one-shot first-turn flag armed for
@@ -3807,6 +3846,19 @@ def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: boo
         logger.debug("TTFT metric emission failed", exc_info=True)
 
 
+class _AppAgentNotLoaded(Exception):
+    """An app-owned slot's kiro-cli agent is not materialized yet.
+
+    Raised inside ``_run_chat`` after the self-heal warm has run and the app
+    agent STILL did not resolve. It is deliberately fatal to the turn: the
+    alternative — dispatching the default agent — is the exact silent
+    substitution the app-dispatch fix exists to prevent (generic agent, none of
+    the app's MCP tools, no error). Carries the user-facing card text as its
+    message so the dedicated handler can surface it through the same
+    ``slot.append("error", ...)`` path as every other terminal turn error.
+    """
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -4343,6 +4395,10 @@ async def _run_chat(
         # resolver supplies its alias, which covers the default crew on an
         # empty slot.
         crew_alias = slot.agent or ""
+        # An app-owned slot whose agent never resolved (see the fail-loud guard
+        # after the resolve block). Captured inside the try so the raise below
+        # lives OUTSIDE it and is not swallowed by the resolve except.
+        _app_agent_unresolved = False
         try:
             cfg = KiroCrewConfig.load()
             provider_name = cfg.agent.provider
@@ -4356,8 +4412,52 @@ async def _run_chat(
             crew_alias = bindings.resolved_alias
             memory_store = bindings.memory_store_name
             agent_model = normalize_agent_model(bindings.model)
+            # SELF-HEAL an app-owned slot whose agent did not resolve. An app's
+            # agents live only in ``~/.kiro/agents/<app>--<agent>.json`` (never in
+            # ``config.agents``), so resolve_agent_bindings can honor them only via
+            # the materialized-agent snapshot — which is COLD on the event loop
+            # until the boot / registration warm lands (both run off the loop). A
+            # cold read makes the resolver fall back to the default agent with
+            # ``requested_resolved=False``, silently running the generic default
+            # with none of the app's MCP tools and NO error. Warm the snapshot off
+            # the loop with the SAME pattern server.py uses at boot (safe to await:
+            # refresh_materialized_agents never raises), then re-resolve ONCE.
+            # Strictly guarded: the common hot path (no ``_app``, or already
+            # resolved) does zero extra work and zero extra I/O.
+            if slot._app and not bindings.requested_resolved:
+                try:
+                    await asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(), refresh_materialized_agents
+                    )
+                except Exception:  # noqa: BLE001 — warm failure only costs the fail-loud below
+                    logger.warning(
+                        "Failed to warm materialized agents for app slot %s",
+                        slot.key,
+                        exc_info=True,
+                    )
+                bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+                kiro_agent = bindings.kiro_agent
+                crew_alias = bindings.resolved_alias
+                memory_store = bindings.memory_store_name
+                agent_model = normalize_agent_model(bindings.model)
+            _app_agent_unresolved = bool(slot._app) and not bindings.requested_resolved
         except Exception:
             logger.warning("Failed to resolve agent bindings in _run_chat", exc_info=True)
+
+        # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
+        # self-heal must NOT run the default agent — that generic-substitution is
+        # the bug this whole path guards against. End the turn with a clear card
+        # naming the requested agent, surfaced through the SAME outer try/except
+        # error path every other fatal turn error uses (see the
+        # ``except _AppAgentNotLoaded`` arm beside the terminal handlers). Raised
+        # here — after the resolve except, before get_or_create, while ``_acquired``
+        # is still False — so the abort runs the standard finally teardown without
+        # ever creating a session or dispatching an agent.
+        if _app_agent_unresolved:
+            raise _AppAgentNotLoaded(
+                f"The app agent '{slot.agent or ''}' isn't loaded yet — "
+                "try again in a moment, or restart the gateway."
+            )
 
         state.broadcast_ws(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Creating session…"}
@@ -8016,6 +8116,16 @@ async def _run_chat(
                 # TRANSIENT_RETRIES. (_posttoken_retry_used needs no counterpart
                 # here: it is already refreshed at genuine-turn start.)
                 slot._transient_5xx_retries = 0
+    except _AppAgentNotLoaded as exc:
+        # An app-owned slot whose agent never materialized, even after the
+        # self-heal warm. Deliberately terminal: running the default agent here is
+        # the exact silent substitution this guards against. Surface the naming
+        # card through the same ``slot.append("error", ...)`` path as every other
+        # terminal turn error, but do NOT record a session failure — nothing
+        # failed to run, the agent simply is not loaded yet, and the user's next
+        # send (once the warm lands) should start clean.
+        logger.warning("App agent not loaded for slot %s: %s", slot.key, exc)
+        slot.append("error", str(exc), "msg msg-err")
     except Exception as exc:
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))

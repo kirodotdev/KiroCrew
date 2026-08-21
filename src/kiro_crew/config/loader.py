@@ -7514,6 +7514,16 @@ def refresh_materialized_agents() -> None:
         _MATERIALIZED_AGENTS = snapshot
         _MATERIALIZED_AGENTS_READY = True
         _MATERIALIZED_REFRESH_APPLIED = my_ticket
+    # An app install/upgrade that rewrote agent JSON just landed in the snapshot;
+    # drop the context builder's per-agent includeCrewContext cache so the next
+    # build re-reads the flag rather than serving a value cached before the write
+    # (otherwise a flipped flag heals only on gateway restart).
+    try:
+        from kiro_crew.context import invalidate_include_crew_context_cache
+
+        invalidate_include_crew_context_cache()
+    except Exception:  # noqa: BLE001 — best-effort; a stale flag is not fatal
+        logger.debug("Failed to invalidate includeCrewContext cache", exc_info=True)
 
 
 def publish_materialized_agents(names: Iterable[str]) -> None:

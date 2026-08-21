@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2327,3 +2328,126 @@ class TestRunChatPlanGate:
         await _drive(state, slot)
 
         assert not slot._stage_titles
+
+
+def _bindings(*, kiro_agent, resolved_alias, requested_resolved):
+    """A minimal ResolvedBindings stand-in for the app-agent dispatch guard.
+
+    Only the fields ``_run_chat`` reads off the resolve result are populated;
+    ``model`` is a real ``str`` so ``normalize_agent_model`` stays happy.
+    """
+    return SimpleNamespace(
+        kiro_agent=kiro_agent,
+        resolved_alias=resolved_alias,
+        memory_store_name="default",
+        model="",
+        requested_resolved=requested_resolved,
+    )
+
+
+class TestAppAgentDispatchGuard:
+    """SELF-HEAL + FAIL-LOUD for an app-owned slot whose agent read cold.
+
+    An app's agents live only in ``~/.kiro/agents/<app>--<agent>.json`` and are
+    never in ``config.agents``; resolve_agent_bindings can honor them only via
+    the materialized-agent snapshot, which is cold on the event loop until the
+    off-loop boot/registration warm lands. A cold read silently falls back to
+    the default agent (``requested_resolved=False``).
+    """
+
+    @pytest.mark.asyncio
+    async def test_cold_app_slot_self_heals_to_the_app_agent(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+        slot = _slot()
+        slot._app = "myapp"
+        slot.agent = "my-app-agent"
+
+        cold = _bindings(
+            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
+        )
+        warm = _bindings(
+            kiro_agent="my-app-agent",
+            resolved_alias="my-app-agent",
+            requested_resolved=True,
+        )
+        refresh = MagicMock()
+        with patch.object(
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, warm]
+        ) as resolve, patch.object(
+            chat_runner, "refresh_materialized_agents", refresh
+        ), patch.object(
+            chat_runner, "subprocess_executor", MagicMock(return_value=None)
+        ), patch.object(
+            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        ):
+            await _drive(state, slot)
+
+        # Warmed the snapshot off the loop and re-resolved exactly once.
+        refresh.assert_called_once()
+        assert resolve.call_count == 2
+        # The healed agent — not the default — was dispatched, and no error card.
+        state.sessions.get_or_create.assert_awaited()
+        assert state.sessions.get_or_create.await_args.kwargs["agent"] == "my-app-agent"
+        assert _errors(slot) == []
+
+    @pytest.mark.asyncio
+    async def test_still_cold_app_slot_fails_loud_and_never_runs_default(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot._app = "myapp"
+        slot.agent = "my-app-agent"
+
+        cold = _bindings(
+            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
+        )
+        refresh = MagicMock()
+        with patch.object(
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold]
+        ) as resolve, patch.object(
+            chat_runner, "refresh_materialized_agents", refresh
+        ), patch.object(
+            chat_runner, "subprocess_executor", MagicMock(return_value=None)
+        ), patch.object(
+            chat_runner, "warm_project_agent_names", new=AsyncMock()
+        ):
+            await _drive(state, slot)
+
+        # Self-heal was attempted (warm + re-resolve) but the agent stayed cold.
+        refresh.assert_called_once()
+        assert resolve.call_count == 2
+        # Fail-loud: the default agent is NEVER dispatched...
+        state.sessions.get_or_create.assert_not_awaited()
+        # ...and a clear card names the requested agent.
+        errors = _errors(slot)
+        assert any("my-app-agent" in e and "isn't loaded yet" in e for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_eager_spawn_bails_for_unresolved_app_slot(self, tmp_path):
+        # An app slot that stays cold after the eager self-heal must NOT register
+        # a speculative session: resolve_agent_bindings returns the DEFAULT agent
+        # on a cold miss, so a registered session would bind the wrong agent and
+        # the first real turn would reuse it, bypassing the _run_chat fail-loud
+        # guard. The eager path bails and leaves it to the first real turn.
+        state, slot = _state(tmp_path), _slot()
+        slot._app = "myapp"
+        slot.agent = "my-app-agent"
+        state.get_slot = MagicMock(return_value=slot)
+        # Never reached when the bail is present; set so a REMOVED bail would fail
+        # on the assertion below (get_or_create awaited) rather than on unpacking.
+        state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+        cold = _bindings(
+            kiro_agent="kirocrew", resolved_alias="default", requested_resolved=False
+        )
+        with patch.object(chat_runner.asyncio, "sleep", new=AsyncMock()), patch.object(
+            chat_runner, "_consume_pending_reset", new=AsyncMock()
+        ), patch.object(
+            chat_runner, "resolve_agent_bindings", side_effect=[cold, cold]
+        ), patch.object(
+            chat_runner, "refresh_materialized_agents", MagicMock()
+        ), patch.object(
+            chat_runner, "subprocess_executor", MagicMock(return_value=None)
+        ):
+            await chat_runner._eager_spawn(state, slot)
+
+        state.sessions.get_or_create.assert_not_awaited()

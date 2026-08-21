@@ -351,6 +351,43 @@ name must store `resolved_alias`, never `kiro_agent`: the stored value is
 re-resolved later with aliases matched FIRST, so a physical agent name that also
 happens to be an alias key would dispatch that alias's target instead.
 
+#### App-slot cold-snapshot self-heal & fail-loud (`dashboard/chat_runner._run_chat`)
+The one-turn cold fallback above is acceptable for an ordinary session (the next
+turn self-heals), but it is **not** acceptable for an **app-owned** slot
+(`slot._app` truthy — an App-Kit slot bound to an app's own kiro agent, e.g.
+`my-app-agent`). An app agent is never in `config.agents` and is resolvable
+*only* through the materialized snapshot, so a cold on-loop read makes
+`resolve_agent_bindings` fall back to the default agent with
+`requested_resolved=False`. The result is silent: the slot still advertises the
+requested name while the generic default agent answers **with none of the app's
+MCP tools and no error**, leaving the app unusable until a gateway restart happens
+to re-warm the snapshot. `_run_chat` therefore guards the resolve, strictly behind
+`slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
+common hot path — no `_app`, or already resolved):
+
+1. **Self-heal.** Warm the snapshot **off the loop** with the same pattern
+   `server.py` uses at boot —
+   `await loop.run_in_executor(subprocess_executor(), refresh_materialized_agents)`
+   (`refresh_materialized_agents` never raises, so awaiting it via the executor is
+   safe) — then **re-resolve once** and use the fresh bindings. This recovers an
+   app slot whose only problem was a snapshot not yet warmed on this loop, without
+   waiting for a restart.
+2. **Fail-loud.** If the slot is app-owned and *still* unresolved after the
+   re-resolve, `_run_chat` does **not** run the default agent. It raises
+   `_AppAgentNotLoaded` (naming `slot.agent`, e.g. *"The app agent
+   'my-app-agent' isn't loaded yet — try again in a moment, or restart the
+   gateway"*) which a dedicated `except` arm beside the terminal turn-error
+   handlers surfaces as a normal `error` card (no `record_failure` — nothing ran).
+   The raise happens *before* `get_or_create`, while no session lock is held, so
+   the standard `finally` teardown runs without ever creating a session or
+   dispatching an agent.
+
+The eager-spawn pre-warm path mirrors the **self-heal** step only (so the
+speculative session bakes in the app's own agent rather than the default, which a
+first real turn would otherwise have to discard); the **fail-loud** lives on the
+real turn alone, since the eager path is best-effort and tears itself down on any
+miss.
+
 ### Materialized-agent snapshot (`config/loader.py`)
 Rung 2's membership test is a process-global `frozenset` — a pure in-memory lookup
 with **no filesystem I/O, not even a stat**. It is reached on every turn of an

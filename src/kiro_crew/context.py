@@ -1091,6 +1091,87 @@ _CRITICAL_RULES = (
 )
 
 
+# Per-agent opt-out cache for the dashboard-contract context (``_CRITICAL_RULES``
+# + the dashboard tool nudges). ``build_message`` reads the flag on EVERY turn, so
+# a cold JSON scan there would be a per-turn cost; memoize by agent name. Staleness
+# within a process is acceptable — the same trade the un-cached ``_load_agent_prompt``
+# read already makes (an agent's spec is not edited mid-process in practice).
+_INCLUDE_CREW_CONTEXT_CACHE: dict[str, bool] = {}
+
+
+def _read_include_crew_context(agent: str) -> bool:
+    """Read ``includeCrewContext`` from *agent*'s materialized JSON. True on any miss.
+
+    Reuses ``_load_agent_prompt``'s sensitive-path-gated scan: skip ``._`` macOS
+    sidecars, ``resolve(strict=True)``, refuse a sensitive resolved target, tolerate
+    ``ValueError``/``OSError``, and match on the declared ``name`` (or the filename
+    stem). Returns ``True`` unless the matched spec carries an explicit boolean
+    ``false`` — an absent flag, a non-boolean value, a missing/unreadable spec, or a
+    directory error all default to injecting, reproducing the pre-opt-out behavior.
+    """
+    try:
+        candidates = kiro_agents_dir().glob("*.json")
+    except OSError:
+        return True
+    for f in candidates:
+        if f.name.startswith("._"):
+            continue
+        try:
+            resolved = f.resolve(strict=True)
+        except OSError:
+            continue
+        if is_sensitive_path(str(resolved)):
+            continue
+        try:
+            # Read through the guarded reader (not resolved.read_text): it
+            # re-resolves, refuses a sensitive target, and opens O_NOFOLLOW —
+            # closing the TOCTOU where the final path component is swapped to a
+            # symlink into ~/.aws etc. AFTER the is_sensitive_path check above.
+            data = json.loads(safe_read_file(str(f)))
+            if not isinstance(data, dict):
+                continue
+            if data.get("name") == agent or f.stem == agent:
+                val = data.get("includeCrewContext", True)
+                # Honor only an explicit boolean; anything else defaults to inject.
+                return val if isinstance(val, bool) else True
+        except (OSError, ValueError):
+            continue
+    return True
+
+
+def _agent_includes_crew_context(agent: str | None) -> bool:
+    """Whether to inject the Crew's dashboard-contract context for *agent*.
+
+    Opt-out, defaulting to inject. The built-in ``kirocrew`` agent and an empty
+    agent always return ``True`` (never a custom agent, so nothing to opt out of).
+    A CUSTOM agent injects unless its materialized JSON explicitly sets
+    ``includeCrewContext: false`` — so a plain custom agent with no flag still gets
+    the critical rules, exactly as it did before the opt-out existed. Memoized by
+    agent name to keep the per-turn ``build_message`` read off the JSON scan path.
+    """
+    if not agent or agent == "kirocrew":
+        return True
+    cached = _INCLUDE_CREW_CONTEXT_CACHE.get(agent)
+    if cached is None:
+        cached = _read_include_crew_context(agent)
+        _INCLUDE_CREW_CONTEXT_CACHE[agent] = cached
+    return cached
+
+
+def invalidate_include_crew_context_cache() -> None:
+    """Drop the memoized ``includeCrewContext`` reads.
+
+    Called when the materialized-agent snapshot is rescanned
+    (``refresh_materialized_agents``): an app install/upgrade rewrites an agent's
+    JSON mid-process via ``_register_agents``, so a value cached before that write
+    — including a default ``True`` cached on a first read that raced ahead of the
+    not-yet-written spec — would otherwise stay wrong until a gateway restart, the
+    exact restart-heals failure class this fix exists to remove. Clearing forces
+    the next ``build_session_context`` / ``build_message`` to re-read the flag.
+    """
+    _INCLUDE_CREW_CONTEXT_CACHE.clear()
+
+
 # Regex patterns for noise compression in assistant messages
 _CODE_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 _JSON_BLOB_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
@@ -1752,9 +1833,12 @@ class ContextBuilder:
         (``_build_context_scope_section``) so it reports the gap instead of
         guessing.
 
-        For custom agents (non-kirocrew), skills and workspace identity
-        are skipped — the agent loads its own via kiro-cli. Memory,
-        lessons, critical rules, and hooks are injected for all agents.
+        For custom agents (non-kirocrew), skills and workspace identity are
+        skipped — the agent loads its own prompt via kiro-cli. The dashboard
+        critical-rules contract is injected by DEFAULT for every agent, but a
+        custom agent can opt out of it (and the dashboard tool nudges) by setting
+        ``includeCrewContext: false`` in its materialized JSON. Memory, lessons,
+        and hooks are injected for all agents.
         """
         is_custom = agent and agent != "kirocrew"
         is_cc = provider_type == "claude_code"
@@ -1804,12 +1888,27 @@ class ContextBuilder:
             _marks.append((label, time.monotonic()))
 
         # Critical rules (diff rendering, OPTIONS buttons, absolute-path file
-        # links). These are dashboard/Slack UI contracts and apply to ALL
-        # providers — including Claude Code. The dashboard renders clickable
-        # input-box options only from the [OPTIONS: ...] text tag (see
-        # dashboard/state.py and the frontend AssistantMessage), so CC must be
-        # told to emit it too or the options never render.
-        parts.append(_CRITICAL_RULES)
+        # links). These are the built-in kirocrew assistant's dashboard/Slack UI
+        # contracts and apply to ALL providers — including Claude Code. The
+        # dashboard renders clickable input-box options only from the
+        # [OPTIONS: ...] text tag (see dashboard/state.py and the frontend
+        # AssistantMessage), so CC must be told to emit it too or the options
+        # never render.
+        #
+        # A CUSTOM app agent can OPT OUT: it ships its own system prompt that
+        # defines its own output contract (e.g. an agent that writes prose
+        # through its own MCP tools, with no diff block or [OPTIONS:] footer),
+        # and injecting the kirocrew assistant's mandates on top both
+        # conflicts with that contract and — on a safety-tuned model — reads as
+        # an attempt to override the agent's identity, which the model then
+        # refuses as prompt injection. The opt-out is per-agent via
+        # ``includeCrewContext: false``; DEFAULT is to inject (a plain custom
+        # agent with no flag still gets the rules, same as the built-in). The
+        # tags still RENDER for any agent that emits them (the dashboard parses
+        # them regardless); this only stops the host from MANDATING them where an
+        # agent has declared it does not want them.
+        if _agent_includes_crew_context(agent):
+            parts.append(_CRITICAL_RULES)
 
         # Current date/time — inject for ALL agents so the LLM knows "today".
         # Honour KiroCrewConfig.timezone (e.g. "Asia/Tokyo") so the LLM sees
@@ -2674,10 +2773,14 @@ class ContextBuilder:
             # Situational nudges for tools that may otherwise never surface with
             # MCP Tool Search. Gated on having a dashboard tab open, because
             # both tools need a card surface to render into — which a
-            # channel-born session has whenever its tab is open.
+            # channel-born session has whenever its tab is open. Also gated on
+            # the agent's opt-out: a custom agent that set includeCrewContext=false
+            # wants none of the Crew's dashboard-tool nudges (it drives its own
+            # UI through its MCP tools), so honor that here too, not just for
+            # _CRITICAL_RULES.
             # ask_question is a MID-turn blocking decision; [OPTIONS:] remains
             # the cheaper END-turn choice mechanism on every interactive surface.
-            if has_dashboard_surface(session_key or ""):
+            if has_dashboard_surface(session_key or "") and _agent_includes_crew_context(agent):
                 parts.append(
                     "\n\n(If you need the user's answer to a blocking question BEFORE "
                     "you can continue the current turn, use the ask_question tool — it "
