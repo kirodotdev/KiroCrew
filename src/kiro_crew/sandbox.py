@@ -725,13 +725,23 @@ def _probe_child_sequence(
 
 
 def _probe_parent_sequence(
-    pid: int, c2p_r: int, p2c_w: int, uid: int, gid: int
+    pid: int,
+    c2p_r: int,
+    p2c_w: int,
+    uid: int,
+    gid: int,
+    death: Callable[[int], str] = _probe_child_death,
 ) -> tuple[bool, bool, str, str]:
-    """Parent half of the probe: drive the handshake and decide the verdict."""
+    """Parent half of the probe: drive the handshake and decide the verdict.
+
+    ``death`` describes a child that stopped reporting. It is injected because the
+    spawned probe's child is owned by a ``Popen`` -- calling ``waitpid`` on it here
+    would race that object's own bookkeeping -- while the forked probe's child is
+    reaped by this module. The verdict logic is identical for both.
+    """
     report = _probe_read_step(c2p_r)
     if report is None:
-        death = _probe_child_death(pid)
-        return (False, True, f"probe child {death}; no {_PROBE_STEP_NEWUSER} result", "")
+        return (False, True, f"probe child {death(pid)}; no {_PROBE_STEP_NEWUSER} result", "")
     step, err = report
     if step == _PROBE_STEP_MULTITHREADED:
         # Same classification and same remedy as a plain EINVAL -- deliberately, see
@@ -764,8 +774,7 @@ def _probe_parent_sequence(
 
     report = _probe_read_step(c2p_r)
     if report is None:
-        death = _probe_child_death(pid)
-        return (False, True, f"probe child {death}; no {_PROBE_STEP_NEWNS} result", "")
+        return (False, True, f"probe child {death(pid)}; no {_PROBE_STEP_NEWNS} result", "")
     step, err = report
     if step != "N":
         return (False, True, f"probe child sent unexpected step {step!r}", "")
@@ -776,6 +785,186 @@ def _probe_parent_sequence(
 
 def _probe_unshare_once() -> tuple[bool, bool, str, str]:
     """One launcher-shaped namespace probe: ``(ok, transient, reason)``.
+
+    Runs in a FRESH interpreter when one can be spawned, and falls back to
+    :func:`_probe_unshare_via_fork` otherwise. The two produce the same verdict
+    tuple through the same classifier; only the process the child half runs in
+    differs. See :data:`_PROBE_SHIM_CODE` for why that difference is the whole
+    point.
+    """
+    spawned = _probe_unshare_via_spawn()
+    if spawned is not None:
+        return spawned
+    return _probe_unshare_via_fork()
+
+
+#: Child half of the probe, run in a FRESH interpreter rather than a fork of the
+#: caller. Same wire protocol as :func:`_probe_child_sequence`, so the reviewed
+#: parent half drives either one unchanged.
+#:
+#: WHY A FRESH PROCESS. ``unshare(CLONE_NEWUSER)`` implies ``CLONE_THREAD`` and the
+#: kernel refuses it with EINVAL unless the caller's thread group holds exactly one
+#: task. A fork child inherits that condition: ``os.register_at_fork`` handlers run
+#: INSIDE ``os.fork()`` before it returns, so a dependency that restarts a thread in
+#: every child -- OpenTelemetry's ``PeriodicExportingMetricReader`` does exactly
+#: this -- makes the child multithreaded before the probe can measure anything. The
+#: verdict is then EINVAL, which is classified permanent and cached, and every later
+#: sandboxed spawn on that process fails closed. A release gate lost 40 tests to one
+#: such probe: all of them pass alone, none of them is a metrics test.
+#:
+#: A fresh interpreter starts single-threaded and runs no after-in-child fork hooks,
+#: so its thread count at ``unshare()`` time is 1 regardless of the caller. This does
+#: NOT soften the fail-closed rule: a genuinely single-threaded process that still
+#: gets EINVAL means the host lacks ``CONFIG_USER_NS``, which stays permanent. It
+#: removes the FALSE EINVAL, not the real one.
+#:
+#: It is also the more faithful probe. The real launcher is already a fresh
+#: interpreter -- ``wrap_argv`` returns ``[sys.executable, launcher_path, ...]`` --
+#: which then forks and unshares. So the fork-based probe was strictly MORE
+#: pessimistic than the spawn it predicts, and this makes the two agree.
+#:
+#: Kept deliberately free of ``kiro_crew`` imports and run under ``-I -S``, like
+#: ``_SPAWN_SHIM_CODE``: no site directory, no ``PYTHON*`` environment influence,
+#: nothing to shadow. It writes ONLY wire steps on fd 1.
+_PROBE_SHIM_CODE = r"""
+import ctypes, errno, os
+
+CLONE_NEWUSER = 0x10000000
+CLONE_NEWNS = 0x00020000
+
+
+def threads():
+    # st_nlink of /proc/self/task is the thread count plus the two dir entries.
+    try:
+        return max(1, os.stat("/proc/self/task").st_nlink - 2)
+    except OSError:
+        return 1
+
+
+def unshare(libc, flags):
+    ctypes.set_errno(0)
+    if libc.unshare(flags) == 0:
+        return 0
+    return ctypes.get_errno() or errno.EPERM
+
+
+def main():
+    try:
+        # dlopen(NULL): resolve unshare() from the libc ALREADY loaded into this
+        # interpreter. Never ctypes.util.find_library here -- on Linux it EXECUTES
+        # helper processes (ldconfig, then a PATH-resolved gcc/cc/objdump on musl
+        # hosts) to locate libc, and this probe runs before any confinement, so a
+        # workspace-controlled `gcc` on PATH would be same-user code execution.
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.unshare.argtypes = [ctypes.c_int]
+        libc.unshare.restype = ctypes.c_int
+    except BaseException:
+        os._exit(1)
+    n = threads()
+    err = unshare(libc, CLONE_NEWUSER)
+    if err == errno.EINVAL and n > 1:
+        os.write(1, b"M:%d\n" % n)
+        os._exit(0)
+    os.write(1, b"U:%d\n" % err)
+    if err:
+        os._exit(0)
+    if not os.read(0, 1):
+        os._exit(0)
+    os.write(1, b"N:%d\n" % unshare(libc, CLONE_NEWNS))
+    os._exit(0)
+
+
+main()
+"""
+
+#: Ceiling on the spawned probe. The child does two syscalls and one blocking read
+#: whose writer is this process, so anything near this is a wedged interpreter, not
+#: slow work. Exceeding it is reported TRANSIENT: a host that cannot start a Python
+#: in 20 seconds is under momentary pressure, not permanently sandbox-less.
+_PROBE_SPAWN_TIMEOUT_SECONDS = 20.0
+
+_probe_spawn_unavailable_logged = False
+
+
+def _probe_spawned_death(proc: "subprocess.Popen[bytes]") -> str:
+    """Describe how the spawned probe child ended, for a transient reason string."""
+    code = proc.poll()
+    if code is None:
+        return "did not report"
+    if code < 0:
+        return f"was killed by signal {-code}"
+    return f"exited with status {code}"
+
+
+def _probe_unshare_via_spawn() -> tuple[bool, bool, str, str] | None:
+    """Probe in a fresh interpreter. ``None`` means "cannot spawn, use the fork path".
+
+    Returning ``None`` rather than a verdict is deliberate: an interpreter this
+    process cannot start says nothing about the host's namespaces, so it must not
+    become a sandbox verdict.
+    """
+    global _probe_spawn_unavailable_logged
+    if not sys.executable:
+        if not _probe_spawn_unavailable_logged:
+            _probe_spawn_unavailable_logged = True
+            logger.warning(
+                "namespace probe cannot spawn a fresh interpreter (sys.executable is "
+                "empty); falling back to a fork-based probe, which reports EINVAL on a "
+                "multithreaded caller even where the sandbox works"
+            )
+        return None
+
+    uid, gid = os.getuid(), os.getgid()
+    try:
+        # close_fds is subprocess's default and does the job the fork path has to do
+        # by hand: the child gets only its standard streams, so an orphaned probe
+        # cannot hold the gateway lock fd or the dashboard listen socket open (#3150).
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _PROBE_SHIM_CODE],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        return _probe_failure("probe spawn", exc.errno or 0)
+    except Exception as exc:  # pragma: no cover - defensive
+        return (False, True, f"probe spawn failed: {exc}", "")
+
+    assert proc.stdin is not None and proc.stdout is not None
+    try:
+        return _probe_parent_sequence(
+            proc.pid,
+            proc.stdout.fileno(),
+            proc.stdin.fileno(),
+            uid,
+            gid,
+            death=lambda _pid: _probe_spawned_death(proc),
+        )
+    finally:
+        # Closing stdin releases a child still waiting on the maps; the wait then
+        # reaps it. Popen owns the pid, so _probe_reap must NOT run here.
+        for stream in (proc.stdin, proc.stdout):
+            try:
+                stream.close()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=_PROBE_SPAWN_TIMEOUT_SECONDS)
+        except Exception:  # pragma: no cover - a wedged interpreter
+            proc.kill()
+            try:
+                proc.wait(timeout=_PROBE_SPAWN_TIMEOUT_SECONDS)
+            except Exception:
+                pass
+
+
+def _probe_unshare_via_fork() -> tuple[bool, bool, str, str]:
+    """The fork-based probe: same verdict, but the child inherits fork hooks.
+
+    Retained as the fallback for a process that cannot spawn an interpreter at all.
+    Its child can be made multithreaded by an ``os.register_at_fork`` handler, which
+    is why :func:`_probe_unshare_via_spawn` is preferred whenever it is available.
 
     Mirrors the sequence ``_build_launcher_script()`` actually performs — fork,
     child ``unshare(CLONE_NEWUSER)``, parent writes the identity UID/GID map,

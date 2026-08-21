@@ -252,7 +252,7 @@ def test_probe_child_killed_by_signal_is_transient(monkeypatch):
     fake_libc = FakeLibC()
     monkeypatch.setattr(_ct, "CDLL", lambda *a, **kw: fake_libc)
 
-    ok, transient, reason, _remedy = sb._probe_unshare_once()
+    ok, transient, reason, _remedy = sb._probe_unshare_via_fork()
     assert ok is False
     assert transient is True
     assert "signal 9" in reason

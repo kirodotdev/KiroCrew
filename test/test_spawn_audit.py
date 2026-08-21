@@ -168,6 +168,16 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
+        # The userns probe child: ONE fixed argv, `sys.executable -I -S -c <shim>`,
+        # no shell, no cwd, stdin/stdout are the two handshake pipes. Nothing is
+        # agent-influenced -- the shim is a module-level string constant and takes
+        # no arguments. It CANNOT route through sandboxed_spawn_argv: this probe is
+        # what decides whether that sandbox exists at all, so routing it would be
+        # circular (wrap_argv consults the verdict this child is producing). The
+        # child does two unshare() calls against its own fresh process and exits;
+        # it executes nothing else (the shim dlopens the already-loaded libc
+        # rather than letting ctypes.util.find_library exec ldconfig/gcc).
+        "sandbox.py::_probe_unshare_via_spawn",
         # _get_rss_tree_mb is deliberately NOT listed: its own spawn moved into
         # _ps_process_table below, so an entry for it would be stale and would
         # mask a future regression that put a spawn back inline.

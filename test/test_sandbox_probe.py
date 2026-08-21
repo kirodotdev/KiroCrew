@@ -571,7 +571,7 @@ class TestProbeScaffolding:
         monkeypatch.setattr(sb.os, "close", tracking_close)
         monkeypatch.setattr(sb.os, "fork", boom)
 
-        ok, transient, reason, _remedy = sb._probe_unshare_once()
+        ok, transient, reason, _remedy = sb._probe_unshare_via_fork()
 
         assert (ok, transient) == (False, True)
         assert reason == "fork failed with errno 11 (EAGAIN)"
@@ -586,7 +586,7 @@ class TestProbeScaffolding:
         monkeypatch.setattr(sb, "_probe_reap", reaped.append)
         monkeypatch.setattr(sb, "_probe_parent_sequence", lambda *_a: (True, False, "ok", ""))
 
-        assert sb._probe_unshare_once() == (True, False, "ok", "")
+        assert sb._probe_unshare_via_fork() == (True, False, "ok", "")
         assert reaped == [4242]
 
     @_linux_only
@@ -601,7 +601,7 @@ class TestProbeScaffolding:
         monkeypatch.setattr(sb, "_probe_parent_sequence", boom)
 
         with pytest.raises(RuntimeError):
-            sb._probe_unshare_once()
+            sb._probe_unshare_via_fork()
         assert reaped == [4242]
 
     def test_non_linux_never_probes(self, monkeypatch):
@@ -794,3 +794,101 @@ class TestProbeChildFdSweep:
 
         assert os.waitstatus_to_exitcode(status) == 0
         assert data == b"01", "sentinel lock fd must close; kept report pipe must survive"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the userns probe is Linux-only")
+class TestProbeRunsInAFreshProcess:
+    """The probe child must not inherit the caller's fork hooks.
+
+    ``unshare(CLONE_NEWUSER)`` implies ``CLONE_THREAD``, so the kernel returns
+    EINVAL unless the caller's thread group holds exactly one task. An
+    ``os.register_at_fork(after_in_child=...)`` handler runs INSIDE ``os.fork()``,
+    so a dependency that restarts a thread in every child -- OpenTelemetry's
+    metric reader does -- makes a forked probe child multithreaded before it can
+    measure anything. That EINVAL is classified permanent and cached, and every
+    later sandboxed spawn in the process then fails closed: one such probe cost a
+    release gate 40 tests, none of them a metrics test.
+    """
+
+    #: The experiment, run in a DISPOSABLE interpreter. Arming the hook is the point
+    #: of the test and CPython cannot unregister one, so doing it in the pytest worker
+    #: would leave every later fork in that worker starting an unrequested thread --
+    #: the exact side effect this fix exists to remove. The child takes the hook with
+    #: it when it exits. Prints three counts: forked-before, forked-after, spawned.
+    _EXPERIMENT = r"""
+import os, subprocess, sys, threading, time
+
+def forked():
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        os.write(w, str(max(1, os.stat("/proc/self/task").st_nlink - 2)).encode())
+        os.close(w)
+        os._exit(0)
+    os.close(w)
+    n = int(os.read(r, 8) or -1)
+    os.close(r)
+    os.waitpid(pid, 0)
+    return n
+
+before = forked()
+os.register_at_fork(after_in_child=lambda: threading.Thread(
+    target=time.sleep, args=(30,), daemon=True).start())
+after = forked()
+code = "import os;print(max(1, os.stat('/proc/self/task').st_nlink - 2))"
+spawned = int(subprocess.run([sys.executable, "-I", "-S", "-c", code],
+                             capture_output=True, text=True, check=True).stdout.strip())
+print(before, after, spawned)
+"""
+
+    def test_a_fork_hook_cannot_reach_the_spawned_child(self):
+        """The property the fix rests on, measured rather than argued.
+
+        Asserted as a DIFFERENCE within one process: a bare "the spawned child has
+        one thread" would pass just as well on a host where nothing armed a hook,
+        which is every host until something does.
+        """
+        out = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", self._EXPERIMENT],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        before, after, spawned = (int(part) for part in out.split())
+
+        assert before == 1, f"the experiment started with a hook already armed ({before})"
+        assert after > 1, "a forked child does not inherit the fork hook; premise gone"
+        assert spawned == 1, "a freshly spawned interpreter must be single-threaded"
+
+    def test_both_paths_report_the_same_verdict_on_this_host(self):
+        """Spawn and fork must agree, or the fix would be changing the answer.
+
+        Only the reason text is compared for its leading step+errno: the spawned
+        path's transient failure strings name a Popen-owned child differently, and
+        that difference is not a verdict.
+        """
+        spawned = sb._probe_unshare_via_spawn()
+        assert spawned is not None, "this host can spawn an interpreter"
+        forked = sb._probe_unshare_via_fork()
+        assert spawned[0] == forked[0], (spawned, forked)
+        assert spawned[1] == forked[1], (spawned, forked)
+        assert spawned[3] == forked[3], (spawned, forked)
+
+    def test_no_executable_falls_back_instead_of_inventing_a_verdict(self, monkeypatch):
+        """An interpreter we cannot start says nothing about the host's namespaces."""
+        monkeypatch.setattr(sb.sys, "executable", "")
+        monkeypatch.setattr(sb, "_probe_spawn_unavailable_logged", False)
+        assert sb._probe_unshare_via_spawn() is None
+
+        monkeypatch.setattr(
+            sb, "_probe_unshare_via_fork", lambda: (True, False, "fork path ran", "")
+        )
+        assert sb._probe_unshare_once() == (True, False, "fork path ran", "")
+
+    def test_the_shim_imports_nothing_first_party(self):
+        """It runs under ``-I -S``: no site directory, so a kiro_crew import would fail."""
+        assert "kiro_crew" not in sb._PROBE_SHIM_CODE
+        for line in sb._PROBE_SHIM_CODE.splitlines():
+            if line.startswith(("import ", "from ")):
+                assert "kiro_crew" not in line, line
