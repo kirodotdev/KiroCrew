@@ -180,6 +180,7 @@ function stubElectronForOpen() {
     // actually asserted instead of merely not crashing.
     setContentProtection(on) { this.contentProtection = on; }
     setAlwaysOnTop() {}
+    setBounds(b) { this.bounds = b; }
     loadURL() {}
     isVisible() { return false; }
     isDestroyed() { return false; }
@@ -187,9 +188,22 @@ function stubElectronForOpen() {
     close() {}
     on() {}
   }
-  const DISPLAY = { id: 1, bounds: { x: 0, y: 0, width: 1440, height: 900 } };
+  // `workArea` is not optional on a real Electron Display, and getAllDisplayInfo
+  // reads it whenever the arrangement changes — a bounds-only double throws
+  // there instead of exercising the handler.
+  const DISPLAY = {
+    id: 1,
+    bounds: { x: 0, y: 0, width: 1440, height: 900 },
+    workArea: { x: 0, y: 25, width: 1440, height: 875 },
+  };
+  // Display listeners are recorded rather than swallowed: whether they are
+  // RELEASED on teardown is the contract behind #4673, and an `on() {}` stub
+  // cannot see a leak.
+  const displayListeners = [];
   return {
     created,
+    displayListeners,
+    DISPLAY,
     electron: {
       app: { on() {}, setActivationPolicy() {}, dock: { show() {} } },
       BrowserWindow: FakeWindow,
@@ -199,7 +213,11 @@ function stubElectronForOpen() {
         getPrimaryDisplay: () => DISPLAY,
         getAllDisplays: () => [DISPLAY],
         getCursorScreenPoint: () => ({ x: 0, y: 0 }),
-        on() {},
+        on(event, fn) { displayListeners.push({ event, fn }); },
+        removeListener(event, fn) {
+          const at = displayListeners.findIndex((l) => l.event === event && l.fn === fn);
+          if (at >= 0) displayListeners.splice(at, 1);
+        },
       },
     },
   };
@@ -243,6 +261,82 @@ test("the pet overlay is a non-activating panel on macOS only", () => {
       // "panel" is not a legal `type` off macOS; the option must be omitted.
       assert.strictEqual(type, undefined);
     }
+  } finally {
+    mod.closePetWindow();
+  }
+});
+
+// ── Display-listener lifecycle (#4673) ─────────────────────────────────────
+// openPetWindow watches the display arrangement so the overlay set can follow
+// it. That subscription used to sit behind a one-way latch and was never
+// released, so it outlived every teardown: macOS fires
+// display-metrics-changed on a space switch and on wake from sleep, the leaked
+// handler saw an empty overlay map, rebuilt one overlay per display and
+// wireHandshake revealed them — the pet flashed back onto the desktop of a user
+// who had DISABLED Mochi, until the host's next 5s reconcile tick closed it
+// again. Nothing on that path consults the enabled state, so the fix is
+// lifecycle symmetry here, not an async probe on the redraw path.
+
+test("closePetWindow releases the display listeners openPetWindow bound", () => {
+  const { mod, displayListeners } = loadPetOverlays();
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    assert.deepStrictEqual(
+      displayListeners.map((l) => l.event).sort(),
+      ["display-added", "display-metrics-changed", "display-removed"],
+      "all three arrangement events are watched while a pet is live",
+    );
+
+    mod.closePetWindow();
+    assert.deepStrictEqual(displayListeners, [], "teardown must release every one");
+
+    // The latch is RESET, not merely unset: a re-enable re-arms exactly once, so
+    // an enable/disable cycle can neither leak a handler nor double-fire one.
+    mod.openPetWindow("http://localhost:6777", "tok");
+    assert.strictEqual(displayListeners.length, 3, "a re-open re-arms once, not twice");
+  } finally {
+    mod.closePetWindow();
+  }
+});
+
+test("a display event after teardown does not flash the pet back on screen", () => {
+  const { mod, created, displayListeners } = loadPetOverlays();
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    assert.strictEqual(created.length, 1, "one overlay for the single display");
+    const metrics = displayListeners.find((l) => l.event === "display-metrics-changed");
+    assert.ok(metrics, "the handler under test must be registered while live");
+
+    mod.closePetWindow();
+    // Exactly what the leak did: deliver the event to the handler that was
+    // registered. It must now build nothing — the guard holds even for an event
+    // already dispatched when teardown ran.
+    metrics.fn();
+    assert.strictEqual(created.length, 1, "no overlay may be created for a torn-down pet");
+    assert.strictEqual(mod.isPetWindowOpen(), false, "and the pet stays gone");
+  } finally {
+    mod.closePetWindow();
+  }
+});
+
+test("a display event while the pet is live still follows the new geometry", () => {
+  // The guard must not be over-broad: a resolution or arrangement change with a
+  // LIVE pet still has to resize its overlay, which is the behaviour the
+  // listeners exist for.
+  const { mod, created, displayListeners, DISPLAY } = loadPetOverlays();
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    const metrics = displayListeners.find((l) => l.event === "display-metrics-changed");
+    DISPLAY.bounds = { x: 0, y: 0, width: 1280, height: 800 };
+    DISPLAY.workArea = { x: 0, y: 25, width: 1280, height: 775 };
+
+    metrics.fn();
+    assert.strictEqual(created.length, 1, "an existing display reuses its overlay");
+    assert.deepStrictEqual(
+      created[0].bounds,
+      DISPLAY.bounds,
+      "the live overlay follows the new display bounds",
+    );
   } finally {
     mod.closePetWindow();
   }

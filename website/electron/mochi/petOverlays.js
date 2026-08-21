@@ -767,12 +767,58 @@ function wireHandshake(win, displayId, pos) {
 }
 
 /**
+ * The display events that make the overlay set stale.
+ *
+ * Named once so binding and unbinding cannot drift apart: an event added to the
+ * bind side but forgotten on the unbind side is the exact shape of the leak
+ * below.
+ */
+const DISPLAY_EVENTS = ["display-added", "display-removed", "display-metrics-changed"];
+
+/**
+ * Bind the display listeners, once per live pet.
+ *
+ * Paired with `unbindDisplayListeners` in `closePetWindow`. The pairing is the
+ * whole point: this used to be a ONE-WAY latch that was never released, so the
+ * handler outlived every teardown and kept rebuilding overlays for a pet that
+ * was no longer supposed to exist.
+ */
+function bindDisplayListeners() {
+  if (displayListenersBound) return;
+  displayListenersBound = true;
+  for (const event of DISPLAY_EVENTS) screen.on(event, onDisplayChange);
+}
+
+/**
+ * Release the display listeners on teardown.
+ *
+ * Without this, a disabled Mochi still flashed its pet back onto the desktop
+ * (#4673): macOS fires `display-metrics-changed` on a space switch and on wake
+ * from sleep, the leaked handler found an empty overlay map, rebuilt one overlay
+ * per display and `wireHandshake` revealed them — visible until the host's next
+ * 5s reconcile tick tore them down again.
+ */
+function unbindDisplayListeners() {
+  if (!displayListenersBound) return;
+  displayListenersBound = false;
+  for (const event of DISPLAY_EVENTS) screen.removeListener(event, onDisplayChange);
+}
+
+/**
  * Rebuild overlays when displays are added, removed or rearranged.
  *
  * Upstream's version contains a duplicated `if (isHidden)` block (a copy/paste
  * slip); it is ported once here.
  */
 function onDisplayChange() {
+  // No live overlay means there is no pet on screen, so there is nothing to
+  // rebuild — REBUILDING would CREATE one, which is the opposite of what a
+  // torn-down pet wants. Belt to `unbindDisplayListeners`' braces: the unbind
+  // stops the event arriving at all, and this makes the handler itself correct
+  // for an event already dispatched when teardown ran, and for any future
+  // caller that binds without checking.
+  if (overlays.size === 0) return;
+
   const newDisplays = screen.getAllDisplays();
   const newIds = new Set(newDisplays.map((d) => d.id));
 
@@ -851,17 +897,16 @@ function openPetWindow(baseUrl, token = "") {
     wireHandshake(win, d.id, startPos);
   }
 
-  if (!displayListenersBound) {
-    displayListenersBound = true;
-    screen.on("display-added", onDisplayChange);
-    screen.on("display-removed", onDisplayChange);
-    screen.on("display-metrics-changed", onDisplayChange);
-  }
+  bindDisplayListeners();
 
   return getActiveOverlay();
 }
 
 function closePetWindow() {
+  // FIRST, before any window closes: a `close()` can synchronously reshape the
+  // display arrangement (an overlay leaving a space), and a listener still bound
+  // at that moment would re-enter this module mid-teardown.
+  unbindDisplayListeners();
   stopHitPoll();
   stopDragPolling();
   for (const win of [...overlays.values()]) {
