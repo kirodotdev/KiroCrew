@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -157,6 +158,25 @@ NATIVE_SUBAGENT_DONE_RESULT_CAP = 8_000
 NATIVE_SUBAGENT_DONE_TRUNC_MARKER = "…(earlier output truncated)\n"
 NATIVE_SUBAGENT_TERMINAL_KEEP = 50
 NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
+
+# Cap on a slot's queued-completion delivery ledger (see
+# ``_ChatSlot.note_pending_subagent_delivery``). Well above any legitimate
+# in-flight set — the slot queue itself is capped at 50 rows — so it only ever
+# evicts entries left behind by rows that vanished from the queue without being
+# consumed, and eviction merely defers those agents' cleanup to the next start.
+_MAX_PENDING_SUBAGENT_DELIVERIES = 128
+
+
+def _delivery_key(content: str) -> str:
+    """Identity of a queued completion for delivery bookkeeping.
+
+    A digest of the announce rather than the text itself: a wave digest runs to
+    tens of kilobytes, and the ledger only needs to recognise the same announce
+    again after a pre-consumption failure re-queues it verbatim under a new
+    queue-entry id. Not a security boundary — nothing is authenticated by it.
+    """
+    return hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()[:32]
+
 
 # Slot-list broadcast coalescing window. The sub-agent slots debouncer in
 # slack/gateway.py hardcodes the same value independently; the two are not shared.
@@ -1418,6 +1438,7 @@ class _ChatSlot:
         "_synthesis_inflight",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
+        "_subagent_delivery_pending",
         "_recovery_retrigger_count",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
@@ -1700,6 +1721,14 @@ class _ChatSlot:
         # blocking spawn_sub_agents MCP tool.  _subagent_done skips injection
         # for these to prevent a duplicate turn that clobbers [OPTIONS:] buttons.
         self._subagents_inline_collected: set[str] = set()
+        # Queued sub-agent completions whose delivery tombstone is still owed:
+        # queue-id -> the agent ids whose ``result.txt`` that row promises. A
+        # completion routed into a BUSY slot is queued, so the parent's context
+        # does not contain it until the row drains; the run loop therefore skips
+        # its own ``mark_delivered`` and the drain settles these instead, so the
+        # retention TTL is measured from consumption rather than from run
+        # completion (issue #4839). See ``take_pending_subagent_deliveries``.
+        self._subagent_delivery_pending: dict[str, list[str]] = {}
         self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
@@ -2463,6 +2492,65 @@ class _ChatSlot:
     def queue_pop(self, index: int = 0) -> dict[str, str]:
         """Pop a queue item by index. Returns {"id": ..., "content": ...}."""
         return self._queue.pop(index)
+
+    def note_pending_subagent_delivery(self, content: str, agent_ids: list[str]) -> None:
+        """Record that a queued completion still owes *agent_ids* a delivery mark.
+
+        Called by the gateway when a sub-agent completion could not be injected
+        because the slot was busy. Until the row drains AND its turn consumes the
+        prompt, the result is not in the parent's context, so no ``delivered``
+        tombstone is written for those agents -- which is also what keeps their
+        ``result.txt`` alive across an arbitrarily long queue wait (issue #4839).
+
+        Keyed on the ANNOUNCE CONTENT, not the queue-entry id: a turn that fails
+        before the model consumed the prompt re-queues that same announce under a
+        freshly minted id (``build_recovery_requeue`` replays the message verbatim
+        while nothing has been emitted), and a debt keyed on the old id could never
+        be claimed by the retry that actually delivers it. The content embeds the
+        agent ids and their result paths, so it is the identity that survives.
+
+        An empty *agent_ids* records nothing: a stopped or failed member keeps the
+        tombstone its own terminal path wrote, and there is nothing to settle.
+
+        Entries are only ever removed by the row that settles them, because
+        anything cleverer races the drain: a turn's tail-drain pops the NEXT row
+        before the current turn's settlement callback runs, so "no longer queued"
+        does not mean "abandoned". A row that leaves the queue unconsumed therefore
+        leaves its entry behind, so the ledger is capped and evicts oldest-first --
+        in the fail-safe direction, since an unsettled agent keeps its folder and
+        is recovered by the next start's reconciliation.
+        """
+        if not content or not agent_ids:
+            return
+        key = _delivery_key(content)
+        owed = self._subagent_delivery_pending.setdefault(key, [])
+        owed.extend(a for a in agent_ids if a not in owed)
+        while len(self._subagent_delivery_pending) > _MAX_PENDING_SUBAGENT_DELIVERIES:
+            self._subagent_delivery_pending.pop(next(iter(self._subagent_delivery_pending)))
+
+    def owes_subagent_delivery(self, contents: list[str]) -> bool:
+        """Whether any of *contents* still owes a delivery mark. Read-only.
+
+        Lets the drain leave a row's dispatch completely untouched when it owes
+        nothing -- the overwhelmingly common case, including every ordinary
+        recovery replay -- instead of arming settlement machinery for it.
+        """
+        return any(_delivery_key(c) in self._subagent_delivery_pending for c in contents)
+
+    def take_pending_subagent_deliveries(self, contents: list[str]) -> list[str]:
+        """Claim the delivery marks owed by the given consumed completion rows.
+
+        Returns the agent ids whose result is now in the parent's context, in
+        drain order, and forgets them. Only the named rows are touched: sweeping
+        entries whose row is "no longer queued" would delete a SUCCESSOR's debt,
+        because the tail-drain at the end of a turn pops the next row while this
+        turn's settlement callback has not run yet -- and a consumed result left
+        unsettled is re-announced as an orphan by the next start.
+        """
+        claimed: list[str] = []
+        for content in contents:
+            claimed.extend(self._subagent_delivery_pending.pop(_delivery_key(content), []))
+        return claimed
 
     def queue_remove_by_id(self, queue_id: str) -> str | None:
         """Remove a queue item by ID. Returns the content or None if not found."""

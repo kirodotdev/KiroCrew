@@ -4394,6 +4394,55 @@ class GatewayOrchestrator:
             logger.debug("AutoNudge expiry notification failed", exc_info=True)
 
     @staticmethod
+    def _defer_queued_delivery(
+        slot: Any, announce: str, info: SubagentInfo, *, flush_only: bool
+    ) -> None:
+        """Owe a queued completion's delivery tombstones to the queue drain.
+
+        The retention window for ``result.txt`` (``agent.subagent_result_ttl_secs``)
+        exists so the parent can read the full transcript AFTER the completion
+        event reaches it. Writing the ``delivered`` tombstone when the announce is
+        merely QUEUED starts that clock while the event is still waiting for a
+        turn, so a long-running turn ahead of it lets the reaper prune every file
+        the queued announce points at (issue #4839).
+
+        So the ids are handed to the slot keyed on the announce ITSELF,
+        ``_delivery_queued`` tells the run loop to skip its own ``mark_delivered``,
+        and the drain (``chat_runner._start_next_queued_turn``) settles them once a
+        turn has consumed that announce -- including a retry, because a failure
+        before the model consumed the prompt re-queues the same text under a newly
+        minted queue id, which a debt keyed on the original id could never match. A
+        wave digest carries its held members' ids too: ``_digest_settle_ids`` is
+        transferred (not copied), so the run loop's ``_settle_digest_holds`` becomes
+        a no-op rather than a second writer.
+
+        Best-effort in one direction only: if the slot cannot take the ids (a
+        stubbed slot in tests), nothing is transferred and the previous
+        immediate-tombstone behaviour stands — better a short window than a
+        folder no one ever tombstones.
+        """
+        # A flush-only record is synthetic (no run, no folder of its own). Only a
+        # COMPLETED member owes a delivered mark: ``info.outcome`` is the codebase's
+        # canonical three-way classification precisely because the ``error``-
+        # nullability idiom reports a user-stopped agent as completed, and a
+        # stopped or failed run already carries its own tombstone whose 7-day
+        # post-mortem window a "delivered" write would shorten to the result TTL.
+        owed: list[str] = [] if (flush_only or info.outcome != "completed") else [info.id]
+        held = getattr(info, "_digest_settle_ids", None)
+        if isinstance(held, list):
+            owed.extend(str(h) for h in held)
+        try:
+            slot.note_pending_subagent_delivery(announce, owed)
+        except Exception:
+            logger.debug(
+                "Subagent %s: could not defer queued delivery marks", info.id, exc_info=True
+            )
+            return
+        info._delivery_queued = True
+        if isinstance(held, list):
+            info._digest_settle_ids = []
+
+    @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:
         """Build notification meta with slot or slack_link for jump-to-source."""
         if not parent_key:
@@ -5466,6 +5515,18 @@ class GatewayOrchestrator:
                                     announce,
                                     kind=SUBAGENT_COMPLETION_KIND,
                                     meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                                )
+                                # Queuing is not delivery. The announce promises
+                                # result paths the parent can read on demand, but
+                                # it will not be in the parent's context until a
+                                # turn drains it — a wait bounded only by the turn
+                                # ceiling, so longer than the retention TTL. Owe
+                                # the delivery tombstones to that drain instead of
+                                # writing them now, or the reaper prunes
+                                # result.txt while the promise is still queued
+                                # and the parent is handed dead paths (#4839).
+                                self._defer_queued_delivery(
+                                    _injection_slot, announce, info, flush_only=_flush_only
                                 )
                                 self.dashboard_state.push_slots_update()
                                 logger.info("Subagent %s → queued in %s", info.id, _slot_name)

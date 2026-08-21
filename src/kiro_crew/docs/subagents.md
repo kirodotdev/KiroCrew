@@ -83,7 +83,7 @@ Three `agent.*` config knobs control what the parent session sees:
 |-----|--------|---------|--------|
 | `agent.completion_keep` | `"head"` / `"tail"` / `"both"` | `"head"` | Which end of the transcript to keep when it exceeds the cap |
 | `agent.completion_keep_chars` | int (`0` disables) | `3000` | Character cap applied after `completion_keep` |
-| `agent.subagent_result_ttl_secs` | int (seconds) | `3600` | How long the delivered `result.txt` is kept before the reaper prunes it |
+| `agent.subagent_result_ttl_secs` | int (seconds) | `3600` | How long the delivered `result.txt` is kept before the reaper prunes it. The window starts when the completion reaches the parent, so a completion queued behind a long turn does not spend it waiting |
 
 Pick the mode that matches how your agents emit their useful output:
 

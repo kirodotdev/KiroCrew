@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew import mcp_apps_render, model_registry, session_directive
 from kiro_crew.acp.client import (
@@ -222,6 +222,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _EMPTY_AUTO_CONTINUE_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _SYNTHETIC_RECOVERY_MSGS,
+    SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
     RecoveryPayload,
     is_synthetic_payload_item,
@@ -3527,6 +3528,113 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     )
 
 
+def _arm_queued_delivery_settlement(
+    state: DashboardState,
+    slot: _ChatSlot,
+    task: "asyncio.Task",
+    contents: list[str],
+    consumed: list[bool],
+) -> None:
+    """Open the retention window on a drained completion once its turn has RUN.
+
+    The gateway records the owed agent ids on the slot when it has to QUEUE a
+    sub-agent completion (``KiroCrewGateway._defer_queued_delivery``), keyed on the
+    announce content, which is what keeps each ``result.txt`` alive for as long as
+    the row waits. This is the other half — but it deliberately does not fire at
+    dispatch.
+
+    A ``delivered`` tombstone is durable and excludes the folder from restart
+    orphan reconciliation, while a dispatched turn is not yet durable: the
+    injected row is still being persisted and the model has not necessarily
+    consumed the prompt. Writing the tombstone at dispatch would mean a crash in
+    that window loses the completion for good (no queue row left, no folder to
+    recover, and the result pruned one TTL later). Waiting for the task to finish
+    makes the failure mode fail-safe instead: nothing is written, so the next
+    start's reconciliation still sees the folder and re-delivers it.
+
+    Nothing is settled until the model has CONSUMED the prompt, and that is the
+    only condition. ``_run_chat`` handles a signed-out CLI, a dead provider,
+    exhausted prompt-busy retries, a transient backend error and a stall by
+    rendering a card and RETURNING NORMALLY, several of them after re-queueing the
+    prompt itself for a later retry — so the task's outcome says nothing either way.
+    *consumed* is the evidence that does: ``_run_chat`` sets it on the provider's
+    turn-complete event for a real end-of-turn, or earlier on the first streamed
+    token or fired tool call. Those triggers are exactly the states in which the
+    announce will NOT be replayed. An EMPTY response splits: the FIRST one
+    re-queues this same announce verbatim and RETRACTS the report, so the clock
+    waits for the replay that lands; the second re-queues a continuation instead
+    and stays consumed.
+
+    Consumption is one-way, so a turn cancelled or failed after it still settles:
+    the result is in the model's context either way, and withholding the tombstone
+    would have the next start re-announce a completion the parent already read.
+
+    *consumed* is a cell owned by THIS armed turn, never slot-wide state: a turn's
+    tail-drain starts its successor before the predecessor's callback runs, so a
+    shared field would be reset by the successor and leave the earlier — already
+    consumed — completion unsettled and re-injected after a restart.
+
+    An unconsumed turn settles nothing, which is the fail-safe side: the folder
+    survives for the replay to read and the next start's reconciliation recovers
+    it, where a premature tombstone would have the reaper delete a result the
+    parent never saw.
+    """
+
+    def _on_turn_done(finished: "asyncio.Task") -> None:  # type: ignore[type-arg]
+        # Consumption is the whole predicate, and it is one-way: once the model has
+        # the prompt, nothing later un-delivers it. A turn cancelled or failed AFTER
+        # that point (session close, shutdown, the turn ceiling) does not replay the
+        # announce -- ``build_recovery_requeue`` switches to a continuation once
+        # anything was emitted, a stop suppresses the requeue outright, and the
+        # guarded-turn error path only renders a card -- so skipping settlement
+        # there would leave a consumed result to be re-announced as an orphan by
+        # the next start. The task's own outcome is therefore not consulted.
+        if not consumed[0]:
+            return
+        try:
+            owed = slot.take_pending_subagent_deliveries(contents)
+        except Exception:
+            logger.debug("Could not claim queued sub-agent delivery marks", exc_info=True)
+            return
+        if not owed:
+            return
+        # The manager owns the write: it holds each tombstone until that run's
+        # teardown has finished, so one can never hide a child that is still being
+        # killed from restart reconciliation. There is no second path -- the debt
+        # only ever exists because the manager's own completion callback created
+        # it, so a state without a manager cannot have one to settle. If the call
+        # does not hand back a coroutine (a stubbed manager), skip rather than
+        # invent a write that would bypass the teardown gate; the folder stays
+        # recoverable by the next start's reconciliation.
+        mgr = getattr(state, "subagents", None)
+        settle = getattr(mgr, "settle_queued_delivery", None) if mgr is not None else None
+        work = None
+        if settle is not None:
+            try:
+                candidate = settle(owed)
+            except Exception:
+                logger.debug("Manager-side delivery settlement refused", exc_info=True)
+            else:
+                work = candidate if asyncio.iscoroutine(candidate) else None
+        if work is None:
+            logger.debug(
+                "No sub-agent manager to settle queued delivery for %s; "
+                "leaving the folder for restart reconciliation",
+                owed,
+            )
+            return
+        writer = asyncio.create_task(work)
+        bg = getattr(state, "_background_tasks", None)
+        if isinstance(bg, set):
+            bg.add(writer)
+            writer.add_done_callback(bg.discard)
+
+    try:
+        task.add_done_callback(_on_turn_done)
+    except Exception:
+        logger.debug("Could not arm queued sub-agent delivery settlement", exc_info=True)
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
@@ -3650,12 +3758,56 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         meta=_row_meta if isinstance(_row_meta, dict) else None,
     )
 
+    # Per-turn consumption cell for a drained sub-agent completion (see
+    # _arm_queued_delivery_settlement): owned by THIS turn, so a successor turn
+    # started by this one's tail-drain cannot reset it. The hook is passed ONLY
+    # for a completion row, so every other row's turn is dispatched exactly as
+    # before.
+    #
+    # Settleable rows are selected by their STRUCTURAL kind, never by the text
+    # prefix ``is_subagent`` reads: the delivery ledger is content-keyed, so a row
+    # whose text merely LOOKS like an announce (a user pasting one back) would
+    # otherwise claim the genuine row's debt and start its retention clock early.
+    # ``chat_utils.is_system_injection_item`` documents the kind tag as the
+    # unforgeable classifier for exactly this reason -- a user-typed row cannot
+    # carry one. Recovery rows are included because a completion that failed before
+    # the model consumed it is re-queued verbatim under that kind.
+    _consumed: list[bool] = [False]
+    _settleable = [
+        item["content"]
+        for item in consumed
+        if item.get("kind") in (SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND)
+    ]
+
+    if _settleable and not slot.owes_subagent_delivery(_settleable):
+        # Owes nothing (every ordinary recovery replay, and any completion whose
+        # debt was already settled): dispatch this row exactly as before.
+        _settleable = []
+
+    def _note_consumed(consumed: bool = True) -> None:
+        # False is a RETRACTION: the runner re-queued this exact announce verbatim
+        # (first empty response), so the delivery that counts has not happened yet.
+        _consumed[0] = consumed
+
+    _run_kwargs: dict[str, Any] = {"_synthetic_payload": synthetic_payload}
+    if _settleable:
+        _run_kwargs["_on_consumed"] = _note_consumed
     task = spawn_guarded_turn(
         state,
         slot,
-        _run_chat(state, slot, next_msg, _synthetic_payload=synthetic_payload),
+        _run_chat(state, slot, next_msg, **_run_kwargs),
     )
     slot.task = task
+    if _settleable:
+        # Open the retention clock on the result files this row promises — but
+        # only once the turn has actually run and the model has consumed the
+        # prompt, since a "delivered" tombstone is durable and hides the folder
+        # from restart recovery. The gateway deliberately left them un-tombstoned
+        # while the row waited in the queue, because that clock would otherwise
+        # expire before the row was ever consumed (issue #4839). Claimed by the
+        # row's CONTENT, which is what a pre-consumption retry re-queues: its
+        # queue-entry id is freshly minted and would match no debt.
+        _arm_queued_delivery_settlement(state, slot, task, _settleable, _consumed)
     return True
 
 
@@ -3810,6 +3962,7 @@ async def _run_chat(
     _prompt_depth: int = 0,
     _synthetic_payload: bool = False,
     regenerate_hint: str = "",
+    _on_consumed: "Callable[[bool], None] | None" = None,
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
@@ -4014,6 +4167,38 @@ async def _run_chat(
     # backend 5xx is only retried while this is False, so a re-prompt can't
     # double-stream text or re-run a side-effecting tool.
     _turn_emitted = False
+    # Was this turn's prompt CONSUMED by the model? Reported to whoever armed the
+    # turn (a queued sub-agent completion's retention clock -- see
+    # ``_arm_queued_delivery_settlement``), because every handled-failure path
+    # below returns from here NORMALLY and so the call's own return says nothing.
+    #
+    # Two triggers, and together they are exactly "the announce will NOT be
+    # replayed": the provider's own turn-complete event for a real end-of-turn (so
+    # an EMPTY response, which consumed the prompt and produced nothing, still
+    # counts), and the first streamed token or fired tool call (after which
+    # ``build_recovery_requeue`` switches from replaying the prompt to a
+    # continuation, i.e. treats it as consumed too). A failure before either --
+    # signed-out CLI, dead provider, exhausted prompt-busy retries, transient
+    # backend error -- re-queues the prompt itself, and reports nothing.
+    #
+    # RETRACTABLE for one case only: the FIRST empty response re-queues this exact
+    # message verbatim (see the empty-response branch below), so the announce is
+    # going to be delivered again and the report must be taken back. That decision
+    # is only known after the stream ends, which is why this is a retraction rather
+    # than a later report. The second empty re-queues a continuation instead, and
+    # stays consumed.
+    _consumed_reported = False
+
+    def _report_consumed(consumed: bool = True) -> None:
+        nonlocal _consumed_reported
+        if _on_consumed is None or _consumed_reported == consumed:
+            return
+        _consumed_reported = consumed
+        try:
+            _on_consumed(consumed)
+        except Exception:
+            logger.debug("consumption report failed for slot %s", slot.key, exc_info=True)
+
     # Model-activity marker for the poisoned-conversation streak ONLY:
     # flipped True on thinking chunks. Deliberately separate from
     # _turn_emitted — thinking is ephemeral/broadcast-only, so retrying
@@ -5076,6 +5261,7 @@ async def _run_chat(
                 if _orch_planning:
                     _orch_plan_buf += safe_chunk
                 _turn_emitted = True  # tokens delivered — transient retry now unsafe
+                _report_consumed()
                 # Stream to the wire through the rolling buffer so a credential
                 # split across token boundaries can't cross a broadcast boundary
                 # unredacted. Only the confirmed-safe prefix is emitted;
@@ -5129,6 +5315,7 @@ async def _run_chat(
                     assistant_text = ""
                 in_tool_group = True
                 _turn_emitted = True  # tool side effect — transient retry now unsafe
+                _report_consumed()
                 # Broadcast for real-time visibility and persist
                 _tool_payload = _tool_call_ws_payload(event)
                 _tool_payload["slot"] = slot.key
@@ -6609,6 +6796,22 @@ async def _run_chat(
                         {"id": _card_id, "slot": slot.key, "text": _txt},
                     )
             elif event.kind == EVENT_COMPLETE:
+                # A turn that ran to a real END OF TURN processed this prompt, so it
+                # was consumed even if it produced nothing at all -- an empty
+                # response re-queues a CONTINUATION, not a replay, so whoever armed
+                # this turn must not keep waiting for a delivery that happened.
+                #
+                # Only that stop reason. The same event also carries the reasons
+                # that CUT a turn short -- stale-recover, tool-stall, cancelled, an
+                # unrecognised provider error -- and those re-queue the prompt
+                # itself, so reporting consumption for them would start the
+                # retention clock on a result the retry still has to deliver. An
+                # absent stop reason is deliberately not treated as end-of-turn
+                # either: a provider that streamed anything has already reported
+                # through the token/tool triggers, and the cost of being wrong here
+                # is asymmetric (a duplicate re-announce versus a pruned result).
+                if event.stop_reason == STOP_REASON_END_TURN:
+                    _report_consumed()
                 # Hang-attribution snapshot BEFORE the close-all safety net
                 # below force-marks every card done: only children still
                 # unfinished at the cut may count toward timeout attribution
@@ -7092,6 +7295,12 @@ async def _run_chat(
                     payload=payload_for_replay(_is_synthetic),
                 )
                 _retrying_empty = True
+                # This message is going out again unchanged, so whoever armed the
+                # turn must not treat it as delivered: a queued sub-agent
+                # completion's retention clock has to wait for the replay that
+                # actually lands (issue #4839). Retracts the turn-complete report
+                # made while streaming, when the empty text was not yet known.
+                _report_consumed(False)
             elif (
                 _prompt_depth == 0
                 and slot._empty_response_retries < 2

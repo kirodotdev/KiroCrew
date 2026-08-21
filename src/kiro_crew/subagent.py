@@ -1169,6 +1169,16 @@ class SubagentInfo:
     # digest COMPOSITION would re-open the restart-loss window between
     # composing and routing.
     _digest_settle_ids: list[str] = field(default_factory=list)
+    # True when the gateway QUEUED this completion's injection because the
+    # parent's slot was busy. Delivery is not consumption: the announce sits in
+    # the slot queue until a turn drains it, and that wait is bounded only by the
+    # turn ceiling — far longer than agent.subagent_result_ttl_secs. The run loop
+    # must therefore SKIP mark_delivered() (a "delivered" tombstone starts the
+    # retention clock, so the reaper would prune result.txt while the promise of
+    # it is still queued, and the parent would be handed a dead path). The drain
+    # settles the tombstone instead — see
+    # ``_ChatSlot.take_pending_subagent_deliveries`` (issue #4839).
+    _delivery_queued: bool = False
     max_turns: int = 0
     reaped: bool = False
     streaming_text: str = ""
@@ -1407,6 +1417,17 @@ class SubagentManager:
         except AttributeError:
             pass  # test doubles without the setter
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        # Teardown gates for runs whose terminal report has started, keyed by id and
+        # OUTLIVING both dicts above. A "delivered" tombstone excludes a folder from
+        # restart orphan reconciliation, so it must never be written while the run's
+        # child is still being killed -- and the settlement that writes it can happen
+        # outside the run (the parent's queue drain; issue #4839), long after a
+        # dashboard "clear completed" / "cancel" has popped BOTH ``_agents`` and
+        # ``_tasks`` for a done-but-still-tearing-down run. Reading the gate from
+        # here, rather than inferring "record gone means teardown finished", is what
+        # makes that inference unnecessary. Removed by the same ``finally`` that sets
+        # the event, so a missing entry always means "nothing left to wait for".
+        self._teardown_gates: dict[str, asyncio.Event] = {}
         # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
         # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
@@ -2442,7 +2463,18 @@ class SubagentManager:
             # result has not reached the parent yet (the gateway marks them when
             # the digest fires), so a restart mid-wave leaves them visible to
             # orphan reconciliation.
-            if mark_delivered_on_success and not info.error and not info._digest_held:
+            #
+            # A QUEUED injection is the same statement about a different wait:
+            # the announce is parked in the parent's slot queue, so the result is
+            # not in its context yet and the retention clock must not start (the
+            # drain settles it). Both flags are set by the gateway inside
+            # _on_done, above.
+            if (
+                mark_delivered_on_success
+                and not info.error
+                and not info._digest_held
+                and not info._delivery_queued
+            ):
                 # Wait for the caller's session teardown before writing the
                 # "delivered" tombstone. This report is deliberately SPAWNED
                 # ahead of teardown (so a cancellation cannot strand it), which
@@ -4678,6 +4710,46 @@ class SubagentManager:
             return
         self._settle_digest_holds(info)
 
+    async def settle_queued_delivery(self, agent_ids: list[str]) -> None:
+        """Write the ``delivered`` tombstones for completions consumed from a queue.
+
+        The queued-injection path (issue #4839) deliberately leaves a completion
+        un-tombstoned until the parent's turn has consumed the announce, so the
+        write lands here — in the parent's drain — rather than in
+        :meth:`_report_terminal`. That is also why it must repeat the gate that
+        report holds: a ``delivered`` tombstone EXCLUDES the folder from restart
+        orphan reconciliation, and the drain can come due while the run's teardown
+        is still killing its child, so writing early would let a crash in that
+        window strand a live child that nothing would ever reap.
+
+        The wait is bounded exactly as the report's is (teardown is itself bounded
+        by ``_RESET_TIMEOUT`` then SIGKILL, and runs in a ``finally``), and a
+        timeout writes anyway rather than abandoning the retention bound — the same
+        trade the report makes. The gate is read from ``_teardown_gates``, which
+        outlives the run's ``_agents``/``_tasks`` records: a dashboard "clear
+        completed" or "cancel" pops both of those for a run that is done but still
+        tearing down, so inferring "record gone means child gone" would tombstone a
+        live child. No gate entry means teardown has finished (or never started).
+
+        The tombstone write itself is offloaded: it fsyncs, and this runs on the
+        gateway event loop.
+        """
+        for agent_id in agent_ids:
+            gate = self._teardown_gates.get(agent_id)
+            if gate is not None and not gate.is_set():
+                try:
+                    await asyncio.wait_for(gate.wait(), timeout=_RESET_TIMEOUT + 30)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Subagent %s: teardown did not complete before the queued "
+                        "delivered tombstone; writing it anyway",
+                        agent_id,
+                    )
+            try:
+                await asyncio.to_thread(mark_delivered, agent_id)
+            except Exception:
+                logger.debug("Failed to mark drained subagent %s delivered", agent_id, exc_info=True)
+
     def _settle_digest_holds(self, info: SubagentInfo) -> None:
         """Settle delivery tombstones for wave members whose injection was
         held for this member's digest. Called ONLY after ``_on_done`` returned
@@ -4847,6 +4919,12 @@ class SubagentManager:
             # already-spawned report holds its "delivered" tombstone until the
             # child is provably gone (see `_report_terminal`).
             teardown_done = asyncio.Event()
+            # Published where it survives this record being evicted: a settlement
+            # that happens OUTSIDE this report (the parent's queue drain, issue
+            # #4839) can come due after a dashboard clear/cancel has removed the run
+            # from _agents AND _tasks, and it still must not tombstone a child that
+            # is being killed.
+            self._teardown_gates[info.id] = teardown_done
             if self._claim_finalize(info):
                 info.elapsed = time.time() - info.started
                 self._record_cost(info)
@@ -4878,6 +4956,10 @@ class SubagentManager:
                 # release the report's delivered-tombstone gate. Unconditional,
                 # so the report can never wedge on a cancelled teardown.
                 teardown_done.set()
+                # Set BEFORE the entry is dropped: a waiter that already holds the
+                # event is released by the line above, and one arriving after finds
+                # no entry, which now means exactly "nothing left to wait for".
+                self._teardown_gates.pop(info.id, None)
 
         # The report itself already ran (or is running) on the shielded task
         # spawned in the finally above; block until it completes so sequencing is
