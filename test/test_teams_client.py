@@ -202,6 +202,34 @@ class TestInboundWebhook:
         gate.set()  # release the pending handler
 
     @pytest.mark.asyncio
+    async def test_close_waits_for_inflight_handler_cleanup(self) -> None:
+        c = _client_with_validator(accept=True)
+        started = asyncio.Event()
+        cleaned_up = asyncio.Event()
+
+        async def handler(inb: TeamsInbound) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned_up.set()
+
+        c.set_message_handler(handler)
+        resp = await c.on_activity(
+            _FakeRequest({"Authorization": "Bearer ok"}, _msg_activity())
+        )
+        assert resp.status == 200
+        await started.wait()
+        handler_task = next(iter(c._handler_tasks))
+
+        await c.close()
+
+        cleaned_before_close_returned = cleaned_up.is_set()
+        await asyncio.gather(handler_task, return_exceptions=True)
+        assert cleaned_before_close_returned
+        assert not c._handler_tasks
+
+    @pytest.mark.asyncio
     async def test_conversation_update_no_turn(self) -> None:
         c = _client_with_validator(accept=True)
         seen: list[TeamsInbound] = []
