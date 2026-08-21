@@ -232,6 +232,187 @@ def read_bytes_with_retry(path: Path | str) -> bytes:
     return target.read_bytes()
 
 
+def _resolved_or_none(path: Path) -> Path | None:
+    """``path.resolve()``, or ``None`` when the platform cannot resolve it.
+
+    A symlink loop or a vanished component ends here. Both exception types are
+    caught on purpose: ``Path.resolve()`` raises ``OSError`` for most failures,
+    but on Python 3.10 a symlink LOOP raises ``RuntimeError`` instead (pathlib
+    only moved that path onto ``os.path.realpath`` in 3.11), and this repo still
+    supports 3.10. Letting that escape would crash the caller -- a Discord
+    resume write, a token store -- where the whole point of this helper is to
+    turn "cannot prove where the write lands" into a refusal.
+
+    Callers treat ``None`` as "cannot prove", which is a refusal on the write
+    path rather than a pass.
+    """
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _owned_roots() -> tuple[Path, ...]:
+    """The directory roots Kiro Crew itself creates and owns.
+
+    Resolution goes through ``config.paths`` lazily: importing it at module scope
+    would tie this leaf helper to the config package, and calling it at import
+    time would resolve the data home as a side effect of importing a writer.
+    Every entry is best-effort -- a host where one cannot be resolved simply
+    contributes no anchor rather than failing the write. ``kiro_home()`` resolves
+    its override, so it can raise the same ``RuntimeError`` a looped link gives
+    :func:`_resolved_or_none`.
+
+    ``data_home()`` performs start-of-process maintenance (a ``mkdir``, and a
+    recovery-breadcrumb refresh) on the FIRST resolution in a process, so a
+    secret write before ``ensure_data_home()`` can trigger it from here. The
+    ``mkdir`` is subsumed by this write's own ``path.parent.mkdir`` a few lines
+    later; the breadcrumb is a stat plus one small write, once per process.
+    """
+    from kiro_crew.config import paths as config_paths
+
+    roots: list[Path] = []
+    for resolver in (config_paths.data_home, config_paths.legacy_home, config_paths.kiro_home):
+        try:
+            roots.append(Path(resolver()))
+        except (OSError, RuntimeError, ValueError):  # pragma: no cover - defensive
+            continue
+    return tuple(roots)
+
+
+def _link_trust_anchor(parent: Path) -> tuple[Path, tuple[str, ...]] | None:
+    """Split *parent* into (anchor, the names below it), or ``None``.
+
+    The anchor is where "a link here is not ours" starts being true. At or ABOVE
+    it a link is the operator's own deployment choice and must keep working: a
+    symlinked ``$HOME`` (``/home/u -> /local/home/u``) or a data home relocated
+    onto another disk are both supported, and ``config/loader.py`` documents a
+    symlinked ``config.json`` as a normal setup. BELOW the anchor every
+    directory is created by Kiro Crew's own ``mkdir`` calls, so a link there was
+    planted by something else.
+
+    The anchor comes back in *parent*'s own LEXICAL namespace together with the
+    names below it, so ``anchor.joinpath(*names) == parent``. An anchor handed
+    back in the resolved namespace instead would let a link BELOW it satisfy an
+    anchor comparison merely by pointing at the anchor, which is the shape that
+    slipped through the first version of this guard.
+
+    The SHALLOWEST matching depth wins, so a component that maps onto an owned
+    root while a real owned root sits above it in the same chain cannot claim to
+    be the anchor and hide itself from the walk.
+
+    Containment is tried lexically FIRST and only then against the resolved
+    parent. Order matters: for a path lexically inside an owned tree the lexical
+    reading is the truthful one, while its resolved form may have been bent
+    elsewhere by exactly the link this guard looks for. The resolved attempt
+    exists for the other case, a caller naming the tree through an outside alias
+    such as a data home reached by its symlink.
+    """
+    roots = _owned_roots()
+    if not roots:
+        return None
+    lexical = parent if parent.is_absolute() else Path(os.path.abspath(parent))
+    resolved = _resolved_or_none(lexical)
+    for candidate in (lexical, resolved):
+        if candidate is None:
+            continue
+        best: int | None = None
+        for root in roots:
+            if candidate == root or root in candidate.parents:
+                depth = len(candidate.parts) - len(root.parts)
+                if best is None or depth < best:
+                    best = depth
+        if best is None:
+            continue
+        names = lexical.parts[len(lexical.parts) - best :] if best else ()
+        anchor = lexical.parents[best - 1] if best else lexical
+        return anchor, names
+    return None
+
+
+def _refuse_linked_parent(path: Path) -> None:
+    """Refuse to write a secret whose parent chain passes through a link.
+
+    ``mkdir(parents=True)``, ``mkstemp(dir=...)`` and ``os.replace`` all follow
+    every component except the final one, so a symlink (or Windows junction)
+    pre-planted at the destination's parent — or at any ancestor below the
+    trust anchor — silently redirects the whole write: the secret lands under
+    whatever the link points at, outside the sensitive-path fence that is the
+    only real boundary against a same-UID reader, and the caller sees success.
+    Issue #4381 is the class report; a per-caller check was rejected there as
+    whack-a-mole, so the refusal lives in the one helper every secret write
+    already goes through.
+
+    Two checks, because neither alone is sufficient:
+
+    * an ``lstat`` walk over the components BELOW the anchor, which is the only
+      thing that sees a Windows junction (``is_link_or_junction``, since
+      ``islink`` reports False for one);
+    * and the resolved parent must EQUAL the path rebuilt from the resolved
+      anchor and those same names. Containment would not do: a link pointing at
+      another directory INSIDE the owned tree resolves to a contained path and
+      would pass while still landing the secret somewhere the caller never
+      named. Equality also covers a redirect the walk cannot see, such as a
+      reparse point a platform's ``realpath`` follows but ``islink`` misses.
+
+    Only the parent CHAIN is checked. A link at the leaf is not a redirect:
+    ``os.replace`` does not follow the final component, so it replaces the link
+    itself with the new file (verified — the link's target keeps its old
+    contents), which is the same outcome as writing over a regular file.
+
+    lstat-based, so it is not race-free: a link planted between this check and
+    the ``mkstemp`` below still wins. Closing that would need an ``O_NOFOLLOW``
+    descent with a directory handle per component, which ``tempfile`` cannot be
+    driven through. ``memory.py``'s lock-path check states the same limitation
+    for the same reason; refusing a link that is ALREADY there removes the
+    pre-planting shape the report is about, which is the shape an attacker can
+    set up at leisure.
+    """
+    parent = path.parent
+    split = _link_trust_anchor(parent)
+    if split is None:
+        # Outside every directory Kiro Crew creates, a link is indistinguishable
+        # from the operator's own layout, so the walk stops at the first
+        # ancestor that ALREADY exists: everything below that is a directory
+        # this write would create itself, so a link there cannot be ours, while
+        # everything above it is pre-existing layout we do not get to judge (a
+        # symlinked ``/tmp`` on macOS is exactly that).
+        for component in (parent, *parent.parents):
+            _refuse_if_link(path, component)
+            if component.exists():
+                return
+        return
+    anchor, names = split
+    current = anchor
+    for name in names:
+        current = current / name
+        _refuse_if_link(path, current)
+    anchor_resolved = _resolved_or_none(anchor)
+    resolved_parent = _resolved_or_none(parent)
+    if anchor_resolved is None or resolved_parent is None:
+        raise OSError(
+            f"refusing to write {path}: its parent chain cannot be resolved, so "
+            "the write cannot be shown to land where it was named."
+        )
+    expected = anchor_resolved.joinpath(*names)
+    if resolved_parent != expected:
+        raise OSError(
+            f"refusing to write {path}: its parent resolves to {resolved_parent} "
+            f"rather than {expected}, so the write would land somewhere it was "
+            "not named. Replace the redirecting link with a real directory."
+        )
+
+
+def _refuse_if_link(path: Path, component: Path) -> None:
+    """Raise when *component* of *path*'s parent chain is a link or junction."""
+    if platform_compat.is_link_or_junction(component):
+        raise OSError(
+            f"refusing to write {path}: its parent {component} is a symlink or "
+            "junction, so the write would land at the link's target instead. "
+            "Replace the link with a real directory."
+        )
+
+
 def atomic_write(
     path: Path | str,
     content: str | bytes,
@@ -274,7 +455,10 @@ def atomic_write(
     the secret never exists in a world-readable file. It also implies
     ``0o600`` on POSIX, hence the conflict check below: passing a wider
     explicit *mode* alongside it is a caller bug, and narrowing it silently
-    would hide that.
+    would hide that. It further implies :func:`_refuse_linked_parent`: a secret
+    writer must never follow a link, because a pre-planted parent symlink or
+    junction redirects the whole write to a location the caller never named
+    (issue #4381).
 
     *restrict_on_error* selects what happens when that lockdown fails, and only
     means anything alongside ``restrict_to_owner=True``. The default ``"raise"``
@@ -308,6 +492,11 @@ def atomic_write(
     # default after the lockdown has been applied.
     effective_mode = 0o600 if restrict_to_owner else mode
     path = Path(path)
+    if restrict_to_owner:
+        # Before the mkdir: mkdir(parents=True) walks THROUGH a planted link and
+        # would create the missing directories under its target, so checking
+        # after it would find a tree the write itself had already built.
+        _refuse_linked_parent(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
