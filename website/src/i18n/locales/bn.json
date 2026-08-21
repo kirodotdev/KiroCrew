@@ -4671,16 +4671,10 @@
         "first_party": "ফার্স্ট-পার্টি",
         "sources": "সোর্স"
       },
-      "featureCard": {
-        "desktop_app": "ডেস্কটপ অ্যাপ",
-        "desktop_app_hint": "এখান থেকেই চালু করা যায়, কিন্তু অ্যাপের নিজের উইন্ডো চালাতে {{productName}} ডেস্কটপ অ্যাপ দরকার।",
-        "enable": "চালু করুন",
-        "get": "নিন",
-        "installed": "ইনস্টল করা আছে",
-        "view_details_for": "{{name}}-এর বিবরণ দেখুন"
-      },
       "featuredSpotlight": {
         "collection": "সংকলন",
+        "desktop_app": "ডেস্কটপ অ্যাপ",
+        "desktop_app_hint": "এখান থেকেই চালু করা যায়, কিন্তু অ্যাপের নিজের উইন্ডো চালাতে {{productName}} ডেস্কটপ অ্যাপ দরকার।",
         "enable": "চালু করুন",
         "featured": "নির্বাচিত",
         "get": "নিন",

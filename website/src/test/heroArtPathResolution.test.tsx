@@ -3,9 +3,8 @@
  * through the blob proxy on every surface that renders it, while absolute paths
  * pass through byte-for-byte so built-ins keep working.
  *
- * The surface exercised here is `FeatureCard`, one of the EDITORIAL surfaces.
- * It used to be `AppListRow`, and the Library's card had its own copy of these
- * assertions — neither renders hero art now: a list row shows the app's icon,
+ * The surface exercised here is `FeaturedSpotlight`, the EDITORIAL surface.
+ * A list row and the Library card render no hero art: a list row shows the app's icon,
  * because a 96x54 crop of marketing art is too small to read as art and too
  * large to scan as an identity. Retargeting rather than deleting is the point:
  * the resolution RULES did not change, only which component still reaches them,
@@ -19,7 +18,7 @@ vi.mock('../components/AppIcon', () => ({
   default: () => <div data-testid="app-icon" />,
 }))
 
-import FeatureCard from '../components/appstore/FeatureCard'
+import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
 import { resolveArtPath } from '../components/appstore/useHeroArt'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -71,13 +70,14 @@ describe('resolveArtPath', () => {
   })
 })
 
-describe('FeatureCard hero art (editorial)', () => {
+describe('FeaturedSpotlight hero art (editorial)', () => {
   const noop = () => {}
 
   const card = (over: Partial<RegistryApp>) => render(
-    <FeatureCard
-      app={registryApp(over)}
-      onOpen={noop} onGet={noop} onEnable={noop}
+    <FeaturedSpotlight
+      type="app"
+      apps={[registryApp(over)]}
+      onOpenApp={noop} onGet={noop} onEnable={noop}
     />,
   )
 

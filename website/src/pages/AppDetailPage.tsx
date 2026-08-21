@@ -799,7 +799,7 @@ export default function AppDetailPage() {
                        desktop shell. Replacing the button with a static claim
                        left every browser user at a dead end — and this page is
                        where store rows land, so it was the common path. Same
-                       pattern as AppListRow / FeatureCard. */
+                       pattern as AppListRow / FeaturedSpotlight rows. */
                     <>
                     <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.enable')}</Btn>
                     {desktopOnly && (

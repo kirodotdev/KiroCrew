@@ -4671,16 +4671,10 @@
         "first_party": "फ़र्स्ट-पार्टी",
         "sources": "स्रोत"
       },
-      "featureCard": {
-        "desktop_app": "डेस्कटॉप ऐप",
-        "desktop_app_hint": "यहाँ से चालू कर सकते हैं, लेकिन ऐप की अपनी विंडो के लिए {{productName}} डेस्कटॉप ऐप चाहिए।",
-        "enable": "सक्षम करें",
-        "get": "प्राप्त करें",
-        "installed": "इंस्टॉल है",
-        "view_details_for": "{{name}} का विवरण देखें"
-      },
       "featuredSpotlight": {
         "collection": "संग्रह",
+        "desktop_app": "डेस्कटॉप ऐप",
+        "desktop_app_hint": "यहाँ से चालू कर सकते हैं, लेकिन ऐप की अपनी विंडो के लिए {{productName}} डेस्कटॉप ऐप चाहिए।",
         "enable": "सक्षम करें",
         "featured": "विशेष",
         "get": "प्राप्त करें",

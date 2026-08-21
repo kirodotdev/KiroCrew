@@ -4587,16 +4587,10 @@
         "first_party": "자체 제공",
         "sources": "소스"
       },
-      "featureCard": {
-        "desktop_app": "데스크톱 앱",
-        "desktop_app_hint": "여기서 활성화할 수 있지만, 앱 자체 창을 사용하려면 {{productName}} 데스크톱 앱이 필요합니다.",
-        "enable": "활성화",
-        "get": "설치",
-        "installed": "설치됨",
-        "view_details_for": "{{name}} 세부 정보 보기"
-      },
       "featuredSpotlight": {
         "collection": "컬렉션",
+        "desktop_app": "데스크톱 앱",
+        "desktop_app_hint": "여기서 활성화할 수 있지만, 앱 자체 창을 사용하려면 {{productName}} 데스크톱 앱이 필요합니다.",
         "enable": "활성화",
         "featured": "추천",
         "get": "설치",

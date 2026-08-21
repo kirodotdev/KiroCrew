@@ -578,14 +578,20 @@ describe('AppsPage — editorial layer wiring', () => {
     expect(await screen.findByTestId('detail-route')).toHaveAttribute('data-path', '/apps/detail/pets')
   })
 
-  it('enables from the spotlight and Gets from the feature card', async () => {
+  it('enables from the lead card and Gets from a row card', async () => {
     // Pets sorts ahead of Zeta App (both verified), so the switched-off builtin
-    // takes the spotlight and the uninstalled core app takes the feature card.
+    // takes the derived `full` lead; Zeta App and Zulu Utility fill the derived
+    // `row` (which needs TWO cards -- with one leftover pick the lead stands
+    // alone and Zeta would only render as a list row).
     listApps.mockResolvedValue([BUILTIN_OFF])
     listRegistry.mockResolvedValue({
       apps: [
         {
           name: 'zeta-app', displayName: 'Zeta App', author: 'kirocrew', description: 'Later in the alphabet.',
+          version: '1.0.0', tags: ['github'], installed: false, provenance: 'core',
+        },
+        {
+          name: 'zulu-utility', displayName: 'Zulu Utility', author: 'kirocrew', description: 'Fills the second row slot.',
           version: '1.0.0', tags: ['github'], installed: false, provenance: 'core',
         },
         // Explore renders server rows, so the installed built-in reaches the

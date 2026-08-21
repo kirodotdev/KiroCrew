@@ -4671,16 +4671,10 @@
         "first_party": "Erstanbieter",
         "sources": "QUELLEN"
       },
-      "featureCard": {
-        "desktop_app": "Desktop-App",
-        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die {{productName}}-Desktop-App.",
-        "enable": "Aktivieren",
-        "get": "Abrufen",
-        "installed": "Installiert",
-        "view_details_for": "Details zu {{name}} anzeigen"
-      },
       "featuredSpotlight": {
         "collection": "KOLLEKTION",
+        "desktop_app": "Desktop-App",
+        "desktop_app_hint": "Aktivieren geht von hier aus, aber das eigene Fenster der App braucht die {{productName}}-Desktop-App.",
         "enable": "Aktivieren",
         "featured": "EMPFOHLEN",
         "get": "Abrufen",

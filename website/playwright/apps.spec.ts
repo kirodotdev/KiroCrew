@@ -4,7 +4,7 @@ import { test, expect, type APIRequestContext, type Page } from '@playwright/tes
  * Apps routes e2e — covers /apps, /apps/detail/:name, /apps/:name.
  *
  * The Apps page is a hybrid storefront (upstream #532): a "Discover" tab with an
- * editorial layer (FeaturedSpotlight + FeatureCards) over a category-railed
+ * editorial layer (FeaturedSpotlight blocks) over a category-railed
  * catalog, and a "Library" tab managing installed apps. It replaced the earlier
  * Installed/Browse tabs.
  *
@@ -51,8 +51,8 @@ function tab(page: Page, label: 'Discover' | 'Library') {
 }
 
 /**
- * Catalog cards. The same aria-label is emitted by FeaturedSpotlight,
- * FeatureCard AND AppListRow, so one app can legitimately match 2-3 times on
+ * Catalog cards. The same aria-label is emitted by FeaturedSpotlight AND
+ * AppListRow, so one app can legitimately match 2-3 times on
  * the Discover landing view -- always scope with .first() or assert on count.
  */
 function browseCards(page: Page) {

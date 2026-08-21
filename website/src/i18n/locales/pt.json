@@ -4739,16 +4739,10 @@
         "first_party": "Oficial",
         "sources": "FONTES"
       },
-      "featureCard": {
-        "desktop_app": "Aplicativo para desktop",
-        "desktop_app_hint": "Dá para ativar por aqui, mas a janela própria do app precisa do app de desktop do {{productName}}.",
-        "enable": "Ativar",
-        "get": "Obter",
-        "installed": "Instalado",
-        "view_details_for": "Ver detalhes de {{name}}"
-      },
       "featuredSpotlight": {
         "collection": "COLEÇÃO",
+        "desktop_app": "Aplicativo para desktop",
+        "desktop_app_hint": "Dá para ativar por aqui, mas a janela própria do app precisa do app de desktop do {{productName}}.",
         "enable": "Ativar",
         "featured": "DESTAQUE",
         "get": "Obter",

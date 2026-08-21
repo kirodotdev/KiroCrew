@@ -4739,16 +4739,10 @@
         "first_party": "Officiel",
         "sources": "SOURCES"
       },
-      "featureCard": {
-        "desktop_app": "Application de bureau",
-        "desktop_app_hint": "Tu peux l'activer d'ici, mais la fenêtre propre à l'app nécessite l'app de bureau {{productName}}.",
-        "enable": "Activer",
-        "get": "Obtenir",
-        "installed": "Installée",
-        "view_details_for": "Afficher les détails de {{name}}"
-      },
       "featuredSpotlight": {
         "collection": "COLLECTION",
+        "desktop_app": "Application de bureau",
+        "desktop_app_hint": "Tu peux l'activer d'ici, mais la fenêtre propre à l'app nécessite l'app de bureau {{productName}}.",
         "enable": "Activer",
         "featured": "À LA UNE",
         "get": "Obtenir",

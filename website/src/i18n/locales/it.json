@@ -4739,16 +4739,10 @@
         "first_party": "Di prima parte",
         "sources": "ORIGINI"
       },
-      "featureCard": {
-        "desktop_app": "App desktop",
-        "desktop_app_hint": "L'attivazione funziona da qui, ma la finestra dell'app richiede l'app desktop di {{productName}}.",
-        "enable": "Attiva",
-        "get": "Ottieni",
-        "installed": "Installato",
-        "view_details_for": "Mostra i dettagli di {{name}}"
-      },
       "featuredSpotlight": {
         "collection": "RACCOLTA",
+        "desktop_app": "App desktop",
+        "desktop_app_hint": "L'attivazione funziona da qui, ma la finestra dell'app richiede l'app desktop di {{productName}}.",
         "enable": "Attiva",
         "featured": "IN EVIDENZA",
         "get": "Ottieni",

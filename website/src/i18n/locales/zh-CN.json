@@ -4603,16 +4603,10 @@
         "first_party": "第一方",
         "sources": "来源"
       },
-      "featureCard": {
-        "desktop_app": "桌面端",
-        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 {{productName}} 桌面端才能使用。",
-        "enable": "启用",
-        "get": "获取",
-        "installed": "已安装",
-        "view_details_for": "查看 {{name}} 的详情"
-      },
       "featuredSpotlight": {
         "collection": "合集",
+        "desktop_app": "桌面端",
+        "desktop_app_hint": "在这里可以启用，但该应用自己的窗口需要 {{productName}} 桌面端才能使用。",
         "enable": "启用",
         "featured": "精选",
         "get": "获取",

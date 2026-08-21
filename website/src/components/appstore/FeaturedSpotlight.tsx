@@ -20,7 +20,7 @@
  * be acted on.
  */
 import { useState } from 'react'
-import { BadgeCheck, Check, ChevronRight, Download, Package, Power } from 'lucide-react'
+import { BadgeCheck, Check, ChevronRight, Download, Monitor, Package, Power } from 'lucide-react'
 import { Btn } from '../ui'
 import { Dialog, DialogBody, DialogContent, DialogTitle } from '../ui/dialog'
 import Clickable from '../Clickable'
@@ -31,6 +31,7 @@ import { useHeroArt } from './useHeroArt'
 import { useEditorialArt, type EditorialArtwork } from './useEditorialArt'
 import { sourceLabel, isVerified, type RegistryApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
+import { needsDesktopApp } from '../../lib/electron'
 
 import { i18nT } from '../../i18n/t'
 
@@ -121,9 +122,31 @@ function FeaturedAppRow({
         role="presentation"
       >
         {hiddenBuiltin ? (
-          <Btn primary className="rounded-full px-3.5 py-1 font-semibold" disabled={busy} onClick={onEnable}>
-            <Power size={13} /> {i18nT('components.appstore.featuredSpotlight.enable')}
-          </Btn>
+          /* A desktop-only builtin is still ENABLE-able from a browser (the
+             state change is server-side; only its UI needs the desktop shell).
+             Same contract as AppListRow: the Monitor badge's hint lives in a
+             hover title, so the button's accessible name carries the same hint
+             for keyboard / screen-reader users. Stacked vertically like
+             AppListRow's action column -- side by side, the pair overflows a
+             narrow card in locales with long translations. */
+          <span className="flex flex-col items-end gap-1">
+            <Btn
+              primary
+              className="rounded-full px-3.5 py-1 font-semibold"
+              disabled={busy}
+              onClick={onEnable}
+              aria-label={needsDesktopApp(app)
+                ? `${i18nT('components.appstore.featuredSpotlight.enable')}. ${i18nT('components.appstore.featuredSpotlight.desktop_app_hint')}`
+                : undefined}
+            >
+              <Power size={13} /> {i18nT('components.appstore.featuredSpotlight.enable')}
+            </Btn>
+            {needsDesktopApp(app) && (
+              <span className="inline-flex items-center gap-1 text-[12px] text-muted" title={i18nT('components.appstore.featuredSpotlight.desktop_app_hint')}>
+                <Monitor size={12} /> {i18nT('components.appstore.featuredSpotlight.desktop_app')}
+              </span>
+            )}
+          </span>
         ) : app.installed ? (
           <span className="inline-flex items-center gap-1.5 text-[12.5px] text-muted whitespace-nowrap"><Check size={13} /> {i18nT('components.appstore.featuredSpotlight.installed')}</span>
         ) : (
@@ -192,8 +215,10 @@ export default function FeaturedSpotlight({
    * the page's hierarchy. The cost is one click between the reader and the
    * Get button, paid only on the compact variant.
    *
-   * Ignored for `app` placements -- a single app has no rows to fold away, and
-   * its card already opens the app itself.
+   * Ignored for `app` placements when the card is CURATED -- a single app has
+   * no rows to fold away, and the curator's artwork is the placement. On a
+   * DERIVED app card it suppresses the stacked art band instead, so a
+   * fallback row reads as secondary beside the lead.
    */
   compact?: boolean
   onOpenApp: (name: string, e?: React.MouseEvent | React.KeyboardEvent) => void
@@ -250,7 +275,15 @@ export default function FeaturedSpotlight({
   const FADE = 140
   const OVERLAP = 104
 
-  const art = curated && !artSrc ? null : (
+  /* A row-block APP card: the stacked art band is what makes the card tall,
+     and beside a side-layout lead the row must read as SECONDARY -- so
+     `compact` suppresses the band on a DERIVED app card (the icon row still
+     identifies the app). A curated card keeps its band: the curator chose
+     that artwork for this placement, and the published path's rendering is
+     this component's contract. Collections take their own compact branch. */
+  const artSuppressed = compact && !isCollection && !curated
+
+  const art = artSuppressed || (curated && !artSrc) ? null : (
     <div
       /* 16:9, matching what the schema tells a curator to author (1600x900). A
          fixed band height cropped that source to whatever the band happened to
@@ -347,7 +380,7 @@ export default function FeaturedSpotlight({
          not a position) keeps the copy above the art's own overlay: both are in
          normal flow, so without a stacking context the negative margin would
          slide the text UNDER the tint that is supposed to be behind it. */
-      style={layout === 'stacked' && artSrc ? { marginTop: -OVERLAP } : undefined}
+      style={layout === 'stacked' && artSrc && !artSuppressed ? { marginTop: -OVERLAP } : undefined}
     >
       <span className="text-[11px] font-bold tracking-[.14em] text-accent">
         {isCollection

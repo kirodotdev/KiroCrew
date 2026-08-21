@@ -4739,16 +4739,10 @@
         "first_party": "Propias",
         "sources": "ORÍGENES"
       },
-      "featureCard": {
-        "desktop_app": "Aplicación de escritorio",
-        "desktop_app_hint": "Se puede activar desde aquí, pero la ventana propia de la app necesita la app de escritorio de {{productName}}.",
-        "enable": "Activar",
-        "get": "Obtener",
-        "installed": "Instalada",
-        "view_details_for": "Ver detalles de {{name}}"
-      },
       "featuredSpotlight": {
         "collection": "COLECCIÓN",
+        "desktop_app": "Aplicación de escritorio",
+        "desktop_app_hint": "Se puede activar desde aquí, pero la ventana propia de la app necesita la app de escritorio de {{productName}}.",
         "enable": "Activar",
         "featured": "DESTACADO",
         "get": "Obtener",

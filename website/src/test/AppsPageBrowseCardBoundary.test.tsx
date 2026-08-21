@@ -1,7 +1,7 @@
 /**
  * Issue #3702: one Browse-tab card whose render throws must NOT unmount the
- * whole /apps route. Each Browse render site — the featured spotlight, the
- * secondary feature cards, and the app list rows — is wrapped in an
+ * whole /apps route. Each Browse render site — the featured cards (one
+ * component, lead and row alike) and the app list rows — is wrapped in an
  * ErrorBoundary that renders a compact degraded placeholder in place of the
  * broken card, while sibling cards and the page chrome keep rendering.
  * (Follow-up to the Library-card boundary added for #3689.)
@@ -62,16 +62,11 @@ vi.mock('../components/appstore/FeaturedSpotlight', () => ({
     // Member-driven throw, plus a section-field-driven one: `title ===
     // 'zzq-crash-title'` models a crash caused by a section-level field
     // (title/blurb/artwork) that a corrected payload fixes without changing
-    // the member refs (the section-boundary latched-recovery case).
-    if (apps[0]?.name === 'zzq-broken-spot' || title === 'zzq-crash-title') throw new Error('zzq-spotlight-render-broke')
+    // the member refs (the section-boundary latched-recovery case). Every
+    // featured card -- published or derived, lead or row -- renders through
+    // this one component now, so the throw triggers are name-prefixed.
+    if (apps[0]?.name?.startsWith('zzq-broken') || title === 'zzq-crash-title') throw new Error('zzq-spotlight-render-broke')
     return <div data-testid={`zzq-spot-${apps[0]?.name}`} />
-  },
-}))
-
-vi.mock('../components/appstore/FeatureCard', () => ({
-  default: ({ app }: { app: { name: string } }) => {
-    if (app.name === 'zzq-broken-feature') throw new Error('zzq-feature-card-render-broke')
-    return <div data-testid={`zzq-feature-${app.name}`} />
   },
 }))
 
@@ -146,8 +141,8 @@ describe('AppsPage Browse-tab per-card error boundaries (#3702)', () => {
     expect(screen.queryByTestId('zzq-row-zzq-broken-row')).not.toBeInTheDocument()
   })
 
-  it('a throwing secondary feature card degrades alone; spotlight and rows survive', async () => {
-    // Featured: Alpha (spotlight), "Broken" + Casa (secondary).
+  it('a throwing derived row card degrades alone; the lead and rows survive', async () => {
+    // Derived blocks: Alpha takes the `full` lead, "Broken" + Casa the `row`.
     setup([
       registryApp('alpha', 'Alpha'),
       registryApp('zzq-broken-feature', 'Broken'),
@@ -157,17 +152,17 @@ describe('AppsPage Browse-tab per-card error boundaries (#3702)', () => {
     renderPage()
 
     expect(await screen.findByText('Broken')).toBeInTheDocument()
-    expect(screen.getByText(i18nT('pages.appsPage.this_app_could_not_be_displayed'))).toBeInTheDocument()
+    expect(screen.getByText(i18nT('pages.appsPage.this_section_could_not_be_displayed'))).toBeInTheDocument()
     expect(screen.getByTestId('zzq-spot-alpha')).toBeInTheDocument()
-    expect(screen.getByTestId('zzq-feature-casa')).toBeInTheDocument()
+    expect(screen.getByTestId('zzq-spot-casa')).toBeInTheDocument()
     // Every list row still renders (AppListRow only throws for zzq-broken-row).
     expect(screen.getByTestId('zzq-row-alpha')).toBeInTheDocument()
     expect(screen.getByTestId('zzq-row-zzq-broken-feature')).toBeInTheDocument()
   })
 
-  it('a throwing featured spotlight degrades alone; feature cards and rows survive', async () => {
-    // "AAA Spot" sorts first → spotlight (the throwing site); Beta + Casa
-    // become the secondary feature cards.
+  it('a throwing lead card degrades alone; row cards and rows survive', async () => {
+    // "AAA Spot" sorts first → the derived `full` lead (the throwing site);
+    // Beta + Casa become the derived row cards.
     setup([
       registryApp('zzq-broken-spot', 'AAA Spot'),
       registryApp('beta', 'Beta'),
@@ -176,9 +171,9 @@ describe('AppsPage Browse-tab per-card error boundaries (#3702)', () => {
     renderPage()
 
     expect(await screen.findByText('AAA Spot')).toBeInTheDocument()
-    expect(screen.getByText(i18nT('pages.appsPage.this_app_could_not_be_displayed'))).toBeInTheDocument()
-    expect(screen.getByTestId('zzq-feature-beta')).toBeInTheDocument()
-    expect(screen.getByTestId('zzq-feature-casa')).toBeInTheDocument()
+    expect(screen.getByText(i18nT('pages.appsPage.this_section_could_not_be_displayed'))).toBeInTheDocument()
+    expect(screen.getByTestId('zzq-spot-beta')).toBeInTheDocument()
+    expect(screen.getByTestId('zzq-spot-casa')).toBeInTheDocument()
     expect(screen.getByTestId('zzq-row-beta')).toBeInTheDocument()
     expect(screen.getByTestId('zzq-row-casa')).toBeInTheDocument()
   })

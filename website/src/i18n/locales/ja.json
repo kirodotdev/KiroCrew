@@ -4587,16 +4587,10 @@
         "first_party": "ファーストパーティ",
         "sources": "ソース"
       },
-      "featureCard": {
-        "desktop_app": "デスクトップアプリ",
-        "desktop_app_hint": "ここから有効にできますが、アプリ独自のウィンドウには {{productName}} デスクトップアプリが必要です。",
-        "enable": "有効にする",
-        "get": "インストール",
-        "installed": "インストール済み",
-        "view_details_for": "{{name}} の詳細を表示"
-      },
       "featuredSpotlight": {
         "collection": "コレクション",
+        "desktop_app": "デスクトップアプリ",
+        "desktop_app_hint": "ここから有効にできますが、アプリ独自のウィンドウには {{productName}} デスクトップアプリが必要です。",
         "enable": "有効にする",
         "featured": "注目",
         "get": "インストール",

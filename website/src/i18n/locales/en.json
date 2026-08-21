@@ -3484,16 +3484,10 @@
         "first_party": "First-party",
         "sources": "SOURCES"
       },
-      "featureCard": {
-        "desktop_app": "Desktop app",
-        "desktop_app_hint": "Enabling works from here, but the app's own window needs the {{productName}} desktop app.",
-        "enable": "Enable",
-        "get": "Get",
-        "installed": "Installed",
-        "view_details_for": "View details for {{name}}"
-      },
       "featuredSpotlight": {
         "collection": "COLLECTION",
+        "desktop_app": "Desktop app",
+        "desktop_app_hint": "Enabling works from here, but the app's own window needs the {{productName}} desktop app.",
         "enable": "Enable",
         "featured": "FEATURED",
         "get": "Get",

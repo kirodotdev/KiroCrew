@@ -3,8 +3,8 @@
  *
  * `AppIcon` resolves `iconUrlDark` in either theme direction, and
  * `AppIcon.darkSelection.test.tsx` pins that. This file pins the CALL SITES,
- * which is a different thing and is where the bug actually was: `FeatureCard`
- * and `FeaturedSpotlight` each guarded the icon behind `iconUrl || icon`, so an
+ * which is a different thing and is where the bug actually was:
+ * `FeaturedSpotlight` guarded the icon behind `iconUrl || icon`, so an
  * app shipping only `iconPathDark` fell through to the `Package` glyph even
  * though `AppIcon` would have rendered its icon. Testing the component while
  * leaving its guards untested is what let that ship — a mutation that removes
@@ -16,7 +16,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 
-import FeatureCard from '../components/appstore/FeatureCard'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -38,19 +37,9 @@ const noop = () => {}
 
 /**
  * The two surfaces no longer share a prop shape -- `FeaturedSpotlight` takes a
- * typed section (`type` plus an `apps` list) while `FeatureCard` still takes one
- * `app` -- so the guard is asserted per component rather than parametrised. The
- * property under test is the same either way: a dark-only icon must render as
- * the dark variant instead of degrading to the package glyph.
+ * The property under test: a dark-only icon must render as the dark variant
+ * instead of degrading to the package glyph.
  */
-describe('FeatureCard with a dark-only icon', () => {
-  it('renders the dark variant instead of falling through to the glyph', () => {
-    render(<FeatureCard app={darkOnly} onOpen={noop} onGet={noop} onEnable={noop} />)
-    const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src'))
-    expect(srcs).toContain('/api/apps/blob?repo=x&path=icon-dark.png')
-  })
-})
-
 describe('FeaturedSpotlight with a dark-only icon', () => {
   it('renders the dark variant instead of falling through to the glyph', () => {
     // The icon now lives on the app ROW rather than in the art panel, and the
@@ -73,7 +62,9 @@ describe('FeaturedSpotlight with a dark-only icon', () => {
 describe('an app with no icon at all still degrades', () => {
   it('renders no blob image when neither variant is present', () => {
     const bare = { ...darkOnly, iconUrlDark: undefined } as unknown as RegistryApp
-    render(<FeatureCard app={bare} onOpen={noop} onGet={noop} onEnable={noop} />)
+    render(
+      <FeaturedSpotlight type="app" apps={[bare]} onOpenApp={noop} onGet={noop} onEnable={noop} />,
+    )
     const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src') || '')
     expect(srcs.some(s => s.includes('/api/apps/blob'))).toBe(false)
   })
