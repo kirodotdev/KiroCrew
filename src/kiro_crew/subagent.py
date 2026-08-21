@@ -140,6 +140,49 @@ def _safe_fire(coro: Awaitable[None]) -> None:
 
 _MAX_CONCURRENT = 3
 
+#: Agent names a roster never suggests: the host default and the conductor are
+#: reached by OMITTING ``agent``, not by naming one. Shared with the spawn tools'
+#: parameter-description roster (``mcp_tools.spawn``) so the pair cannot drift
+#: when a third reserved name appears.
+UNADVERTISED_AGENTS = frozenset({"kirocrew", "kirocrew-conductor"})
+
+# How many valid names an unknown-agent refusal carries. The string reaches a WS
+# frame, a tombstone and the caller's transcript, so it is bounded like every
+# other rendered detail in this module; the remainder is reported as a count with
+# a pointer to spawn_list, which lists them all.
+_MAX_AVAILABLE_IN_ERROR = 12
+
+
+def _available_agents_hint(available: list[str]) -> str:
+    """Render the valid-name roster for an unknown-agent refusal.
+
+    The names are computed anyway, to log the refusal. Withholding them from the
+    RETURNED error is what left the caller unable to self-correct: it retried
+    other invented names while every log line already held the answer, and the
+    log is not a surface the caller can read (#4842).
+
+    Every name is matched against ``_AGENT_NAME_RE`` before it is rendered, then
+    redacted, then the list is bounded. The grammar is the load-bearing filter, not
+    a tidiness check: an agent spec's ``name`` field is taken verbatim by
+    ``agent_discovery._global_agent_info`` with no validation, so a spec can
+    declare a name containing a newline and instruction-shaped text -- which is
+    pure ASCII, and would ride this string into the caller's model context.
+    ``SPAWN_RUN_SCHEMA`` already gates the ``agent`` parameter on the same grammar,
+    so a name that fails it could never have been dispatched anyway: offering it
+    here would advertise an unusable name.
+    """
+    names = [_redact(n) for n in available if _AGENT_NAME_RE.fullmatch(n)]
+    if not names:
+        # An empty roster is a different instruction than a truncated one: there
+        # is no name to correct to, so the only valid move is to stop naming an
+        # agent at all.
+        return "; no other agents are installed - omit 'agent' to use the default"
+    shown = names[:_MAX_AVAILABLE_IN_ERROR]
+    hint = "; available: " + ", ".join(shown)
+    if len(names) > len(shown):
+        hint += f" (+{len(names) - len(shown)} more, call spawn_list)"
+    return hint
+
 
 def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
     """Validate that an agent name is one kiro-cli can actually load.
@@ -171,7 +214,7 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
         known |= set(cached_project_agent_names(project_dir) or frozenset())
     if requested in known:
         return requested, ""
-    available = sorted(known - {"kirocrew", "kirocrew-conductor"})
+    available = sorted(known - UNADVERTISED_AGENTS)
     # REFUSE a named-but-unknown agent rather than silently falling back to the
     # host default: that fallback runs the full default agent (frequently at
     # approval_mode="auto"), so a typo'd — or malicious — agent name was a silent
@@ -179,7 +222,9 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
     # "use the default" (handled above); only a named agent that does not exist
     # is rejected, so a future caller cannot reintroduce the escalation.
     logger.warning("Agent %r not found; refusing spawn. Available: %s", requested, available)
-    return "", f"agent {requested!r} not found"
+    # The roster travels WITH the refusal, not only to the log: the caller acts on
+    # the returned string, and a bare "not found" gives it nothing to correct to.
+    return "", f"agent {requested!r} not found{_available_agents_hint(available)}"
 
 
 def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:
