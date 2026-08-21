@@ -535,8 +535,8 @@ answers `tools/list` from):
   `artifact_get_comments`, `artifact_post_comment`, `artifact_reply_comment`,
   `artifact_delete_comment`, `artifact_mark_review`, `deploy_artifact`
 - **Knowledge and skills:** `local_knowledge_search`, `knowledge_dedup`,
-  `skill_discover`, `skill_search`, `skill_fetch`, `browse_outline`,
-  `browse_search`
+  `knowledge_list_sources`, `skill_discover`, `skill_search`, `skill_fetch`,
+  `browse_outline`, `browse_search`
 - **Workflows and hooks:** `workflow_author`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **Diagnostics:** `resource_status`, `issue_radar_record_investigation`

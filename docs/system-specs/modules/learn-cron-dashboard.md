@@ -1225,7 +1225,7 @@ Searches the Knowledge Library for relevant content. Escalated from App Store to
 
 - **Trigger rules**: strict — only fires on explicit user signals (e.g. "search my knowledge", "check my docs on X"), not on general questions
 - **Schema**: `LOCAL_KNOWLEDGE_SEARCH_SCHEMA` in `validation.py`
-- **Parameters**: `query` (required string), `limit` (optional integer, default 3, hard max 5)
+- **Parameters**: `query` (required string), `limit` (optional integer, default 3, hard max 5), `source_id` (optional string — scopes the FTS5-keyword and vector seed legs to one source; graph traversal stays unfiltered. Unknown ids return a guidance message naming `knowledge_list_sources`, the no-argument companion tool that lists each source's `name — id (N item(s))` with active-item counts)
 - **Confidence threshold**: `MIN_SCORE=0.012` filters noise
 - **Output format**: source + content only, no score metadata (~2500 token budget)
 - **Graceful degradation**: returns helpful message when knowledge DB not configured

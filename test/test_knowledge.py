@@ -462,6 +462,76 @@ class TestHybridRetriever:
         assert top["artifact_name"] == "OP Vision Plan"
 
 
+class TestHybridRetrieverSourceFilter:
+    def test_source_id_narrows_keyword_seeds(self, store):
+        # Both items match the query; scoping to one source keeps only its item
+        # (no entities exist, so the unfiltered graph leg contributes nothing).
+        src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
+        src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
+        store.add_item("Auth A", "JWT tokens for service alpha", "doc", source_id=src_a)
+        store.add_item("Auth B", "JWT tokens for service beta", "doc", source_id=src_b)
+        retriever = HybridRetriever(store)
+        results = retriever.search("JWT", source_id=src_a)
+        assert [r["title"] for r in results] == ["Auth A"]
+
+    def test_omitted_source_id_keeps_current_behavior(self, store):
+        # Regression: no source_id == the pre-filter result set.
+        src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
+        src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
+        store.add_item("Auth A", "JWT tokens for service alpha", "doc", source_id=src_a)
+        store.add_item("Auth B", "JWT tokens for service beta", "doc", source_id=src_b)
+        retriever = HybridRetriever(store)
+        results = retriever.search("JWT")
+        assert {r["title"] for r in results} == {"Auth A", "Auth B"}
+
+    def test_graph_leg_still_reaches_other_sources(self, store):
+        # The graph leg is deliberately unfiltered: an entity hit in another
+        # source still surfaces, marked as a graph match, while the keyword
+        # seeds stay scoped to the requested source.
+        src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
+        src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
+        store.add_item("Auth A", "JWT tokens for service alpha", "doc", source_id=src_a)
+        item_b = store.add_item("Gateway Doc", "routing notes", "doc", source_id=src_b)
+        ent = store.add_entity("Gateway", "service")
+        store.add_mention(item_b, ent)
+        retriever = HybridRetriever(store)
+        results = retriever.search("JWT Gateway", source_id=src_a)
+        by_title = {r["title"]: r for r in results}
+        assert "Auth A" in by_title
+        assert "Gateway Doc" in by_title
+        assert by_title["Gateway Doc"]["match_type"] == "graph"
+
+    def test_source_id_narrows_vector_seeds(self, store):
+        # Identical embeddings in two sources; scoping keeps one. The query
+        # shares no tokens with the content, isolating the vector leg.
+        src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
+        src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
+        vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
+        store.add_item("Vec A", "alpha content", "doc", source_id=src_a, embedding=vec)
+        store.add_item("Vec B", "beta content", "doc", source_id=src_b, embedding=vec)
+        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0])
+        results = retriever.search("unrelatedquerytoken", source_id=src_a)
+        assert [r["title"] for r in results] == ["Vec A"]
+
+    def test_unknown_source_id_returns_graph_only_results(self, store):
+        # A nonexistent id empties the seed legs without raising; the tool
+        # layer is what turns this into a guidance message.
+        store.add_item("Auth", "JWT tokens", "doc")
+        retriever = HybridRetriever(store)
+        assert retriever.search("JWT", source_id="no-such-source") == []
+
+    def test_scoped_search_includes_dedup_survivor_via_source_locations(self, store):
+        # An item owned by source A but located in source B (the surviving copy
+        # of a cross-source dedup collapse) still belongs to B's scope — the
+        # same ownership-OR-location rule the /api/knowledge/graph filter uses.
+        src_a = store.add_source("Owner", "local_folder", "/tmp/owner")
+        src_b = store.add_source("Location", "local_folder", "/tmp/loc")
+        item = store.add_item("Shared Doc", "JWT tokens shared", "doc", source_id=src_a)
+        store.add_source_location(item, src_b)
+        retriever = HybridRetriever(store)
+        assert [r["title"] for r in retriever.search("JWT", source_id=src_b)] == ["Shared Doc"]
+
+
 # ---------------------------------------------------------------------------
 # 6. SimpleDiGraph
 # ---------------------------------------------------------------------------

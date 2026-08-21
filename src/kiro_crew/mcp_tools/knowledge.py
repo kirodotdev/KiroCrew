@@ -25,6 +25,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
     KNOWLEDGE_DEDUP_SCHEMA,
+    KNOWLEDGE_LIST_SOURCES_SCHEMA,
     LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     validate_tool_args,
 )
@@ -58,8 +59,29 @@ def schemas() -> list[dict[str, Any]]:
                         "description": "Max results to return (default 3, max 5)",
                         "default": 3,
                     },
+                    "source_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional source ID to scope keyword/vector seeding "
+                            "to one knowledge source (graph traversal still "
+                            "surfaces cross-source connections). Discover valid "
+                            "IDs with knowledge_list_sources."
+                        ),
+                    },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "knowledge_list_sources",
+            "description": (
+                "List the knowledge library's sources as 'name — id (N items)' "
+                "lines. Use it to discover a valid source_id before scoping "
+                "local_knowledge_search to a single source."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
             },
         },
         {
@@ -153,6 +175,7 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, LOCAL_KNOWLEDGE_SEARCH_SCHEMA)
     query = args["query"]
     limit = args.get("limit", 3)
+    source_id = args.get("source_id") or None
 
     db_path = Path(mcp_core.config_dir()) / "workspace" / "knowledge" / "knowledge.db"
     if not db_path.exists():
@@ -170,10 +193,39 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     # and the embedder availability probe.
     cfg_path = Path(mcp_core.config_dir()) / "config.json"
     store, embedder = mcp_core._get_knowledge_search(db_path, cfg_path)
+
+    # The query is caller-supplied free text and SEL is persisted and
+    # dashboard-readable, so redact it before any audit write (mirrors
+    # knowledge_add_document's audit_title). The search itself keeps the
+    # raw query.
+    audit_query, _ = redact_credentials(query)
+    audit_query, _ = redact_exfiltration_urls(audit_query)
+
+    if source_id is not None:
+        # An unknown source would silently degrade the seed legs to empty; tell
+        # the caller which tool discovers valid IDs instead of raising.
+        row = store.db.execute("SELECT 1 FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if row is None:
+            mcp_core.sel().log_tool_invocation(
+                session_key=mcp_core._resolve_session_key(),
+                source="mcp",
+                tool_name="local_knowledge_search",
+                outcome="unknown_source",
+                metadata={"query": audit_query},
+            )
+            message = (
+                f"No knowledge source with id {source_id!r}. "
+                "Call knowledge_list_sources to see the valid source IDs."
+            )
+            # The id is caller-supplied free text echoed back into chat.
+            message, _ = redact_exfiltration_urls(message)
+            message, _ = redact_credentials(message)
+            return message
+
     embed_fn = embedder.embed if embedder and embedder.is_available() else None
     retriever = mcp_core.HybridRetriever(store, embedder=embed_fn)
 
-    results = retriever.search(query, limit=limit)
+    results = retriever.search(query, limit=limit, source_id=source_id)
 
     # Filter by minimum confidence score
     min_score = 0.012
@@ -185,7 +237,7 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
             source="mcp",
             tool_name="local_knowledge_search",
             outcome="no_results",
-            metadata={"query": query},
+            metadata={"query": audit_query},
         )
         return "No relevant knowledge found."
 
@@ -245,7 +297,7 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
         source="mcp",
         tool_name="local_knowledge_search",
         outcome="success",
-        metadata={"query": query, "result_count": len(results)},
+        metadata={"query": audit_query, "result_count": len(results)},
     )
     return output
 
@@ -336,8 +388,53 @@ def knowledge_dedup(name: str, args: dict[str, Any]) -> str:
     return output
 
 
+def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
+    validate_tool_args(args, KNOWLEDGE_LIST_SOURCES_SCHEMA)
+    db_path = Path(mcp_core.config_dir()) / "workspace" / "knowledge" / "knowledge.db"
+    if not db_path.exists():
+        mcp_core.sel().log_tool_invocation(
+            session_key=mcp_core._resolve_session_key(),
+            source="mcp",
+            tool_name="knowledge_list_sources",
+            outcome="not_configured",
+        )
+        return "Knowledge Library is not configured. Ingest documents via the dashboard first."
+    # Same cached (store, embedder) pair the search handler uses — skips the
+    # per-call schema-DDL/migrate/graph-load. The store is shared: never close it.
+    cfg_path = Path(mcp_core.config_dir()) / "config.json"
+    store, _embedder = mcp_core._get_knowledge_search(db_path, cfg_path)
+    # Count active items only — superseded/deduped copies would overstate
+    # how much a source_id scope is likely to surface. Membership matches the
+    # retriever's scoped seed queries: ownership (items.source_id) OR location
+    # (source_locations, for items surviving a cross-source dedup collapse).
+    rows = store.db.execute(
+        "SELECT s.id, s.name, COUNT(DISTINCT i.id) AS item_count "
+        "FROM sources s LEFT JOIN items i ON i.status = 'active' AND ("
+        "  i.source_id = s.id"
+        "  OR i.id IN (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = s.id)"
+        ") GROUP BY s.id, s.name ORDER BY s.name"
+    ).fetchall()
+    mcp_core.sel().log_tool_invocation(
+        session_key=mcp_core._resolve_session_key(),
+        source="mcp",
+        tool_name="knowledge_list_sources",
+        outcome="success",
+        metadata={"source_count": len(rows)},
+    )
+    if not rows:
+        return "The knowledge library has no sources yet."
+    lines = [f"Knowledge sources ({len(rows)}):"]
+    for row in rows:
+        lines.append(f"- {row['name']} — id: {row['id']} ({row['item_count']} item(s))")
+    output = "\n".join(lines)
+    output, _ = redact_exfiltration_urls(output)
+    output, _ = redact_credentials(output)
+    return output
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "local_knowledge_search": local_knowledge_search,
     "knowledge_add_document": knowledge_add_document,
     "knowledge_dedup": knowledge_dedup,
+    "knowledge_list_sources": knowledge_list_sources,
 }
