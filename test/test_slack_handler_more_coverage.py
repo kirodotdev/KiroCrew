@@ -603,6 +603,51 @@ class TestAutoTitleToolRejection:
         assert "slack:t2" not in h._titled_threads
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
+    def test_lock_is_rebound_when_the_event_loop_changes(self):
+        """Regression for #4789: the module-global auto-title lock must be
+        rebound when the running event loop changes.
+
+        ``pytest-asyncio`` gives every async test a fresh loop, and on
+        Python 3.10+ acquiring an ``asyncio.Lock`` from a loop other than the
+        one it was first used on raises ``RuntimeError`` — which the bare
+        ``except Exception:`` in ``_maybe_auto_title_slack`` then swallowed,
+        silently skipping the permission-rejection branch. Prove the contract
+        deterministically with two distinct loops instead of replaying the
+        order-dependent CI flake.
+        """
+
+        def _run_once(session_key: str):
+            provider = FakeProvider(
+                [
+                    AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq1", title="Bash"),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="Deploy plan review"),
+                    AcpEvent(kind=EVENT_COMPLETE),
+                ]
+            )
+            slack = MockSlackClient()
+
+            async def _go():
+                # Touch the lock on this loop first, then run the real path.
+                lock = h._get_auto_title_lock()
+                await h._maybe_auto_title_slack(
+                    slack, _TitleSessions(provider), "C1", session_key, None, "u", "a"
+                )
+                return lock
+
+            return asyncio.run(_go()), provider, slack
+
+        lock1, provider1, _ = _run_once("slack:loop1")
+        lock2, provider2, slack2 = _run_once("slack:loop2")
+
+        # The second, distinct loop must get a fresh lock object…
+        assert lock2 is not lock1
+        # …and the real path must still work there: the rejection is recorded
+        # (this was the exact assertion the flake broke) and the title lands.
+        assert provider1.rejected == ["rq1"]
+        assert provider2.rejected == ["rq1"]
+        titles = [a for a in slack2.actions if a[0] == "set_thread_title"]
+        assert titles and titles[0][1]["title"] == "Deploy plan review"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # handle_interaction — defence-in-depth re-checks

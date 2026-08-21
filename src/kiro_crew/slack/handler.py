@@ -4162,13 +4162,21 @@ async def handle_message(
 # ── Slack thread auto-title ─────────────────────────────────────────────
 
 _auto_title_lock: asyncio.Lock | None = None
+_auto_title_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _get_auto_title_lock() -> asyncio.Lock:
-    """Lazily create the lock inside a running event loop."""
-    global _auto_title_lock
-    if _auto_title_lock is None:
+    """Return an auto-title lock bound to the current event loop (Python 3.10 compat).
+
+    Lazily created inside a running loop, and rebound when the running loop
+    changes: a cached ``asyncio.Lock`` raises ``RuntimeError`` when acquired
+    from a different loop than the one it was first used on.
+    """
+    global _auto_title_lock, _auto_title_lock_loop
+    loop = asyncio.get_running_loop()
+    if _auto_title_lock is None or _auto_title_lock_loop is not loop:
         _auto_title_lock = asyncio.Lock()
+        _auto_title_lock_loop = loop
     return _auto_title_lock
 
 
