@@ -1387,6 +1387,10 @@ export interface WebhookTokenEntry {
   /** True for the legacy `hooks.webhook_token` config scalar, which cannot be
    *  deleted from the dashboard. */
   legacy: boolean
+  /** Operator-owned destination. Empty only for legacy or pre-routing rows. */
+  agent: string
+  /** Per-source admission switch; absent historical rows normalize to true. */
+  enabled: boolean
 }
 
 export interface WebhookContextEntry {
@@ -1842,13 +1846,25 @@ export const api = {
   // contexts, run history. All dashboard-authed; the webhook bearer token is
   // never used from the browser.
   webhooks: () => fetch('/api/webhooks').then(j),
-  // `require_signature` defaults to true server-side; pass false only for a
-  // caller that cannot compute an HMAC.
-  createWebhookToken: (label: string, requireSignature = true) =>
-    post('/api/webhooks/tokens', { label, require_signature: requireSignature }).then(j),
+  // `require_signature` defaults to true server-side; a destination is required
+  // for every newly created first-class source.
+  createWebhookToken: (label: string, requireSignature = true, agent = '') =>
+    post('/api/webhooks/tokens', {
+      label,
+      require_signature: requireSignature,
+      agent,
+    }).then(j),
+  updateWebhookToken: (
+    id: string,
+    patch: { agent?: string; enabled?: boolean; label?: string },
+  ) => fetch('/api/webhooks/tokens/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).then(j),
   deleteWebhookToken: (id: string) => del('/api/webhooks/tokens/' + encodeURIComponent(id)).then(j),
   deleteWebhookContext: (hookId: string) => del('/api/webhooks/contexts/' + encodeURIComponent(hookId)).then(j),
-  testWebhook: (message?: string) => post('/api/webhooks/test', { message }).then(j),
+  testWebhook: (message?: string, agent?: string) => post('/api/webhooks/test', { message, agent }).then(j),
   setWebhooksEnabled: (enabled: boolean) => post('/api/webhooks/switch', { enabled }).then(j),
   // Prompts (Agent SOPs)
   prompts: () => fetch('/api/prompts').then(j),

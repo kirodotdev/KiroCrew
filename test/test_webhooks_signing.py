@@ -55,6 +55,7 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(H, "_HOOK_STORE_PATH", Path(tmp_path) / "hooks.json")
     monkeypatch.setattr(H, "_sel", lambda: MagicMock())
     monkeypatch.setattr(H, "_legacy_hook_token", lambda: "")
+    monkeypatch.setattr(H, "_installed_agent_names", lambda: {"kirocrew"})
     webhooks._reset_auth_throttle()
     webhooks._reset_signature_replay()
     yield Path(tmp_path)
@@ -624,7 +625,9 @@ class TestReadEndpointNeverLeaksTheSecret:
     async def test_create_returns_the_secret_once_next_to_the_token(self, wired):
         req = make_mocked_request("POST", "/api/webhooks/tokens")
         req.app["state"] = MagicMock()
-        req.json = AsyncMock(return_value={"label": "Review Bot"})
+        req.json = AsyncMock(
+            return_value={"label": "Review Bot", "agent": "kirocrew"}
+        )
         resp = await H.api_webhook_token_create(req)
         assert resp.status == 201
         data = json.loads(resp.body.decode("utf-8"))
@@ -644,7 +647,11 @@ class TestReadEndpointNeverLeaksTheSecret:
         req = make_mocked_request("POST", "/api/webhooks/tokens")
         req.app["state"] = MagicMock()
         req.json = AsyncMock(
-            return_value={"label": "CI runner", "require_signature": False}
+            return_value={
+                "label": "CI runner",
+                "require_signature": False,
+                "agent": "kirocrew",
+            }
         )
         resp = await H.api_webhook_token_create(req)
         assert resp.status == 201

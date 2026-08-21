@@ -1,15 +1,10 @@
 /**
  * Inbound webhooks — rail-and-detail surface for `POST /api/hooks/agent`.
  *
- * Shape (Option C, adapted to the full top-level content width):
- *
- *   ┌──────────────┬──────────────────────────────────────────┐
- *   │ RAIL (300px) │ DETAIL                                   │
- *   │ Setup pin    │ Setup & endpoint | Token | Context | Run  │
- *   │ Tokens       │ (whichever the rail selection points at)  │
- *   │ Contexts     │                                          │
- *   │ Recent runs  │                                          │
- *   └──────────────┴──────────────────────────────────────────┘
+ * Shape (Option C revised): a Webhooks plane whose rail contains only
+ * first-class sources, plus an Activity plane for registered contexts and runs.
+ * Each source owns one credential, destination agent, signing policy, enabled
+ * state, and activity while all sources continue to share the inbound endpoint.
  *
  * Both columns are edge-to-edge and full height with flush headers at the same
  * height; the rail is a real resizable column via the shared `useColumnResize`
@@ -28,8 +23,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, Check, Circle, Clock, Copy, KeyRound, Minus, Play, Power,
-  ShieldAlert, ShieldCheck, Trash2, Webhook, X, PanelLeftOpen,
+  AlertTriangle, Check, ChevronDown, ChevronRight, Circle, Clock, Copy, KeyRound,
+  Minus, Play, Power, ShieldAlert, ShieldCheck, Trash2, Webhook, X, PanelLeftOpen,
 } from 'lucide-react'
 
 import { api } from '../api/client'
@@ -39,11 +34,11 @@ import type {
   WebhookFreshness, WebhookOutcome, WebhookRunRecord,
   WebhookTestResult, WebhookTokenCreated, WebhookTokenEntry, WebhooksView,
 } from '../api/client'
-import SegmentedControl from '../components/SegmentedControl'
+import AgentSelector, { type KiroCrewAgent } from '../components/AgentSelector'
+import UnderlineTabs, { type UnderlineTab } from '../components/UnderlineTabs'
 import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skeleton } from '../components/ui'
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
-import { useScrollEdges } from '../hooks/useScrollEdges'
 import { timeAgo } from '../utils/timeAgo'
 
 import { fmtBytes, fmtDateTime, fmtDuration, fmtNumber, fmtUnit } from '../i18n/format'
@@ -134,6 +129,15 @@ type Selection =
 
 const SETUP: Selection = { kind: 'setup' }
 
+type WebhooksPlane = 'sources' | 'activity'
+
+function buildWebhooksPlanes(sourceCount: number, activityCount: number): Array<UnderlineTab<WebhooksPlane>> {
+  return [
+    { key: 'sources', label: i18nT('pages.webhooksPage.webhooks'), count: sourceCount },
+    { key: 'activity', label: i18nT('pages.artifactDetailPage.activity'), count: activityCount },
+  ]
+}
+
 /** Shown until the first response lands, and whenever the endpoint is
  *  unavailable — the page still explains itself with zero data. The kill switch
  *  defaults to ON here so an unreachable endpoint is never mistaken for a
@@ -192,16 +196,33 @@ function absolute(ts: number): string {
 
 /* ── presentational primitives (flush, full-bleed — no floating cards) ─── */
 
-function Section({ title, right, flush, children }: {
-  title: string; right?: React.ReactNode; flush?: boolean; children: React.ReactNode
+function Section({ title, right, flush, collapsible, defaultCollapsed, children }: {
+  title: string
+  right?: React.ReactNode
+  flush?: boolean
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+  children: React.ReactNode
 }) {
+  const [collapsed, setCollapsed] = useState(Boolean(collapsible && defaultCollapsed))
   return (
     <section className="border-b border-border">
       <div className="flex items-center gap-2 px-4 py-2 bg-bg-accent border-b border-border">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[.08em] text-muted">{title}</h2>
+        {collapsible
+          ? (
+            <Btn
+              className="min-w-0 border-0 rounded-none bg-transparent p-0 text-left hover:border-transparent hover:bg-transparent active:scale-100"
+              aria-expanded={!collapsed}
+              onClick={() => setCollapsed(value => !value)}
+            >
+              {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+              <h2 className="text-[11px] font-semibold uppercase tracking-[.08em] text-muted">{title}</h2>
+            </Btn>
+          )
+          : <h2 className="text-[11px] font-semibold uppercase tracking-[.08em] text-muted">{title}</h2>}
         {right && <div className="ml-auto flex items-center gap-1.5">{right}</div>}
       </div>
-      <div className={flush ? '' : 'px-4 py-3.5'}>{children}</div>
+      {!collapsed && <div className={flush ? '' : 'px-4 py-3.5'}>{children}</div>}
     </section>
   )
 }
@@ -345,6 +366,7 @@ export default function WebhooksPage() {
   // Re-asserting it continuously would also undo the user's own expand, making
   // the rail impossible to open on a phone and leaving no way to navigate.
   const collapsedForMobile = useRef(false)
+  const collapseRail = rail.collapse
   useEffect(() => {
     if (!isMobile) {
       collapsedForMobile.current = false
@@ -352,9 +374,9 @@ export default function WebhooksPage() {
     }
     if (!collapsedForMobile.current) {
       collapsedForMobile.current = true
-      rail.collapse()
+      collapseRail()
     }
-  }, [isMobile, rail.collapse])
+  }, [collapseRail, isMobile])
   // On a phone the rail and the detail pane cannot share the width, so the two
   // become a drill-down: the rail opens full-width to browse, and choosing an
   // entry collapses it back to the strip and hands the screen to the detail.
@@ -363,6 +385,7 @@ export default function WebhooksPage() {
   // the full viewport width instead of the width left over beside a strip.
   const railBar = isMobile && rail.collapsed
   const [selection, setSelection] = useState<Selection>(SETUP)
+  const [plane, setPlane] = useState<WebhooksPlane>('sources')
   /** Choose a rail entry. On a phone this also closes the rail, so the detail
    *  pane gets the screen instead of being squeezed beside it. */
   const select = (next: Selection) => {
@@ -371,6 +394,7 @@ export default function WebhooksPage() {
   }
   const [filter, setFilter] = useState('')
   const [label, setLabel] = useState('')
+  const [newAgent, setNewAgent] = useState('')
   const [requireSignature, setRequireSignature] = useState(true)
   const [revealed, setRevealed] = useState<WebhookTokenCreated | null>(null)
   // Two-step dismissal for the one-time reveal: the secrets are unrecoverable
@@ -381,15 +405,8 @@ export default function WebhooksPage() {
   // click — that direction is not destructive.
   const [switchArmed, setSwitchArmed] = useState(false)
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null)
-  // Measured overflow state for the tokens table's scroller — gates the pinned
-  // Revoke column's seam (border + fade). Measured, not breakpoint-inferred:
-  // the table overflows whenever the detail pane is narrower than the token
-  // columns, which the resizable rail can cause at any viewport size.
-  const [attachTokensScroller, tokensTableEdges, , attachTokensTable] = useScrollEdges<HTMLDivElement>()
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<WebhookTestResult | null>(null)
-  // null ⇒ follow whatever the current tokens require.
-  const [exampleMode, setExampleMode] = useState<ExampleMode | null>(null)
   const queryClient = useQueryClient()
 
   const { data, isLoading, error, refetch } = useQuery<WebhooksView>({
@@ -404,6 +421,22 @@ export default function WebhooksPage() {
     retry: false,
   })
   const view = data ?? EMPTY_VIEW
+  const initialSourceSelected = useRef(false)
+  useEffect(() => {
+    if (isLoading || initialSourceSelected.current) return
+    initialSourceSelected.current = true
+    const firstSource = view.tokens[0]
+    if (firstSource) setSelection({ kind: 'token', id: firstSource.id })
+  }, [isLoading, view.tokens])
+  const { data: agents = [] } = useQuery<KiroCrewAgent[]>({
+    queryKey: ['agents-installed'],
+    queryFn: async () => {
+      const response = await Promise.resolve(api.agentsInstalled?.())
+      return Array.isArray(response) ? response as KiroCrewAgent[] : []
+    },
+    retry: false,
+  })
+  const destinationAgent = newAgent || agents[0]?.name || ''
   // Only a failure with NOTHING to show is an "unavailable" state. A failed
   // background refetch while a snapshot is already on screen must not claim the
   // page is broken.
@@ -433,16 +466,25 @@ export default function WebhooksPage() {
   })
 
   const createToken = useMutation({
-    mutationFn: (name: string) =>
-      Promise.resolve(api.createWebhookToken?.(name, requireSignature)) as Promise<WebhookTokenCreated>,
+    mutationFn: ({ name, agent }: { name: string; agent: string }) =>
+      Promise.resolve(api.createWebhookToken?.(name, requireSignature, agent)) as Promise<WebhookTokenCreated>,
     onSuccess: (r) => {
       setLabel('')
-      setSelection(SETUP)
+      setNewAgent('')
+      if (r?.entry?.id) setSelection({ kind: 'token', id: r.entry.id })
       // The secret is in this response and nowhere else — hold it in state only
       // until the user dismisses the reveal.
       if (r?.token) setRevealed(r)
       reload()
     },
+  })
+
+  const updateToken = useMutation({
+    mutationFn: ({ id, patch }: {
+      id: string
+      patch: { agent?: string; enabled?: boolean; label?: string }
+    }) => Promise.resolve(api.updateWebhookToken?.(id, patch)),
+    onSuccess: reload,
   })
 
   const revokeToken = useMutation({
@@ -463,14 +505,14 @@ export default function WebhooksPage() {
   })
 
   const sendTest = useMutation({
-    mutationFn: (message?: string) =>
-      Promise.resolve(api.testWebhook?.(message)) as Promise<WebhookTestResult>,
+    mutationFn: (agent: string) =>
+      Promise.resolve(api.testWebhook?.(undefined, agent)) as Promise<WebhookTestResult>,
     onSuccess: (r) => { setTestResult(r ?? null); reload() },
     onError: (e: Error) => setTestResult({ ok: false, status: 0, error: e.message }),
   })
 
-  const mutationError = createToken.error || revokeToken.error || deleteContext.error
-    || setSwitch.error
+  const mutationError = createToken.error || updateToken.error || revokeToken.error
+    || deleteContext.error || setSwitch.error
   const mutationMessage = mutationError instanceof Error ? mutationError.message : null
 
   /* filter applies to every group at once */
@@ -478,12 +520,7 @@ export default function WebhooksPage() {
   const match = (...parts: (string | null | undefined)[]) =>
     !q || parts.some(p => (p || '').toLowerCase().includes(q))
 
-  const tokens = useMemo(
-    () => view.tokens.filter(t => match(t.label, t.display_prefix, t.last4)),
-    // `match` closes over `q` only; listing it keeps the memo honest.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view.tokens, q],
-  )
+  const tokens = view.tokens
   const contexts = useMemo(
     () => view.contexts.filter(c => match(c.hook_id, c.session_key, c.freshness)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -502,537 +539,306 @@ export default function WebhooksPage() {
   const selectedRun = selection.kind === 'run'
     ? view.runs.find(r => r.id === selection.id) ?? null : null
 
-  // A selection whose target disappeared (revoked token, deleted context) falls
-  // back to Setup rather than rendering a blank pane.
-  const pane: Selection['kind'] =
-    selection.kind === 'token' && !selectedToken ? 'setup'
-      : selection.kind === 'context' && !selectedContext ? 'setup'
-        : selection.kind === 'run' && !selectedRun ? 'setup'
-          : selection.kind
+  // A selection whose target disappeared falls back to the plane's empty state
+  // rather than rendering a blank pane.
+  const pane: Selection['kind'] = plane === 'sources'
+    ? selection.kind === 'token' && selectedToken ? 'token' : 'setup'
+    : selection.kind === 'context' && selectedContext
+      ? 'context'
+      : selection.kind === 'run' && selectedRun ? 'run' : 'setup'
 
   const leaf = pane === 'token' ? selectedToken?.label ?? i18nT('pages.webhooksPage.token')
     : pane === 'context' ? selectedContext?.hook_id ?? i18nT('pages.webhooksPage.context')
       : pane === 'run' ? `${OUTCOME[selectedRun?.outcome ?? 'completed'].label()} · ${selectedRun?.hook_id ?? i18nT('pages.webhooksPage.unknown_caller')}`
-        : i18nT('pages.webhooksPage.setup_endpoint')
+        : plane === 'activity'
+          ? i18nT('pages.artifactDetailPage.activity')
+          : i18nT('pages.webhooksPage.let_an_outside_system_wake_up_your_agent')
 
   // New tokens require signing by default, so a fresh install previews the
   // signed form rather than a snippet that would start failing with 401 the
   // moment a token exists.
   const defaultMode: ExampleMode =
     view.tokens.length === 0 || view.tokens.some(t => t.require_signature) ? 'signed' : 'bearer'
-  const mode = exampleMode ?? defaultMode
-  const sharedExample = exampleFor(
-    mode, view.url, 'hook:my-job', i18nT('pages.webhooksPage.job_finished_3_findings'), signatureWindow,
-  )
-
   /* ── rail ── */
 
-  const railBody = (
-    <>
-      <RailRow
-        active={pane === 'setup'}
-        onClick={() => select(SETUP)}
-        dot={live
-          ? <Check size={14} className="text-ok shrink-0" />
-          : switchOn
-            ? <AlertTriangle size={14} className="text-warn shrink-0" />
-            : <Power size={14} className="text-muted shrink-0" />}
-        title={<span className="font-semibold">{i18nT('pages.webhooksPage.setup_endpoint')}</span>}
-        subtitle={!switchOn
-          ? i18nT('pages.webhooksPage.switched_off_credentials_kept', { count: view.tokens.length })
-          : live
-            ? i18nT('pages.webhooksPage.enabled_credentials', { count: view.tokens.length })
-            : i18nT('pages.webhooksPage.disabled_no_token_set')}
-        testId="webhook-row-setup"
-      />
+  const railBody = plane === 'sources'
+    ? (
+      <>
+        {tokens.length === 0
+          ? (
+            <GroupEmpty>
+              {i18nT('pages.webhooksPage.no_tokens_yet_until_one_exists_every_inbound_cal')}
+            </GroupEmpty>
+          )
+          : tokens.map(token => (
+            <RailRow
+              key={token.id}
+              active={pane === 'token' && selectedToken?.id === token.id}
+              onClick={() => select({ kind: 'token', id: token.id })}
+              dot={<Dot className={token.enabled !== false ? 'bg-ok' : 'bg-muted'} />}
+              title={token.label}
+              subtitle={`${i18nT('pages.channelPage.agent')}: ${token.agent || '—'}`}
+              age={usedAgo(token.last_used_at)}
+              testId={`webhook-row-token-${token.id}`}
+            />
+          ))}
+      </>
+    )
+    : (
+      <>
+        <GroupLabel label={i18nT('pages.webhooksPage.registered_contexts')} count={contexts.length} />
+        {contexts.length === 0
+          ? (
+            <GroupEmpty>
+              {view.contexts.length === 0
+                ? i18nT('pages.webhooksPage.nothing_registered_an_agent_calls_the_register_h')
+                : i18nT('pages.webhooksPage.no_context_matches_the_filter')}
+            </GroupEmpty>
+          )
+          : contexts.map(context => (
+            <RailRow
+              key={context.hook_id}
+              active={pane === 'context' && selectedContext?.hook_id === context.hook_id}
+              onClick={() => select({ kind: 'context', hookId: context.hook_id })}
+              dot={(
+                <Dot
+                  className={FRESHNESS[context.freshness].dot}
+                  testId={`webhook-freshness-${context.hook_id}`}
+                  extra={{ 'data-freshness': context.freshness }}
+                />
+              )}
+              title={<span className="font-mono">{context.hook_id}</span>}
+              subtitle={FRESHNESS[context.freshness].label()}
+              age={timeAgo(context.registered_at)}
+              testId={`webhook-row-context-${context.hook_id}`}
+            />
+          ))}
 
-      <GroupLabel label={i18nT('pages.webhooksPage.tokens')} count={tokens.length} />
-      {tokens.length === 0
-        ? (
-          <GroupEmpty>
-            {view.tokens.length === 0
-              ? i18nT('pages.webhooksPage.no_tokens_yet_until_one_exists_every_inbound_cal')
-              : i18nT('pages.webhooksPage.no_token_matches_the_filter')}
-          </GroupEmpty>
-        )
-        : tokens.map(t => (
-          <RailRow
-            key={t.id}
-            active={pane === 'token' && selectedToken?.id === t.id}
-            onClick={() => select({ kind: 'token', id: t.id })}
-            dot={<KeyRound size={13} className="text-muted shrink-0" />}
-            title={t.label}
-            subtitle={<span className="font-mono">{t.display_prefix}…{t.last4}</span>}
-            age={usedAgo(t.last_used_at)}
-            testId={`webhook-row-token-${t.id}`}
-          />
-        ))}
-
-      <GroupLabel label={i18nT('pages.webhooksPage.registered_contexts')} count={contexts.length} />
-      {contexts.length === 0
-        ? (
-          <GroupEmpty>
-            {view.contexts.length === 0
-              ? i18nT('pages.webhooksPage.nothing_registered_an_agent_calls_the_register_h')
-              : i18nT('pages.webhooksPage.no_context_matches_the_filter')}
-          </GroupEmpty>
-        )
-        : contexts.map(c => (
-          <RailRow
-            key={c.hook_id}
-            active={pane === 'context' && selectedContext?.hook_id === c.hook_id}
-            onClick={() => select({ kind: 'context', hookId: c.hook_id })}
-            dot={(
-              <Dot
-                className={FRESHNESS[c.freshness].dot}
-                testId={`webhook-freshness-${c.hook_id}`}
-                extra={{ 'data-freshness': c.freshness }}
-              />
-            )}
-            title={<span className="font-mono">{c.hook_id}</span>}
-            subtitle={`${FRESHNESS[c.freshness].label()} — ${c.freshness === 'fresh' ? i18nT('pages.webhooksPage.context_injected_verbatim')
-              : c.freshness === 'stale' ? i18nT('pages.webhooksPage.injected_with_a_warning') : i18nT('pages.webhooksPage.context_dropped')}`}
-            age={timeAgo(c.registered_at)}
-            testId={`webhook-row-context-${c.hook_id}`}
-          />
-        ))}
-
-      <GroupLabel label={i18nT('pages.webhooksPage.recent_runs')} count={runs.length} />
-      {runs.length === 0
-        ? (
-          <GroupEmpty>
-            {view.runs.length === 0
-              ? i18nT('pages.webhooksPage.no_calls_recorded_yet_every_accepted_rejected_an')
-              : i18nT('pages.webhooksPage.no_run_matches_the_filter')}
-          </GroupEmpty>
-        )
-        : runs.map(r => (
-          <RailRow
-            key={r.id}
-            active={pane === 'run' && selectedRun?.id === r.id}
-            onClick={() => select({ kind: 'run', id: r.id })}
-            dot={<Dot className={OUTCOME[r.outcome].dot} square />}
-            title={<span className="font-mono">{r.hook_id ?? i18nT('pages.webhooksPage.unknown_caller')}</span>}
-            subtitle={`${OUTCOME[r.outcome].label()}${r.outcome === 'completed' ? ` — ${durationLabel(r.duration_ms)} · ${sizeLabel(r.result_chars)}` : ''}`}
-            age={timeAgo(r.started_at)}
-            testId={`webhook-row-run-${r.id}`}
-          />
-        ))}
-
-      <div className="px-3 pt-3 pb-6 text-[11px] text-muted-strong leading-relaxed">
-        {i18nT('pages.webhooksPage.a_webhook_lets_an_outside_system_ci_a_review_bot')}
-      </div>
-    </>
-  )
+        <GroupLabel label={i18nT('pages.webhooksPage.recent_runs')} count={runs.length} />
+        {runs.length === 0
+          ? (
+            <GroupEmpty>
+              {view.runs.length === 0
+                ? i18nT('pages.webhooksPage.no_calls_recorded_yet_every_accepted_rejected_an')
+                : i18nT('pages.webhooksPage.no_run_matches_the_filter')}
+            </GroupEmpty>
+          )
+          : runs.map(run => (
+            <RailRow
+              key={run.id}
+              active={pane === 'run' && selectedRun?.id === run.id}
+              onClick={() => select({ kind: 'run', id: run.id })}
+              dot={<Dot className={OUTCOME[run.outcome].dot} square />}
+              title={<span className="font-mono">{run.hook_id ?? i18nT('pages.webhooksPage.unknown_caller')}</span>}
+              subtitle={`${OUTCOME[run.outcome].label()}${run.outcome === 'completed' ? ` — ${durationLabel(run.duration_ms)} · ${sizeLabel(run.result_chars)}` : ''}`}
+              age={timeAgo(run.started_at)}
+              testId={`webhook-row-run-${run.id}`}
+            />
+          ))}
+      </>
+    )
 
   /* ── panes ── */
 
-  const setupPane = (
-    <>
-      <div
-        data-testid="webhook-switch-row"
-        className="flex items-center gap-2.5 flex-wrap px-4 py-2.5 border-b border-border bg-bg-accent"
-      >
-        <Power size={15} className={switchOn ? 'text-ok shrink-0' : 'text-muted shrink-0'} />
-        <span className="text-[13px] font-semibold text-text-strong">{i18nT('pages.webhooksPage.inbound_webhooks')}</span>
-        <Badge variant={switchOn ? (hasTokens ? 'ok' : 'warn') : 'muted'}>
-          {switchOn ? (hasTokens ? i18nT('pages.webhooksPage.on') : i18nT('pages.webhooksPage.no_credential_yet')) : i18nT('pages.webhooksPage.off')}
-        </Badge>
-        <span className="text-[12px] text-muted min-w-0">
-          {switchOn
-            ? i18nT('pages.webhooksPage.inbound_webhooks_are_on_calls_are_answered_by_th')
-            : i18nT('pages.webhooksPage.inbound_webhooks_are_off_calls_are_refused_befor')}
-        </span>
-        <span className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
-          {switchOn
-            ? (switchArmed
-              ? (
-                <>
-                  <span className="text-[12px] text-muted">
-                    {i18nT('pages.webhooksPage.tokens_and_run_history_are_kept_you_can_switch_i')}
-                  </span>
-                  <Btn
-                    danger
-                    data-testid="webhook-switch-off-confirm"
-                    disabled={setSwitch.isPending}
-                    onClick={() => setSwitch.mutate(false)}
-                  >
-                    <Power size={13} /> {i18nT('pages.webhooksPage.confirm_turn_off')}
-                  </Btn>
-                  <Btn onClick={() => setSwitchArmed(false)}>{i18nT('pages.webhooksPage.keep_it_on')}</Btn>
-                </>
-              )
-              : (
-                <Btn
-                  danger
-                  data-testid="webhook-switch-off"
-                  onClick={() => setSwitchArmed(true)}
-                >
-                  <Power size={13} /> {i18nT('pages.webhooksPage.turn_off')}
-                </Btn>
-              ))
-            : (
-              <Btn
-                primary
-                data-testid="webhook-switch-on"
-                disabled={setSwitch.isPending}
-                onClick={() => setSwitch.mutate(true)}
-              >
-                <Power size={13} /> {i18nT('pages.webhooksPage.turn_on')}
-              </Btn>
-            )}
-        </span>
-      </div>
-
-      {revealed && (
-        <Banner
-          tone="warn"
-          testId="webhook-token-reveal"
-          icon={<KeyRound size={16} className="text-warn" />}
-          title={revealed.signing_secret
-            ? i18nT('pages.webhooksPage.copy_both_secrets_now_they_are_shown_once')
-            : i18nT('pages.webhooksPage.copy_this_token_now_it_is_shown_once')}
-        >
-          <div className="flex flex-col gap-2">
-            <span>
-              {revealed.signing_secret
-                ? i18nT('pages.webhooksPage.shown_once_signing_pair_warning')
-                : i18nT('pages.webhooksPage.shown_once_bearer_only_warning')}
-            </span>
-
-            <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[.06em] text-muted">
-                {i18nT('pages.webhooksPage.bearer_token_proves_who_is_calling')}
-              </span>
-              <CopyField value={revealed.token} label={i18nT('pages.webhooksPage.copy_webhook_token')} />
-            </div>
-
-            {revealed.signing_secret && (
-              <div className="flex flex-col gap-1" data-testid="webhook-reveal-signing-secret">
-                <span className="text-[11px] uppercase tracking-[.06em] text-muted">
-                  {i18nT('pages.webhooksPage.signing_secret_proves_the_body_was_not_tampered')}
-                </span>
-                <CopyField value={revealed.signing_secret} label={i18nT('pages.webhooksPage.copy_signing_secret')} />
-                <span className="text-[12px] text-muted">
-                  {i18nT('pages.webhooksPage.equally_unrecoverable_calls_with_this_token_must')}
-                </span>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 flex-wrap">
-              <Btn onClick={() => copyText(revealed.token)}><Copy size={13} /> {i18nT('pages.webhooksPage.copy_token')}</Btn>
-              {revealed.signing_secret && (
-                <Btn
-                  data-testid="webhook-reveal-copy-signing"
-                  onClick={() => copyText(revealed.signing_secret ?? '')}
-                >
-                  <Copy size={13} /> {i18nT('pages.webhooksPage.copy_signing_secret')}
-                </Btn>
-              )}
-              {dismissArmed
-                ? (
-                  <Btn
-                    danger
-                    onClick={() => { setRevealed(null); setDismissArmed(false) }}
-                    data-testid="webhook-reveal-dismiss-confirm"
-                  >
-                    <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide')} {revealed.signing_secret ? 'them' : 'it'} {i18nT('pages.webhooksPage.permanently')}
-                  </Btn>
-                )
-                : (
-                  <Btn onClick={() => setDismissArmed(true)} data-testid="webhook-reveal-dismiss">
-                    <X size={13} /> {i18nT('pages.webhooksPage.dismiss_i_have_saved')} {revealed.signing_secret ? 'both' : i18nT('pages.webhooksPage.this_token')}
-                  </Btn>
-                )}
-            </div>
-            <span className="text-[12px] text-muted">
-              {i18nT('pages.webhooksPage.this_panel_stays_on_setup_endpoint_until_you_dis')}
-            </span>
-          </div>
-        </Banner>
-      )}
-
-      {!switchOn
-        ? (
-          <Banner
-            tone="warn"
-            testId="webhook-banner-off"
-            icon={<Power size={16} className="text-warn" />}
-            title={i18nT('pages.webhooksPage.inbound_webhooks_are_switched_off')}
-            right={<Badge variant="muted">{i18nT('pages.webhooksPage.off')}</Badge>}
-          >
-            {i18nT('pages.webhooksPage.no_call_will_be_accepted_every_request_is_answer')}{' '}
-            <code className="font-mono">503</code> {i18nT('pages.webhooksPage.before_its_token_is_even_checked_your_tokens_and')}
-          </Banner>
-        )
-        : hasTokens
-          ? (
-            <Banner
-              tone="ok"
-              testId="webhook-banner-live"
-              icon={<Check size={16} className="text-ok" />}
-              title={i18nT('pages.webhooksPage.inbound_webhooks_are_enabled')}
-              right={<Badge variant="ok">{i18nT('pages.webhooksPage.live')}</Badge>}
-            >
-              {i18nT('pages.webhooksPage.any_caller_that_can_reach_this_gateway_and_prese')}
-            </Banner>
-          )
-          : (
-            <Banner
-              tone="muted"
-              testId="webhook-banner-no-tokens"
-              icon={<Webhook size={16} className="text-muted" />}
-              title={i18nT('pages.webhooksPage.let_an_outside_system_wake_up_your_agent')}
-            >
-              {i18nT('pages.webhooksPage.a_webhook_is_a_private_web_address_another_progr')}
-            </Banner>
-          )}
-
-      <Banner
-        tone="danger"
-        icon={<ShieldAlert size={16} className="text-danger" />}
-        title={i18nT('pages.webhooksPage.a_webhook_token_is_a_remote_execution_credential')}
-      >
-        {i18nT('pages.webhooksPage.a_valid_token_lets_a_caller_make_the_agent_run_c')}
-      </Banner>
-
-      <Section title={i18nT('pages.webhooksPage.tokens')}>
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* `basis-full` while narrow: this row already wraps, but a flex item
-              with a max-width and no floor shrinks toward zero BEFORE the row
-              wraps — the field crushed to about three characters beside a
-              full-size button, and naming a token is the gate on creating one
-              (the button stays disabled until the label is non-empty).
-              A whole line is deterministic where a min-width is not: it does not
-              depend on whether this particular locale's placeholder happens to
-              be long enough to force the wrap. Widest is German at 29
-              characters, Korean the shortest at 17. */}
-          <Input
-            className="basis-full sm:basis-auto max-w-full sm:max-w-[260px]"
-            placeholder={i18nT('pages.webhooksPage.label_e_g_review_bot')}
-            aria-label={i18nT('pages.webhooksPage.new_token_label')}
-            value={label}
-            onChange={e => setLabel(e.target.value)}
-          />
-          <Btn
-            primary
-            // Blocked while a freshly minted secret is still on screen. The
-            // reveal pane holds the ONLY copy of that token and signing secret —
-            // a second mint would call setRevealed and overwrite them while the
-            // first credential stays active, leaving it unusable and
-            // unrecoverable. The operator dismisses the pane to mint again.
-            disabled={!label.trim() || createToken.isPending || !!revealed}
-            onClick={() => createToken.mutate(label.trim())}
-          >
-            <KeyRound size={13} /> {createToken.isPending ? i18nT('pages.webhooksPage.generating') : i18nT('pages.webhooksPage.generate_token')}
-          </Btn>
-          {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't
-              resolve the control through the custom <Checkbox>; the label is both
-              nested around it and linked by htmlFor→id. */}
-          <label
-            htmlFor="webhook-require-signature"
-            className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer"
-          >
-            <Checkbox
-              id="webhook-require-signature"
-              checked={requireSignature}
-              onChange={e => setRequireSignature(e.target.checked)}
-            />
-            {i18nT('pages.webhooksPage.require_request_signing')}
-          </label>
-          <span className="text-[12px] text-muted">
-            {i18nT('pages.webhooksPage.name_the_system_that_will_call_this_so_you_can_r')}
-          </span>
-        </div>
-
-        {view.tokens.length === 0
-          ? (
-            <div className="mt-3 text-[13px] text-muted">
-              {i18nT('pages.webhooksPage.no_tokens_yet_a_token_is_the_whole_authenticatio')}
-            </div>
-          )
-          : (
-            // Six columns cannot reflow below about 560px, so on a narrow
-            // viewport the table scrolls sideways inside its own box rather than
-            // being clipped by the pane. `min-w-max` keeps the columns at their
-            // natural width instead of crushing the token strings.
-            <div ref={attachTokensScroller} className="mt-3 -mx-1 px-1 overflow-x-auto">
-              {/* This table is AUTO layout (`min-w-max`, no table-fixed), so
-                  column edges depend on content and a wrapper-anchored cue
-                  cannot know where the pinned column starts. The seam therefore
-                  lives INSIDE the pinned cells — as a 1px CHILD DIV, not a cell
-                  border: under `border-collapse: collapse` a cell border
-                  belongs to the collapsed table grid and paints at the cell's
-                  LAYOUT slot, so it stays behind while the sticky cell travels.
-                  Same treatment as the Hooks and Schedule tables. The table is
-                  the observed content node: auto layout means the ROWS set
-                  scrollWidth, which the scroller's own box never reports. */}
-              <table ref={attachTokensTable} className="w-full min-w-max text-[13px] border-collapse table-striped">
-              <thead>
-                <tr>
-                  {[i18nT('pages.webhooksPage.label'), i18nT('pages.webhooksPage.token'), i18nT('pages.webhooksPage.signing'), i18nT('pages.webhooksPage.created'), i18nT('pages.webhooksPage.last_used')].map(h => (
-                    <th key={h} className="text-left text-[11px] uppercase tracking-[.07em] text-muted font-semibold py-1.5 border-b border-border">
-                      {h}
-                    </th>
-                  ))}
-                  {/* Revoke is the LAST of six columns the page itself concedes
-                      cannot reflow below ~560px, so on a phone it starts past
-                      the scroll edge. `sticky right-0` pins it to the
-                      scrollport's right edge while the other columns scroll
-                      under it — which is why the cell needs an OPAQUE `bg-bg`
-                      (the detail pane's own surface): the default cell
-                      background is transparent and the scrolling columns would
-                      show through. The header cell was already unlabelled. */}
-                  <th className="sticky right-0 bg-bg text-left text-[11px] uppercase tracking-[.07em] text-muted font-semibold py-1.5 border-b border-border">
-                    {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-                    {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-bg to-transparent" />}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {view.tokens.map((t, i) => (
-                  <tr key={t.id} className="border-b border-border last:border-b-0">
-                    <td className="py-2 pr-3 text-text-strong">
-                      {t.label}
-                      {t.legacy && <Badge variant="muted" className="ml-2">{i18nT('pages.webhooksPage.config')}</Badge>}
-                    </td>
-                    <td className="py-2 pr-3 font-mono text-muted">{t.display_prefix}…{t.last4}</td>
-                    <td className="py-2 pr-3">
-                      <SigningBadge required={t.require_signature} tokenId={t.id} />
-                    </td>
-                    <td className="py-2 pr-3 text-muted">{timeAgo(t.created_at)}</td>
-                    <td className="py-2 pr-3 text-muted">{usedAgo(t.last_used_at)}</td>
-                    {/* Pinned like the header cell, on an OPAQUE `bg-bg`. These
-                        rows carry no hover tint, but `.table-striped` zebra
-                        lives on the <tr>, which the opaque base would hide —
-                        the overlay re-applies the same translucent `--card-hl`
-                        token on even rows so the pinned cell matches the rest
-                        of the row exactly. */}
-                    <td className="sticky right-0 bg-bg py-2 text-right">
-                      <div aria-hidden className={`absolute inset-0 -z-10 ${i % 2 === 1 ? 'bg-[var(--card-hl)]' : ''}`} />
-                      {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-                      {tokensTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-bg to-transparent" />}
-                      <RevokeButton
-                        token={t}
-                        confirming={confirmRevoke === t.id}
-                        onArm={() => setConfirmRevoke(t.id)}
-                        onConfirm={() => revokeToken.mutate(t.id)}
-                        onCancel={() => setConfirmRevoke(null)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              </table>
-            </div>
-          )}
-      </Section>
-
-      <Section title={i18nT('pages.webhooksPage.endpoint')} right={<Badge variant="muted">{i18nT('pages.webhooksPage.post')}</Badge>}>
-        <CopyField
-          value={view.url || i18nT('pages.webhooksPage.endpoint_url_unavailable_the_gateway_did_not_rep')}
-          label={i18nT('pages.webhooksPage.copy_endpoint_url')}
-          mask={!view.url}
-        />
-        <Hint>
-          {i18nT('pages.webhooksPage.endpoint_checks_only_the_credential')}{' '}
-          <code className="font-mono">{i18nT('pages.webhooksPage.ssh_nl_6776_127_0_0_1_6776_host')}</code>{' '}
-          {i18nT('pages.webhooksPage.prefer_the_tunnel_to_a_public_interface')}
-        </Hint>
-      </Section>
-
-      <Section
-        title={i18nT('pages.webhooksPage.request_example')}
-        right={(
-          <>
-            <ModeSwitch mode={mode} onChange={setExampleMode} />
-            <Btn onClick={() => copyText(sharedExample)}><Copy size={13} /> {i18nT('pages.webhooksPage.copy')}</Btn>
-          </>
-        )}
-      >
-        <CodeBlock
-          code={sharedExample}
-          label={mode === 'signed' ? i18nT('pages.webhooksPage.example_signed_request') : i18nT('pages.webhooksPage.example_curl_request')}
-        />
-        <Hint>
-          {mode === 'signed'
+  const globalControl = (
+    <div
+      data-testid="webhook-switch-row"
+      className="flex items-center gap-2.5 flex-wrap px-4 py-2.5 border-b border-border bg-bg-accent"
+    >
+      <Power size={15} className={switchOn ? 'text-ok shrink-0' : 'text-muted shrink-0'} />
+      <span className="text-[13px] font-semibold text-text-strong">{i18nT('pages.webhooksPage.inbound_webhooks')}</span>
+      <Badge variant={switchOn ? (hasTokens ? 'ok' : 'warn') : 'muted'}>
+        {switchOn ? (hasTokens ? i18nT('pages.webhooksPage.on') : i18nT('pages.webhooksPage.no_credential_yet')) : i18nT('pages.webhooksPage.off')}
+      </Badge>
+      <span className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
+        {switchOn
+          ? (switchArmed
             ? (
               <>
-                {i18nT('pages.webhooksPage.signed_mode_requirements', { seconds: signatureWindow })}
+                <span className="text-[12px] text-muted">
+                  {i18nT('pages.webhooksPage.tokens_and_run_history_are_kept_you_can_switch_i')}
+                </span>
+                <Btn
+                  danger
+                  data-testid="webhook-switch-off-confirm"
+                  disabled={setSwitch.isPending}
+                  onClick={() => setSwitch.mutate(false)}
+                >
+                  <Power size={13} /> {i18nT('pages.webhooksPage.confirm_turn_off')}
+                </Btn>
+                <Btn onClick={() => setSwitchArmed(false)}>{i18nT('pages.webhooksPage.keep_it_on')}</Btn>
               </>
             )
             : (
-              <>
-                {i18nT('pages.webhooksPage.bearer_only_form_for_a_token_generated_with_sign')}
-              </>
-            )}
-          {' '}{i18nT('pages.webhooksPage.response_is_a_receipt_only')}
-        </Hint>
-      </Section>
+              <Btn danger data-testid="webhook-switch-off" onClick={() => setSwitchArmed(true)}>
+                <Power size={13} /> {i18nT('pages.webhooksPage.turn_off')}
+              </Btn>
+            ))
+          : (
+            <Btn
+              primary
+              data-testid="webhook-switch-on"
+              disabled={setSwitch.isPending}
+              onClick={() => setSwitch.mutate(true)}
+            >
+              <Power size={13} /> {i18nT('pages.webhooksPage.turn_on')}
+            </Btn>
+          )}
+      </span>
+    </div>
+  )
 
-      <Section title={i18nT('pages.webhooksPage.limits_behaviour')} flush>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-          {[
-            [i18nT('pages.webhooksPage.session_key'), <span key="k"><code className="font-mono">{view.limits.session_key_prefix}</code> {i18nT('pages.webhooksPage.prefix_required')}</span>, i18nT('pages.webhooksPage.anything_else_is_rejected_before_the_turn_starts')],
-            [i18nT('pages.webhooksPage.message_size'), i18nT('pages.webhooksPage.max_chars', { chars: fmtNumber(view.limits.message_max) }), i18nT('pages.webhooksPage.longer_bodies_are_refused_not_truncated')],
-            [i18nT('pages.webhooksPage.request_body'), i18nT('pages.webhooksPage.max_kib', { kib: Math.round((view.limits.body_max_bytes ?? 262144) / 1024) }), i18nT('pages.webhooksPage.the_raw_body_is_capped_before_it_is_parsed_large')],
-            [i18nT('pages.webhooksPage.timeout'), i18nT('pages.webhooksPage.timeout_default_and_max', { default: view.limits.timeout_default, max: view.limits.timeout_max }), i18nT('pages.webhooksPage.override_per_call_with_the_timeout_field')],
-            [i18nT('pages.webhooksPage.concurrency'), i18nT('pages.webhooksPage.max_runs', { runs: view.limits.max_concurrent }), i18nT('pages.webhooksPage.callers_over_the_cap_get_http_429_retry_with_bac')],
-            [i18nT('pages.webhooksPage.request_signing'), i18nT('pages.webhooksPage.hmac_sha256_window', { seconds: signatureWindow }), i18nT('pages.webhooksPage.signed_over_timestamp_and_raw_body_detail', { seconds: signatureWindow })],
-            [i18nT('pages.webhooksPage.failed_auth'), '10 per minute', i18nT('pages.webhooksPage.a_source_that_keeps_sending_bad_tokens_or_bad_si')],
-            [i18nT('pages.webhooksPage.kill_switch'), switchOn ? 'on' : 'off', i18nT('pages.webhooksPage.when_off_every_call_gets_http_503_before_its_tok')],
-            [i18nT('pages.webhooksPage.delivery_model'), i18nT('pages.webhooksPage.fire_and_forget_200'), i18nT('pages.webhooksPage.returns_immediately_the_answer_is_not_in_the_res')],
-            [i18nT('pages.webhooksPage.results_go_to'), i18nT('pages.webhooksPage.dashboard_slack_dm'), i18nT('pages.webhooksPage.when_deliver_is_true')],
-          ].map(([t, v, d], i) => (
-            <div key={i} className="px-4 py-3 border-b border-r border-border">
-              <div className="text-[11px] uppercase tracking-[.07em] text-muted">{t}</div>
-              <div className="text-[13px] text-text-strong mt-1">{v}</div>
-              <div className="text-[12px] text-muted mt-0.5">{d}</div>
-            </div>
-          ))}
-        </div>
-      </Section>
-
-      <Section
-        title={i18nT('pages.webhooksPage.capacity')}
-        right={<Badge variant={view.slots.in_use >= view.slots.max ? 'err' : 'ok'}>
-          {view.slots.in_use} / {view.slots.max} {i18nT('pages.webhooksPage.slots_in_use')}
-        </Badge>}
-      >
-        <div className="flex items-center gap-1.5">
-          {Array.from({ length: view.slots.max }).map((_, i) => (
-            <span
-              key={i}
-              className={`h-2 flex-1 max-w-[80px] rounded-sm ${i < view.slots.in_use ? 'bg-accent' : 'bg-border'}`}
-            />
-          ))}
-          <span className="text-[12px] text-muted ml-2">
-            {Math.max(0, view.slots.max - view.slots.in_use)} {i18nT('pages.webhooksPage.free')}{' '}
-            {view.slots.in_use >= view.slots.max ? 'new calls get 429' : i18nT('pages.webhooksPage.new_calls_accepted')}
+  const revealPane = revealed && (
+    <Banner
+      tone="warn"
+      testId="webhook-token-reveal"
+      icon={<KeyRound size={16} className="text-warn" />}
+      title={revealed.signing_secret
+        ? i18nT('pages.webhooksPage.copy_both_secrets_now_they_are_shown_once')
+        : i18nT('pages.webhooksPage.copy_this_token_now_it_is_shown_once')}
+    >
+      <div className="flex flex-col gap-2">
+        <span>
+          {revealed.signing_secret
+            ? i18nT('pages.webhooksPage.shown_once_signing_pair_warning')
+            : i18nT('pages.webhooksPage.shown_once_bearer_only_warning')}
+        </span>
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] uppercase tracking-[.06em] text-muted">
+            {i18nT('pages.webhooksPage.bearer_token_proves_who_is_calling')}
           </span>
+          <CopyField value={revealed.token} label={i18nT('pages.webhooksPage.copy_webhook_token')} />
         </div>
-      </Section>
+        {revealed.signing_secret && (
+          <div className="flex flex-col gap-1" data-testid="webhook-reveal-signing-secret">
+            <span className="text-[11px] uppercase tracking-[.06em] text-muted">
+              {i18nT('pages.webhooksPage.signing_secret_proves_the_body_was_not_tampered')}
+            </span>
+            <CopyField value={revealed.signing_secret} label={i18nT('pages.webhooksPage.copy_signing_secret')} />
+          </div>
+        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Btn onClick={() => copyText(revealed.token)}><Copy size={13} /> {i18nT('pages.webhooksPage.copy_token')}</Btn>
+          {revealed.signing_secret && (
+            <Btn data-testid="webhook-reveal-copy-signing" onClick={() => copyText(revealed.signing_secret ?? '')}>
+              <Copy size={13} /> {i18nT('pages.webhooksPage.copy_signing_secret')}
+            </Btn>
+          )}
+          {dismissArmed
+            ? (
+              <Btn
+                danger
+                onClick={() => { setRevealed(null); setDismissArmed(false) }}
+                data-testid="webhook-reveal-dismiss-confirm"
+              >
+                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide')} {i18nT('pages.webhooksPage.permanently')}
+              </Btn>
+            )
+            : (
+              <Btn onClick={() => setDismissArmed(true)} data-testid="webhook-reveal-dismiss">
+                <X size={13} /> {i18nT('pages.webhooksPage.dismiss_i_have_saved')}
+              </Btn>
+            )}
+        </div>
+      </div>
+    </Banner>
+  )
+
+  const setupPane = (
+    <>
+      {globalControl}
+      {revealPane}
+      <div className="mx-auto flex w-full max-w-2xl flex-col py-8">
+        <div className="px-4 pb-5 text-center">
+          <Webhook size={24} className="mx-auto mb-3 text-accent" />
+          <h1 className="text-[16px] font-semibold text-text-strong">
+            {i18nT('pages.webhooksPage.let_an_outside_system_wake_up_your_agent')}
+          </h1>
+          <p className="mt-1 text-[13px] text-muted">
+            {i18nT('pages.webhooksPage.a_webhook_lets_an_outside_system_ci_a_review_bot')}
+          </p>
+        </div>
+        <Section title={i18nT('pages.webhooksPage.source')}>
+          <div className="flex flex-col gap-3">
+            <Input
+              className="w-full"
+              placeholder={i18nT('pages.webhooksPage.label_e_g_review_bot')}
+              aria-label={i18nT('pages.webhooksPage.new_token_label')}
+              value={label}
+              onChange={event => setLabel(event.target.value)}
+            />
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[12px] text-muted">{i18nT('pages.channelPage.agent')}</span>
+              <AgentSelector
+                agents={agents}
+                defaultAgent={agents[0]?.name ?? ''}
+                value={destinationAgent}
+                onChange={setNewAgent}
+              />
+            </div>
+            <div className="flex items-center gap-1.5 text-[12px] text-muted">
+              <Checkbox
+                id="webhook-require-signature"
+                aria-label={i18nT('pages.webhooksPage.require_request_signing')}
+                checked={requireSignature}
+                onChange={event => setRequireSignature(event.target.checked)}
+              />
+              <span>{i18nT('pages.webhooksPage.require_request_signing')}</span>
+            </div>
+            <div>
+              <Btn
+                primary
+                disabled={!label.trim() || !destinationAgent || createToken.isPending || !!revealed}
+                onClick={() => createToken.mutate({ name: label.trim(), agent: destinationAgent })}
+              >
+                <KeyRound size={13} /> {createToken.isPending
+                  ? i18nT('pages.webhooksPage.generating')
+                  : i18nT('pages.webhooksPage.generate_token')}
+              </Btn>
+            </div>
+          </div>
+        </Section>
+      </div>
     </>
   )
 
   const tokenPane = selectedToken && (
     <>
-      <Banner
-        tone={selectedToken.last_used_at ? 'ok' : 'muted'}
-        icon={<KeyRound size={16} className={selectedToken.last_used_at ? 'text-ok' : 'text-muted'} />}
-        title={selectedToken.label}
-        right={<Badge variant={selectedToken.legacy ? 'muted' : 'ok'}>
-          {selectedToken.legacy ? i18nT('pages.webhooksPage.from_config') : i18nT('pages.webhooksPage.active')}
-        </Badge>}
-      >
-        {selectedToken.last_used_at
-          ? i18nT('pages.webhooksPage.last_authorized_a_call', { when: usedAgo(selectedToken.last_used_at) })
-          : i18nT('pages.webhooksPage.this_token_has_not_authorized_a_call_yet')}
-      </Banner>
-
-      <Section
-        title={i18nT('pages.webhooksPage.token')}
-        right={(
+      {globalControl}
+      {revealed?.entry?.id === selectedToken.id && revealPane}
+      <div className="border-b border-border">
+        <div className="flex items-start gap-3 px-4 pt-3.5 pb-2">
+          <Webhook size={17} className="text-accent shrink-0" />
+          <div className="min-w-0">
+            <div className="text-[14px] font-semibold text-text-strong truncate">{selectedToken.label}</div>
+            <div className="text-[12px] text-muted truncate">
+              {i18nT('pages.channelPage.agent')}: {selectedToken.agent || '—'}
+            </div>
+          </div>
+          <Badge variant={selectedToken.enabled !== false ? 'ok' : 'muted'} className="ml-auto shrink-0">
+            {selectedToken.enabled !== false
+              ? i18nT('pages.webhooksPage.active')
+              : i18nT('pages.schedulePage.paused')}
+          </Badge>
+        </div>
+        <div
+          data-testid="webhook-source-actions"
+          className="flex flex-wrap items-center justify-end gap-1.5 px-4 pb-3.5"
+        >
+          {!selectedToken.legacy && confirmRevoke !== selectedToken.id && (
+            <Btn
+              data-testid={`webhook-source-toggle-${selectedToken.id}`}
+              disabled={updateToken.isPending}
+              onClick={() => updateToken.mutate({
+                id: selectedToken.id,
+                patch: { enabled: selectedToken.enabled === false },
+              })}
+            >
+              <Power size={13} /> {selectedToken.enabled !== false
+                ? i18nT('pages.webhooksPage.turn_off')
+                : i18nT('pages.webhooksPage.turn_on')}
+            </Btn>
+          )}
           <RevokeButton
             token={selectedToken}
             confirming={confirmRevoke === selectedToken.id}
@@ -1040,46 +846,67 @@ export default function WebhooksPage() {
             onConfirm={() => revokeToken.mutate(selectedToken.id)}
             onCancel={() => setConfirmRevoke(null)}
           />
-        )}
-      >
-        <Kv rows={[
-          [i18nT('pages.webhooksPage.label'), selectedToken.label],
-          [i18nT('pages.webhooksPage.token'), <span key="v" className="font-mono">{selectedToken.display_prefix}…{selectedToken.last4}</span>],
-          [i18nT('pages.webhooksPage.request_signing'), (
-            <span key="rs" className="flex items-start gap-2 flex-wrap">
-              <SigningBadge required={selectedToken.require_signature} tokenId={selectedToken.id} />
-              <span className="text-muted">
-                {selectedToken.require_signature
-                  ? i18nT('pages.webhooksPage.calls_must_send_signature_headers_detail', { seconds: signatureWindow })
-                  : i18nT('pages.webhooksPage.this_token_is_accepted_on_the_bearer_header_alon')}
-              </span>
-            </span>
-          )],
-          [i18nT('pages.webhooksPage.created'), `${timeAgo(selectedToken.created_at)} · ${absolute(selectedToken.created_at)}`],
-          [i18nT('pages.webhooksPage.last_used'), selectedToken.last_used_at
-            ? `${usedAgo(selectedToken.last_used_at)} · ${absolute(selectedToken.last_used_at)}`
-            : i18nT('pages.webhooksPage.never_used')],
-          [i18nT('pages.webhooksPage.source'), selectedToken.legacy
-            ? i18nT('pages.webhooksPage.hooks_webhook_token_in_config_json')
-            : i18nT('pages.webhooksPage.generated_in_the_dashboard')],
-        ]}
-        />
-        <Hint>
-          {selectedToken.require_signature
-            ? i18nT('pages.webhooksPage.credentials_not_recoverable_signed')
-            : i18nT('pages.webhooksPage.credential_not_recoverable_bearer')}
-          {selectedToken.legacy && i18nT('pages.webhooksPage.a_legacy_config_token_has_no_signing_secret_so_i')}
-        </Hint>
+        </div>
+      </div>
+
+      <Section title={i18nT('pages.kiroCrewAgentsPage.routing')}>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-[13px] font-medium text-text-strong">{i18nT('pages.channelPage.agent')}</div>
+            <div className="text-[12px] text-muted">{selectedToken.agent || '—'}</div>
+          </div>
+          {selectedToken.legacy
+            ? <Badge variant="muted">{i18nT('pages.webhooksPage.from_config')}</Badge>
+            : (
+              <div className={updateToken.isPending ? 'pointer-events-none opacity-60' : ''}>
+                <AgentSelector
+                  agents={agents}
+                  defaultAgent={selectedToken.agent
+                    ? agents[0]?.name ?? ''
+                    : i18nT('apps.meetings.taskSidebar.unassigned')}
+                  value={selectedToken.agent}
+                  onChange={agent => updateToken.mutate({ id: selectedToken.id, patch: { agent } })}
+                />
+              </div>
+            )}
+        </div>
       </Section>
 
       <Section
-        title={i18nT('pages.webhooksPage.call_with_this_token')}
+        title={i18nT('components.windowsTitlebarMenu.connection')}
+        right={<Badge variant="muted">{i18nT('pages.webhooksPage.post')}</Badge>}
+      >
+        <div className="flex flex-col gap-3">
+          <CopyField
+            value={view.url || i18nT('pages.webhooksPage.endpoint_url_unavailable_the_gateway_did_not_rep')}
+            label={i18nT('pages.webhooksPage.copy_endpoint_url')}
+            mask={!view.url}
+          />
+          <Kv rows={[
+            [i18nT('pages.webhooksPage.token'), <span key="token" className="font-mono">{selectedToken.display_prefix}…{selectedToken.last4}</span>],
+            [i18nT('pages.webhooksPage.created'), `${timeAgo(selectedToken.created_at)} · ${absolute(selectedToken.created_at)}`],
+            [i18nT('pages.webhooksPage.last_used'), selectedToken.last_used_at
+              ? `${usedAgo(selectedToken.last_used_at)} · ${absolute(selectedToken.last_used_at)}`
+              : i18nT('pages.webhooksPage.never_used')],
+          ]} />
+          <Hint>
+            {selectedToken.require_signature
+              ? i18nT('pages.webhooksPage.credentials_not_recoverable_signed')
+              : i18nT('pages.webhooksPage.credential_not_recoverable_bearer')}
+          </Hint>
+        </div>
+      </Section>
+
+      <Section
+        key={`request-example-${selectedToken.id}`}
+        title={i18nT('pages.webhooksPage.request_example')}
+        collapsible
+        defaultCollapsed
         right={(
-          <Btn
-            onClick={() => copyText(exampleFor(
-              selectedToken.require_signature ? 'signed' : 'bearer',
-              view.url, 'hook:my-job', i18nT('pages.webhooksPage.job_finished_3_findings'), signatureWindow,
-            ))}
+          <Btn onClick={() => copyText(exampleFor(
+            selectedToken.require_signature ? 'signed' : 'bearer',
+            view.url, 'hook:my-job', i18nT('pages.webhooksPage.job_finished_3_findings'), signatureWindow,
+          ))}
           >
             <Copy size={13} /> {i18nT('pages.webhooksPage.copy')}
           </Btn>
@@ -1094,21 +921,45 @@ export default function WebhooksPage() {
             ? i18nT('pages.webhooksPage.example_signed_request_for', { label: selectedToken.label })
             : i18nT('pages.webhooksPage.example_curl_request_for', { label: selectedToken.label })}
         />
-        <Hint>
-          {selectedToken.require_signature
-            ? i18nT('pages.webhooksPage.this_token_rejects_an_unsigned_call_so_the_examp')
-            : i18nT('pages.webhooksPage.this_token_was_generated_with_signing_switched_o')}
-        </Hint>
       </Section>
 
-      <Section title={i18nT('pages.webhooksPage.runs_this_token_authorized')} flush>
+      <Section
+        key={`request-signing-${selectedToken.id}`}
+        title={i18nT('pages.webhooksPage.request_signing')}
+        collapsible
+        defaultCollapsed
+      >
+        <div className="flex items-start gap-2 flex-wrap">
+          <SigningBadge required={selectedToken.require_signature} tokenId={selectedToken.id} />
+          <span className="text-[12px] text-muted">
+            {selectedToken.require_signature
+              ? i18nT('pages.webhooksPage.calls_must_send_signature_headers_detail', { seconds: signatureWindow })
+              : i18nT('pages.webhooksPage.this_token_is_accepted_on_the_bearer_header_alon')}
+          </span>
+        </div>
+      </Section>
+
+      <Section title={i18nT('pages.webhooksPage.recent_runs')} flush>
         <RunList
-          runs={view.runs.filter(r => r.token_id === selectedToken.id)}
-          empty={i18nT('pages.webhooksPage.no_recorded_call_has_used_this_token_yet')}
-          onSelect={id => setSelection({ kind: 'run', id })}
+          runs={view.runs.filter(run => run.token_id === selectedToken.id)}
+          empty={i18nT('pages.webhooksPage.no_calls_recorded_yet_every_accepted_rejected_an')}
+          onSelect={id => {
+            setPlane('activity')
+            setSelection({ kind: 'run', id })
+          }}
         />
       </Section>
     </>
+  )
+
+  const activityEmptyPane = (
+    <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+      <Clock size={24} className="mb-3 text-muted" />
+      <div className="text-[14px] font-semibold text-text-strong">{i18nT('pages.artifactDetailPage.activity')}</div>
+      <div className="mt-1 max-w-md text-[13px] text-muted">
+        {i18nT('pages.webhooksPage.no_calls_recorded_yet_every_accepted_rejected_an')}
+      </div>
+    </div>
   )
 
   const contextPane = selectedContext && (
@@ -1260,7 +1111,10 @@ export default function WebhooksPage() {
               <TokenLink
                 tokenId={selectedRun.token_id}
                 tokens={view.tokens}
-                onSelect={id => setSelection({ kind: 'token', id })}
+                onSelect={id => {
+                  setPlane('sources')
+                  setSelection({ kind: 'token', id })
+                }}
               />
             )
             : <span key="t" className="text-muted">{i18nT('pages.webhooksPage.no_valid_token')}</span>],
@@ -1291,33 +1145,40 @@ export default function WebhooksPage() {
     <div className="flex flex-col h-full w-full min-w-0 min-h-0 bg-bg text-text">
       <PageHeader
         title={i18nT('pages.webhooksPage.webhooks')}
-        actions={(
-          <>
+        actions={plane === 'sources' && selectedToken
+          ? (
             <Btn
-              aria-label={i18nT('pages.webhooksPage.copy_example')}
-              title={i18nT('pages.webhooksPage.copy_example')}
-              onClick={() => copyText(sharedExample)}
-            >
-              <Copy size={14} /> <span className="hidden sm:inline">{i18nT('pages.webhooksPage.copy_example')}</span>
-            </Btn>
-            <Btn
-              primary={live}
-              disabled={sendTest.isPending || !live}
+              primary={live && selectedToken.enabled}
+              disabled={sendTest.isPending || !live || !selectedToken.enabled}
               aria-label={i18nT('pages.webhooksPage.send_test_request')}
-              title={live
-                ? i18nT('pages.webhooksPage.send_test_request')
-                : switchOn
-                  ? i18nT('pages.webhooksPage.create_an_access_token_first_there_is_nothing_to')
-                  : i18nT('pages.webhooksPage.inbound_webhooks_are_switched_off_turn_them_back')}
-              onClick={() => sendTest.mutate(undefined)}
+              title={i18nT('pages.webhooksPage.send_test_request')}
+              onClick={() => sendTest.mutate(selectedToken.agent || 'kirocrew')}
             >
               <Play size={14} />{' '}
               <span className="hidden sm:inline">
                 {sendTest.isPending ? i18nT('pages.webhooksPage.sending') : i18nT('pages.webhooksPage.send_test_request')}
               </span>
             </Btn>
-          </>
-        )}
+          )
+          : undefined}
+      />
+      <UnderlineTabs
+        tabs={buildWebhooksPlanes(view.tokens.length, view.contexts.length + view.runs.length)}
+        value={plane}
+        onChange={next => {
+          setPlane(next)
+          if (next === 'sources') {
+            setSelection(view.tokens[0] ? { kind: 'token', id: view.tokens[0].id } : SETUP)
+          } else if (view.runs[0]) {
+            setSelection({ kind: 'run', id: view.runs[0].id })
+          } else if (view.contexts[0]) {
+            setSelection({ kind: 'context', hookId: view.contexts[0].hook_id })
+          } else {
+            setSelection(SETUP)
+          }
+        }}
+        ariaLabel={i18nT('pages.webhooksPage.webhooks')}
+        layoutId="webhooks-planes"
       />
 
       <div className={`flex flex-1 w-full min-w-0 min-h-0 ${railBar ? 'flex-col' : ''}`}>
@@ -1363,30 +1224,31 @@ export default function WebhooksPage() {
           >
             <div className="h-[46px] shrink-0 flex items-center gap-2.5 px-3 border-b border-border">
               <Webhook size={15} className="text-accent shrink-0" />
-              {/* The page title lives in PageHeader now, so repeating it here
-                  would say "Webhooks" twice within 40 vertical pixels. The rail
-                  keeps the icon for orientation when it is narrow. */}
-              <span
-                className="ml-auto flex items-center gap-1.5 text-[11px] text-muted border border-border rounded-md px-1.5 py-[2px] bg-bg-elevated"
-                title={i18nT('pages.webhooksPage.concurrent_hook_runs')}
-              >
-                <span className="w-[34px] h-1 rounded-sm bg-border overflow-hidden">
-                  <span
-                    className="block h-full bg-accent"
-                    style={{ width: `${Math.min(100, (view.slots.in_use / Math.max(1, view.slots.max)) * 100)}%` }}
-                  />
-                </span>
-                {view.slots.in_use} / {view.slots.max} {i18nT('pages.webhooksPage.slots')}
+              <span className="text-[12px] font-semibold text-text-strong">
+                {plane === 'sources'
+                  ? i18nT('pages.webhooksPage.webhooks')
+                  : i18nT('pages.artifactDetailPage.activity')}
               </span>
+              {plane === 'sources' && (
+                <Btn
+                  primary
+                  className="ml-auto"
+                  onClick={() => select(SETUP)}
+                >
+                  {i18nT('pages.schedulePage.new')}
+                </Btn>
+              )}
             </div>
-            <div className="p-2 border-b border-border">
-              <SearchInput
-                placeholder={i18nT('pages.webhooksPage.filter_tokens_contexts_and_runs')}
-                aria-label={i18nT('pages.webhooksPage.filter_webhooks')}
-                value={filter}
-                onChange={e => setFilter(e.target.value)}
-              />
-            </div>
+            {plane === 'activity' && (
+              <div className="p-2 border-b border-border">
+                <SearchInput
+                  placeholder={i18nT('pages.webhooksPage.filter_tokens_contexts_and_runs')}
+                  aria-label={i18nT('pages.webhooksPage.filter_webhooks')}
+                  value={filter}
+                  onChange={event => setFilter(event.target.value)}
+                />
+              </div>
+            )}
             <div className="flex-1 min-h-0 overflow-y-auto">
               {isLoading ? <RailSkeleton /> : railBody}
             </div>
@@ -1461,10 +1323,11 @@ export default function WebhooksPage() {
 
           {isLoading
             ? <DetailSkeleton />
-            : pane === 'token' ? tokenPane
-              : pane === 'context' ? contextPane
-                : pane === 'run' ? runPane
-                  : setupPane}
+            : plane === 'sources'
+              ? (pane === 'token' ? tokenPane : setupPane)
+              : pane === 'context'
+                ? contextPane
+                : pane === 'run' ? runPane : activityEmptyPane}
         </div>
       </main>
       </div>
@@ -1496,45 +1359,6 @@ function SigningBadge({ required, tokenId }: { required: boolean; tokenId: strin
 
 /** Picks which form the shared request example is shown in. Static labels, no
  *  motion — the snippet below it is what changes. */
-function ModeSwitch({ mode, onChange }: {
-  mode: ExampleMode
-  onChange: (mode: ExampleMode) => void
-}) {
-  return (
-    // `data-mode` is the contract the tests and the capture harness read; the
-    // wrapper keeps it while SegmentedControl owns the control itself.
-    //
-    // `collapse={false}` is required, for two reasons the component documents:
-    // the parent hugs its content (`inline-flex`), which makes its responsive
-    // measurement circular, and with collapsing off it never renders the
-    // dropdown whose overlay `.card-glow`'s `> * { z-index: 1 }` would trap
-    // beneath the rows below — this control sits inside such a Card.
-    // SegmentedControl sets no role or accessible name of its own, so the two
-    // segments would otherwise be announced with no indication of what they
-    // switch. The group name lives here.
-    <span
-      data-testid="webhook-example-mode"
-      data-mode={mode}
-      className="inline-flex"
-      role="group"
-      aria-label={i18nT('pages.webhooksPage.request_example_mode')}
-    >
-      <SegmentedControl<ExampleMode>
-        segments={[
-          { key: 'signed', label: i18nT('pages.webhooksPage.signed') },
-          { key: 'bearer', label: i18nT('pages.webhooksPage.bearer_only') },
-        ]}
-        value={mode}
-        onChange={onChange}
-        collapse={false}
-        layoutId="webhook-example-mode"
-      />
-    </span>
-  )
-}
-
-/** Revoking is destructive and irreversible for callers, so it takes two
- *  deliberate clicks. The legacy config token cannot be revoked here at all. */
 function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
   token: WebhookTokenEntry
   confirming: boolean
@@ -1550,9 +1374,9 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
     )
   }
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
       {confirming && (
-        <span className="text-[12px] text-muted">{i18nT('pages.webhooksPage.calls_using_it_start_failing_with_401')}</span>
+        <span className="w-full text-right text-[12px] text-muted">{i18nT('pages.webhooksPage.calls_using_it_start_failing_with_401')}</span>
       )}
       <Btn
         danger

@@ -8,12 +8,10 @@ delivers the answer to your notifications, not back over the HTTP connection.
 This is the inbound counterpart to cron jobs: cron fires on a schedule Kiro Crew
 owns, a webhook fires when something outside Kiro Crew decides it is time.
 
-## The Webhooks page is a preview, and hidden by default
+## The Webhooks page is preview-gated
 
-The HTTP endpoint below is fully supported. Its dashboard page is not finished
-yet, so it is not advertised anywhere in the UI: no sidebar row and no Search
-Everywhere result. Revealing it takes two per-device switches, because the page
-that holds the opt-in is itself behind a gate:
+The HTTP endpoint is fully supported. Its dashboard page is currently hidden
+behind two per-device switches:
 
 1. **Settings > Developer > Developer Mode** — off by default, and while it is
    off there is no **Developer** row in the sidebar at all. Turn it on first, or
@@ -27,17 +25,58 @@ all behave the same whether the page is visible or not. The one consequence is
 that when this document says "the Webhooks page", you need both switches on to
 get there.
 
+## Sources, routing, and management
+
+The Webhooks page treats each external caller as a first-class **source**. The
+left rail lists sources only; selecting one shows its routing, shared connection,
+request example, signing policy, enabled/paused state, and activity. The separate
+**Activity** tab holds registered contexts and recent runs.
+
+Every newly created source must select an installed destination agent. That
+mapping is operator-owned:
+
+- the mapped agent is used when the request omits `agent`;
+- a matching body `agent` is accepted, but a different one is rejected with
+  `409` and `code: "agent_conflict"`;
+- if the mapped agent is later deleted, calls fail closed with `409` and
+  `code: "destination_agent_unavailable"` rather than falling back;
+- pausing one source returns `503` with `code: "source_disabled"` after bearer
+  authentication but before the request body is read. Other sources and the
+  global switch are unaffected.
+
+Management uses the dashboard-authenticated API:
+
+```text
+POST   /api/webhooks/tokens              {label, agent, require_signature?}
+PATCH  /api/webhooks/tokens/{source_id}  {agent?, enabled?, label?}
+DELETE /api/webhooks/tokens/{source_id}
+```
+
+`PATCH` rejects every field except `agent`, `enabled`, and `label`; credentials
+and signing policy are immutable. Mint a replacement source to rotate either
+secret or change signing policy, preserving one-time secret reveal. The legacy
+`hooks.webhook_token` entry remains read-only and cannot be patched or deleted
+through these routes.
+
+Persisted rows created before source routing load as `agent: ""` and
+`enabled: true`. They retain the historical caller/default routing behavior
+until an operator assigns a destination. The legacy config credential has the
+same unmapped compatibility behavior and remains bearer-only.
+
 ## The fire-and-forget contract
 
 The endpoint accepts, queues, and returns. It never carries the agent's answer.
 
 ```
 POST /api/hooks/agent
-  ├─ token check                                    → 401 on failure
-  ├─ bounded raw-body read (256 KiB)                → 413 when exceeded
-  ├─ HMAC + replay check (when required)            → 401 on failure
-  ├─ payload validation (message, sessionKey, …)    → 400 on failure
-  ├─ capacity check (6 concurrent)                  → 429 when full
+  ├─ global switch                                   → 503 when off
+  ├─ token check                                     → 401 on failure
+  ├─ source enabled check                            → 503 when paused
+  ├─ bounded raw-body read (256 KiB)                 → 413 when exceeded
+  ├─ HMAC + replay check (when required)             → 401 on failure
+  ├─ payload validation (message, sessionKey, …)     → 400 on failure
+  ├─ mapped-agent resolution                         → 409 on conflict/missing agent
+  ├─ capacity check (6 concurrent)                   → 429 when full
   └─ spawn background task, respond immediately
        {"status": "accepted", "sessionKey": "hook:review:pr-123"}
 
@@ -78,7 +117,7 @@ curl -X POST http://127.0.0.1:5476/api/hooks/agent \
 | `message` | string | — | Required, non-empty after trimming. Max 49,999 characters. |
 | `sessionKey` | string | `hook:default:<unix-ts>` | Must start with `hook:`. The part after the prefix is the **hook id** used to look up registered context. |
 | `name` | string | `Webhook` | Human label shown in the notification title. |
-| `agent` | string | gateway default | Route the turn to a named agent. |
+| `agent` | string | source destination | Optional compatibility field. For a mapped source it must be omitted or exactly match the operator-owned destination; a conflict is `409 agent_conflict`. Unmapped historical and legacy credentials retain caller/default routing. |
 | `deliver` | boolean | `true` | When false, the turn runs and is logged but nothing is pushed to you. |
 | `timeoutSeconds` | integer | `599` | Clamped to the range 60–3593. Values outside it are silently clamped, not rejected; a non-integer is a 400. |
 
@@ -93,10 +132,14 @@ The `Authorization: Bearer <token>` header is the documented form.
 | `400` | `{"error": "…"}` | Malformed JSON, empty `message`, message over 49,999 chars, `sessionKey` without the `hook:` prefix, or a non-integer `timeoutSeconds`. |
 | `401` | `{"error": "unauthorized"}` | No matching token — including the case where no token has been configured at all. |
 | `401` | `{"error": "…"}` | Signing failure on a token that requires signatures: `X-KiroCrew-Timestamp` or `X-KiroCrew-Signature` missing, timestamp unparseable or more than 300 seconds from now, digest mismatch, or a signature already seen inside the window (replay). Each cause has its own `error` string. |
-| `403` | `{"error": "Forbidden"}` | Not produced by this endpoint any more. If you see it, you are hitting a different path or a proxy in front of the gateway. || `413` | `{"error": "request body exceeds 262144 bytes"}` | The raw request body is larger than the endpoint-local 256 KiB limit. Fixed-length and chunked bodies are both bounded before JSON parsing. |
+| `403` | `{"error": "Forbidden"}` | Not produced by this endpoint any more. If you see it, you are hitting a different path or a proxy in front of the gateway. |
+| `409` | `{"code": "agent_conflict", …}` | The request body names an agent different from the source's operator-owned destination. |
+| `409` | `{"code": "destination_agent_unavailable", …}` | The mapped destination agent is no longer installed. |
+| `413` | `{"error": "request body exceeds 262144 bytes"}` | The raw request body is larger than the endpoint-local 256 KiB limit. Fixed-length and chunked bodies are both bounded before JSON parsing. |
 | `429` | `{"error": "hook capacity reached (6)"}` | All six concurrent slots are in use. Retry with backoff. |
 | `429` | `{"error": "too many failed attempts"}` | This source sent 10 failed authentications — bad tokens or bad signatures — within a minute, and is blocked for five. |
-| `503` | `{"error": "inbound webhooks are disabled"}` | The kill switch is off. Returned before the token is checked. |
+| `503` | `{"error": "inbound webhooks are disabled"}` | The global kill switch is off. Returned before the token is checked. |
+| `503` | `{"code": "source_disabled", …}` | This authenticated source is paused. Returned before its body is read. |
 
 Note that the accept response is `200`, not `201` or `202`.
 

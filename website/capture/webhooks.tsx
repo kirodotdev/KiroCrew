@@ -40,12 +40,23 @@ const TOKENS = [
   {
     id: 'wht_7f3a91', label: 'Review Bot', display_prefix: 'kc_whk_4f2b', last4: '1f3a',
     created_at: NOW - 86400 * 3, last_used_at: NOW - 480, legacy: false,
-    require_signature: true,
+    require_signature: true, agent: 'code-reviewer', enabled: true,
   },
   {
     id: 'wht_ad2be9', label: 'CI callback', display_prefix: 'kc_whk_91de', last4: 'b231',
     created_at: NOW - 86400, last_used_at: null, legacy: false,
-    require_signature: false,
+    require_signature: false, agent: 'oncall', enabled: false,
+  },
+]
+
+const AGENTS = [
+  {
+    name: 'code-reviewer', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default',
+    model: '', description: 'Reviews pull requests and reports findings', source: 'user',
+  },
+  {
+    name: 'oncall', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default',
+    model: '', description: 'Handles deployment and incident callbacks', source: 'user',
   },
 ]
 
@@ -139,6 +150,7 @@ document.documentElement.setAttribute('data-theme', theme)
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 qc.setQueryData(['webhooks'], SCENES[scene] ?? SCENES.enabled)
+qc.setQueryData(['agents-installed'], AGENTS)
 
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>

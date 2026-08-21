@@ -175,6 +175,7 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_webhook_test,
     api_webhook_token_create,
     api_webhook_token_delete,
+    api_webhook_token_update,
     api_webhooks,
     api_webhooks_switch,
 )

@@ -343,6 +343,24 @@ class WebhookTokenStore:
             write_json_atomic(self.path, data)
         return bool(enabled)
 
+    @staticmethod
+    def _public_entry(entry: dict[str, Any], *, legacy: bool = False) -> dict[str, Any]:
+        """Build the explicit, secret-free source shape used by every response."""
+        return {
+            "id": entry.get("id", ""),
+            "label": entry.get("label", ""),
+            "display_prefix": entry.get("display_prefix", ""),
+            "last4": entry.get("last4", ""),
+            "created_at": float(entry.get("created_at") or 0.0),
+            "last_used_at": entry.get("last_used_at"),
+            "legacy": legacy,
+            "require_signature": bool(entry.get("require_signature")),
+            # Rows minted before source routing remain readable and preserve
+            # their legacy caller-selected routing behavior.
+            "agent": str(entry.get("agent") or ""),
+            "enabled": entry.get("enabled", True) is not False,
+        }
+
     def public_entries(self, legacy_token: str = "") -> list[dict[str, Any]]:
         """Entries safe to hand a dashboard client (no hash, no raw secret).
 
@@ -359,32 +377,24 @@ class WebhookTokenStore:
             # legacy value has no fixed public prefix, so echoing its head
             # would leak secret material to the dashboard.
             out.append(
-                {
-                    "id": LEGACY_TOKEN_ID,
-                    "label": LEGACY_TOKEN_LABEL,
-                    "display_prefix": "hooks.webhook_token",
-                    "last4": legacy_token[-4:],
-                    "created_at": 0.0,
-                    "last_used_at": None,
-                    "legacy": True,
-                    # The config scalar has no signing secret to verify against,
-                    # so it stays bearer-only rather than breaking on upgrade.
-                    "require_signature": False,
-                }
+                self._public_entry(
+                    {
+                        "id": LEGACY_TOKEN_ID,
+                        "label": LEGACY_TOKEN_LABEL,
+                        "display_prefix": "hooks.webhook_token",
+                        "last4": legacy_token[-4:],
+                        "created_at": 0.0,
+                        "last_used_at": None,
+                        # The config scalar has no signing secret to verify
+                        # against, so it remains bearer-only on upgrade.
+                        "require_signature": False,
+                        "agent": "",
+                        "enabled": True,
+                    },
+                    legacy=True,
+                )
             )
-        for entry in self._load():
-            out.append(
-                {
-                    "id": entry.get("id", ""),
-                    "label": entry.get("label", ""),
-                    "display_prefix": entry.get("display_prefix", ""),
-                    "last4": entry.get("last4", ""),
-                    "created_at": float(entry.get("created_at") or 0.0),
-                    "last_used_at": entry.get("last_used_at"),
-                    "legacy": False,
-                    "require_signature": bool(entry.get("require_signature")),
-                }
-            )
+        out.extend(self._public_entry(entry) for entry in self._load())
         return out
 
     def entry_for(self, token_id: str) -> dict[str, Any] | None:
@@ -421,7 +431,7 @@ class WebhookTokenStore:
         write_json_atomic(self.path, data)
 
     def create(
-        self, label: str, require_signature: bool = True
+        self, label: str, require_signature: bool = True, agent: str = ""
     ) -> tuple[str, str, dict[str, Any]]:
         """Mint a token. Returns ``(raw_secret, signing_secret, public_entry)``.
 
@@ -432,6 +442,9 @@ class WebhookTokenStore:
         false — a caller that cannot compute an HMAC gets a bearer-only token.
         """
         clean_label = sanitize_label(label)
+        if not isinstance(agent, str):
+            raise WebhookError("agent must be a string")
+        clean_agent = agent.strip()
         raw = TOKEN_PREFIX + secrets.token_urlsafe(32)[:TOKEN_ENTROPY_CHARS]
         signing_secret = (
             SIGNING_SECRET_PREFIX + secrets.token_urlsafe(32)[:SIGNING_SECRET_ENTROPY_CHARS]
@@ -448,6 +461,8 @@ class WebhookTokenStore:
             "last_used_at": None,
             "require_signature": bool(require_signature),
             "signing_secret": signing_secret,
+            "agent": clean_agent,
+            "enabled": True,
         }
         path = self.path
         with locked(path):
@@ -459,11 +474,48 @@ class WebhookTokenStore:
                 entry["id"] = "wht_" + secrets.token_hex(3)
             entries.append(entry)
             self._write_tokens(entries)
-        public = {
-            k: v for k, v in entry.items() if k not in ("token_hash", "signing_secret")
-        }
-        public["legacy"] = False
+        public = self._public_entry(entry)
         return raw, signing_secret, public
+
+    def update(
+        self,
+        token_id: str,
+        *,
+        agent: str | None = None,
+        enabled: bool | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update operator-owned source fields and return its public shape.
+
+        Credentials and signing policy are intentionally absent: rotating either
+        requires minting a new source so secrets retain one-time reveal semantics.
+        """
+        if agent is not None and not isinstance(agent, str):
+            raise WebhookError("agent must be a string")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise WebhookError("enabled must be a boolean")
+        clean_label = sanitize_label(label) if label is not None else None
+        clean_agent = agent.strip() if agent is not None else None
+
+        path = self.path
+        updated: dict[str, Any] | None = None
+        with locked(path):
+            entries = self._load()
+            for entry in entries:
+                if entry.get("id") != token_id:
+                    continue
+                if clean_label is not None:
+                    entry["label"] = clean_label
+                if clean_agent is not None:
+                    entry["agent"] = clean_agent
+                if enabled is not None:
+                    entry["enabled"] = enabled
+                updated = entry
+                break
+            if updated is None:
+                return None
+            self._write_tokens(entries)
+        return self._public_entry(updated)
 
     def delete(self, token_id: str) -> bool:
         """Remove the entry with *token_id*. False when unknown."""

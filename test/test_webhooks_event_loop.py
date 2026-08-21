@@ -151,20 +151,23 @@ class TestInboundRouteOffloadsStoreIo:
 class TestManagementRoutesOffloadStoreIo:
     """The dashboard routes share the same lock, so they must offload too."""
 
-    def test_token_create_and_delete(self, store_dir):
+    def test_token_create_update_and_delete(self, store_dir):
         create = _LoopGuard(webhooks.WebhookTokenStore.create, "token_store.create")
+        update = _LoopGuard(webhooks.WebhookTokenStore.update, "token_store.update")
         delete = _LoopGuard(webhooks.WebhookTokenStore.delete, "token_store.delete")
 
         req = MagicMock()
+        payload = {"label": "ci", "agent": "kirocrew"}
 
         async def _json():
-            return {"label": "ci"}
+            return payload
 
         req.json = _json
         req.get = lambda *a, **k: "dashboard"
         req.match_info = {}
 
         with patch.object(webhooks.WebhookTokenStore, "create", create), \
+                patch.object(hooks_handlers, "_installed_agent_names", lambda: {"kirocrew"}), \
                 patch.object(hooks_handlers, "_sel", MagicMock()):
             resp = asyncio.run(hooks_handlers.api_webhook_token_create(req))
         assert resp.status == 201
@@ -172,6 +175,13 @@ class TestManagementRoutesOffloadStoreIo:
 
         token_id = json.loads(resp.text)["entry"]["id"]
         req.match_info = {"token_id": token_id}
+        payload = {"enabled": False}
+        with patch.object(webhooks.WebhookTokenStore, "update", update), \
+                patch.object(hooks_handlers, "_sel", MagicMock()):
+            resp = asyncio.run(hooks_handlers.api_webhook_token_update(req))
+        assert resp.status == 200
+        assert update.calls == 1
+
         with patch.object(webhooks.WebhookTokenStore, "delete", delete), \
                 patch.object(hooks_handlers, "_sel", MagicMock()):
             resp = asyncio.run(hooks_handlers.api_webhook_token_delete(req))

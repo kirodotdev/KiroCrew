@@ -39,9 +39,41 @@ class TestTokenPersistence:
         assert entry["last4"] == raw[-4:]
 
     def test_public_entry_from_create_has_no_hash(self, store):
-        _, _secret, entry = store.create("Review Bot")
+        _, _secret, entry = store.create("Review Bot", agent="code-reviewer")
         assert "token_hash" not in entry
         assert entry["legacy"] is False
+        assert entry["agent"] == "code-reviewer"
+        assert entry["enabled"] is True
+
+    def test_historical_rows_default_to_unmapped_and_enabled(self, store):
+        raw, _secret, entry = store.create("Historical")
+        stored = store.list_entries()[0]
+        stored.pop("agent")
+        stored.pop("enabled")
+        with webhooks.locked(store.path):
+            store._write_tokens([stored])
+
+        public = store.public_entries()[0]
+        assert public["agent"] == ""
+        assert public["enabled"] is True
+        assert store.verify(raw) == entry["id"]
+
+    def test_update_only_changes_source_owned_fields(self, store):
+        _raw, secret, entry = store.create("Review Bot", agent="code-reviewer")
+        updated = store.update(
+            entry["id"], label="CI callback", agent="oncall", enabled=False
+        )
+        assert updated is not None
+        assert updated["label"] == "CI callback"
+        assert updated["agent"] == "oncall"
+        assert updated["enabled"] is False
+        assert "token_hash" not in updated
+        assert "signing_secret" not in updated
+        stored = store.entry_for(entry["id"])
+        assert stored is not None
+        assert stored["signing_secret"] == secret
+        assert stored["require_signature"] is True
+        assert store.update("wht_missing", enabled=False) is None
 
     def test_raw_secret_shape(self, store):
         raw, _secret, _ = store.create("Review Bot")

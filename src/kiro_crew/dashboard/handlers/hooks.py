@@ -15,6 +15,7 @@ from aiohttp import web
 
 from kiro_crew import webhooks
 from kiro_crew.agent import _VALID_HOOK_EVENTS, _shipped_defaults, kiro_agents_dir_path
+from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import run_in_embed_pool
@@ -520,6 +521,11 @@ def _legacy_hook_token() -> str:
     return legacy if isinstance(legacy, str) else ""
 
 
+def _installed_agent_names() -> set[str]:
+    """Return currently dispatchable global agent names (blocking filesystem read)."""
+    return {agent.name for agent in list_agents()}
+
+
 async def _json_object(
     request: web.Request, *, default_empty: bool = False
 ) -> dict | None:
@@ -666,6 +672,56 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
 
+    # A source pause is an operator-owned admission decision, so enforce it
+    # after the caller has authenticated but before allocating or parsing the
+    # body. This is deliberately a separate store read from HMAC verification:
+    # a revocation between the two checks must still fail closed there.
+    source_entry: dict[str, object] | None = None
+    if token_id != webhooks.LEGACY_TOKEN_ID:
+        try:
+            source_entry = await asyncio.to_thread(
+                webhooks.token_store().entry_for, token_id
+            )
+        except webhooks.WebhookStoreUnreadable:
+            return web.json_response(
+                {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+                status=503,
+            )
+        if source_entry is None:
+            # Revoked after bearer lookup: do not read the caller's body and do
+            # not let the vanished row silently become a legacy-style source.
+            _sel().log_api_access(
+                caller=source,
+                operation="hooks.agent",
+                outcome="denied",
+                source="webhook",
+                resources=f"token:{token_id}",
+                error="webhook source revoked during admission",
+            )
+            return web.json_response(
+                {"error": "unauthorized", "code": "unauthorized"}, status=401
+            )
+        if source_entry.get("enabled", True) is False:
+            _sel().log_api_access(
+                caller=source,
+                operation="hooks.agent",
+                outcome="denied",
+                source="webhook",
+                resources=f"token:{token_id}",
+                error="webhook source paused by operator",
+            )
+            await asyncio.to_thread(
+                webhooks.run_store().record,
+                outcome=webhooks.OUTCOME_DISABLED,
+                name=str(source_entry.get("label") or "Paused source"),
+                token_id=token_id,
+                detail="Webhook source is paused in the dashboard",
+            )
+            return web.json_response(
+                {"error": "webhook source is paused", "code": "source_disabled"},
+                status=503,
+            )
+
     # Read the RAW body before anything parses it: the signature covers the exact
     # bytes the caller signed, and re-serialising a parsed dict can never
     # reproduce them (key order, separators and unicode escaping all differ).
@@ -759,8 +815,8 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         # the ephemeral session is already reset — the turn's output is gone
         # while the run history says it was delivered.
         return web.json_response({"error": "name must be a string", "code": "name_not_a_string"}, status=400)
-    agent = body.get("agent", "") or None
-    if agent is not None and not isinstance(agent, str):
+    requested_agent = body.get("agent", "") or None
+    if requested_agent is not None and not isinstance(requested_agent, str):
         return web.json_response({"error": "agent must be a string", "code": "agent_not_a_string"}, status=400)
     deliver = body.get("deliver", True)
     try:
@@ -770,6 +826,63 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
         )
     except (ValueError, TypeError):
         return web.json_response({"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"}, status=400)
+
+    mapped_agent = str(source_entry.get("agent") or "") if source_entry else ""
+    if mapped_agent and requested_agent and requested_agent != mapped_agent:
+        _sel().log_api_access(
+            caller=source,
+            operation="hooks.agent",
+            outcome="denied",
+            source="webhook",
+            resources=f"token:{token_id};agent:{mapped_agent}",
+            error="request agent conflicts with source destination",
+        )
+        return web.json_response(
+            {
+                "error": "request agent conflicts with the source destination",
+                "code": "agent_conflict",
+                "destination_agent": mapped_agent,
+            },
+            status=409,
+        )
+    agent = mapped_agent or requested_agent
+    if mapped_agent:
+        try:
+            installed_agents = await asyncio.to_thread(_installed_agent_names)
+        except Exception:
+            logger.warning("webhook destination-agent discovery failed", exc_info=True)
+            _sel().log_api_access(
+                caller=source,
+                operation="hooks.agent",
+                outcome="denied",
+                source="webhook",
+                resources=f"token:{token_id};agent:{mapped_agent}",
+                error="destination-agent discovery unavailable",
+            )
+            return web.json_response(
+                {
+                    "error": "destination agent could not be verified",
+                    "code": "agent_discovery_unavailable",
+                },
+                status=503,
+            )
+        if mapped_agent not in installed_agents:
+            _sel().log_api_access(
+                caller=source,
+                operation="hooks.agent",
+                outcome="denied",
+                source="webhook",
+                resources=f"token:{token_id};agent:{mapped_agent}",
+                error="source destination agent is not installed",
+            )
+            return web.json_response(
+                {
+                    "error": "the webhook source destination agent is not installed",
+                    "code": "destination_agent_unavailable",
+                    "destination_agent": mapped_agent,
+                },
+                status=409,
+            )
 
     # One turn per sessionKey. Checked BEFORE the capacity gate so an overlapping
     # call is refused for the accurate reason rather than reported as "capacity".
@@ -1305,12 +1418,7 @@ async def api_webhooks(request: web.Request) -> web.Response:
 
 @_store_failure_guard
 async def api_webhook_token_create(request: web.Request) -> web.Response:
-    """POST /api/webhooks/tokens — mint a token; both secrets are shown once.
-
-    ``require_signature`` defaults to true. Pass it as false to mint a
-    bearer-only token for a caller that cannot compute an HMAC; the response
-    then omits ``signing_secret`` because none was generated.
-    """
+    """POST /api/webhooks/tokens — mint a routed source credential."""
     body = await _json_object(request)
     if body is None:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
@@ -1319,11 +1427,31 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "require_signature must be a boolean", "code": "require_signature_not_a_boolean"}, status=400
         )
+    agent = body.get("agent")
+    if not isinstance(agent, str) or not agent.strip():
+        return web.json_response(
+            {"error": "agent is required", "code": "agent_required"}, status=400
+        )
+    agent = agent.strip()
+    try:
+        installed_agents = await asyncio.to_thread(_installed_agent_names)
+    except Exception:
+        logger.warning("webhook destination-agent discovery failed", exc_info=True)
+        return web.json_response(
+            {"error": "destination agent could not be verified", "code": "agent_discovery_unavailable"},
+            status=503,
+        )
+    if agent not in installed_agents:
+        return web.json_response(
+            {"error": "destination agent is not installed", "code": "destination_agent_unavailable"},
+            status=400,
+        )
     try:
         raw, signing_secret, entry = await asyncio.to_thread(
             webhooks.token_store().create,
             body.get("label", ""),
             require_signature=require_signature,
+            agent=agent,
         )
     except webhooks.WebhookError as exc:
         _sel().log_api_access(
@@ -1339,7 +1467,7 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
         operation="webhooks.token_create",
         outcome="success",
         source="dashboard",
-        resources=f"token:{entry['id']}:{entry['label']}:signed={require_signature}",
+        resources=f"token:{entry['id']}:{entry['label']}:agent={agent}:signed={require_signature}",
     )
     payload: dict[str, object] = {"ok": True, "token": raw, "entry": entry}
     if signing_secret:
@@ -1347,6 +1475,85 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
         # the verifier, but no read endpoint echoes it back.
         payload["signing_secret"] = signing_secret
     return web.json_response(payload, status=201)
+
+
+@_store_failure_guard
+async def api_webhook_token_update(request: web.Request) -> web.Response:
+    """PATCH /api/webhooks/tokens/{token_id} — update source-owned settings."""
+    token_id = request.match_info["token_id"]
+    if token_id == webhooks.LEGACY_TOKEN_ID:
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="webhooks.token_update",
+            outcome="denied",
+            source="dashboard",
+            resources=f"token:{token_id}",
+            error="legacy credential is config-managed",
+        )
+        return web.json_response(
+            {"error": "the legacy credential is config-managed", "code": "legacy_credential_in_config"},
+            status=400,
+        )
+    body = await _json_object(request)
+    if body is None:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    allowed = {"agent", "enabled", "label"}
+    unknown = sorted(set(body) - allowed)
+    if unknown or not body:
+        return web.json_response(
+            {"error": "patch may only contain agent, enabled, or label", "code": "invalid_source_patch"},
+            status=400,
+        )
+    if "agent" in body:
+        agent = body["agent"]
+        if not isinstance(agent, str) or not agent.strip():
+            return web.json_response({"error": "agent is required", "code": "agent_required"}, status=400)
+        agent = agent.strip()
+        try:
+            installed_agents = await asyncio.to_thread(_installed_agent_names)
+        except Exception:
+            logger.warning("webhook destination-agent discovery failed", exc_info=True)
+            return web.json_response(
+                {"error": "destination agent could not be verified", "code": "agent_discovery_unavailable"},
+                status=503,
+            )
+        if agent not in installed_agents:
+            return web.json_response(
+                {"error": "destination agent is not installed", "code": "destination_agent_unavailable"},
+                status=400,
+            )
+    else:
+        agent = None
+    if "enabled" in body and not isinstance(body["enabled"], bool):
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "enabled_not_a_boolean"}, status=400
+        )
+    if "label" in body and not isinstance(body["label"], str):
+        return web.json_response(
+            {"error": "label must be a string", "code": "label_not_a_string"}, status=400
+        )
+    try:
+        entry = await asyncio.to_thread(
+            webhooks.token_store().update,
+            token_id,
+            agent=agent,
+            enabled=body.get("enabled") if "enabled" in body else None,
+            label=body.get("label") if "label" in body else None,
+        )
+    except webhooks.WebhookStoreUnreadable:
+        raise
+    except webhooks.WebhookError as exc:
+        return web.json_response({"error": str(exc), "code": "source_update_rejected"}, status=400)
+    if entry is None:
+        return web.json_response({"error": "not found", "code": "credential_not_found"}, status=404)
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="webhooks.token_update",
+        outcome="success",
+        source="dashboard",
+        resources=f"token:{token_id}:fields={','.join(sorted(body))}",
+    )
+    return web.json_response({"ok": True, "entry": entry})
 
 
 @_store_failure_guard
@@ -1417,12 +1624,38 @@ async def api_webhook_test(request: web.Request) -> web.Response:
             "This is a Kiro Crew webhook test request. Reply with a one-line "
             "confirmation that you received it; no other action is needed."
         )
+    agent = body.get("agent") or "kirocrew"
+    if not isinstance(agent, str):
+        return web.json_response(
+            {"error": "agent must be a string", "code": "agent_not_a_string"},
+            status=400,
+        )
+    try:
+        installed_agents = await asyncio.to_thread(_installed_agent_names)
+    except Exception:
+        logger.warning("webhook test destination-agent discovery failed", exc_info=True)
+        return web.json_response(
+            {
+                "error": "destination agent could not be verified",
+                "code": "agent_discovery_unavailable",
+            },
+            status=503,
+        )
+    if agent not in installed_agents:
+        return web.json_response(
+            {
+                "error": "the webhook source destination agent is not installed",
+                "code": "destination_agent_unavailable",
+                "destination_agent": agent,
+            },
+            status=409,
+        )
     session_key = f"{_HOOK_SESSION_PREFIX}test:{int(time.time())}"
 
     store = webhooks.token_store()
     try:
         raw, signing_secret, entry = await asyncio.to_thread(
-            store.create, "Test request (auto)"
+            store.create, "Test request (auto)", agent=agent
         )
     except webhooks.WebhookError as exc:
         _sel().log_api_access(
@@ -1454,6 +1687,7 @@ async def api_webhook_test(request: web.Request) -> web.Response:
         "message": message,
         "sessionKey": session_key,
         "name": "Webhook test",
+        "agent": agent,
         "deliver": False,
     }
     # Serialise once and send those exact bytes: the signature covers the raw

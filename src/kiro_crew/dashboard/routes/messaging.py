@@ -50,6 +50,7 @@ def register(app: web.Application) -> None:
     # only ever authenticates POST /api/hooks/agent, never these).
     app.router.add_get("/api/webhooks", handlers.api_webhooks)
     app.router.add_post("/api/webhooks/tokens", handlers.api_webhook_token_create)
+    app.router.add_patch("/api/webhooks/tokens/{token_id}", handlers.api_webhook_token_update)
     app.router.add_delete("/api/webhooks/tokens/{token_id}", handlers.api_webhook_token_delete)
     app.router.add_delete("/api/webhooks/contexts/{hook_id}", handlers.api_webhook_context_delete)
     app.router.add_post("/api/webhooks/test", handlers.api_webhook_test)
