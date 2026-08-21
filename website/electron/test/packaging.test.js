@@ -193,6 +193,66 @@ describe("first-download installer design contract", () => {
 });
 
 
+// Shared by the microphone and local-network describes below: both need to read
+// the two entitlements plists as parsed key->value maps rather than as text.
+// Hoisted to module scope so the two blocks cannot drift into slightly different
+// parsers and disagree about what a file actually grants.
+
+/**
+ * Strip XML comments, repeatedly, until the text stops changing.
+ *
+ * One pass is not enough: removing an outer `<!-- … -->` can splice together
+ * text that forms a NEW `<!--`, so a single replace can leave a comment
+ * opener behind. Looping to a fixed point (then asserting nothing is left)
+ * is what makes "this key is real, not commented-out prose" trustworthy.
+ */
+function stripComments(xml) {
+  let out = xml;
+  for (let i = 0; i < 20; i += 1) {
+    const next = out.replace(/<!--[\s\S]*?-->/g, "");
+    if (next === out) return next;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * Parse an entitlements plist into a plain { key: value } map.
+ *
+ * Deliberately a scanner rather than a built-from-a-string RegExp: composing
+ * a pattern out of a key name means hand-rolling escaping, which is easy to
+ * get subtly wrong (CodeQL flags exactly that), and a text match cannot tell
+ * a genuine <dict> entry from one mentioned in a comment. Walking the tags
+ * gives an exact key->value answer with no escaping in the picture at all.
+ * Booleans are all these files hold; anything else is reported as its raw tag.
+ */
+function parseEntitlements(xml) {
+  const body = stripComments(xml);
+  assert.equal(body.includes("<!--"), false, "unterminated XML comment");
+  const out = {};
+  const tag = /<key>([\s\S]*?)<\/key>\s*(<[^>]+>)/g;
+  let m;
+  while ((m = tag.exec(body)) !== null) {
+    const name = m[1].trim();
+    const value = m[2].replace(/\s|\//g, "");
+    out[name] = value === "<true>" ? true : value === "<false>" ? false : m[2];
+  }
+  return { entitlements: out, body };
+}
+
+// There are TWO signing lanes reading TWO different files (electron-builder
+// locally, the enterprise signing service for release), so an entitlement
+// present in one and absent from the other still ships a broken bundle on that
+// lane. Every entitlement assertion below runs against both.
+const ENTITLEMENT_LANES = {
+  "electron-builder (build/entitlements.mac.plist)": path.join(
+    ROOT, "build", "entitlements.mac.plist"
+  ),
+  "signing service (packaging/signing/Entitlements.entitlements)": path.resolve(
+    ROOT, "..", "..", "packaging", "signing", "Entitlements.entitlements"
+  ),
+};
+
 // Under the hardened runtime, an Info.plist usage string does NOT grant a
 // protected resource — the matching `device.*` entitlement does. With
 // audio-input missing, the runtime refused the microphone BEFORE macOS (TCC) was
@@ -205,58 +265,7 @@ describe("macOS microphone entitlement (both signing lanes)", () => {
   const MIC = "com.apple.security.device.audio-input";
   const CAMERA = "com.apple.security.device.camera";
 
-  /**
-   * Strip XML comments, repeatedly, until the text stops changing.
-   *
-   * One pass is not enough: removing an outer `<!-- … -->` can splice together
-   * text that forms a NEW `<!--`, so a single replace can leave a comment
-   * opener behind. Looping to a fixed point (then asserting nothing is left)
-   * is what makes "this key is real, not commented-out prose" trustworthy.
-   */
-  function stripComments(xml) {
-    let out = xml;
-    for (let i = 0; i < 20; i += 1) {
-      const next = out.replace(/<!--[\s\S]*?-->/g, "");
-      if (next === out) return next;
-      out = next;
-    }
-    return out;
-  }
-
-  /**
-   * Parse an entitlements plist into a plain { key: value } map.
-   *
-   * Deliberately a scanner rather than a built-from-a-string RegExp: composing
-   * a pattern out of a key name means hand-rolling escaping, which is easy to
-   * get subtly wrong (CodeQL flags exactly that), and a text match cannot tell
-   * a genuine <dict> entry from one mentioned in a comment. Walking the tags
-   * gives an exact key->value answer with no escaping in the picture at all.
-   * Booleans are all these files hold; anything else is reported as its raw tag.
-   */
-  function parseEntitlements(xml) {
-    const body = stripComments(xml);
-    assert.equal(body.includes("<!--"), false, "unterminated XML comment");
-    const out = {};
-    const tag = /<key>([\s\S]*?)<\/key>\s*(<[^>]+>)/g;
-    let m;
-    while ((m = tag.exec(body)) !== null) {
-      const name = m[1].trim();
-      const value = m[2].replace(/\s|\//g, "");
-      out[name] = value === "<true>" ? true : value === "<false>" ? false : m[2];
-    }
-    return { entitlements: out, body };
-  }
-
-  const LANES = {
-    "electron-builder (build/entitlements.mac.plist)": path.join(
-      ROOT, "build", "entitlements.mac.plist"
-    ),
-    "signing service (packaging/signing/Entitlements.entitlements)": path.resolve(
-      ROOT, "..", "..", "packaging", "signing", "Entitlements.entitlements"
-    ),
-  };
-
-  for (const [lane, file] of Object.entries(LANES)) {
+  for (const [lane, file] of Object.entries(ENTITLEMENT_LANES)) {
     it(`grants the microphone in the ${lane} lane`, () => {
       const { entitlements } = parseEntitlements(fs.readFileSync(file, "utf8"));
       assert.equal(
@@ -336,6 +345,85 @@ describe("macOS microphone entitlement (both signing lanes)", () => {
       "must be real prompt copy explaining WHY the mic is used, not empty/placeholder"
     );
   });
+});
+
+// macOS 15 (Sequoia) gates local-network access behind TCC for EVERY app, not
+// just sandboxed ones. An app that declares no local-network intent gets no
+// prompt and no row in Privacy & Security -> Local Network, so there is nothing
+// for the user to allow and `tccutil reset LocalNetwork <bundle-id>` fails with
+// no record to reset. In that state unicast connections from the app's process
+// subtree to non-gateway RFC1918 addresses fail INSTANTLY with EHOSTUNREACH,
+// which reads as a routing fault rather than a denied permission. That was the
+// shipped state: extendInfo declared the microphone and nothing else.
+//
+// This is the same failure SHAPE as the dead microphone above — capability
+// refused, no prompt, no toggle — but NOT the same mechanism, and the difference
+// is the whole point of these tests. Local network on a non-sandboxed
+// hardened-runtime app is TCC-only: the Info.plist usage string is the entire
+// declaration, and there is no entitlement to add. Two neighbouring keys look
+// like they would help and must stay OUT:
+//
+//   * the multicast entitlement is for multicast/broadcast, needs an
+//     Apple-granted provisioning profile, and signing with it unprovisioned
+//     fails outright;
+//   * the App-Sandbox network-client entitlement only means anything under App
+//     Sandbox, which this app does not use — shipping it implies a sandbox the
+//     bundle is not built for.
+//
+// So the assertions run in both directions: the usage string must be present,
+// and neither cargo-culted entitlement may appear in either signing lane.
+describe("macOS local network privacy declaration", () => {
+  const MULTICAST = "com.apple.developer.networking.multicast";
+  const SANDBOX_NETWORK_CLIENT = "com.apple.security.network.client";
+
+  it("declares local-network intent with real prompt copy", () => {
+    // Without this key macOS shows no prompt and creates no TCC record, which
+    // is precisely the state where the user cannot grant access even though the
+    // System Settings pane exists. As with the mic, assert the VALUE: macOS
+    // refuses an empty purpose string, so a present-but-blank key ships the bug.
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const usage = (pkg.build.mac.extendInfo || {}).NSLocalNetworkUsageDescription;
+    assert.equal(
+      typeof usage,
+      "string",
+      "NSLocalNetworkUsageDescription must be declared, or LAN access is denied " +
+        "with no prompt and no Privacy & Security row to flip"
+    );
+    assert.ok(
+      usage.trim().length >= 20,
+      "must be real prompt copy explaining WHY the local network is used"
+    );
+    // Electron's own bundled Info.plist carries generic boilerplate of the form
+    // "This app needs access to …" for keys nobody wrote copy for. Shipping that
+    // as a user-facing security prompt is the failure this guards.
+    assert.equal(
+      /this app needs access to/i.test(usage),
+      false,
+      "must not ship Electron's generic boilerplate as the prompt copy"
+    );
+  });
+
+  for (const [lane, file] of Object.entries(ENTITLEMENT_LANES)) {
+    it(`adds no local-network entitlement in the ${lane} lane`, () => {
+      // Checked as parsed keys, not substrings: the comments in these files and
+      // in this test MENTION both names to explain why they are absent, and a
+      // substring test would fail on the very prose documenting the rule.
+      const { entitlements } = parseEntitlements(fs.readFileSync(file, "utf8"));
+      assert.notEqual(
+        entitlements[MULTICAST],
+        true,
+        `${file} must not request ${MULTICAST} — it needs an Apple-granted ` +
+          "provisioning profile and breaks signing when unprovisioned; plain " +
+          "unicast LAN access does not need it"
+      );
+      assert.notEqual(
+        entitlements[SANDBOX_NETWORK_CLIENT],
+        true,
+        `${file} must not request ${SANDBOX_NETWORK_CLIENT} — it is an ` +
+          "App-Sandbox key and this bundle is not sandboxed"
+      );
+    });
+  }
 });
 
 describe("uninstall data preservation contract", () => {

@@ -679,6 +679,62 @@ tccutil reset Microphone com.amazon.kiro.crew
 This is also why distributing the signed + notarized DMG matters (above): a
 stable identity is what keeps grants sticky instead of silently orphaning them.
 
+### Local network access needs a USAGE STRING, and no entitlement exists for it
+
+macOS 15 (Sequoia) added local-network privacy for **every** app, sandboxed or
+not. The mic's lesson does not transfer: there is no `device.*` entitlement to
+add here, and adding one of the neighbouring network keys makes things worse.
+This resource is TCC-only, and `NSLocalNetworkUsageDescription` is the entire
+declaration.
+
+> **Symptom:** an agent's shell command connects fine to the default gateway
+> (`192.168.x.1`) and to any public host, but every **other** LAN address — a NAS,
+> an IoT device, another dev box — fails **instantly** with errno 65
+> (`EHOSTUNREACH`, "No route to host") in ~0.000s rather than timing out. `ping`
+> and ARP to the same host succeed, so it reads as a routing fault. There is no
+> Kiro Crew row under System Settings › Privacy & Security › Local Network, and
+> `tccutil reset LocalNetwork com.amazon.kiro.crew` fails because no TCC record
+> exists to reset.
+
+The gateway-works / everything-else-fails split is the signature of the TCC gate,
+not of the network. With no declared intent macOS creates no
+`kTCCServiceLocalNetwork` record, so there is no prompt to answer and no toggle to
+flip — the same dead end as the mic, reached by a different mechanism.
+
+Three neighbouring keys look like the fix and are **not**:
+
+- `com.apple.developer.networking.multicast` covers multicast and broadcast,
+  requires an Apple-granted provisioning profile, and breaks signing when
+  requested unprovisioned. Plain unicast LAN access does not need it.
+- `com.apple.security.network.client` only means anything under **App Sandbox**,
+  which this bundle does not use.
+- `NSAllowsLocalNetworking` (which the bundle already carries) is an **App
+  Transport Security** key that relaxes HTTPS requirements for local hostnames.
+  It has nothing to do with the TCC gate — an easy one to mistake for a fix,
+  since it is already present in a bundle that cannot reach the LAN.
+
+`website/electron/test/packaging.test.js` pins both directions: the usage string
+must be declared with real copy, and neither entitlement may appear in either
+signing lane.
+
+#### Why the CLI gateway is not affected the same way
+
+Apple exempts several launch contexts from local-network privacy: daemons started
+by `launchd`, anything running as root, and **command-line tools run from Terminal
+or over SSH, including every child process they spawn**. So a gateway started with
+`kirocrew gateway` from a terminal reaches the LAN normally, while the same agent
+command run under the desktop app is gated by the app bundle's TCC record. That
+asymmetry is a useful triage question ("how did you start the gateway?") and a
+usable workaround, not evidence that the app is fine.
+
+One caveat worth knowing before concluding the usage string alone fixed it: agent
+shell commands are wrapped by `sandbox_exec_argv` in `src/kiro_crew/sandbox.py`,
+which `exec`s the target through `/usr/bin/sandbox-exec` and replaces the process
+image. The Seatbelt profile itself is `(allow default)` plus filesystem denies and
+carries **no** network rules, so the sandbox does not block sockets — but whether
+TCC's responsible-process attribution still lands on the app bundle across that
+`exec` has to be confirmed on a real macOS 15 host rather than reasoned about.
+
 ## Remote tunnel mode
 
 The desktop app can also connect to a gateway running on a **remote** host (e.g.

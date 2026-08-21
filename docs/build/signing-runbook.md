@@ -155,6 +155,16 @@ makes the microphone work for voice input and streaming STT; without it the mic 
 refused with **no prompt at all** and no System Settings toggle to fix it. Camera
 is deliberately absent, because `permission-handler.js` denies video.
 
+Not every protected resource works that way, so do not generalize the mic rule.
+**Local network access has no entitlement** — on macOS 15 it is gated by TCC alone
+and declared solely by `NSLocalNetworkUsageDescription` in
+`website/electron/package.json`'s `build.mac.extendInfo`, which both lanes inherit
+from the same built bundle. Requesting
+`com.apple.developer.networking.multicast` to "fix" LAN access breaks signing
+unless Apple has provisioned it, and `com.apple.security.network.client` is an
+App-Sandbox key this bundle has no use for. `packaging.test.js` asserts both stay
+out of both files.
+
 ## Supply-chain ordering inside the jobs
 
 Two orderings in the workflow are deliberate and must be preserved:
