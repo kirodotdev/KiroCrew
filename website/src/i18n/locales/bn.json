@@ -10197,7 +10197,9 @@
       "script_source": "স্ক্রিপ্ট সোর্স",
       "script_source_download": "স্ক্রিপ্ট ডাউনলোড করুন",
       "script_source_failed": "স্ক্রিপ্ট সোর্স লোড করা যায়নি।",
-      "script_source_truncated": "কাটছাঁট করা হয়েছে — স্ক্রিপ্টটি প্রিভিউ সীমার চেয়ে বড়।"
+      "script_source_truncated": "কাটছাঁট করা হয়েছে — স্ক্রিপ্টটি প্রিভিউ সীমার চেয়ে বড়।",
+      "no_owning_session": "কোনো মালিক সেশন নেই",
+      "owning_session": "মালিক সেশন"
     },
     "servicesTab": {
       "connected": "সংযুক্ত",

@@ -10197,7 +10197,9 @@
       "script_source": "स्क्रिप्ट स्रोत",
       "script_source_download": "स्क्रिप्ट डाउनलोड करें",
       "script_source_failed": "स्क्रिप्ट स्रोत लोड नहीं किया जा सका।",
-      "script_source_truncated": "काट-छाँट की गई — स्क्रिप्ट पूर्वावलोकन सीमा से बड़ी है।"
+      "script_source_truncated": "काट-छाँट की गई — स्क्रिप्ट पूर्वावलोकन सीमा से बड़ी है।",
+      "no_owning_session": "कोई स्वामी सत्र नहीं",
+      "owning_session": "स्वामी सत्र"
     },
     "servicesTab": {
       "connected": "कनेक्टेड",

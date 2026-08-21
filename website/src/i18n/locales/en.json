@@ -6620,7 +6620,9 @@
       "to_confirm": "to confirm",
       "try_remind_me_to_check_my_pipeline_every_morning": "— try \"remind me to check my pipeline every morning\"",
       "type": "Type",
-      "type_verb_to_confirm": "Type"
+      "type_verb_to_confirm": "Type",
+      "no_owning_session": "No owning session",
+      "owning_session": "Owning session"
     },
     "servicesTab": {
       "connected": "Connected",

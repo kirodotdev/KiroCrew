@@ -10075,7 +10075,9 @@
       "script_source": "脚本源代码",
       "script_source_download": "下载脚本",
       "script_source_failed": "无法加载脚本源代码。",
-      "script_source_truncated": "已截断 — 脚本超出预览大小限制。"
+      "script_source_truncated": "已截断 — 脚本超出预览大小限制。",
+      "no_owning_session": "无所属会话",
+      "owning_session": "所属会话"
     },
     "servicesTab": {
       "connected": "已连接",

@@ -10075,7 +10075,9 @@
       "script_source": "スクリプトのソース",
       "script_source_download": "スクリプトをダウンロード",
       "script_source_failed": "スクリプトのソースを読み込めませんでした。",
-      "script_source_truncated": "切り詰められました — スクリプトがプレビューの上限を超えています。"
+      "script_source_truncated": "切り詰められました — スクリプトがプレビューの上限を超えています。",
+      "no_owning_session": "所有セッションなし",
+      "owning_session": "所有セッション"
     },
     "servicesTab": {
       "connected": "接続済み",
