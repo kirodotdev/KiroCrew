@@ -18,11 +18,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve diff base (merge-base)
+        id: diffbase
+        env:
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # base.sha is the base branch tip when the PR event fired, not the
+          # branch-off point, so diffing it directly pulls in sibling commits.
+          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
+            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            exit 1
+          fi
+          echo "Diff base: $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
       - name: Get changed files
         id: changed
         run: |
           echo "files<<EOF" >> $GITHUB_OUTPUT
-          git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} >> $GITHUB_OUTPUT
+          git diff --name-only ${{ steps.diffbase.outputs.sha }}..${{ github.event.pull_request.head.sha }} >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       # Deterministic replication of the blocking rules from
@@ -33,7 +48,7 @@ jobs:
         if: contains(steps.changed.outputs.files, 'website/src/')
         working-directory: website
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "::group::use-lucide-icons — no inline SVGs"
@@ -105,7 +120,7 @@ jobs:
       - name: Check backend security rules
         if: contains(steps.changed.outputs.files, 'src/kiro_crew/')
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           echo "::group::sensitive-path reads must go through is_sensitive_path()"
@@ -185,6 +200,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve diff base (merge-base)
+        id: diffbase
+        env:
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # base.sha is the base branch tip when the PR event fired, not the
+          # branch-off point, so diffing it directly pulls in sibling commits.
+          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
+            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            exit 1
+          fi
+          echo "Diff base: $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
       - name: Install woke
         env:
           WOKE_VERSION: "0.19.0"
@@ -205,7 +235,7 @@ jobs:
 
       - name: Scan only changed lines
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           # _vendor is third-party code (llama-cpp-python) whose upstream URLs
@@ -257,9 +287,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve diff base (merge-base)
+        id: diffbase
+        env:
+          BASE_TIP: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # This job runs in the semgrep container, where the checkout is owned
+          # by a different uid than the job user; git refuses to read it
+          # ("dubious ownership") without this exemption. The other jobs run
+          # directly on the runner and do not need it.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # base.sha is the base branch tip when the PR event fired, not the
+          # branch-off point, so diffing it directly pulls in sibling commits.
+          if ! MERGE_BASE=$(git merge-base "$BASE_TIP" "$HEAD_SHA"); then
+            echo "::error::Could not resolve the merge-base of $BASE_TIP and $HEAD_SHA (this job needs fetch-depth: 0)"
+            exit 1
+          fi
+          echo "Diff base: $MERGE_BASE"
+          echo "sha=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+
       - name: Semgrep scan (diff only)
         env:
-          SEMGREP_BASELINE_REF: ${{ github.event.pull_request.base.sha }}
+          SEMGREP_BASELINE_REF: ${{ steps.diffbase.outputs.sha }}
         run: |
           semgrep scan \
             --config p/python \
@@ -313,6 +363,9 @@ jobs:
       # This keeps PRs atomic and reviewable as a single logical change.
       - name: Enforce single commit
         env:
+          # base.sha (not the merge-base): rev-list is a commit-range query, so
+          # a non-ancestor base still yields only the PR's own commits — see the
+          # merge-base fix (#4968), which deliberately left this site alone.
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
