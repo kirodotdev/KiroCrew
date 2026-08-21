@@ -29,12 +29,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 
 from kiro_crew.cloud import ssm as cloud_ssm
-from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS, TTL_PATTERN
+from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS
+
+# The subcommand builder and the ttl/port bounds are SHARED with the SSH
+# transport on purpose: both transports hand the same string to the same remote
+# shell, so a second copy of either could only ever drift into a weaker bound.
 from kiro_crew.instances.token_mint import (
     TokenMintError,
+    _token_subcommand,
+    _validate_port,
+    _validate_ttl,
     build_remote_command,
     parse_token_from_stdout,
 )
@@ -56,21 +62,8 @@ logger = logging.getLogger(__name__)
 # ``instances.mint_timeout_secs`` wins for both transports.
 _DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_SSM_MINT_TIMEOUT_SECS
 
-# Same ttl shape token_mint.py accepts (kept local rather than importing a
-# "private" helper cross-module — see module docstring).
-_TTL_RE = re.compile(TTL_PATTERN)
-
 # How much of a failing remote's stdout/stderr to carry in an error message.
 _OUTPUT_TAIL_CHARS = 300
-
-
-def _validate_ttl(ttl: str) -> str:
-    if not _TTL_RE.match(ttl):
-        raise TokenMintError(
-            f"invalid ttl {ttl!r}: expected a positive integer with 'h' or 'm' "
-            "suffix (e.g. '20h', '30m')"
-        )
-    return ttl
 
 
 def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
@@ -87,18 +80,6 @@ def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
         return ""
     safe = redact_exfiltration_urls(redact_credentials(text)[0])[0]
     return safe.strip()[-limit:]
-
-
-def _validate_port(port: int | None) -> int | None:
-    if port is None:
-        return None
-    try:
-        p = int(port)
-    except (TypeError, ValueError) as e:
-        raise TokenMintError(f"invalid port {port!r}: not an integer") from e
-    if not (1 <= p <= 65535):
-        raise TokenMintError(f"invalid port {p}: out of range 1-65535")
-    return p
 
 
 async def mint_remote_token_ssm(
@@ -129,14 +110,9 @@ async def mint_remote_token_ssm(
     port = _validate_port(remote_port)
     embed_port = _validate_port(embed_parent_port)
 
-    subcommand = "token"
-    if ttl:
-        subcommand += f" --ttl {ttl}"
-    if port:
-        subcommand += f" --port {port}"
-    if embed_port:
-        subcommand += f" --embed-parent-port {embed_port}"
-    remote_command = build_remote_command(remote_bin, subcommand, marker_port=port)
+    remote_command = build_remote_command(
+        remote_bin, _token_subcommand(ttl, port, embed_port), marker_port=port
+    )
 
     # False positive (below): the message mentions "token" (this function's job)
     # but the interpolated values are the SSM target id and the ttl — never the

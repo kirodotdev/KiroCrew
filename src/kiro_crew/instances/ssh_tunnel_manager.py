@@ -473,27 +473,36 @@ class _SshTunnel:
         """
         deadline = time.monotonic() + self._connect_timeout
         while time.monotonic() < deadline:
-            proc = self._proc
-            if proc is not None and proc.returncode is not None:
-                await self._capture_stderr()
-                self.status.state = TunnelState.ERROR
-                self.status.error = self._exit_error(proc.returncode)
+            if await self._failed_on_child_exit():
                 return False
             if await self._port_reachable():
                 # A reachable port is NOT proof THIS child bound it: a lingering
                 # tunnel or orphaned ssh can answer while our child already lost
                 # the bind race (ExitOnForwardFailure -> exit 255). Confirm our
                 # child is still alive before declaring the tunnel ready.
-                proc = self._proc
-                if proc is not None and proc.returncode is not None:
-                    await self._capture_stderr()
-                    self.status.state = TunnelState.ERROR
-                    self.status.error = self._exit_error(proc.returncode)
+                if await self._failed_on_child_exit():
                     return False
                 return True
             await asyncio.sleep(_READY_POLL_INTERVAL_SECS)
         self.status.error = f"timed out after {self._connect_timeout}s waiting for forward"
         return False
+
+    async def _failed_on_child_exit(self) -> bool:
+        """Record an already-exited child as an ERROR status; True if it exited.
+
+        ``self._proc`` is re-read on every call rather than passed in, because
+        each caller looks across an await during which the child can have exited.
+        Returns False when there is no child at all — a racing ``stop()`` clears
+        ``self._proc`` — so that teardown is left to the readiness timeout rather
+        than reported as an exit with a returncode nobody captured.
+        """
+        proc = self._proc
+        if proc is None or proc.returncode is None:
+            return False
+        await self._capture_stderr()
+        self.status.state = TunnelState.ERROR
+        self.status.error = self._exit_error(proc.returncode)
+        return True
 
     async def _port_reachable(self) -> bool:
         """Return True if something accepts a TCP connect on the local forward."""
@@ -2015,12 +2024,15 @@ class SshTunnelManager:
         try:
             while True:
                 await asyncio.sleep(delay)
-                refreshed = await self._refresh_token_once(instance_id)
-                if not refreshed:
-                    # instance gone, or transient mint failure — recompute delay
-                    # from the (possibly unchanged) ttl and try again next cycle.
-                    if instance_id not in self._tunnels:
-                        return
+                # A failed re-mint is only terminal once the instance is no longer
+                # connected (dropped from _tunnels); a transient mint failure
+                # retries on the next cycle at the same interval, since `delay` is
+                # derived from the ttl once, before the loop, and never re-derived.
+                if (
+                    not await self._refresh_token_once(instance_id)
+                    and instance_id not in self._tunnels
+                ):
+                    return
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # never let the refresh loop crash silently

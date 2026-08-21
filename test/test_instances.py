@@ -2968,12 +2968,22 @@ class TestDiagnostics:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
         assert asyncio.run(diag._probe_ssh("cd-1", connect_timeout_secs=42.0)) is True
         assert "ConnectTimeout=42" in captured["argv"]
+        # Both probes share token_mint._build_ssh_argv with the mint, so the two
+        # options a probe cannot work without are pinned HERE too: without
+        # BatchMode a probe hangs on an interactive prompt instead of reporting
+        # unreachable, and without AddressFamily=inet it can resolve ::1 and miss
+        # the IPv4 loopback forward. A mint-motivated edit to the shared builder
+        # would otherwise change the ladder with no signal on this side.
+        assert "BatchMode=yes" in captured["argv"]
+        assert "AddressFamily=inet" in captured["argv"]
 
         assert (
             asyncio.run(diag._probe_remote_dashboard("cd-1", 7777, connect_timeout_secs=42.0))
             is True
         )
         assert "ConnectTimeout=42" in captured["argv"]
+        assert "BatchMode=yes" in captured["argv"]
+        assert "AddressFamily=inet" in captured["argv"]
 
     def test_probe_local_forward(self):
         from kiro_crew.instances import diagnostics as diag

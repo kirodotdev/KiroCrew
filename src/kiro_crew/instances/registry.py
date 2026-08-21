@@ -283,6 +283,18 @@ class _RegistryDoc:
     last_active_id: str = ""
 
 
+def _find(doc: _RegistryDoc, instance_id: str) -> Instance | None:
+    """Return the record in *doc* with *instance_id*, or ``None`` if absent.
+
+    Hands back the live object out of ``doc.instances`` (not a copy), so a caller
+    holding the lock can mutate it in place and persist *doc*.
+    """
+    for inst in doc.instances:
+        if inst.id == instance_id:
+            return inst
+    return None
+
+
 class InstancesRegistry:
     """CRUD over ``instances.json`` with atomic writes and a process lock.
 
@@ -349,10 +361,7 @@ class InstancesRegistry:
     def get(self, instance_id: str) -> Instance | None:
         """Return the instance with *instance_id*, or ``None`` if absent."""
         with self._lock:
-            for inst in self._read().instances:
-                if inst.id == instance_id:
-                    return inst
-            return None
+            return _find(self._read(), instance_id)
 
     def get_last_active(self) -> Instance | None:
         """Return the last-active instance to auto-revive on startup."""
@@ -360,10 +369,7 @@ class InstancesRegistry:
             doc = self._read()
             if not doc.last_active_id:
                 return None
-            for inst in doc.instances:
-                if inst.id == doc.last_active_id:
-                    return inst
-            return None
+            return _find(doc, doc.last_active_id)
 
     # ── write API ────────────────────────────────────────────────────────
 
@@ -471,11 +477,7 @@ class InstancesRegistry:
             validate_ttl(str(changes["ttl"]))
         with self._lock:
             doc = self._read()
-            target: Instance | None = None
-            for inst in doc.instances:
-                if inst.id == instance_id:
-                    target = inst
-                    break
+            target = _find(doc, instance_id)
             if target is None:
                 raise InstanceNotFoundError(f"no instance with id {instance_id!r}")
             for key, value in changes.items():
@@ -505,14 +507,11 @@ class InstancesRegistry:
         """Set the ``was_connected`` hint (no-op if the instance is gone)."""
         with self._lock:
             doc = self._read()
-            changed = False
-            for inst in doc.instances:
-                if inst.id == instance_id:
-                    inst.was_connected = bool(value)
-                    changed = True
-                    break
-            if changed:
-                self._write(doc)
+            inst = _find(doc, instance_id)
+            if inst is None:
+                return
+            inst.was_connected = bool(value)
+            self._write(doc)
 
     def set_last_active(self, instance_id: str) -> None:
         """Mark *instance_id* as the one to auto-revive on next startup.
@@ -522,7 +521,7 @@ class InstancesRegistry:
         """
         with self._lock:
             doc = self._read()
-            if not any(i.id == instance_id for i in doc.instances):
+            if _find(doc, instance_id) is None:
                 raise InstanceNotFoundError(f"no instance with id {instance_id!r}")
             doc.last_active_id = instance_id
             self._write(doc)

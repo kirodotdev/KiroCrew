@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass, field
 
 from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.instances.token_mint import _build_ssh_argv
 from kiro_crew.instances.validation import (
     SshValidationError,
     SsmValidationError,
@@ -102,6 +103,33 @@ class DiagnosisResult:
         return {"code": self.code, "ok": self.ok, "reason": self.reason, "probes": self.probes}
 
 
+def _remote_status_probe_command(remote_port: int) -> str:
+    """Remote shell snippet that reports whether the dashboard answers.
+
+    Prints the HTTP status ``curl`` saw, which is what both transports' rung 2
+    interprets: any status (including an auth gate like 401/403/404) means
+    something is listening, while ``000`` — or no output at all, e.g. a remote
+    with no ``curl`` — means nothing is bound there.
+    """
+    return (
+        f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
+        f"http://{_LOOPBACK}:{int(remote_port)}/api/status"
+    )
+
+
+def _dashboard_is_listening(output: str | None) -> bool:
+    """Interpret rung 2's remote ``curl`` output — see :func:`_remote_status_probe_command`.
+
+    ``None`` is the SSH rung's "the ssh invocation itself failed" and is False,
+    same as the no-output case; the SSM rung passes the invocation's stdout, so
+    a remote whose ``curl`` never ran reaches here as an empty string.
+    """
+    if output is None:
+        return False
+    code = output.strip().strip("'\"")
+    return bool(code) and code != "000"
+
+
 async def _probe_ssh(
     ssh_host: str, connect_timeout_secs: float = _DEFAULT_PROBE_CONNECT_TIMEOUT_SECS
 ) -> bool:
@@ -116,17 +144,7 @@ async def _probe_ssh(
     2s margin past the ssh-side timeout for auth + running ``true`` after
     connect succeeds.
     """
-    argv = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={max(1, round(connect_timeout_secs))}",
-        "-o",
-        "AddressFamily=inet",
-        ssh_host,
-        "true",
-    ]
+    argv = _build_ssh_argv(ssh_host, "true", connect_timeout_secs=connect_timeout_secs)
     return await _run_ok(argv, connect_timeout_secs + 2.0)
 
 
@@ -145,26 +163,12 @@ async def _probe_remote_dashboard(
     leaves a 5s margin past the ssh-side timeout, matching the remote
     ``curl --max-time 5`` this runs after connect succeeds.
     """
-    remote_cmd = (
-        f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
-        f"http://{_LOOPBACK}:{int(remote_port)}/api/status"
-    )
-    argv = [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={max(1, round(connect_timeout_secs))}",
-        "-o",
-        "AddressFamily=inet",
+    argv = _build_ssh_argv(
         ssh_host,
-        remote_cmd,
-    ]
-    out = await _run_stdout(argv, connect_timeout_secs + 5.0)
-    if out is None:
-        return False
-    code = out.strip().strip("'\"")
-    return bool(code) and code != "000"
+        _remote_status_probe_command(remote_port),
+        connect_timeout_secs=connect_timeout_secs,
+    )
+    return _dashboard_is_listening(await _run_stdout(argv, connect_timeout_secs + 5.0))
 
 
 async def _probe_local_forward(local_port: int) -> bool:
@@ -298,15 +302,13 @@ async def _probe_remote_dashboard_ssm(
 ) -> bool:
     """Return True if the remote dashboard answers on its loopback port, via SSM.
 
-    Runs the same ``curl`` check as the SSH rung but dispatches it with SSM
-    ``send-command`` instead of ``ssh``. Any HTTP status (incl. an auth gate like
-    401/403/404) means something is listening; ``000``/empty means nothing is
-    bound there.
+    Runs the same ``curl`` check as the SSH rung (the one
+    :func:`_remote_status_probe_command` builds) but dispatches it with SSM
+    ``send-command`` instead of ``ssh``.
     """
-    remote_cmd = (
-        f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
-        f"http://{_LOOPBACK}:{int(remote_port)}/api/status"
-    )
+    # Built outside the try so a malformed port raises rather than being folded
+    # into the "no answer" verdict below.
+    remote_cmd = _remote_status_probe_command(remote_port)
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(
@@ -322,8 +324,7 @@ async def _probe_remote_dashboard_ssm(
         )
     except Exception:  # timeout, AWSError, dispatch failure — treat as no answer
         return False
-    code = (result.stdout or "").strip().strip("'\"")
-    return bool(code) and code != "000"
+    return _dashboard_is_listening(result.stdout or "")
 
 
 async def diagnose_instance_ssm(

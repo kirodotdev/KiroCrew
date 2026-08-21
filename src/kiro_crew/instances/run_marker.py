@@ -80,6 +80,27 @@ def _run_dir() -> Path:
     return d
 
 
+def _read_sidecar(port: int, suffix: str) -> str:
+    """Stripped contents of ``run/gateway-<port><suffix>``, or ``""``.
+
+    Read-only on purpose: it composes the path itself instead of calling
+    :func:`marker_path` / :func:`pid_path` / :func:`secret_path`, because those
+    go through :func:`_run_dir` and would MATERIALISE ``run/`` — a client command
+    that merely looks for a gateway must not create the run dir. (``config_dir()``
+    still resolves, and creates, the data home itself.) An unreadable or absent
+    file is indistinguishable from an empty one here; each reader decides what
+    "" means for its own value.
+    """
+    try:
+        return (
+            (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{suffix}")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+    except (OSError, ValueError):
+        return ""
+
+
 def marker_path(port: int) -> Path:
     """Path of the run-marker for a gateway serving *port*."""
     return _run_dir() / f"{_MARKER_PREFIX}{int(port)}{_MARKER_SUFFIX}"
@@ -123,13 +144,7 @@ def read_secret(port: int) -> str:
     proof the recorded gateway still owns the port; that remains
     ``port_resolution._gateway_owns_port``'s job.
     """
-    try:
-        raw = (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{_SECRET_SUFFIX}").read_text(
-            encoding="utf-8"
-        )
-    except (OSError, ValueError):
-        return ""
-    return raw.strip()
+    return _read_sidecar(port, _SECRET_SUFFIX)
 
 
 def read_pid(port: int) -> int | None:
@@ -145,13 +160,7 @@ def read_pid(port: int) -> int | None:
 
     Read-only: never creates ``run/``.
     """
-    try:
-        raw = (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}").read_text(
-            encoding="utf-8"
-        )
-    except (OSError, ValueError):
-        return None
-    raw = raw.strip()
+    raw = _read_sidecar(port, _PID_SUFFIX)
     if not raw.isdigit():
         return None
     pid = int(raw)
@@ -173,14 +182,7 @@ def read_launcher(port: int) -> str | None:
     Read-only: never creates ``run/`` (unlike :func:`marker_path`, whose
     ``_run_dir`` materialises the directory).
     """
-    try:
-        raw = (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{_MARKER_SUFFIX}").read_text(
-            encoding="utf-8"
-        )
-    except (OSError, ValueError):
-        return None
-    raw = raw.strip()
-    return raw or None
+    return _read_sidecar(port, _MARKER_SUFFIX) or None
 
 
 def marker_ports() -> list[int]:
