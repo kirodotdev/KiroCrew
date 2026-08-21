@@ -508,6 +508,34 @@ def augmented_path(base_path: str = "") -> str:
     return os.pathsep.join(parts)
 
 
+#: How many directories :func:`describe_search_path` names before truncating.
+#: The effective search path carries a bin dir per installed Node version, so an
+#: unbounded dump would push the actionable first entries out of a log reader's
+#: view.
+_SEARCH_PATH_REPORT_LIMIT = 40
+
+
+def describe_search_path(path: str) -> str:
+    """Render *path* as a human-readable list of searched directories.
+
+    ``command not found: <name>`` never said WHERE it looked, so a reader could
+    not tell "this install directory is not covered by the search path" from
+    "this binary is not installed" -- two different problems with two different
+    fixes -- without reading the source. Every caller formats the search path
+    through here so the two failures read differently everywhere they are
+    reported.
+
+    Truncated at :data:`_SEARCH_PATH_REPORT_LIMIT`; the count is always stated,
+    so a truncated tail is visible rather than silent.
+    """
+    dirs = [d for d in path.split(os.pathsep) if d]
+    if not dirs:
+        return "searched no directories (empty PATH)"
+    shown = dirs[:_SEARCH_PATH_REPORT_LIMIT]
+    suffix = f" (+{len(dirs) - len(shown)} more)" if len(dirs) > len(shown) else ""
+    return f"searched {len(dirs)} directories: {', '.join(shown)}{suffix}"
+
+
 def dedup_path(path: str) -> str:
     """Drop repeated entries from a ``PATH`` string, keeping the first of each.
 

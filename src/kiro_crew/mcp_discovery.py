@@ -33,6 +33,7 @@ from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import (
     denied_spec_env_keys,
+    describe_search_path,
     emit_env,
     sanitize_spec_env,
     spec_env_path,
@@ -116,16 +117,40 @@ _PROBE_TTL_SECS = 1800
 _unresolvable_warned: set[tuple[str, str]] = set()
 
 
-def _warn_unresolvable_once(name: str, command: str) -> None:
-    """WARNING on first sight of an unresolvable command, DEBUG thereafter."""
+def _unresolved_error(command: str, search_path: str = "") -> str:
+    """The dashboard-facing string for a command that resolved nowhere.
+
+    Names the count of directories searched, because ``command not found`` alone
+    does not distinguish the two causes a reader can act on: the binary is not
+    installed, or it is installed somewhere the search path does not cover. The
+    full directory list goes to the log (:func:`_warn_unresolvable_once`) rather
+    than here -- this string renders in a fixed-width dashboard cell.
+    """
+    if not search_path:
+        return f"command not found: {command}"
+    count = len([d for d in search_path.split(os.pathsep) if d])
+    return (
+        f"command not found: {command} — not in any of the {count} directories "
+        "searched (see the gateway log for the list)"
+    )
+
+
+def _warn_unresolvable_once(name: str, command: str, search_path: str = "") -> None:
+    """WARNING on first sight of an unresolvable command, DEBUG thereafter.
+
+    *search_path* is the PATH actually searched; naming its directories is what
+    lets a reader tell "this install location is not covered" from "this binary
+    does not exist" without reading the source.
+    """
     key = (name, command)
+    searched = f" ({describe_search_path(search_path)})" if search_path else ""
     if key in _unresolvable_warned:
         logger.debug(
             "MCP probe [%s]: command still not found: %s (already reported)", name, command
         )
         return
     _unresolvable_warned.add(key)
-    logger.warning("MCP probe failed [%s]: command not found: %s", name, command)
+    logger.warning("MCP probe failed [%s]: command not found: %s%s", name, command, searched)
 
 
 #: Servers whose probe has already reported a missing sandbox backend. Keyed by
@@ -1520,6 +1545,10 @@ async def probe_server(
         return server
 
     server.status = "probing"
+    # The PATH the spawn will actually search, bound before the try so the
+    # FileNotFoundError handler can name the searched directories regardless of
+    # how far the attempt got.
+    effective_path = ""
     # Stamped at probe START so the early error returns below (which skip the
     # cache) still carry an honest "when": the probe DID run at this time.
     # _cache_probe overwrites it with completion time on the paths it covers.
@@ -1556,11 +1585,12 @@ async def probe_server(
         )
 
         # Resolve command to absolute path using the merged env PATH
-        resolved = shutil.which(server.command, path=env.get("PATH"))
+        effective_path = env.get("PATH") or ""
+        resolved = shutil.which(server.command, path=effective_path)
         if not resolved:
             server.status = "error"
-            server.error = f"command not found: {server.command}"
-            _warn_unresolvable_once(server.name, server.command)
+            server.error = _unresolved_error(server.command, effective_path)
+            _warn_unresolvable_once(server.name, server.command, effective_path)
             return server
 
         # The command resolved, so forget any prior "not found" report — keyed on
@@ -1765,8 +1795,10 @@ async def probe_server(
         )
     except FileNotFoundError:
         server.status = "error"
-        server.error = f"command not found: {server.command}"
-        _warn_unresolvable_once(server.name, server.command)
+        server.error = _unresolved_error(server.command, effective_path)
+        # ``effective_path`` was bound before the try, so it is always safe to
+        # read here even if the failure preceded PATH resolution.
+        _warn_unresolvable_once(server.name, server.command, effective_path)
     except SandboxUnavailableError as exc:
         # The PROBE could not run — this says nothing about the server, and the
         # two must not be reported alike. Ahead of the generic clause, which would

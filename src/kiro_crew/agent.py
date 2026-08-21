@@ -59,7 +59,13 @@ from kiro_crew.config.paths import (
     isolated_agents_dir,
     kiro_agents_dir,
 )
-from kiro_crew.env import emit_env, spec_env_path, spec_path_key
+from kiro_crew.env import (
+    dedup_path,
+    describe_search_path,
+    emit_env,
+    spec_env_path,
+    spec_path_key,
+)
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
 from kiro_crew.mcp_provenance import without_marker
 from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
@@ -3105,8 +3111,13 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # spec from the other sources before dropping it, in priority order
     # (kirocrew > kiro-global > provider-global).  This prevents one source's
     # unresolvable command from killing a server another source can resolve.
-    def _resolve_command(cmd: str, env: dict | None) -> str | None:
-        """Resolve an MCP command to an absolute path, or None if not found.
+    def _resolve_command(cmd: str, env: dict | None) -> tuple[str | None, str]:
+        """Resolve an MCP command to an absolute path, plus the path searched.
+
+        Returns ``(resolved_or_None, search_path)``. The second element is what
+        lets the drop warning name the directories actually consulted; it is ""
+        when no PATH search happened (empty command, or an absolute command
+        accepted directly).
 
         Accepts an absolute path directly when the file exists and is
         executable — shutil.which can fail inside user-namespace sandboxes
@@ -3124,18 +3135,21 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         fallback for pip-generated wrappers like ``kirocrew``.
         """
         if not cmd:
-            return None
+            return None, ""
         if os.path.isabs(cmd) and os.path.isfile(cmd) and os.access(cmd, os.X_OK):
-            return cmd
+            return cmd, ""
         # Case-insensitive PATH key: a Windows-authored spec says "Path", and
         # resolving against a DIFFERENT path than the emitted spec carries would
         # reopen the probe/session split from the other side.
         _env = env or {}
         _key = spec_path_key(_env)
         _declared = _env.get(_key, "") if _key else ""
-        return shutil.which(
-            cmd, path=spec_env_path(_declared if isinstance(_declared, str) else "")
-        )
+        _search = spec_env_path(_declared if isinstance(_declared, str) else "")
+        # The search path is returned, not recomputed by the caller: a candidate
+        # that declares its own ``env.PATH`` is searched against a DIFFERENT path
+        # than one that does not, so a caller reporting ``spec_env_path("")``
+        # would name directories that were never searched.
+        return shutil.which(cmd, path=_search), _search
 
     valid_servers: dict[str, Any] = {}
     # The store is keyed by its own RAW name, but ``name`` below iterates the
@@ -3232,12 +3246,15 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         resolved: str | None = None
         chosen: dict = spec
         tried: list[str] = []
+        searched: list[str] = []
         had_any_command = False
         for label, cand in candidates:
             cmd = cand.get("command", "")
             if cmd:
                 had_any_command = True
-            r = _resolve_command(cmd, cand.get("env"))
+            r, cand_search = _resolve_command(cmd, cand.get("env"))
+            if cand_search:
+                searched.append(cand_search)
             tried.append(f"{label}={cmd or '<none>'}{' -> ok' if r else ''}")
             if r:
                 resolved = r
@@ -3275,10 +3292,19 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             # that was defined but couldn't be resolved.
             logger.warning("Dropping MCP server %r: no command", name)
         else:
+            # The searched directories belong in the WARNING, not only at DEBUG:
+            # a default-level reader is exactly who needs to tell "installed
+            # somewhere this path does not cover" from "not installed at all".
+            # Built from the paths the candidates were ACTUALLY searched against
+            # and deduped -- a candidate declaring its own env.PATH is searched
+            # against a different path, so recomputing one here would name
+            # directories that were never consulted. The candidate list stays at
+            # DEBUG: that is about which spec won, not about why none resolved.
             logger.warning(
-                "Dropping MCP server %r: command not found: %s",
+                "Dropping MCP server %r: command not found: %s — %s",
                 name,
                 spec.get("command", ""),
+                describe_search_path(dedup_path(os.pathsep.join(searched))),
             )
             logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
     config["mcpServers"] = valid_servers
