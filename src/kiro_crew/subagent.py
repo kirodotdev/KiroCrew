@@ -4678,19 +4678,47 @@ class SubagentManager:
             return
         self._settle_digest_holds(info)
 
-    def _settle_digest_holds(self, info: SubagentInfo) -> None:
-        """Settle delivery tombstones for wave members whose injection was
-        held for this member's digest. Called ONLY after ``_on_done`` returned
-        without raising — the digest has been handed off, so marking the held
-        members delivered no longer risks the restart-loss window
-        (settling at digest composition, before routing, would).
+    def settle_handed_off_digest_holds(self, ids: "list[str]") -> None:
+        """Mark wave members delivered whose digest is CONFIRMED to have landed.
+
+        The seam a routing branch calls when it owns the confirmation itself.
+        The dashboard route hands the digest to a fire-and-forget injection
+        task, so its ``_on_done`` returns before the parent has seen anything;
+        it therefore DETACHES the flushing member's ``_digest_settle_ids`` when
+        it launches that task and calls this once the task completes cleanly.
+        Ownership travels with the ids, which is what keeps the two settle
+        paths from both firing (#2233).
+
+        Takes the ids rather than the ``SubagentInfo`` precisely because the
+        caller has already taken them off the member: passing the member back
+        would re-introduce the shared mutable the split exists to remove.
+
+        A failing tombstone write is logged and skipped, never raised: one
+        unwritable run folder must not strand the rest of the chunk, and this
+        runs from a task done-callback where an exception has nowhere to go.
         """
-        for _hid in info._digest_settle_ids:
+        for _hid in ids:
             try:
                 mark_delivered(_hid)
             except Exception:
                 logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
-        info._digest_settle_ids = []
+
+    def _settle_digest_holds(self, info: SubagentInfo) -> None:
+        """Settle delivery tombstones for wave members whose injection was
+        held for this member's digest. Called ONLY after ``_on_done`` returned
+        without raising — for the routes where that return IS the confirmation
+        (a bare return is not enough for the dashboard route, which detaches
+        the ids and settles them itself; see
+        :meth:`settle_handed_off_digest_holds`). Marking the held members
+        delivered no longer risks the restart-loss window here (settling at
+        digest composition, before routing, would).
+
+        The ids are taken off ``info`` BEFORE settling, so a re-entry cannot
+        write a second tombstone and a route that detached them first leaves
+        this a no-op.
+        """
+        ids, info._digest_settle_ids = info._digest_settle_ids, []
+        self.settle_handed_off_digest_holds(ids)
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         """Get agent info by ID."""
