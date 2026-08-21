@@ -1923,12 +1923,16 @@ incidental. Each was measured on Windows 11:
   is also reachable from config, where a zero or negative budget yields a degenerate
   image and an unbounded one yields a frame far larger than any consumer expects.
 
-  Screenshots are locked down in BOTH layers, because `restrict_to_owner` emits a
-  **non-inheritable** ACE: a directory-only grant leaves each new file with just the
-  inherited SYSTEM / Administrators / Owner-Rights entries and never an owner-only
-  DACL. The directory is created through `platform_compat.make_owner_only_dir` (a
-  bare `mkdir(mode=0o700)` is inert on Windows, where access comes from the DACL) and
-  each frame is tightened as it is written.
+  Screenshots are locked down in BOTH layers. The directory grant is now
+  **inheritable** (`platform_compat.make_owner_only_dir` routes through
+  `restrict_dir_to_owner`, which emits `(OI)(CI)`), so a newly created frame does
+  inherit the owner-only DACL — but inheritance governs only what is CREATED from
+  that point on, and Windows grants Bypass Traverse Checking to Everyone by
+  default, so a frame that already exists keeps its own DACL and stays reachable
+  through the tightened parent. The directory is created through
+  `platform_compat.make_owner_only_dir` (a bare `mkdir(mode=0o700)` is inert on
+  Windows, where access comes from the DACL) and each frame is still tightened as
+  it is written, which is what covers the already-exists case.
 
 - **The `press_key` grammar is a platform-free seam, and both halves canonicalize.**
   `keymap.parse_spec()` returns a `KeySpec` of abstract names, which `tools._perform`

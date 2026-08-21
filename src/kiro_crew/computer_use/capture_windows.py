@@ -34,11 +34,14 @@ Three Windows-specific findings shape the capture:
 The spool PATH, the ring trim and the owner-only protection are all shared with
 :mod:`capture_macos` (``shots_dir`` resolves through ``tempfile.gettempdir()``,
 already ``%TEMP%`` here). Both layers of that protection are needed on Windows and
-neither substitutes for the other: ``restrict_to_owner`` emits a NON-inheritable
-ACE, so a directory-only grant leaves each new file with just the inherited
-SYSTEM / Administrators / Owner-Rights entries, while a file-only grant leaves the
-directory itself listable. The directory is tightened once per process and each
-frame is tightened as it is written.
+neither substitutes for the other: the directory grant is inheritable
+(``restrict_dir_to_owner`` emits ``(OI)(CI)``) so files created inside inherit the
+owner-only DACL, but inheritance governs only what is CREATED from here on -- a
+frame that already exists keeps its own DACL, and Windows grants Bypass Traverse
+Checking to Everyone by default, so a permissive pre-existing file stays reachable
+through a tightened parent. A file-only grant, conversely, leaves the directory
+itself listable. The directory is tightened once per process and each frame is
+tightened as it is written.
 """
 
 from __future__ import annotations
@@ -387,11 +390,12 @@ def persist_jpeg(raw: bytes) -> str:
 
     The Windows counterpart of ``capture_macos.persist_jpeg``, and it keeps that
     function's per-file ``restrict_to_owner``. The directory ACL is NOT sufficient
-    on its own: ``restrict_to_owner`` emits a non-inheritable ACE (it was written
-    for files), so the directory's owner grant carries no ``(OI)(CI)`` and a new
-    file lands with only the inherited SYSTEM / Administrators / Owner-Rights
-    entries — never an owner-only DACL. A frame can contain anything that was on
-    screen, so the file itself is locked down.
+    on its own even now that it is inheritable: ``make_owner_only_dir`` routes
+    through ``restrict_dir_to_owner``, whose ``(OI)(CI)`` grants cover files
+    CREATED from that point on, but Windows grants Bypass Traverse Checking to
+    Everyone by default, so a frame that already exists keeps its own DACL and
+    stays reachable through the tightened parent. A frame can contain anything
+    that was on screen, so the file itself is locked down.
 
     The spawn is on the capture path, not the observation path: it runs only when a
     screenshot was actually produced, which is already the expensive branch, and

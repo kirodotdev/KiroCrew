@@ -2768,6 +2768,22 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 _OWNER_RIGHTS_SID = "*S-1-3-4"
 
 
+# icacls inheritance flags for a DIRECTORY grant: (OI) object-inherit
+# propagates the ACE to files created inside, (CI) container-inherit propagates
+# it to subdirectories. Neither sets (IO), so the ACE also applies to the
+# directory itself and traversal is preserved.
+#
+# Without these flags a grant applies to the named object ALONE. That is
+# correct and complete for a file, and silently wrong for a directory: a file
+# created inside an "owner-only" directory would carry no explicit ACE at all
+# and fall back to whatever the creating process's token grants by default
+# (typically owner + SYSTEM + Administrators) — a default rather than the
+# guarantee the caller asked for. The flags are meaningless on a file, which is
+# why this is a directory-only rights prefix and not something
+# :func:`restrict_to_owner` can pass unconditionally.
+_ICACLS_DIR_INHERIT = "(OI)(CI)"
+
+
 # Success-only memo for _current_user_sid. NOT functools.lru_cache: lru_cache
 # would memoize a *failure* (None) permanently, so one transient whoami
 # timeout at first call (AV scan, system pressure) would poison every later
@@ -3130,9 +3146,16 @@ def make_owner_only_dir(path: str | os.PathLike) -> None:
 
     ``0o700`` and not :func:`restrict_to_owner` on POSIX: that helper applies
     ``0o600``, correct for a secret-bearing file and wrong for a directory,
-    which needs the execute bit to be traversable at all. Windows has no such
-    split (``icacls ... :F`` grants traverse with everything else), and there the
-    DACL is the only carrier of access, so the fail-loud helper is right.
+    which needs the execute bit to be traversable at all. On Windows the split
+    is the inverse of inert: ``restrict_to_owner``'s grants are not inheritable
+    (correct for a file, where the flags mean nothing), so routing a directory
+    through it left every file created inside on the creating token's default
+    DACL. Both platforms therefore go through
+    :func:`restrict_dir_to_owner`, the directory-shaped twin.
+
+    Only newly created children are covered. A file that already exists inside
+    the directory keeps its own DACL — see :func:`restrict_dir_to_owner` for
+    why a tightened parent does not fix one.
 
     Best-effort on the tightening step: the directory is still created, and the
     caller decides whether an un-tightened directory is fatal.
@@ -3140,10 +3163,7 @@ def make_owner_only_dir(path: str | os.PathLike) -> None:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        if IS_WINDOWS:
-            restrict_to_owner(p)
-        else:
-            p.chmod(0o700)
+        restrict_dir_to_owner(p)
     except OSError:
         logger.warning("could not restrict directory %s to owner-only", p, exc_info=True)
 
@@ -3202,6 +3222,80 @@ def restrict_to_owner(path: str | os.PathLike) -> None:
     if IS_POSIX:
         os.chmod(path, 0o600)
         return
+    # Misuse guard: this helper is FILE-shaped. Its grants carry no (OI)(CI),
+    # so handing it a directory tightens the directory itself and leaves every
+    # file created inside on the creating token's default DACL -- the exact
+    # defect restrict_dir_to_owner exists to close. Warn rather than raise:
+    # the ACE still applies to the named object, so the lockdown is partial
+    # rather than absent, and turning a partial protection into a runtime
+    # OSError would be the worse outcome. The argv tests cannot see this from
+    # the call site, so the check lives here.
+    try:
+        if Path(path).is_dir():
+            # The path is deliberately NOT logged. In this codebase a path can
+            # itself be the secret -- mcp_gateway/apps.py notes that its spool
+            # FILENAMES are live capability tokens -- so naming it here would be
+            # clear-text logging of sensitive information (CodeQL flagged exactly
+            # that). logging already records module/function/lineno, which is
+            # what locates the offending caller.
+            logger.warning(
+                "restrict_to_owner was called on a directory; its grants are not "
+                "inheritable, so files created inside will not be owner-only. "
+                "Use restrict_dir_to_owner for a directory."
+            )
+    except OSError:
+        pass
+    _icacls_owner_only(path, inherit=False)
+
+
+def restrict_dir_to_owner(path: str | os.PathLike) -> None:
+    """Fail-loud owner-only lockdown of a DIRECTORY, inherited by its children.
+
+    The directory twin of :func:`restrict_to_owner`, and separate from it
+    because the two shapes genuinely differ on both platforms:
+
+    POSIX: ``0o700`` rather than ``0o600`` — a directory needs the execute bit
+    to be traversable at all, so the file helper's mode would make the
+    directory useless.
+
+    Windows: the grants carry ``(OI)(CI)`` so they propagate to files and
+    subdirectories created inside. ``restrict_to_owner``'s grants deliberately
+    do not, because those flags are meaningless on a file; applying the
+    file-shaped helper to a directory is what left every file created inside an
+    "owner-only" directory on the creating token's default DACL.
+
+    Note the limit: inheritance governs what gets CREATED from here on. A file
+    that already exists inside the directory keeps its own DACL, and Windows
+    grants *Bypass Traverse Checking* to Everyone by default, so a permissive
+    pre-existing file stays reachable through a tightened parent. Repairing an
+    existing install needs a per-file pass over the known names; this helper is
+    the guarantee for new files, not a retrofit.
+
+    Fail-loud like :func:`restrict_to_owner`: any failure raises ``OSError`` so
+    callers reach their warn-and-continue handlers.
+    """
+    if IS_POSIX:
+        # Semgrep's insecure-file-permissions rule reads 0o700 as "widely
+        # permissive" and recommends 0o644, which is backwards for a DIRECTORY
+        # holding secrets: 0o644 drops owner-execute (making the directory
+        # untraversable) and ADDS world-read -- the exact exposure this helper
+        # exists to close. 0o700 is the restrictive mode here, so the finding is
+        # suppressed on the line below. Same reasoning as cloud/launch_job.py.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
+        os.chmod(path, 0o700)
+        return
+    _icacls_owner_only(path, inherit=True)
+
+
+def _icacls_owner_only(path: str | os.PathLike, *, inherit: bool) -> None:
+    """Apply an owner-only DACL to *path* via icacls. Windows-only.
+
+    Shared by :func:`restrict_to_owner` (``inherit=False``, file shape) and
+    :func:`restrict_dir_to_owner` (``inherit=True``, directory shape). The only
+    difference between the two argv forms is the rights prefix, so they are one
+    function: an owner-only DACL that two call paths could drift apart on is
+    the defect this consolidation exists to prevent.
+    """
     icacls = shutil.which("icacls") or r"C:\Windows\System32\icacls.exe"
     # Resolve the invoking user's SID BEFORE building the argv. If whoami is
     # unavailable (missing from PATH under a stripped-down profile, subprocess
@@ -3216,19 +3310,21 @@ def restrict_to_owner(path: str | os.PathLike) -> None:
     user_sid = _current_user_sid()
     if user_sid is None:
         raise OSError(
-            "restrict_to_owner: cannot resolve current user SID via whoami; "
+            f"{'restrict_dir_to_owner' if inherit else 'restrict_to_owner'}: "
+            "cannot resolve current user SID via whoami; "
             "refusing to apply Owner-Rights-only DACL (would lock non-owner "
             f"users out of {path!s} — see _current_user_sid docstring)."
         )
+    rights = f"{_ICACLS_DIR_INHERIT}F" if inherit else "F"
     argv: list[str] = [
         icacls,
         os.fspath(path),
         "/inheritance:r",
         "/grant:r",
-        f"{_OWNER_RIGHTS_SID}:F",
+        f"{_OWNER_RIGHTS_SID}:{rights}",
     ]
     if user_sid != _OWNER_RIGHTS_SID:
-        argv += ["/grant:r", f"{user_sid}:F"]
+        argv += ["/grant:r", f"{user_sid}:{rights}"]
     try:
         r = subprocess.run(
             argv,

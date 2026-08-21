@@ -833,7 +833,7 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
     if platform_compat.IS_POSIX:
         platform_compat.chmod_safe(str(staging_parent), 0o700)
     else:
-        platform_compat.restrict_to_owner(str(staging_parent))
+        platform_compat.restrict_dir_to_owner(str(staging_parent))
     return staging_parent
 
 
@@ -851,7 +851,7 @@ def _prepare_auth_workspace(
         if platform_compat.IS_POSIX:
             platform_compat.chmod_safe(str(root), 0o700)
         else:
-            platform_compat.restrict_to_owner(str(root))
+            platform_compat.restrict_dir_to_owner(str(root))
         for mapping in _auth_store_mappings(platform_name, home, environ):
             for pattern in mapping.filenames:
                 for source in mapping.source.glob(pattern):

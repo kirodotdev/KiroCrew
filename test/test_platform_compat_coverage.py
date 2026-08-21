@@ -1779,7 +1779,11 @@ class TestRestrictToOwner:
             raise OSError("no perms")
 
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
-        monkeypatch.setattr(pc.Path, "chmod", _boom)
+        # The POSIX tightening now goes through restrict_dir_to_owner, which
+        # calls os.chmod rather than Path.chmod -- patching the old seam would
+        # intercept nothing, the raise would never fire, and this test would
+        # pass without ever exercising the warn-and-continue handler.
+        monkeypatch.setattr(pc.os, "chmod", _boom)
         with caplog.at_level(logging.WARNING, logger=pc.logger.name):
             pc.make_owner_only_dir(target)
         assert target.is_dir()
@@ -1787,11 +1791,17 @@ class TestRestrictToOwner:
 
     def test_make_owner_only_dir_uses_the_dacl_on_windows(self, monkeypatch, tmp_path):
         called: list[Any] = []
+        wrong: list[Any] = []
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "restrict_to_owner", called.append)
+        # Must be the DIRECTORY helper: restrict_to_owner's grants are
+        # file-shaped (no (OI)(CI)), so files created inside would not inherit
+        # the lockdown.
+        monkeypatch.setattr(pc, "restrict_dir_to_owner", called.append)
+        monkeypatch.setattr(pc, "restrict_to_owner", wrong.append)
         target = tmp_path / "secrets"
         pc.make_owner_only_dir(target)
         assert called and str(called[0]) == str(target)
+        assert wrong == []
 
 
 # ---------------------------------------------------------------------------

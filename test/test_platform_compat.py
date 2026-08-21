@@ -1656,6 +1656,116 @@ class TestRestrictToOwnerArgvOnLinux:
         # applying a half-configured lockdown.
         assert called == [], f"icacls should not run when SID is unknown: {called}"
 
+    def test_directory_grants_are_inheritable(self, tmp_path, monkeypatch):
+        # The bug this pins: make_owner_only_dir used to delegate to the
+        # FILE-shaped restrict_to_owner, whose grants carry no (OI)(CI). Those
+        # ACEs apply to the directory alone, so a file created inside an
+        # "owner-only" directory got no explicit ACE and fell back to the
+        # creating token's default DACL. No mode assertion can catch this —
+        # NTFS reports 0o666 for any file regardless of its DACL — so the
+        # argv IS the observable, exactly as the file-shape test above.
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_USER_SID_CACHE", [])
+        monkeypatch.setattr(pc, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1000")
+        captured: dict = {}
+
+        def fake_run(argv, **_kw):
+            captured["argv"] = list(argv)
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(pc.subprocess, "run", fake_run)
+        d = tmp_path / "secrets-dir"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        argv = captured["argv"]
+        assert os.fspath(d) in argv
+        assert "/inheritance:r" in argv
+        grants = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "/grant:r"]
+        # Both grants must propagate to children, or the directory guarantee
+        # covers nothing created inside it.
+        assert "*S-1-3-4:(OI)(CI)F" in grants, grants
+        assert "*S-1-5-21-1-2-3-1000:(OI)(CI)F" in grants, grants
+
+    def test_file_grants_stay_non_inheritable(self, tmp_path, monkeypatch):
+        # The other half of the split, asserted negatively: (OI)(CI) is
+        # meaningless on a file, so restrict_to_owner must NOT acquire it when
+        # the directory shape does. Without this, "just add (OI)(CI) to
+        # restrict_to_owner" reads as a passing simplification.
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_USER_SID_CACHE", [])
+        monkeypatch.setattr(pc, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1000")
+        captured: dict = {}
+
+        def fake_run(argv, **_kw):
+            captured["argv"] = list(argv)
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(pc.subprocess, "run", fake_run)
+        f = tmp_path / "secret.key"
+        f.write_bytes(b"s" * 32)
+        pc.restrict_to_owner(f)
+        grants = [
+            captured["argv"][i + 1]
+            for i, a in enumerate(captured["argv"][:-1])
+            if a == "/grant:r"
+        ]
+        assert grants, captured["argv"]
+        for g in grants:
+            assert "(OI)" not in g and "(CI)" not in g, g
+
+    def test_file_helper_warns_when_handed_a_directory(self, tmp_path, monkeypatch, caplog):
+        # The misuse guard. The argv tests cannot see this from the call site, so
+        # a directory reaching the file-shaped helper has to be caught here --
+        # it tightens the directory but leaves files created inside on the
+        # creating token's default DACL. Warn, not raise: the ACE still applies
+        # to the named object, so the lockdown is partial rather than absent.
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_USER_SID_CACHE", [])
+        monkeypatch.setattr(pc, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1000")
+        monkeypatch.setattr(
+            pc.subprocess,
+            "run",
+            lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+        )
+        d = tmp_path / "a-directory"
+        d.mkdir()
+        with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+            pc.restrict_to_owner(d)
+        assert any("not inheritable" in r.getMessage() for r in caplog.records), [
+            r.getMessage() for r in caplog.records
+        ]
+
+    def test_file_helper_stays_quiet_for_a_file(self, tmp_path, monkeypatch, caplog):
+        # The guard must not fire on the helper's actual purpose, or every
+        # secret-file lockdown would emit a spurious warning.
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_USER_SID_CACHE", [])
+        monkeypatch.setattr(pc, "_current_user_sid", lambda: "*S-1-5-21-1-2-3-1000")
+        monkeypatch.setattr(
+            pc.subprocess,
+            "run",
+            lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+        )
+        f = tmp_path / "secret.key"
+        f.write_bytes(b"s" * 32)
+        with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+            pc.restrict_to_owner(f)
+        assert not [r for r in caplog.records if "not inheritable" in r.getMessage()]
+
+    def test_directory_shape_uses_0o700_on_posix(self, tmp_path, monkeypatch):
+        # The POSIX half of the split: 0o700, not the file helper's 0o600 —
+        # a directory without the execute bit is not traversable at all.
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        modes: list[int] = []
+        monkeypatch.setattr(pc.os, "chmod", lambda p, m: modes.append(m))
+        pc.restrict_dir_to_owner(tmp_path)
+        assert modes == [0o700], modes
+
     def test_sid_failure_is_not_cached_success_is(self, monkeypatch):
         # A transient whoami failure (timeout under AV scan, non-zero rc) must
         # NOT be memoized: with lru_cache the first failure poisoned every
@@ -2515,23 +2625,40 @@ class TestMakeOwnerOnlyDir:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Windows derives access from the DACL, so the mode argument is inert
-        and restrict_to_owner is the only thing that protects the directory."""
+        and the DACL helper is the only thing that protects the directory.
+
+        It must be the DIRECTORY helper. ``restrict_to_owner`` is file-shaped:
+        its grants carry no ``(OI)(CI)``, so routing a directory through it
+        tightened the directory itself and left every file created inside on
+        the creating token's default DACL -- which is why the negative
+        assertion below is the load-bearing half of this test.
+        """
         calls: list[str] = []
+        wrong: list[str] = []
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "restrict_to_owner", lambda p: calls.append(str(p)))
+        monkeypatch.setattr(pc, "restrict_dir_to_owner", lambda p: calls.append(str(p)))
+        monkeypatch.setattr(pc, "restrict_to_owner", lambda p: wrong.append(str(p)))
         target = tmp_path / "win"
         pc.make_owner_only_dir(target)
         assert target.is_dir()
         assert calls == [str(target)]
+        assert wrong == [], "a directory must not go through the file-shaped helper"
 
     def test_directory_still_exists_when_tightening_fails(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Best-effort on the tightening step: the caller decides whether an
-        un-tightened directory is fatal, so creation must not be rolled back."""
+        un-tightened directory is fatal, so creation must not be rolled back.
+
+        Patches the same helper ``make_owner_only_dir`` actually calls -- when
+        this named the file helper instead, the raise never fired and the test
+        passed without exercising the handler at all.
+        """
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(
-            pc, "restrict_to_owner", lambda p: (_ for _ in ()).throw(OSError("nope"))
+            pc,
+            "restrict_dir_to_owner",
+            lambda p: (_ for _ in ()).throw(OSError("nope")),
         )
         target = tmp_path / "partial"
         pc.make_owner_only_dir(target)

@@ -879,7 +879,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # through the sandbox helper because sandbox imports platform_compat.
         "platform_compat.py::process_owner_uid",
         "platform_compat.py::process_matches",
-        "platform_compat.py::restrict_to_owner",
+        # The single icacls chokepoint shared by restrict_to_owner (file shape)
+        # and restrict_dir_to_owner (directory shape, inheritable grants). Both
+        # public helpers delegate here, so this one entry covers the owner-only
+        # DACL spawn for every caller; neither public name spawns directly.
+        "platform_compat.py::_icacls_owner_only",
         # OS keep-awake helper for the prevent-sleep feature (power.py). FIXED
         # argv — `caffeinate -i -w <pid>` on macOS, `systemd-inhibit
         # --what=idle:sleep --mode=block … /bin/sh -c 'while kill -0 <pid> …'`

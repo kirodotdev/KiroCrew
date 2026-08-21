@@ -156,6 +156,11 @@ def _windows_restrict_to_owner_stub(request, monkeypatch):
     call sites that bound the symbol by value (tips.py) are unaffected
     by this module-attr patch -- acceptable: they surface as at most a
     handful of failures, handled individually.
+
+    ``restrict_dir_to_owner`` is stubbed alongside it and must stay that
+    way: it is the directory twin that ``make_owner_only_dir`` routes
+    through, so stubbing only the file helper would leave every test that
+    creates an owner-only directory spawning a real icacls.
     """
     if not platform_compat.IS_WINDOWS or request.module.__name__ in (
         "test_platform_compat",
@@ -164,6 +169,7 @@ def _windows_restrict_to_owner_stub(request, monkeypatch):
         yield
         return
     monkeypatch.setattr(platform_compat, "restrict_to_owner", lambda p: None)
+    monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", lambda p: None)
     yield
 
 

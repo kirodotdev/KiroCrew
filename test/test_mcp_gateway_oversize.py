@@ -148,9 +148,12 @@ class TestSpillToFile:
         """
         if pc.IS_WINDOWS:
             calls: list[str] = []
-            monkeypatch.setattr(
-                pc, "restrict_to_owner", lambda p: calls.append(str(p))
-            )
+            wrong: list[str] = []
+            monkeypatch.setattr(pc, "restrict_dir_to_owner", lambda p: calls.append(str(p)))
+            # The file-shaped helper must NOT be what a directory goes through:
+            # its icacls grants carry no (OI)(CI), so spilled payloads written
+            # into the directory afterwards would not inherit the lockdown.
+            monkeypatch.setattr(pc, "restrict_to_owner", lambda p: wrong.append(str(p)))
         loose = tmp_path / "mcp_spill"
         loose.mkdir(mode=0o755)
 
@@ -165,6 +168,7 @@ class TestSpillToFile:
 
         if pc.IS_WINDOWS:
             assert str(loose) in calls
+            assert str(loose) not in wrong
         else:
             assert loose.stat().st_mode & 0o777 == 0o700
 

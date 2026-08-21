@@ -125,7 +125,7 @@ def write_spool(payload: dict) -> str:
         # Fail loud — a record must never exist without owner-only
         # protection; the interception caller's failure-safe path delivers
         # the original tool result with no app render.
-        platform_compat.restrict_to_owner(directory)
+        platform_compat.restrict_dir_to_owner(directory)
 
     spool_id = uuid.uuid4().hex
     record = {
