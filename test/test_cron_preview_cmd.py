@@ -182,3 +182,74 @@ class TestCronPreviewCallToolPath:
         out = capsys.readouterr().out
         assert "[notify suppressed]" in out
         assert "hello world" in out
+
+
+class TestCronPreviewNotifyParity:
+    """The preview ctx must accept everything production ScriptContext.notify accepts.
+
+    A monitor cron exists to speak up; `session="origin"` is the documented way to
+    reach the chat that created it. A preview that only validates the silent branch
+    validates nothing that matters, and a TypeError there reads exactly like a script
+    bug -- inviting the "fix" of dropping the kwarg, which silently breaks delivery.
+    """
+
+    def test_notify_accepts_documented_routing_kwarg(self, tmp_path: Path, capsys):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    ctx.notify('stall suspected', session='origin')\n"
+            "    raise Report('done')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert "[notify suppressed]" in out
+        assert "stall suspected" in out
+        # Routing surfaced, not swallowed: preview is how you confirm where it goes.
+        assert "origin" in out
+        assert "Error" not in out
+
+    def test_notify_signature_derived_from_production(self, tmp_path: Path, capsys):
+        """Expectations come from ScriptContext.notify itself, so future drift fails here."""
+        _write_script(
+            tmp_path,
+            "s.py",
+            "import inspect\n"
+            "from kiro_crew.cron_script import Report, ScriptContext\n"
+            "def run(ctx):\n"
+            "    prod = inspect.signature(ScriptContext.notify)\n"
+            "    stub = inspect.signature(ctx.notify)\n"
+            "    # Same first parameter name, so keyword calls work in both.\n"
+            "    assert list(stub.parameters)[0] == list(prod.parameters)[1]\n"
+            "    # Anything production can bind, the stub must bind too.\n"
+            "    call = {'session': 'origin', 'channel': 'C123'}\n"
+            "    prod.bind(object(), 'x', **call)\n"
+            "    stub.bind('x', **call)\n"
+            "    raise Report('parity ok')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert "parity ok" in out
+        assert "Error" not in out
+
+    def test_notify_redacts_credentials_in_text_and_kwargs(self, tmp_path: Path, capsys):
+        """Production redacts before sending; preview must redact before printing."""
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    ctx.notify('leak aws_secret_access_key=AKIAIOSFODNN7EXAMPLE',\n"
+            "               detail='aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY')\n"
+            "    raise Report('done')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        # The kwarg value is redacted too, not just the text.
+        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert "REDACTED" in out

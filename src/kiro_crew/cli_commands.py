@@ -1085,8 +1085,18 @@ def _cron_preview(args: argparse.Namespace) -> None:
                 )
             return result
 
-        def notify(self, message: str) -> None:
-            print(f"[notify suppressed]: {message}")
+        def notify(self, text: str, **kwargs: object) -> dict:
+            # Signature mirrors production ScriptContext.notify: scripts pass routing
+            # kwargs (session="origin" is the documented way for a cron to reach the
+            # chat that created it), so a positional-only stub made preview crash on
+            # the one branch a monitor cron exists for. Redaction mirrors production
+            # too -- this prints to the user's terminal, and kwargs values are
+            # script-supplied. Returns an empty dict: nothing was delivered.
+            safe_text = redact(text)
+            safe_kwargs = json.loads(redact(json.dumps(kwargs))) if kwargs else {}
+            routing = f" (kwargs: {safe_kwargs})" if safe_kwargs else ""
+            print(f"[notify suppressed]: {safe_text}{routing}")
+            return {}
 
         def close(self):
             pass
