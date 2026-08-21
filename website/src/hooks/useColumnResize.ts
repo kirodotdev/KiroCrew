@@ -1,10 +1,14 @@
 // Drag-to-resize behaviour shared by the dashboard's fixed-width workspace
 // columns (Issue Radar's left rail and issue / PR lists, Task Runner's run
-// rail, the Webhooks rail). Every column behaves the same way — the handle sits
-// on its right edge,
-// dragging right widens it, the width is clamped while dragging and persisted to
-// localStorage on release — so the logic lives here once instead of being
-// duplicated per column.
+// rail, the Webhooks rail). Every column behaves the same way — the width is
+// clamped while dragging and persisted to localStorage on release — so the
+// logic lives here once instead of being duplicated per column.
+//
+// The handle usually sits on the column's RIGHT edge (a left-side rail), where
+// dragging right widens it. A right-side rail puts its grip on the LEFT edge,
+// so the drag direction flips: pass `edge: 'left'` and the hook negates the
+// pointer delta instead of every such caller hand-rolling the same block with
+// a minus sign in it.
 //
 // A column may also opt into COLLAPSING (the rails do): drag far enough
 // past the minimum and the column snaps to a narrow icon strip instead of
@@ -12,6 +16,7 @@
 // distance back out, so the snap has hysteresis and doesn't flicker around the
 // boundary.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { safeSetItem } from '../utils/safeStorage'
 import { useIsMobile } from './useIsMobile'
 import { usePointerDrag } from './usePointerDrag'
 
@@ -46,8 +51,9 @@ export interface ColumnResize {
   dragging: boolean
   /** Re-open a collapsed column at the width the user last dragged it to. */
   expand: () => void
-  /** Move the column by `dx` px and persist, clamping / collapsing the same way
-   *  a drag of that distance would. Drives the handle's arrow keys. */
+  /** Move the grip by `dx` px and persist, clamping / collapsing the same way
+   *  a drag of that distance would (so on a left-edge grip, positive `dx`
+   *  narrows). Drives the handle's arrow keys. */
   nudge: (dx: number) => void
   /** Collapse to the icon strip without a drag — e.g. on a narrow viewport,
    *  where a fixed-width column would squeeze the pane beside it. No-op when the
@@ -64,7 +70,15 @@ export function useColumnResize(
   max: number,
   collapse?: CollapseConfig,
   loadCollapsed?: () => boolean,
+  /** Which edge of the column the grip sits on. On a `'left'` grip (a
+   *  right-side rail) dragging LEFT grows the column, so the pointer delta is
+   *  negated before it reaches the resolver. */
+  edge: 'right' | 'left' = 'right',
 ): ColumnResize {
+  // Folding the grip's direction into a sign keeps resolve/apply edge-agnostic.
+  // nudge shares it so arrow keys follow the grip's direction too: on a
+  // left-edge grip, ArrowRight moves the grip right, which narrows the column.
+  const sign = edge === 'left' ? -1 : 1
   // The stored width is always an EXPANDED width, so collapsing and reopening
   // restores the user's chosen size rather than the default.
   const [openWidth, setOpenWidth] = useState<number>(load)
@@ -148,18 +162,17 @@ export function useColumnResize(
   }, [resolve, narrowMode])
 
   const persist = useCallback((next: { openWidth: number, collapsed: boolean }) => {
-    try {
-      // Always the OPEN width — the collapsed strip width is never a column width.
-      localStorage.setItem(storageKey, String(next.openWidth))
-      // The collapsed flag is a DESKTOP preference. While the viewport is narrow
-      // the column's collapsed state is ephemeral (`openedWhileNarrow`), so
-      // writing it here would let a phone visit — even a single tap on the drag
-      // handle, which resolves to the strip it is already showing — come back as
-      // a collapsed rail on the next desktop session.
-      if (collapse && !narrowMode) localStorage.setItem(collapse.storageKey, next.collapsed ? '1' : '0')
-    } catch {
-      /* storage blocked or full — the layout still applies for this session */
-    }
+    // safeSetItem reclaims disposable caches under quota pressure and never
+    // throws — a blocked or full store means the layout applies for this
+    // session only.
+    // Always the OPEN width — the collapsed strip width is never a column width.
+    safeSetItem(storageKey, String(next.openWidth))
+    // The collapsed flag is a DESKTOP preference. While the viewport is narrow
+    // the column's collapsed state is ephemeral (`openedWhileNarrow`), so
+    // writing it here would let a phone visit — even a single tap on the drag
+    // handle, which resolves to the strip it is already showing — come back as
+    // a collapsed rail on the next desktop session.
+    if (collapse && !narrowMode) safeSetItem(collapse.storageKey, next.collapsed ? '1' : '0')
   }, [storageKey, collapse, narrowMode])
 
   const handleProps = usePointerDrag({
@@ -173,11 +186,11 @@ export function useColumnResize(
       document.body.style.cursor = 'col-resize'
       document.body.style.userSelect = 'none'
     },
-    onMove: ({ dx }) => { apply(dx) },
+    onMove: ({ dx }) => { apply(sign * dx) },
     onEnd: ({ dx }) => {
       draggingRef.current = false
       setDragging(false)
-      persist(apply(dx))
+      persist(apply(sign * dx))
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     },
@@ -221,12 +234,15 @@ export function useColumnResize(
   // resolved from the CURRENT width rather than a drag origin, so repeated
   // presses accumulate the way held-arrow behaviour is expected to.
   const nudge = useCallback((dx: number) => {
+    // `dx` is a grip movement, like the drag's: on a left-edge grip a positive
+    // step (ArrowRight) narrows the column, matching the pointer.
+    const d = sign * dx
     const live = liveRef.current
     const clamp = (v: number) => Math.min(max, Math.max(min, v))
     // Collapsed and growing: reopen at the remembered width instead of the
     // minimum, mirroring how the drag resolver treats an outward pull.
     if (collapse && live.collapsed) {
-      if (dx <= 0) return
+      if (d <= 0) return
       const next = { openWidth: clamp(live.openWidth), collapsed: false }
       if (narrowMode) setOpenedWhileNarrow(true)
       else setCollapsed(false)
@@ -234,7 +250,7 @@ export function useColumnResize(
       persist(next)
       return
     }
-    const raw = live.openWidth + dx
+    const raw = live.openWidth + d
     // Shrinking past the minimum collapses, matching the drag's snap rather
     // than stopping dead at a wall the keyboard can never get past.
     const next = collapse && raw < min
@@ -244,7 +260,7 @@ export function useColumnResize(
     else setCollapsed(next.collapsed)
     setOpenWidth(next.openWidth)
     persist(next)
-  }, [min, max, collapse, persist, narrowMode])
+  }, [min, max, collapse, persist, narrowMode, sign])
 
   return {
     width, collapsed: collapsedEffective, dragging, expand, nudge,

@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Files, Diff, Search, X, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import { cn } from '../../lib/utils'
-import { usePointerDrag } from '../../hooks/usePointerDrag'
-import { safeSetItem } from '../../utils/safeStorage'
+import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 
 /** Rail width bounds; the grip clamps between them. */
@@ -98,35 +97,21 @@ export default function FileBrowserRail({ projectDir, onFileOpen, selectedPath }
     }
   }
 
-  const [railW, setRailW] = useState(() => {
-    const v = parseInt(localStorage.getItem(RAIL_W_KEY) || '', 10)
-    return Number.isFinite(v) ? Math.min(RAIL_MAX_W, Math.max(RAIL_MIN_W, v)) : RAIL_MIN_W
-  })
-  const startWRef = useRef(0)
-  const latestWRef = useRef(railW)
-  latestWRef.current = railW
-  // The grip sits on the rail's LEFT edge, so dragging left (dx < 0) grows it.
-  const grip = usePointerDrag({
-    threshold: 0,
-    onStart: () => {
-      startWRef.current = latestWRef.current
-      document.body.style.userSelect = 'none'
-      document.body.style.cursor = 'col-resize'
+  // The grip sits on the rail's LEFT edge, so the hook negates the drag delta
+  // (edge: 'left'): dragging left grows the rail. Clamping and the persisted
+  // width key are unchanged from the hand-rolled block this replaces.
+  const rail = useColumnResize(
+    RAIL_W_KEY,
+    () => {
+      const v = parseInt(localStorage.getItem(RAIL_W_KEY) || '', 10)
+      return Number.isFinite(v) ? Math.min(RAIL_MAX_W, Math.max(RAIL_MIN_W, v)) : RAIL_MIN_W
     },
-    onMove: ({ dx }) => {
-      setRailW(Math.min(RAIL_MAX_W, Math.max(RAIL_MIN_W, startWRef.current - dx)))
-    },
-    onEnd: () => {
-      document.body.style.userSelect = ''
-      document.body.style.cursor = ''
-      safeSetItem(RAIL_W_KEY, String(latestWRef.current))
-    },
-  })
-  // Safety: restore body styles if unmounted mid-drag.
-  useEffect(() => () => {
-    document.body.style.userSelect = ''
-    document.body.style.cursor = ''
-  }, [])
+    RAIL_MIN_W,
+    RAIL_MAX_W,
+    undefined,
+    undefined,
+    'left',
+  )
 
   const segBtn = (on: boolean) =>
     cn('flex items-center justify-center gap-1.5 h-[22px] px-2 rounded-[5px] text-[11.5px] font-medium cursor-pointer border-none transition-colors',
@@ -135,13 +120,14 @@ export default function FileBrowserRail({ projectDir, onFileOpen, selectedPath }
   return (
     <>
       <div
-        {...grip}
+        {...rail.handleProps}
         role="separator"
         aria-orientation="vertical"
         aria-label={t('pages.chat.fileBrowserRail.resize')}
         className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40 active:bg-accent/60 transition-colors"
+        style={{ touchAction: 'none' }}
       />
-      <div style={{ width: railW }} className="shrink-0 min-h-0 border-l border-border flex flex-col">
+      <div style={{ width: rail.width }} className="shrink-0 min-h-0 border-l border-border flex flex-col">
         <div className="flex items-center gap-1.5 px-2 h-[40px] shrink-0 border-b border-border">
           <div
             className="flex flex-none bg-bg-elevated border border-border rounded-[7px] p-[2px] gap-[2px]"
