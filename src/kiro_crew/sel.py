@@ -211,6 +211,102 @@ _QUEUE_DRAIN_BATCH = 256  # max events appended per open() in the writer loop
 _FLUSH_TIMEOUT_SECS = 5.0  # bound on flush() so a stuck writer can't hang reads
 
 
+def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
+    """Apply *redactor* to every string reachable in *obj*, copying containers.
+
+    Shared by the on-disk write path (:func:`_redacted_metadata_copy`) and the
+    forward-callback path (``_forward_event``) so the two surfaces can never
+    silently diverge in which shapes they cover. Sequences are rebuilt as plain
+    ``list``/``tuple`` (mirroring json's own array degradation) rather than via
+    ``type(obj)(...)``: a namedtuple or a subclass with a different constructor
+    signature is legal metadata today (json serializes it fine), and a
+    ``TypeError`` here would cost a whole writer batch. Keys and non-string
+    leaves pass through unchanged.
+    """
+    if isinstance(obj, str):
+        return redactor(obj)
+    if isinstance(obj, dict):
+        return {k: _redact_deep(v, redactor) for k, v in obj.items()}
+    if isinstance(obj, tuple):
+        return tuple(_redact_deep(i, redactor) for i in obj)
+    if isinstance(obj, list):
+        return [_redact_deep(i, redactor) for i in obj]
+    return obj
+
+
+# AWS access-key ids case-insensitively. The shared redactor's pattern is
+# case-SENSITIVE (a real key is upper-case, and loosening it there would
+# false-positive on ordinary prose across every egress surface). SEL callers,
+# however, log NORMALIZED text — e.g. the dashboard file-search handler
+# lowercases the query before logging it in ``resources`` — and a lowercased
+# key is trivially reversible, so the audit trail needs the case-insensitive
+# net that ordinary egress does not. Bounded on both sides so a longer
+# alphanumeric run (where extra chars change the case-restore candidates)
+# stays out of scope.
+_AWS_KEY_ANYCASE_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Za-z0-9]{16}(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _redact_text(text: str) -> str:
+    """Apply the baseline credential/exfiltration passes to one string.
+
+    Adds a case-insensitive AWS access-key pass on top of ``security.redact``:
+    SEL callers may normalize case before logging (see ``_AWS_KEY_ANYCASE_RE``),
+    which would slip a lowercased key past the shared case-sensitive pattern.
+    """
+    # circular import: kiro_crew.security imports SecurityEvent/SecurityEventLog
+    # from this module at top level, so the redactor can only be imported
+    # lazily here (same pattern as _forward_event / log_governance_decision).
+    from kiro_crew.security import redact
+
+    return _AWS_KEY_ANYCASE_RE.sub("[REDACTED: credential]", redact(text))
+
+
+# Free-form string fields on SecurityEvent that carry caller-influenced text
+# (a tool/operation name, a resources summary, an exception message) and are
+# therefore redacted by the writer alongside metadata. The identity-shaped
+# fields (caller_identity, agent, source, downstream_service, request_id) are
+# constrained vocabularies, not caller free-text, and stay verbatim.
+_REDACTED_TEXT_FIELDS = ("operation", "resources", "error")
+
+
+def _redact_and_clip(text: str) -> str:
+    """Redact *text*, THEN clip it to ``_MAX_ARG_LEN``.
+
+    Order is the whole point. Clipping first can cut a credential in half, and
+    the surviving prefix no longer matches any credential grammar (they are all
+    anchored on a full-length token), so the writer's own pass cannot recover
+    it: a long ``resources`` line with a key straddling byte 500 would persist
+    most of that key. Redacting the FULL string first replaces the token
+    outright, and only then is the (now secret-free) text clipped.
+
+    Used by the ``log_*`` helpers, which are where the clip happens. The
+    writer's pass in ``_flush_batch`` stays as the backstop for events built by
+    constructing :class:`SecurityEvent` directly.
+    """
+    return _redact_text(text)[:_MAX_ARG_LEN]
+
+
+def _redacted_metadata_copy(metadata: dict) -> dict:
+    """Return a copy of *metadata* with credential/exfiltration text redacted.
+
+    ``metadata`` is a free-form dict whose string values often carry
+    caller-supplied text verbatim (search queries, document titles). The SEL
+    file is persisted and dashboard-readable, so a secret pasted into such a
+    field must never land on disk. String VALUES are redacted at any nesting
+    depth (dicts, lists, tuples); keys and non-string values pass through
+    unchanged.
+
+    Always builds a NEW structure: callers may reuse their metadata dict after
+    logging, so redaction must never be observable through the object they
+    passed in. May raise on a pathological value; the writer contains that
+    per event by persisting a placeholder — the raw text is never written.
+    """
+    return {k: _redact_deep(v, _redact_text) for k, v in metadata.items()}
+
+
 @dataclass
 class SecurityEvent:
     """A single auditable security event."""
@@ -391,6 +487,69 @@ class SecurityEventLog:
         from the running thread means a future inline caller cannot reintroduce
         that stall by forgetting a flag.
         """
+        # Redact caller-supplied text before the chain hash is computed, so the
+        # persisted bytes and the HMAC signature agree on the redacted form.
+        # This is the single convergence point for every CALLER-originated event
+        # (async writer, sync mode, and the critical fail-closed path all land
+        # here), so a credential pasted into a free-form field — a metadata
+        # value, an exception message in ``error``, a resources summary — never
+        # reaches disk regardless of which log_* helper recorded it. The one
+        # write that bypasses this method, the ``sel_rotation`` boundary record,
+        # carries no caller text (a generated segment name and a byte count), so
+        # it needs no pass. Covered surfaces: ``metadata`` values (any nesting
+        # depth) and the free-form top-level strings in
+        # ``_REDACTED_TEXT_FIELDS``; identity-shaped fields stay verbatim.
+        # Caller-side passes (the governance helpers'
+        # ``redact_via_context``) remain as a broader first layer. Runs outside
+        # the chain lock: regex cost must not extend the critical section that
+        # synchronous fallbacks and prune contend on. Fail-closed per event: a
+        # redaction failure replaces the offending text with a placeholder —
+        # the raw text is never persisted, and one bad value never costs the
+        # rest of the batch.
+        for event in events:
+            for field_name in _REDACTED_TEXT_FIELDS:
+                value = getattr(event, field_name)
+                if not value:
+                    continue
+                try:
+                    cleaned = _redact_text(value)
+                except Exception as exc:
+                    logger.warning(
+                        "SEL: %s redaction failed for a %s event; persisting a "
+                        "placeholder instead of the raw text",
+                        field_name,
+                        event.event_type,
+                        exc_info=True,
+                    )
+                    cleaned = f"[redaction_error: {type(exc).__name__}]"
+                if cleaned != value:
+                    logger.info(
+                        "SEL: redacted %s text in a %s event",
+                        field_name,
+                        event.event_type,
+                    )
+                    setattr(event, field_name, cleaned)
+            if not event.metadata:
+                continue
+            try:
+                redacted = _redacted_metadata_copy(event.metadata)
+            except Exception as exc:
+                logger.warning(
+                    "SEL: metadata redaction failed for a %s event; persisting "
+                    "a placeholder instead of the raw metadata",
+                    event.event_type,
+                    exc_info=True,
+                )
+                redacted = {"redaction_error": type(exc).__name__}
+            if redacted != event.metadata:
+                # Observability only — a secret reaching audit metadata signals
+                # an upstream handling defect. Keys only, never values.
+                logger.info(
+                    "SEL: redacted metadata value(s) in a %s event (keys: %s)",
+                    event.event_type,
+                    list(event.metadata),
+                )
+            event.metadata = redacted
         callback: Callable[[dict], None] | None
         with self._lock:
             try:
@@ -578,16 +737,7 @@ class SecurityEventLog:
             # only be imported lazily here.
             from kiro_crew.security import redact
 
-            def _redact_deep(obj: object) -> object:
-                if isinstance(obj, str):
-                    return redact(obj)
-                if isinstance(obj, dict):
-                    return {k: _redact_deep(v) for k, v in obj.items()}
-                if isinstance(obj, (list, tuple)):
-                    return type(obj)(_redact_deep(i) for i in obj)
-                return obj
-
-            callback(_redact_deep(asdict(event)))  # type: ignore[arg-type]
+            callback(_redact_deep(asdict(event), redact))  # type: ignore[arg-type]
         except Exception:
             logger.warning("forward_callback failed", exc_info=True)
 
@@ -1564,8 +1714,8 @@ class SecurityEventLog:
                 outcome=outcome,
                 request_id=str(request_id),
                 downstream_service=downstream_service,
-                resources=resources[:_MAX_ARG_LEN] if resources else "",
-                error=error[:_MAX_ARG_LEN] if error else "",
+                resources=_redact_and_clip(resources) if resources else "",
+                error=_redact_and_clip(error) if error else "",
                 metadata=metadata or {},
             ),
             critical=critical,
@@ -1592,11 +1742,14 @@ class SecurityEventLog:
         codebase).  ``scope``/``item``/``rule``/``layer`` go in ``metadata`` for
         ``policy explain`` and forensic queries.
 
-        On-disk SEL records are NOT redacted by the writer, and the persisted
-        HMAC chain signs the bytes as-written, so the operation/resources/reason
-        are redacted HERE (before ``log``) via ``redact_via_context`` — a command
-        body or path that tripped governance must not leak a credential into the
-        audit log.
+        The writer applies the baseline credential/exfiltration passes to
+        ``operation``/``resources``/``error`` and metadata values before
+        persisting, but ``redact_via_context`` is broader (a loaded
+        companion's extra regexes apply) — so ``operation``/``item``/``reason``
+        are ALSO redacted HERE (before ``log``): a command body or path that
+        tripped governance must not leak anything the broader pass would have
+        caught. The writer's narrower pass is a second layer, not a
+        replacement.
 
         Pass ``critical=True`` when the caller enforces "audit-or-deny" for a
         GOVERNED decision (e.g. a governed transport-start allow): the event is
@@ -1622,14 +1775,14 @@ class SecurityEventLog:
                 caller_identity=session_key,
                 agent=agent,
                 source=_infer_source(session_key),
-                operation=safe_operation[:_MAX_ARG_LEN],
+                operation=_redact_and_clip(safe_operation),
                 outcome=outcome,
-                resources=safe_item[:_MAX_ARG_LEN],
+                resources=_redact_and_clip(safe_item),
                 metadata={
                     "scope": scope,
                     "rule": rule,
                     "layer": layer,
-                    "reason": safe_reason[:_MAX_ARG_LEN],
+                    "reason": _redact_and_clip(safe_reason),
                 },
             ),
             critical=critical,
@@ -1674,13 +1827,13 @@ class SecurityEventLog:
                 caller_identity=session_key,
                 agent="kirocrew",
                 source=_infer_source(session_key),
-                operation=chokepoint[:_MAX_ARG_LEN],
+                operation=_redact_and_clip(chokepoint),
                 outcome="blocked" if failed_closed else "degraded",
                 resources="",
                 metadata={
                     "scope": scope,
                     "app": app,
-                    "reason": safe_reason[:_MAX_ARG_LEN],
+                    "reason": _redact_and_clip(safe_reason),
                     "disposition": "failed_closed" if failed_closed else "failed_open",
                 },
             ),
@@ -1714,8 +1867,8 @@ class SecurityEventLog:
                 source=source,
                 operation=operation,
                 outcome=outcome,
-                resources=resources[:_MAX_ARG_LEN] if resources else "",
-                error=error[:_MAX_ARG_LEN] if error else "",
+                resources=_redact_and_clip(resources) if resources else "",
+                error=_redact_and_clip(error) if error else "",
             ),
             critical=critical,
         )

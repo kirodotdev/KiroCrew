@@ -23,13 +23,13 @@ Each entry records:
 | `operation` | Tool name or `METHOD /api/path` |
 | `tool_kind` | Tool category (`execute_bash`, `fs_write`, `mcp_core`, `mcp_cron`, etc.) |
 | `outcome` | `invoked`, `auto_approved`, `approved`, `rejected`, `denied`, `completed`, `failed`, `clamped`, `degraded` (a governance chokepoint failed OPEN) |
-| `resources` | Affected resources summary (truncated to 500 chars) |
+| `resources` | Affected resources summary (redacted, then truncated to 500 chars — see `metadata`) |
 | `downstream_service` | MCP server name if applicable (`kirocrew-core`, `kirocrew-cron`, `internal-mcp`) |
 | `request_id` | ACP permission request ID |
 | `error` | Error message if failed/denied |
 | `prev_hash` | HMAC of previous entry (chain link) |
 | `entry_hash` | HMAC-SHA256 of this entry |
-| `metadata` | Additional context (approval reason, step index, etc.) |
+| `metadata` | Additional context (approval reason, step index, etc.). Free-form string values are **redacted at write time**: the writer applies `security.redact` (credential + exfiltration-URL passes) to string values at any nesting depth before the entry is hashed and persisted, so caller-supplied text (a search query, a document title) never lands a secret on disk. Keys and non-string values pass through; the caller's dict is never mutated (the writer redacts a copy). The same write-time pass covers the free-form top-level strings `operation` / `resources` / `error` (an exception message can quote a command body or URL); identity-shaped fields (`caller_identity`, `agent`, `source`, `downstream_service`, `request_id`) are constrained vocabularies and stay verbatim. Where a `log_*` helper CLIPS a field to 500 chars it redacts first and clips second: clipping first can cut a credential in half, and the surviving prefix matches no full-token grammar, so the writer's pass could not recover it. The HMAC chain signs the redacted bytes |
 
 The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `operation=config.load`, `caller_identity=config_loader`) is emitted by `config/loader.py`'s `_log_config_clamp_event` when an out-of-range security-bounded knob (`agent.subagent_auto_max` / `agent.max_subagents` / `agent.subagent_max_turns` / `session.pool_size`) is clamped to its API-enforced ceiling at load time, recording `metadata` `{file_value, clamped_to, min, max}`. Best-effort: a SEL failure never makes config loading raise.
 
