@@ -15,7 +15,7 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.dashboard.token_auth import derive_caller_app
+from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_caller_app
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
@@ -269,6 +269,102 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     return resolved, None
 
 
+def _refuse_unattributable_caller(
+    state: DashboardState, request: web.Request
+) -> web.Response | None:
+    """403 when the caller NAMES a dashboard slot that is gone, else None.
+
+    ``_effective_request_app`` answers ``""`` both for the person and for a
+    caller it cannot place, and the tree-shaping rules read ``""`` as the
+    person's full authority. That is sound for a caller that never had a slot --
+    a Slack thread, a channel session, the person's own cron -- but not for a
+    ``dashboard:`` key, which NAMES a slot: absence there is not "nothing to
+    confine me to", it is "the app I would have been confined to is exactly what
+    got popped". A tab closing while one of its tool calls is still in flight
+    produces precisely that, because the slot is popped synchronously without
+    draining in-flight MCP calls.
+
+    So an app-owned session going through that race would otherwise arrive here
+    with an empty scope and be handed the person's authority over the person's
+    own folders. ``mcp_dashboard._caller_app_scope`` already refuses this class
+    for its own tool set; ``caller_names_a_missing_slot`` exists so a route
+    outside that set applies the same rule, and it is deliberately NOT in the
+    middleware -- a popped slot no longer says whose tab it was, so refusing
+    there would also refuse the person's own in-flight calls on every internal
+    route at once. Each route that could not attribute a write decides for
+    itself, and a write to the shared folder tree is one of those.
+    """
+    if caller_names_a_missing_slot(
+        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
+    ):
+        sel().log_api_access(
+            caller="unattributable",
+            operation="chat.folder_write",
+            outcome="denied",
+            source="app_isolation",
+            resources=request.path,
+            error="caller names a dashboard slot that is gone",
+        )
+        return web.json_response(
+            {
+                "error": "the calling session is gone, so this write cannot be attributed",
+                "code": "caller_unattributable",
+            },
+            status=403,
+        )
+    return None
+
+
+def _folder_owner_app(folder: dict[str, Any]) -> str:
+    """The app that owns *folder*, or ``""`` when the person owns it.
+
+    The single place the storage rule is expressed: a folder created by an app
+    carries that app in ``owner_app``, and **an absent or empty key reads as the
+    person's**. That default is what makes this a field addition rather than a
+    migration — every folder written before the field existed is the person's,
+    which is exactly what it was.
+
+    Ownership decides only the tree-shaping verbs (create-into, rename,
+    reparent, delete). Reads stay whole: an app sees the person's folders and
+    can file its OWN sessions into one (``api_chat_slot_folder``), which is the
+    case a per-app namespace would have cost.
+    """
+    return str(folder.get("owner_app") or "")
+
+
+def _subtree_holds_foreign_folder(
+    folders: list[dict[str, Any]], *, root_id: str, request_app: str
+) -> bool:
+    """True if anything under *root_id* belongs to someone other than *request_app*.
+
+    Reparenting a folder relocates everything beneath it -- that is what "the
+    folder moves with everything in it" means -- so the blast radius of a move is
+    the whole SUBTREE, not the row being written. An app moving a folder it owns
+    would otherwise relocate a folder the person nested inside it, which is the
+    same violation as editing that folder directly, reached one level down.
+
+    Used by the reparent path only. Delete asks a stricter question instead --
+    whether the folder is EMPTY -- because a delete has more kinds of content to
+    account for (sessions, and archived sessions a live scan cannot see), and
+    emptiness answers all of them without an ownership test per content type.
+
+    Scoped to the descendants and not the root: the caller's authority over the
+    root itself is a separate question, answered separately.
+
+    Uses the cycle-guarded walk so a pre-existing corrupt parent chain in
+    folders.json cannot hang the request.
+    """
+    for f in folders:
+        fid = str(f.get("id") or "")
+        if fid == root_id:
+            continue
+        if _folder_owner_app(f) == request_app:
+            continue
+        if _is_descendant(folders, ancestor_id=root_id, folder_id=fid):
+            return True
+    return False
+
+
 def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> bool:
     """True if `folder_id` is `ancestor_id` or lies anywhere under it.
 
@@ -290,6 +386,8 @@ def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> 
 async def api_chat_folder_create(request: web.Request) -> web.Response:
     """POST /api/chat/folders — create a project folder."""
     state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -326,23 +424,52 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     }
     if color:
         folder["color"] = color
+    # Never from the body: a caller that could name its own owner could name
+    # someone else's. Written only when an app is calling, so the person's rows
+    # keep the shape they have on disk today and "absent means the person"
+    # stays the one representation (see _folder_owner_app).
+    request_app = _effective_request_app(state, request)
+    if request_app:
+        folder["owner_app"] = request_app
 
     def _append(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         # Re-check the parent under the lock. Its existence was validated before
         # the lock was taken, so a concurrent delete of that parent would
         # otherwise land this folder with a dangling parent_id — the same
         # pre-lock/post-lock gap the reparent path re-tests.
-        if parent_id and not any(f["id"] == parent_id for f in folders):
+        parent = next((f for f in folders if f["id"] == parent_id), None) if parent_id else None
+        if parent_id and parent is None:
             return False, "parent_not_found"
+        # Nesting into a folder writes to THAT folder's child list, so an app may
+        # only nest under one of its own. The top level is not a folder row and
+        # so has no owner to violate — that is where an app's own tree starts.
+        # Decided here rather than pre-lock because a reparent racing this
+        # request can change who the parent belongs to.
+        if request_app and parent is not None and _folder_owner_app(parent) != request_app:
+            return False, "forbidden_parent"
         folder["order"] = len(folders)  # recount under the lock
         folders.append(folder)
         return True, ""
 
-    if await state.mutate_folders(_append) == "parent_not_found":
+    create_err = await state.mutate_folders(_append)
+    if create_err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
         return web.json_response(
             {"error": "parent folder not found", "code": "folder_parent_not_found"},
             status=400,
+        )
+    if create_err == "forbidden_parent":
+        sel().log_api_access(
+            caller=request_app, operation="chat.folder_create",
+            outcome="denied", source="app_isolation", resources=f"parent={parent_id}",
+            error="app cannot create inside a folder it does not own",
+        )
+        return web.json_response(
+            {
+                "error": "cannot create a folder inside one this app does not own",
+                "code": "folder_not_owned",
+            },
+            status=403,
         )
     state.push_slots_update()
     source, caller = _audit_origin(request)
@@ -356,10 +483,13 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
 async def api_chat_folder_update(request: web.Request) -> web.Response:
     """PATCH /api/chat/folders/{id} — rename or reorder a folder."""
     state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
     fid = request.match_info["id"]
     folder = next((f for f in state._folders if f["id"] == fid), None)
     if not folder:
         return web.json_response({"error": "not found"}, status=404)
+    request_app = _effective_request_app(state, request)
     try:
         body = await request.json()
     except Exception:
@@ -368,6 +498,10 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # ``folder`` — otherwise an early field (e.g. name) is persisted while a later
     # field (e.g. an invalid/cyclic parent_id) returns 400, leaving the rejected
     # request's partial mutation live for the next successful save.
+    #
+    # ``owner_app`` is deliberately absent from the fields below: ownership is
+    # stamped once at create from the authenticated caller and is not a field a
+    # request can hand over, take, or clear.
     changes: dict[str, object] = {}
     if "name" in body:
         new_name = str(body["name"]).strip()[:100]
@@ -442,11 +576,28 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         target = next((f for f in folders if f["id"] == fid), None)
         if target is None:
             return False, "not_found"
+        # Ownership, decided here for the same reason the cycle rule is: a
+        # concurrent reparent can change who the target or the destination
+        # belongs to between validation and the write.
+        if request_app and _folder_owner_app(target) != request_app:
+            return False, "not_owned"
         if reparenting and new_parent:
             if not any(f["id"] == new_parent for f in folders):
                 return False, "parent_not_found"
             if _is_descendant(folders, ancestor_id=fid, folder_id=new_parent):
                 return False, "cycle"
+            dest = next((f for f in folders if f["id"] == new_parent), None)
+            if request_app and dest is not None and _folder_owner_app(dest) != request_app:
+                return False, "forbidden_parent"
+        if reparenting and request_app and _subtree_holds_foreign_folder(
+            folders, root_id=fid, request_app=request_app
+        ):
+            # A move takes the whole subtree with it, so a folder the person
+            # nested inside this one would be relocated by an app's write. Only
+            # the reparent is gated: a rename, a colour or a collapse changes
+            # nothing about where the descendants sit. Checked for a move to the
+            # top level too -- "" is still a move.
+            return False, "foreign_descendant"
         target.update(changes)
         if not target.get("color"):
             target.pop("color", None)
@@ -457,6 +608,27 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         # Deleted between the validation above and acquiring the store lock.
         return web.json_response(
             {"error": "not found", "code": "folder_not_found"}, status=404
+        )
+    if err in ("not_owned", "forbidden_parent", "foreign_descendant"):
+        # Distinguished in the audit, not to the caller: one code for all three
+        # keeps the response from reporting which folder was foreign.
+        _reason = {
+            "not_owned": "app cannot change a folder it does not own",
+            "forbidden_parent": "app cannot move a folder into one it does not own",
+            "foreign_descendant": "app cannot move a folder holding one it does not own",
+        }[err]
+        sel().log_api_access(
+            caller=request_app, operation="chat.folder_update",
+            outcome="denied", source="app_isolation",
+            resources=(f"parent={new_parent}" if err == "forbidden_parent" else fid),
+            error=_reason,
+        )
+        return web.json_response(
+            {
+                "error": "this app does not own that folder",
+                "code": "folder_not_owned",
+            },
+            status=403,
         )
     if err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
@@ -487,9 +659,61 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     """DELETE /api/chat/folders/{id} — delete a folder, ungroup its slots."""
 
     state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
     fid = request.match_info["id"]
-    if not any(f["id"] == fid for f in state._folders):
+    target = next((f for f in state._folders if f["id"] == fid), None)
+    if target is None:
         return web.json_response({"error": "not found"}, status=404)
+    request_app = _effective_request_app(state, request)
+    # Answered before a single slot is unfiled, so the common refusal costs no
+    # rollback. Sound pre-lock because ``owner_app`` is stamped at create and no
+    # route can reassign it — unlike the child test in ``_remove``, this answer
+    # cannot go stale while the request runs.
+    if request_app and _folder_owner_app(target) != request_app:
+        sel().log_api_access(
+            caller=request_app, operation="chat.folder_delete",
+            outcome="denied", source="app_isolation", resources=fid,
+            error="app cannot delete a folder it does not own",
+        )
+        return web.json_response(
+            {"error": "this app does not own that folder", "code": "folder_not_owned"},
+            status=403,
+        )
+    # An app may not delete a folder at all -- not even an empty one it owns.
+    #
+    # This is the smallest rule that is actually enforceable. A delete relocates
+    # everything the folder contains, and a folder's contents live in a DIFFERENT
+    # store from the folder: sessions are in the slot table and the session
+    # archive, neither of which shares a lock with the folder store. So "is this
+    # folder empty?" cannot be answered atomically with the removal, and every
+    # narrower rule leaked through a different seam -- a session filed while the
+    # archive scan awaited, a child created while the lock was acquired, a
+    # session closing after the scan and writing its folder_id on the way out.
+    # Each was closable in isolation; the class was not.
+    #
+    # Nothing shipped loses a capability: no MCP tool exposes folder deletion
+    # (the set is chat_folder_tree / chat_folder_create / chat_folder_move /
+    # chat_folder_move_session), and the only client of this route is the
+    # dashboard UI, which is the person. An app organizes its own work by
+    # creating, renaming and reparenting its folders and filing its sessions --
+    # cleanup is the person's, who can delete a full folder as they always could.
+    if request_app:
+        sel().log_api_access(
+            caller=request_app, operation="chat.folder_delete",
+            outcome="denied", source="app_isolation", resources=fid,
+            error="app cannot delete folders",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "an app cannot delete folders - ask the person, or move your "
+                    "sessions out and leave the folder"
+                ),
+                "code": "folder_delete_forbidden",
+            },
+            status=403,
+        )
     # Unfile the folder's slots first, then commit the folder removal. If that
     # commit fails, put the slots back: otherwise the delete half-lands —
     # conversations persistently unfiled while the folder they came from is
@@ -504,18 +728,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
             slot.folder_id = ""
             await save_slot_off_loop(state, slot, force=True)
 
-    def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
-        for f in folders:
-            if f.get("parent_id") == fid:
-                f["parent_id"] = ""
-        # In place, not a rebind: mutate_folders snapshots the list object it
-        # was given, and other holders of state._folders must see the removal.
-        folders[:] = [f for f in folders if f["id"] != fid]
-        return True, None
-
-    try:
-        await state.mutate_folders(_remove)
-    except Exception:
+    async def _restore_unfiled() -> None:
         for slot, previous in unfiled:
             # Only put back a slot that is STILL unfiled. Between the unfile
             # above and this rollback the user can move that conversation
@@ -535,6 +748,20 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
                     slot.key, previous, exc_info=True,
                 )
         state.push_slots_update()
+
+    def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+        for f in folders:
+            if f.get("parent_id") == fid:
+                f["parent_id"] = ""
+        # In place, not a rebind: mutate_folders snapshots the list object it
+        # was given, and other holders of state._folders must see the removal.
+        folders[:] = [f for f in folders if f["id"] != fid]
+        return True, None
+
+    try:
+        await state.mutate_folders(_remove)
+    except Exception:
+        await _restore_unfiled()
         raise
     state.push_slots_update()
     source, caller = _audit_origin(request)

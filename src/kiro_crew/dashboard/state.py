@@ -5277,11 +5277,51 @@ class DashboardState:
     ]
 
     def load_folders(self) -> None:
-        """Load folder definitions from disk."""
+        """Load folder definitions from disk, dropping rows nothing can use.
+
+        ``folders.json`` is hand-editable, and a bare ``json.loads`` admits
+        whatever it holds: a non-list document, a non-dict entry, or a row with
+        no ``id``. Every consumer matches rows by id, and ``mutate_folders``
+        snapshots the store with ``dict(row)`` -- which raises on a non-dict and
+        surfaces as a 500, since no middleware maps handler exceptions. So ONE
+        bad row would take out every folder read and write until someone edited
+        the file, and hardening each consumer in turn only moves where it dies.
+
+        Filtered here instead, at the single point the rows enter memory. A row
+        with no usable id can never be the row a request addresses, so dropping
+        it is the correct answer and not merely the safe one; it is logged so a
+        silently shrinking sidebar is explainable. Same per-entry isolation the
+        cron loader applies for the same reason.
+
+        The id must be a non-empty STRING, not merely truthy. Ids are minted as
+        ``uuid.uuid4().hex[:12]``, so anything else is already corrupt -- and a
+        merely-truthy test lets a list or dict id through, which then reaches
+        ``counts.get(f["id"])`` in the archived-count join and raises
+        ``TypeError: unhashable type`` from inside the folder GET. Admitting a
+        row that cannot be used is the same failure as not filtering at all.
+        """
         path = config_dir() / self._FOLDERS_FILE
         try:
             if path.exists():
-                self._folders = json.loads(path.read_text(encoding="utf-8"))
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(raw, list):
+                    logger.warning(
+                        "folders.json is a %s, not a list — ignoring it",
+                        type(raw).__name__,
+                    )
+                    return
+                kept = [
+                    f
+                    for f in raw
+                    if isinstance(f, dict) and isinstance(f.get("id"), str) and f["id"]
+                ]
+                if len(kept) != len(raw):
+                    logger.warning(
+                        "dropped %d unusable folder row(s) from folders.json "
+                        "(not a dict, or no id)",
+                        len(raw) - len(kept),
+                    )
+                self._folders = kept
         except Exception:
             logger.warning("Failed to load folders", exc_info=True)
 

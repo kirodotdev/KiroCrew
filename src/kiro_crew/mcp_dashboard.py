@@ -122,9 +122,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "chat_folder_tree; missing path segments are created too (mkdir -p). "
                 "Omit ``parent`` (or pass 'root') for a top-level folder. Creating a "
                 "folder never moves anything — file sessions into it with "
-                "chat_folder_move_session. Not available to an app agent: the folder "
-                "tree is shared with the person and every other app, so an app files "
-                "its own sessions into folders that already exist."
+                "chat_folder_move_session. An app agent may create at the top level "
+                "or inside a folder it created itself, and the new folder belongs to "
+                "it; creating inside one of the person's folders is refused."
             ),
             "inputSchema": {
                 "type": "object",
@@ -152,9 +152,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "(sessions and subfolders travel with it); nothing is deleted. "
                 "Cycle-guarded: a folder cannot become its own descendant. "
                 "``folder`` and ``new_parent`` are each a folder id or human path; "
-                "omit ``new_parent`` (or pass 'root') for the top level. Not available "
-                "to an app agent — reparenting reshapes a tree shared with the person "
-                "and every other app."
+                "omit ``new_parent`` (or pass 'root') for the top level. An app agent "
+                "may move only a folder it created itself, and only to the top level "
+                "or under another of its own."
             ),
             "inputSchema": {
                 "type": "object",
@@ -285,7 +285,7 @@ def _ambiguous_segment_error(seg: str, matches: list[dict]) -> str:
 
 
 def _resolve_chat_folder_ref(
-    ref: str, folders: list[dict], *, create_missing: bool
+    ref: str, folders: list[dict], *, create_missing: bool, session_key: str | None = None
 ) -> tuple[str, list[str], str | None]:
     """Resolve a sidebar-folder reference to a folder id. THE resolution chokepoint.
 
@@ -335,7 +335,7 @@ def _resolve_chat_folder_ref(
     # the two readings are compared would mutate the tree on a reference we are
     # about to refuse.
     walked, created, walk_err = _walk_chat_folder_segments(
-        ref, folders, create_missing=create_missing and not exact
+        ref, folders, create_missing=create_missing and not exact, session_key=session_key
     )
     if walk_err:
         return "", created, walk_err
@@ -358,7 +358,7 @@ def _resolve_chat_folder_ref(
 
 
 def _walk_chat_folder_segments(
-    ref: str, folders: list[dict], *, create_missing: bool
+    ref: str, folders: list[dict], *, create_missing: bool, session_key: str | None = None
 ) -> tuple[str, list[str], str | None]:
     """Walk a ``/``-separated path segment by segment. ONE walk, two modes.
 
@@ -407,7 +407,11 @@ def _walk_chat_folder_segments(
             continue
         if not create_missing:
             return "", created, None
-        made = _post("/api/chat/folders", {"name": seg, "parent_id": parent})
+        made = _post(
+            "/api/chat/folders",
+            {"name": seg, "parent_id": parent},
+            session_key=session_key,
+        )
         if made.get("error"):
             return "", created, str(made["error"])
         folders.append(made)
@@ -423,9 +427,18 @@ def _resolve_chat_folder_id(ref: str, folders: list[dict]) -> tuple[str, str | N
     return fid, err
 
 
-def _ensure_chat_folder_path(ref: str, folders: list[dict]) -> tuple[str, list[str], str | None]:
-    """Resolve a parent-folder reference, creating missing segments (mkdir -p)."""
-    return _resolve_chat_folder_ref(ref, folders, create_missing=True)
+def _ensure_chat_folder_path(
+    ref: str, folders: list[dict], *, session_key: str
+) -> tuple[str, list[str], str | None]:
+    """Resolve a parent-folder reference, creating missing segments (mkdir -p).
+
+    ``session_key`` is REQUIRED because this variant writes: the intermediate
+    segments are real folders, and each must be created under the identity the
+    caller's gate verified rather than one the write helper re-derives.
+    """
+    return _resolve_chat_folder_ref(
+        ref, folders, create_missing=True, session_key=session_key
+    )
 
 
 def _resolve_chat_slot_key(ref: str, slots: list[dict]) -> tuple[str, str | None]:
@@ -606,48 +619,70 @@ def _visible_chat_slots() -> tuple[list[dict], str | None]:
     return [r for r in live if str(r.get("app") or "") == scope], None
 
 
-def _refuse_tree_shaping_if_app_scoped(verb: str) -> str | None:
-    """Error text when the caller may not reshape the folder tree, else None.
+def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
+    """``(verified_caller_key, error)`` — the key to WRITE under, or why not.
 
-    Folders are ONE tree per instance with no owner field, so there is no "this
-    app's folder" to confine a write to: creating, renaming, reparenting or
-    deleting one lands in the person's sidebar and in every other app's view of
-    it. An app-scoped caller is therefore refused the tree-shaping verbs
-    outright rather than given authority that cannot be bounded.
+    Folders now carry an owner (``chat_folders._folder_owner_app``), so an app
+    HAS a folder of its own to write to and the endpoint bounds each write to
+    it: an app may create at the top level or inside its own folders, and may
+    rename, reparent or delete only what it owns. The person keeps full
+    authority over everything, and an app keeps read of the whole tree plus
+    filing its OWN sessions into any folder.
 
-    What an app KEEPS is everything already scoped to it: reading the tree, and
-    filing its OWN sessions into a folder that exists. The person's own agent is
-    unscoped and keeps full authority — reorganising sessions is the point of
-    these tools.
+    So this layer no longer decides the policy — it would be a second copy of a
+    rule the endpoint enforces under the store lock, and only the endpoint can
+    see the authoritative tree. What stays here is the one question the endpoint
+    cannot answer: whether the caller can be placed at all. An unverifiable or
+    delegated caller has no scope to bound a write to, and a write to shared
+    structure is not the place to assume the caller is the human.
 
-    Identity is resolved strictly, and an unverifiable caller is refused too: a
-    write to shared structure is not the place to assume the caller is the human.
+    The verified key is RETURNED rather than left for the write helpers to
+    re-derive. Those default to :func:`_resolve_session_key`, whose ``/proc``
+    ancestor walk can resolve to a different slot than the strict check above —
+    so re-resolving would check one identity and write under another, and for an
+    app-owned session the walk landing on an ancestor makes the write arrive at
+    the endpoint looking like the unconfined person. Every caller of this gate
+    must pass what it returns straight to the write.
     """
     caller_key = _resolve_session_key_strict()
     if not caller_key:
-        return (
+        return "", (
             f"Error: cannot verify which session is calling, so {verb} is "
             "refused — reshaping the shared folder tree requires a caller "
             "identity the gateway can vouch for."
         )
     rows, err = _get_rows("/api/chat/slots")
     if err:
-        return f"Error: {err}"
+        return "", f"Error: {err}"
     scope = _caller_app_scope(caller_key, rows)
     if scope is None:
-        return (
+        return "", (
             f"Error: cannot establish what this caller is allowed to change, so "
             f"{verb} is refused — a subagent or a scheduled job runs on behalf of "
             "whatever created it and cannot be granted more than that."
         )
-    if scope:
-        return (
-            f"Error: {verb} is not available to an app — the folder tree is "
-            "shared with the person and every other app, and folders carry no "
-            "owner, so there is no app-private folder to change. Filing your "
-            "own sessions into an existing folder still works."
+    if scope and not caller_key.startswith("dashboard:"):
+        # An app-owned LINKED session -- a channel- or cron-bound slot runs its
+        # turns under ``linked_session_key`` -- is the one shape whose staleness
+        # nothing downstream can notice. The endpoint re-derives the app from
+        # this key and refuses a key that NAMES a slot which is gone, but
+        # ``caller_names_a_missing_slot`` is ``dashboard:``-only BY DESIGN: for
+        # any other shape absence is not evidence of a vanished slot, since a
+        # Slack thread or a channel session legitimately never had one, and
+        # refusing those would take these tools from callers no app could have
+        # been attached to.
+        #
+        # So for a linked key the endpoint cannot tell "this app's slot just
+        # closed" from "no app owns this caller", and would read the second and
+        # apply the person's authority. THIS layer can tell, because it resolved
+        # the scope positively a moment ago, so the refusal belongs here.
+        return "", (
+            f"Error: {verb} is refused for a channel- or schedule-bound session "
+            "owned by an app — its identity cannot be re-verified at the point of "
+            "the write, so the folder rules could not be bounded to it. Run this "
+            "from the app's own dashboard session."
         )
-    return None
+    return caller_key, None
 
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
@@ -719,7 +754,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "chat_folder_create":
         args = validate_tool_args(args, CHAT_FOLDER_CREATE_SCHEMA)
-        gate = _refuse_tree_shaping_if_app_scoped("creating a folder")
+        caller_key, gate = _refuse_tree_shaping_if_unverifiable("creating a folder")
         if gate:
             return gate
         # A '/' in a NAME is what makes a rendered path ambiguous (a folder named
@@ -738,7 +773,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # mkdir -p over the parent path: resolve as far as the tree already
         # goes, then create each missing segment.
         parent_id, created_segments, parent_err = _ensure_chat_folder_path(
-            str(args.get("parent") or ""), chat_folders
+            str(args.get("parent") or ""), chat_folders, session_key=caller_key
         )
         made_note = (
             f" (created parent path: {'/'.join(created_segments)})" if created_segments else ""
@@ -763,7 +798,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "characters or fewer"
             )
         body = {"name": safe_name, "parent_id": parent_id}
-        d = _post("/api/chat/folders", body)
+        # The verified key is passed through unchanged: re-resolving inside the
+        # helper would let the write carry a different session's authority than
+        # the one the gate checked, and the endpoint's ownership rule is only as
+        # good as the identity that reaches it.
+        d = _post("/api/chat/folders", body, session_key=caller_key)
         if d.get("error"):
             return redact(f"Error: {d['error']}{made_note}")
         chat_folders.append(d)
@@ -773,7 +812,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "chat_folder_move":
         args = validate_tool_args(args, CHAT_FOLDER_MOVE_SCHEMA)
-        gate = _refuse_tree_shaping_if_app_scoped("moving a folder")
+        caller_key, gate = _refuse_tree_shaping_if_unverifiable("moving a folder")
         if gate:
             return gate
         chat_folders, folders_err = _get_rows("/api/chat/folders")
@@ -787,7 +826,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         dest_id, dest_err = _resolve_chat_folder_id(args.get("new_parent") or "", chat_folders)
         if dest_err:
             return f"Error: {dest_err}"
-        d = _patch(f"/api/chat/folders/{fld_id}", {"parent_id": dest_id})
+        d = _patch(
+            f"/api/chat/folders/{fld_id}",
+            {"parent_id": dest_id},
+            session_key=caller_key,
+        )
         if d.get("error"):
             # The endpoint owns the cycle guard (a folder cannot move into its
             # own descendant) — surface its verdict rather than re-deriving it.

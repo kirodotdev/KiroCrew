@@ -1036,14 +1036,31 @@ def _send(
         return _transport_failure(str(e), mark_transport_error)
 
 
-def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
+def _post(
+    path: str,
+    body: dict | None = None,
+    *,
+    timeout: float = 30,
+    session_key: str | None = None,
+) -> dict:
+    """POST a gateway endpoint.
+
+    ``session_key``: as in :func:`_patch`, and it matters for the same reason.
+    The default resolution is :func:`_resolve_session_key`, which includes the
+    ``/proc`` ancestor walk, so a caller that already gated itself on
+    :func:`_resolve_session_key_strict` and then let this helper re-resolve
+    would CHECK one identity and WRITE under another — the walk can land on an
+    ancestor slot, which for an app-owned session means the write arrives
+    looking like the unconfined person. Such a caller must pass the key it
+    verified. It is still validated by ``_session_key_header_error``.
+    """
     data = json.dumps(body or {}).encode()
     headers = {
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
     }
-    sk = _resolve_session_key()
+    sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
         return {"error": _sk_err}
