@@ -8008,6 +8008,8 @@
         "thinking": "思考中"
       },
       "toolCallLine": {
+        "aria_hide_diff": "隐藏 diff",
+        "diff_truncated": "diff 已截断",
         "aria_awaiting_approval": "等待批准工具：{{label}}",
         "aria_hide_details": "隐藏工具详情：{{label}}",
         "aria_show_details": "展开工具详情：{{label}}",

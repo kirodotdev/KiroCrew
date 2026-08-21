@@ -1401,6 +1401,11 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
         "tool_call_id": _redact_tool_field(event.tool_call_id),
         "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
         "input": _redact_tool_field(event.tool_input),
+        # ACP tool kind (read/edit/execute/…). The dashboard gates the inline
+        # diff-card promotion on kind == "edit" so a shell command whose input
+        # happens to look like a diff is never promoted; persisting it keeps
+        # historical rows gate-able identically to live ones.
+        "kind": _redact_tool_field(event.tool_kind, limit=64),
     }
 
 

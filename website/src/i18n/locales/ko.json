@@ -8008,6 +8008,8 @@
         "thinking": "생각 중"
       },
       "toolCallLine": {
+        "aria_hide_diff": "diff 숨기기",
+        "diff_truncated": "diff가 잘렸습니다",
         "aria_awaiting_approval": "도구 승인 대기 중: {{label}}",
         "aria_hide_details": "도구 세부 정보 숨기기: {{label}}",
         "aria_show_details": "도구 세부 정보 표시: {{label}}",

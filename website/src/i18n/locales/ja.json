@@ -8008,6 +8008,8 @@
         "thinking": "考え中"
       },
       "toolCallLine": {
+        "aria_hide_diff": "diff を非表示",
+        "diff_truncated": "diff は切り詰められました",
         "aria_awaiting_approval": "ツールの承認待ち: {{label}}",
         "aria_hide_details": "ツールの詳細を非表示: {{label}}",
         "aria_show_details": "ツールの詳細を表示: {{label}}",

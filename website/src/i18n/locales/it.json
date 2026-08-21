@@ -8220,6 +8220,8 @@
         "thinking": "Riflessione"
       },
       "toolCallLine": {
+        "aria_hide_diff": "Nascondi diff",
+        "diff_truncated": "diff troncato",
         "aria_awaiting_approval": "In attesa di approvazione per lo strumento: {{label}}",
         "aria_hide_details": "Nascondi i dettagli per lo strumento: {{label}}",
         "aria_show_details": "Mostra i dettagli per lo strumento: {{label}}",

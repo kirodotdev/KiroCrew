@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import DiffBlock from '../components/DiffBlock'
+import DiffBlock, { extractFilePath } from '../components/DiffBlock'
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch
@@ -141,6 +141,22 @@ describe('DiffBlock', () => {
     const envrcDiff = `--- a/.envrc\n+++ b/.envrc\n@@ -1,2 +1,2 @@\n-old\n+new`
     render(<DiffBlock code={envrcDiff} complete={true} onFileOpen={() => {}} />)
     await waitFor(() => expect(screen.getByTitle(/^Open .* in side panel$/)).toBeInTheDocument())
+  })
+
+  it('keeps spaces in header paths instead of truncating to a sibling file', () => {
+    // Spaces are legal path characters; the unified-diff header terminator is
+    // a TAB (timestamp separator) or end of line. A cut at the first space
+    // would resolve "/work/report final.md" to the SIBLING "/work/report",
+    // and the open affordance would read and save the wrong file.
+    const spaced = `--- /work/report final.md\n+++ /work/report final.md\n@@ -1,1 +1,1 @@\n-old\n+new`
+    expect(extractFilePath(spaced)?.path).toBe('/work/report final.md')
+    const gitSpaced = `--- a/docs/my notes.md\n+++ b/docs/my notes.md\n@@ -1,1 +1,1 @@\n-old\n+new`
+    expect(extractFilePath(gitSpaced)).toEqual({ path: 'docs/my notes.md', prefixStripped: true })
+  })
+
+  it('strips a TAB-separated timestamp from header paths', () => {
+    const stamped = `--- /work/a.txt\t2026-01-01 00:00:00\n+++ /work/a.txt\t2026-01-02 00:00:00\n@@ -1,1 +1,1 @@\n-old\n+new`
+    expect(extractFilePath(stamped)?.path).toBe('/work/a.txt')
   })
 
   it('hides View file button when file does not exist', async () => {

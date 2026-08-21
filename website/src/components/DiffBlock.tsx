@@ -1,5 +1,5 @@
 import { memo, useState, useMemo, useEffect, useRef } from 'react'
-import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
+import { Copy, Check, ChevronUp, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
@@ -34,7 +34,7 @@ import { i18nT } from '../i18n/t'
  * a `--- ` / `+++ ` row is content (a deleted `-- ` / added `++ ` line), not a
  * header. Scanning stops at the first hunk since git headers precede hunks.
  */
-function extractFilePath(code: string): { path: string; prefixStripped: boolean } | null {
+export function extractFilePath(code: string): { path: string; prefixStripped: boolean } | null {
   let plusFallback: string | null = null
   let minusGit: string | null = null
   let minusPlain: string | null = null
@@ -42,17 +42,26 @@ function extractFilePath(code: string): { path: string; prefixStripped: boolean 
   const skip = (p: string) => !p || p === '/dev/null' || p === '-' || p === '+'
   for (const line of code.split('\n')) {
     if (line.startsWith('@@')) break
-    const plusGitMatch = /^\+\+\+ b\/(.+?)(?:\s+|$)/.exec(line)
+    // Header paths terminate at a TAB (the unified-diff timestamp separator)
+    // or end of line — never at a space, which is a legal path character.
+    // Both difflib (the backend's diff generator) and git emit the path as
+    // the whole remainder of the line, so a lazy match cut at the first
+    // space would resolve "/work/report final.md" to the SIBLING file
+    // "/work/report" — and the open-in-panel affordance would read and save
+    // the wrong file. A trailing space-separated timestamp from some other
+    // tool stays attached instead; the existence probe then fails and the
+    // affordance is simply not offered — fail-safe in the harmless direction.
+    const plusGitMatch = /^\+\+\+ b\/(.+?)(?:\t|$)/.exec(line)
     if (plusGitMatch && !skip(plusGitMatch[1])) return { path: plusGitMatch[1], prefixStripped: true }
-    const plusPlainMatch = /^\+\+\+ ([^\s].+?)(?:\s+|$)/.exec(line)
+    const plusPlainMatch = /^\+\+\+ ([^\s].*?)(?:\t|$)/.exec(line)
     if (plusPlainMatch && !skip(plusPlainMatch[1]) && !plusFallback) {
       plusFallback = plusPlainMatch[1]
     }
-    const minusGitMatch = /^--- a\/(.+?)(?:\s+|$)/.exec(line)
+    const minusGitMatch = /^--- a\/(.+?)(?:\t|$)/.exec(line)
     if (minusGitMatch && !skip(minusGitMatch[1]) && !minusGit) {
       minusGit = minusGitMatch[1]
     }
-    const minusPlainMatch = /^--- ([^\s].+?)(?:\s+|$)/.exec(line)
+    const minusPlainMatch = /^--- ([^\s].*?)(?:\t|$)/.exec(line)
     if (minusPlainMatch && !skip(minusPlainMatch[1]) && !minusPlain) {
       minusPlain = minusPlainMatch[1]
     }
@@ -80,7 +89,7 @@ function extractFilePath(code: string): { path: string; prefixStripped: boolean 
  * path, making "relative spelling absent" meaningless as evidence. */
 const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
-export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, streaming }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; streaming?: boolean }) {
+export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, streaming, onFold }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; streaming?: boolean; onFold?: () => void }) {
   const [copied, setCopied] = useState(false)
   const [sideBySide, setSideBySide] = useState(false)
   // Resolve the file path: prefer headers inside the diff, fall back to the
@@ -167,7 +176,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
   // Patch-level controls, slotted into Pierre's header metadata area (light
   // DOM, so outer-tree styling and the group-hover reveal both apply).
   const headerControls = () => (
-    <span className={`flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
+    <span className={`relative z-10 flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
       {filePath && onFileOpen && (
         <button
           className="px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
@@ -189,7 +198,30 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
        wrapper because Pierre paints the title inside its shadow root — a native
        `title` resolves up the flat tree, so hovering the filename picks it up. */
     <div className="diff-block group/diff rounded-xl border border-border overflow-hidden" title={headerPath ?? undefined}>
-      <div className={`pierre-surface ${streaming ? 'ft-stream-block' : ''}`}>
+      <div className={`relative pierre-surface ${streaming ? 'ft-stream-block' : ''}`}>
+        {/* Fold handle: a narrow chevron zone at the header's left edge — NOT
+            the whole strip (the filename must stay inert for select/copy and
+            its full-path tooltip) and NOT a member of the actions row
+            (max-two-buttons-per-row counts siblings in the horizontal group).
+            The chevron is visible at rest (muted) so the only density control
+            is discoverable without mousing over; it brightens on hover/focus.
+            NO `title` — it would shadow the wrapper's full-path tooltip;
+            aria-label carries the action for this icon-only control. */}
+        {onFold && (
+          <button
+            type="button"
+            className="group/fold absolute left-0 top-0 w-8 h-8 z-0 flex items-center justify-center bg-transparent border-none cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-tl-xl"
+            data-diff-toggle
+            onClick={onFold}
+            aria-label={i18nT('pages.chat.toolCallLine.aria_hide_diff')}
+          >
+            <ChevronUp
+              size={13}
+              aria-hidden
+              className="text-muted/60 group-hover/diff:text-muted hover:!text-text group-focus-visible/fold:text-text transition-colors"
+            />
+          </button>
+        )}
         <PierrePatch patch={displayPatch} options={options} renderHeaderMetadata={headerControls} />
         {!complete && <div className="px-3 py-1 text-muted text-[12px] italic animate-pulse">{i18nT('components.diffBlock.generating_diff')}</div>}
       </div>

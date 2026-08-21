@@ -8114,6 +8114,8 @@
         "thinking": "ভাবছে"
       },
       "toolCallLine": {
+        "aria_hide_diff": "diff লুকান",
+        "diff_truncated": "diff কাটা হয়েছে",
         "aria_awaiting_approval": "টুলের অনুমোদনের অপেক্ষায়: {{label}}",
         "aria_hide_details": "টুলের বিস্তারিত লুকাও: {{label}}",
         "aria_show_details": "টুলের বিস্তারিত দেখাও: {{label}}",

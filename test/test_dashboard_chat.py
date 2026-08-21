@@ -6718,6 +6718,41 @@ class TestRunChatToolCallUpdate:
         assert msg_update["meta"]["purpose"] == "List the temp dir"
 
     @pytest.mark.asyncio
+    async def test_tool_meta_persists_kind(self, tmp_path, monkeypatch):
+        """The persisted tool-message meta carries the ACP tool kind. The
+        dashboard gates the inline diff-card promotion on kind == 'edit'
+        (a shell command whose input looks like a diff must never promote),
+        and historical rows can only be gated from persisted meta."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="fs_write",
+                tool_kind="edit",
+                tool_purpose="Edit app.py",
+                tool_input="--- /a/app.py\n+++ /a/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2",
+                tool_call_id="tc-kind1",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        (tool_msg,) = [m for m in slot.messages if m.get("role") == "tool"]
+        assert tool_msg["meta"]["kind"] == "edit"
+
+    @pytest.mark.asyncio
     async def test_refinement_broadcasts_chat_message_update(self, tmp_path, monkeypatch):
         """The handler broadcasts a chat_message_update WS event so the
         frontend can patch the persisted tile in place without a reload."""

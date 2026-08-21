@@ -3311,6 +3311,87 @@ class TestMakeUnifiedDiff:
         result = _make_unified_diff("", "x\n" * 5000, "file.py", max_len=100)
         assert len(result) <= 100
 
+    def test_truncation_cuts_at_line_boundary_and_is_marked(self):
+        """A cut diff ends with the ``\\ diff truncated`` annotation on its own
+        line (unified-diff escape convention — renderers skip it), never with a
+        garbled half-row, so downstream +/- counting can detect understatement."""
+        from kiro_crew.acp._dispatch import DIFF_TRUNCATION_MARK
+
+        result = _make_unified_diff("", "wordwordword\n" * 5000, "file.py", max_len=200)
+        assert len(result) <= 200
+        assert result.endswith("\n" + DIFF_TRUNCATION_MARK)
+        # Every line before the marker is a complete diff row from the
+        # original (starts with a diff prefix, never a mid-word fragment).
+        body_lines = result.split("\n")[:-1]
+        assert all(
+            line.startswith(("---", "+++", "@@", "+", "-", " ")) for line in body_lines if line
+        )
+
+    def test_under_cap_diff_is_not_marked(self):
+        from kiro_crew.acp._dispatch import DIFF_TRUNCATION_MARK
+
+        result = _make_unified_diff("old\n", "new\n", "file.py")
+        assert DIFF_TRUNCATION_MARK not in result
+
+
+class TestDeriveEditDiff:
+    """Bare-JSON edit payloads derive a diff from their own arguments, so a
+    tool_call with no diff content block still displays what changed."""
+
+    def test_create_content_becomes_addition_diff(self):
+        from kiro_crew.acp._dispatch import derive_edit_diff
+
+        diff = derive_edit_diff({"path": "/a/new.py", "command": "create", "fileText": "x = 1\ny = 2\n"})
+        assert "+x = 1" in diff
+        assert "+y = 2" in diff
+        assert "+++ /a/new.py" in diff
+
+    def test_str_replace_pair_becomes_replace_hunk(self):
+        from kiro_crew.acp._dispatch import derive_edit_diff
+
+        diff = derive_edit_diff(
+            {"path": "/a/b.py", "command": "strReplace", "oldStr": "x = 1\n", "newStr": "x = 2\n"}
+        )
+        assert "-x = 1" in diff
+        assert "+x = 2" in diff
+
+    def test_unrecognized_shapes_yield_empty(self):
+        from kiro_crew.acp._dispatch import derive_edit_diff
+
+        assert derive_edit_diff({"path": "/a/b", "command": "create"}) == ""
+        assert derive_edit_diff({"command": "create", "fileText": "x"}) == ""  # no path
+        assert derive_edit_diff("not a dict") == ""
+        assert derive_edit_diff(None) == ""
+
+    def test_non_string_arguments_never_reach_difflib(self):
+        """Malformed args (numeric path, dict oldStr) must yield "" instead of
+        letting a TypeError out of difflib abort the whole dispatch mid-turn."""
+        from kiro_crew.acp._dispatch import derive_edit_diff
+
+        assert derive_edit_diff({"path": 42, "command": "strReplace", "oldStr": "a", "newStr": "b"}) == ""
+        assert derive_edit_diff({"path": "/a/b", "command": "strReplace", "oldStr": {"x": 1}, "newStr": "b"}) == "--- /a/b\n+++ /a/b\n@@ -0,0 +1 @@\n+b"
+        assert derive_edit_diff({"path": ["/a"], "command": "create", "fileText": "x"}) == ""
+        assert derive_edit_diff({"path": "/a/b", "command": "create", "fileText": 7}) == ""
+
+    def test_insert_with_line_number_derives_positioned_hunk(self):
+        """An insert IS additions-only, so with a line number the derived
+        hunk is exact: zero old lines at insertLine, additions after it."""
+        from kiro_crew.acp._dispatch import derive_edit_diff
+
+        diff = derive_edit_diff(
+            {"path": "/a/b.py", "command": "insert", "insertLine": 4, "content": "x = 1\ny = 2"}
+        )
+        assert "@@ -4,0 +5,2 @@" in diff
+        assert "+x = 1" in diff
+        assert "+y = 2" in diff
+
+    def test_insert_without_line_number_derives_nothing(self):
+        """Without a line number the hunk position would be a guess — the
+        row keeps its fold-proof trace via the file_changes snapshot."""
+        from kiro_crew.acp._dispatch import derive_edit_diff
+
+        assert derive_edit_diff({"path": "/a/b.py", "command": "insert", "content": "x = 1"}) == ""
+
     def test_no_trailing_newline(self):
         result = _make_unified_diff("old", "new", "file.py")
         assert "-old" in result

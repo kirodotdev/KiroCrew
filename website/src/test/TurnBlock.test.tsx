@@ -252,6 +252,65 @@ describe('TurnBlock — MCP App-bearing tool calls stay visible', () => {
 })
 
 /**
+ * An edit-tool row whose persisted meta carries a unified diff promotes an
+ * inline diff presentation (ToolCallLine renders a card or summary chip), so
+ * like a workflow_run launch it stays out of BOTH folds — it is the primary
+ * display of the file change now that the model no longer restates tool
+ * edits as ```diff blocks. Density relief is per-card (ToolCallLine's
+ * fold control in the card header), not a mode of this component.
+ */
+describe('TurnBlock — diff-card tool rows', () => {
+  const DIFF = '--- /a/b.py\n+++ /a/b.py\n@@ -1,2 +1,2 @@\n import os\n-x = 1\n+x = 2'
+  const items: TurnItem[] = [
+    { kind: 'single', msg: { role: 'tool', content: '🔧 Running: read_me', ts: '1', meta: { tool_call_id: 'tc-plain' } }, idx: 0 },
+    { kind: 'single', msg: { role: 'tool', content: '🔧 fs_write', ts: '2', meta: { tool_call_id: 'tc-edit', kind: 'edit', input: DIFF } }, idx: 1 },
+    { kind: 'single', msg: { role: 'assistant', content: 'Edited the file with plenty of descriptive text to be substantive here.', ts: '3' }, idx: 2 },
+  ]
+
+  const renderDiffTurn = (collapseAll: boolean) =>
+    render(
+      <TurnBlock
+        turn={makeTurn(items)}
+        collapseAll={collapseAll}
+        renderItem={(it) => (
+          <div data-testid={`item-${it.kind === 'single' ? `${it.msg.role}-${(it.msg.meta?.tool_call_id as string) ?? 'x'}` : 'group'}`} />
+        )}
+      />,
+    )
+
+  it('default mode: the diff-card row renders outside the collapsed tool group', () => {
+    renderDiffTurn(false)
+    expect(screen.getByTestId('item-tool-tc-edit')).toBeInTheDocument()
+    expect(screen.queryByTestId('item-tool-tc-plain')).not.toBeInTheDocument()
+  })
+
+  it('collapseAll mode: the diff row stays visible-inline', () => {
+    renderDiffTurn(true)
+    // The plain read folds ("Worked through 1 step"), the edit row does not.
+    expect(screen.getByText('Worked through 1 step')).toBeInTheDocument()
+    expect(screen.getByTestId('item-tool-tc-edit')).toBeInTheDocument()
+    expect(screen.getByTestId('item-assistant-x')).toBeInTheDocument()
+  })
+
+  it('an execute-kind row with diff-shaped input still collapses (kind gate)', () => {
+    const shellItems: TurnItem[] = [
+      { kind: 'single', msg: { role: 'tool', content: '🔧 shell', ts: '1', meta: { tool_call_id: 'tc-sh', kind: 'execute', input: DIFF } }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 shell 2', ts: '2', meta: { tool_call_id: 'tc-sh2', kind: 'execute', input: 'ls' } }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Ran the commands with plenty of descriptive output text here.', ts: '3' }, idx: 2 },
+    ]
+    render(
+      <TurnBlock
+        turn={makeTurn(shellItems)}
+        renderItem={(it) => (
+          <div data-testid={`item-${it.kind === 'single' ? `${it.msg.role}-${(it.msg.meta?.tool_call_id as string) ?? 'x'}` : 'group'}`} />
+        )}
+      />,
+    )
+    expect(screen.queryByTestId('item-tool-tc-sh')).not.toBeInTheDocument()
+  })
+})
+
+/**
  * A turn can hand back to the user and then RESUME in the same turn — after a
  * denied tool call, an auto-nudge / monitor cycle, a queued message, or an
  * injected subagent / workflow completion. The [OPTIONS:] follow-up marker is

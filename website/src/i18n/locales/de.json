@@ -8114,6 +8114,8 @@
         "thinking": "Denkt nach"
       },
       "toolCallLine": {
+        "aria_hide_diff": "Diff ausblenden",
+        "diff_truncated": "Diff gekürzt",
         "aria_awaiting_approval": "Warten auf Genehmigung für Werkzeug {{label}}",
         "aria_hide_details": "Details für Werkzeug {{label}} ausblenden",
         "aria_show_details": "Details für Werkzeug {{label}} anzeigen",

@@ -8114,6 +8114,8 @@
         "thinking": "सोच रहा है"
       },
       "toolCallLine": {
+        "aria_hide_diff": "diff छिपाएँ",
+        "diff_truncated": "diff काट दिया गया",
         "aria_awaiting_approval": "टूल के लिए स्वीकृति की प्रतीक्षा: {{label}}",
         "aria_hide_details": "टूल के लिए विवरण छिपाएँ: {{label}}",
         "aria_show_details": "टूल के लिए विवरण दिखाएँ: {{label}}",

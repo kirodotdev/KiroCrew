@@ -94,6 +94,33 @@ class TestContextBuilder:
         # backwards once clicked.
         assert "in the USER's voice" in ctx
 
+    def test_diff_rule_is_runtime_selected(self, tmp_path):
+        """The diff-block rule is selected server-side from the trusted runtime
+        resolution: a dashboard session (tool cards render) gets the
+        don't-repeat rule, every other surface (messaging channels, cron, CLI —
+        no tool cards) keeps the hard mandate. Deciding this at injection time
+        removes the per-turn model judgment a messaging channel's only
+        file-change display would otherwise ride on."""
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        dash = builder.build_session_context(session_key="dashboard_chat-1-1")
+        assert "do NOT repeat them as ```diff" in dash
+        assert "No exceptions" not in dash
+        for key, src in (
+            ("slack-thread-123", None),
+            ("discord:456", None),
+            ("cron_abc", None),
+            ("cli_chat", None),
+            # An explicit runtime_source overrides the key-derived guess.
+            ("dashboard_chat-1-1", "slack"),
+        ):
+            ctx = builder.build_session_context(session_key=key, runtime_source=src)
+            assert "No exceptions" in ctx, f"channel mandate missing for {key}/{src}"
+            assert "do NOT repeat them as ```diff" not in ctx
+
     def test_cc_provider_has_full_parity_with_kiro(self, tmp_path):
         """Full parity: anything injected for kiro ACP must also be injected for
         the Claude Code provider. The original bug — CC's clickable input-box
@@ -834,6 +861,31 @@ class TestRuntimeDisplayName:
         assert "[RUNTIME] Discord" in msg
         assert "authoritative for this turn" in msg
         assert msg.index("[RUNTIME] Discord") < msg.index("[CURRENT USER REQUEST")
+
+    def test_channel_turn_reasserts_diff_mandate_mid_session(self, tmp_path):
+        """A dashboard-started session resumed from a channel carries the
+        relaxed diff rule from session start, but a channel renders no tool
+        cards — the per-turn refresh re-asserts the hard mandate for THIS
+        turn. Asymmetric by design: a dashboard turn never injects anything
+        (worst case there is a cosmetic duplicate diff, never a missing one)."""
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        msg, _ = builder.build_message(
+            "edit the file",
+            is_new_session=False,
+            session_key="dashboard:chat-1",
+            runtime_source="discord",
+        )
+        assert "this surface renders no tool cards" in msg
+        dash_msg, _ = builder.build_message(
+            "edit the file",
+            is_new_session=False,
+            session_key="dashboard:chat-1",
+            runtime_source="dashboard",
+        )
+        assert "this surface renders no tool cards" not in dash_msg
 
 
 class TestMultibyteSanitization:

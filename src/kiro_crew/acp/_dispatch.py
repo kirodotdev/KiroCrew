@@ -312,12 +312,90 @@ def classify_notification(msg: JsonRpcMessage) -> str:
 # per-class: the caller walks the returned events.
 
 
-def make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str:
-    """Generate a unified diff string from old/new text, handling empty inputs."""
+# Appended when a diff is cut at ``max_len``. Uses the unified-diff escape
+# convention ("\ ...", the same lead-in as "\ No newline at end of file"), so
+# diff renderers skip the line while consumers counting +/- rows can detect
+# that the counts understate the real change.
+DIFF_TRUNCATION_MARK = "\\ diff truncated"
+
+# Argument keys that carry the created file's content across edit-tool arg
+# shapes; checked in order, the first non-empty string wins.
+_EDIT_CONTENT_KEYS = ("fileText", "content", "text")
+
+
+def derive_edit_diff(raw_input: object) -> str:
+    """Derive a unified diff from a bare-JSON edit payload.
+
+    Covers the edit-tool arg shapes that arrive WITHOUT a diff content block:
+    a ``strReplace`` pair renders as a replace hunk; a ``create``'s content
+    renders as a whole-file addition; an ``insert`` with a line number
+    renders as an addition hunk AT that line — in all three the rendered
+    lines ARE the change, exactly. An insert/append without a line number
+    derives nothing (the hunk position would be a guess) and keeps its
+    fold-proof trace via the file_changes snapshot channel. Deriving here
+    (single, shared) rather than per-surface means every consumer of
+    ``tool_input`` — the dashboard card, a future channel renderer — sees
+    the same diff.
+    """
+    if not isinstance(raw_input, dict):
+        return ""
+    path = raw_input.get("path")
+    if not isinstance(path, str) or not path:
+        # A non-string path (numeric, dict) in malformed args must not reach
+        # difflib — a TypeError here would abort the whole dispatch mid-turn.
+        return ""
+    command = raw_input.get("command")
+    if command == "strReplace":
+        old = raw_input.get("oldStr")
+        new = raw_input.get("newStr")
+        old = old if isinstance(old, str) else ""
+        new = new if isinstance(new, str) else ""
+        if old or new:
+            return make_unified_diff(old, new, path)
+        return ""
+    if command == "create":
+        for key in _EDIT_CONTENT_KEYS:
+            value = raw_input.get(key)
+            if isinstance(value, str) and value:
+                return make_unified_diff("", value, path)
+        return ""
+    if command == "insert":
+        insert_line = raw_input.get("insertLine")
+        if not isinstance(insert_line, int) or insert_line < 0:
+            return ""
+        for key in _EDIT_CONTENT_KEYS:
+            value = raw_input.get(key)
+            if isinstance(value, str) and value:
+                lines = value.rstrip("\n").split("\n")
+                body = "\n".join(f"+{line}" for line in lines)
+                # Pure-insertion hunk: zero old lines at insert_line, the
+                # added lines starting on the following row (0-indexed
+                # insertLine -> content lands as new line insert_line+1).
+                header = f"@@ -{insert_line},0 +{insert_line + 1},{len(lines)} @@"
+                return f"--- {path}\n+++ {path}\n{header}\n{body}"
+        return ""
+    return ""
+
+
+def make_unified_diff(old: str, new: str, path: str, max_len: int = 65536) -> str:
+    """Generate a unified diff string from old/new text, handling empty inputs.
+
+    ``max_len`` bounds the live event payload; the default is sized so the
+    dashboard's full-card range (a few hundred lines) is never cut. A longer
+    diff is truncated at a LINE boundary and annotated with
+    ``DIFF_TRUNCATION_MARK`` — a bare slice can cut mid-line and render a
+    garbled half-row, and an unmarked cut silently understates +/- counts.
+    """
     old_lines = (old if old.endswith("\n") else old + "\n").splitlines(keepends=True) if old else []
     new_lines = (new if new.endswith("\n") else new + "\n").splitlines(keepends=True) if new else []
     udiff = difflib.unified_diff(old_lines, new_lines, fromfile=path, tofile=path, n=3)
-    return "".join(udiff).rstrip()[:max_len]
+    text = "".join(udiff).rstrip()
+    if len(text) <= max_len:
+        return text
+    budget = max(max_len - len(DIFF_TRUNCATION_MARK) - 1, 0)
+    cut = text.rfind("\n", 0, budget)
+    head = text[:cut] if cut > 0 else text[:budget]
+    return head + "\n" + DIFF_TRUNCATION_MARK
 
 
 def select_tool_title(
@@ -780,14 +858,14 @@ def _build_tool_call_event(
                     input_str = diff_str
                     found_diff = True
                 break
-    # Fallback for strReplace when no diff content block was present.
-    if not found_diff and isinstance(raw_input, dict) and raw_input.get("command") == "strReplace":
-        old = raw_input.get("oldStr") or ""
-        new = raw_input.get("newStr") or ""
-        if old or new:
-            diff_str = make_unified_diff(old, new, raw_input.get("path") or "")
-            if diff_str:
-                input_str = diff_str
+    # Fallback when no diff content block was present: derive from the edit
+    # args themselves (strReplace pair, create/insert content). Gated on the
+    # EDIT kind — "content"-shaped args exist on many non-edit tools, and a
+    # derived diff would corrupt their input display.
+    if not found_diff and (kind == "edit" or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")):
+        diff_str = derive_edit_diff(raw_input)
+        if diff_str:
+            input_str = diff_str
     if input_str:
         input_str = _redact(input_str)
     if tool_call_id and input_str and tool_input_cache is not None:

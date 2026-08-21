@@ -16,7 +16,6 @@ Permission flow:
 from __future__ import annotations
 
 import asyncio
-import difflib
 import functools
 import glob
 import json
@@ -38,7 +37,9 @@ from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
     _kiro_tool_name,
+    derive_edit_diff,
     extract_tool_purpose,
+    make_unified_diff,
     parse_session_modes,
     parse_usage_update,
 )
@@ -1948,12 +1949,14 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
             pass
 
 
-def _make_unified_diff(old: str, new: str, path: str, max_len: int = 6000) -> str:
-    """Generate a unified diff string from old/new text, handling empty inputs."""
-    old_lines = (old if old.endswith("\n") else old + "\n").splitlines(keepends=True) if old else []
-    new_lines = (new if new.endswith("\n") else new + "\n").splitlines(keepends=True) if new else []
-    udiff = difflib.unified_diff(old_lines, new_lines, fromfile=path, tofile=path, n=3)
-    return "".join(udiff).rstrip()[:max_len]
+def _make_unified_diff(old: str, new: str, path: str, max_len: int = 65536) -> str:
+    """Generate a unified diff string from old/new text, handling empty inputs.
+
+    Thin delegate to :func:`kiro_crew.acp._dispatch.make_unified_diff`, kept as
+    a module-level name for this file's call sites and tests; the truncation
+    semantics (line-boundary cut + ``DIFF_TRUNCATION_MARK``) live in one place.
+    """
+    return make_unified_diff(old, new, path, max_len=max_len)
 
 
 def _select_tool_title(
@@ -5222,19 +5225,16 @@ class AcpClient:
                             input_str = diff_str
                             found_diff = True
                         break
-            # Fallback for strReplace when no diff content block was found
-            if (
-                not found_diff
-                and isinstance(raw_input, dict)
-                and raw_input.get("command") == "strReplace"
+            # Fallback when no diff content block was found: derive from the
+            # edit args (strReplace pair, create/insert content). Gated on
+            # the EDIT kind — "content"-shaped args exist on non-edit tools.
+            if not found_diff and (
+                kind == "edit"
+                or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
             ):
-                old = raw_input.get("oldStr") or ""
-                new = raw_input.get("newStr") or ""
-                path = raw_input.get("path") or ""
-                if old or new:
-                    diff_str = _make_unified_diff(old, new, path)
-                    if diff_str:
-                        input_str = diff_str
+                diff_str = derive_edit_diff(raw_input)
+                if diff_str:
+                    input_str = diff_str
             # Redact sensitive content before caching/displaying
             if input_str:
                 input_str, _ = redact_exfiltration_urls(input_str)

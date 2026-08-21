@@ -2876,6 +2876,8 @@
         "expand": "Expand"
       },
       "toolCallLine": {
+        "aria_hide_diff": "Hide diff",
+        "diff_truncated": "diff truncated",
         "aria_awaiting_approval": "Awaiting approval for tool: {{label}}",
         "aria_hide_details": "Hide details for tool: {{label}}",
         "aria_show_details": "Show details for tool: {{label}}",

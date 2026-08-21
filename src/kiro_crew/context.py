@@ -638,8 +638,8 @@ _RUNTIME_DISPLAY = {
 }
 
 
-def _runtime_display_name(session_key: str, runtime_source: str | None = None) -> str:
-    """Map a session_key to a human-readable runtime name.
+def _resolve_runtime_source(session_key: str, runtime_source: str | None = None) -> str:
+    """Resolve the canonical runtime source key for a session.
 
     ``runtime_source`` is the authoritative transport for the current turn.
     It is intentionally separate from ``session_key``: a dashboard session can
@@ -652,7 +652,7 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
     """
     source = (runtime_source or "").strip().lower()
     if source:
-        return _RUNTIME_DISPLAY.get(source, source)
+        return source
 
     if session_key.startswith("dashboard:") or session_key.startswith("dashboard_"):
         source = "dashboard"
@@ -683,7 +683,20 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
             if lowered_key.startswith((f"{namespace}:", f"{namespace}_")):
                 source = namespace
                 break
-    return _RUNTIME_DISPLAY.get(source, source)
+    return source
+
+
+def _runtime_display_name(session_key: str, runtime_source: str | None = None) -> str:
+    """Map a session_key to a human-readable runtime name.
+
+    Display mapping over :func:`_resolve_runtime_source` — resolution
+    semantics live there so the [RUNTIME] line and every source-keyed
+    decision (e.g. the diff-block rule selection) can never disagree.
+    """
+    return _RUNTIME_DISPLAY.get(
+        _resolve_runtime_source(session_key, runtime_source),
+        _resolve_runtime_source(session_key, runtime_source),
+    )
 
 
 # ── Switchable context groups ──
@@ -1059,15 +1072,36 @@ def _load_steering_resources() -> str:
         return ""
 
 
-# Critical rules reinforced every session (supplements the system prompt)
-_CRITICAL_RULES = (
-    "[CRITICAL RULES — always follow these]\n"
+# Critical rules reinforced every session (supplements the system prompt).
+# The diff-block rule is RUNTIME-SELECTED server-side (_critical_rules_for):
+# the trusted runtime resolution already exists for the [RUNTIME] line, so
+# whether tool cards render is decided at injection time instead of asking the
+# model to evaluate a runtime clause every turn — a misjudged clause on a
+# messaging channel would silently leave the user with no record of what
+# changed. Only the tool-vs-shell distinction stays with the model (clause (a)
+# below): the runtime cannot see HOW a file was changed.
+_DIFF_RULE_DASHBOARD = (
+    "File changes and diff blocks: edits made through the BUILT-IN "
+    "file-editing tools already render as structured diff cards in this "
+    "dashboard's transcript — do NOT repeat them as ```diff code blocks. For "
+    "a file changed any OTHER way — shell commands like sed, scripted bulk "
+    "edits, git apply, or an MCP tool that writes files — emit a ```diff "
+    "code block (standard unified diff format with `--- old_path` / "
+    "`+++ new_path` headers and an `@@` hunk line; use /dev/null for new "
+    "files / deletions — the headers let the dashboard's diff viewer link to "
+    "the file), because no card is rendered for those.\n"
+)
+_DIFF_RULE_CHANNEL = (
     "After ANY file change (create, edit, append, delete), you MUST show a "
     "```diff code block with the change using standard unified diff format "
     "including `--- old_path` / `+++ new_path` headers and an `@@` hunk line "
-    "(use /dev/null for new files / deletions). The headers are required so "
-    "the dashboard's diff viewer can link to the file. No exceptions — even "
-    "single-line changes MUST get a diff block.\n"
+    "(use /dev/null for new files / deletions). This surface renders no tool "
+    "cards, so your message text is the only place the user can see what "
+    "changed. No exceptions — even single-line changes MUST get a diff "
+    "block.\n"
+)
+_CRITICAL_RULES_HEAD = "[CRITICAL RULES — always follow these]\n"
+_CRITICAL_RULES_TAIL = (
     "When referencing file paths in your response, ALWAYS use the absolute path "
     "inside inline `code` backticks (e.g. `/home/user/project/src/main.py`). "
     "Never use relative paths or bare filenames. This enables the UI file viewer panel.\n"
@@ -1089,6 +1123,31 @@ _CRITICAL_RULES = (
     'first"), and never phrase it as a question back to the user.\n'
     "[END CRITICAL RULES]\n\n"
 )
+# The dashboard variant is the module's canonical block: tests and the
+# marker-neutralization prefix check treat "a critical-rules block" as one of
+# these two fixed strings, so both stay module constants (never templated).
+_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+
+# Runtime sources whose transcript renders tool-call cards (and therefore the
+# inline diff card). Everything else — messaging channels, cron, subagent,
+# background, CLI — gets the hard diff-block mandate: their only file-change
+# display is the message text itself.
+
+
+def _critical_rules_for(session_key: str | None, runtime_source: str | None) -> str:
+    """Select the critical-rules block for this session's runtime.
+
+    Compares the RAW source key from the same trusted resolution that
+    produces the [RUNTIME] line — never the localized display string — so the
+    diff-block contract and the runtime the model is told about can never
+    disagree, and a display-name change cannot flip the rule. Unknown or
+    unresolvable runtimes get the channel variant: the hard mandate is the
+    safe default (worst case a dashboard user sees a duplicate diff; the
+    inverse failure leaves a channel user with no record at all).
+    """
+    source = _resolve_runtime_source(session_key or "", runtime_source)
+    return _CRITICAL_RULES if source == "dashboard" else _CRITICAL_RULES_CHANNEL
 
 
 # Per-agent opt-out cache for the dashboard-contract context (``_CRITICAL_RULES``
@@ -1908,7 +1967,7 @@ class ContextBuilder:
         # them regardless); this only stops the host from MANDATING them where an
         # agent has declared it does not want them.
         if _agent_includes_crew_context(agent):
-            parts.append(_CRITICAL_RULES)
+            parts.append(_critical_rules_for(session_key, runtime_source))
 
         # Current date/time — inject for ALL agents so the LLM knows "today".
         # Honour KiroCrewConfig.timezone (e.g. "Asia/Tokyo") so the LLM sees
@@ -2390,16 +2449,25 @@ class ContextBuilder:
             if session_ctx:
                 # Scrub forgeable boundary markers from the UNTRUSTED content in
                 # session context (memory / lessons / prior-session history /
-                # provenance) WITHOUT touching the trusted _CRITICAL_RULES block
+                # provenance) WITHOUT touching the trusted critical-rules block
                 # that build_session_context prepends as parts[0] — that block
                 # legitimately carries [CRITICAL RULES]/[END CRITICAL RULES] and
-                # must survive intact. _CRITICAL_RULES is always the prefix (only
-                # tail-truncation ever trims the string), and none of the other
-                # trusted framing uses these markers, so scrubbing everything
-                # after the block is safe.
-                if session_ctx.startswith(_CRITICAL_RULES):
-                    session_ctx = _CRITICAL_RULES + _neutralize_structural_markers(
-                        session_ctx[len(_CRITICAL_RULES) :]
+                # must survive intact. The block is one of two fixed module
+                # constants (runtime-selected, never templated) and is always
+                # the prefix (only tail-truncation ever trims the string), and
+                # none of the other trusted framing uses these markers, so
+                # scrubbing everything after the block is safe.
+                _rules_prefix = next(
+                    (
+                        rb
+                        for rb in (_CRITICAL_RULES, _CRITICAL_RULES_CHANNEL)
+                        if session_ctx.startswith(rb)
+                    ),
+                    None,
+                )
+                if _rules_prefix is not None:
+                    session_ctx = _rules_prefix + _neutralize_structural_markers(
+                        session_ctx[len(_rules_prefix) :]
                     )
                 else:
                     session_ctx = _neutralize_structural_markers(session_ctx)
@@ -2436,6 +2504,21 @@ class ContextBuilder:
                 "authoritative for this turn, even if the session originated on "
                 "another interface.\n\n"
             )
+            # A session that started on the dashboard carries the relaxed
+            # diff-block rule from session start, but this turn may arrive
+            # from a surface that renders no tool cards. Re-assert the hard
+            # mandate for THIS turn. Deliberately asymmetric: only the
+            # channel mandate is ever injected mid-session (a dashboard turn
+            # in a channel-started session at worst duplicates a diff, which
+            # is cosmetic; the inverse — a channel turn under the relaxed
+            # rule — leaves the user with no record of what changed).
+            if _resolve_runtime_source(session_key or "", runtime_source) != "dashboard":
+                parts.append(
+                    "For THIS turn: this surface renders no tool cards, so "
+                    "after ANY file change you MUST include a ```diff code "
+                    "block in your message text — it is the only place the "
+                    "user can see what changed.\n\n"
+                )
 
         # Post-compaction re-injection: the skills index was lost when the
         # session-start context was compacted. Re-inject it so the model can
