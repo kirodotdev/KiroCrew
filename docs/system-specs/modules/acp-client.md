@@ -501,6 +501,18 @@ handshake: it issues `session/load` directly under the original sessionId and
 registers the session queue **after** the load response so replayed transcript
 frames are dropped rather than counted against the current turn.
 
+**KAS auth callbacks are retained and bounded off-loop answers.**
+`_kiro/auth/getAccessToken` is connection-scoped and may shell out before writing
+its response, so the reader schedules it without blocking stdout demux but keeps
+a strong reference in `_answer_tasks`. It shares `_max_answer_tasks` with other
+off-loop answers because every path ultimately contends for the same stdin; a
+separate token cap would allow the combined resource total to exceed the bound.
+The done callback removes completed tasks. At capacity, the reader uses the same
+bounded discrimination wait as permission answers: one completion admits the
+callback, while no progress within the bound marks the runtime dead so pending
+waiters resolve explicitly. Server-to-client requests never take the notification
+counted-drop path, because that would leave the remote requester unanswered.
+
 **Unroutable frames are counted, not logged per frame.** The reader drops any
 frame it cannot route; the drop itself is correct and unchanged, but logging one
 `DEBUG` line per dropped frame is a log-retention hazard on a multiplexed
