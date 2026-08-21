@@ -12,7 +12,7 @@
     "productivity",
     "keyboard"
   ],
-  "defaultEnabled": false,
+  "defaultEnabled": true,
   "minKiroCrewVersion": "0.1.0",
   "ui": {
     "overlays": [

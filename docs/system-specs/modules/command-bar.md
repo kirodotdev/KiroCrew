@@ -8,9 +8,13 @@ query. It is the first app to ship with **no backend at all** — no subprocess,
 proxy, no routes. Its whole surface is a code-split React chunk in the dashboard bundle, so it
 carries the same origin, i18n catalogs, design system and build as the shell.
 
-The app id is `command-bar`; the display name is "Command Bar". `defaultEnabled` is false, and
-the app's enabled state IS the opt-in — there is no config key for this feature. While it is
-disabled the legacy command palette owns the gesture and nothing about that path changes.
+The app id is `command-bar`; the display name is "Command Bar". `defaultEnabled` is TRUE, so a
+fresh install has the launcher on the quick-search gesture and there is no config key for the
+feature -- the app's enabled state is the switch. Builtins otherwise ship default-off, so this
+exemption is declared where every other one is, on `manager._DEFAULT_ON_BUILTINS`; the manifest
+flag alone would fail the opt-in policy tests. Disabling the app hands the gesture back to the
+legacy command palette, which is left in place precisely so that is a real choice rather than a
+downgrade; nothing about that path changes while the app is off.
 
 What makes the app worth existing is a single invariant: **the first page issues no network
 request.** The palette it replaces ran an unindexed scan over the sessions corpus on every
@@ -118,13 +122,17 @@ that answer an older prefix.
 | no builtin declares both `ui.overlays` and `ui.entry` | origin downgrade on restart refuses its own slot |
 | a rejected lazy chunk falls back to the legacy palette | the gesture dead-ends after a bad deploy |
 
-## Launch prerequisite
+## Switching it off, and back on
 
-The app is reachable in the UI only once the published catalog carries a row for it. The Apps
-page builds its Discover shelf from the network-fetched catalog, and its Library list filters
-out disabled builtins, so a default-off builtin with no catalog row appears on neither surface
-and cannot be switched on from the dashboard. This is a publishing step outside this
-repository, not a code defect — but until it lands, the opt-in exists only over the API.
+Both directions have to work in the UI, and one of them nearly did not. The Apps page
+builds its Discover shelf from the network-fetched catalog, which carries no row for this
+app, and its Library list hides disabled builtins -- so with the app off it would have
+appeared on neither surface and could only be re-enabled over the API. Library therefore
+keeps listing a disabled builtin that declares `ui.overlays`
+(`website/src/pages/AppsPage.tsx`): an app allowed to replace a host surface is the one
+class a reader turns off and then needs to find again, and its own description tells them
+to disable it to get the old surface back. The rule is keyed on the capability, not on this
+app's name, and it changes nothing for the default-off builtins that have no overlay.
 
 ## Deliberately not here
 

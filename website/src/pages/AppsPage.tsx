@@ -222,6 +222,25 @@ export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
   return [...flagged, ...rest].slice(0, 3)
 }
 
+/**
+ * Whether an installed app belongs in the Library list.
+ *
+ * A disabled builtin is normally hidden: the wheel ships ~20 of them default-off
+ * and listing every one would bury the apps a reader actually uses. An app that
+ * REPLACES a host surface is the exception, because it is the only class a reader
+ * can turn off and then need to find again -- its own copy tells them to disable
+ * it to get the old surface back, and with the row gone from Library and no
+ * catalog row in Discover that would be a one-way switch. Keyed on `ui.overlays`
+ * rather than on the app id so the rule belongs to the capability, not to a name.
+ *
+ * Exported so its test exercises this predicate rather than a copy of it.
+ */
+export function keepInLibrary(
+  app: Pick<InstalledApp, 'origin' | 'enabled' | 'manifest'>,
+): boolean {
+  return !(app.origin === 'builtin' && !app.enabled && !app.manifest?.ui?.overlays?.length)
+}
+
 export default function AppsPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -520,7 +539,7 @@ export default function AppsPage() {
   const installedApps = useMemo(
     () =>
       apps
-        .filter(a => !(a.origin === 'builtin' && !a.enabled))
+        .filter(keepInLibrary)
         .map(a => ({
           ...a,
           updateAvailable: updateMap.has(a.name),

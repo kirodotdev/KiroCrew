@@ -466,7 +466,8 @@ Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
 ## 12. Store visibility is a manifest flag, not a code removal
 
 Built-in apps ship default-DISABLED. `manager._DEFAULT_ON_BUILTINS` is the single
-source of truth for the exemption (currently only `projects`, the Task Runner),
+source of truth for the exemption (`projects`, the Task Runner, and `command-bar`,
+which replaces the quick-search gesture rather than adding a sidebar entry),
 read by the policy tests over both the hardcoded list and the file-based
 manifests, so a builtin cannot become default-on through one registration path
 while the other path's test still forbids it. A default-enabled builtin is

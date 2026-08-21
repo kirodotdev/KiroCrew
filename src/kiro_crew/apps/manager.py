@@ -1623,7 +1623,16 @@ def register_external_app(
 # both the hardcoded list and the file-based manifests read it from here, so a
 # builtin cannot become default-on in one registration path while the other
 # path's test still forbids it.
-_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset({"projects"})  # Task Runner
+_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
+    {
+        "projects",  # Task Runner
+        # Command Bar replaces the quick-search (Cmd+K) surface rather than adding
+        # a sidebar entry, so shipping it off leaves the gesture on the legacy
+        # palette and the launcher unseen. Disabling the app is what restores the
+        # old surface, which is the opt-out this exemption trades for.
+        "command-bar",
+    }
+)
 
 # EMPTY, and that is a finished migration rather than an oversight. Every builtin now
 # ships as a file-based manifest under ``builtins/<dir>/app.json`` and is picked up by

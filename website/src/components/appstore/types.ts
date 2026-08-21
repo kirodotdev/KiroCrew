@@ -84,7 +84,16 @@ export type InstalledApp = {
     crons?: { name: string }[]
     tags?: string[]
     jobFamilies?: string[]
-    ui?: { entry?: string; pages?: { route: string; label: string; icon: string }[] }
+    ui?: {
+      entry?: string
+      pages?: { route: string; label: string; icon: string }[]
+      /**
+       * Host surfaces this app replaces while enabled. Serialized by the manifest
+       * but previously undeclared here, so a reader outside `overlaySlots.ts` (which
+       * carries its own record type) could not see it.
+       */
+      overlays?: { id: string; replaces: string }[]
+    }
     permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

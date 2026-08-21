@@ -1181,12 +1181,14 @@ def test_overlay_builtins_must_not_ship_a_ui_bundle():
     )
 
 
-def test_command_bar_builtin_is_overlay_only_and_default_off():
+def test_command_bar_builtin_is_overlay_only_and_default_on():
     """The shipped Command Bar app is the first overlay-only builtin.
 
     Its shape is load-bearing: no page (it is not routed), no backend entry point (so
-    enabling it spawns no process), and default-off (the previous quick-search surface
-    stays in place until the user opts in).
+    being enabled spawns no process), and default-ON: the launcher owns the
+    quick-search gesture on a fresh install, and the legacy palette is what a reader
+    opts back into by disabling the app. The default-on decision itself is declared
+    in ``manager._DEFAULT_ON_BUILTINS``; the opt-in policy tests read it from there.
     """
     raw = json.loads(
         (
@@ -1195,7 +1197,7 @@ def test_command_bar_builtin_is_overlay_only_and_default_off():
     )
     m = AppManifest.from_dict(raw)
     assert m.validate() == []
-    assert raw["defaultEnabled"] is False
+    assert raw["defaultEnabled"] is True
     assert m.ui.pages == []
     assert not m.backend.entryPoint
     assert [(o.id, o.replaces) for o in m.ui.overlays] == [("command-bar", "quick-search")]
