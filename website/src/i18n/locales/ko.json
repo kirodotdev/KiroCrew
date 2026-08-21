@@ -10102,7 +10102,9 @@
       "script_source": "스크립트 소스",
       "script_source_download": "스크립트 다운로드",
       "script_source_failed": "스크립트 소스를 불러오지 못했습니다.",
-      "script_source_truncated": "잘렸습니다 — 스크립트가 미리보기 한도를 초과합니다."
+      "script_source_truncated": "잘렸습니다 — 스크립트가 미리보기 한도를 초과합니다.",
+      "no_owning_session": "소유 세션 없음",
+      "owning_session": "소유 세션"
     },
     "servicesTab": {
       "connected": "연결됨",

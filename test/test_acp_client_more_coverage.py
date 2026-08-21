@@ -53,6 +53,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
+    JSONRPC_METHOD_NOT_FOUND,
     METHOD_COMMANDS_EXECUTE,
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_TOOL_CALL,
@@ -972,7 +973,7 @@ class TestReadPromptResponse:
         assert await client._read_prompt_response(1, 5.0) == ""
         # An unhandled inbound request is answered so the agent fails fast.
         client._send_error.assert_awaited_once_with(
-            "s-1", acp_client._JSONRPC_METHOD_NOT_FOUND, "Method not found: fs/read_text_file"
+            "s-1", JSONRPC_METHOD_NOT_FOUND, "Method not found: fs/read_text_file"
         )
         assert client.last_prompt_stats.context_pct == 42.5
         assert client._last_stop_reason == "end_turn"

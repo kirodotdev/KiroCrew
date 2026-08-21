@@ -1252,6 +1252,14 @@ async def api_crons(request: web.Request) -> web.Response:
                 0
             ]
             or None,
+            # The chat session that owns this job. Ownership decides chat-side
+            # reachability: cron_list only shows a session its own jobs, so a job
+            # whose key is empty (None here) is invisible to every chat session
+            # and manageable only from this page or the CLI. Raw value on
+            # purpose — the frontend decides presentation, and a derived
+            # "reachable" boolean would be a second encoding of the same fact.
+            "session_key": redact_credentials(redact_exfiltration_urls(j.session_key or "")[0])[0]
+            or None,
             "silent": j.silent,
             "strict_schedule": j.strict_schedule,
             "hide_in_chat": j.hide_in_chat,

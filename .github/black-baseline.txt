@@ -183,12 +183,9 @@ src/kiro_crew/autonudge_authz.py
 src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
-src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/diff_signals.py
-src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/enable_automerge.py
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/local_review.py
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_findings.py
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_status.py
-src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/resolve_profile.py
 src/kiro_crew/changelog.py
 src/kiro_crew/channel.py
 src/kiro_crew/channel_history.py
@@ -306,7 +303,6 @@ src/kiro_crew/deploy/pricing.py
 src/kiro_crew/deploy/profiles.py
 src/kiro_crew/deploy/render.py
 src/kiro_crew/deploy/scan.py
-src/kiro_crew/deploy/skills/artifact-deploy/scripts/attach_backend.py
 src/kiro_crew/deploy/skills/artifact-deploy/scripts/detach_backend.py
 src/kiro_crew/deploy/skills/artifact-deploy/scripts/reaper_lambda/index.py
 src/kiro_crew/deploy/skills/artifact-deploy/templates/handler-example.py
@@ -677,7 +673,6 @@ test/test_cloud_launch_job.py
 test/test_collection_status_endpoint.py
 test/test_completion_result_read_off_loop.py
 test/test_computer_use_apps.py
-test/test_computer_use_ffi.py
 test/test_computer_use_overlay.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
@@ -1243,7 +1238,6 @@ test/test_skill_update_flow.py
 test/test_skill_versioning.py
 test/test_skills.py
 test/test_slack_agent_passthrough.py
-test/test_slack_config_handlers.py
 test/test_slack_dashboard_live_sync.py
 test/test_slack_events_coverage.py
 test/test_slack_gateway.py
@@ -1274,7 +1268,6 @@ test/test_slot_detail_offload.py
 test/test_slot_needs_input_status.py
 test/test_slot_sync_on_create.py
 test/test_slots_broadcast_coalesce.py
-test/test_snapshot.py
 test/test_socketsec.py
 test/test_source_providers.py
 test/test_source_providers_comment_guard.py

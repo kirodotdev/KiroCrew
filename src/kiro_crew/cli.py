@@ -53,6 +53,7 @@ from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.log_redaction import install_log_redaction
 from kiro_crew.memory import MemoryStore
 from kiro_crew.platform import (
     PlatformCompositionError,
@@ -863,6 +864,15 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
         logging.getLogger().addHandler(fh)
     else:
         logging.getLogger("kiro_crew").addHandler(fh)
+
+    # Install secret redaction filter — scrubs Bearer tokens from all kiro_crew
+    # log output before it reaches any handler. The filter also accepts literal
+    # secret values to redact, but none are passed here: wiring resolved vault
+    # secret values into the filter is a follow-up PR. Bearer token redaction is
+    # active immediately with zero vault I/O.
+    _LONG_LIVED_COMMANDS = {"serve", "gateway", "chat", None}
+    if command in _LONG_LIVED_COMMANDS:
+        install_log_redaction([])
 
 
 def main() -> None:

@@ -1105,6 +1105,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # ``.../backend/registry.py``, a registered sink above.
         "apps/builtins/ops_mission_control/backend/secrets.py",
         "apps/builtins/ops_mission_control/backend/providers/http.py",
+        # Log-level defensive scrubbing: strips vault secrets and Bearer tokens
+        # from log output before it reaches the log ring. Not an egress boundary
+        # itself — the log ring reader (/api/logs) is the registered sink.
+        "log_redaction.py",
+        # CLI bootstrap: the ``install_log_redaction()`` call in
+        # ``_setup_cli_logging`` matches the drift-guard's redaction regex.
+        # The CLI is not an egress boundary — it's an installer, not a sink.
+        "cli.py",
     }
 )
 

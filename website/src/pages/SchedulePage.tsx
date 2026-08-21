@@ -393,7 +393,7 @@ export default function SchedulePage() {
     }
   }, [load, setActionError])
   const { armedId: confirmDeleteId, arm: armDelete, confirm: confirmDelete, isDeleting } = useArmedDelete(performDelete)
-  const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(j.model||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
+  const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(j.model||'')+' '+(j.session_key||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
   const scheduleComparators = useMemo(() => ({
     name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
     schedule: (a: CronJob, b: CronJob) => (a.schedule || '').localeCompare(b.schedule || ''),
@@ -795,7 +795,18 @@ export default function SchedulePage() {
                   />
                 </TableCell>
                 <TableCell className="truncate"><code>{j.id}</code></TableCell>
-                <TableCell className="truncate text-text-strong" title={j.name}>{j.name}</TableCell>
+                {/* Name on line 1, its owning session on line 2 — same pairing
+                    as the Type and Schedule columns. The empty state renders
+                    EXPLICIT copy, italic prose against the owned state's mono,
+                    because "no owning session" is the fact that explains why a
+                    job is invisible to cron_list in chat — a blank line would
+                    hide exactly the state this line exists to show. */}
+                <TableCell className="truncate text-text-strong" title={`${j.name} · ${j.session_key || i18nT('pages.schedulePage.no_owning_session')}`}>
+                  <span className="block truncate">{j.name}</span>
+                  {j.session_key
+                    ? <span className="block truncate text-[11px] font-mono font-normal text-muted">{j.session_key}</span>
+                    : <span className="block truncate text-[11px] italic font-normal text-muted">{i18nT('pages.schedulePage.no_owning_session')}</span>}
+                </TableCell>
                 {/* Kind on line 1, its owner on line 2 — mirrors the
                     schedule/timezone pair in the next column. The agent's model
                     is tooltip-only: at this width it truncated to noise, and the
@@ -1156,6 +1167,17 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, on
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.last_run')}</div>
                 <span className="text-sm text-text">{fmtDateTimeNumeric(job.last_run_ts)}</span>
+              </div>
+            )}
+            {/* The row's owner line truncates; here the full key is readable.
+                The ownerless copy stays italic-vs-mono distinguishable, same
+                treatment as the table row. */}
+            {job && (
+              <div className="flex flex-col gap-1.5">
+                <div className="text-[12px] text-muted font-medium">{i18nT('pages.schedulePage.owning_session')}</div>
+                {job.session_key
+                  ? <code className="text-[12px] font-mono break-all text-text">{job.session_key}</code>
+                  : <span className="text-sm italic text-muted">{i18nT('pages.schedulePage.no_owning_session')}</span>}
               </div>
             )}
           </>

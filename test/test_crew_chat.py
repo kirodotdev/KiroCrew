@@ -2540,10 +2540,19 @@ class TestReviewFixes:
         orch = _orch(state=state)
         with patch.object(orch, "_post", return_value=True) as post:
             orch._store("s1")     # _reconcile SCHEDULES the replay (it is sync)
-            await asyncio.sleep(0.05)          # let that task run
+            # Poll until the drain task completes (forwards cleared) instead of
+            # a fixed sleep that flakes on loaded CI runners (#4914).
+            # Catch RuntimeError on Windows where the drain task may hold a
+            # write lock on forwards.json while we try to read it.
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                try:
+                    if not CrewStore("s1").forwards:
+                        break
+                except (RuntimeError, OSError):
+                    pass  # file locked by drain task — retry
         post.assert_called_once()
         assert "orphaned result" in post.call_args.args[1]
-        await orch._store("s1").wait_writes()
         assert CrewStore("s1").forwards == []
 
 

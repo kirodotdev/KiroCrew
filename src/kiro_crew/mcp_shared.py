@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.loopback_http import loopback_urlopen
@@ -1182,4 +1183,11 @@ def _run_stdio_dispatch_loop(
                 )
                 _worker_thread.start()
         elif req_id is not None:
-            respond(req_id, None, error={"code": -32601, "message": f"Unknown method: {method}"})
+            respond(
+                req_id,
+                None,
+                error={
+                    "code": JSONRPC_METHOD_NOT_FOUND,
+                    "message": f"Unknown method: {method}",
+                },
+            )

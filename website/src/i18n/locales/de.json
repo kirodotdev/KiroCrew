@@ -10224,7 +10224,9 @@
       "script_source": "Skript-Quellcode",
       "script_source_download": "Skript herunterladen",
       "script_source_failed": "Der Skript-Quellcode konnte nicht geladen werden.",
-      "script_source_truncated": "Gekürzt — das Skript überschreitet das Vorschaulimit."
+      "script_source_truncated": "Gekürzt — das Skript überschreitet das Vorschaulimit.",
+      "no_owning_session": "Keine besitzende Sitzung",
+      "owning_session": "Besitzende Sitzung"
     },
     "servicesTab": {
       "connected": "Verbunden",

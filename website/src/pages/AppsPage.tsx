@@ -1033,6 +1033,7 @@ export default function AppsPage() {
                     <FeaturedSpotlight
                       type="app"
                       apps={[spotlight]}
+                      layout="side"
                       busyName={featuredBusyName(actionLoading, [spotlight])}
                       onGet={name => getApp(name)}
                       onEnable={name => enableApp(name)}

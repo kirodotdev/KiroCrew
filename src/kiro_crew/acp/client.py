@@ -70,6 +70,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
+    JSONRPC_METHOD_NOT_FOUND,
     KNOWN_SESSION_UPDATES,
     METHOD_AGENT_SWITCHED,
     METHOD_CANCEL,
@@ -835,11 +836,6 @@ _WAIT_RESPONSE_MAX_TIMEOUT = 600.0  # 10 min absolute ceiling
 # and must never gate tool dispatch, so a wedged SEL backend is abandoned (the
 # worker thread may leak, which is survivable) after this timeout.
 _SEL_AUDIT_TIMEOUT_SECONDS = 5.0
-# JSON-RPC 2.0 reserved error code for an unrecognized method — used to answer
-# unknown server→client requests so the agent fails fast instead of hanging.
-_JSONRPC_METHOD_NOT_FOUND = -32601
-
-
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
 # synthesize a kind for these well-known literals — unknown ids stay empty
 # so we don't fabricate intent the agent didn't express.
@@ -4846,7 +4842,7 @@ class AcpClient:
         if msg.id is None:
             return
         logger.warning("ACP: rejecting unknown server request: method=%s id=%s", msg.method, msg.id)
-        await self._send_error(msg.id, _JSONRPC_METHOD_NOT_FOUND, f"Method not found: {msg.method}")
+        await self._send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, f"Method not found: {msg.method}")
 
     def _extract_text_chunk(self, msg: JsonRpcMessage) -> tuple[str | None, bool]:
         """Extract text from an agent_message_chunk or agent_thought_chunk update.

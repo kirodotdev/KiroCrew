@@ -10468,7 +10468,9 @@
       "script_source": "Исходный код скрипта",
       "script_source_download": "Скачать скрипт",
       "script_source_failed": "Не удалось загрузить исходный код скрипта.",
-      "script_source_truncated": "Обрезано — скрипт превышает лимит предпросмотра."
+      "script_source_truncated": "Обрезано — скрипт превышает лимит предпросмотра.",
+      "no_owning_session": "Нет сессии-владельца",
+      "owning_session": "Сессия-владелец"
     },
     "servicesTab": {
       "connected": "Подключено",

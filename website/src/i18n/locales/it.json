@@ -10346,7 +10346,9 @@
       "script_source": "Codice sorgente dello script",
       "script_source_download": "Scarica script",
       "script_source_failed": "Impossibile caricare il codice sorgente dello script.",
-      "script_source_truncated": "Troncato — lo script supera il limite di anteprima."
+      "script_source_truncated": "Troncato — lo script supera il limite di anteprima.",
+      "no_owning_session": "Nessuna sessione proprietaria",
+      "owning_session": "Sessione proprietaria"
     },
     "servicesTab": {
       "connected": "Connesso",

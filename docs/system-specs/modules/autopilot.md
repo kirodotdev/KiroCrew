@@ -170,7 +170,8 @@ in the prompt. It creates the tracker if absent (timeout from
 `orchestrator.stage_timeout_seconds`), resumes at `tracker.current_stage` when
 rounds already exist, and for each stage index:
 
-1. Break if `slot._stopping`.
+1. Break if `_orchestration_stopped(slot, tracker)` — see
+   [Stop and Cancel](#stop-and-cancel) for why both flags are read.
 2. **Clamp**: break if `stage_idx >= slot._plan_stage_count`. `total` is
    captured once when the range is built, so a plan that shrank mid-run would
    otherwise emit a phantom "Stage N of M" with N > M.
@@ -266,11 +267,31 @@ model may ignore, tier 2 is `is_force_failed()` in Python.
 |------|---------|----------|
 | Cancel button | `plan-action` with `cancel` | Always available: stop tracker, clear `_auto_run`, cancel sub-agent tasks, post `🛑 Plan cancelled.`, no LLM call |
 | Typed `stop` / `cancel` / `abort` | `api_chat`, only while `tracker.has_escalated` and not already stopped | Same teardown, posts `🛑 [SYSTEM] Orchestration stopped by user.` |
-| Stop button | `POST /api/chat/slots/{slot}/stop` | Generic cooperative stop with hard-kill escalation on a second press; sets `_stopping`, which every `_stage_loop` checkpoint honors |
+| Stop button | `POST /api/chat/slots/{slot}/stop` | Generic cooperative stop with hard-kill escalation on a second press; sets `_stopping` |
 
 Typed stop words are gated on `has_escalated` so an ordinary "cancel that idea"
 mid-plan is not read as a control command; the Cancel and Stop buttons are
 unconditional.
+
+**Two flags, two meanings — every advancement gate reads both.** Stop sets
+`slot._stopping`: the slot is being torn down, so nothing on it may keep running.
+Cancel and the typed stop words set `tracker.stopped` and leave `_stopping`
+alone: the slot stays alive and usable, and only the plan ends. A gate reading
+one flag therefore observes only half the stops, and the window that matters is
+`_run_chat` — the loop's longest await, so the likeliest place for a cancel to
+land, and the point it would otherwise resume from straight into the next stage
+against a revoked approval. `_orchestration_stopped(slot, tracker)` is the single
+predicate all four gates (top-of-iteration, post-`_run_chat`, the sub-agent poll
+condition, and pre-capture) call, so the two channels cannot drift apart again.
+
+The inverse — having Cancel set `slot._stopping` — is deliberately **not** what
+this does: that flag carries teardown semantics for paths outside the stage loop,
+and cancelling a plan is not a request to tear the session down.
+
+The all-stages-complete summary still reads `slot._stopping` alone. A cancel that
+lands after the final stage's gate has already passed leaves a plan whose stages
+all genuinely ran, and suppressing a truthful completion summary there would be
+the wrong trade.
 
 ## Configuration
 

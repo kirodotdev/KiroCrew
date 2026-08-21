@@ -74,6 +74,8 @@ MODEL_CONFIG_ID = "model"
 #: the runtime answers it directly rather than routing it to a session. Note the
 #: single-underscore ``_kiro/`` namespace, distinct from the ``_kiro.dev/`` ones.
 METHOD_KAS_AUTH_GET_ACCESS_TOKEN = "_kiro/auth/getAccessToken"
+#: JSON-RPC 2.0 reserved error code for an unrecognized method.
+JSONRPC_METHOD_NOT_FOUND = -32601
 #: JSON-RPC error code returned when the auth callback cannot be fulfilled. KAS
 #: treats any rejection as an expired-token signal, so the exact code is not
 #: load-bearing; -32000 is the ACP server-error range.

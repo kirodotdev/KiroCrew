@@ -10346,7 +10346,9 @@
       "script_source": "Código-fonte do script",
       "script_source_download": "Baixar script",
       "script_source_failed": "Não foi possível carregar o código-fonte do script.",
-      "script_source_truncated": "Truncado — o script excede o limite de pré-visualização."
+      "script_source_truncated": "Truncado — o script excede o limite de pré-visualização.",
+      "no_owning_session": "Sem sessão proprietária",
+      "owning_session": "Sessão proprietária"
     },
     "servicesTab": {
       "connected": "Conectado",
