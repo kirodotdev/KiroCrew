@@ -1495,7 +1495,20 @@ class TestDenyRowTitleRedaction:
         state, client = _make_state(tmp_path)
         slot = _make_slot()
         slot._trust_reads = True
-        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
+        # The name-grant check is stubbed to "no refusal" so this test keeps
+        # measuring what its name claims -- that the trust-reads DENY row and its
+        # SEL record are redacted -- rather than the host's PATH semantics. It
+        # reaches the tier with `ls`, which resolves to a trusted system program on
+        # POSIX but does not exist on Windows, where the check therefore declines
+        # the tier outright, the request falls through to the interactive card, and
+        # the `trust_reads` deny asserted below never happens. Patching the ONE
+        # off-loop entry point every tier goes through is the same seam
+        # `test_chat_runner_coverage.py` uses; the check itself is covered directly
+        # in `test/test_name_grant.py`.
+        _no_refusal = patch.object(
+            chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
+        )
+        with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel, _no_refusal:
             audit = MagicMock()
             mock_sel.return_value = audit
             await _drive_deny_turn(

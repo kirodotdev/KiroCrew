@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from kiro_crew import mcp_apps_render, model_registry, session_directive
+from kiro_crew import mcp_apps_render, model_registry, platform_compat, session_directive
 from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpError,
@@ -199,6 +199,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import chunk_for_transport
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.name_grant import Refusal, name_grant_refusal, pin_human_approval
 from kiro_crew.platform import redact_via_context
 from kiro_crew.providers.acp import is_claude_backend
 from kiro_crew.providers.base import (
@@ -2233,6 +2234,87 @@ def _session_principal(session_key: str) -> str:
     if parsed is None or parsed.chat_type != CHAT_TYPE_DIRECT or len(parsed.scope) != 1:
         return ""
     return parsed.scope[0]
+
+
+async def _name_grant_refusal_off_loop(command: str) -> Refusal | None:
+    """The ONE place this module's tiers reach the name-grant check.
+
+    It resolves names against ``PATH`` and digests the file behind each one, so
+    it runs on a worker thread: the gateway's loop must not stat a stalled
+    network mount or read a large binary. Every tier goes through here rather
+    than calling ``asyncio.to_thread`` itself, so there is a single place to
+    reason about (and, for the rung tests, a single place to stub -- three tiers
+    each spawning their own thread is what crashed the Windows xdist workers).
+
+    Windows is answered ON the loop, because there the verdict needs no
+    filesystem access at all: the check declines every name-based grant outright
+    (neither ``cmd.exe`` search order nor POSIX-mode tokenization is modelled),
+    so the thread would do nothing but hand back a constant. Paying a hop for it
+    is not merely waste -- the worker can outlive a caller's event loop, which is
+    what crashes an xdist worker rather than merely failing its test.
+    """
+
+    if not command:
+        return None
+    if platform_compat.IS_WINDOWS:
+        return name_grant_refusal(command)
+    return await asyncio.to_thread(name_grant_refusal, command)
+
+
+async def _name_grant_refusal_for(event: object) -> Refusal | None:
+    """Why a shell *event* may not be auto-approved by program NAME, or ``None``.
+
+    Every auto-approve tier is a statement about a PROGRAM, and the shell
+    resolves the name itself afterwards through a ``PATH`` that legitimately
+    leads with directories the agent can write.
+
+    This lives here rather than inside ``HookManager.on_tool_call``, which is
+    synchronous and called ON the loop. The hook layer decides its own tiers and
+    this downgrades an auto-approve it granted, so a refusal costs one
+    interactive prompt and never blocks.
+
+    ``None`` for a non-shell tool or an unrecoverable command: there is no
+    program name to vouch for, and those tiers are unchanged.
+    """
+
+    if not getattr(event, "is_shell", False):
+        return None
+    command = getattr(event, "shell_command", None)
+    if not command:
+        return None
+    return await _name_grant_refusal_off_loop(command)
+
+
+def _audit_name_grant_refusal(
+    *, session_key: str, slot: Any, event: Any, refusal: Refusal, tier: str
+) -> None:
+    """Record that a name-based auto-approve was DECLINED, and on which tier.
+
+    Declining is a security decision, so it belongs in the audit log beside the
+    approvals and denials. Without it the log shows a command arriving at the
+    interactive card and never says that a grant was withheld, or why.
+
+    The CODE, never the ``detail``: the detail names the program and the resolved
+    paths, and an audit sink is exactly where that becomes a disclosure. Both
+    ``code`` and ``log_text`` are constants read out of a module table.
+
+    Not ``critical=True``. That flag is for audit-or-deny, where a caller must
+    refuse rather than run something unaudited. Nothing runs unaudited here:
+    declining sends the request to the approval card, and the human's own answer
+    is audited in turn.
+    """
+
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=_redact_display_text(event.title),
+        tool_kind=getattr(event, "tool_kind", ""),
+        outcome="auto_approve_declined",
+        request_id=event.request_id,
+        error=refusal.log_text,
+        metadata={"reason": "name_grant", "code": refusal.code, "tier": tier},
+    )
 
 
 def _resolve_channel_target(
@@ -6667,6 +6749,37 @@ async def _run_chat(
                             )
                             tool_result = ToolHookResult(action=TOOL_ALLOW)
                     if tool_result.action == TOOL_AUTO_APPROVE:
+                        # The hook layer granted this by NAME (its
+                        # `auto_approve_tools` globs, or the read-only allowlist).
+                        # Ask off-loop whether the names still identify the
+                        # programs they appear to name; a shadowed, agent-tree or
+                        # unidentified resolution falls through to the interactive
+                        # card instead. Done HERE rather than inside the hook
+                        # because the answer needs filesystem work that its
+                        # synchronous, loop-bound method must not perform.
+                        _hook_shim = await _name_grant_refusal_for(event)
+                        if _hook_shim is not None:
+                            logger.warning(
+                                "declining a hook auto-approve: %s; the request "
+                                "falls through to interactive approval",
+                                _hook_shim.log_text,
+                            )
+                            _audit_name_grant_refusal(
+                                session_key=session_key,
+                                slot=slot,
+                                event=event,
+                                refusal=_hook_shim,
+                                tier="hook_auto_approve",
+                            )
+                            slot.append(
+                                "system",
+                                "🛡️ Auto-approve not applied — "
+                                f"{_redact_display_text(_hook_shim.detail)}. "
+                                "Approve this command explicitly.",
+                                "msg msg-info",
+                            )
+                            tool_result = ToolHookResult(action=TOOL_ALLOW)
+                    if tool_result.action == TOOL_AUTO_APPROVE:
                         try:
                             validated_tool = _validate_tool_name(
                                 event.title, is_shell=event.is_shell
@@ -6863,6 +6976,41 @@ async def _run_chat(
                         if _tp_command
                         else None
                     )
+                    if matched and event.is_shell and _tp_command:
+                        # The user granted a PROGRAM NAME. Do not honour it when
+                        # that name no longer identifies the program it appears
+                        # to name — the shell resolves it again, through a PATH
+                        # that can lead with directories the agent writes.
+                        # Declining costs one interactive prompt; the command is
+                        # neither blocked nor rewritten.
+                        #
+                        # `is_shell` is tested explicitly because `_tp_command`
+                        # is non-empty for a non-shell grant too, where it is a
+                        # canonical `mcp-trust:v1:...` identity rather than a
+                        # command. There is no program name to vouch for there,
+                        # so that tier stays unchanged.
+                        _tp_shim = await _name_grant_refusal_off_loop(_tp_command)
+                        if _tp_shim:
+                            # The CODE, not the detail and not the pattern: both
+                            # are derived from user/agent input, and a log sink is
+                            # where that becomes a disclosure. The detail still
+                            # reaches the person, on the card below.
+                            logger.warning("trusted pattern not applied: %s", _tp_shim.log_text)
+                            _audit_name_grant_refusal(
+                                session_key=session_key,
+                                slot=slot,
+                                event=event,
+                                refusal=_tp_shim,
+                                tier="trusted_pattern",
+                            )
+                            slot.append(
+                                "system",
+                                "🛡️ Trusted pattern not applied — "
+                                f"{_redact_display_text(_tp_shim.detail)}. "
+                                "Approve this command explicitly.",
+                                "msg msg-info",
+                            )
+                            matched = None
                     if matched:
                         try:
                             validated_tool = _validate_tool_name(
@@ -6932,7 +7080,19 @@ async def _run_chat(
                     and cmd
                     and not _child_low_fidelity
                 ):
-                    if is_read_only_bash(cmd):
+                    _tr_shim = (
+                        await _name_grant_refusal_off_loop(cmd) if is_read_only_bash(cmd) else None
+                    )
+                    if _tr_shim is not None:
+                        logger.warning("trust-reads not applied: %s", _tr_shim.log_text)
+                        _audit_name_grant_refusal(
+                            session_key=session_key,
+                            slot=slot,
+                            event=event,
+                            refusal=_tr_shim,
+                            tier="trust_reads",
+                        )
+                    if is_read_only_bash(cmd) and _tr_shim is None:
                         try:
                             validated_tool = _validate_tool_name(
                                 event.title, is_shell=event.is_shell
@@ -7416,6 +7576,31 @@ async def _run_chat(
                             metadata={"reason": "interactive"},
                         )
                     else:
+                        # BEFORE approve_tool, not after: the approval response
+                        # is what starts execution, so a file swapped in that
+                        # window would be the one pinned -- recording a file the
+                        # human never saw. Off-loop because it digests the file.
+                        #
+                        # Scope kept to `cmd`, the command the tiers above already
+                        # extracted. Round 18 widened this to fall back to
+                        # `event.shell_command` so a structured approval of a
+                        # non-system program stopped re-prompting; round 20 called
+                        # the wider form an undisclosed persistent grant, and
+                        # between "prompts once more than it needs to" and "records
+                        # an identity from a surface the human may not read as
+                        # durable", the extra prompt is the safe side. The narrower
+                        # form is the one that ships.
+                        #
+                        # `is_shell` is tested explicitly (round 21) because
+                        # `extract_bash_command` reads a `command` key out of ANY
+                        # structured input and falls back to the raw string, so a
+                        # NON-shell MCP call carrying `{"command": "gh ..."}` would
+                        # otherwise mint a witness for the shell program `gh` --
+                        # a durable grant from an approval that was never about
+                        # running `gh` at all. Same reason the trusted-pattern tier
+                        # above tests it.
+                        if event.is_shell and cmd:
+                            await asyncio.to_thread(pin_human_approval, cmd)
                         await client.approve_tool(event.request_id)
                         _approved_title = _redact_display_text(event.title)
                         slot.append(

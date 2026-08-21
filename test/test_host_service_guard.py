@@ -98,6 +98,12 @@ _DELIBERATELY_UNGUARDED = {
     # behind them — a detector of `doas`, not a spawn of it. `doas systemctl
     # restart` is still caught on the inner `systemctl` token.
     "doas": "privilege prefix; the wrapped command carries the action",
+    # The polkit equivalent, and excluded for the identical reason. Its only
+    # appearance in src/ is as a MEMBER of `name_grant._DISPATCHERS`, the table
+    # that refuses to vouch for a program which runs another program named in
+    # its arguments -- a detector of `pkexec`, not a spawn of it. `pkexec
+    # systemctl restart` is still caught on the inner `systemctl` token.
+    "pkexec": "privilege prefix; the wrapped command carries the action",
 }
 
 
