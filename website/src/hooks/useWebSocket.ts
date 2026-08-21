@@ -2,14 +2,14 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
 import { sseStatus, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications } from '../store/notificationsSlice'
 import { MC_NOTIFICATION_EVENT, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, type McNotificationDetail } from './notificationEvent'
 import { emitThemeSound } from './themeSound'
 import {
-  fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setGoalLoops, sseGoalLoop, sseSideQueue
+  fetchHistory, missedChunkMarker, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setGoalLoops, sseGoalLoop, sseSideQueue, reconcileWorkflowRuns
 } from '../store/chatSlice'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
@@ -19,6 +19,13 @@ import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullR
 import { i18nT } from '../i18n/t'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
+
+/** How often a workflow row this tab still shows as `running` is re-checked
+ *  against `/api/workflows/runs`. Deliberately slow: a run lasts minutes, this
+ *  is a correctness backstop for a lost terminal frame rather than the progress
+ *  channel (that is the live event stream), and the tick makes no request at all
+ *  while no row is running. */
+const WORKFLOW_HEAL_MS = 15000
 
 type VoiceProgress = {
   slot: string
@@ -443,6 +450,78 @@ export function useWebSocket() {
     } catch { /* ignore */ }
   }, [dispatch])
 
+  /** Reconcile chat workflow rows against the authority (`/api/workflows/runs`).
+   *
+   *  `workflow_run_event` is a one-shot broadcast with no replay, so a tab that
+   *  was closed, asleep, or disconnected when a run ended keeps a row spinning at
+   *  `running` for the rest of its life — and a run that started before the tab
+   *  opened has no row at all, because nothing else ever seeds this slice. This
+   *  read is the only thing that closes either gap.
+   *
+   *  Fails CLOSED: a rejected request, or a response without a `runs` array,
+   *  means "the authority could not be read" and never "there are no runs", so
+   *  nothing is dispatched. `api.workflowRuns` is called optionally because many
+   *  component tests mock the api client partially, where a newly-added method is
+   *  undefined. The merge itself is monotonic — see `reconcileWorkflowRuns`.
+   *
+   *  Routed through `queryClient.fetchQuery` so the three callers (connect,
+   *  visibility, heal tick) SHARE one in-flight request instead of racing
+   *  duplicate GETs when two of them land together — a visibility event landing
+   *  next to a tick is exactly the common case. `staleTime: 0` keeps it a real
+   *  read every time (a cached answer is the thing being corrected, so it must
+   *  never be served from cache), and the key is deliberately NOT the Workflows
+   *  tab's `['workflow-runs']`: that entry caches an unwrapped `RunSummary[]`
+   *  from the app's own base path, so sharing it would collide on shape. */
+  const syncWorkflowRuns = useCallback(async () => {
+    const read = api.workflowRuns
+    if (!read) return
+    try {
+      const out = await queryClient.fetchQuery({
+        queryKey: ['workflow-runs-reconcile'],
+        queryFn: () => read(),
+        staleTime: 0,
+        gcTime: 30_000,
+        retry: false,
+      })
+      const runs = out?.runs
+      if (!Array.isArray(runs)) return
+      dispatch(reconcileWorkflowRuns(runs))
+    } catch { /* unreadable authority — leave local state untouched */ }
+  }, [dispatch, queryClient])
+
+  /** True while ANY workflow row is stored as running. A boolean, so the hook
+   *  re-renders only when the last run ends or the first one starts — that flip
+   *  is what arms and disarms the heal timer below. */
+  const anyWorkflowRunning = useAppSelector(s =>
+    Object.values(s.chat.workflowRuns ?? {}).some(r => r?.status === 'running'),
+  )
+
+  /** Re-check a still-`running` row against the authority on a slow interval.
+   *
+   *  Connect-time reconcile covers every gap that COINCIDES with a reconnect,
+   *  which is the common one — but a frame can also be lost while the socket
+   *  stays open, and then nothing else would ever correct the row: the spinner is
+   *  driven purely by stored status, and the linger cleanup only arms once a
+   *  status is terminal. This makes the store eventually consistent with the
+   *  authority no matter how a frame went missing.
+   *
+   *  Armed ONLY while a row is actually showing as running, so an idle tab holds
+   *  no timer and issues no request; a hidden tab skips the tick (its rows are
+   *  off screen and its timers are throttled anyway) and heals the moment it is
+   *  looked at again. Lives here rather than in WorkflowProgressBar because the
+   *  sidebar's running indicator reads the same slice and a run belonging to a
+   *  non-active slot renders no bar at all — one timer heals every surface. */
+  useEffect(() => {
+    if (!anyWorkflowRunning) return
+    const heal = () => { if (!document.hidden) syncWorkflowRuns() }
+    const timer = setInterval(heal, WORKFLOW_HEAL_MS)
+    document.addEventListener('visibilitychange', heal)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', heal)
+    }
+  }, [anyWorkflowRunning, syncWorkflowRuns])
+
   /** Flush all buffered streaming chunks into the store: one batched dispatch
    *  per slot. Runs once per animation frame (see scheduleChunkFlush) and
    *  synchronously before any finalize/segment/message for ordering. */
@@ -606,6 +685,10 @@ export function useWebSocket() {
         seedGoalLoops()
         dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
+        // Same one-shot problem, different stream: a run that ENDED while the
+        // socket was down pushed a terminal `workflow_run_event` nobody received,
+        // and a run that STARTED while it was down has no row at all.
+        syncWorkflowRuns()
         // Re-fetch active slot messages to recover from missed chunks
         const active = store.getState().chat.activeSlot
         if (active) dispatch(refreshSlot(active))
@@ -635,6 +718,11 @@ export function useWebSocket() {
       // only, so it is no protection for a row the response does not carry.
       dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
+      // FIRST connect: seeds rows for runs already in flight (a reload, or a new
+      // tab on a session whose workflow is still going). The WS stream only
+      // carries events from here on, so without this such a run is invisible
+      // until its next phase event — and one that ends first never appears.
+      syncWorkflowRuns()
       // Eagerly subscribe to subagent events on first connect too.
       dispatch(clearSubagentsForSnapshot())
       ws.send(JSON.stringify({ type: 'subscribe_subagents' }))

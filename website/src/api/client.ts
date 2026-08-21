@@ -15,6 +15,7 @@ import type {
   SessionStorageCleanup,
   SessionStorageReport,
   SessionTrashResult,
+  WorkflowRunSummary,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
@@ -2256,6 +2257,17 @@ export const api = {
       github_issue_url: string
       download_url: string
     }>,
+  /** Compact list of dynamic-workflow runs, newest first — the AUTHORITY for a
+   *  run's status.
+   *
+   *  Live status reaches the chat only as one-shot `workflow_run_event` frames,
+   *  so a client that was closed, asleep, or disconnected when a run ended holds
+   *  a row that never leaves `running`. This is the read that corrects it (see
+   *  `reconcileWorkflowRuns`). Rejects (503) when the workflows service is
+   *  unavailable, which callers must treat as "no evidence" — never as "no runs".
+   */
+  workflowRuns: () =>
+    get('/api/workflows/runs').then(j) as Promise<{ runs?: WorkflowRunSummary[] }>,
   refineTaskInput: (input: string) => post('/api/taskrunner/refine', { input }).then(j),
   refineStatus: () => fetch('/api/taskrunner/refine').then(j),
   refineCancel: () => post('/api/taskrunner/refine/cancel').then(j),

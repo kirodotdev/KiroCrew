@@ -5,7 +5,7 @@ import { resolveDefaultColor } from '../utils/sessionColors'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
-import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity } from '../types'
+import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
@@ -515,6 +515,32 @@ export interface WorkflowRunProgress {
   error?: string
   sessionKey?: string
 }
+
+/** The statuses a run has ENDED in. Spelled once so the reducer, the reconcile
+ *  and any surface deciding "is this still live?" cannot drift apart — and so an
+ *  unrecognised status from a newer backend reads as "not terminal / unknown"
+ *  rather than accidentally matching. */
+export const WORKFLOW_TERMINAL_STATUSES = ['finished', 'failed', 'cancelled'] as const
+
+export function isTerminalWorkflowStatus(status: string | undefined | null): boolean {
+  return !!status && (WORKFLOW_TERMINAL_STATUSES as readonly string[]).includes(status)
+}
+
+/** Coerce one workflow wire field to the string `WorkflowRunProgress` declares.
+ *
+ *  Every text field on a run is AGENT-AUTHORED: a workflow script calls
+ *  `ctx.phase(123)` or logs a dict, and that value rides the event stream and the
+ *  runs API unchanged. The rendering path slices these (`(run.phase || '').slice`)
+ *  so a number reaching the store throws inside render — the chat goes blank, not
+ *  just this row. The type annotations claimed `string` without anything enforcing
+ *  it, so this is the enforcement, applied at BOTH writers into the slice (the
+ *  live `sseWorkflowEvent` and the `reconcileWorkflowRuns` read) rather than at one
+ *  of them: the two paths carry the same values and a guard on only the newer one
+ *  leaves the same crash reachable through the older.
+ *
+ *  A non-string is dropped rather than stringified: `String({})` renders
+ *  "[object Object]" in the chat, which is worse than the field being absent. */
+const workflowText = (value: unknown): string => (typeof value === 'string' ? value : '')
 
 export interface SideMessage {
   role: 'user' | 'assistant'
@@ -2923,14 +2949,14 @@ const chatSlice = createSlice({
       if (session_key && !cur.sessionKey) cur.sessionKey = session_key
       switch (type) {
         case 'run_started':
-          cur.name = (d.name as string) || cur.name || run_id
+          cur.name = workflowText(d.name) || cur.name || run_id
           cur.status = 'running'
           break
         case 'phase_started':
-          cur.phase = (d.title as string) || cur.phase
+          cur.phase = workflowText(d.title) || cur.phase
           break
         case 'log': {
-          const msg = (d.message as string) || ''
+          const msg = workflowText(d.message)
           if (msg) cur.lastLog = msg
           break
         }
@@ -2939,7 +2965,7 @@ const chatSlice = createSlice({
           break
         case 'run_failed':
           cur.status = 'failed'
-          cur.error = (d.error as string) || cur.error
+          cur.error = workflowText(d.error) || cur.error
           break
         case 'run_cancelled':
           cur.status = 'cancelled'
@@ -2951,6 +2977,78 @@ const chatSlice = createSlice({
     },
     clearWorkflowRun(state, action: PayloadAction<string>) {
       delete state.workflowRuns[action.payload]
+    },
+    /** Fold the AUTHORITATIVE run list (`GET /api/workflows/runs`) into
+     *  `workflowRuns`, correcting rows the live event stream could not.
+     *
+     *  `workflow_run_event` frames are one-shot and never replayed, so a client
+     *  that was closed, asleep, or disconnected when a run ended holds an entry
+     *  frozen at `running` forever: the spinner keeps spinning, the phase and log
+     *  lines keep rendering as live, and the terminal-linger cleanup — which only
+     *  tracks entries that have reached a terminal status — never arms to drop it.
+     *  A gateway restart is the same case from the other side: the registry marks
+     *  a run that was still running as failed (interrupted), and only this read
+     *  carries that to a tab that stayed open across the restart.
+     *
+     *  The merge is deliberately MONOTONIC, because the snapshot is a point-in-time
+     *  read that races the live stream (frames can land while the request is in
+     *  flight) and a workflow status only ever moves one way, running → terminal:
+     *   - a local entry already TERMINAL is never touched — the snapshot cannot be
+     *     newer than the frame that ended it, so "re-opening" it could only undo
+     *     truth the client already has;
+     *   - a running local entry is only ever advanced to terminal, never rewound;
+     *   - progress fields (`phase`, `lastLog`) are filled only when EMPTY, since a
+     *     live frame's value is newer than any value this response carries;
+     *   - a row absent locally is SEEDED only while it is still running — that is
+     *     the reload / late-join case (nothing else seeds this slice, so a run
+     *     started before the tab opened is otherwise invisible). A terminal row is
+     *     never resurrected: the run is over and re-adding it would show a wall of
+     *     ✓ rows above the composer on every reconnect.
+     *   - an unrecognised status is not evidence and is skipped entirely, so a
+     *     future backend state cannot silently clear a spinner or seed a row.
+     *
+     *  A failed request must NOT reach here at all: an absent list means the
+     *  authority could not be read, not that no runs exist. Callers pass only a
+     *  real `runs` array (see `syncWorkflowRuns` in useWebSocket).
+     *
+     *  Absence from a SUCCESSFUL response is likewise not evidence: the registry
+     *  evicts old runs (200 by default), so a long-lived entry can legitimately
+     *  drop out of the list. Such an entry is left alone rather than guessed at.
+     */
+    reconcileWorkflowRuns(state, action: PayloadAction<WorkflowRunSummary[]>) {
+      for (const row of action.payload ?? []) {
+        const runId = row?.run_id
+        if (typeof runId !== 'string' || !runId || isUnsafeKey(runId)) continue
+        const status = row.status
+        const terminal = isTerminalWorkflowStatus(status)
+        if (!terminal && status !== 'running') continue  // unknown status: no evidence
+        const key = safeKey(runId)
+        const cur = state.workflowRuns[key]
+        if (!cur) {
+          if (terminal) continue  // over and gone — never resurrect
+          state.workflowRuns[key] = {
+            run_id: runId,
+            name: workflowText(row.name) || runId,
+            phase: workflowText(row.phase),
+            lastLog: workflowText(row.last_log),
+            status: 'running',
+            sessionKey: workflowText(row.session_key) || undefined,
+          }
+          continue
+        }
+        if (cur.status !== 'running') continue  // terminal locally: one-way, done
+        if (!cur.name) cur.name = workflowText(row.name) || cur.name
+        if (!cur.sessionKey && workflowText(row.session_key)) cur.sessionKey = workflowText(row.session_key)
+        if (!terminal) {
+          // Still running per the authority — the live stream owns progress, so
+          // only fill what this client never received.
+          if (!cur.phase && workflowText(row.phase)) cur.phase = workflowText(row.phase)
+          if (!cur.lastLog && workflowText(row.last_log)) cur.lastLog = workflowText(row.last_log)
+          continue
+        }
+        cur.status = status as WorkflowRunProgress['status']
+        if (workflowText(row.error)) cur.error = workflowText(row.error)
+      }
     },
     sseChatMessageUpdate(state, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {
       const { slot, tool_call_id: tcid, ts, content, meta } = action.payload
@@ -3884,7 +3982,7 @@ export const {
   setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
   sseMcpAppRender,
-  sseWorkflowEvent, clearWorkflowRun,
+  sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideClose, sideOptimisticAppend, sideOptimisticRollback,
 } = chatSlice.actions
 export default chatSlice.reducer

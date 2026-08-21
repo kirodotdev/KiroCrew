@@ -1200,6 +1200,28 @@ export interface WebAppTeardown {
   reversible: boolean;
 }
 
+/** One row of `GET /api/workflows/runs` — the compact run view (no events).
+ *
+ *  This is the AUTHORITATIVE status of a dynamic-workflow run: the live
+ *  `workflow_run_event` WS stream is one-shot, so a client that was closed,
+ *  asleep, or disconnected when a run ended never sees its terminal frame.
+ *  Field names are the backend's (`RunHandle.snapshot`), snake_case on the wire.
+ */
+export interface WorkflowRunSummary {
+  run_id: string;
+  name?: string;
+  /** `running` | `finished` | `failed` | `cancelled`. Typed loosely on purpose —
+   *  an unrecognised value is treated as "no evidence" rather than coerced. */
+  status?: string;
+  error?: string | null;
+  /** Originating chat session, `""` for a UI-launched run that belongs to no chat. */
+  session_key?: string;
+  /** Title of the most recent `phase_started` event. */
+  phase?: string;
+  /** Most recent narrator `log` message. */
+  last_log?: string;
+}
+
 export interface WebAppMetadata {
   slug: string;
   origin_session: string;

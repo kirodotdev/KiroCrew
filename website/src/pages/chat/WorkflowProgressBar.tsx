@@ -1,7 +1,7 @@
 import { useEffect, useMemo, memo, useState } from 'react'
 import { Workflow, Loader2, CheckCircle2, AlertCircle, ChevronDown } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { clearWorkflowRun } from '../../store/chatSlice'
+import { clearWorkflowRun, isTerminalWorkflowStatus, reconcileWorkflowRuns } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { WorkflowRunProgress } from '../../store/chatSlice'
 import WorkflowRunTree from '../../apps/workflows/WorkflowRunTree'
@@ -110,6 +110,23 @@ function ExpandableRunRow({
   const { snapshot, error: snapshotError } = useRunSnapshot(run.run_id, {
     enabled: expanded,
   })
+
+  // The snapshot IS the authority, so a row still stored as running while its own
+  // snapshot reports a terminal status is a missed terminal frame — the header
+  // would otherwise keep spinning next to a tree that already says "finished".
+  // Routed through the same monotonic merge as the connect-time reconcile, so it
+  // can only ever advance a running row, never rewind one.
+  const dispatch = useAppDispatch()
+  const snapStatus = snapshot?.status
+  useEffect(() => {
+    if (run.status !== 'running') return
+    if (!isTerminalWorkflowStatus(snapStatus)) return
+    dispatch(reconcileWorkflowRuns([{
+      run_id: run.run_id,
+      status: snapStatus,
+      error: snapshot?.error ?? undefined,
+    }]))
+  }, [dispatch, run.run_id, run.status, snapStatus, snapshot?.error])
 
   return (
     <div className="border-b border-accent/10 last:border-b-0">
