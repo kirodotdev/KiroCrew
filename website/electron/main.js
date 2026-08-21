@@ -107,7 +107,7 @@ const store = new Store({
     globalHotkey: null,                    // system-wide summon accelerator: null = platform default, "" = disabled, string = custom (see global-hotkey.js)
     lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
-    updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
+    updateChannel: "",                     // "" = follow the stable default; "insider"|"stable" = user opt-in (Settings > About)
     runLocalGateway: true,                 // false = act as a pure client; never start a gateway on this machine
     linuxFrameless: null,                  // Linux window chrome: true = frameless, false = native frame, null = follow the desktop environment (see linux-frame.js)
   },

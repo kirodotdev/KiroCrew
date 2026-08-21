@@ -121,20 +121,33 @@ function channelForVersion(version) {
  *   migrate the dev app onto a production channel.
  * - unstamped (dev, stamped === null) builds have no update lane; the
  *   preference cannot conjure one.
- * - production stamps (insider/stable) follow the preference when set,
- *   else their own stamp. Switching BACK can be a downgrade mid-cycle
- *   (insider 0.2.0-insider.1 -> stable 0.1.0), which is why allowDowngrade
- *   is enabled in configureUpdater.
+ * - production builds (insider/stable stamps) follow the preference when set,
+ *   and default to STABLE when it is not. Switching BACK can be a downgrade
+ *   mid-cycle (insider 0.2.0-insider.1 -> stable 0.1.0), which is why
+ *   allowDowngrade is enabled in configureUpdater.
+ *
+ * Why the unset default is stable rather than the stamp: a stable release is
+ * PROMOTED, meaning the exact notarized candidate bytes are re-pointed at the
+ * stable channel without a rebuild, so the stable download and the insider
+ * download of a promoted version are the SAME FILE and carry the same
+ * prerelease stamp (`0.3.0-insider.13`). The channel therefore cannot be a
+ * property of the bytes, and reading it out of the version string sends every
+ * promoted-stable install to the insider feed. It is a default plus an opt-in,
+ * which is what this function's own contract above already describes.
+ *
+ * `channelForVersion` deliberately keeps classifying the BYTES (it is what the
+ * About panel's "you are running prerelease bytes" note is keyed on); only the
+ * followed feed is decoupled from it here.
  *
  * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
- * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = follow stamp
+ * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = default
  * @returns {"nightly"|"insider"|"stable"|null}
  */
 function resolveChannel(stamped, preference) {
   if (stamped === "nightly") return "nightly";
   if (stamped === null) return null;
   if (preference === "insider" || preference === "stable") return preference;
-  return stamped;
+  return "stable";
 }
 
 /**

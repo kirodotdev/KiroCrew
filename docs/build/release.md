@@ -503,6 +503,30 @@ nightly and insider stamp is a semver prerelease and would otherwise be
 invisible to its own channel). The library still refuses an equal version before
 the `allowDowngrade` branch, which is what prevents a self-reinstall loop.
 
+**Which channel a build follows is a default plus an opt-in, not a property of
+the bytes.** `channelForVersion()` classifies the version stamp and `nightly`
+stays pinned by it, but for the two production lanes `resolveChannel()` honours
+the persisted Settings → About preference and defaults to **stable** when none is
+set. It cannot read the lane out of the stamp, because stable is PROMOTED: the
+stable and insider downloads of a promoted version are the same notarized file
+carrying the same `-insider.N` stamp, so a stamp-derived channel would send every
+promoted-stable install to the insider feed. The consequences to know:
+
+- **Insider is an explicit opt-in.** Any install with no recorded preference
+  follows stable — including one installed from the insider DMG, and including an
+  insider install that predates this rule. The two downloads are identical files,
+  so nothing in them can record which page one came from, and nothing already on
+  disk distinguishes an insider install from a stable one that has been offered
+  the promoted build. Insider is reached by the switcher, once, per install.
+- **There is no way to seed that preference retroactively.** A migration would
+  have to read the channel from the version stamp, and the first build carrying
+  any such migration is itself promotion-stamped, so it would write `insider` for
+  every stable install — the defect this rule exists to remove, made permanent.
+  A future transition could use a persisted last-run version; this one cannot.
+- **The "you are running prerelease bytes" note still keys on the stamp**
+  (`stampedChannel`), not on the followed channel, because that statement is
+  about the bytes and stays literally true on a promoted stable install.
+
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
 (`POST /api/shutdown`, then SIGTERM, then SIGKILL) and disarms the liveness
