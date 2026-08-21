@@ -230,20 +230,30 @@ One logical change per commit.
 ## Release Changelog
 
 `CHANGELOG.md` is written **only when a version is bumped**, and everything
-already in it is immutable. Enforced by the `changelog-is-written-at-version-bump-only`
-rule in `AUTOSDE.yaml`; the parser that renders it is `src/kiro_crew/changelog.py`.
+already in it is immutable. Two halves enforce that: the
+`changelog-is-written-at-version-bump-only` rule in `AUTOSDE.yaml` applies the
+judgment a reviewer has to make (is this a commit dump? should this PR be touching
+the file at all?), and `scripts/check_changelog_history.py` enforces what needs no
+reading — every section the base documents as shipped survives byte-identical, and
+the file contains **only** shipped sections. The parser that renders it is
+`src/kiro_crew/changelog.py`.
 
 - **Your feature PR does not touch `CHANGELOG.md`.** The release PR writes the
   section covering everything that shipped. A per-PR changelog line is how the
   file grows into something nobody reads, and how it acquires an `## [Unreleased]`
   section that then has to be untangled at release time. The commit subject is
   the record until a bump names it.
-- **There is no `## [Unreleased]` section.** To see what is pending, read
-  `git log --oneline <last-tag>..HEAD`.
+- **There is no `## [Unreleased]` section, and the gate refuses one.** To see what
+  is pending, read `git log --oneline <last-tag>..HEAD`. With shipped sections
+  frozen, that leaves exactly one legal shape for a changelog diff — prepend one new
+  section — because there is nowhere to append a per-PR line to.
 - **One section per release, newest first**, headed exactly
   `## [X.Y.Z] — YYYY-MM-DD`. Never a prerelease spelling: `0.3.0-insider.9` and
   `0.3.0-rc.2` are drafts of `0.3.0`, are folded onto it by the parser, and must
-  not get their own heading.
+  not get their own heading. The gate refuses those too, so a release branch writes
+  its section once, under the release's final heading, rather than carrying a draft
+  it renames later.
+
 - **Never delete or edit a shipped section.** A release PR prepends one section
   and leaves every earlier one byte-identical. This has already gone wrong once:
   a section was *replaced* rather than prepended and 322 lines of released
@@ -290,7 +300,19 @@ Format, which the `[0.2.0]` section is the reference for:
   Partition `git log <last-tag>..HEAD` and account for every commit, because the
   omissions are systematic rather than random: a change whose subject names one
   subsystem while touching a shared surface is exactly what a keyword or path
-  scan misses, and nothing downstream ever reports it.
+  scan misses, and nothing downstream ever reports it. It is also systematically
+  biased *against* the release's headline: the PR that lands a large surface is
+  the least likely to have spent effort on a changelog line, so an accumulated
+  file over-represents small fixes and omits the features people upgraded for.
+- **The section ends with `### Contributors`**, crediting everyone whose code
+  shipped in it — `@handle`, alphabetical by username case-insensitively, bots
+  left out. Derive it from the release's own range rather than by hand:
+  `gh api repos/kirodotdev/KiroCrew/releases/generate-notes -f tag_name=<tag>
+  -f previous_tag_name=<last-tag>` names the author of every merged PR, so nobody
+  is dropped for having a quiet commit subject. The GitHub Release page gets this
+  for free from `generate_release_notes: true`, but that page is not what ships:
+  the changelog section is the copy inside the wheel and behind the dashboard's
+  Releases page, so it needs its own.
 
 ## The gate before you commit
 

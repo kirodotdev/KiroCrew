@@ -16,22 +16,34 @@ what a reader looks at and the deletions were buried in the same hunk. Nothing
 failed; the loss surfaced only when a user noticed the dashboard's Releases page
 had gone nearly empty.
 
-So the judgment half of the rule (is this a commit dump? is this heading a
-prerelease? should this PR be touching the file at all?) stays in
-``AUTOSDE.yaml`` where a reviewer applies it, and the **mechanically checkable**
-half lives here, where no reviewer has to notice anything:
+So the judgment half of the rule (is this a commit dump? should this PR be
+touching the file at all?) stays in ``AUTOSDE.yaml`` where a reviewer applies it,
+and the **mechanically checkable** half lives here, where no reviewer has to
+notice anything. Two invariants:
 
-    every version section present at the base ref must still be present at head,
-    byte-identical
+    1. every version section present at the base ref must still be present at
+       head, byte-identical
+    2. head must contain ONLY shipped sections -- no ``## [Unreleased]``, no
+       prerelease heading
 
 with **no exemptions**. A section whose heading is a bare ``X.Y.Z`` describes
 shipped software and is immutable, full stop.
 
+Rule 2 is what makes rule 1 sufficient. Together they leave exactly one legal
+shape for a changelog diff -- prepend one new section -- because there is no
+draft section to append a per-PR line to and every released one is frozen. A
+release's notes are written once, when the version is bumped, under the
+release's own heading.
+
 A **prerelease** heading (``## [0.3.0-insider.9]``, ``## [0.3.0-rc.2]``) is not a
-shipped section at all -- it is a draft of a release that has not happened -- so it
-is skipped here exactly like ``## [Unreleased]``. That is what lets a release
-branch replace its own in-progress ``[0.3.0-insider.9]`` heading with the written
-``[0.3.0]`` entry: nothing shipped is being touched.
+shipped section -- it is a draft of a release that has not happened -- so
+:func:`compare` skips it there exactly like ``## [Unreleased]``, and
+:func:`draft_headings` refuses it at head. The two are not in tension: history is
+read from refs that may legitimately contain such a heading, while the tree being
+proposed may not introduce one. An earlier design used a prerelease heading as a
+deliberate in-progress state on a release branch, to be renamed when the entry
+was written. That state is what accumulated 0.4.0's 721-line unedited draft, and
+it renders as "no notes" against the version the reader is actually running.
 
 An earlier version of this check exempted "the newest section at the base ref" so
 a release branch could redraft its own entry. That was wrong in a way worth
@@ -257,6 +269,49 @@ def parse_sections(text: str, grammar: Grammar = HEAD_GRAMMAR) -> list[tuple[str
 #: decide whether a base text that parsed to zero shipped releases is genuinely
 #: empty or was mis-parsed -- never to extract a version.
 _ANY_BRACKET_H2 = re.compile(r"^##\s+\[", re.MULTILINE)
+
+
+def draft_headings(text: str, grammar: Grammar = HEAD_GRAMMAR) -> list[str]:
+    """Return every level-2 heading that does not name a shipped release.
+
+    ``## [Unreleased]``, ``## [0.4.0-rc.1]``, ``## [0.4.0-insider.3]``, and the
+    unbracketed ``## Unreleased`` all qualify: each heads a section describing
+    software nobody has installed.
+
+    This is a HEAD-only invariant and deliberately not part of :func:`compare`.
+    ``compare`` answers "did this change rewrite history", and a draft heading is
+    not a rewrite of anything -- so mixing the two would make the immutability
+    rule's verdict depend on whether a draft happened to be present. Two
+    invariants, checked separately, in :func:`main`:
+
+    1. every section the base documents as shipped is byte-identical at head
+    2. head contains **only** shipped sections
+
+    Together they leave exactly one legal shape for a changelog diff: prepend one
+    new ``## [X.Y.Z] — YYYY-MM-DD`` section. There is nowhere to append a per-PR
+    line, because there is no draft section to append it to and the released ones
+    cannot be edited. That is the enforcement half of AGENTS.md ->
+    "Release Changelog"; the file is written when a version is bumped and at no
+    other time.
+
+    A draft section is not merely untidy. ``build_release_list`` groups by
+    ``base_version``, and ``base_version("Unreleased") == "Unreleased"``, so it
+    never folds onto the version actually running -- while ``_sort_key`` ranks it
+    ``(-1,)`` and sinks it below every release. A ``## [Unreleased]`` section
+    therefore renders on the dashboard's Releases page as the running version
+    with **no notes at all**, plus a trailing "Unreleased" row at the bottom of
+    the archive carrying the entire body. 0.4.0's draft reached 721 lines that
+    way, and nothing reported it.
+    """
+    drafts: list[str] = []
+    for line in text.splitlines():
+        if not grammar.h2_re.match(line):
+            continue
+        heading = grammar.section_re.match(line)
+        raw = heading.group("version").strip() if heading else line.lstrip("#").strip()
+        if not is_shipped_heading(raw, grammar):
+            drafts.append(raw)
+    return drafts
 
 
 def compare(
@@ -516,11 +571,33 @@ def _self_test() -> int:
     if compare("# Changelog\n\n## Unreleased\n\npending\n", dateless_head):
         failures.append("a base with no version headings at all is wrongly flagged")
 
+    # The draft-section rule. Probed here as well as in the test suite because
+    # ci.yml runs --test immediately before enforcement, so a weakened rule fails
+    # in the same job instead of passing green.
+    draft_probes: list[tuple[str, str, bool]] = [
+        ("an [Unreleased] section is caught", "# Changelog\n\n## [Unreleased]\n\npending\n", True),
+        ("an unbracketed ## Unreleased is caught", "# Changelog\n\n## Unreleased\n\np\n", True),
+        (
+            "a prerelease heading is caught even when dated",
+            "# Changelog\n\n## [0.4.0-rc.1] \u2014 2026-08-21\n\ndrafting\n",
+            True,
+        ),
+        (
+            "a draft below shipped sections is caught wherever it sits",
+            f"# Changelog\n\n{latest}{shipped}## [Unreleased]\n\npending\n",
+            True,
+        ),
+        ("a file of shipped sections only is clean", base, False),
+    ]
+    for label, probe_text, should_flag in draft_probes:
+        if bool(draft_headings(probe_text)) != should_flag:
+            failures.append(f"draft-section rule: {label}")
+
     if failures:
         for line in failures:
             print(f"self-test FAILED: {line}", file=sys.stderr)
         return 1
-    print(f"changelog-history self-test: {len(cases) + 2} probes, all correct")
+    print(f"changelog-history self-test: {len(cases) + 2 + len(draft_probes)} probes, all correct")
     return 0
 
 
@@ -528,11 +605,45 @@ def main(argv: list[str]) -> int:
     if "--test" in argv:
         return _self_test()
 
+    # Read head FIRST: the draft-section rule is a property of the file as it
+    # stands and needs no base ref, so it must also hold when this is run locally
+    # with nothing to compare against.
+    try:
+        with open(CHANGELOG, encoding="utf-8") as handle:
+            head_text: str | None = handle.read()
+    except FileNotFoundError:
+        head_text = None
+
+    if head_text is not None:
+        drafts = draft_headings(head_text)
+        if drafts:
+            for heading in drafts:
+                print(
+                    f"::error::changelog-history: [{heading}] is a draft section. "
+                    f"{CHANGELOG} holds shipped releases only -- a section is written "
+                    f"when a version is bumped, under the release's own "
+                    f"'## [X.Y.Z] — YYYY-MM-DD' heading, and never before.",
+                    file=sys.stderr,
+                )
+            print(
+                "\nThere is no Unreleased section and no prerelease heading: a "
+                "prerelease is a draft of its base version, and the renderer folds "
+                "it there, so its own heading only puts a build stamp in the "
+                "reader's archive. An [Unreleased] section is worse -- it folds onto "
+                "nothing, so the Releases page shows the running version with no "
+                "notes and hangs the whole body off a row at the bottom.\n"
+                "To see what is pending instead: git log --oneline <last-tag>..HEAD\n"
+                'See AGENTS.md -> "Release Changelog".',
+                file=sys.stderr,
+            )
+            return 1
+
     base_ref = os.environ.get("CHANGELOG_BASE_REF", "").strip()
     if not base_ref:
         print(
-            "changelog-history: no CHANGELOG_BASE_REF, nothing to compare against "
-            "(set it to enforce, e.g. CHANGELOG_BASE_REF=origin/main)"
+            "changelog-history: no draft sections ✓; no CHANGELOG_BASE_REF, so "
+            "nothing to compare shipped history against (set it to enforce, e.g. "
+            "CHANGELOG_BASE_REF=origin/main)"
         )
         return 0
 
@@ -543,10 +654,7 @@ def main(argv: list[str]) -> int:
             f"nothing shipped to protect"
         )
         return 0
-    try:
-        with open(CHANGELOG, encoding="utf-8") as handle:
-            head_text = handle.read()
-    except FileNotFoundError:
+    if head_text is None:
         print(
             f"::error::{CHANGELOG} is missing at head but exists at {base_ref}. "
             f"The changelog is append-only history and cannot be deleted.",

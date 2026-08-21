@@ -290,3 +290,75 @@ def test_the_gate_reads_the_grammar_from_the_renderer_it_is_given() -> None:
     assert grammar.section_re is renderer._SECTION_RE
     assert grammar.h2_re is renderer._H2_RE
     assert grammar.fold("0.3.0-insider.9") == "0.3.0"
+
+
+# ── head carries shipped sections and nothing else ────────────────────────
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## [Unreleased]",
+        "## Unreleased",
+        "## [0.4.0-rc.1]",
+        "## [0.4.0-rc.1] — 2026-08-21",
+        "## [0.4.0-insider.3]",
+        "## [0.4.0-nightly.20260821t000000]",
+    ],
+)
+def test_a_draft_heading_is_refused_at_head(heading: str) -> None:
+    """No section may describe software nobody has installed.
+
+    This is what leaves prepending a new section as the only legal changelog
+    diff: with no draft section present, a feature PR has nowhere to append a
+    per-PR line, and ``compare`` already freezes every released section.
+    """
+    assert gate.draft_headings(f"# Changelog\n\n{heading}\n\nbody\n"), heading
+
+
+def test_a_draft_is_found_wherever_it_sits() -> None:
+    """Position must not matter -- a draft below shipped history still renders."""
+    text = (
+        "# Changelog\n\n## [0.3.0] — 2026-08-17\n\nshipped\n\n"
+        "## [Unreleased]\n\npending\n\n## [0.2.0] — 2026-08-09\n\nolder\n"
+    )
+    assert gate.draft_headings(text) == ["Unreleased"]
+
+
+def test_a_file_of_shipped_sections_only_is_clean() -> None:
+    text = "# Changelog\n\n## [0.3.0] — 2026-08-17\n\na\n\n## [0.2.0] — 2026-08-09\n\nb\n"
+    assert gate.draft_headings(text) == []
+
+
+def test_a_level_three_heading_inside_a_section_is_not_a_draft() -> None:
+    """The rule reads level-2 headings only; a section's own `###` groups are its body."""
+    text = (
+        "# Changelog\n\n## [0.3.0] — 2026-08-17\n\n"
+        "### Before you upgrade\n\n- a thing\n\n### Notable fixes\n\n- another\n"
+    )
+    assert gate.draft_headings(text) == []
+
+
+def test_the_repos_own_changelog_carries_no_draft_section() -> None:
+    """The live invariant, not just the diff.
+
+    A diff-based check only fires on the PR that introduces a draft. Asserting
+    the file itself means the state cannot persist even if one slipped in.
+    """
+    text = (_REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert gate.draft_headings(text) == []
+
+
+def test_compare_still_reads_a_draft_heading_in_HISTORY_without_flagging_it() -> None:
+    """The two rules are separate on purpose, and this is the case that needs it.
+
+    ``compare`` answers "did this change rewrite shipped history" and is fed base
+    text from refs that legitimately predate the draft-section rule. Folding the
+    head-only rule into it would make the immutability verdict depend on whether
+    a draft happened to be present in history.
+    """
+    base = "# Changelog\n\n## [0.3.0-insider.9]\n\ngenerated\n\n## [0.2.0]\n\nshipped\n\n"
+    head = "# Changelog\n\n## [0.3.0] — 2026-08-17\n\nwritten\n\n## [0.2.0]\n\nshipped\n\n"
+    assert gate.compare(base, head) == []
+    assert gate.draft_headings(base) == ["0.3.0-insider.9"]
+    assert gate.draft_headings(head) == []

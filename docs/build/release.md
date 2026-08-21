@@ -797,11 +797,20 @@ The rules that keep the two from drifting:
 - **`main` is the recovery source.** If a release branch's changelog is damaged,
   restore from `main` rather than reconstructing by hand; `main` is never rewound
   by a release cut, so its copy is the one that still has the full history.
-- **Never carry a release branch's `Unreleased` entries into its own section by
-  assumption.** Entries accumulated on `main` after the release branch was cut
-  describe commits that branch does not contain — check with
-  `git merge-base --is-ancestor <sha> origin/release/<x.y.z>` before folding
-  anything in, or the release gets credited with work it does not ship.
+- **Write it from the commit range, under the release's final heading.** There is no
+  `## [Unreleased]` section to accumulate into and no in-progress prerelease heading
+  to rename later — `scripts/check_changelog_history.py` refuses both, at head, with
+  or without a base ref. So the section is composed once, from
+  `git log --oneline <last-tag>..HEAD`, and every commit in that range is accounted
+  for rather than sampled. 0.4.0 is the cautionary case: its per-PR accumulation
+  reached 721 lines while describing about 11% of the 453 commits it covered, and it
+  named none of the eighteen breaking changes it shipped.
+- **Editing the in-flight section after it is written needs the documented human
+  override**, because the immutability rule cannot tell a not-yet-shipped section
+  from a shipped one without a tag lookup, and a shallow CI checkout has no tags.
+  This is the intended trade: a fix cherry-picked into a later RC that deserves a
+  changelog line is rare, and the alternative — an exemption keyed on position in
+  the file — once made the most recently shipped section the only editable one.
 
 ## Deliberately not built
 

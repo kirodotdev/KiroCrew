@@ -407,6 +407,9 @@ custom-rules:
       - FLAG a new `## [Unreleased]` section. There is no Unreleased section:
         unshipped changes live in the commit log until a bump names them. Use
         `git log --oneline <last-tag>..HEAD` to see what is pending.
+        `scripts/check_changelog_history.py` also refuses this mechanically, so
+        spend your attention on the section's CONTENT rather than re-deriving
+        this; report it only if the gate somehow did not.
       - FLAG a section assembled from a commit dump — a bare list of commit
         subjects, a "Bug Fixes (N total)" count, or a trailing "and N more
         (see commit log)". That is not a changelog entry; it is the thing a
@@ -417,7 +420,9 @@ custom-rules:
         `## [0.3.0-rc.2]` and similar prerelease spellings must not appear.
         A prerelease is a draft of its base version and is folded onto it by
         src/kiro_crew/changelog.py; giving it its own heading puts a build
-        stamp in the reader's version archive.
+        stamp in the reader's version archive. Mechanically refused by
+        `scripts/check_changelog_history.py` as well; a release branch writes
+        its section once, under the release's final heading.
 
       Allowed (do NOT flag):
       - A release PR that prepends one new `## [X.Y.Z] — YYYY-MM-DD` section
