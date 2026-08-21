@@ -37,6 +37,12 @@ from kiro_crew.apps.builtins.meetings.backend.routes import _common
 
 BASE = k.API_BASE
 
+# Repo-root anchor for tests that read a checked-in source file. A relative
+# literal resolves against the process CWD, which no test owns: another test
+# chdir-ing away makes the read fail, and under `-n auto` the loser is decided
+# by worker scheduling rather than by anything in this file.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 async def _start(client, meeting_id: str = "standup", **body) -> dict:
     await client.post(f"{BASE}/meetings/{meeting_id}/init", json={"title": "Standup"})
@@ -913,9 +919,10 @@ class TestAgentRoutes:
         assertion breaks when either side changes alone.
         """
         import re
-        from pathlib import Path as _Path
 
-        source = _Path("website/src/apps/meetings/hooks/useMeetingSession.ts").read_text()
+        source = (
+            _REPO_ROOT / "website/src/apps/meetings/hooks/useMeetingSession.ts"
+        ).read_text()
         block = re.search(
             r"ALLOWED_TRANSITIONS: Record<MeetingStatus, MeetingStatus\[\]> = \{(.*?)\n\}",
             source,
