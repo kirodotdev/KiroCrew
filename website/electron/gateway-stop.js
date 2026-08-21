@@ -198,13 +198,36 @@ function postShutdown({
 /**
  * Stop the gateway child gracefully and await its exit.
  *   1. POST /api/shutdown (clean flush + self-exit)
- *   2. SIGTERM if the endpoint didn't take (older gateway / unreachable)
- *   3. SIGKILL if it still hasn't exited within timeoutMs
+ *   2. the endpoint didn't take (older gateway / unreachable / wedged loop):
+ *      - POSIX:   SIGTERM, then SIGKILL if it still hasn't exited by timeoutMs
+ *      - Windows: a TREE kill (see below) — there is no step 3 to escalate to
  * Resolves once the process is fully gone — callers (quit / auto-update) rely
  * on the exit having completed before proceeding.
  *
+ * WHY WINDOWS TAKES A DIFFERENT STEP 2. The POSIX escalation assumes signals:
+ * SIGTERM reaches the gateway's own handler, which flushes sessions, memory and
+ * cron and reaps its kiro-cli / MCP / app-server children before exiting, and
+ * SIGKILL is a genuinely stronger follow-up for a child that ignored it. Neither
+ * holds on Windows: Node maps BOTH signal names onto TerminateProcess, so no
+ * handler runs, nothing is flushed, and the SIGKILL step is unreachable because
+ * the SIGTERM already hard-terminated the pid. What survives is every
+ * DESCENDANT, reparented and still holding the data home's locks and the same
+ * .local_secret — and because the port frees, the caller's verification reports
+ * success while those orphans race the replacement gateway. Windows has no
+ * process group a single kill can reach, so the tree kill (`taskkill /T /F`) is
+ * the only correct step-2 there. This mirrors the backend, which routes its own
+ * stop path through platform_compat.kill_process_tree for exactly this reason.
+ *
  * @param {import("child_process").ChildProcess} proc
  * @param {object} opts
+ * @param {string} [opts.platform] process.platform override (tests)
+ * @param {(pid:number) => Promise<void>} [opts.killTreeFn] tree-kill used on
+ *   win32. Injected because the real one shells out to taskkill. The single-pid
+ *   kill is the floor: a caller that supplies none keeps it, and a tree kill that
+ *   rejects degrades to it. The caller MUST bound the tree kill's own timeouts to
+ *   fit inside this function's deadline — it is awaited, never pre-empted, since
+ *   cutting it short would kill the parent alone and orphan the very descendants
+ *   it exists to reap.
  * @returns {Promise<void>}
  */
 async function stopGatewayGracefully(
@@ -218,27 +241,83 @@ async function stopGatewayGracefully(
     httpMod,
     fsMod,
     pathMod,
+    platform = process.platform,
+    killTreeFn = null,
   } = {}
 ) {
   if (!proc || proc.exitCode !== null) return;
+  const useTreeKill = platform === "win32" && typeof killTreeFn === "function";
+  // In-flight tree kill, awaited before this function reports the gateway gone.
+  // taskkill /T terminates the PARENT first and then walks the rest of the tree, so
+  // the process 'exit' event fires while descendants are still being reaped —
+  // resolving on that alone would hand the auto-update caller a green light
+  // mid-sweep and let it swap the app's files with children still live on the data
+  // home's locks. Tracked outside the executor so the await below can see it.
+  let treeKillInFlight = null;
   await new Promise((resolve) => {
     let settled = false;
     const done = () => { if (!settled) { settled = true; resolve(); } };
     proc.once("exit", done);
     if (proc.exitCode !== null) return done();
-    // Send SIGKILL at timeoutMs but DON'T resolve here — wait for the real
-    // 'exit' so callers are guaranteed the process is gone (and signalCode is
-    // accurate). A hard safety net resolves even if 'exit' never fires.
+    // Kill with the widest scope available; the single-pid kill is the floor.
+    //
+    // The tree kill is allowed to run to completion rather than being pre-empted
+    // on a timer: cutting it short would kill the PARENT alone and orphan exactly
+    // the descendants it exists to reap, which is the bug, not a mitigation. What
+    // keeps that safe is the CALLER passing timeouts whose sum fits inside this
+    // function's deadline (see main.js) — otherwise the hard timer would resolve
+    // while the kill was still in flight and the auto-update caller would swap the
+    // app's files underneath a live gateway.
+    //
+    // A REJECTION still falls back to the single-pid kill. windowsTaskkill fails
+    // closed by design when its identity probe cannot run or the pid was recycled,
+    // and a swallowed rejection would leave no kill attempted at all — strictly
+    // worse than what it replaced. Losing the descendants is a leak; losing the
+    // parent as well is corruption, so the floor is unconditional.
+    const killWith = (signal) => {
+      const killPid = () => {
+        if (proc.exitCode === null) { try { proc.kill(signal); } catch {} }
+      };
+      if (!useTreeKill) { killPid(); return; }
+      treeKillInFlight = killTreeFn(proc.pid).catch(killPid);
+    };
+    // Escalate at timeoutMs but DON'T resolve here — wait for the real 'exit' so
+    // callers are guaranteed the process is gone (and signalCode is accurate). A
+    // hard safety net resolves even if 'exit' never fires.
     const killTimer = setTimeout(() => {
-      if (proc.exitCode === null) { try { proc.kill("SIGKILL"); } catch {} }
+      if (proc.exitCode === null) {
+        // On Windows the first kill was already terminal, so the only thing left
+        // to add is SCOPE: sweep the tree in case descendants outlived it.
+        killWith("SIGKILL");
+      }
     }, timeoutMs);
     const hardTimer = setTimeout(done, timeoutMs + 3000);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
-    // Prefer the clean endpoint; signal-nudge only if it didn't take.
+    // Prefer the clean endpoint; kill only if it didn't take.
     postShutdownFn({ backendUrl, kirocrewHome, secrets, httpMod, fsMod, pathMod }).then((ok) => {
-      if (!ok && proc.exitCode === null) { try { proc.kill("SIGTERM"); } catch {} }
+      if (ok || proc.exitCode !== null) return;
+      killWith("SIGTERM");
     });
   });
+  // The parent is gone (or the deadline expired). Now let the tree sweep finish, so
+  // "the gateway is stopped" covers its descendants too -- taskkill /T kills the
+  // parent FIRST, so the 'exit' above fires mid-sweep.
+  //
+  // Bounded, not open-ended: a tree kill that never settles (a wedged probe, a
+  // hung taskkill) must not hold the caller forever, because every caller of this
+  // function is on a shutdown path with somewhere to be. The caller sizes the tree
+  // kill's own timeouts to fit inside timeoutMs (see main.js), so in practice this
+  // adds only the sweep's remaining tail; the race is the backstop for when that
+  // sizing is wrong.
+  if (treeKillInFlight) {
+    await Promise.race([
+      treeKillInFlight,
+      new Promise((r) => {
+        const t = setTimeout(r, timeoutMs);
+        if (typeof t.unref === "function") t.unref();
+      }),
+    ]);
+  }
 }
 
 /**

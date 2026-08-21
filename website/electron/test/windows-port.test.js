@@ -1,5 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   parseNetstatListenPids,
   windowsGatewayExecutablePaths,
@@ -361,9 +363,66 @@ test("windowsTaskkill revalidates identity before using force on the PID", async
   });
   assert.deepStrictEqual(invocation, {
     command: TEST_TOOLS.taskkill,
-    args: ["/F", "/PID", "4242"],
+    args: ["/T", "/F", "/PID", "4242"],
     options: { timeout: 2345 },
   });
+});
+
+test("windowsTaskkill reaps the gateway's whole tree, not just the listening PID", () => {
+  // /T IS LOAD-BEARING ON WINDOWS, and its absence is invisible on POSIX.
+  //
+  // The gateway is not a leaf: it spawns detached kiro-cli ACP runtimes, MCP
+  // servers and app servers, and Windows has no process group a single kill can
+  // reach -- taskkill /T is the only way to take the subtree with the parent.
+  // Killing the listener alone frees the PORT (so the recovery probe reports
+  // success) while leaving those children alive and reparented, holding the data
+  // home's locks and the same .local_secret. The respawned gateway then races
+  // orphans from the generation it just replaced.
+  //
+  // The Python side already reached this conclusion: cli_server.py's stop path
+  // routes through platform_compat.kill_process_tree precisely because "a single
+  // -PID kill_pid would orphan them". This is the JS shell honouring the same
+  // invariant, so the two halves of one product stop the same way.
+  //
+  // Asserted against the SOURCE rather than only through the injected execFile
+  // above, so a refactor that reintroduces a single-PID kill on another code
+  // path fails here too.
+  const src = fs.readFileSync(path.join(__dirname, "..", "windows-port.js"), "utf8");
+  assert.match(
+    src,
+    /"\/T",\s*"\/F",\s*"\/PID"/,
+    "windowsTaskkill must pass /T so the gateway's detached children are reaped " +
+      "with it; a single-PID kill frees the port but orphans the subtree"
+  );
+});
+
+test("the SIGKILL launch hint is not offered as macOS-only advice on Windows", () => {
+  // A gateway child that exits with signalCode "SIGKILL" gets a hint pointing at
+  // macOS Gatekeeper and `xattr -cr`. On macOS that is the single most useful
+  // thing to say. On Windows it is never true and actively misleading, because
+  // OUR OWN teardown produces that signalCode: Node maps .kill("SIGTERM") and
+  // .kill("SIGKILL") onto TerminateProcess, so every wedge recovery and every
+  // fallback stop sets it. The launch log is exactly what the unrecoverable-
+  // gateway dialog tells the user to read, so a mac remedy printed on a Windows
+  // box sends bug reports down the wrong path.
+  //
+  // Asserted on the source because main.js requires electron at load time and so
+  // cannot be imported here -- the same idiom windows-titlebar-contract.test.js
+  // uses. The requirement is only that the hint be PLATFORM-GATED; the wording is
+  // free to change.
+  const src = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const hint = src.split("\n").findIndex((line) => line.includes("xattr -cr"));
+  assert.notStrictEqual(hint, -1, "the Gatekeeper hint should still exist for macOS");
+  const guarded = src
+    .split("\n")
+    .slice(Math.max(0, hint - 4), hint + 1)
+    .join("\n");
+  assert.match(
+    guarded,
+    /IS_MAC|IS_WIN|platform/,
+    "the macOS Gatekeeper/xattr hint must be platform-gated: on Windows our own " +
+      "teardown sets signalCode SIGKILL, so this prints a mac remedy on every stop"
+  );
 });
 
 test("windowsTaskkill refuses a PID reused by an unrelated process", async () => {

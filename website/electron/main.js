@@ -971,7 +971,13 @@ function spawnGateway(resolve) {
         });
         child.on("exit", (code, signal) => {
           glog(`gateway child exited code=${code} signal=${signal}`);
-          if (signal === "SIGKILL") {
+          // macOS only. The hint is the right first thing to say there, but on
+          // Windows this signalCode is produced by OUR OWN teardown -- Node maps
+          // both .kill("SIGTERM") and .kill("SIGKILL") onto TerminateProcess --
+          // so an ungated hint prints a mac remedy on every wedge recovery and
+          // every fallback stop, in the very log the unrecoverable-gateway dialog
+          // tells the user to read.
+          if (signal === "SIGKILL" && IS_MAC) {
             glog("HINT: SIGKILL on a freshly-spawned bundled binary almost always means macOS Gatekeeper blocked an unsigned/quarantined nested executable. On the recipient's Mac run: xattr -cr <path to KiroCrew.app>");
           }
           // Only the CURRENT child may mutate the shared state. A stale child's
@@ -991,9 +997,11 @@ function spawnGateway(resolve) {
 }
 
 /**
- * Gracefully stop the embedded gateway and await its exit (POST /api/shutdown
- * -> SIGTERM -> SIGKILL). Core logic lives in gateway-stop.js for testability;
- * this thin wrapper binds the module-level child process + config.
+ * Gracefully stop the embedded gateway and await its exit: POST /api/shutdown,
+ * then on POSIX SIGTERM -> SIGKILL, and on Windows a tree kill (no real signals
+ * there, so the escalation is scope rather than force — see gateway-stop.js).
+ * Core logic lives in gateway-stop.js for testability; this thin wrapper binds
+ * the module-level child process + config.
  *
  * Uses call-time home resolution (secretCandidates) rather than the boot-time
  * KIROCREW_HOME pin, so a KIROCREW_HOME change between boot and shutdown is
@@ -1020,8 +1028,81 @@ async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
     kirocrewHome,
     secrets,
     timeoutMs,
+    // Windows fallback scope: when /api/shutdown does not take, a single-pid kill
+    // frees the port but leaves the gateway's detached kiro-cli / MCP / app-server
+    // children alive and reparented, holding the data home's locks. Windows has no
+    // process group to signal, so the tree kill is the only way to take them with
+    // the parent. Gated on the same identity check the port sweep uses, so a
+    // recycled pid is refused rather than killed.
+    //
+    // TIMEOUTS ARE PINNED, not defaulted. windowsTaskkill's defaults are sized for
+    // the interactive port sweep (8s PowerShell + 5s WMIC + 10s taskkill = 23s),
+    // which exceeds stopGatewayGracefully's own deadline of timeoutMs + 3000. The
+    // tree kill is awaited rather than pre-empted -- cutting it short would kill
+    // the parent alone and orphan the tree -- so it is the BUDGET that has to fit:
+    // 3+2+5 = 10s, comfortably inside 18s, and still generous for probes that
+    // normally answer in well under a second.
+    killTreeFn: killGatewayTreeOnWindowsBounded,
   });
   gatewayProcess = null;
+}
+
+/**
+ * Tree-kill the gateway pid on Windows for the SHUTDOWN path only, with the
+ * timeouts that path's deadline can afford.
+ *
+ * windowsTaskkill's DEFAULTS (8s PowerShell + 5s WMIC + 10s taskkill = 23s) suit
+ * a caller with no deadline, but exceed stopGatewayGracefully's own
+ * timeoutMs + 3000. The kill is awaited rather than pre-empted — cutting it short
+ * would kill the parent alone and orphan the very descendants it exists to reap —
+ * so the BUDGET is what has to fit: 3+2+5 = 10s, inside 18s, and still generous
+ * for probes that normally answer in well under a second.
+ *
+ * Do NOT reuse this anywhere without such a deadline: shorter probe timeouts only
+ * make an early fallback to the parent-only kill MORE likely, which is the outcome
+ * the tree kill exists to prevent. Unbounded callers use
+ * killGatewayProcessTree().
+ */
+function killGatewayTreeOnWindowsBounded(pid) {
+  return windowsTaskkill(pid, {
+    isTrustedCommand: isTrustedWindowsGatewayCommand,
+    getCommandFn: (probePid) => windowsProcessCommand(probePid, {
+      powershellTimeoutMs: 3000,
+      wmicTimeoutMs: 2000,
+    }),
+    timeoutMs: 5000,
+  });
+}
+
+/**
+ * Kill a gateway child and, on Windows, everything it spawned.
+ *
+ * POSIX needs no tree walk here: the signal reaches the gateway, which reaps its
+ * own children on the way out. Windows has neither — no signal semantics (Node
+ * maps every name onto TerminateProcess) and no process group — so the detached
+ * kiro-cli / MCP / app-server descendants survive a single-pid kill, reparented
+ * and still holding the data home's locks.
+ *
+ * Falls back to the single-pid kill whenever the tree kill refuses (identity
+ * probe unavailable, or a recycled pid): losing the descendants is a leak, while
+ * losing the parent too would leave a live gateway behind a caller that believes
+ * it is gone.
+ */
+async function killGatewayProcessTree(proc, signal) {
+  if (!proc || proc.exitCode !== null) return;
+  const killPid = () => {
+    try { proc.kill(signal); } catch (e) { glog(`${signal} failed: ${e && e.message}`); }
+  };
+  if (!IS_WIN || !proc.pid) { killPid(); return; }
+  try {
+    // windowsTaskkill's OWN defaults: this path has no deadline to fit, so the
+    // identity probe gets its full budget rather than the shutdown path's
+    // shortened one.
+    await windowsTaskkill(proc.pid, { isTrustedCommand: isTrustedWindowsGatewayCommand });
+  } catch (e) {
+    glog(`tree kill refused (${e && e.message}) — falling back to a single-pid kill`);
+    killPid();
+  }
 }
 
 /** Best-effort synchronous-ish stop for the before-quit path (can't await). */
@@ -2559,7 +2640,13 @@ async function recoverWedgedGateway(win) {
       log: (m) => glog(`liveness: ${m}`),
     }).catch((e) => glog(`liveness: py-spy capture threw: ${e && e.message}`));
   }
-  try { if (gatewayProcess) gatewayProcess.kill("SIGKILL"); } catch (e) { glog(`SIGKILL failed: ${e && e.message}`); }
+  // TREE-scoped on Windows. This path deliberately skips /api/shutdown (it runs on
+  // the frozen loop), so it is the one trigger where nothing else reaps the
+  // gateway's detached kiro-cli / MCP children -- and the port sweep below cannot
+  // cover for it, because a single-pid kill FREES the port, after which the sweep
+  // finds no owner and its own /T taskkill is never reached. Awaited so the tree is
+  // gone before the respawn, and it falls back to the pid kill on any refusal.
+  await killGatewayProcessTree(gatewayProcess, "SIGKILL");
   gatewayProcess = null;
   let freed = true;
   let foreignHolder = false;

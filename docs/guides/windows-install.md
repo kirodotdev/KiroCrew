@@ -45,7 +45,15 @@ Current status:
   elevated install under Program Files instead. The per-user default is what
   keeps a nightly install (`KiroCrew Nightly`) side by side with a stable one
   rather than replacing it; nightly additionally pins its own `nsis.guid` so
-  the two channels do not share an uninstall registry key. Either mode leaves
+  the two channels do not share an uninstall registry key, and its own
+  `win.appId` so they do not share a shortcut **AppUserModelID**. That last one
+  is Windows-only on purpose: the shared `appId` is required on macOS, where
+  Squirrel.Mac validates an update against the host's designated requirement,
+  but on Windows it reaches `${APP_ID}`, which the NSIS uninstaller passes to
+  `WinShell::UninstAppUserModelId`. Shared, uninstalling one channel
+  deregisters the identity the *other* channel's desktop and Start Menu
+  shortcuts still carry, and the shell then reports that app as relocated or
+  missing even though its `.exe` is untouched. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
 - **Guided Kiro Crew artwork** — the welcome and finish pages use the existing

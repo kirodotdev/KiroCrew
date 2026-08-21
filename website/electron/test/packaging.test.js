@@ -548,4 +548,63 @@ describe("uninstall data preservation contract", () => {
     // rename on either side fails here instead of silently re-sharing.
     assert.equal(electronPkg.name, "kirocrew-desktop");
   });
+
+  it("gives nightly its own Windows appId so a channel update cannot orphan the other's shortcuts", () => {
+    // WHY THIS IS A WINDOWS-ONLY IDENTITY, SEPARATE FROM THE SHARED macOS ONE.
+    //
+    // The shared appId is deliberate on macOS: Squirrel.Mac validates an update
+    // against the host app's designated requirement, which pins the bundle id,
+    // so splitting it would strand every installed mac app. NSIS has no such
+    // constraint -- it keys install identity off nsis.guid and productFilename,
+    // both of which nightly already overrides.
+    //
+    // On Windows the shared id is actively harmful, because ${APP_ID} reaches
+    // TWO shell registrations that are global per-id rather than per-install:
+    //
+    //   WinShell::SetLnkAUMI       stamps the AppUserModelID onto both the
+    //                              desktop and Start Menu shortcuts
+    //   WinShell::UninstAppUserModelId  removes that registration wholesale
+    //
+    // The damaging path is a real UNINSTALL, not the update path: because
+    // nsis.allowToChangeInstallationDirectory is false, the
+    // allowToChangeInstallationDirectory define is never emitted, so
+    // setIsTryToKeepShortcuts always yields "true" and an update runs the old
+    // uninstaller with --keep-shortcuts, which skips the block below. Uninstall
+    // one channel, though, and WinShell::UninstAppUserModelId runs against the
+    // id BOTH channels share -- deregistering the AppUserModelID the surviving
+    // channel's shortcuts still carry. Its desktop shortcut then resolves to a
+    // dead registration and the shell reports that app as relocated or missing
+    // even though its .exe is untouched.
+    //
+    // main.js already splits the RUNTIME id (app.setAppUserModelId picks
+    // com.amazon.kiro.crew.nightly for a nightly stamp). Leaving the PACKAGED
+    // id shared makes the two disagree: the app claims one identity at runtime
+    // while its own shortcuts were stamped with the other.
+    const buildScript = fs.readFileSync(
+      path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+      "utf8"
+    );
+    assert.ok(
+      buildScript.includes("-c.win.appId=com.amazon.kiro.crew.nightly"),
+      "build-desktop.sh must give the nightly channel its own WINDOWS appId, or " +
+        "uninstalling one channel deregisters the other channel's shortcut " +
+        "AppUserModelID and Windows reports that app as relocated"
+    );
+    // It must stay WINDOWS-scoped: appInfo.id prefers the platform-specific
+    // value, so a top-level override would change the macOS bundle id too and
+    // break Squirrel.Mac's designated-requirement check on every installed mac.
+    assert.ok(
+      !buildScript.includes("-c.appId=com.amazon.kiro.crew.nightly"),
+      "the nightly appId override must be win-scoped; a top-level appId would " +
+        "also move the macOS bundle id and strand installed mac updates"
+    );
+    // The runtime id main.js claims for a nightly build must equal the one the
+    // installer stamps, or the shortcuts and the process disagree again.
+    assert.ok(
+      main.includes("com.amazon.kiro.crew.nightly"),
+      "main.js must claim the same nightly AppUserModelID the installer stamps"
+    );
+    // And the shared production id must remain the mac/appId default.
+    assert.equal(electronPkg.build.appId, "com.amazon.kiro.crew");
+  });
 });

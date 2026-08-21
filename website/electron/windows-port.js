@@ -223,10 +223,24 @@ async function windowsTaskkill(
   if (!isTrustedCommand(command)) {
     throw new Error(`Refusing taskkill for pid ${safePid}: process identity changed`);
   }
+  // /T takes the whole subtree, not just the listening PID. The gateway is not a
+  // leaf: it spawns detached kiro-cli ACP runtimes, MCP servers and app servers,
+  // and Windows has no process group a single kill can reach. Killing the parent
+  // alone frees the PORT -- so the caller's verification reports success -- while
+  // those children survive, reparented, still holding the data home's locks and
+  // the same .local_secret, and the respawned gateway then races orphans from the
+  // generation it just replaced. The identity check above still gates on the
+  // PARENT, which is the process whose ownership we can prove; /T then follows the
+  // kernel's own parent links rather than a name match, so it cannot widen the
+  // kill to a process we did not authorise.
+  //
+  // The Python half of the product already settled this: cli_server.py's stop
+  // path uses platform_compat.kill_process_tree ("a single-PID kill_pid would
+  // orphan them"). Same invariant, same reason, both sides.
   await execFileText(
     execFileFn,
     tools.taskkill,
-    ["/F", "/PID", String(safePid)],
+    ["/T", "/F", "/PID", String(safePid)],
     timeoutMs
   );
 }

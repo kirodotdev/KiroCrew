@@ -186,6 +186,276 @@ test("stopGatewayGracefully: a SIGTERM-ignoring child still dies on Windows", { 
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test("stopGatewayGracefully: the Windows fallback reaps the TREE, not just the gateway pid", async () => {
+  // THE ORPHAN BUG. The happy path is fine on every platform: POST
+  // /api/shutdown sets shutdown_event, and the gateway's own shutdown reaps its
+  // kiro-cli / MCP / app-server children before exiting. This test is about the
+  // FALLBACK -- an unreadable .local_secret, a 403, a timeout, or a wedged loop
+  // -- where the endpoint never takes and the shell resorts to killing.
+  //
+  // On POSIX, kill(SIGTERM) still lets the gateway run its handler and clean up.
+  // On Windows there is no such thing: Node maps both SIGTERM and SIGKILL onto
+  // TerminateProcess, so no handler runs, nothing is flushed, and every
+  // descendant is orphaned and reparented -- still holding the data home's locks
+  // and the same .local_secret. Worse, the port frees, so the caller's
+  // verification reports success while the orphans race the replacement gateway.
+  //
+  // So on Windows the kill must be TREE-scoped. Injected rather than spawning a
+  // real tree: the point is WHICH call the fallback makes, and a test cannot
+  // portably assert on grandchildren it did not create.
+  const treeKills = [];
+  // Collect EVERY 'exit' listener: stopGatewayGracefully registers more than one
+  // (the resolver plus the timer-clearing cleanup), so a mock that keeps only the
+  // last one never resolves and the test hangs instead of failing.
+  const proc = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    _onExit: [],
+    kill() { /* single-pid kill: must NOT be the Windows fallback */ },
+    once(event, fn) { if (event === "exit") this._onExit.push(fn); },
+    _finish() { this.exitCode = 1; for (const fn of this._onExit) fn(); },
+  };
+  await stopGatewayGracefully(proc, {
+    backendUrl: "http://127.0.0.1:1",
+    kirocrewHome: "/nope",
+    timeoutMs: 50,
+    // The endpoint fails -- this is the fallback path, by construction.
+    postShutdownFn: async () => false,
+    platform: "win32",
+    killTreeFn: async (pid) => { treeKills.push(pid); proc._finish(); },
+  });
+  assert.deepStrictEqual(
+    treeKills,
+    [4242],
+    "on Windows a failed /api/shutdown must escalate to a TREE kill; a single-pid " +
+      "kill frees the port but orphans every kiro-cli and MCP child"
+  );
+});
+
+test("stopGatewayGracefully: a REJECTED tree kill still falls back to killing the pid", async () => {
+  // A tree kill can legitimately refuse: windowsTaskkill fails closed when the
+  // identity probe cannot run or reports a recycled pid. Swallowing that leaves
+  // NO kill attempted at all -- strictly worse than the single-pid kill it
+  // replaced -- and the hard timer then resolves anyway, so the auto-update
+  // caller proceeds to swap the app's files while the gateway is still running.
+  // Losing the tree is bad; losing the parent too is data loss.
+  const signals = [];
+  const proc = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    _onExit: [],
+    kill(sig) { signals.push(sig); this.exitCode = 1; for (const fn of this._onExit) fn(); },
+    once(event, fn) { if (event === "exit") this._onExit.push(fn); },
+  };
+  await stopGatewayGracefully(proc, {
+    backendUrl: "http://127.0.0.1:1",
+    kirocrewHome: "/nope",
+    timeoutMs: 50,
+    postShutdownFn: async () => false,
+    platform: "win32",
+    killTreeFn: async () => { throw new Error("process identity changed"); },
+  });
+  assert.deepStrictEqual(
+    signals,
+    ["SIGTERM"],
+    "a refused tree kill must degrade to the single-pid kill, not to no kill at all"
+  );
+});
+
+test("stopGatewayGracefully: does not resolve while the tree kill is still reaping", async () => {
+  // The parent dies FIRST -- taskkill /T terminates it and then walks the rest of
+  // the tree -- so the process 'exit' event fires while descendants are still being
+  // reaped. Resolving on that event alone hands control back to the auto-update
+  // caller mid-sweep, which then swaps the app's files with kiro-cli / MCP children
+  // still live and holding the data home's locks: exactly the state the tree kill
+  // was added to prevent, reintroduced by resolving too early.
+  let releaseTree;
+  const treeDone = new Promise((r) => { releaseTree = r; });
+  let resolvedBeforeTreeSettled = false;
+  let treeSettled = false;
+  const proc = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    _onExit: [],
+    kill() {},
+    once(event, fn) { if (event === "exit") this._onExit.push(fn); },
+  };
+  const stopping = stopGatewayGracefully(proc, {
+    backendUrl: "http://127.0.0.1:1",
+    kirocrewHome: "/nope",
+    timeoutMs: 5000,
+    postShutdownFn: async () => false,
+    platform: "win32",
+    killTreeFn: async () => {
+      // The parent goes down immediately; the rest of the tree lags.
+      proc.exitCode = 1;
+      for (const fn of proc._onExit) fn();
+      await treeDone;
+      treeSettled = true;
+    },
+  }).then(() => { resolvedBeforeTreeSettled = !treeSettled; });
+
+  // Give the parent-exit path every chance to resolve early.
+  await new Promise((r) => setTimeout(r, 150));
+  releaseTree();
+  await stopping;
+  assert.strictEqual(
+    resolvedBeforeTreeSettled,
+    false,
+    "resolved on the parent's exit while the tree kill was still reaping descendants"
+  );
+});
+
+test("stopGatewayGracefully: a HUNG tree kill still resolves, and never pre-empts itself", async () => {
+  // A tree kill is AWAITED, not raced against a timer. Pre-empting it would kill
+  // the parent alone and orphan exactly the descendants it exists to reap -- the
+  // bug, dressed up as a mitigation. So the contract is: the caller sizes the tree
+  // kill's own timeouts to fit this deadline (pinned by the main.js test below),
+  // and this function must not resolve a moment later than it otherwise would.
+  //
+  // Asserted with a kill that NEVER settles, the pathological case: the hard timer
+  // must still resolve, and no single-pid kill may have fired behind the tree
+  // kill's back.
+  const signals = [];
+  const proc = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    _onExit: [],
+    kill(sig) { signals.push(sig); this.exitCode = 1; for (const fn of this._onExit) fn(); },
+    once(event, fn) { if (event === "exit") this._onExit.push(fn); },
+  };
+  const started = Date.now();
+  await stopGatewayGracefully(proc, {
+    backendUrl: "http://127.0.0.1:1",
+    kirocrewHome: "/nope",
+    timeoutMs: 60,
+    postShutdownFn: async () => false,
+    platform: "win32",
+    killTreeFn: () => new Promise(() => {}),
+  });
+  assert.deepStrictEqual(
+    signals,
+    [],
+    "the tree kill must not be pre-empted by a single-pid kill; that would orphan " +
+      "the descendants it exists to reap"
+  );
+  // Bounded by the hard safety net (timeoutMs + 3000), not by the hung kill.
+  assert.ok(
+    Date.now() - started < 60 + 3000 + 2000,
+    "a hung tree kill must not delay the caller past the hard deadline"
+  );
+});
+
+test("wedge recovery kills the gateway TREE, not just the wedged pid", () => {
+  // The wedge path deliberately SKIPS /api/shutdown -- that endpoint runs on the
+  // very loop that is frozen -- so it is the one trigger where Windows always
+  // reached a bare single-pid kill. And the port sweep that follows cannot cover
+  // for it: the bare kill frees the LISTEN port, so forceStopGatewayPort then
+  // finds no owner and the /T taskkill inside it is never reached. The detached
+  // kiro-cli / MCP children survive holding the data home's locks and race the
+  // gateway that is about to be respawned.
+  //
+  // Source-asserted because main.js requires electron at load time. The
+  // requirement is that the wedge kill go through a tree-scoped path on win32,
+  // not that it use any particular helper name.
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const marker = "liveness: backend unresponsive — force-killing wedged gateway";
+  const at = main.indexOf(marker);
+  assert.notStrictEqual(at, -1, "expected the wedge-recovery force-kill path in main.js");
+  // The kill happens within the next few dozen lines of that log line.
+  const region = main.slice(at, at + 2000);
+  assert.match(
+    region,
+    /killGatewayProcessTree|windowsTaskkill|IS_WIN/,
+    "wedge recovery must tree-kill on Windows; a bare pid kill frees the port, so " +
+      "the port sweep that follows finds no owner and never reaps the descendants"
+  );
+  // ...and the helper it goes through must NOT borrow the shutdown path's
+  // shortened timeouts. Those exist only because stopGatewayGracefully has a hard
+  // deadline to fit inside. Wedge recovery has none, so inheriting them would time
+  // the identity probe out early on a slow box, fall back to the parent-only kill,
+  // and respawn beside the very orphans this path exists to reap.
+  const helper = main.indexOf("async function killGatewayProcessTree");
+  assert.notStrictEqual(helper, -1, "expected the shared tree-kill helper in main.js");
+  assert.doesNotMatch(
+    main.slice(helper, helper + 1200),
+    /killGatewayTreeOnWindowsBounded/,
+    "the wedge-recovery tree kill must not reuse the shutdown-BOUNDED helper: it " +
+      "has no deadline to fit, so the shortened probe timeouts only make an early " +
+      "fallback to the parent-only kill more likely"
+  );
+});
+
+test("main.js bounds the shutdown tree kill so it fits inside the hard deadline", () => {
+  // windowsTaskkill's DEFAULTS are sized for the interactive port sweep: identity
+  // revalidation via PowerShell (8s) then WMIC (5s), then taskkill itself (10s) --
+  // 23s worst case, which is longer than stopGatewayGracefully's whole deadline of
+  // timeoutMs + 3000. On the shutdown path that ordering is what matters: the hard
+  // timer resolves on schedule regardless, so an unbounded kill would still be in
+  // flight when the auto-update caller starts swapping the app's files.
+  //
+  // Rather than pre-empting the kill (which would defeat its purpose by killing
+  // the parent alone and orphaning the tree it exists to reap), the call site
+  // passes TIGHTER timeouts so the whole tree kill provably completes first.
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  const start = main.indexOf("function killGatewayTreeOnWindowsBounded");
+  assert.notStrictEqual(start, -1, "main.js must define the bounded Windows tree kill");
+  // Brace-match to the end of the function rather than regex-scanning to the first
+  // "})," -- the call nests one options object inside another, so a lazy pattern
+  // stops early and silently misses the outer timeout.
+  let depth = 0;
+  let end = start;
+  for (; end < main.length; end += 1) {
+    if (main[end] === "{") depth += 1;
+    else if (main[end] === "}") { depth -= 1; if (depth === 0) break; }
+  }
+  const call = main.slice(start, end + 1);
+  const budget = ["powershellTimeoutMs", "wmicTimeoutMs", "timeoutMs"]
+    .map((k) => Number((new RegExp(`${k}:\\s*(\\d+)`).exec(call) || [])[1]));
+  assert.ok(
+    budget.every((n) => Number.isFinite(n) && n > 0),
+    "the shutdown tree kill must pin all three of windowsTaskkill's timeouts " +
+      "(powershell, wmic, taskkill); an unpinned one inherits a default too long " +
+      "for the shutdown deadline"
+  );
+  const worstCase = budget.reduce((a, b) => a + b, 0);
+  assert.ok(
+    worstCase < 15000 + 3000,
+    `the tree kill's worst case (${worstCase}ms) must fit inside the hard deadline, `
+      + "or the caller is told the gateway is gone while the kill is still running"
+  );
+});
+
+test("stopGatewayGracefully: POSIX keeps signalling the child, not a tree kill", async () => {
+  // The Windows branch must not change POSIX behaviour: there, SIGTERM genuinely
+  // reaches the gateway's handler, which is strictly better than a tree kill
+  // because it still flushes sessions/memory/cron before exiting.
+  const signals = [];
+  const treeKills = [];
+  const proc = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    _onExit: [],
+    kill(sig) { signals.push(sig); this.exitCode = 1; for (const fn of this._onExit) fn(); },
+    once(event, fn) { if (event === "exit") this._onExit.push(fn); },
+  };
+  await stopGatewayGracefully(proc, {
+    backendUrl: "http://127.0.0.1:1",
+    kirocrewHome: "/nope",
+    timeoutMs: 50,
+    postShutdownFn: async () => false,
+    platform: "linux",
+    killTreeFn: async (pid) => { treeKills.push(pid); },
+  });
+  assert.deepStrictEqual(signals, ["SIGTERM"]);
+  assert.deepStrictEqual(treeKills, [], "POSIX must keep the graceful SIGTERM path");
+});
+
 test("stopGatewayGracefully: no-op on already-dead process", async () => {
   const proc = spawnDummy({ ignoreSigterm: false });
   await new Promise((r) => { proc.once("exit", r); proc.kill("SIGKILL"); });

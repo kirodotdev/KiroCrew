@@ -562,6 +562,30 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       # changing it later orphans installed updaters, so it is pinned from the
       # first shipped build.
       "-c.nsis.guid=0f417bf9-2759-51d6-acfb-f864805d1f41"
+      # WINDOWS-ONLY appId split. The shared appId above is required on macOS
+      # (Squirrel.Mac validates against the host's designated requirement, which
+      # pins the bundle id), but on Windows it reaches ${APP_ID}, which the NSIS
+      # template uses for two registrations that are global per-id rather than
+      # per-install: WinShell::SetLnkAUMI stamps the AppUserModelID onto the
+      # desktop and Start Menu shortcuts, and WinShell::UninstAppUserModelId
+      # removes that registration outright.
+      #
+      # The update path is safe on its own: nsis.allowToChangeInstallationDirectory
+      # is false, so that define is never emitted, setIsTryToKeepShortcuts always
+      # yields "true", and the old uninstaller runs with --keep-shortcuts, which
+      # skips the deregistration. A real UNINSTALL does not. Uninstall one
+      # channel and WinShell::UninstAppUserModelId runs against the id BOTH
+      # channels share, deregistering the AppUserModelID the surviving channel's
+      # shortcuts still carry -- its desktop shortcut then resolves to a dead
+      # registration and the shell reports that app as relocated or missing even
+      # though its .exe is untouched.
+      #
+      # Scoped to `win` deliberately: appInfo.id prefers the platform-specific
+      # value, so a top-level -c.appId would also move the macOS bundle id and
+      # strand every installed mac app's updates. This is the same identity
+      # main.js already claims at runtime via app.setAppUserModelId, so the
+      # packaged shortcuts and the running process finally agree.
+      "-c.win.appId=com.amazon.kiro.crew.nightly"
     )
   fi
   # Start from a pristine output dir. A prior interrupted universal build can
