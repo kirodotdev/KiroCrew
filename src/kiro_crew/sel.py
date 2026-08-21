@@ -26,6 +26,7 @@ Retention: configurable, default 365 days per Amazon Security Event Logging Stan
 from __future__ import annotations
 
 import atexit
+import errno
 import hashlib
 import hmac
 import json
@@ -42,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal, overload
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
@@ -1246,8 +1247,15 @@ class SecurityEventLog:
         unrelated file an operator parked in the segment dir is never treated as
         rotation output (and so never deleted by retention). A candidate must
         ALSO be a real regular file: the name check is what protects an
-        operator's file, the ``lstat`` check is what stops a PLANTED link from
-        being read as audit history.
+        operator's file, the ``lstat`` check is the cheap first filter that
+        stops a PLANTED link from being read as audit history. It judges the
+        dirent at SCAN time only, so the readers re-validate at open time via
+        :func:`_open_segment` — a link planted between scan and open is refused
+        there rather than followed. A hardlink ALIAS is deliberately NOT
+        deduplicated: every key such a decision could use is
+        attacker-controlled here, so a dedupe lets a planted name DISPLACE the
+        real segment (see the comment at the scan); an alias's worst case is
+        repeating already-signed records, which admission gating bounds.
 
         The link case is reachable on an upgrade and matters on the read side,
         not the delete side: ``security_events.d`` was not on the sensitive-path
@@ -1276,6 +1284,16 @@ class SecurityEventLog:
             scanner = os.scandir(self._segment_dir)
         except OSError:
             return []
+        # A hardlink ALIAS is deliberately NOT handled here (or anywhere):
+        # an alias IS the regular file its name points at, so telling it from
+        # the original requires a cross-name decision — and every key
+        # available for that decision (which name sorts first, which survives)
+        # is attacker-controlled in this directory. A dedupe keyed on names
+        # lets a planted alias DISPLACE the real segment and corrupt read
+        # chronology, which is strictly worse than what an alias can do on its
+        # own: duplicate already-signed records in bounded reads. That
+        # duplication is admission-gated (_read_sources_newest_first requires
+        # a record signed with the out-of-tree key) and cannot forge history.
         named: list[Path] = []
         examined = 0
         truncated = False
@@ -1730,18 +1748,52 @@ class SecurityEventLog:
             valid += file_valid
         return total, valid
 
+    @overload
+    def _reader_handle(self, path: Path, *, binary: Literal[True]) -> IO[bytes] | None: ...
+
+    @overload
+    def _reader_handle(self, path: Path, *, binary: Literal[False]) -> IO[str] | None: ...
+
+    def _reader_handle(self, path: Path, *, binary: bool) -> IO[str] | IO[bytes] | None:
+        """Reader-side open policy, shared by both readers.
+
+        The LIVE log opens with ordinary ``open()``: it is a fixed
+        module-owned path, never an enumerated name, and its WRITER follows
+        an operator's symlink (``O_CREAT | O_APPEND``), so a reader that
+        refuses one turns the live log write-only — events keep landing
+        while every read reports empty and ``verify_integrity`` counts a
+        clean ``(0, 0)``. Rotated segments ARE enumerated, attacker-nameable
+        entries, and take the descriptor-validating funnel
+        (:func:`_open_segment`).
+        """
+        if path == self._path:
+            try:
+                if binary:
+                    return open(path, "rb")
+                return open(path, encoding="utf-8")
+            except OSError:
+                logger.warning("SEL could not open the live log %s", path.name, exc_info=True)
+                return None
+        fd = _open_segment(path)
+        if fd is None:
+            return None
+        if binary:
+            return os.fdopen(fd, "rb")
+        return os.fdopen(fd, encoding="utf-8")
+
     def _verify_file(self, path: Path) -> tuple[int, int]:
         """Verify one log file's chain. Returns (total, valid).
 
         Streamed line by line so a capped-but-large segment is never loaded whole.
+        The handle comes from :meth:`_reader_handle`, so a symlink or FIFO
+        planted under a segment name is refused here rather than followed; a
+        refused file is not audit history and counts as (0, 0).
         """
         total = 0
         valid = 0
         prev_hash = ""
-        try:
-            handle = open(path, encoding="utf-8")
-        except OSError:
-            logger.warning("SEL could not open %s for verification", path, exc_info=True)
+        handle = self._reader_handle(path, binary=False)
+        if handle is None:
             return 0, 0
         with handle:
             for raw_line in handle:
@@ -1896,9 +1948,17 @@ class SecurityEventLog:
         gigabyte-long unterminated line would exhaust the process. Hitting the cap
         ends the scan, so a caller sees the lines it already got and admission
         simply fails to find a signed record -- which is the safe direction.
+
+        The handle comes from :meth:`_reader_handle`, so a symlink or FIFO
+        planted under a segment name yields nothing here instead of being
+        followed (or, for a FIFO, blocking the reader inside ``open``); the
+        live log itself opens ordinarily, matching its writer.
         """
+        handle = self._reader_handle(path, binary=True)
+        if handle is None:
+            return
         try:
-            with open(path, "rb") as f:
+            with handle as f:
                 f.seek(0, 2)
                 pos = f.tell()
                 buf = b""
@@ -2099,6 +2159,102 @@ def _segment_seq(path: Path) -> int:
     """
     match = _SEGMENT_NAME_RE.fullmatch(path.name)
     return int(match.group("seq")) if match else 0
+
+
+def _open_segment(path: Path) -> int | None:
+    """Open *path* read-only as a validated ROTATED SEGMENT, or ``None``.
+
+    The dirent check in :meth:`SecurityEventLog._segments_oldest_first` judges
+    what a directory entry WAS when scanned; this opener judges what the name
+    IS at open time, closing the scan->open window in which a substitute can
+    be planted (the read-side TOCTOU). Segments are the enumerated,
+    attacker-nameable surface; the LIVE log deliberately does not come here —
+    its writer follows an operator's symlink, so its readers must too
+    (:meth:`SecurityEventLog._reader_handle` owns that split).
+
+    Three layers, each covering what the previous one cannot:
+
+    - ``O_NOFOLLOW`` fails a planted symlink at the open itself where the
+      platform has it (``ELOOP`` on Linux/macOS; some BSDs say ``EMLINK`` or
+      ``EFTYPE``). ``O_NONBLOCK`` is load-bearing for a planted FIFO: without
+      it the read-side ``os.open`` blocks until a writer appears, before any
+      descriptor-level check is reachable; it has no effect on regular files.
+      Both degrade to 0 via ``getattr`` on Windows, and ``O_BINARY`` keeps the
+      descriptor out of Windows text mode there.
+    - ``fstat`` on the DESCRIPTOR — which nothing can swap afterwards —
+      requires a regular file, refusing FIFOs, directories, and device nodes
+      on every platform.
+    - An identity check makes the flag degradation safe: the opened file must
+      be exactly the file *path* names right now (``lstat`` dev/ino equal to
+      the descriptor's). A symlink's own ``lstat`` identity never equals its
+      target's, so a symlink swap is refused even where ``O_NOFOLLOW`` does
+      not exist, and a mid-swap mismatch fails closed. (On a filesystem that
+      reports ``st_ino == 0`` for everything, the comparison degrades to the
+      flag and type checks; such filesystems do not support symlinks.)
+
+    A HARDLINK is deliberately not judged here: a hardlink IS the regular
+    file its name points at, indistinguishable at the per-file level, and a
+    link count above one is routinely legitimate (``rsync --link-dest`` and
+    ``cp -al`` backups). Nor is a planted second name deduplicated anywhere
+    else — every key such a decision could use is attacker-controlled, so a
+    dedupe would let a planted alias DISPLACE the real segment (see the scan
+    comment in :meth:`SecurityEventLog._segments_oldest_first`). An alias's
+    bounded worst case is repeating already-signed records.
+
+    Returns a descriptor at position 0, ready for ``os.fdopen``; ownership
+    passes to the caller. A refusal warns in the same "planted link?" style as
+    the dirent filter, so the two layers read consistently in the log.
+    """
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (
+            errno.ELOOP,
+            getattr(errno, "EMLINK", -1),
+            getattr(errno, "EFTYPE", -1),
+        ):
+            logger.warning(
+                "SEL refusing audit file %s: it is a symlink (planted link?); "
+                "it is not audit history",
+                path.name,
+            )
+        elif exc.errno == errno.ENOENT:
+            # Deleted by retention between the caller's exists() check and
+            # this open — a normal race, not an incident.
+            logger.debug("SEL audit file %s vanished before open", path.name)
+        else:
+            logger.warning("SEL could not open audit file %s", path.name, exc_info=True)
+        return None
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(path)
+    except OSError:
+        os.close(fd)
+        logger.warning("SEL could not stat opened audit file %s", path.name, exc_info=True)
+        return None
+    if not stat.S_ISREG(opened.st_mode):
+        os.close(fd)
+        logger.warning(
+            "SEL ignoring non-regular audit file %s (planted link?); "
+            "it is not audit history",
+            path.name,
+        )
+        return None
+    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(fd)
+        logger.warning(
+            "SEL refusing audit file %s: it is not the file its name points "
+            "at (planted link?); it is not audit history",
+            path.name,
+        )
+        return None
+    return fd
 
 
 def _parse_timestamp(raw: object) -> datetime | None:

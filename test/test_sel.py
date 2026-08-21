@@ -2889,6 +2889,153 @@ class TestSegmentDirIsNotFollowedThroughALink:
         assert total == valid
 
 
+class TestSegmentOpensValidateTheDescriptor:
+    """The scan->open window is closed at OPEN time, not just at scan time.
+
+    ``_segments_oldest_first`` judges the DIRENT; a link or FIFO planted after
+    that judgment must still be refused by the open itself. ``_open_segment``
+    opens ``O_NOFOLLOW | O_NONBLOCK``, requires the DESCRIPTOR to be a regular
+    file, and requires the opened identity to be exactly what the name points
+    at — so both consumers (``_verify_file`` for verify_integrity,
+    ``_iter_lines_backward`` for recent) are exercised here with the planted
+    path handed to them DIRECTLY, as if it had passed the scan. Hardlink
+    ALIASES are deliberately not deduplicated (a cross-name decision keyed on
+    attacker-controlled names lets a plant displace real history); the
+    displacement test locks that invariant.
+    """
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_a_symlink_is_refused_by_both_consumers(self, sel_dir, small_segments):
+        """O_NOFOLLOW (and the lstat identity check where it is absent) is what
+        catches this: a followed link to a regular file yields a perfectly
+        regular descriptor, so fstat alone would pass it."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)  # rotation creates the real segment dir
+        secret = sel_dir / "outside.jsonl"
+        secret.write_text(json.dumps({"chain": "s3cr3t-outside"}) + "\n", encoding="utf-8")
+        planted = sel_dir / "security_events.d" / "security_events-000001-20200101T000000Z.jsonl"
+        planted.unlink(missing_ok=True)
+        try:
+            planted.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/filesystem")
+
+        assert log._verify_file(planted) == (0, 0), "linked file counted as audit history"
+        assert list(log._iter_lines_backward(planted)) == [], "linked file's lines surfaced"
+        # End to end: nothing surfaced by the readers, nothing counted as valid.
+        assert "s3cr3t-outside" not in json.dumps(log.recent(limit=10_000))
+        total, valid = log.verify_integrity()
+        assert total == valid
+        # The link's target survives: the entry is ignored, never chased.
+        assert secret.exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
+    def test_an_alias_plant_cannot_displace_newer_history(self, sel_dir, small_segments):
+        """A LOWER-sequence hardlink of the newest segment must not displace
+        the real name from the read order. Aliases are deliberately NOT
+        deduplicated — every key such a decision could use (which name sorts
+        first, which survives) is attacker-controlled in this directory, so a
+        dedupe hands the plant the power to hide or reorder real history. An
+        alias's worst case without dedupe is repeating already-signed records;
+        it can never displace, hide, or forge them."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segments = log._segments_oldest_first()
+        assert len(segments) > 1, "precondition: several segments"
+        newest = segments[-1]
+        alias = sel_dir / "security_events.d" / "security_events-000000-20000101T000000Z.jsonl"
+        alias.unlink(missing_ok=True)
+        os.link(newest, alias)  # newest content under the lowest-sorting name
+
+        listed = log._segments_oldest_first()
+        assert newest in listed, "the real newest segment was displaced by its alias"
+        order = list(log._read_sources_newest_first())
+        assert newest in order, "the real newest segment vanished from the read order"
+        assert order.index(newest) < order.index(alias), (
+            "the alias outranked the real newest segment in newest-first reads"
+        )
+        total, valid = log.verify_integrity()
+        assert total == valid, "alias duplication broke signature validity"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
+    def test_a_backup_hardlink_does_not_suppress_audit_history(self, sel_dir, small_segments):
+        """Backup tools (rsync --link-dest, cp -al, rsnapshot) hardlink audit
+        files from OUTSIDE the segment dir. A link count above one must not
+        refuse the file: history keeps reading and verifying, and retention
+        keeps moving — refusing here silently blanked real audit history while
+        verify_integrity still reported clean."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        before_recent = len(log.recent(limit=10_000))
+        before = log.verify_integrity()
+        backups = sel_dir / "backup"
+        backups.mkdir()
+        os.link(sel_dir / "security_events.jsonl", backups / "live.jsonl")
+        for i, seg in enumerate(log._segments_oldest_first()):
+            os.link(seg, backups / f"seg{i}.jsonl")
+
+        assert len(log.recent(limit=10_000)) == before_recent, "backup links suppressed history"
+        assert log.verify_integrity() == before
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+    def test_a_fifo_does_not_block_and_is_skipped(self, sel_dir, small_segments):
+        """O_NONBLOCK is load-bearing: without it the read-side open of a FIFO
+        with no writer blocks forever, BEFORE any descriptor check is reachable
+        — this test hangs, loudly, if that flag is dropped."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        fifo = sel_dir / "security_events.d" / "security_events-000001-20200101T000000Z.jsonl"
+        fifo.unlink(missing_ok=True)
+        os.mkfifo(fifo)
+
+        assert log._verify_file(fifo) == (0, 0), "a FIFO counted as audit history"
+        assert list(log._iter_lines_backward(fifo)) == [], "a FIFO yielded lines"
+        total, valid = log.verify_integrity()
+        assert total == valid
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_a_symlinked_live_log_stays_readable(self, sel_dir, small_segments):
+        """An operator may relocate the live log via symlink. The WRITER
+        follows it (O_CREAT | O_APPEND open), so the readers must too — a
+        reader that refuses the link turns the live log write-only: events
+        keep landing while recent() reports empty and verify_integrity()
+        counts a clean (0, 0)."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 20)
+        live = sel_dir / "security_events.jsonl"
+        relocated = sel_dir / "relocated.jsonl"
+        os.replace(live, relocated)
+        live.symlink_to(relocated)
+        _fill(log, 5, start=1000)  # the writer keeps appending through the link
+
+        recent = log.recent(limit=10_000)
+        assert any(
+            e.get("resources") == "seq=1004" for e in recent
+        ), "reads went dark through the linked live log"
+        total, valid = log.verify_integrity()
+        assert total == valid
+        assert total > 0
+
+    def test_regular_segments_read_identically_through_the_funnel(
+        self, sel_dir, small_segments
+    ):
+        """The guard must not change what a REAL segment verifies or yields."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segments = log._segments_oldest_first()
+        assert segments, "precondition: rotation happened"
+        seg = segments[0]
+        expected = [
+            line.strip().decode("utf-8")
+            for line in reversed(seg.read_bytes().splitlines())
+            if line.strip()
+        ]
+        assert list(log._iter_lines_backward(seg)) == expected
+        total, valid = log.verify_integrity()
+        assert total == valid
+        assert total > 0
+
+
 class TestPlantedSegmentsAreNotReadAsHistory:
     """A forged segment must never surface through the read path.
 
