@@ -309,10 +309,12 @@ Format, which the `[0.2.0]` section is the reference for:
   left out. Derive it from the release's own range rather than by hand:
   `gh api repos/kirodotdev/KiroCrew/releases/generate-notes -f tag_name=<tag>
   -f previous_tag_name=<last-tag>` names the author of every merged PR, so nobody
-  is dropped for having a quiet commit subject. The GitHub Release page gets this
-  for free from `generate_release_notes: true`, but that page is not what ships:
-  the changelog section is the copy inside the wheel and behind the dashboard's
-  Releases page, so it needs its own.
+  is dropped for having a quiet commit subject. **This belongs to the changelog
+  only.** A GitHub Release page renders its own contributor block from the tag
+  range, natively, whatever its body says — so putting a list in the release notes
+  duplicates it on the page, immediately above GitHub's own. The changelog needs
+  its own because that copy is what ships inside the wheel and what the
+  dashboard's Releases page reads, where no such block exists.
 
 ## The gate before you commit
 
