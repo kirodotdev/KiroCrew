@@ -1473,9 +1473,12 @@ Two things computer use still shares with this module, neither of them a decisio
 ## Audit
 
 `sel.log_governance_decision` records a `governance_decision` event
-(`outcome ∈ {allowed, denied}` — the existing permit vocabulary). On-disk SEL is
-not redacted by the writer and the HMAC chain signs the bytes as written, so the
-operation / item / reason are redacted via `redact_via_context` **before** `log`.
+(`outcome ∈ {allowed, denied}` — the existing permit vocabulary). The SEL writer
+applies the baseline credential/exfiltration passes to `metadata` values and the
+free-form top-level strings (`operation` / `resources` / `error`) before
+persisting, but `redact_via_context` is broader than those passes — so the
+operation / item / reason are ALSO redacted via `redact_via_context` **before**
+`log`; the writer's pass is a second layer, not a replacement.
 
 ## CLI
 
