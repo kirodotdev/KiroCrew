@@ -1469,14 +1469,14 @@
         "truncated": "· 잘림"
       },
       "manifest": {
-        "description": "대시보드를 벗어나지 않고 Kiro Crew가 실행 중인 머신의 파일을 살펴보고 읽습니다. 여러 파일을 탭으로 열어 두고, 각 파일의 git 상태가 옆에 표시되는 디렉터리 트리를 따라 이동하고, 폴더 전체에서 문자열을 검색하고, Markdown을 원본이 아닌 렌더링된 형태로 읽을 수 있습니다. 설계상 읽기 전용입니다. 파일을 열고 검색하지만 편집·이동·삭제는 절대 하지 않으며, 접근 범위는 홈 디렉터리와 /tmp, /opt로 한정됩니다.",
+        "description": "대시보드를 떠나지 않고 Kiro Crew가 실행 중인 머신의 파일을 탐색하고 읽습니다. 여러 파일을 탭으로 열어 두고, 각 파일의 Git 상태가 표시된 디렉터리 트리를 탐색하며, 폴더 전체에서 단어를 검색하고(Word, Excel, PowerPoint, PDF 파일 내부 포함) 다양한 파일 유형을 바로 볼 수 있습니다: 렌더링된 Markdown, PDF, 이미지, HTML 페이지, CSV/TSV 표, 슬라이드 색상과 레이아웃이 있는 Office 문서, 오디오/비디오. Markdown 파일은 자동 저장으로 제자리에서 편집할 수 있으며, 다른 모든 유형은 엄격히 읽기 전용이고 홈 디렉터리와 /tmp, /opt만 접근 가능합니다.",
         "display_name": "파일",
-        "highlight_1": "읽기 전용: 파일을 열고 검색하며, 쓰기·이동·삭제는 하지 않습니다",
-        "highlight_2": "여러 파일을 탭으로 동시에 열고 구문 강조를 표시",
-        "highlight_3": "Markdown 파일을 원본 소스가 아닌 서식이 적용된 텍스트로 표시",
-        "highlight_4": "디렉터리 트리에 각 파일의 git 상태를 함께 표시",
-        "highlight_5": "줄 단위 일치와 주변 미리 보기를 포함해 디렉터리 전체를 검색",
-        "highlight_6": "접근 가능한 경로는 홈 디렉터리와 /tmp, /opt로 제한 — 바깥으로 향하는 심볼릭 링크는 거부",
+        "highlight_1": "Markdown 파일은 자동 저장과 디스크 변경 보호와 함께 제자리 편집 가능, 나머지는 읽기 전용 유지",
+        "highlight_2": "PDF, 이미지, HTML 미리보기, CSV/TSV 표, Word/Excel/PowerPoint 콘텐츠, 오디오/비디오를 바로 표시",
+        "highlight_3": "PowerPoint 슬라이드는 실제 색상, 위치, 포함된 이미지로 렌더링",
+        "highlight_4": "폴더 검색은 Word, Excel, PowerPoint, PDF 파일 내부의 단어도 찾음",
+        "highlight_5": "디렉터리 트리에 각 파일의 Git 상태를 인라인으로 표시",
+        "highlight_6": "접근 가능 경로는 홈 디렉터리, /tmp, /opt로 제한 — 외부로의 심볼릭 링크는 거부",
         "page_label": "파일"
       },
       "pathBar": {
@@ -1505,6 +1505,33 @@
       },
       "treeNode": {
         "loading": "불러오는 중…"
+      },
+      "find": {
+        "find_in_document": "문서에서 찾기",
+        "find_in_file": "{{name}}에서 찾기",
+        "previous_match": "이전 일치 항목",
+        "next_match": "다음 일치 항목",
+        "close_find": "찾기 닫기"
+      },
+      "editor": {
+        "saving": "저장 중…",
+        "saved": "저장됨",
+        "file_changed_on_disk": "⚠ 디스크의 파일이 변경됨 — 다시 불러오세요",
+        "save_failed": "⚠ 저장 실패",
+        "edit_file": "{{name}} 편집",
+        "edit_file_action": "편집",
+        "done_editing": "완료 — 저장 후 보기",
+        "recovered_unsaved": "저장되지 않은 변경 사항을 복구했습니다"
+      },
+      "viewers": {
+        "preview": "미리보기",
+        "source": "소스",
+        "table": "표",
+        "slide_n": "슬라이드 {{n}}",
+        "empty_workbook": "빈 통합 문서",
+        "extracting_document": "문서 추출 중…",
+        "could_not_extract": "이 문서를 추출할 수 없습니다",
+        "showing_first_rows": "… 처음 {{count}}행 표시 중"
       }
     },
     "issueRadar": {

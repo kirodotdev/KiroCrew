@@ -6,6 +6,7 @@ coverage for Coverlay.
 """
 
 import os
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -696,15 +697,29 @@ class TestAutoSdeRound1Findings:
         globs = [cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "--glob"]
         assert not any(".kirocrew" in g for g in globs), globs
 
-    def test_app_is_read_only_get_routes_only(self):
-        """#16: the file explorer exposes no write verbs — every dispatch
-        route is GET. A write path here would bypass the auto-skill guards
-        (redaction, SEL audit, slug validation)."""
+    def test_app_write_surface_is_markdown_only(self):
+        """#16 (updated): the file explorer originally exposed no write verbs
+        at all. It now has exactly ONE deliberate write path — markdown
+        editing via POST /write — and this test pins the boundary so it
+        cannot widen silently:
+
+        - no PUT/DELETE/PATCH handlers exist;
+        - POST dispatches only the /write route (every other POST is 404);
+        - /write refuses non-markdown files, never creates files, and is
+          SEL-audited (the audit concern behind the original finding).
+        """
         import inspect
 
         src = inspect.getsource(server)
-        for verb in ("do_POST", "do_PUT", "do_DELETE", "do_PATCH"):
+        for verb in ("do_PUT", "do_DELETE", "do_PATCH"):
             assert verb not in src, f"unexpected write verb handler: {verb}"
+        # POST exists solely for /write — the dispatcher 404s everything else.
+        post_routes = re.findall(r'method == "POST" and route == "(/[^"]*)"', src)
+        assert post_routes == ["/write"], post_routes
+        write_src = inspect.getsource(server.FileExplorerHandler._h_write)
+        assert '{".md", ".markdown"}' in write_src  # markdown-only gate
+        assert "must_exist=True" in write_src  # no file creation
+        assert '_sel_audit("file_write"' in write_src  # audited
 
     def test_kirocrew_root_outside_allowed_roots_denied(self, tmp_tree, monkeypatch):
         """Security: a .kirocrew dir outside ALLOWED_ROOTS must be denied even

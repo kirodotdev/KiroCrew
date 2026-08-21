@@ -197,10 +197,17 @@ export default function FileExplorerPage() {
 
   const downloadFile = useCallback(() => {
     if (!activeFile || !fileData) return
+    // Binary files come through /read as metadata only (no content), so a
+    // blob built from it would download empty. Stream the real bytes instead.
+    if (fileData.binary || fileData.encoding === 'base64') {
+      const a = document.createElement('a')
+      a.href = fileExplorerApi.rawUrl(activeFile.path, true)
+      a.download = basename(activeFile.path)
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      return
+    }
     const content = fileData.content || ''
-    const blob = fileData.encoding === 'base64'
-      ? (() => { const b = atob(content); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return new Blob([u], { type: fileData.mime || 'application/octet-stream' }) })()
-      : new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url; a.download = basename(activeFile.path)
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)

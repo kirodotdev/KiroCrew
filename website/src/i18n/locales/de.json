@@ -1498,14 +1498,14 @@
         "truncated": "· gekürzt"
       },
       "manifest": {
-        "description": "Durchsuche und lies Dateien auf dem Rechner, der Kiro Crew ausführt, ohne das Dashboard zu verlassen. Halte mehrere Dateien in Tabs offen, gehe den Verzeichnisbaum durch, in dem neben jeder Datei ihr Git-Status steht, suche in einem ganzen Ordner nach einer Zeichenfolge und lies Markdown gerendert statt im Rohtext. Der Zugriff ist bewusst nur lesend: Dateien werden geöffnet und durchsucht, aber nie bearbeitet, verschoben oder gelöscht, und erreichbar sind nur dein Home-Verzeichnis sowie /tmp und /opt.",
+        "description": "Durchsuchen und lesen Sie Dateien auf dem Rechner, auf dem Kiro Crew läuft, ohne das Dashboard zu verlassen. Halten Sie mehrere Dateien in Tabs geöffnet, navigieren Sie im Verzeichnisbaum mit dem Git-Status jeder Datei, durchsuchen Sie einen ganzen Ordner nach einem Begriff (auch innerhalb von Word-, Excel-, PowerPoint- und PDF-Dateien) und betrachten Sie viele Dateitypen direkt: gerendertes Markdown, PDFs, Bilder, HTML-Seiten, CSV/TSV-Tabellen, Office-Dokumente mit Folienfarben und -layout sowie Audio/Video. Markdown-Dateien lassen sich direkt mit automatischem Speichern bearbeiten; alle anderen Dateitypen bleiben strikt schreibgeschützt, und erreichbar sind nur Ihr Home-Verzeichnis, /tmp und /opt.",
         "display_name": "Dateien",
-        "highlight_1": "Schreibgeschützt: öffnet und durchsucht Dateien und schreibt, verschiebt oder löscht sie nie",
-        "highlight_2": "Mehrere Dateien gleichzeitig in Tabs offen, mit Syntaxhervorhebung",
-        "highlight_3": "Markdown-Dateien werden als formatierter Text statt als Rohquelle dargestellt",
-        "highlight_4": "Der Verzeichnisbaum zeigt den Git-Status jeder Datei direkt an",
-        "highlight_5": "Suche über ein Verzeichnis hinweg mit Treffern auf Zeilenebene und umgebender Vorschau",
-        "highlight_6": "Erreichbare Pfade sind auf dein Home-Verzeichnis, /tmp und /opt begrenzt — Symlinks nach außen werden abgelehnt",
+        "highlight_1": "Markdown-Dateien sind direkt bearbeitbar mit automatischem Speichern und Schutz vor Änderungen auf der Festplatte; alles andere bleibt schreibgeschützt",
+        "highlight_2": "Zeigt PDFs, Bilder, HTML-Vorschauen, CSV/TSV-Tabellen, Word-/Excel-/PowerPoint-Inhalte und Audio/Video direkt an",
+        "highlight_3": "PowerPoint-Folien werden mit ihren echten Farben, Positionen und eingebetteten Bildern dargestellt",
+        "highlight_4": "Die Ordnersuche findet Wörter auch innerhalb von Word-, Excel-, PowerPoint- und PDF-Dateien",
+        "highlight_5": "Der Verzeichnisbaum zeigt den Git-Status jeder Datei inline",
+        "highlight_6": "Erreichbare Pfade sind auf Ihr Home-Verzeichnis, /tmp und /opt beschränkt — Symlinks nach außen werden abgelehnt",
         "page_label": "Dateien"
       },
       "pathBar": {
@@ -1534,6 +1534,33 @@
       },
       "treeNode": {
         "loading": "wird geladen…"
+      },
+      "find": {
+        "find_in_document": "Im Dokument suchen",
+        "find_in_file": "In {{name}} suchen",
+        "previous_match": "Vorheriger Treffer",
+        "next_match": "Nächster Treffer",
+        "close_find": "Suche schließen"
+      },
+      "editor": {
+        "saving": "Wird gespeichert…",
+        "saved": "Gespeichert",
+        "file_changed_on_disk": "⚠ Datei wurde auf der Festplatte geändert — neu laden",
+        "save_failed": "⚠ Speichern fehlgeschlagen",
+        "edit_file": "{{name}} bearbeiten",
+        "edit_file_action": "Bearbeiten",
+        "done_editing": "Fertig — speichern und anzeigen",
+        "recovered_unsaved": "Nicht gespeicherte Änderungen wiederhergestellt"
+      },
+      "viewers": {
+        "preview": "Vorschau",
+        "source": "Quelltext",
+        "table": "Tabelle",
+        "slide_n": "Folie {{n}}",
+        "empty_workbook": "Leere Arbeitsmappe",
+        "extracting_document": "Dokument wird extrahiert…",
+        "could_not_extract": "Dieses Dokument konnte nicht extrahiert werden",
+        "showing_first_rows": "… die ersten {{count}} Zeilen werden angezeigt"
       }
     },
     "issueRadar": {

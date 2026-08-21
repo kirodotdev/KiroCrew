@@ -1501,13 +1501,13 @@
         "truncated": "· truncado"
       },
       "manifest": {
-        "description": "Navegue e leia arquivos na máquina que executa o Kiro Crew sem sair do painel. Mantenha vários arquivos abertos em abas, percorra a árvore de diretórios com o status git de cada arquivo ao lado, pesquise um texto em uma pasta inteira e leia markdown renderizado em vez de bruto. É somente leitura por princípio: abre e pesquisa arquivos, mas nunca os edita, move ou exclui, e só alcança o seu diretório pessoal, além de /tmp e /opt.",
+        "description": "Navegue e leia arquivos da máquina que executa o Kiro Crew sem sair do painel. Mantenha vários arquivos abertos em abas, percorra a árvore de diretórios com o status Git de cada arquivo, pesquise um termo em toda uma pasta (inclusive dentro de arquivos Word, Excel, PowerPoint e PDF) e visualize muitos tipos de arquivo na hora: Markdown renderizado, PDFs, imagens, páginas HTML, tabelas CSV/TSV, documentos do Office com cores e layout dos slides, e áudio/vídeo. Arquivos Markdown podem ser editados no local com salvamento automático; todos os outros tipos permanecem estritamente somente leitura, e apenas seu diretório pessoal, /tmp e /opt são acessíveis.",
         "display_name": "Arquivos",
-        "highlight_1": "Somente leitura: abre e pesquisa arquivos e nunca os grava, move ou exclui",
-        "highlight_2": "Vários arquivos abertos ao mesmo tempo em abas, com realce de sintaxe",
-        "highlight_3": "Arquivos Markdown são exibidos como texto formatado, em vez do código bruto",
-        "highlight_4": "A árvore de diretórios mostra o status git de cada arquivo na própria linha",
-        "highlight_5": "Pesquise em um diretório inteiro, com correspondências por linha e uma prévia do entorno",
+        "highlight_1": "Arquivos Markdown são editáveis no local com salvamento automático e proteção contra mudanças no disco; todo o resto permanece somente leitura",
+        "highlight_2": "Exibe PDFs, imagens, pré-visualizações HTML, tabelas CSV/TSV, conteúdo Word/Excel/PowerPoint e áudio/vídeo na hora",
+        "highlight_3": "Slides do PowerPoint são renderizados com suas cores, posições e imagens incorporadas reais",
+        "highlight_4": "A pesquisa de pastas também encontra palavras dentro de arquivos Word, Excel, PowerPoint e PDF",
+        "highlight_5": "A árvore de diretórios mostra o status Git de cada arquivo em linha",
         "highlight_6": "Os caminhos acessíveis se limitam ao seu diretório pessoal, /tmp e /opt — links simbólicos para fora são recusados",
         "page_label": "Arquivos"
       },
@@ -1537,6 +1537,33 @@
       },
       "treeNode": {
         "loading": "carregando..."
+      },
+      "find": {
+        "find_in_document": "Localizar no documento",
+        "find_in_file": "Localizar em {{name}}",
+        "previous_match": "Ocorrência anterior",
+        "next_match": "Próxima ocorrência",
+        "close_find": "Fechar pesquisa"
+      },
+      "editor": {
+        "saving": "Salvando…",
+        "saved": "Salvo",
+        "file_changed_on_disk": "⚠ O arquivo mudou no disco — recarregue",
+        "save_failed": "⚠ Falha ao salvar",
+        "edit_file": "Editar {{name}}",
+        "edit_file_action": "Editar",
+        "done_editing": "Concluído — salvar e visualizar",
+        "recovered_unsaved": "Alterações não salvas recuperadas"
+      },
+      "viewers": {
+        "preview": "Pré-visualização",
+        "source": "Código-fonte",
+        "table": "Tabela",
+        "slide_n": "Slide {{n}}",
+        "empty_workbook": "Pasta de trabalho vazia",
+        "extracting_document": "Extraindo o documento…",
+        "could_not_extract": "Não foi possível extrair este documento",
+        "showing_first_rows": "… mostrando as primeiras {{count}} linhas"
       }
     },
     "issueRadar": {

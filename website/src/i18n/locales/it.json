@@ -1501,14 +1501,14 @@
         "truncated": "· troncato"
       },
       "manifest": {
-        "description": "Sfoglia e leggi i file sulla macchina che esegue Kiro Crew senza uscire dalla dashboard. Tieni aperti più file in schede, percorri l’albero delle cartelle con accanto lo stato git di ciascun file, cerca una stringa in un’intera cartella e leggi il markdown formattato anziché grezzo. È di sola lettura per scelta: apre e cerca nei file ma non li modifica, non li sposta e non li elimina mai, e può raggiungere solo la tua home più /tmp e /opt.",
+        "description": "Esplora e leggi i file della macchina su cui gira Kiro Crew senza uscire dalla dashboard. Tieni più file aperti in schede, naviga l'albero delle directory con lo stato Git di ogni file, cerca un termine in un'intera cartella (anche dentro file Word, Excel, PowerPoint e PDF) e visualizza molti tipi di file direttamente: Markdown renderizzato, PDF, immagini, pagine HTML, tabelle CSV/TSV, documenti Office con colori e layout delle diapositive, e audio/video. I file Markdown si modificano sul posto con salvataggio automatico; ogni altro tipo resta rigorosamente in sola lettura, e sono raggiungibili solo la home, /tmp e /opt.",
         "display_name": "File",
-        "highlight_1": "Sola lettura: apre e cerca nei file, e non li scrive, sposta o elimina mai",
-        "highlight_2": "Più file aperti contemporaneamente in schede, con evidenziazione della sintassi",
-        "highlight_3": "I file Markdown vengono resi come testo formattato invece che come sorgente grezzo",
-        "highlight_4": "L’albero delle cartelle mostra in linea lo stato git di ogni file",
-        "highlight_5": "Cerca in tutta una cartella con corrispondenze riga per riga e anteprima del contesto",
-        "highlight_6": "I percorsi raggiungibili si limitano alla tua home, /tmp e /opt — i symlink che escono da lì vengono rifiutati",
+        "highlight_1": "I file Markdown sono modificabili sul posto con salvataggio automatico e protezione dalle modifiche su disco; tutto il resto resta in sola lettura",
+        "highlight_2": "Visualizza direttamente PDF, immagini, anteprime HTML, tabelle CSV/TSV, contenuti Word/Excel/PowerPoint e audio/video",
+        "highlight_3": "Le diapositive PowerPoint sono rese con colori, posizioni e immagini incorporate reali",
+        "highlight_4": "La ricerca nelle cartelle trova le parole anche dentro file Word, Excel, PowerPoint e PDF",
+        "highlight_5": "L'albero delle directory mostra lo stato Git di ogni file in linea",
+        "highlight_6": "I percorsi raggiungibili sono limitati alla home, /tmp e /opt — i link simbolici verso l'esterno vengono rifiutati",
         "page_label": "File"
       },
       "pathBar": {
@@ -1537,6 +1537,33 @@
       },
       "treeNode": {
         "loading": "caricamento..."
+      },
+      "find": {
+        "find_in_document": "Trova nel documento",
+        "find_in_file": "Trova in {{name}}",
+        "previous_match": "Risultato precedente",
+        "next_match": "Risultato successivo",
+        "close_find": "Chiudi ricerca"
+      },
+      "editor": {
+        "saving": "Salvataggio…",
+        "saved": "Salvato",
+        "file_changed_on_disk": "⚠ File modificato su disco — ricaricare",
+        "save_failed": "⚠ Salvataggio non riuscito",
+        "edit_file": "Modifica {{name}}",
+        "edit_file_action": "Modifica",
+        "done_editing": "Fatto — salva e visualizza",
+        "recovered_unsaved": "Ripristinate modifiche non salvate"
+      },
+      "viewers": {
+        "preview": "Anteprima",
+        "source": "Sorgente",
+        "table": "Tabella",
+        "slide_n": "Diapositiva {{n}}",
+        "empty_workbook": "Cartella di lavoro vuota",
+        "extracting_document": "Estrazione del documento…",
+        "could_not_extract": "Impossibile estrarre questo documento",
+        "showing_first_rows": "… visualizzazione delle prime {{count}} righe"
       }
     },
     "issueRadar": {

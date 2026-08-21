@@ -859,13 +859,13 @@
         "truncated": "· truncated"
       },
       "manifest": {
-        "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string, and read markdown rendered rather than raw. It is read-only by design: it opens and searches files but never edits, moves, or deletes them, and it can only reach your home directory plus /tmp and /opt.",
+        "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string (including inside Word, Excel, PowerPoint, and PDF files), and view many file types in place: markdown rendered, PDFs, images, HTML pages, CSV/TSV tables, Office documents with slide colours and layout, and audio/video. Markdown files can be edited in place with auto-save; every other file type stays strictly read-only, and reachable paths are limited to your home directory, /tmp, and /opt.",
         "display_name": "Files",
-        "highlight_1": "Read-only: opens and searches files, and never writes, moves, or deletes them",
-        "highlight_2": "Multiple files open at once in tabs, with syntax highlighting",
-        "highlight_3": "Markdown files render as formatted text instead of raw source",
-        "highlight_4": "Directory tree shows each file's git status inline",
-        "highlight_5": "Search across a directory with line-level matches and surrounding preview",
+        "highlight_1": "Markdown files are editable in place with auto-save and change-on-disk protection; everything else stays read-only",
+        "highlight_2": "Views PDFs, images, HTML previews, CSV/TSV tables, Word/Excel/PowerPoint content, and audio/video in place",
+        "highlight_3": "PowerPoint slides render with their real colours, positions, and embedded images",
+        "highlight_4": "Folder search also finds words inside Word, Excel, PowerPoint, and PDF files",
+        "highlight_5": "Directory tree shows each file's git status inline",
         "highlight_6": "Reachable paths are limited to your home directory, /tmp, and /opt — symlinks out are refused",
         "page_label": "Files"
       },
@@ -891,6 +891,33 @@
       },
       "treeNode": {
         "loading": "loading..."
+      },
+      "find": {
+        "find_in_document": "Find in document",
+        "find_in_file": "Find in {{name}}",
+        "previous_match": "Previous match",
+        "next_match": "Next match",
+        "close_find": "Close find"
+      },
+      "editor": {
+        "saving": "Saving…",
+        "saved": "Saved",
+        "file_changed_on_disk": "⚠ File changed on disk — reload",
+        "save_failed": "⚠ Save failed",
+        "edit_file": "Edit {{name}}",
+        "edit_file_action": "Edit",
+        "done_editing": "Done — save and view",
+        "recovered_unsaved": "Recovered unsaved changes"
+      },
+      "viewers": {
+        "preview": "Preview",
+        "source": "Source",
+        "table": "Table",
+        "slide_n": "Slide {{n}}",
+        "empty_workbook": "Empty workbook",
+        "extracting_document": "Extracting document…",
+        "could_not_extract": "Could not extract this document",
+        "showing_first_rows": "… showing first {{count}} rows"
       }
     },
     "issueRadar": {

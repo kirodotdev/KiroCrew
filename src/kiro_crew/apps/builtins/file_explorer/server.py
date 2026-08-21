@@ -35,6 +35,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import uuid
@@ -42,10 +43,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.apps.builtins.file_explorer import office_extract
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.hooks import safe_read_file_bytes
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
 from kiro_crew.security import is_sensitive_path
+
+try:  # optional runtime dependency, same posture as the knowledge readers
+    from pdfminer.high_level import extract_text as _pdf_extract
+except Exception:  # pragma: no cover - absent in minimal installs
+    _pdf_extract = None  # type: ignore[assignment]
 from kiro_crew.sel import sel
 
 # ---------------------------------------------------------------------------
@@ -57,6 +64,17 @@ APP_NAME = os.environ.get("KIROCREW_APP_NAME", "file-explorer")
 
 # Read size cap (bytes)
 MAX_READ_BYTES = int(os.environ.get("FE_MAX_READ_BYTES", 4 * 1024 * 1024))  # 4 MB
+# Whole-file caps for the viewer endpoints. /raw streams bytes for inline
+# viewing (PDF iframe, <img>, media tags); /extract parses Office documents.
+_WRITE_LOCK = threading.Lock()  # serializes /write token-check + replace
+
+MAX_RAW_BYTES = int(os.environ.get("FE_MAX_RAW_BYTES", 64 * 1024 * 1024))  # 64 MB
+MAX_EXTRACT_BYTES = int(os.environ.get("FE_MAX_EXTRACT_BYTES", 40 * 1024 * 1024))  # 40 MB
+# Document-content search pass (inside docx/xlsx/pptx/pdf)
+MAX_DOC_SEARCH_FILES = int(os.environ.get("FE_MAX_DOC_SEARCH_FILES", 120))
+DOC_SEARCH_TIMEOUT_SEC = int(os.environ.get("FE_DOC_SEARCH_TIMEOUT_SEC", 12))
+MAX_PDF_SEARCH_BYTES = 20 * 1024 * 1024
+MAX_PDF_SEARCH_PAGES = 60
 MAX_TREE_ENTRIES = int(os.environ.get("FE_MAX_TREE_ENTRIES", 5000))
 MAX_SEARCH_RESULTS = int(os.environ.get("FE_MAX_SEARCH_RESULTS", 500))
 SEARCH_TIMEOUT_SEC = int(os.environ.get("FE_SEARCH_TIMEOUT_SEC", 15))
@@ -254,6 +272,22 @@ BINARY_EXTS = {
     ".woff",
     ".woff2",
     ".eot",
+    # Office documents are ZIP containers: /read short-circuits them as
+    # binary and the UI fetches /extract for a structured view instead.
+    ".docx",
+    ".xlsx",
+    ".pptx",
+    ".doc",
+    ".xls",
+    ".ppt",
+    ".key",
+    ".numbers",
+    ".pages",
+    ".m4a",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".m4v",
 }
 
 # Image extensions get a special mime hint
@@ -284,6 +318,20 @@ def _expand(p: str) -> Path:
     if not p:
         raise PathError("path is required", 400)
     return Path(os.path.expanduser(p)).resolve()
+
+
+def _disposition(kind: str, name: str) -> str:
+    """RFC 6266 Content-Disposition with an injection-proof filename.
+
+    A basename may legally contain CR/LF (POSIX forbids only ``/`` and NUL),
+    and ``send_header`` does not reject control bytes — an embedded CRLF
+    would split the response inside the authenticated dashboard origin.
+    Same sanitization convention as the dashboard file handlers: squash to
+    a safe ASCII token, carry the real name RFC 5987-encoded alongside.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name) or "download"
+    encoded = urllib.parse.quote(name, safe="")
+    return f"{kind}; filename=\"{safe}\"; filename*=UTF-8''{encoded}"
 
 
 def _safe_path(raw: str, must_exist: bool = True) -> Path:
@@ -629,12 +677,170 @@ def _search(root: Path, query: str, include: str = "", exclude: str = "") -> lis
     """Recursive content search.  Uses ripgrep when available, falls back to
     a Python implementation for portability.  Returns results in ripgrep order
     (per-file).
+
+    After the text engines, a document pass searches INSIDE Word, Excel,
+    PowerPoint, and PDF files, which the text engines treat as opaque binary.
     """
     if not query:
         return []
     if _has_rg():
-        return _search_rg(root, query, include, exclude)
-    return _search_python(root, query, include, exclude)
+        out = _search_rg(root, query, include, exclude)
+    else:
+        out = _search_python(root, query, include, exclude)
+    if len(out) < MAX_SEARCH_RESULTS:
+        try:
+            out.extend(
+                _search_documents(root, query, include, exclude, MAX_SEARCH_RESULTS - len(out))
+            )
+        except Exception:  # never let the document pass break plain search
+            logger.warning("document search pass failed", exc_info=True)
+    return out
+
+
+# ── Search inside documents (docx/xlsx/pptx/pdf) ──
+
+_SEARCHABLE_DOC_EXTS = {".docx", ".xlsx", ".pptx", ".pdf"}
+
+# (path, mtime, size) → [(label, line_no, text)] — so refining a query does
+# not re-extract the same workbooks and decks on every keystroke.
+_DOC_TEXT_CACHE: dict[tuple, list] = {}
+_DOC_TEXT_CACHE_MAX = 256
+
+
+def _pdf_text_units(p: Path) -> list[tuple[str, int, str]]:
+    """Per-page PDF text.  Uses pdfminer when available (an optional runtime
+    dependency, same posture as the knowledge readers); falls back to the
+    hardened best-effort scan in :mod:`kiro_crew.doc_parser`.
+    """
+    if p.stat().st_size > MAX_PDF_SEARCH_BYTES:
+        return []
+    if _pdf_extract is None:
+        from kiro_crew import doc_parser
+
+        txt = doc_parser.extract_text(str(p))
+        return [("pdf", 1, txt)] if txt else []
+    blob = safe_read_file_bytes(str(p))
+    if blob is None:
+        return []
+    import io as _io
+
+    txt = _pdf_extract(_io.BytesIO(blob), maxpages=MAX_PDF_SEARCH_PAGES) or ""
+    units: list[tuple[str, int, str]] = []
+    for i, page in enumerate(txt.split("\f"), 1):
+        page = page.strip()
+        if page:
+            units.append((f"p{i}", i, page))
+    return units
+
+
+def _doc_text_units(p: Path) -> list[tuple[str, int, str]]:
+    """Flatten a document into searchable ``(label, line_no, text)`` units."""
+    st = p.stat()
+    key = (str(p), int(st.st_mtime), st.st_size)
+    if key in _DOC_TEXT_CACHE:
+        return _DOC_TEXT_CACHE[key]
+    ext = p.suffix.lower()
+    units: list[tuple[str, int, str]] = []
+    if ext == ".pdf":
+        units = _pdf_text_units(p)
+    elif st.st_size <= MAX_EXTRACT_BYTES:
+        blob = safe_read_file_bytes(str(p))
+        if blob is None:
+            return []
+        data = office_extract.extract_structured(p, data=blob)
+        if data["kind"] == "docx":
+            for i, blk in enumerate(data.get("blocks") or [], 1):
+                if blk["type"] == "table":
+                    for row in blk.get("rows") or []:
+                        units.append(("table", i, " | ".join(c for c in row if c)))
+                else:
+                    units.append(("", i, blk.get("text") or ""))
+        elif data["kind"] == "xlsx":
+            for sheet in data.get("sheets") or []:
+                for rn, row in enumerate(sheet.get("rows") or [], 1):
+                    txt = " | ".join(str(c) for c in row if c)
+                    if txt:
+                        units.append((f"{sheet['name']} r{rn}", rn, txt))
+        elif data["kind"] == "pptx":
+            for slide in data.get("slides") or []:
+                for line in slide.get("lines") or []:
+                    units.append((f"slide {slide['n']}", slide["n"], line))
+    if len(_DOC_TEXT_CACHE) >= _DOC_TEXT_CACHE_MAX:
+        _DOC_TEXT_CACHE.pop(next(iter(_DOC_TEXT_CACHE)))
+    _DOC_TEXT_CACHE[key] = units
+    return units
+
+
+def _search_documents(root: Path, query: str, include: str, exclude: str, limit: int) -> list[dict]:
+    root = _contain_in_allowed_roots(root, operation="file_search")
+    deadline = time.monotonic() + DOC_SEARCH_TIMEOUT_SEC
+    q = query.lower()
+    inc_pats = [g.strip() for g in include.split(",") if g.strip()] if include else []
+    exc_pats = [g.strip() for g in exclude.split(",") if g.strip()] if exclude else []
+
+    def _matches_globs(p: Path, globs: list[str]) -> bool:
+        return any(p.match(g) or p.name == g for g in globs)
+
+    out: list[dict] = []
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        if time.monotonic() > deadline or len(out) >= limit or scanned >= MAX_DOC_SEARCH_FILES:
+            break
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and d not in SENSITIVE_DIRS]
+        if dirpath == str(root):
+            gated = platform_compat.tcc_protected_dirs_for_walk(root)
+            if gated:
+                dirnames[:] = [d for d in dirnames if d not in gated]
+        dp = Path(dirpath)
+        if _is_crew_home_root(dp):
+            if not _under_crew_home(root):
+                dirnames[:] = []
+            else:
+                dirnames[:] = [d for d in dirnames if d in _KIROCREW_SAFE_SUBDIRS]
+            filenames[:] = []
+        for fn in filenames:
+            if time.monotonic() > deadline or len(out) >= limit or scanned >= MAX_DOC_SEARCH_FILES:
+                break
+            fp = Path(dirpath) / fn
+            if fp.suffix.lower() not in _SEARCHABLE_DOC_EXTS or fn.startswith("~$"):
+                continue
+            try:
+                # A symlinked document may resolve outside the allow-list;
+                # containment re-checks the REAL target before it is read.
+                fp = _contain_in_allowed_roots(fp, operation="doc_search")
+            except PathError:
+                continue
+            if inc_pats and not _matches_globs(fp, inc_pats):
+                continue
+            if exc_pats and _matches_globs(fp, exc_pats):
+                continue
+            if is_sensitive_path(str(fp)):
+                continue
+            scanned += 1
+            try:
+                units = _doc_text_units(fp)
+            except Exception:  # unreadable/corrupt/locked document — skip
+                continue
+            per_file = 0
+            for label, line_no, text in units:
+                idx = text.lower().find(q)
+                if idx == -1:
+                    continue
+                start = max(0, idx - 60)
+                snippet = text[start : idx + len(query) + 240].strip()
+                preview = f"[{label}] {snippet}" if label else snippet
+                out.append(
+                    {
+                        "file": str(fp),
+                        "line": int(line_no),
+                        "col": idx + 1,
+                        "preview": preview[:400],
+                    }
+                )
+                per_file += 1
+                if per_file >= 20 or len(out) >= limit:
+                    break
+    return out
 
 
 def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]:
@@ -831,22 +1037,22 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), fmt % args)
 
     # ----- routing -----
-    def _authorized_or_health(self, method: str) -> bool:
+    def _authorized_or_health(self, method: str, body: bytes = b"") -> bool:
         """Verify the gateway's X-KiroCrew-Proxy HMAC before dispatch (CWE-306).
 
         The health endpoint stays unauthenticated because the gateway's own
         liveness probe (apps/backend.py) hits the backend directly, unsigned.
-        A read-only GET carries no body, so the signed body hash is sha256(b"").
+        The gateway signs the wire form of the request-target, which a
+        ``BaseHTTPRequestHandler`` receives verbatim as ``self.path`` — no
+        reconstruction needed. GET requests carry no body, so their signed
+        body hash is sha256(b""); POST verification passes the exact received
+        payload so the signature binds the body bytes too.
         """
         route = urllib.parse.urlparse(self.path).path.rstrip("/")
         if route in ("", "/health", "/api", "/api/health"):
             return True
-        if verify_proxy_request(
-            self.headers.get("X-KiroCrew-Proxy", ""),
-            method=method,
-            target=self.path,
-            body=b"",
-        ):
+        header = self.headers.get("X-KiroCrew-Proxy", "")
+        if verify_proxy_request(header, method=method, target=self.path, body=body):
             return True
         _sel_audit("proxy_auth_failed", self.path, outcome="denied")
         self._json(401, {"error": "unauthorized"})
@@ -866,6 +1072,33 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             logger.exception("GET %s failed [%s]", self.path, corr)
             # Generic body + correlation id — do not echo raw exception text to
             # the (reverse-proxied, browser-facing) client (CWE-209).
+            self._json(500, {"error": "internal error", "id": corr})
+
+    def do_POST(self) -> None:  # noqa: N802
+        """POST handler (currently only ``/write``).
+
+        The body is read BEFORE auth so the HMAC — which covers the body
+        hash — is verified over the exact bytes received.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length < 0 or length > MAX_READ_BYTES:
+            return self._json(413, {"error": "body too large"})
+        body = self.rfile.read(length) if length else b""
+        self._post_body = body
+        if not self._authorized_or_health("POST", body=body):
+            return
+        try:
+            self._dispatch("POST")
+        except PathError as exc:
+            if exc.status == 403:
+                _sel_audit("access_denied", self.path, outcome="denied")
+            self._json(exc.status, {"error": str(exc)})
+        except Exception:  # noqa: BLE001
+            corr = uuid.uuid4().hex[:12]
+            logger.exception("POST %s failed [%s]", self.path, corr)
             self._json(500, {"error": "internal error", "id": corr})
 
     def _dispatch(self, method: str) -> None:
@@ -902,6 +1135,14 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             return self._h_tree(qs)
         if method == "GET" and route == "/read":
             return self._h_read(qs)
+        if method == "GET" and route == "/raw":
+            return self._h_raw(qs)
+        if method == "GET" and route == "/extract":
+            return self._h_extract(qs)
+        if method == "POST" and route == "/write":
+            return self._h_write(qs)
+        if method == "POST":
+            return self._json(404, {"error": f"{method} {route} not found"})
         if method == "GET" and route == "/search":
             return self._h_search(qs)
         if method == "GET" and route == "/git-status":
@@ -990,6 +1231,7 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             "truncated": False,
             "encoding": "utf-8",
             "content": "",
+            "mtime_ns": st.st_mtime_ns,
         }
         if is_binary:
             return self._json(200, body)
@@ -1018,6 +1260,176 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         except OSError as exc:
             raise PathError(f"read failed: {exc}", 500) from exc
         return self._json(200, body)
+
+    def _h_raw(self, qs: dict[str, list[str]]) -> None:
+        """Stream a file's raw bytes with its real Content-Type.
+
+        Used by the viewer for PDFs (iframe), images (``img src``), audio and
+        video tags, and the download button (``download=1`` forces a
+        Content-Disposition attachment).  Same path safety, sensitive-path
+        denial, and SEL audit as ``/read``; capped at MAX_RAW_BYTES.  Types
+        the browser could interpret as an executable page in the dashboard
+        origin are never served inline — only image/audio/video/PDF are.
+        """
+        raw = (qs.get("path") or [""])[0]
+        as_download = (qs.get("download") or ["0"])[0] in {"1", "true"}
+        p = _safe_path(raw, must_exist=True)
+        if not p.is_file():
+            raise PathError(f"not a regular file: {p}", 400)
+        st = p.stat()
+        if st.st_size > MAX_RAW_BYTES:
+            raise PathError(f"file too large to stream ({st.st_size} bytes > {MAX_RAW_BYTES})", 413)
+        _sel_audit("file_read", str(p))
+        data = safe_read_file_bytes(str(p))
+        if data is None:
+            raise PathError("access denied", 403)
+        mime = _guess_mime(p)
+        inline_ok = (
+            mime.startswith(("image/", "audio/", "video/")) and mime != "image/svg+xml"
+        ) or mime == "application/pdf"
+        if not inline_ok and not as_download:
+            as_download = True
+        if as_download:
+            mime = mime if inline_ok else "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if as_download:
+            self.send_header("Content-Disposition", _disposition("attachment", p.name))
+        else:
+            self.send_header("Content-Disposition", "inline")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _h_extract(self, qs: dict[str, list[str]]) -> None:
+        """Structured extraction of Office documents (docx/xlsx/pptx).
+
+        With ``member=<zip member>``: stream one embedded media file (slide
+        images etc.) instead of the JSON extraction — restricted to the
+        Office media folders, images inline, anything else refused.
+        """
+        raw = (qs.get("path") or [""])[0]
+        member = (qs.get("member") or [""])[0]
+        p = _safe_path(raw, must_exist=True)
+        if not p.is_file():
+            raise PathError(f"not a regular file: {p}", 400)
+        _sel_audit("file_read", str(p) + (f"!{member}" if member else ""))
+        if p.stat().st_size > MAX_EXTRACT_BYTES:
+            raise PathError(f"file too large to extract (> {MAX_EXTRACT_BYTES} bytes)", 413)
+        blob = safe_read_file_bytes(str(p))
+        if blob is None:
+            raise PathError("access denied", 403)
+        try:
+            if not member:
+                return self._json(200, office_extract.extract_structured(p, data=blob))
+            data, fname = office_extract.media_member(p, member, data=blob)
+        except office_extract.OfficeExtractError as exc:
+            raise PathError(str(exc), exc.status) from exc
+        mime, _ = mimetypes.guess_type(member)
+        mime = mime or "application/octet-stream"
+        self.send_response(200)
+        # SVG is a scriptable document, not a picture: inline it and it runs
+        # in the dashboard origin.  Attachment-only, like any non-image.
+        if mime.startswith("image/") and mime != "image/svg+xml":
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Disposition", "inline")
+        else:
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", _disposition("attachment", fname))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=300")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _h_write(self, qs: dict[str, list[str]]) -> None:
+        """Save markdown content (edit-in-place with optimistic concurrency).
+
+        Deliberately narrow: MARKDOWN FILES ONLY, the file must already exist
+        (no create), capped at MAX_READ_BYTES, same allow-list and sensitive-
+        path denies as reads.  An optional ``base_mtime`` guard returns 409 if
+        the file changed on disk since the editor loaded it, so a concurrent
+        writer is never silently clobbered.  The write is atomic
+        (temp file + ``os.replace``) and SEL-audited.
+        """
+        raw = (qs.get("path") or [""])[0]
+        base_mtime = (qs.get("base_mtime") or [""])[0]
+        base_token = (qs.get("base_token") or [""])[0]
+        p = _safe_path(raw, must_exist=True)
+        if not p.is_file():
+            raise PathError(f"not a regular file: {p}", 400)
+        if p.suffix.lower() not in {".md", ".markdown"}:
+            raise PathError("editing is only supported for markdown files", 415)
+        st = p.stat()
+        if st.st_size > MAX_READ_BYTES:
+            # The editor buffer came from a capped /read: writing it back
+            # would replace the file with its own truncation.
+            raise PathError("file exceeds the editable size cap", 413)
+        if base_token:
+            # Nanosecond token from /read — immune to same-second collisions.
+            try:
+                if st.st_mtime_ns != int(base_token):
+                    raise PathError("file changed on disk since it was loaded", 409)
+            except ValueError:
+                pass
+        elif base_mtime:
+            try:
+                if int(st.st_mtime) != int(float(base_mtime)):
+                    raise PathError("file changed on disk since it was loaded", 409)
+            except ValueError:
+                pass
+        body = getattr(self, "_post_body", b"")
+        _sel_audit("file_write", str(p))
+        with _WRITE_LOCK:
+            return self._locked_write(p, body, base_token, base_mtime)
+
+    def _locked_write(self, p: Path, body: bytes, base_token: str, base_mtime: str) -> None:
+        """Token check + atomic replace under _WRITE_LOCK.
+
+        The pre-lock check gives a fast 409; this re-check inside the lock is
+        the authoritative one — two overlapping writers can both pass an
+        unlocked check-then-write (the race md_notebook's guard names).
+        """
+        st = p.stat()
+        if base_token:
+            try:
+                if st.st_mtime_ns != int(base_token):
+                    raise PathError("file changed on disk since it was loaded", 409)
+            except ValueError:
+                pass
+        elif base_mtime:
+            try:
+                if int(st.st_mtime) != int(float(base_mtime)):
+                    raise PathError("file changed on disk since it was loaded", 409)
+            except ValueError:
+                pass
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.")
+        try:
+            try:
+                shutil.copymode(p, tmp_path)
+            except OSError:
+                pass
+            with os.fdopen(tmp_fd, "wb") as fh:
+                fh.write(body)
+            os.replace(tmp_path, p)
+        except OSError as exc:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise PathError(f"write failed: {exc}", 500) from exc
+        st2 = p.stat()
+        return self._json(
+            200,
+            {
+                "ok": True,
+                "size": st2.st_size,
+                "mtime": int(st2.st_mtime),
+                "mtime_ns": st2.st_mtime_ns,
+            },
+        )
 
     def _h_search(self, qs: dict[str, list[str]]) -> None:
         raw = (qs.get("path") or [""])[0]
