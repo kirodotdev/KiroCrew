@@ -983,8 +983,10 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     # Telegram / WeCom bots answering real users. Overwrite any non-dict section
     # value too, so the enabled=False guarantee can't be skipped by a falsy value.
     # (Slack has no config-level enable — it is credential-gated, and those creds
-    # are scrubbed from the pod env by build_pod_env.)
-    for section in ("tunnel", "telegram", "wecom"):
+    # are scrubbed from the pod env by build_pod_env.) iMessage matters most
+    # here: it needs no credential at all, so a pod that inherited enabled=true
+    # would drive the operator's real Messages.app and reply to real people.
+    for section in ("tunnel", "telegram", "wecom", "imessage"):
         if not isinstance(data.get(section), dict):
             data[section] = {}
         data[section]["enabled"] = False

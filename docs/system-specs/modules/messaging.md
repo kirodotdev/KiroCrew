@@ -2,7 +2,7 @@
 
 ## Overview
 
-`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, and Weixin integrations; its conservative contract also leaves room for future channels such as WhatsApp. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
+`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, and iMessage integrations; its conservative contract also leaves room for future channels such as WhatsApp. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
 **Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), and `sel` for audit.
 
@@ -760,3 +760,149 @@ approvals run decider-less (deny-by-default under INTERACTIVE mode).
   (atomic 0600) with `os.environ` synced. Writes are serialized under the
   repo-wide config lock. All fields are boot-read, so `restart_required` is
   true on any actual change.
+
+## iMessage channel
+
+**Transport (`kiro_crew/imessage/`).** A concrete `MessagingTransport` over the
+external `imsg` CLI (MIT, macOS 14+) in its long-lived `rpc` mode: the gateway
+spawns it as a child and speaks newline-framed JSON-RPC 2.0 over the child's
+stdin/stdout, the same shape as a language server. No daemon, no port, no
+webhook, and therefore **no new inbound network surface**; the child exits
+cleanly when stdin closes, so the existing subprocess lifecycle applies
+unchanged. `rpc.py` owns only the framing (request correlation, notification
+routing, oversized/unparseable-line tolerance, a stdout limit far above
+asyncio's 64 KiB default so one large line cannot kill the reader);
+`client.py` owns iMessage semantics.
+
+**Why an external bridge rather than Python.** iMessage has no server-side API,
+so both halves a channel needs are macOS-native problems: following the Messages
+SQLite database and its WAL through filesystem events (with a poll backstop,
+because macOS drops events and rotates sidecar files) and dispatching a send
+through Messages.app. A reimplementation would be a second, worse copy of a
+moving target, and would put database-corruption and TCC-permission handling
+inside the gateway process. The dependency is one binary the operator installs
+with a package manager, and its absence is detectable and reportable at startup.
+
+**Local-only is the design constraint, not a preference.** Hosted relays exist
+that will hand you an iMessage-capable number and let any Linux host drive it
+over an API. That is explicitly rejected: it puts a third party in the message
+path of the one channel whose entire value is that the transport is the user's
+own device and their own account.
+
+**Inbound.** `watch.subscribe` on the all-chat stream with a `since_rowid`
+cursor persisted to `$KIROCREW_HOME/imessage_cursor.json`, so a gateway restart
+replays what it missed instead of losing it. The cursor advances on every
+observed row, including ones the channel drops — a cursor that tracked only
+delivered messages would replay every skipped row on the next start. Two
+behaviours of the subscription are handled explicitly rather than discovered in
+production:
+
+- The subscription is **bounded** (`buffer_limit`, default 256). When it fills
+  it ENDS, with one terminal `watch.overflow` notification carrying
+  `resume_after_rowid`; the client resubscribes at that cursor with capped
+  exponential backoff. Ignoring this makes the channel go permanently silent
+  under a burst rather than lose one message.
+- That cursor is at or before the first dropped message, so **duplicate replay
+  is possible by design**. A bounded dedupe window keyed on message GUID
+  (`DEDUPE_WINDOW = 1024`, deliberately larger than the buffer) is therefore
+  required, not optional.
+
+**Outbound.** `send` with a `to` handle. The result's `id`/`guid` are
+best-effort in the bridge's own contract, so their absence is treated as success
+with no id, never as failure.
+
+**Typing and read receipts.** `typing` and `read` are documented exceptions to
+the bridge's injected-helper requirement (typing keeps a direct-IMCore fallback,
+read keeps bridge activation), so they work on a default install with
+`bridge.ready = false`. Availability is probed from the `initialize`/`status`
+readiness snapshot's `methods` field — the structurally usable surface at that
+instant — and each degrades silently and permanently on first rejection, because
+their parameter lists are not part of the bridge's documented surface. This
+matters because iMessage cannot edit a sent message, so the typing indicator is
+the only progress signal the channel has.
+
+**Capabilities.** `streaming=False` and `edit=False` (no message mutation
+exists), `reactions=False`, `files_inbound=False`, `files_outbound=False`,
+`threads=False`, `max_buttons=0` (no tappable choices — a trailing `[OPTIONS:]`
+trailer is stripped like on the other button-less channels),
+`supports_proactive_send=True` (a Mac may message a handle at any time; there is
+no 24-hour window), `supports_session_resume=False` (inbound routes off the
+handle, not a mirrored session binding). `max_message_chars=4000` is declared
+conservatively rather than measured: iMessage publishes no maximum, and this
+field is a claim other code trusts, so under-declaring costs an extra message
+while over-declaring risks a send the platform silently refuses.
+
+**Access control.** Handle allowlist, deny-by-default — an empty allowlist
+authorizes nobody, which is the correct posture for a channel with no org
+boundary in front of it. Handles are normalized before comparison (email folds
+to lowercase, phone loses formatting) so `+61 400 000 000` and `+61400000000`
+are one handle. Own messages (`is_from_me`) are dropped without an audit event
+— the all-chat watch sees the agent's own replies, and auditing them would log
+one entry per outbound message. **Group chats fail closed** with a
+`denied_group_chat` audit: a reply there would deliver tool output to members who
+are not on the allowlist, the same reasoning that makes Telegram and Webex
+direct-only. Unauthorized inbound is dropped with no reply, so an unknown sender
+learns nothing about what they reached.
+
+**Rendering.** Only the final answer is delivered; reasoning and tool activity
+stay in the gateway. There is no placeholder message, because there is no edit
+to rewrite it with — every other channel's "🤔 Thinking…" would be stranded
+above the reply permanently. Markdown is flattened (`plaintext.py`) before
+sending, with **fenced code-block contents passed through verbatim**: code is
+what a user copies out of a message, and unwrapping or re-indenting it corrupts
+it silently. Splitting runs last, on already-flat text, preferring a paragraph
+break, then a line break, then a space, then a hard cut that still respects
+grapheme clusters (a cut inside a flag, a skin-toned emoji, or a combining
+accent renders as mojibake on both sides). CJK text, having no spaces, always
+reaches the hard-cut path.
+
+**Topology: v1 requires the gateway to run ON the Messages host,** and refuses
+to start elsewhere. A gateway running remotely could point `cli_path` at a
+transparent stdio wrapper and would appear to work — it can read chats and
+process inbound — while outbound sends fail with an AppleEvents authorization
+error (`-1743`), because the Automation grant is recorded against the
+remote-shell server process, which macOS exposes no grantable toggle for.
+Shipping that topology would mean shipping a send path that cannot be made to
+work, so the channel refuses and reports why.
+
+**Host requirements.** macOS 14+ with Messages signed in; Full Disk Access for
+the process context that reads the Messages database; Automation permission for
+Messages.app for sends. Both grants are per process context, so a headless
+launch-agent gateway needs its own one-time interactive grant.
+
+**Deliberately out of scope for v1.** Group chats, attachments in either
+direction, SMS-only operation, and every message mutation (tapbacks, edit,
+unsend, effects, polls, group management). Those last ones require injecting a
+helper into Messages.app, which requires System Integrity Protection to be
+disabled system-wide. **v1 must not require SIP changes** — asking a user to
+disable SIP to talk to their own agent is not an acceptable default.
+
+**Pod isolation.** `pod/runtime.py` forces `imessage.enabled = false` in a
+sanitized seed. iMessage is the one channel with no credential to scrub, so a
+pod that inherited `enabled: true` from a real config would drive the operator's
+actual Messages.app and reply to real people.
+
+## iMessage settings API
+
+- `GET /api/imessage/config` — `connected` (true only while the bridge's watch
+  is live this session, kept truthful by `IMessageClient.on_state_change`),
+  `connect_error`, `configured` (enabled AND a non-empty allowlist — the
+  transport fails closed on an empty list), `supported` (false off macOS, so the
+  UI can explain the requirement instead of leaving the operator to infer it
+  from a channel that never connects), `read_only` (true unless the request is
+  direct-local), plus `enabled`, `cli_path`, `db_path`, `allowed_handles`,
+  `service` and `session_folder`. **There is no credential in this payload** —
+  no mask, no presence boolean, nothing to rotate.
+- `PUT /api/imessage/config` — requires a direct-local request (loopback peer
+  AND no forwarding headers); remote gets 403. Validate-first/commit-last.
+  `allowed_handles` accepts an Apple Account email or a phone-shaped handle
+  (linear string checks, no regex, so an operator-supplied list cannot trigger
+  polynomial backtracking). `service` must be one of `imessage` / `sms` /
+  `auto`, sharing one `IMESSAGE_SERVICES` constant with the loader's clamp so
+  the form's choices and the config normalization cannot drift. `cli_path` and
+  `db_path` reject line breaks and NULs: they become `argv` of a spawned child
+  (via `create_subprocess_exec`, never a shell), where a newline would corrupt
+  the argument rather than be quoted. Writes go to `config.json` under
+  `imessage`, serialized under the repo-wide config lock. Every field except
+  `session_folder` is boot-read, so `restart_required` is true on any other
+  change.

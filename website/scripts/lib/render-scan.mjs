@@ -123,7 +123,7 @@ export const ALWAYS_LATIN = [
   'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'Kiro Crew',
   'KiroCrew',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
-  'TypeScript', 'YAML', 'npm',
+  'TypeScript', 'YAML', 'iMessage', 'npm',
   // language endonyms from SUPPORTED_LANGUAGES
   'English', 'Espanol', 'Español', 'Francais', 'Français', 'Portugues', 'Português',
   'Deutsch', 'Italiano', 'Pseudolocale',

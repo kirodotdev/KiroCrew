@@ -877,6 +877,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",
+        # The iMessage bridge child (`<cli_path> rpc [--db-path <p>]`). Fixed
+        # list-argv, no shell: both paths come from the operator's own
+        # `config.json` `imessage` section, which the settings API writes only
+        # from a direct-local request and which rejects a line break or NUL, so
+        # neither value can be agent-supplied or split into extra arguments.
+        # Sandboxing it would defeat the point: the child exists to reach
+        # Messages.app through the operator's own Full Disk Access and
+        # Automation grants, which a scrubbed-env sandbox strips.
+        "imessage/rpc.py::start",
         "mcp_core.py::_get_ppid",
         "mcp_gateway/backend.py::spawn_backend",
         "mcp_gateway/gatewayd.py::main",

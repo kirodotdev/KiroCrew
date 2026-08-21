@@ -95,6 +95,7 @@ _CHANNEL_LABELS = {
     "webex": "Webex",
     "wecom": "WeCom",
     "weixin": "WeChat",
+    "imessage": "iMessage",
 }
 
 
@@ -3212,6 +3213,14 @@ class DashboardState:
         # Short reason from the most recent Webex connection failure, empty
         # when connected or never attempted. Read by the settings badge.
         self.webex_connect_error: str = ""
+        # True only while the iMessage watch is live on the local bridge (kept
+        # truthful by IMessageClient.on_state_change). Read by the iMessage
+        # settings status badge.
+        self.imessage_connected: bool = False
+        # Short reason the iMessage channel is not running — a missing imsg
+        # binary, a Messages database the process cannot read (Full Disk
+        # Access), or a non-macOS host. Empty when connected or never attempted.
+        self.imessage_connect_error: str = ""
         # True only while the WeCom (企业微信) channel's WebSocket is connected
         # + subscribed (kept live by WeComClient.on_status, wired in
         # maybe_start_wecom). Read by the WeCom settings status badge.

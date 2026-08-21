@@ -459,8 +459,38 @@ export interface WebexConfigSave {
   session_folder?: string
 }
 
-/** Microsoft Teams channel status + config, from GET /api/teams/config. */
-export interface TeamsConfigData {
+/**
+ * iMessage channel status + config, from GET /api/imessage/config.
+ *
+ * The only channel payload with no credential in it: the transport is the
+ * operator's own Messages.app, so there is nothing to mask or rotate.
+ */
+export interface IMessageConfigData {
+  connected: boolean
+  connect_error: string
+  configured: boolean
+  read_only: boolean
+  /** False off macOS, where there is no iMessage to reach. */
+  supported: boolean
+  enabled: boolean
+  db_path: string
+  allowed_handles: string[]
+  service: string
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+}
+
+/** Writable iMessage config fields sent to PUT /api/imessage/config. */
+export interface IMessageConfigSave {
+  enabled: boolean
+  db_path: string
+  allowed_handles: string[]
+  service: string
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+}
+
+/** Microsoft Teams channel status + config, from GET /api/teams/config. */export interface TeamsConfigData {
   connected: boolean
   connect_error: string
   configured: boolean
@@ -2746,6 +2776,10 @@ export const api = {
   // Webex integration config
   getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,
   saveWebexConfig: (body: Partial<WebexConfigSave>) => put('/api/webex/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+  // iMessage — no credential to send or mask; the transport is the operator's
+  // own Messages.app on this machine.
+  getIMessageConfig: () => get('/api/imessage/config').then(j) as Promise<IMessageConfigData>,
+  saveIMessageConfig: (body: Partial<IMessageConfigSave>) => put('/api/imessage/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
   // Effective per-channel governance policy decision: { slack: true, discord: false, ... }
   // (true = permitted, false = denied by the `channels` policy, null = governance
   // evaluation transiently failed → shown as "unavailable", NOT "Off by admin").

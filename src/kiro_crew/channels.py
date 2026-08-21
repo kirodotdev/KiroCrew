@@ -16,9 +16,9 @@ by ``messaging/`` or by any channel package.
 Imports are at MODULE scope on purpose: channel modules pull in their vendor
 clients, and this module is imported by hosts (``slack/gateway.py``) at
 process import time — BEFORE any event loop starts. That preserves the
-pre-registry import timing exactly (the gateway used to import the six
-``maybe_start_*`` at its own module scope). Lazy in-function imports here
-would instead run those six dependency graphs synchronously on the live
+pre-registry import timing exactly (the gateway used to import the
+``maybe_start_*`` factories at its own module scope). Lazy in-function imports
+here would instead run those dependency graphs synchronously on the live
 gateway loop the first time ``_start_channel_transports()`` enumerates the
 roster, stalling the dashboard mid-boot. Executor-side callers such as
 ``_channel_members()`` still import this module lazily on their side, which
@@ -35,6 +35,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from kiro_crew.discord.gateway import maybe_start_discord
+from kiro_crew.imessage.gateway import maybe_start_imessage
 from kiro_crew.messaging.registry import ChannelDescriptor
 from kiro_crew.teams.gateway import maybe_start_teams
 from kiro_crew.telegram.gateway import maybe_start_telegram
@@ -54,4 +55,5 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
         ChannelDescriptor(channel_type="webex", start=maybe_start_webex),
         ChannelDescriptor(channel_type="teams", start=maybe_start_teams),
         ChannelDescriptor(channel_type="weixin", start=maybe_start_weixin),
+        ChannelDescriptor(channel_type="imessage", start=maybe_start_imessage),
     )

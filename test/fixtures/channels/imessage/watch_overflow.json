@@ -1,0 +1,16 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "imsg watch.overflow terminal notification, quoted verbatim in https://github.com/steipete/imsg/blob/main/docs/rpc.md ('watch.subscribe' overflow): subscription, resume_after_rowid, reason, terminal.",
+    "captured_at": "2026-08-21",
+    "note": "Transcribed from published docs, NOT captured from a live Mac. Pins the one payload the channel cannot afford to misparse: the subscription is already dead when this arrives, so a parser that misses resume_after_rowid goes permanently silent rather than losing one message."
+  },
+  "jsonrpc": "2.0",
+  "method": "watch.overflow",
+  "params": {
+    "subscription": 1,
+    "resume_after_rowid": 118360,
+    "reason": "buffer_limit_exceeded",
+    "terminal": true
+  }
+}

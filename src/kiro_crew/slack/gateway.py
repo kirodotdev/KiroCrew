@@ -256,6 +256,7 @@ from kiro_crew.taskrunner import TaskRunner
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.discord.client import DiscordClient
+    from kiro_crew.imessage.client import IMessageClient
     from kiro_crew.messaging.registry import ChannelDescriptor
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.subagent_scale import SubagentEventCoalescer
@@ -1518,6 +1519,11 @@ class GatewayOrchestrator:
         self._webex_enabled = bool(cfg.webex.enabled and self._webex_bot_token)
         self._webex_allowed_emails: list[str] = list(cfg.webex.allowed_emails)
         self._webex_client: "WebexClient | None" = None
+        # iMessage — no credential exists to hoist: the transport is the user's
+        # own signed-in Messages.app, so enablement is the config flag alone.
+        # Everything else is read from the typed cfg.imessage dataclass at start.
+        self._imessage_enabled = bool(cfg.imessage.enabled)
+        self._imessage_client: "IMessageClient | None" = None
         # Teams — the MICROSOFT_APP_ID / MICROSOFT_APP_PASSWORD / _TENANT_ID
         # credentials (env/.env) override the typed cfg.teams fields; all other
         # settings come from the typed cfg.teams dataclass.

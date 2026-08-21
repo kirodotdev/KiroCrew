@@ -635,6 +635,7 @@ _RUNTIME_DISPLAY = {
     "weixin": "Weixin",
     "webex": "Webex",
     "teams": "Microsoft Teams",
+    "imessage": "iMessage",
 }
 
 
@@ -678,6 +679,7 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
             "weixin",
             "webex",
             "teams",
+            "imessage",
             "slack",
         ):
             if lowered_key.startswith((f"{namespace}:", f"{namespace}_")):

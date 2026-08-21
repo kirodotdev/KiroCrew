@@ -258,6 +258,8 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_delete_message,
     api_discord_config_get,
     api_discord_config_save,
+    api_imessage_config_get,
+    api_imessage_config_save,
     api_notification_ack,
     api_notification_agent_push,
     api_notification_channel_settings,

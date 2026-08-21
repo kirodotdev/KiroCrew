@@ -583,6 +583,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "shared code: a channel cannot forget what it does not call.",
     ),
     (
+        "iMessage delivery",
+        "imessage/renderer.py",
+        "The iMessage DELIVERY boundary. This channel is the one that collapses "
+        "markdown itself -- `to_plaintext` in `delivery_text` -- because the "
+        "surface renders no markup, so the driver's literal-byte scan of the "
+        "provider stream runs BEFORE the transformation that can reassemble a "
+        "credential it could not match (`**AKIA**IOSFODNN7EXAMPLE`, a link "
+        "target broken by emphasis). `delivery_text` therefore re-scans the "
+        "flattened form through redact_for_display (messaging/display_safety.py) "
+        "with the same redactor pair TurnDriver streams through, which is the "
+        "only form that actually ships. Elsewhere in this package "
+        "`redact_handle` appears solely in log lines, which is why the sibling "
+        "modules are listed as non-egress and this one is not.",
+    ),
+    (
         "Slack render pipeline",
         "slack/format.py",
         "The Slack RENDERING boundary: text that is converted to mrkdwn goes "
@@ -821,6 +836,22 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
         "autonudge_authz.py",
+        # Gate-side log hygiene for a channel whose user identity IS a phone
+        # number or an Apple Account email. ``redact_handle`` shortens a handle
+        # before it reaches a gateway log line or a SEL ``caller`` field. None of
+        # these modules writes message content to the user through this call.
+        #
+        # ``imessage/renderer.py`` is deliberately NOT in this list even though
+        # it also calls ``redact_handle`` for a delivery-failure log line: it is
+        # a real egress sink and is registered as one above. An earlier version
+        # of this note claimed the renderer's redaction "is the shared
+        # TurnDriver's and is already counted there" -- that was wrong, and it is
+        # the kind of wrong that suppresses a gate. The driver scans the provider
+        # stream as literal bytes; the renderer then flattens the markup, which
+        # can reassemble a credential that scan could not see.
+        "imessage/client.py",
+        "imessage/transport.py",
+        "imessage/transport_dispatch.py",
         "acp/_dispatch.py",
         "acp/client.py",
         # Redacts the tool title in the auto-rejected-permission WARNING (a
@@ -1323,6 +1354,7 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "weixin": "Weixin messages, approvals, and owner-authorization decisions",
     "webex": "Webex messages, approvals, and owner-authorization decisions",
     "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
+    "imessage": "iMessage messages, approvals, and owner-authorization decisions",
     "host": "In-process governance checks not driven by a user-facing surface",
     "unknown": "Events that carry no surface signal (classified rather than misattributed)",
 }

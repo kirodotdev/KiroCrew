@@ -347,7 +347,8 @@ def _setup_impl(
     # 3. Messaging channels (optional, configured after setup by default).
     #    Slack prompts run only on explicit opt-in (`kirocrew setup --slack`);
     #    the dashboard and CLI need no channel credentials, and every channel
-    #    (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat) can be
+    #    (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat, iMessage)
+    #    can be
     #    connected later from the dashboard or its setup guide.
     if slack:
         _setup_slack_tokens()
@@ -357,7 +358,8 @@ def _setup_impl(
     else:
         print("── Messaging Channels ──\n")
         print("  The dashboard works without any messaging credentials.")
-        print("  Connect Slack, Discord, Telegram, Teams, Webex, WeCom, or WeChat")
+        print("  Connect Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat,")
+        print("  or iMessage (macOS only)")
         print("  later from the dashboard (Settings → Channels) or run")
         print("  'kirocrew setup --slack' for the guided Slack setup.\n")
 

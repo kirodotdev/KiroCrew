@@ -1,13 +1,13 @@
 # Messaging Transport Architecture
 
 Channel-neutral contracts used by Kiro Crew's shipped Slack, Discord, Telegram,
-Webex, WeCom, Teams, and Weixin integrations. They also let future channels
-such as WhatsApp be added without re-implementing streaming, tool approval,
-session identity, or rendering for each one.
+Webex, WeCom, Teams, Weixin, and iMessage integrations. They also let future
+channels such as WhatsApp be added without re-implementing streaming, tool
+approval, session identity, or rendering for each one.
 
 - **Package:** `kiro_crew.messaging`
-- **Status:** contracts plus Slack, Discord, Telegram, Webex, WeCom, Teams, and
-  Weixin implementations shipped. Slack's transport path is **default ON** in
+- **Status:** contracts plus Slack, Discord, Telegram, Webex, WeCom, Teams,
+  Weixin, and iMessage implementations shipped. Slack's transport path is **default ON** in
   this fork (`messaging.use_transport`, default `true`) — opt out with `false`.
 
 ## Why

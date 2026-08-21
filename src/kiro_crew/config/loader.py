@@ -149,6 +149,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "wecom",
         "weixin",
         "teams",
+        "imessage",
         "dashboard",
         "tunnel",
         "hooks",
@@ -426,6 +427,12 @@ def _normalize_threshold_pair(soft: int, hard: int) -> tuple[int, int]:
     if soft > hard:
         soft = hard
     return soft, hard
+
+
+#: Outbound services the iMessage bridge accepts. Anything else is a typo that
+#: would be rejected per send rather than at load time. Shared with the settings
+#: API so the form's choices and the loader's clamp cannot drift apart.
+IMESSAGE_SERVICES = frozenset(("imessage", "sms", "auto"))
 
 
 def _safe_bool(value: object, default: bool) -> bool:
@@ -1141,9 +1148,7 @@ def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str,
     (exact on POSIX, case-folded on Windows) so a differently-cased Windows
     spelling cannot slip past. Mutates *env* in place and returns it.
     """
-    matched = [
-        k for k in env if platform_compat.env_key_allowed(k, _KIRO_API_KEY_ONLY)
-    ]
+    matched = [k for k in env if platform_compat.env_key_allowed(k, _KIRO_API_KEY_ONLY)]
     for k in matched:
         del env[k]
     return env
@@ -3458,9 +3463,7 @@ class SessionSummaryConfig:
             logger.warning("min_user_turns %d < 1, using 1", self.min_user_turns)
             object.__setattr__(self, "min_user_turns", 1)
         if self.regenerate_after_turns < 1:
-            logger.warning(
-                "regenerate_after_turns %d < 1, using 1", self.regenerate_after_turns
-            )
+            logger.warning("regenerate_after_turns %d < 1, using 1", self.regenerate_after_turns)
             object.__setattr__(self, "regenerate_after_turns", 1)
         if self.max_intents < 1:
             logger.warning("max_intents %d < 1, using 1", self.max_intents)
@@ -4587,9 +4590,7 @@ class McpGatewayConfig:
 # dashboard stub-batch reader), and a reader disagreeing with the field makes the
 # batch skip servers the rewrite pools perfectly well.
 FORWARD_DECLARED_ENV_DEFAULT = bool(
-    McpGatewayConfig.__dataclass_fields__[  # type: ignore[arg-type]
-        "forward_declared_env"
-    ].default
+    McpGatewayConfig.__dataclass_fields__["forward_declared_env"].default  # type: ignore[arg-type]
 )
 
 
@@ -4736,10 +4737,7 @@ class InstancesConfig:
                 _MINT_TIMEOUT_FLOOR,
             )
             object.__setattr__(self, "mint_timeout_secs", None)
-        elif (
-            self.mint_timeout_secs is not None
-            and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING
-        ):
+        elif self.mint_timeout_secs is not None and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING:
             logger.warning(
                 "instances.mint_timeout_secs %s > %s, clamping to %s",
                 self.mint_timeout_secs,
@@ -5610,6 +5608,97 @@ class WebexConfig:
 
 
 @dataclass
+class IMessageConfig:
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the iMessage channel. macOS only, and the gateway must run "
+            "on the Mac that is signed in to Messages. Needs no bot and no "
+            "token — it drives Messages.app through the local imsg bridge, so "
+            "the transport involves no third party. The turn itself still goes "
+            "to the configured model provider, as on any channel.",
+            tags=["imessage"],
+        ),
+    )
+    db_path: str = field(
+        default="",
+        metadata=_meta(
+            "Messages Database Path",
+            "Override the Messages database location. Empty (the default) lets "
+            "the bridge use ~/Library/Messages/chat.db. Reading it needs Full "
+            "Disk Access for the process the gateway runs as.",
+            tags=["imessage"],
+        ),
+    )
+    allowed_handles: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed Handles",
+            "Phone numbers or Apple ID emails permitted to message the agent. "
+            "Empty = deny all (fail closed): anyone who knows this Mac's handle "
+            "can send to it. Formatting is ignored, so '+61 400 000 000' and "
+            "'+61400000000' are the same handle.",
+            tags=["imessage"],
+        ),
+    )
+    service: str = field(
+        default="imessage",
+        metadata=_meta(
+            "Send Service",
+            "Which service outbound replies use: 'imessage' (default), 'sms', "
+            "or 'auto' to let the bridge fall back to SMS when iMessage is "
+            "unavailable. Inbound is unaffected — the channel answers on "
+            "whichever service the message arrived over.",
+            tags=["imessage"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "When a conversation's context passes this, prompt the user to "
+            "/compact or /new instead of auto-compacting.",
+            tags=["imessage"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context reaches this, even without a user "
+            "decision, so the window never overflows.",
+            tags=["imessage"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["imessage"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Shared normalization: clamp both thresholds and guarantee soft <= hard
+        # so a misconfig can't make the soft nudge unreachable -- _maybe_notice
+        # checks ``pct >= hard`` first. Mirrors WebexConfig.
+        self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
+            self.soft_threshold_pct, self.hard_threshold_pct
+        )
+        # An unrecognized service would be forwarded to the bridge and rejected
+        # per send, turning a typo into a channel that accepts messages and
+        # never answers. Fall back to the safe default instead.
+        service = (self.service or "").strip().lower()
+        self.service = service if service in IMESSAGE_SERVICES else "imessage"
+
+
+@dataclass
 class TeamsConfig:
     enabled: bool = field(
         default=False,
@@ -5821,6 +5910,14 @@ class KiroCrewConfig:
     teams: TeamsConfig = field(
         default_factory=TeamsConfig,
         metadata=_meta("Teams", "Microsoft Teams integration settings.", tags=["teams"]),
+    )
+    imessage: IMessageConfig = field(
+        default_factory=IMessageConfig,
+        metadata=_meta(
+            "iMessage",
+            "iMessage integration settings (macOS only, local bridge, no bot token).",
+            tags=["imessage"],
+        ),
     )
     dashboard: DashboardConfig = field(
         default_factory=DashboardConfig,
@@ -6055,6 +6152,9 @@ class KiroCrewConfig:
         teams_data = data.get("teams", {})
         if not isinstance(teams_data, dict):
             teams_data = {}
+        imessage_data = data.get("imessage", {})
+        if not isinstance(imessage_data, dict):
+            imessage_data = {}
         slack_data = data.get("slack", {})
         if not isinstance(slack_data, dict):
             slack_data = {}
@@ -6231,9 +6331,7 @@ class KiroCrewConfig:
                 max_subagents=_safe_int(
                     agent_data.get("max_subagents", 0), 0, 0, SUBAGENT_AUTO_MAX_CEILING
                 ),
-                max_stop_hook_nudges=_safe_int(
-                    agent_data.get("max_stop_hook_nudges", 100), 100, 0
-                ),
+                max_stop_hook_nudges=_safe_int(agent_data.get("max_stop_hook_nudges", 100), 100, 0),
                 subagent_mem_buffer_pct=_safe_int(
                     agent_data.get("subagent_mem_buffer_pct", 20), 20
                 ),
@@ -6518,6 +6616,19 @@ class KiroCrewConfig:
                 soft_threshold_pct=_threshold_pct(webex_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(webex_data.get("hard_threshold_pct"), 95),
             ),
+            imessage=IMessageConfig(
+                session_folder=_coerce_session_folder(imessage_data.get("session_folder")),
+                enabled=bool(imessage_data.get("enabled", False)),
+                db_path=str(imessage_data.get("db_path", "")),
+                allowed_handles=[
+                    h
+                    for h in _safe_list(imessage_data.get("allowed_handles"))
+                    if isinstance(h, str) and h
+                ],
+                service=str(imessage_data.get("service", "") or "imessage"),
+                soft_threshold_pct=_threshold_pct(imessage_data.get("soft_threshold_pct"), 80),
+                hard_threshold_pct=_threshold_pct(imessage_data.get("hard_threshold_pct"), 95),
+            ),
             teams=TeamsConfig(
                 session_folder=_coerce_session_folder(teams_data.get("session_folder")),
                 enabled=bool(teams_data.get("enabled", False)),
@@ -6701,9 +6812,7 @@ class KiroCrewConfig:
                 # (809M vs 74M, but much better latency).
                 model=stt_data.get("model", "turbo"),
                 mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
-                parakeet_model=stt_data.get(
-                    "parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"
-                ),
+                parakeet_model=stt_data.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"),
                 device=stt_data.get("device", "cpu"),
                 timeout_secs=stt_data.get("timeout_secs", 300),
                 transcribe_region=stt_data.get("transcribe_region", "us-east-1"),
@@ -6834,9 +6943,7 @@ class KiroCrewConfig:
                 # giving it a different answer than the schema would only put two
                 # disagreeing defaults in the file.
                 forward_declared_env=_safe_bool(
-                    mcp_gateway_data.get(
-                        "forward_declared_env", FORWARD_DECLARED_ENV_DEFAULT
-                    ),
+                    mcp_gateway_data.get("forward_declared_env", FORWARD_DECLARED_ENV_DEFAULT),
                     FORWARD_DECLARED_ENV_DEFAULT,
                 ),
                 socket_path=str(mcp_gateway_data.get("socket_path", "")),
@@ -6937,16 +7044,15 @@ class KiroCrewConfig:
             ),
             session_summary=SessionSummaryConfig(
                 enabled=bool(session_summary_data.get("enabled", False)),
-                min_user_turns=_safe_int(
-                    session_summary_data.get("min_user_turns", 2), 2),
+                min_user_turns=_safe_int(session_summary_data.get("min_user_turns", 2), 2),
                 regenerate_after_turns=_safe_int(
-                    session_summary_data.get("regenerate_after_turns", 1), 1),
-                max_intents=_safe_int(
-                    session_summary_data.get("max_intents", 50), 50),
-                max_constraints=_safe_int(
-                    session_summary_data.get("max_constraints", 50), 50),
+                    session_summary_data.get("regenerate_after_turns", 1), 1
+                ),
+                max_intents=_safe_int(session_summary_data.get("max_intents", 50), 50),
+                max_constraints=_safe_int(session_summary_data.get("max_constraints", 50), 50),
                 assistant_excerpt_chars=_safe_int(
-                    session_summary_data.get("assistant_excerpt_chars", 400), 400),
+                    session_summary_data.get("assistant_excerpt_chars", 400), 400
+                ),
             ),
             slack_channels={
                 ch_id: ChannelConfig.from_dict(ch_data)
@@ -7025,6 +7131,7 @@ class KiroCrewConfig:
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
             "teams": asdict(self.teams),
+            "imessage": asdict(self.imessage),
             "dashboard": asdict(self.dashboard),
             "tunnel": asdict(self.tunnel),
             "hooks": self.hooks,
@@ -7222,9 +7329,7 @@ class KiroCrewConfig:
         for k, v in creds.items():
             if not v:
                 continue
-            if scrubbed and (
-                k in _CREDENTIAL_KEYS or _JIRA_TOKEN_RE.match(k)
-            ):
+            if scrubbed and (k in _CREDENTIAL_KEYS or _JIRA_TOKEN_RE.match(k)):
                 continue
             os.environ.setdefault(k, v)
 
@@ -7761,9 +7866,7 @@ def resolve_crew_identity(
         # The line exists so a kiro-template name that collides with a crew
         # key (which would silently inherit that crew's watchdog windows) is
         # diagnosable from logs.
-        logger.debug(
-            "crew_agent %r resolved by crew-namespace fallback", agent
-        )
+        logger.debug("crew_agent %r resolved by crew-namespace fallback", agent)
         return agent
     return ""
 

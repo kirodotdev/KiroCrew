@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import { Link2 } from 'lucide-react'
 import { DiscordIcon } from './DiscordIcon'
+import { IMessageIcon } from './IMessageIcon'
 import { SlackIcon } from './SlackIcon'
 import { TeamsIcon } from './TeamsIcon'
 import { TelegramLogo } from './TelegramLogo'
@@ -26,6 +27,7 @@ const BRAND_ICONS: Record<string, ComponentType<{ size?: number }>> = {
   webex: WebexIcon,
   wecom: WeComLogo,
   weixin: WeixinLogo,
+  imessage: IMessageIcon,
 }
 
 /** True when `channel` has a real brand mark (i.e. not the `Link2` fallback). */

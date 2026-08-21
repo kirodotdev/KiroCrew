@@ -594,6 +594,7 @@ class TestOmissionDetection:
             "weixin:1": "weixin",
             "webex:1": "webex",
             "teams:1": "teams",
+            "imessage:1": "imessage",
             "C123:456.789": "slack",
         }
         for key, expected in probes.items():

@@ -86,9 +86,9 @@ _CHANNEL_LABELS: dict[str, str] = {
     "wecom": "WeCom",
     "teams": "Teams",
     "weixin": "Weixin",
+    "imessage": "iMessage",
     "unified": "Direct message",
 }
-
 #: In-memory window for a newly surfaced slot. Deliberately the same bound the
 #: dashboard's own ``restore_recent_sessions`` uses, so a channel tab and a
 #: dashboard tab of equal length hold equal amounts of history — the tab is the

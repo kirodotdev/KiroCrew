@@ -11,6 +11,7 @@ import { WebexIcon } from '../../components/WebexIcon'
 import { WeComLogo } from '../../components/WeComLogo'
 import { TeamsIcon } from '../../components/TeamsIcon'
 import { WeixinLogo } from '../../components/WeixinLogo'
+import { IMessageIcon } from '../../components/IMessageIcon'
 import { SlackPanel } from './SlackPanel'
 import { DiscordPanel } from './DiscordPanel'
 import { TelegramPanel } from './TelegramPanel'
@@ -19,6 +20,7 @@ import { WeComPanel } from './WeComPanel'
 import { ChannelDisabledPanel } from './ChannelDisabledPanel'
 import { TeamsPanel } from './TeamsPanel'
 import { WeixinPanel } from './WeixinPanel'
+import { IMessagePanel } from './IMessagePanel'
 
 import { i18nT } from '../../i18n/t'
 /** Minimal status shape every channel config endpoint shares. */
@@ -48,6 +50,7 @@ const CHANNELS: ChannelEntry[] = [
   { key: 'wecom', name: 'WeCom', logo: <WeComLogo size={20} />, queryKey: 'wecom-config', getConfig: () => api.getWeComConfig(), Panel: WeComPanel },
   { key: 'teams', name: 'Microsoft Teams', logo: <TeamsIcon size={20} />, queryKey: 'teams-config', getConfig: () => api.getTeamsConfig(), Panel: TeamsPanel },
   { key: 'weixin', name: 'WeChat', logo: <WeixinLogo size={20} />, queryKey: 'weixin-config', getConfig: () => api.getWeixinConfig(), Panel: WeixinPanel },
+  { key: 'imessage', name: 'iMessage', logo: <IMessageIcon size={20} />, queryKey: 'imessage-config', getConfig: () => api.getIMessageConfig(), Panel: IMessagePanel },
 ]
 
 export const CHANNEL_KEYS = CHANNELS.map(c => c.key)
