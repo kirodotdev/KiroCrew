@@ -7001,11 +7001,12 @@
         "theme_styles_ignored_body": "They use CSS that themes aren't allowed to change, so Kiro Crew skipped them. If you made this theme, declare fonts in theme.json's fonts list and keep other rules on the allowed surfaces, then install it again.",
         "theme_styles_ignored_link": "Theming guide",
         "theme_styles_ignored_title": "Some of this theme's styles were ignored",
-        "ui_font_family_for_the_dashboard_code_font_follo": "UI font family for the dashboard. Code font follows the active theme.",
+        "ui_font_family_for_the_dashboard_code_font_follo": "UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Use your browser's zoom. Your browser remembers it for this site.",
         "view": "View",
         "zoom_font": "Zoom & Font",
-        "zoom_level": "Zoom Level"
+        "zoom_level": "Zoom Level",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "Agent data",

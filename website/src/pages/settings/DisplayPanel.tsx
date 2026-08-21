@@ -2,6 +2,7 @@ import { X, Loader2 } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
+import type { FontFamily } from '../../hooks/useZoom'
 import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
@@ -27,6 +28,7 @@ import {
   setTerminalFontSize,
   DEFAULT_TERMINAL_FONT_SIZE,
 } from '../../hooks/useTerminalFont'
+import { FONT_FAMILY_OPTIONS, OPENDYSLEXIC_MONO_FAMILY_NAME } from '../../utils/fontFamilyOptions'
 import { useFontOptions } from '../../hooks/useFontOptions'
 import { isFontInstalled, monospaceFontStack } from '../../utils/fontDetect'
 
@@ -98,8 +100,19 @@ export function DisplayPanel() {
     () => fontFamilies.map(family => ({ value: family, label: family, ...fontPreview(family) })),
     [fontFamilies],
   )
+  // The bundled OpenDyslexicMono row sits between the Default row and the OS-
+  // detected list. Always selectable regardless of what Local Font Access
+  // reports, because the browser has the family loaded from the page's own
+  // @font-face declaration. Users who pick OpenDyslexic for the dashboard can
+  // apply OpenDyslexicMono to the terminal without having to type the family
+  // name. A future bundled mono face becomes a second inlined row.
   const fontOptions = [
     { value: '', label: i18nT('pages.settings.displayPanel.terminal_font_default') },
+    {
+      value: OPENDYSLEXIC_MONO_FAMILY_NAME,
+      label: OPENDYSLEXIC_MONO_FAMILY_NAME,
+      ...fontPreview(OPENDYSLEXIC_MONO_FAMILY_NAME),
+    },
     ...fontRows,
   ]
   // A literal key per branch, never an assembled one: a key built from parts is
@@ -301,8 +314,8 @@ export function DisplayPanel() {
             </div>
           )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} description={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard_code_font_follo')} value={family}
-            options={[{ value: 'sans', label: 'Sans' }, { value: 'mono', label: 'Mono' }, { value: 'system', label: 'System' }]}
-            onChange={v => setFontFamily(v as 'sans' | 'mono' | 'system')} />
+            options={FONT_FAMILY_OPTIONS.map(o => ({ value: o.value, label: o.labelKey ? i18nT(o.labelKey) : o.label! }))}
+            onChange={v => setFontFamily(v as FontFamily)} />
         </SettingsCard>
       </SettingsSection>
 

@@ -1180,4 +1180,21 @@ export default [
       'i18next/no-literal-string': 'off',
     },
   },
+
+  // FONT FAMILY PICKER ROWS + BUNDLED FONT NAME LITERALS: the Settings →
+  // Display Font Family picker's option labels ('Sans' / 'Mono' / 'System' /
+  // 'OpenDyslexic') are proper nouns and internal identifiers, not user copy.
+  // The module also holds the CSS font-family stack strings for the bundled
+  // OpenDyslexic face (OPENDYSLEXIC_BODY_STACK / OPENDYSLEXIC_MONO_STACK) and
+  // the bundled-mono family-name list (BUNDLED_MONO_FONTS). All are matched by
+  // exact value against @font-face declarations and CSS lookups; translating
+  // any of them would break the resolution. Same names-only rationale as
+  // monoFontCandidates.ts above — kept in its own module so the exemption is
+  // tight.
+  {
+    files: ['src/utils/fontFamilyOptions.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
 ]

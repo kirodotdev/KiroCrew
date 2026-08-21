@@ -208,6 +208,55 @@
   unicode-range: U+0980-09FF;
 }
 
+/* ─── OpenDyslexic (SIL-OFL) ── accessibility built-in ───
+   Registered as its own font-family so the a11y font never leaks into
+   var(--mono) consumers: proportional variants live under 'OpenDyslexic',
+   the monospace face under 'OpenDyslexicMono'. useZoom's MONO_OVERRIDE map
+   points --mono at OpenDyslexicMono when the user selects opendyslexic.
+
+   Italic and BoldItalic are bundled so <em>, blockquotes, and markdown
+   ***bold-italic*** render as drawn glyphs — synthesized italic on OpenDyslexic
+   destroys the weighted-bottom/asymmetric-shape properties dyslexic readers
+   pick this font for. Family-name isolation means italic never resolves inside
+   <code> blocks: var(--mono) reads 'OpenDyslexicMono' which has no italic face
+   declared, so italic inside code stays synthesized (same as JetBrains Mono).
+*/
+@font-face {
+  font-family: 'OpenDyslexic';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/opendyslexic/OpenDyslexic-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'OpenDyslexic';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/opendyslexic/OpenDyslexic-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'OpenDyslexic';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/opendyslexic/OpenDyslexic-Italic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'OpenDyslexic';
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/opendyslexic/OpenDyslexic-BoldItalic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'OpenDyslexicMono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/opendyslexic/OpenDyslexicMono-Regular.woff2') format('woff2');
+}
+
 /* ── Design tokens ── */
 /* Shared across all themes */
 :root {
@@ -2257,6 +2306,18 @@ file-tree-container{
    every other label in the app (everything else inherits letter-spacing:normal
    from body). Do not promote any of this to an unscoped rule. */
 html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; word-spacing:-2.5px; gap:3px }
+
+/* OpenDyslexicMono (data-font-family="opendyslexic" in CLI mode) is measured
+   ~22% wider than JetBrains Mono at 12px (advance 8.784 vs 7.20 for capital 'S'
+   from fontTools on the shipped .woff2). The rail budget above therefore has
+   less slack under opendyslexic than under mono, and the "Report issue" button
+   may truncate to an ellipsis on very narrow rails.
+   No opendyslexic-specific tightening rule is applied: -0.05em / -2.5px are
+   metrically tuned for JetBrains Mono's advance and would misfire on
+   OpenDyslexicMono, and negative tracking on a legibility font actively fights
+   the readability properties a user picking OpenDyslexic came for. The
+   button's `text-ellipsis` on `Report issue` handles overflow gracefully;
+   a dedicated rule can be added later if visual QA shows truncation matters. */
 
 /* Cut-edge rule on the pinned-crew chip row. The row is a single nowrap line with
    overflow:hidden so the trailing dropdown stays against the last chip (see

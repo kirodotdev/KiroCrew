@@ -10807,7 +10807,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "আপনার ব্রাউজারের জুম ব্যবহার করুন। ব্রাউজার এই সাইটের জন্য তা মনে রাখে।",
         "view": "ভিউ",
         "zoom_font": "জুম ও ফন্ট",
-        "zoom_level": "জুম লেভেল"
+        "zoom_level": "জুম লেভেল",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",

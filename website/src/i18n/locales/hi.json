@@ -10807,7 +10807,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "अपने ब्राउज़र का ज़ूम उपयोग करें। आपका ब्राउज़र इसे इस साइट के लिए याद रखता है।",
         "view": "दृश्य",
         "zoom_font": "ज़ूम और फ़ॉन्ट",
-        "zoom_level": "ज़ूम स्तर"
+        "zoom_level": "ज़ूम स्तर",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",

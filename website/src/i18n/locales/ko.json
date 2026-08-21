@@ -10682,7 +10682,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "브라우저의 확대/축소를 사용하세요. 브라우저가 이 사이트의 값을 기억합니다.",
         "view": "보기",
         "zoom_font": "확대/축소 및 글꼴",
-        "zoom_level": "확대/축소 수준"
+        "zoom_level": "확대/축소 수준",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

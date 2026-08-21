@@ -10682,7 +10682,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "使用浏览器自带的缩放，浏览器会为本站点记住此设置。浏览器会为此站点记住此设置。",
         "view": "视图",
         "zoom_font": "缩放与字体",
-        "zoom_level": "缩放级别"
+        "zoom_level": "缩放级别",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "代理数据",

@@ -275,11 +275,15 @@ describe('DisplayPanel – font family setting', () => {
     // under EVERY option here, System included (website/docs/theming-contract.md
     // § Fonts). Without this sentence a user who picks System and still sees the
     // code font change reads the option as broken.
+    // Since OpenDyslexic shipped, the description also carves out that option:
+    // it applies its own OpenDyslexicMono to code surfaces, so the "follows the
+    // active theme" rule doesn't hold for it. The assertion pins both halves so
+    // a future edit can't silently drop either.
     renderWithProviders(<DisplayPanel />)
 
     expect(screen.getByText('Font Family')).toBeInTheDocument()
     expect(
-      screen.getByText('UI font family for the dashboard. Code font follows the active theme.'),
+      screen.getByText('UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own.'),
     ).toBeInTheDocument()
   })
 })
@@ -376,5 +380,23 @@ describe('DisplayPanel – dropped overrides notice', () => {
     }))
     renderWithProviders(<DisplayPanel />)
     expect(screen.queryByText("Some of this theme's styles were ignored")).not.toBeInTheDocument()
+  })
+})
+
+describe('DisplayPanel – Font Family picker (OpenDyslexic option)', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // The Font Family row is a SettingsButtonGroup that lists Sans / Mono /
+  // System, plus OpenDyslexic as a fourth built-in a11y option. The buttons
+  // render their label as accessible text; asserting on the button role is
+  // enough to prove the option is discoverable — actually clicking it would
+  // just re-verify the shared SettingsButtonGroup wiring, which has its own
+  // tests.
+  it('lists OpenDyslexic as a fourth font family option alongside Sans/Mono/System', () => {
+    renderWithProviders(<DisplayPanel />)
+    expect(screen.getByRole('button', { name: 'Sans' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Mono' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'System' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'OpenDyslexic' })).toBeInTheDocument()
   })
 })

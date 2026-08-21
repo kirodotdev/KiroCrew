@@ -10931,7 +10931,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa el zoom de tu navegador. El navegador lo recuerda para este sitio.",
         "view": "Vista",
         "zoom_font": "Zoom y tipografía",
-        "zoom_level": "Nivel de zoom"
+        "zoom_level": "Nivel de zoom",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "Datos del agente",

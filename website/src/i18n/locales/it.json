@@ -10930,7 +10930,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa lo zoom del browser. Il browser lo ricorda per questo sito.",
         "view": "Vista",
         "zoom_font": "Zoom e carattere",
-        "zoom_level": "Livello di zoom"
+        "zoom_level": "Livello di zoom",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

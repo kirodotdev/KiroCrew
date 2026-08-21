@@ -550,7 +550,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "display.font-family",
     "label": "Font Family",
     "labelKey": "pages.settings.displayPanel.font_family",
-    "description": "UI font family for the dashboard. Code font follows the active theme.",
+    "description": "UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own.",
     "tab": "display",
     "type": "buttonGroup",
     "occurrence": 1

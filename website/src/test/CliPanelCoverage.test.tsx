@@ -637,7 +637,16 @@ describe('CliPanel web-font refit', () => {
     setFonts({ ready: Promise.resolve(), load })
     const { term, fit } = mount()
     await act(async () => { await Promise.resolve() })
-    expect(load).toHaveBeenCalledWith(expect.stringContaining('"JetBrains Mono"'))
+    // The pre-loaded family must match the terminal's configured stack — the
+    // previous implementation hardcoded 'JetBrains Mono', which silently
+    // missed any custom Terminal Font Family (Nerd Fonts, OpenDyslexicMono,
+    // etc.), so xterm's canvas renderer measured against the fallback until
+    // some other var(--mono) surface forced the load. Asserting against
+    // `term.options.fontFamily` pins the fix: whatever family the terminal
+    // was configured with is what gets pre-loaded.
+    const configuredFontFamily = term.options.fontFamily
+    expect(configuredFontFamily).toBeTruthy()
+    expect(load).toHaveBeenCalledWith(expect.stringContaining(configuredFontFamily!))
     expect(fit.fit).toHaveBeenCalled()
     expect(term.fontFamilyWrites).toContain('monospace')
   })

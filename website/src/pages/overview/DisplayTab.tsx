@@ -4,10 +4,28 @@ import { useTheme } from '../../hooks/useTheme'
 import { Card, CardTitle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
+import { FONT_FAMILY_OPTIONS } from '../../utils/fontFamilyOptions'
+import type { FontFamily } from '../../hooks/useZoom'
 
 import { i18nT } from '../../i18n/t'
 const BTN = 'px-3 py-1 rounded-full text-[13px] cursor-pointer border transition-all'
 const active = (on: boolean) => on ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
+
+/**
+ * Font Family button labels for this tab.
+ *
+ * The Sans / Mono / System keys are pre-existing DisplayTab-scoped translations;
+ * OpenDyslexic reuses the DisplayPanel catalog key so the label is a single
+ * source of truth. Kept as a `Record<FontFamily, string>` so every FontFamily
+ * union member is proven to have a label at compile time — a new family added
+ * to `FONT_FAMILY_OPTIONS` without a label here fails typecheck.
+ */
+const FONT_FAMILY_LABEL_KEY: Record<FontFamily, string> = {
+  sans: 'pages.overview.displayTab.sans',
+  mono: 'pages.overview.displayTab.mono',
+  system: 'pages.overview.displayTab.system',
+  opendyslexic: 'pages.settings.displayPanel.font_family_option_opendyslexic',
+}
 
 export default function DisplayTab() {
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
@@ -32,9 +50,9 @@ export default function DisplayTab() {
       <Card>
         <CardTitle>{i18nT('pages.overview.displayTab.font')} <InfoTip text={i18nT('pages.overview.displayTab.change_the_dashboard_font_family_persists_across')} /></CardTitle>
         <div className="flex items-center gap-2">
-          {(['sans', 'mono', 'system'] as const).map(f => (
+          {FONT_FAMILY_OPTIONS.map(({ value: f }) => (
             <button key={f} className={BTN + ' ' + active(family === f)} onClick={() => setFontFamily(f)}>
-              {f === 'sans' ? i18nT('pages.overview.displayTab.sans') : f === 'mono' ? i18nT('pages.overview.displayTab.mono') : i18nT('pages.overview.displayTab.system')}
+              {i18nT(FONT_FAMILY_LABEL_KEY[f])}
             </button>
           ))}
         </div>

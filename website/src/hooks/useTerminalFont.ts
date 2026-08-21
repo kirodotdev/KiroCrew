@@ -30,6 +30,11 @@ const terminalFontDefaults = {
 export const DEFAULT_TERMINAL_FONT_FAMILY = terminalFontDefaults.fontFamily
 /** Default cell font size in px (the historical hard-coded value). */
 export const DEFAULT_TERMINAL_FONT_SIZE = terminalFontDefaults.fontSize
+
+// `BUNDLED_MONO_FONTS` lives in utils/fontFamilyOptions.ts alongside the other
+// font-name literals so the ESLint i18n exemption stays scoped to a single
+// module. Consumers (DisplayPanel's terminal font picker) should import from
+// there directly.
 /** Font-size bounds — below 8px the cell is unreadable, above 32px one line fills the pane. */
 export const MIN_TERMINAL_FONT_SIZE = 8
 export const MAX_TERMINAL_FONT_SIZE = 32

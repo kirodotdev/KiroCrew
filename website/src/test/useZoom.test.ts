@@ -192,12 +192,102 @@ test('routes Sans and Mono through the theme role tokens, System through neither
   expect(readBody()).toContain('-apple-system')
 })
 
-test('cycleFamily rotates sans → mono → system → sans', () => {
+test('cycleFamily rotates sans → mono → system → opendyslexic → sans', () => {
   const { result } = renderHook(() => useZoom())
   act(() => result.current.cycleFamily())
   expect(result.current.family).toBe('mono')
   act(() => result.current.cycleFamily())
   expect(result.current.family).toBe('system')
   act(() => result.current.cycleFamily())
+  expect(result.current.family).toBe('opendyslexic')
+  act(() => result.current.cycleFamily())
   expect(result.current.family).toBe('sans')
+})
+
+// ── OpenDyslexic (accessibility built-in) ──
+// A dedicated Font Family option that ships bundled proportional + monospace
+// faces (see index.css @font-face blocks). Distinct from Sans/Mono/System in two
+// ways: it does NOT read theme role tokens (a theme pack cannot hijack the a11y
+// font), and it publishes its own --mono override so code blocks also render in
+// OpenDyslexicMono.
+
+test('opendyslexic sets --font-body to the bundled OpenDyslexic stack', () => {
+  const { result } = renderHook(() => useZoom())
+  const readBody = () => document.documentElement.style.getPropertyValue('--font-body')
+
+  act(() => result.current.setFontFamily('opendyslexic'))
+  expect(readBody()).toContain("'OpenDyslexic'")
+  expect(readBody()).toContain('sans-serif')
+  // Deliberately NOT routed through --theme-font-* — the a11y font must reach
+  // the user regardless of the installed theme pack's declared faces.
+  expect(readBody()).not.toContain('--theme-font')
+})
+
+test('opendyslexic publishes data-font-family="opendyslexic" on <html>', () => {
+  // The attribute survives with the user's actual choice — not auto-resolved to
+  // "mono" even in CLI mode. This is asymmetric with the sans-default→mono
+  // auto-resolve, and deliberately so: the mono-tuned rail letter-spacing rule
+  // in index.css (data-font-family="mono") is calibrated for JetBrains Mono's
+  // metrics and would harm OpenDyslexicMono's dyslexia-friendly wider glyphs.
+  const { result } = renderHook(() => useZoom())
+  act(() => result.current.setFontFamily('opendyslexic'))
+  expect(document.documentElement.dataset.fontFamily).toBe('opendyslexic')
+})
+
+test('opendyslexic persists to localStorage under mc-font-family', () => {
+  const { result } = renderHook(() => useZoom())
+  act(() => result.current.setFontFamily('opendyslexic'))
+  expect(localStorage.getItem('mc-font-family')).toBe('opendyslexic')
+})
+
+test('opendyslexic overrides --mono to OpenDyslexicMono for code blocks', () => {
+  // Code blocks and inline code read var(--mono). Without this override the
+  // dashboard would render body text in OpenDyslexic but keep JetBrains Mono
+  // for code — inconsistent for a user who picked the font for legibility.
+  const { result } = renderHook(() => useZoom())
+  const readMono = () => document.documentElement.style.getPropertyValue('--mono')
+
+  act(() => result.current.setFontFamily('opendyslexic'))
+  expect(readMono()).toContain("'OpenDyslexicMono'")
+  expect(readMono()).toContain('monospace')
+})
+
+test('leaving opendyslexic clears the --mono inline override', () => {
+  // Once the user switches away, the :root default (JetBrains Mono) must take
+  // over again. If the inline value stuck, sans/mono/system would render body
+  // in their own family but keep code blocks in OpenDyslexicMono — mismatch.
+  const { result } = renderHook(() => useZoom())
+  const readMono = () => document.documentElement.style.getPropertyValue('--mono')
+
+  act(() => result.current.setFontFamily('opendyslexic'))
+  expect(readMono()).toContain("'OpenDyslexicMono'")
+
+  act(() => result.current.setFontFamily('sans'))
+  // The inline --mono is removed so the :root declaration takes over. Reading
+  // the inline value returns the empty string (jsdom exposes only inline
+  // style through .style.getPropertyValue).
+  expect(readMono()).toBe('')
+})
+
+test('opendyslexic in CLI mode resolves body to the mono variant, keeps data-font-family', () => {
+  // Mirrors the sans→mono auto-resolve for CLI, but preserves the user's
+  // actual choice in data-font-family. The mono-only rail letter-spacing rule
+  // in index.css (data-font-family="mono") is JetBrains-Mono-tuned and would
+  // harm OpenDyslexicMono's dyslexia-friendly wider glyphs, so this branch
+  // deliberately avoids triggering it.
+  const html = document.documentElement
+  const readBody = () => html.style.getPropertyValue('--font-body')
+
+  html.dataset.ui = 'cli'
+  try {
+    const { result } = renderHook(() => useZoom())
+    act(() => result.current.setFontFamily('opendyslexic'))
+
+    // Body renders in OpenDyslexicMono, not the proportional face.
+    expect(readBody()).toContain("'OpenDyslexicMono'")
+    // But the DOM attribute reports the user's chosen family, not "mono".
+    expect(html.dataset.fontFamily).toBe('opendyslexic')
+  } finally {
+    delete html.dataset.ui
+  }
 })

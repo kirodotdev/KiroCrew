@@ -11055,7 +11055,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "Используйте масштаб браузера. Браузер запомнит его для этого сайта.",
         "view": "Вид",
         "zoom_font": "Масштаб и шрифт",
-        "zoom_level": "Уровень масштаба"
+        "zoom_level": "Уровень масштаба",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "Данные агента",

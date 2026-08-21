@@ -179,3 +179,17 @@ describe('terminal font picker — enumeration action', () => {
     expect(await screen.findByText('Installed fonts added to the list.')).toBeInTheDocument()
   })
 })
+
+describe('terminal font picker — bundled fonts are always selectable', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('lists OpenDyslexicMono as a selectable option regardless of OS-detected list', async () => {
+    // The OS detection mock returns only INSTALLED ('Hack'), NOT OpenDyslexicMono
+    // — this test proves the bundled row is prepended independently of detection.
+    // Users who pick Font Family = OpenDyslexic for the dashboard can then
+    // apply OpenDyslexicMono to the terminal without knowing to type the exact
+    // family name.
+    await openFontPicker()
+    expect(screen.getByRole('option', { name: /OpenDyslexicMono/ })).toBeInTheDocument()
+  })
+})

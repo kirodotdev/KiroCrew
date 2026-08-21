@@ -10682,7 +10682,8 @@
         "use_your_browser_s_zoom_your_browser_remembers_i": "ブラウザーのズームを使用してください。ブラウザーはこのサイトのズームを記憶します。",
         "view": "表示",
         "zoom_font": "ズーム＆フォント",
-        "zoom_level": "ズームレベル"
+        "zoom_level": "ズームレベル",
+        "font_family_option_opendyslexic": "OpenDyslexic"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

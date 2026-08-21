@@ -13,6 +13,12 @@ You may obtain a copy of the License at
 Portions of this software incorporate third-party components; see
 THIRD-PARTY-NOTICES for their respective copyright notices and licenses.
 
+This distribution bundles the OpenDyslexic font by Abbie Gonzalez,
+licensed under the SIL Open Font License 1.1. The font files live at
+website/public/fonts/opendyslexic/; the accompanying OFL.txt in that
+directory is the license text, and the same text is reproduced under
+"Bundled Fonts" in THIRD-PARTY-NOTICES.
+
 The macOS computer-use feature's optional background-window click path
 (src/kiro_crew/computer_use/macos_skylight.py) uses undocumented macOS
 window-server interfaces. The symbol declarations and the event-field
