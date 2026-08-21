@@ -2039,6 +2039,19 @@ Examples:
     agent_update.add_argument("--memory-store", help="New memory store name")
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
+    agent_reset_model = agent_sub.add_parser(
+        "reset-model",
+        help="Clear an agent spec's pinned model so it tracks the shipped default again",
+    )
+    agent_reset_model.add_argument(
+        "--agent",
+        # Literal rather than an import: this parser is built on every CLI
+        # invocation and `agent.py` pulls in config.loader, which is the import
+        # cost the lazy dispatch in main() exists to avoid. Same spelling the
+        # resolver itself compares against in resolve_effective_model.
+        default="kirocrew",
+        help="Kiro agent spec to reset (default: kirocrew)",
+    )
 
     # workspace
     ws_parser = sub.add_parser("workspace", help="Manage workspace definitions")

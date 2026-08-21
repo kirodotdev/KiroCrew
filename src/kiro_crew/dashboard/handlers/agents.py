@@ -17,7 +17,13 @@ from aiohttp import web
 
 from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
-from kiro_crew.agent import AGENT_FILENAME, get_shipped_tools, install_agent, kiro_agents_dir_path
+from kiro_crew.agent import (
+    AGENT_FILENAME,
+    clear_model_pin,
+    get_shipped_tools,
+    install_agent,
+    kiro_agents_dir_path,
+)
 from kiro_crew.agent_discovery import (
     clear_list_agents_cache,
     list_agents,
@@ -1401,10 +1407,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             # provider id at the config.loader factory boundary.
                             data["model"] = patch_body["model"] or None
                             if data["model"] is None:
-                                data.pop("model", None)
                                 # Cleared/auto: resume tracking the shipped
                                 # default (re-synced by _refresh_dynamic_fields).
-                                agent_state.set_model_managed(agent_name, True)
+                                # Shared with `kirocrew agent reset-model` so the
+                                # two surfaces cannot disagree on what clearing a
+                                # model means.
+                                clear_model_pin(data, agent_name)
                             else:
                                 # Explicit pick: freeze it against default bumps.
                                 agent_state.set_model_managed(agent_name, False)

@@ -35,9 +35,10 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, MutableMapping
 
 from kiro_crew import agent_state, platform_compat
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
 )
@@ -83,6 +84,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
+from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
 
@@ -2603,6 +2605,204 @@ def migrate_agent_specs() -> int:
     if cleaned:
         logger.info("Cleaned %d kiro agent spec(s) of KiroCrew bookkeeping keys", cleaned)
     return cleaned
+
+
+def clear_model_pin(config: MutableMapping[str, object], name: str) -> None:
+    """Drop *config*'s ``model`` pin and resume tracking the shipped default.
+
+    The in-place half of "return this agent to the default model", shared by
+    every caller that offers it, so the dashboard's Agent Templates editor and
+    the CLI cannot drift on what clearing a model means (the same reason
+    :func:`agent_state.lift_and_strip_bookkeeping` is shared by four writers).
+    The caller persists *config* itself.
+
+    Deliberately the ONLY way a spec's ``model`` becomes managed after install:
+    ownership cannot be inferred from a spec's value, because a model an older
+    build's propagation wrote and one the user typed in by hand are identical on
+    disk. So this is driven by an explicit user action -- clearing the model in
+    the editor, or ``kirocrew agent reset-model`` -- and never by a heuristic
+    running behind the user's back on refresh.
+
+    Ordering is benign in both directions: if the sidecar write lands and the
+    caller's spec write does not, the next refresh resolves the still-pinned
+    spec to the shipped default, which is what the user asked for; if the spec
+    write lands and the sidecar write does not, the pin is gone and the resolver
+    falls through to the global.
+    """
+    config.pop("model", None)
+    agent_state.set_model_managed(name, True)
+
+
+def _read_spec_capped(path: Path) -> dict | None:
+    """Parse an agent spec through the hardened, SIZE-CAPPED read gate.
+
+    ``agent_discovery._read_agent_spec`` is what that module documents as the one
+    reader for both agent scopes: it reads via ``hooks.safe_read_file_bytes``, so
+    a multi-gigabyte "agent config" in a user-writable, tool-shared directory is
+    refused at the cap instead of being slurped into memory, and it also rejects
+    non-UTF-8 bytes, AppleDouble sidecars and JSON that is not an object.
+
+    A thin wrapper rather than a direct call at each site, so the reason the
+    capped reader is used lives in one place.
+    """
+    return _read_agent_spec(path)
+
+
+def _spec_path_is_safe(path: Path, agents_dir: Path) -> bool:
+    """True when *path* is a real file inside *agents_dir*, safe to read and rewrite.
+
+    A spec is read and then written back, so a SYMLINK is refused rather than
+    followed. Following one would read the target and write a modified copy into
+    the agents directory, which launders the contents of a file the reader may
+    not otherwise be allowed to open -- a governance-fenced path, for instance --
+    into a location that is freely readable. (The rewrite itself does not corrupt
+    the target: ``_atomic_json_write`` goes through ``os.replace``, which swaps
+    the link rather than writing through it. The copy-out is the problem.)
+
+    Also refuses a resolved path that leaves the agents directory, and any
+    sensitive path, which is the same fence this module already applies before
+    touching a resolved path elsewhere.
+    """
+    try:
+        if path.is_symlink():
+            return False
+        resolved = path.resolve()
+        if resolved.parent != agents_dir.resolve():
+            return False
+        if is_sensitive_path(str(resolved)):
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def agent_spec_path(name: str) -> Path | None:
+    """Return the user-level kiro spec file for *name*, or ``None`` if absent.
+
+    Prefers ``<agents dir>/<name>.json`` and falls back to a scan for a spec
+    whose ``name`` field matches, mirroring how the dashboard's per-agent
+    handler resolves an agent to a file (a spec's filename and its ``name`` are
+    not required to agree).
+
+    *name* is validated against the shared agent-name grammar BEFORE it reaches
+    the path join, so a caller passing a traversal (``../../something``) gets
+    ``None`` rather than a path outside the agents directory. The check lives
+    here, at the resolver, so every caller inherits it instead of each one
+    remembering: this function returns a path that :func:`reset_agent_model`
+    then WRITES, and the CLI takes the name from a user-supplied ``--agent``.
+    A symlinked or otherwise unsafe candidate is refused for the same reason --
+    see :func:`_spec_path_is_safe`.
+
+    A DECLARED ``name`` wins over a matching filename, which is the order the
+    other two resolvers already use (``_resolve_named_agent_model`` and the
+    dashboard's per-agent handler both test ``data["name"] == agent`` before the
+    stem). Preferring the filename would let ``<name>.json`` that declares a
+    DIFFERENT agent be selected, and since the caller then writes to it, that
+    clears the wrong agent's pin while the requested one stays pinned. The
+    filename is accepted only when no spec declares this name -- see below.
+
+    Raises ``ValueError`` when TWO safe specs declare the same name. The runtime
+    iterates the directory unordered, so which of them is live is undefined, and
+    a writer cannot pick without risking clearing the pin nothing is reading.
+    """
+    if not _AGENT_NAME_RE.match(name or ""):
+        return None
+    agents_dir = kiro_agents_dir_path()
+    if not agents_dir.is_dir():
+        return None
+
+    direct = agents_dir / f"{name}.json"
+    declared_matches: list[Path] = []
+    fallback: Path | None = None
+    for spec_path in sorted(agents_dir.glob("*.json")):
+        if not _spec_path_is_safe(spec_path, agents_dir):
+            continue
+        try:
+            data = _read_spec_capped(spec_path)
+        except (json.JSONDecodeError, OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        declared = data.get("name")
+        if declared == name:
+            declared_matches.append(spec_path)
+        elif spec_path == direct:
+            # Right filename. Accepted as the fallback even when it declares a
+            # DIFFERENT name, because the runtime resolver matches on
+            # `data["name"] == agent OR path.stem == agent` -- so with nothing
+            # declaring this name, the stem match makes THIS file the live spec,
+            # and refusing it would leave a live pin unresettable, which is the
+            # bug this change exists to fix. Only used when no declared match is
+            # found, and a declared match alongside it is the ambiguity the
+            # caller refuses rather than resolves.
+            fallback = spec_path
+    if len(declared_matches) > 1:
+        # Paths are repr'd: a filename in this user-writable, tool-shared
+        # directory is untrusted input, and this message is printed to a terminal.
+        raise ValueError(
+            f"{len(declared_matches)} specs declare the name {name!r}: "
+            f"{', '.join(repr(str(p)) for p in declared_matches)}. The runtime iterates the "
+            f"directory unordered, so which one is live is undefined -- remove or rename "
+            f"one before resetting."
+        )
+    if declared_matches:
+        return declared_matches[0]
+    return fallback
+
+
+def _conflicting_spec_for(name: str, chosen: Path, agents_dir: Path) -> Path | None:
+    """Return a DIFFERENT safe spec whose FILENAME also claims *name*.
+
+    The runtime resolver (``KiroCrewConfig._resolve_named_agent_model``) accepts
+    EITHER a declared-name match or a filename match -- ``data["name"] == agent
+    or path.stem == agent`` -- and iterates ``glob("*.json")``, which is
+    unordered. So when ``<name>.json`` declares a different agent AND another
+    file declares *name*, which of the two the runtime actually uses is
+    UNDEFINED: it is whichever the filesystem yields first.
+
+    A reset cannot pick correctly in that state. Clearing either one can leave
+    the live pin in place and strip the model from a spec nothing is reading, so
+    the caller refuses instead of guessing.
+    """
+    direct = agents_dir / f"{name}.json"
+    if direct == chosen or not direct.is_file():
+        return None
+    if not _spec_path_is_safe(direct, agents_dir):
+        return None
+    return direct
+
+
+def reset_agent_model(name: str) -> tuple[Path, str]:
+    """Clear *name*'s spec model pin on disk; return (spec path, previous model).
+
+    The explicit, narrow counterpart to ``kirocrew setup --clean``, which also
+    resumes default-model tracking but regenerates the whole spec and discards
+    every user customization with it. Raises ``FileNotFoundError`` when the
+    agent has no user-level spec.
+    """
+    spec_path = agent_spec_path(name)
+    if spec_path is None:
+        raise FileNotFoundError(f"no kiro agent spec for {name!r} in {kiro_agents_dir_path()}")
+    conflict = _conflicting_spec_for(name, spec_path, kiro_agents_dir_path())
+    if conflict is not None:
+        raise ValueError(
+            f"two specs claim {name!r}: {str(spec_path)!r} declares it, and {str(conflict)!r} "
+            f"carries the filename. The runtime accepts either, in unordered directory order, "
+            f"so which one is live is undefined -- rename or remove one before resetting."
+        )
+    try:
+        data = _read_spec_capped(spec_path)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        raise FileNotFoundError(f"could not read agent spec {spec_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise FileNotFoundError(f"agent spec {spec_path} is not readable as a JSON object")
+    previous = data.get("model") or ""
+    clear_model_pin(data, name)
+    # Same strip every spec writer runs: kiro-cli validates with
+    # deny_unknown_fields and drops the whole agent on an unknown key.
+    agent_state.lift_and_strip_bookkeeping(data, name)
+    _atomic_json_write(spec_path, data)
+    return spec_path, str(previous)
 
 
 def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
