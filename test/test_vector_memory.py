@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.vector_memory import (
     _HAS_FAISS,
     _HAS_NUMPY,
@@ -636,11 +637,998 @@ class TestSchemaInit:
     def test_file_permissions(self, tmp_path: Path) -> None:
         import stat
 
-        db_path = tmp_path / "mem.db"
+        from kiro_crew import platform_compat
+
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home, so a
+        # tmp_path DB would take the custom-path branch and be left alone by design.
+        # conftest pins KIROCREW_HOME per test, so this is still isolated.
+        store = VectorMemoryStore()
+        db_path = store._db_path
+        store.init()
+        # NTFS reports 0o666 for any file regardless of its DACL, so the mode
+        # assertion is meaningful only on POSIX. The routing assertion below is
+        # what covers Windows.
+        if platform_compat.IS_POSIX:
+            assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+    def test_the_memory_directory_stays_traversable_after_the_lockdown(
+        self, tmp_path: Path
+    ) -> None:
+        """The directory must end at 0o700, not the 0o600 a FILE gets.
+
+        ``restrict_to_owner`` is ``chmod(0o600)`` on POSIX, which is right for a file and
+        wrong for a directory: it strips the execute bit that makes the directory
+        TRAVERSABLE, so the very next ``sqlite3.connect`` fails with "unable to open
+        database file" and every store in the process goes with it. A directory needs
+        ``0o700``.
+
+        Asserted as an OUTCOME -- reopen the store and read back through it -- so it holds
+        whatever helper the lockdown routes the directory through. Windows has no execute
+        bit for a directory and NTFS does not report POSIX modes, so the mode half is
+        POSIX-only; the reopen half runs everywhere.
+        """
+        import stat
+
+        from kiro_crew import platform_compat
+
+        # DEFAULT db_path: the branch that actually tightens the directory.
+        store = VectorMemoryStore()
+        db_path = store._db_path
+        store.init()
+        assert store.set_semantic("user.name", "probe", 0.9, "test") is None
+        store.close()
+
+        if platform_compat.IS_POSIX:
+            mode = stat.S_IMODE(db_path.parent.stat().st_mode)
+            assert mode == 0o700, f"the memory directory is {mode:#o}, expected 0o700"
+            assert mode & stat.S_IXUSR, "the directory lost its execute bit; it is untraversable"
+
+        # The real regression this guards: a second open through that directory.
+        reopened = VectorMemoryStore(db_path=db_path)
+        reopened.init()
+        try:
+            row = reopened.get_semantic("user.name")
+            assert row is not None, "the reopened store could not read back through the directory"
+        finally:
+            reopened.close()
+
+    def test_the_directory_takes_0o700_and_never_the_file_lockdown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pins the ROUTING of the directory, so Windows CI covers the POSIX hazard too.
+
+        ``IS_POSIX`` is forced on, so this runs the POSIX branch from any host: the mode
+        bits that break are not observable on NTFS, but the choice of call is. The
+        directory must get ``chmod(0o700)`` and must never be handed to
+        ``restrict_to_owner``, which is ``chmod(0o600)`` there and would strip the execute
+        bit the directory needs to be traversable.
+        """
+        from kiro_crew import vector_memory as vm
+
+        home = tmp_path / "home"
+        calls: list[tuple[str, str]] = []
+
+        monkeypatch.setattr(vm, "config_dir", lambda: home)
+        monkeypatch.setattr(vm.platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(
+            vm.platform_compat, "restrict_to_owner", lambda p: calls.append(("restrict", str(p)))
+        )
+        monkeypatch.setattr(
+            Path, "chmod", lambda self, mode, **kw: calls.append((f"chmod:{mode:#o}", str(self)))
+        )
+
+        VectorMemoryStore(db_path=home / vm._DB_FILE)._lock_down_memory_tree()
+
+        assert ("chmod:0o700", str(home)) in calls, f"the directory did not get 0o700: {calls}"
+        assert ("restrict", str(home)) not in calls, (
+            "the directory went through restrict_to_owner, which is chmod(0o600) on POSIX "
+            "and strips the execute bit that makes it traversable"
+        )
+
+    def test_a_file_swapped_after_validation_is_re_checked_before_tightening(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An entry replaced between validation and tightening must be caught, not followed.
+
+        Validation necessarily runs BEFORE the directory is owner-only -- it is what decides
+        whether to open the store at all -- so at that moment a local user who can write the
+        directory can still swap an approved entry for a link. Relying on the earlier
+        reading would then apply the ACL to whatever the link points at, which is the exact
+        capability the whole guard exists to deny.
+
+        So each file is re-validated immediately before its ``restrict_to_owner``, once the
+        directory is locked. Simulated by swapping the entry during the directory's own
+        tightening call -- the one moment that is genuinely between the two checks. The
+        directory is tightened by ``chmod(0o700)`` on POSIX and ``restrict_to_owner`` on
+        Windows, so the swap is hooked onto whichever one this platform uses.
+        """
+        import os
+
+        from kiro_crew import vector_memory as vm
+
+        victim = tmp_path / "victim.txt"
+        victim.write_text("unrelated to memory", encoding="utf-8")
+
+        store = VectorMemoryStore()
+        db_path = store._db_path
+        store.init()
+        store.close()
+
+        home = db_path.parent
+        seen: list[str] = []
+
+        tightened_dir: list[str] = []
+
+        def _swap_the_db() -> None:
+            # The swap lands exactly in the window: after validation approved the DB (it is
+            # a plain file at that point), before the per-file leg reaches it.
+            tightened_dir.append(str(home))
+            real_unlink(db_path)
+            os.link(victim, db_path)
+
+        real_unlink = Path.unlink
+
+        def _restrict(p: object) -> None:
+            seen.append(str(p))
+            if Path(str(p)) == home:  # the directory leg, on Windows
+                _swap_the_db()
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", _restrict)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        if vm.platform_compat.IS_POSIX:
+            # On POSIX the directory is tightened with chmod(0o700), not restrict_to_owner,
+            # so that is the call the swap has to ride.
+            real_chmod = Path.chmod
+
+            def _chmod(self: Path, mode: int, **kw: object) -> None:
+                real_chmod(self, mode, **kw)  # type: ignore[arg-type]
+                if self == home:
+                    _swap_the_db()
+
+            monkeypatch.setattr(Path, "chmod", _chmod)
+
+        VectorMemoryStore(db_path=db_path)._lock_down_memory_tree()
+
+        assert tightened_dir, "the directory was never tightened, so there was no window"
+        assert str(db_path) not in seen, (
+            "the lockdown followed an entry swapped after validation; the pre-tighten "
+            "re-check did not happen"
+        )
+        assert victim.read_text(encoding="utf-8") == "unrelated to memory"
+
+    def test_the_lockdown_refuses_a_planted_link_at_a_memory_filename(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link planted at a memory filename must NOT have its target re-permissioned.
+
+        The lockdown rewrites access on whatever it is handed and both back ends follow
+        links (``os.chmod`` resolves a symlink unless told otherwise; ``icacls`` applies
+        to a link's target). On a data home another local user can write -- the legacy
+        home, a restored backup -- that turns this hardening into a lever for changing
+        permissions on a file outside the home. A hard link is the version that needs no
+        privilege on Windows, so it is the reachable shape there.
+        """
+        import os
+
+        from kiro_crew import vector_memory as vm
+
+        victim = tmp_path / "victim.txt"
+        victim.write_text("unrelated to memory", encoding="utf-8")
+
+        seen: list[str] = []
+        monkeypatch.setattr(
+            vm.platform_compat, "restrict_to_owner", lambda p: seen.append(str(p))
+        )
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home,
+        # and conftest pins KIROCREW_HOME per test, so this is isolated AND is the
+        # branch under test. A tmp_path/mem.db would take the custom-path branch,
+        # where the files are deliberately left alone.
+        db_path = VectorMemoryStore()._db_path
+        store = VectorMemoryStore(db_path=db_path)
+        store.init()  # creates the real DB, so the happy path is covered too
+        store.close()
+        seen.clear()
+
+        # Plant a hard link at one of the sidecar names the pass walks.
+        planted = store._faiss_path
+        planted.unlink(missing_ok=True)
+        os.link(victim, planted)
+        assert planted.stat().st_nlink > 1, "the hard link did not take"
+
+        store._lock_down_memory_tree()  # synchronous form; no worker to join
+
+        assert str(planted) not in seen, "the lockdown followed a planted hard link"
+        # The DB itself is a plain file, so it must still be restricted -- the guard
+        # must reject the link WITHOUT abandoning the rest of the pass.
+        assert str(db_path) in seen, f"the guard skipped the real DB too; saw {seen}"
+        # The victim keeps its own name and its contents: the lockdown drops OUR
+        # directory entry, never the attacker's other link to the same inode, so
+        # refusing to follow the link must not destroy what it pointed at either.
+        assert victim.exists(), "the lockdown deleted the link's target"
+        assert victim.read_text(encoding="utf-8") == "unrelated to memory"
+
+    def test_an_unsafe_sidecar_is_removed_rather_than_written_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A planted link at a SIDECAR name must be unlinked, not skipped.
+
+        Skipping looks neutral and is not. Every writer for these paths truncates in
+        place -- ``faiss.write_index``, the id map's ``write_text``, SQLite's WAL append
+        all write THROUGH an existing inode rather than creating a new one -- so a link
+        left behind at one of these names keeps its permissive DACL and then receives
+        every future embedding. Declining to re-permission the attacker's file and then
+        filling it with the memories anyway is the worst of both.
+
+        Unlinking is the fix that fits a SIDECAR specifically: it drops our directory
+        entry only, and the file is derived state rebuilt from SQLite. The DB gets the
+        fatal abort instead, which the neighbouring tests pin.
+        """
+        import os
+
+        from kiro_crew import vector_memory as vm
+
+        victim = tmp_path / "victim.txt"
+        victim.write_text("unrelated to memory", encoding="utf-8")
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", lambda p: None)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home, and
+        # conftest pins KIROCREW_HOME per test, so this is both isolated and the branch
+        # under test.
+        db_path = VectorMemoryStore()._db_path
         store = VectorMemoryStore(db_path=db_path)
         store.init()
-        mode = stat.S_IMODE(db_path.stat().st_mode)
-        assert mode == 0o600
+        store.close()
+
+        planted = store._faiss_path
+        planted.unlink(missing_ok=True)
+        os.link(victim, planted)
+        assert planted.stat().st_nlink > 1, "the hard link did not take"
+
+        store._lock_down_memory_tree()
+
+        # Our name for the attacker's inode is gone, so the next FAISS save creates a
+        # fresh file inside the owner-only directory instead of truncating theirs.
+        # os.path.lexists, not exists(): the latter follows a link, so it would answer
+        # False for a DANGLING one and pass on a path that is still planted.
+        assert not os.path.lexists(planted), "the unsafe sidecar was left to be written through"
+        # Their own name and its contents are untouched: we removed a directory entry,
+        # not the file.
+        assert victim.exists(), "removing our entry destroyed the link's target"
+        assert victim.read_text(encoding="utf-8") == "unrelated to memory"
+
+    def test_an_unsafe_wal_is_kept_and_aborts_instead_of_being_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ``-wal`` is NOT recoverable state, so it must never be unlinked.
+
+        Under ``journal_mode=WAL`` a COMMITTED transaction lives in the ``-wal`` until a
+        checkpoint moves it into the ``.db``, so after a crash that file is the only copy
+        of those memories. Removing it the way a ``-shm`` or a FAISS index is removed
+        would silently discard acknowledged writes -- and connecting anyway would have
+        SQLite replay and extend a log another local user can read.
+
+        So it takes the DB's response instead: leave the file alone and refuse to open
+        the store. That neither loses the rows nor leaks the new ones, and it leaves the
+        operator holding the only copy rather than us deleting it for them.
+        """
+        import os
+
+        from kiro_crew import vector_memory as vm
+        from kiro_crew.vector_memory import MemoryStoreUnsafeError
+
+        victim = tmp_path / "victim-wal"
+        victim.write_text("committed rows nobody else has", encoding="utf-8")
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", lambda p: None)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        db_path = VectorMemoryStore()._db_path
+        store = VectorMemoryStore(db_path=db_path)
+        store.init()
+        store.close()
+
+        planted = store._wal_path()
+        planted.unlink(missing_ok=True)
+        os.link(victim, planted)
+        assert planted.stat().st_nlink > 1, "the hard link did not take"
+
+        # The lockdown must NOT clear it, and the reopen must refuse rather than connect.
+        with pytest.raises(MemoryStoreUnsafeError, match="refusing to open"):
+            VectorMemoryStore(db_path=db_path).init()
+
+        assert os.path.lexists(planted), "the -wal was removed, discarding committed rows"
+        assert victim.read_text(encoding="utf-8") == "committed rows nobody else has"
+
+    def test_a_sidecar_that_cannot_be_removed_refuses_to_open_the_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A removal that FAILS must abort, not warn and connect anyway.
+
+        Unlinking an unsafe sidecar can fail for reasons that have nothing to do with the
+        attacker -- a read-only directory, or another process holding the FAISS index
+        mapped on Windows. An entry that is still present when the connect happens gets
+        written through in place, exactly like an unsafe DB would, so a warning alone
+        would let every future embedding land in a file another local user can read.
+
+        The store therefore refuses to open while any memory path is both unsafe and
+        present, whichever of the two reasons left it there.
+        """
+        import os
+
+        from kiro_crew import vector_memory as vm
+        from kiro_crew.vector_memory import MemoryStoreUnsafeError
+
+        victim = tmp_path / "victim.txt"
+        victim.write_text("unrelated to memory", encoding="utf-8")
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", lambda p: None)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        db_path = VectorMemoryStore()._db_path
+        store = VectorMemoryStore(db_path=db_path)
+        store.init()
+        store.close()
+
+        planted = store._faiss_path
+        planted.unlink(missing_ok=True)
+        os.link(victim, planted)
+
+        # Stand in for the undeletable cases, which cannot be provoked portably: a
+        # read-only directory behaves differently across platforms, and the mapped-index
+        # case is Windows-only. The observable under test is the response to a removal
+        # that did not clear the path, not the reason it did not.
+        real_unlink = Path.unlink
+
+        def _refuse(self: Path, *a: object, **k: object) -> None:
+            if self == planted:
+                raise OSError("simulated: cannot unlink")
+            real_unlink(self, *a, **k)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "unlink", _refuse)
+
+        with pytest.raises(MemoryStoreUnsafeError, match="this process can secure"):
+            VectorMemoryStore(db_path=db_path).init()
+
+        assert os.path.lexists(planted), "the test did not exercise a surviving entry"
+
+    def test_an_unsafe_path_is_refused_even_when_init_runs_on_the_event_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must be SYNCHRONOUS, including on the loop where work is offloaded.
+
+        Windows-on-loop is the one path that hands work to a thread ``init()`` does not
+        wait for, so it is the path where a decision could arrive too late to matter. If
+        the VALIDATION went to that worker along with the ``icacls``, ``init()`` would
+        connect first and learn afterwards that the path was an attacker's link -- the
+        store would already be open through it, which is the whole outcome these refusals
+        exist to prevent.
+
+        Only the tightening may be deferred. This pins the split from the refusal side;
+        ``test_the_lockdown_lands_from_the_event_loop_without_blocking_it`` pins it from
+        the scheduling side. Asserted on both platforms: POSIX validates inline too, so a
+        regression that deferred validation everywhere fails on the Linux matrix as well.
+        """
+        import asyncio
+        import os
+
+        from kiro_crew import vector_memory as vm
+        from kiro_crew.vector_memory import MemoryStoreUnsafeError
+
+        victim = tmp_path / "victim.txt"
+        victim.write_text("unrelated to memory", encoding="utf-8")
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", lambda p: None)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        db_path = VectorMemoryStore()._db_path
+        store = VectorMemoryStore(db_path=db_path)
+        store.init()
+        store.close()
+
+        # Specifically the case that flows through `_unsecured_paths`: a planted sidecar
+        # whose removal fails. The DB and `-wal` are re-`lstat`ed by init() directly, so
+        # they would abort even if validation HAD been deferred -- only this one actually
+        # depends on the validation having run before the connect.
+        planted = store._faiss_path
+        planted.unlink(missing_ok=True)
+        os.link(victim, planted)
+        real_unlink = Path.unlink
+
+        def _refuse(self: Path, *a: object, **k: object) -> None:
+            if self == planted:
+                raise OSError("simulated: cannot unlink")
+            real_unlink(self, *a, **k)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "unlink", _refuse)
+
+        async def _init_on_loop() -> None:
+            VectorMemoryStore(db_path=db_path).init()
+
+        # Raises out of the coroutine, i.e. before the connect -- not eventually, on a
+        # worker, after the store is already open.
+        with pytest.raises(MemoryStoreUnsafeError, match="this process can secure"):
+            asyncio.run(_init_on_loop())
+
+        assert os.path.lexists(planted), "the test did not exercise a surviving entry"
+
+    def test_a_linked_data_home_is_not_re_permissioned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link planted at the DATA HOME must not have its target tightened.
+
+        The home is compared with ``resolve()`` so a legitimately relocated home still
+        matches, but that also means a symlink or junction planted AT the home compares
+        equal -- and `chmod`/`icacls` follow a directory link exactly as they follow a
+        file one. So the same refusal the files get has to cover the directory, or the
+        lockdown becomes a lever for re-permissioning an arbitrary directory.
+
+        Uses ``symlink_or_junction``, which falls back to a junction on Windows and so
+        needs no privilege; a junction is also the shape ``is_link_or_junction`` exists
+        to catch, since ``Path.is_symlink()`` reports False for one.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew import vector_memory as vm
+
+        victim_dir = tmp_path / "victim-dir"
+        victim_dir.mkdir()
+        (victim_dir / "unrelated.txt").write_text("not ours", encoding="utf-8")
+
+        home = tmp_path / "linked-home"
+        platform_compat.symlink_or_junction(victim_dir, home)
+        assert platform_compat.is_link_or_junction(home), "the directory link did not take"
+
+        seen: list[str] = []
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", lambda p: seen.append(str(p)))
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        db_path = home / vm._DB_FILE
+        # Make the linked path look like Kiro Crew's own home, so this takes the branch
+        # that tightens the directory rather than the custom-db_path branch that skips it.
+        monkeypatch.setattr(vm, "config_dir", lambda: home)
+
+        VectorMemoryStore(db_path=db_path)._lock_down_memory_tree()
+
+        assert str(home) not in seen, "the lockdown re-permissioned a linked data home"
+        assert str(victim_dir) not in seen, "the lockdown followed the link to its target"
+
+        # And it is FATAL, not merely skipped. There is no safe way to proceed: tightening
+        # the link re-permissions its target, while not tightening it means the DB, the WAL
+        # and every embedding are created inside a directory whose access we could not
+        # establish. Unlike a planted sidecar it also cannot be cleared -- deleting an
+        # operator's home link is worse than declining to start -- so refusing is all
+        # that is left.
+        from kiro_crew.vector_memory import MemoryStoreUnsafeError
+
+        with pytest.raises(MemoryStoreUnsafeError, match="this process can secure"):
+            VectorMemoryStore(db_path=db_path).init()
+
+        assert platform_compat.is_link_or_junction(home), "the test consumed its own setup"
+        assert (victim_dir / "unrelated.txt").read_text(encoding="utf-8") == "not ours"
+
+    def test_a_missing_sidecar_is_not_reported_as_unsafe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Absent sidecars are the normal case on a clean open and must stay silent.
+
+        ``_is_lockdown_safe`` refuses a missing path, so the removal branch is reached
+        for every sidecar that does not exist yet -- a fresh store has no ``-wal`` and no
+        FAISS index. That must be a no-op, not a warning and not an error: otherwise
+        every first run logs a security warning about files nobody planted.
+        """
+        from kiro_crew import vector_memory as vm
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", lambda p: None)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+
+        db_path = VectorMemoryStore()._db_path
+        store = VectorMemoryStore(db_path=db_path)
+
+        warnings: list[str] = []
+        monkeypatch.setattr(vm.logger, "warning", lambda msg, *a, **k: warnings.append(str(msg)))
+
+        store.init()  # a clean create: no sidecars exist for most of the walk
+        store.close()
+
+        assert not any(
+            "unsafe entry" in w for w in warnings
+        ), f"a missing sidecar was reported as unsafe: {warnings}"
+
+    def test_init_refuses_to_open_a_db_it_could_not_secure(self, tmp_path: Path) -> None:
+        """A link planted at the DB filename must abort ``init()``, not be opened.
+
+        Skipping the lockdown on a planted entry and then connecting through it anyway
+        would be the worse half of both choices: we correctly decline to re-permission
+        the attacker's target, and then write every future memory through their name.
+        Fatal rather than a warning, because memory being unavailable is a supported
+        degraded state while silently leaking it is not.
+
+        A hard link is the shape that needs no privilege on Windows, so it is what an
+        attacker would actually use there.
+        """
+        import os
+
+        from kiro_crew.vector_memory import MemoryStoreUnsafeError
+
+        victim = tmp_path / "attacker-owned.db"
+        victim.write_text("attacker's file", encoding="utf-8")
+        db_path = tmp_path / "mem.db"
+        os.link(victim, db_path)  # no privilege needed, unlike a symlink
+        assert db_path.stat().st_nlink > 1, "the hard link did not take"
+
+        store = VectorMemoryStore(db_path=db_path)
+        with pytest.raises(MemoryStoreUnsafeError, match="refusing to open"):
+            store.init()
+
+    @requires_symlinks
+    def test_init_refuses_a_dangling_symlink_at_the_db_path(self, tmp_path: Path) -> None:
+        """A BROKEN link at the DB filename must abort too, not be created through.
+
+        ``Path.exists()`` follows the link, so a dangling one answers False -- which
+        would conflate "nothing here, safe to create" with "a link to somewhere else".
+        SQLite would then create the link's target wherever it points, outside the
+        protected home, and write the memories there. The presence check therefore uses
+        ``lstat``, which sees the entry itself.
+
+        Needs real symlink creation, so it is guarded: a junction cannot dangle the same
+        way, and this is precisely the file-symlink case.
+        """
+        import os
+
+        from kiro_crew.vector_memory import MemoryStoreUnsafeError
+
+        db_path = tmp_path / "mem.db"
+        os.symlink(tmp_path / "no-such-target.db", db_path)
+        assert not db_path.exists(), "the link must be dangling for this to be the case"
+
+        store = VectorMemoryStore(db_path=db_path)
+        with pytest.raises(MemoryStoreUnsafeError, match="refusing to open"):
+            store.init()
+
+    def test_a_custom_db_path_does_not_re_permission_its_parent_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A caller-supplied ``db_path`` keeps its directory's existing permissions.
+
+        ``eval/runner.py`` points a store at a scenario workspace, and
+        ``eval/bench/ingest.py`` at a bench directory -- both hold unrelated files the
+        caller owns. Tightening those to owner-only could cut authorized users off from
+        data that is not Kiro Crew's to re-permission, so the directory step applies only
+        to the default data home. The FILES are still locked down: that is the whole
+        contribution on a custom path.
+        """
+        from kiro_crew import vector_memory as vm
+
+        workspace = tmp_path / "eval-workspace"
+        workspace.mkdir()
+        (workspace / "unrelated.txt").write_text("someone else's file", encoding="utf-8")
+
+        db_path = workspace / "vector_memory.db"
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()  # an open handle blocks tmp_path teardown on Windows
+
+        # NOTHING under a caller-owned directory is touched -- neither the directory nor
+        # the files. The directory is not ours to narrow, and tightening the files
+        # without first securing the directory would be a check/use race (the pathname
+        # `_is_lockdown_safe` clears is re-opened by `restrict_to_owner`, and a user who
+        # can write the directory could swap it in between). `icacls` is path-only and
+        # `O_NOFOLLOW` does not exist on Windows, so there is no safe fd-based form to
+        # fall back on.
+        assert seen == [], (
+            "a custom db_path's directory belongs to its caller, so nothing under it "
+            f"should be re-permissioned; saw {seen}"
+        )
+        if vm.platform_compat.IS_POSIX:
+            import stat as _stat
+
+            mode = _stat.S_IMODE(workspace.stat().st_mode)
+            assert mode != 0o700, f"the caller's directory was narrowed to {oct(mode)}"
+
+    def test_a_failed_directory_lockdown_abandons_the_per_file_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No owner-only directory means no per-file pass -- the directory is a precondition.
+
+        The per-file step validates a PATHNAME and then re-opens it, which is only safe
+        while nobody else can swap the entry in between. An owner-only directory is what
+        provides that; without it another local user could substitute a link after
+        ``_is_lockdown_safe`` cleared the entry and have their target re-permissioned.
+
+        Skipping leaves the files exactly as they were -- the status quo this change
+        improves on -- whereas proceeding would hand a local attacker a new capability.
+        So the failure mode must be "no worse than before", never "worse than before".
+        """
+        from kiro_crew import vector_memory as vm
+
+        # DEFAULT db_path on purpose: the directory lockdown applies only to Kiro Crew's
+        # own data home, and conftest pins KIROCREW_HOME to a tmp dir per test, so this
+        # is both isolated and the branch under test. A `tmp_path/mem.db` would take the
+        # custom-path branch, where the directory is deliberately left alone.
+        store = VectorMemoryStore()
+        db_path = store._db_path
+        store.init()  # real DB on disk first, so the files genuinely exist
+        store.close()
+
+        # Fail the DIRECTORY step only, and let the per-file calls record themselves.
+        # The directory is tightened via `chmod(0o700)` on POSIX and the fail-loud
+        # `restrict_to_owner` on Windows, so each platform needs its own seam broken.
+        restricted: list[str] = []
+        parent = db_path.parent
+
+        def _restrict(p: object) -> None:
+            if Path(str(p)) == parent:  # the directory leg, on Windows
+                raise OSError("simulated: a shared directory refuses its ACL change")
+            restricted.append(str(p))
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", _restrict)
+        if vm.platform_compat.IS_POSIX:
+            real_chmod = Path.chmod
+
+            def _chmod(self: Path, mode: int, **kw: object) -> None:
+                if self == parent:
+                    raise OSError("simulated: cannot chmod a shared directory")
+                real_chmod(self, mode, **kw)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(Path, "chmod", _chmod)
+
+        store._lock_down_memory_tree()
+
+        assert restricted == [], (
+            "the per-file pass ran without an owner-only directory, leaving the "
+            f"check/use race open for {restricted}"
+        )
+
+    def test_the_lockdown_lands_from_the_event_loop_without_blocking_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``init()`` on a running loop must still lock down, with every ``icacls`` off-thread.
+
+        Three properties, and the fix is only correct with all three. On Windows each
+        ``restrict_to_owner`` spawns ``icacls`` (10s timeout) and five call sites reach
+        ``init()`` from inside an ``async def`` (``cli_server._run_task``,
+        ``dashboard.server.start_dashboard``, ``eval.runner._run_scenario_in``), so
+        spawning any of them inline would park the loop and every coroutine on the gateway
+        with it -- hence NOTHING that spawns may run on the loop thread, the directory
+        included. But merely SKIPPING would be worse than the bug this PR fixes: a
+        deployment whose only inits are those async sites would never be protected at all,
+        so the tightening must still happen.
+
+        And it must happen DIRECTORY FIRST even on that worker, which is what this test
+        pins beyond "something happened off-thread": until the directory is owner-only,
+        another local user can swap an entry between the validation and the
+        ``restrict_to_owner`` that acts on it.
+
+        What is *not* deferred is the validation -- it spawns nothing (~0.09ms of
+        lstat/unlink), so every decision ``init()`` makes about whether to open the store
+        at all is synchronous on every platform. The sibling refusal tests cover that;
+        this one covers the scheduling.
+
+        Asserted on both platforms: POSIX has no subprocess to block on (a bare
+        ``os.chmod``), so everything applies inline there, and a regression that dropped
+        the call entirely would fail on the Linux matrix too.
+
+        Every worker it spawns is JOINED before returning. A worker still
+        touching the monkeypatched helper or ``tmp_path`` after the test body ends would
+        race the fixture teardown -- the leak class this suite exists to keep out.
+        """
+        import asyncio
+        import threading
+
+        from kiro_crew import platform_compat
+        from kiro_crew import vector_memory as vm
+
+        loop_thread = threading.get_ident()
+        seen: list[tuple[str, int]] = []
+        lock = threading.Lock()
+        # Captured so every worker can be joined; the store spawns one per lockdown
+        # pass, and init() runs two.
+        spawned: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def _tracking_thread(*args: object, **kwargs: object) -> threading.Thread:
+            t = real_thread(*args, **kwargs)  # type: ignore[arg-type]
+            if kwargs.get("name") == "memory-lockdown":
+                spawned.append(t)
+            return t
+
+        def _record(p: object) -> None:
+            with lock:
+                seen.append((str(p), threading.get_ident()))
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", _record)
+        monkeypatch.setattr(vm.platform_compat, "make_owner_only_dir", lambda p: None)
+        monkeypatch.setattr(vm.threading, "Thread", _tracking_thread)
+
+        async def _init_on_loop() -> None:
+            # Default db_path: the lockdown only runs for Kiro Crew's own data home,
+            # which conftest pins per test, so this is the branch that offloads.
+            store = VectorMemoryStore()
+            try:
+                store.init()
+            finally:
+                store.close()  # an open handle blocks tmp_path teardown on Windows
+
+        asyncio.run(_init_on_loop())
+
+        for t in spawned:
+            t.join(timeout=30)
+            assert not t.is_alive(), "a lockdown worker outlived the test"
+
+        with lock:
+            recorded = list(seen)
+        assert recorded, "the lockdown must happen, on either platform"
+        store_paths = VectorMemoryStore()
+        db_name = store_paths._db_path.name
+        assert any(
+            Path(p).name == db_name for p, _ in recorded
+        ), f"the DB itself was never locked down: {recorded}"
+        if not platform_compat.IS_POSIX:
+            home = str(store_paths._db_path.parent)
+            on_loop = [p for p, tid in recorded if tid == loop_thread]
+            # NOTHING that spawns icacls may touch the loop thread -- that is the whole
+            # point of the offload, and it includes the directory.
+            assert on_loop == [], f"icacls would have spawned on the loop for {on_loop}"
+            off_loop = [p for p, tid in recorded if tid != loop_thread]
+            assert off_loop, f"the tightening must still happen, off the loop; saw {recorded}"
+            # The directory is tightened FIRST on that worker: it is the precondition that
+            # closes the swap window for everything inside it.
+            assert off_loop[0] == home, (
+                "the directory must be tightened before any file inside it, or the "
+                f"per-file step is a check/use race; order was {off_loop}"
+            )
+
+    def test_creation_routes_through_restrict_to_owner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lockdown must go through ``restrict_to_owner``, on every platform.
+
+        ``chmod_safe`` is a no-op on Windows, so a regression back to it would leave
+        the user's memories and embeddings under the DACL the file inherits — and no
+        mode assertion can catch that, because NTFS has no mode bits to read. This
+        asserts the call, which is observable everywhere.
+        """
+        from kiro_crew import vector_memory as vm
+
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home,
+        # and conftest pins KIROCREW_HOME per test, so this is isolated AND is the
+        # branch under test. A tmp_path/mem.db would take the custom-path branch,
+        # where the files are deliberately left alone.
+        db_path = VectorMemoryStore()._db_path
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()  # an open handle blocks tmp_path teardown on Windows
+        # The main DB, plus whatever else legitimately routes through this helper.
+        # Asserted as a set of ALLOWED paths rather than an exact list, because the
+        # membership differs by platform for two reasons worth knowing:
+        #
+        #  * the WAL sidecars may or may not exist yet on a fresh create, and
+        #  * ``make_owner_only_dir`` reaches ``restrict_to_owner`` for the PARENT
+        #    DIRECTORY on Windows only -- on POSIX it uses ``chmod(0o700)``, because a
+        #    directory needs the execute bit. So the directory appears here on the
+        #    Windows shard and not on the POSIX matrix.
+        allowed = {
+            str(db_path),
+            f"{db_path}-wal",
+            f"{db_path}-shm",
+            str(db_path.parent / "memory.faiss"),
+            str(db_path.parent / "memory.ids.json"),
+            str(db_path.parent),
+        }
+        assert str(db_path) in seen, seen
+        assert set(seen) <= allowed, set(seen) - allowed
+
+    def test_the_directory_is_owner_only_so_wal_sidecars_inherit_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Locking the .db file alone does not protect the memories.
+
+        ``journal_mode=WAL`` makes SQLite create ``memory.db-wal`` and
+        ``memory.db-shm``, and a COMMITTED row lives in the ``-wal`` until a
+        checkpoint moves it. SQLite creates and destroys those files throughout the
+        DB's life, at moments no caller can hook, so the directory they inherit
+        access from is the only place it can be settled once. Without this, a
+        readable parent directory leaves committed memories readable on Windows even
+        though the .db file itself is locked down.
+        """
+        import stat as _stat
+
+        from kiro_crew import vector_memory as vm
+
+        # Asserted on the OUTCOME rather than on a call, because the directory step is
+        # deliberately not routed through `make_owner_only_dir` (that helper swallows
+        # OSError, and this step is a precondition whose failure must be observable).
+        # POSIX carries the answer in the mode bits; on Windows NTFS has none to read,
+        # so the observable is that the directory went through `restrict_to_owner`.
+        dirs: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (dirs.append(str(p)), real(p))[1],
+        )
+        # DEFAULT db_path: the directory lockdown is scoped to Kiro Crew's own data home
+        # (a custom path's directory belongs to its caller and is left alone), and
+        # conftest pins KIROCREW_HOME to a tmp dir, so this stays isolated.
+        store = VectorMemoryStore()
+        db_path = store._db_path
+
+        try:
+            store.init()
+        finally:
+            store.close()  # an open handle blocks tmp_path teardown on Windows
+
+        if vm.platform_compat.IS_POSIX:
+            mode = _stat.S_IMODE(db_path.parent.stat().st_mode)
+            assert mode == 0o700, f"the memory directory is {oct(mode)}, not owner-only"
+        else:
+            assert str(db_path.parent) in dirs, (
+                f"the memory directory was never restricted; saw {dirs}"
+            )
+
+    def test_an_existing_wal_sidecar_is_repaired_on_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The directory fixes new sidecars; this fixes the ones already there.
+
+        A ``-wal`` created before the directory was tightened keeps the access it was
+        born with, and it can hold committed rows indefinitely if no checkpoint has
+        run -- so an existing install is not repaired by the directory alone.
+        """
+        from kiro_crew import vector_memory as vm
+
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home,
+        # and conftest pins KIROCREW_HOME per test, so this is isolated AND is the
+        # branch under test. A tmp_path/mem.db would take the custom-path branch,
+        # where the files are deliberately left alone.
+        db_path = VectorMemoryStore()._db_path
+        first = VectorMemoryStore(db_path=db_path)
+        first.init()
+        # CLOSED before the sidecar is touched: Windows refuses a write to a file
+        # another handle holds open, and SQLite keeps -wal open for the life of the
+        # connection. Closing is also what the scenario describes -- an install whose
+        # sidecar was left behind by an earlier process.
+        first.close()
+        wal = Path(f"{db_path}-wal")
+        wal.write_bytes(b"pretend committed rows")
+
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+        second = VectorMemoryStore(db_path=db_path)
+        try:
+            second.init()
+        finally:
+            second.close()
+
+        assert str(wal) in seen, seen
+
+    def test_the_faiss_index_is_repaired_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The embedding index carries the same secrets as the DB.
+
+        And the owner-only directory does not cover it on Windows: Bypass Traverse
+        Checking is granted to Everyone by default, so a permissive DACL on a file
+        that already exists stays reachable inside a tightened directory. An install
+        whose FAISS index predates the lockdown is therefore only fixed by naming the
+        file.
+        """
+        from kiro_crew import vector_memory as vm
+
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home,
+        # and conftest pins KIROCREW_HOME per test, so this is isolated AND is the
+        # branch under test. A tmp_path/mem.db would take the custom-path branch,
+        # where the files are deliberately left alone.
+        db_path = VectorMemoryStore()._db_path
+        faiss = db_path.parent / "memory.faiss"
+        faiss.write_bytes(b"pretend embeddings")
+
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()
+
+        assert str(faiss) in seen, seen
+
+    def test_an_existing_db_is_restricted_before_the_migrations_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering, not just coverage: the migrations must not run on a writable file.
+
+        An existing DB may still carry a writable inherited DACL. If the lockdown only
+        happened at the end of ``init()``, every schema migration would run against a
+        file another local user could concurrently write.
+        """
+        from kiro_crew import vector_memory as vm
+
+        # DEFAULT db_path: the lockdown applies only to Kiro Crew's own data home,
+        # and conftest pins KIROCREW_HOME per test, so this is isolated AND is the
+        # branch under test. A tmp_path/mem.db would take the custom-path branch,
+        # where the files are deliberately left alone.
+        db_path = VectorMemoryStore()._db_path
+        first = VectorMemoryStore(db_path=db_path)
+        first.init()
+        first.close()
+
+        events: list[str] = []
+        real_restrict = vm.platform_compat.restrict_to_owner
+        real_connect = vm.sqlite3.connect
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (events.append(f"restrict:{Path(p).name}"), real_restrict(p))[1],
+        )
+        monkeypatch.setattr(
+            vm.sqlite3,
+            "connect",
+            lambda *a, **k: (events.append("connect"), real_connect(*a, **k))[1],
+        )
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()
+
+        assert "connect" in events, events
+        restricted_db_before = events.index(f"restrict:{db_path.name}") < events.index("connect")
+        assert restricted_db_before, events
+
+    def test_relaxed_mode_is_retightened_on_reopen(self, tmp_path: Path) -> None:
+        """A DB whose mode was widened after creation is locked down again.
+
+        Covers the POSIX arm of the every-init re-tighten: a home migration or a
+        restored backup can land ``memory.db`` group-readable, and only re-applying
+        the lockdown on open closes it.
+        """
+        import stat
+
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("POSIX mode bits")
+        # DEFAULT db_path, so the lockdown actually applies: a custom path's directory
+        # belongs to its caller and is deliberately left alone.
+        db_path = VectorMemoryStore()._db_path
+        VectorMemoryStore().init()
+        db_path.chmod(0o644)
+        VectorMemoryStore().init()  # the re-tighten a reopen must perform
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
 
     def test_idempotent_init(self, tmp_path: Path) -> None:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")

@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import re
+import stat
 import struct
 import threading
 from collections import OrderedDict
@@ -53,6 +54,7 @@ except ImportError:
 import time
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import _on_event_loop
 from kiro_crew.config.loader import config_dir
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.project_scope import (
@@ -617,6 +619,81 @@ def _mmr_rerank(
     return [candidates[i] for i in selected]
 
 
+def _path_present(path: Path) -> bool:
+    """Whether *path* names anything at all, INCLUDING a dangling symlink.
+
+    ``Path.exists()`` follows the link, so it answers False for a broken one -- which
+    would conflate "nothing here, safe to create" with "a link to somewhere else that
+    the next writer will follow". ``lstat`` inspects the entry itself and raises only
+    when the name is genuinely absent.
+    """
+    try:
+        path.lstat()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+class MemoryStoreUnsafeError(RuntimeError):
+    """The memory DB path is not a plain file this process can safely own.
+
+    Raised by :meth:`VectorMemoryStore.init` instead of opening a path the lockdown
+    refused to secure -- a symlink, a directory or a multi-link entry planted at the DB
+    filename. Fatal rather than a warning: the alternative is writing every future
+    memory through a name another local user controls, and memory being unavailable is
+    a supported degraded state while silently leaking it is not.
+    """
+
+
+def _is_lockdown_safe(path: Path) -> bool:
+    """Whether *path* is a plain file this process may safely re-permission.
+
+    The lockdown REWRITES access on whatever it is handed, and both back ends follow
+    links: ``os.chmod`` resolves a symlink unless told otherwise, and ``icacls``
+    likewise applies to a link's target. So on a data home another local user can
+    write -- the legacy home, a restored backup, a misconfigured share -- an entry
+    planted at one of the memory filenames turns this hardening into a lever for
+    changing permissions on a file outside the home entirely.
+
+    Three rejects, each closing a distinct shape:
+
+    * **missing** -- the normal case on a clean open (SQLite and FAISS create theirs
+      on demand), and skipping it also avoids a false "may be readable" warning,
+      since ``icacls`` reports a missing file as ``rc=2`` -> plain ``OSError``.
+    * **not a regular file** -- a symlink (``lstat`` sees the link, ``stat`` the
+      target), a directory, or a device. A symlink is the classic redirect.
+    * **more than one hard link** -- a hardlink needs no privilege on Windows, so it
+      is the reachable version of the same attack there; the name we own and the
+      attacker's name are the same inode, and re-permissioning ours re-permissions
+      theirs.
+
+    Refusing is the safe direction: an un-tightened file is the status quo this PR
+    improves on, while following a link would be a new capability handed to a local
+    attacker. Logged at WARNING because a link at these names is never routine.
+    """
+    try:
+        st = path.lstat()  # lstat, not stat: a symlink must be seen AS a symlink
+    except (OSError, ValueError):
+        return False  # missing, or a name the OS refuses to stat
+    if not stat.S_ISREG(st.st_mode):
+        logger.warning(
+            "Refusing to restrict %s: not a regular file (mode=%s). A link or special "
+            "file at a memory filename would redirect the lockdown onto its target.",
+            path,
+            stat.filemode(st.st_mode),
+        )
+        return False
+    if getattr(st, "st_nlink", 1) > 1:
+        logger.warning(
+            "Refusing to restrict %s: it has %d hard links, so re-permissioning it "
+            "would also re-permission a name outside this directory.",
+            path,
+            st.st_nlink,
+        )
+        return False
+    return True
+
+
 # ── Store ──
 
 
@@ -689,10 +766,521 @@ class VectorMemoryStore:
         # episodic row. Backs the debounce in _touch_last_accessed; swept when it
         # grows past _LAST_ACCESSED_CACHE_MAX.
         self._last_accessed_touch: dict[str, float] = {}
+        # Memory paths the lockdown could neither secure nor clear, recorded by
+        # _validate_memory_tree and read by init(), which refuses to open the store
+        # while any remain. Not a cache: rebuilt from scratch on every pass, so it always
+        # describes the tree as it is now.
+        self._unsecured_paths: list[Path] = []
+
+    def _wal_path(self) -> Path:
+        """The write-ahead log, which holds committed rows the ``.db`` does not yet.
+
+        Its own accessor because it is the one sidecar that is NOT recreatable: under
+        ``journal_mode=WAL`` a COMMITTED transaction lives here until a checkpoint moves
+        it into the DB, so after a crash this file is the only copy of those memories.
+        That makes it unrecoverable state in the same sense the DB is, and it is treated
+        the same way -- see :meth:`_is_unrecoverable`.
+        """
+        return Path(f"{self._db_path}-wal")
+
+    def _secret_bearing_files(self) -> tuple[Path, ...]:
+        """Every file beside the DB that carries the user's memories.
+
+        All of them, not just the DB, because on Windows the owner-only DIRECTORY is
+        not sufficient for a file that already exists: **Bypass Traverse Checking** is
+        granted to Everyone by default, so a permissive DACL on the file itself stays
+        reachable even inside a tightened directory. The directory governs what SQLite
+        and FAISS create from now on; this list is what repairs an existing install.
+
+        - ``-wal``: a COMMITTED row lives here until a checkpoint moves it, so it is
+          unrecoverable state rather than a cache. Same suffix set ``memory.py`` uses
+          to drop a corrupt index.
+        - ``-shm``: the WAL's shared-memory index. Pure derived state -- SQLite rebuilds
+          it from the ``-wal`` on the next connect, so unlike the ``-wal`` itself it
+          holds no memory that is not stored elsewhere.
+        - ``memory.faiss`` / ``memory.ids.json``: the embedding index and its id map,
+          written with no lockdown of their own. (``with_suffix`` REPLACES ``.faiss``,
+          so the id map is ``memory.ids.json``; it is spelled here the way
+          :meth:`_save_faiss_index` spells it.)
+
+        Not exhaustive for the data home as a whole -- ``memory.py``'s FTS index
+        (``memory_index.db``) and its sidecars carry the same secrets and are not
+        this class's to open. Tracked separately rather than reached across a module
+        boundary from here.
+        """
+        return (
+            self._wal_path(),
+            Path(f"{self._db_path}-shm"),
+            self._faiss_path,
+            self._faiss_path.with_suffix(".ids.json"),
+        )
+
+    def _is_unrecoverable(self, path: Path) -> bool:
+        """Whether losing *path* would lose memories that exist nowhere else.
+
+        Splits the lockdown's two responses to a path it cannot secure. The DB and its
+        ``-wal`` are the store: a committed row lives in the ``-wal`` until a checkpoint
+        moves it into the ``.db``, so between those two files sits every memory the user
+        has, and unlinking either can discard acknowledged writes. Those abort
+        :meth:`init` instead.
+
+        Everything else -- ``-shm``, the FAISS index, its id map -- is rebuilt from the
+        pair above (SQLite recreates the ``-shm`` on connect; ``load_faiss_index`` falls
+        back to ``build_faiss_index``), so removing a planted entry at one of those names
+        costs nothing and is the only response that stops it being written through.
+        """
+        return path == self._db_path or path == self._wal_path()
+
+    def _lock_down_memory_tree_off_loop(self) -> None:
+        """Run the lockdown, keeping the SUBPROCESS off the event loop.
+
+        The split is **validation vs ACL tightening**, and it is drawn on cost because the
+        two differ by nearly three orders of magnitude.
+
+        VALIDATION -- deciding whether each memory path is a plain single-link file,
+        clearing a recoverable one that is not, and recording the rest -- is pure
+        ``lstat``/``unlink``/``mkdir`` with no subprocess at all: **~0.09ms** for the whole
+        five-path sweep, measured. It always runs INLINE, on the calling thread, event loop
+        or not, because it is what :meth:`init` reads to decide whether to open the store.
+        Deferring it would mean connecting first and learning afterwards that the path was
+        an attacker's link -- the store would already be open through it. At this cost
+        there is nothing to gain by deferring it and a guarantee to lose.
+
+        ACL TIGHTENING is the expensive half and the one that must not run on a loop: each
+        ``restrict_to_owner`` spawns ``icacls`` (**~70ms** each, 10s timeout) and there are
+        up to five of them. Five call sites reach :meth:`init` from inside an ``async def``
+        (``cli_server._run_task``, ``dashboard.server.start_dashboard``,
+        ``eval.runner._run_scenario_in``), so running these inline would park the loop and
+        every other coroutine on the gateway with it. On Windows-on-loop they are
+        offloaded to a worker. Offloading rather than SKIPPING is the point: a deployment
+        whose only inits are those async sites still gets tightened, which a skip would
+        have left permanently readable. Same shape ``mcp_gateway.manager`` uses for the
+        identical helper.
+
+        What that buys is that **every refusal is synchronous on every platform**. A
+        planted link, a linked data home, a sidecar that could not be cleared -- all are
+        decided before the connect on the calling thread. Only the DACL of an
+        already-existing file can land late, and never the decision to open the store.
+
+        A plain thread rather than ``asyncio.to_thread``, because this is a sync method
+        with nothing to await on -- and deliberately **non-daemon**: a daemon is killed
+        outright at interpreter exit, so a short-lived Windows task (``kirocrew run``,
+        one eval scenario) could exit before the tightening landed and leave those files on
+        their inherited DACL. Non-daemon means the interpreter waits for it instead,
+        bounded by ``restrict_to_owner``'s own 10s-per-file ``icacls`` timeout.
+
+        POSIX runs everything inline: ``restrict_to_owner`` is a bare ``os.chmod`` there,
+        with no subprocess to block on, so a thread hop would buy nothing.
+        """
+        if platform_compat.IS_POSIX or not _on_event_loop():
+            self._lock_down_memory_tree()
+            return
+        # Validate inline (cheap, and init() reads the verdict immediately); tighten off
+        # the loop (the icacls spawns). `_validate_memory_tree` returns the paths whose
+        # DACL still needs applying, so the worker does no deciding of its own.
+        to_tighten = self._validate_memory_tree()
+        if not to_tighten:
+            return
+        threading.Thread(
+            target=self._tighten_paths,
+            args=(to_tighten,),
+            name="memory-lockdown",
+            daemon=False,
+        ).start()
+
+    def _tighten_paths(self, paths: tuple[Path, ...]) -> None:
+        """Apply the owner-only DACL/mode to already-VALIDATED paths, in order.
+
+        Split out so it is the only thing that can run on a worker thread: it makes no
+        decisions, it just applies ``restrict_to_owner`` to what validation approved.
+
+        ``paths`` arrives DIRECTORY FIRST, and the first entry is a PRECONDITION rather
+        than merely the first item: if the directory cannot be tightened, the file pass is
+        abandoned rather than run anyway. Proceeding without an owner-only directory would
+        hand a local attacker a lever to have their own target re-permissioned; skipping
+        leaves the files as they were, which is the status quo this change improves on. So
+        the failure mode is "no worse than before", never worse.
+
+        Each FILE is RE-VALIDATED here, immediately before its ``restrict_to_owner``, and
+        that second check is what closes the swap window rather than merely narrowing it.
+        Validation ran before the directory was owner-only -- it has to, since it is what
+        decides whether to open the store at all -- so at that moment another local user
+        could still replace an approved entry with a link and have its target
+        re-permissioned. Re-checking after the directory is locked means the entry being
+        acted on was confirmed while nobody else could write the directory. It costs one
+        ``lstat`` against a ~70ms ``icacls``, so there is no reason to rely on the earlier
+        reading.
+
+        A per-FILE failure only warns and the walk continues, because memory being
+        unavailable is a supported degraded state and ``restrict_to_owner`` documents this
+        warn-and-continue handler as its caller contract.
+
+        The DIRECTORY does NOT go through ``restrict_to_owner`` on POSIX, because that is
+        ``chmod(0o600)`` -- correct for a file, and for a directory it strips the execute
+        bit that makes it TRAVERSABLE, so the very next ``sqlite3.connect`` fails with
+        "unable to open database file". A directory needs ``0o700``. On Windows there is no
+        such distinction (the DACL is the carrier for both), so the directory takes the
+        same ``restrict_to_owner`` as everything else there.
+        """
+        for index, path in enumerate(paths):
+            # Files only: `_is_lockdown_safe` demands a regular file, which the directory
+            # is not. The directory's own link/junction check ran in validation, and it is
+            # tightened here before anything else, so nobody can swap it in between.
+            if index > 0 and not _is_lockdown_safe(path):
+                logger.warning(
+                    "Not restricting %s: it is no longer a plain single-link file. It was "
+                    "one when the tree was validated, so it was replaced in between -- "
+                    "refusing rather than re-permissioning whatever it now points at.",
+                    path,
+                )
+                continue
+            try:
+                if index == 0 and platform_compat.IS_POSIX:
+                    path.chmod(0o700)
+                else:
+                    platform_compat.restrict_to_owner(path)
+            except OSError:
+                if index == 0:
+                    logger.warning(
+                        "Cannot restrict %s to owner, so the per-file lockdown is "
+                        "SKIPPED: without an owner-only directory another local user "
+                        "could swap a checked entry for a link and have its target "
+                        "re-permissioned. The memory files keep the access they "
+                        "already had.",
+                        path,
+                        exc_info=True,
+                    )
+                    return
+                logger.warning(
+                    "Cannot restrict %s to owner; it may be readable by other users",
+                    path,
+                    exc_info=True,
+                )
+
+    def _lock_down_memory_tree(self) -> None:
+        """Validate the memory tree, then make it owner-only. The fully inline form.
+
+        Used on POSIX and off the event loop. On Windows-on-loop
+        :meth:`_lock_down_memory_tree_off_loop` runs the same two steps with the
+        tightening on a worker; the validation is identical and always inline.
+        """
+        self._tighten_paths(self._validate_memory_tree())
+
+    def _validate_memory_dir(self) -> bool:
+        """Decide whether the memory DIRECTORY may be tightened, and create it.
+
+        Returns False when neither it nor the files inside it may be touched, in which case
+        the per-file pass must be ABANDONED rather than run anyway. Without an owner-only
+        directory there is nothing stopping another local user swapping a checked entry for
+        a link between :func:`_is_lockdown_safe` and ``restrict_to_owner``, and losing that
+        race would rewrite permissions on a file outside the home. Skipping leaves the
+        files exactly as they were, which is the status quo this change improves on;
+        proceeding would hand a local attacker a new capability. So the failure mode is
+        "no worse than before", never "worse than before".
+
+        A custom ``db_path`` also returns False, having applied the pre-existing POSIX
+        ``chmod`` -- that directory belongs to its caller, and the same race argument
+        applies to its contents.
+
+        No ``icacls`` here: this is the cheap half (``mkdir`` plus two stat-class checks)
+        so it can run on the event loop, and the caller applies the DACL.
+        """
+        parent = self._db_path.parent
+        # Only OUR OWN directory. A caller that passes a custom `db_path` -- the eval
+        # runner points one at a scenario workspace -- owns that directory and keeps
+        # unrelated files in it, so tightening it to owner-only could cut authorized
+        # users off from data that is not ours to re-permission. The default home is
+        # Kiro Crew's own, so tightening it is in scope; anywhere else, the per-file pass
+        # is the whole contribution. Compared resolved, so a symlinked or
+        # differently-spelled home still matches.
+        try:
+            owns_dir = parent.resolve() == (config_dir() / _DB_FILE).parent.resolve()
+        except OSError:
+            owns_dir = False
+        if not owns_dir:
+            # Nothing is locked down here, and that is deliberate on both halves. The
+            # directory belongs to its caller, so narrowing it could cut authorized users
+            # off from unrelated files they keep in it. And WITHOUT an owner-only
+            # directory the per-file pass would be a check/use race: `_is_lockdown_safe`
+            # inspects a pathname that `restrict_to_owner` then re-opens, so another
+            # local user who can write the directory could swap the entry in between.
+            # There is no fd-based alternative to fall back on -- `icacls` is path-only
+            # and `O_NOFOLLOW` does not exist on Windows -- so the honest choice is to
+            # leave the files exactly as the caller had them.
+            #
+            # Scope of the omission: the callers that pass a custom `db_path` are the
+            # eval runner and the bench ingester, whose stores hold scenario fixtures
+            # rather than the operator's memories. The real data home -- what this change
+            # exists to protect -- always takes the branch below.
+            logger.debug(
+                "Not tightening %s: a custom db_path's directory belongs to its caller, "
+                "and tightening the files without first securing it would be a "
+                "check/use race. Keeping the POSIX chmod only.",
+                parent,
+            )
+            # Keep the PRE-EXISTING POSIX guard, which this change must not remove:
+            # before it, `init()` applied `chmod_safe(db_path, 0o600)` unconditionally.
+            # `os.chmod` follows a symlink, so it carries the same swap hazard as the
+            # Windows leg -- but it is what the caller already had on this path, and
+            # dropping it would be a regression rather than the conservative choice.
+            # Windows gets nothing here: `restrict_to_owner` shells out to `icacls`,
+            # which is the leg that could re-permission an attacker-chosen target, and
+            # `chmod_safe` is a documented no-op there anyway.
+            if platform_compat.IS_POSIX:
+                platform_compat.chmod_safe(self._db_path, 0o600)
+            return False
+        # The same refusal the FILES get, for the DIRECTORY. `resolve()` above compares
+        # the home through any link, which is what lets a legitimately relocated home
+        # match -- but it also means a symlink or junction PLANTED at the home would
+        # compare equal and send the chmod/icacls below onto whatever it points at. Both
+        # back ends follow a directory link exactly as they follow a file one, so an
+        # attacker who can create the home path gets an arbitrary directory
+        # re-permissioned. `is_link_or_junction`, not `is_symlink()`, because a Windows
+        # junction is invisible to the latter and needs no privilege to create.
+        #
+        # Recorded as UNSECURED, not merely skipped, so `init()` refuses to open the store.
+        # There is no version of this that is safe to proceed through: tightening the link
+        # would re-permission its target, and NOT tightening it means every memory file is
+        # created inside a directory whose access we could not establish -- the DB, the WAL
+        # and the embeddings all land somewhere an attacker chose. Unlike a planted
+        # sidecar, we also cannot clear it: removing an operator's home directory link is
+        # far more destructive than declining to start.
+        if platform_compat.is_link_or_junction(parent):
+            logger.warning(
+                "Refusing to use %s as the memory home: it is a link or junction, not a "
+                "real directory, so its access cannot be established -- tightening it "
+                "would re-permission its target instead. The memory store will not be "
+                "opened. Replace that path with a real directory, or point KIROCREW_HOME "
+                "at one.",
+                parent,
+            )
+            self._unsecured_paths.append(parent)
+            return False
+        try:
+            # Only the mkdir here -- SQLite needs the directory to exist before the connect,
+            # and creating it spawns nothing. Tightening it is the CALLER's job
+            # (`_tighten_paths`), which is what may run on a worker.
+            #
+            # NOT `make_owner_only_dir`: that helper catches OSError and only logs, so it
+            # can report success on a directory it failed to tighten -- and this is a
+            # precondition whose failure must be observable.
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(
+                "Cannot create %s, so the lockdown is SKIPPED: without an owner-only "
+                "directory another local user could swap a checked entry for a link and "
+                "have its target re-permissioned. The memory files keep the access they "
+                "already had.",
+                parent,
+                exc_info=True,
+            )
+            return False
+        return True
+
+    def _validate_memory_tree(self) -> tuple[Path, ...]:
+        """Decide the whole tree's fate WITHOUT spawning anything, and return what to tighten.
+
+        This is the cheap half of the lockdown -- ``mkdir``, ``lstat``, ``unlink``, no
+        subprocess, ~0.09ms for the five-path sweep -- so it runs inline on every platform
+        and on the event loop. Everything :meth:`init` needs in order to decide whether to
+        open the store at all is settled here, synchronously: which paths are plain files,
+        which planted entries were cleared, and which survived. The returned tuple is
+        DIRECTORY FIRST, then files, so a caller that applies them in order tightens the
+        directory before anything inside it.
+
+        That order is load-bearing rather than tidy. Once the directory is owner-only
+        another local user can no longer create, rename or swap an entry inside it, so the
+        entry :func:`_is_lockdown_safe` cleared is the same one ``restrict_to_owner``
+        later acts on. The files are included even though the directory covers what is
+        created from here, because an owner-only directory is not sufficient for a file
+        that already EXISTS on Windows: *Bypass Traverse Checking* is granted to Everyone
+        by default, so a permissive DACL on the file itself stays reachable from inside a
+        tightened directory. The per-file pass is what repairs an existing install.
+
+        This runs BEFORE the directory is owner-only -- it has to, since it is what decides
+        whether to open the store at all -- so its per-file verdicts are provisional: a
+        local user who can write the directory could swap an approved entry afterwards.
+        That is why :meth:`_tighten_paths` re-validates each file immediately before acting
+        on it, once the directory is locked. The approval here selects candidates; the
+        re-check is what the ``restrict_to_owner`` actually relies on.
+
+        The refusals are NOT provisional in the same way, because they only ever get
+        stricter: an entry that was a link when validated is refused now, and if it were
+        replaced by a plain file afterwards the worst outcome is that the store declines to
+        open. Failing closed on a stale reading is the safe direction.
+
+        A refused entry that is nonetheless PRESENT is not left as found, because skipping
+        it is not the neutral act it looks like: the writers truncate their file in place
+        (``faiss.write_index``, ``Path.write_text``, and SQLite's own WAL append all write
+        THROUGH an existing inode), so a planted link left behind at one of these names
+        keeps its permissive DACL and then receives every future embedding and every
+        committed row. "Skip" would mean the lockdown declines to re-permission the
+        attacker's file and then fills it with the memories anyway.
+
+        Which response it gets turns on whether the file is recoverable, per
+        :meth:`_is_unrecoverable`. Derived state (``-shm``, the FAISS index, its id map) is
+        UNLINKED: that drops our directory entry only, never the attacker's other name for
+        the inode, and its owner rebuilds it from the DB. The DB and its ``-wal`` hold
+        committed memories that exist nowhere else, so removing them could discard
+        acknowledged writes -- they are left in place for :meth:`init` to abort on instead.
+
+        An unsafe entry that SURVIVES its removal is recorded in :attr:`_unsecured_paths`
+        so :meth:`init` refuses to open the store at all. Same reasoning as the DB abort: a
+        planted link still there when the connect happens gets written through in place,
+        and a warning alone would let the embeddings land in it. Rebuilt from scratch on
+        every pass, so a path a later ``init()`` does clear stops being fatal.
+
+        Called twice by :meth:`init` -- before the connect so the migrations do not run
+        against a writable file, and after it for whatever SQLite just created.
+        """
+        # Rebuilt per pass rather than accumulated: this runs twice per init() and on
+        # every subsequent one, and the question is always "is the tree unsafe NOW".
+        self._unsecured_paths = []
+        if not self._validate_memory_dir():
+            return ()
+        # The directory leads, so the caller tightens it before anything inside it.
+        approved: list[Path] = [self._db_path.parent]
+        for path in (self._db_path, *self._secret_bearing_files()):
+            if not _is_lockdown_safe(path):
+                # The DB and the -wal are the memories themselves, so they are left for
+                # init()'s abort, which refuses to open the store at all rather than
+                # discarding committed rows. Only recoverable state is cleared here.
+                if not self._is_unrecoverable(path) and not self._remove_unsafe_sidecar(path):
+                    self._unsecured_paths.append(path)
+                continue
+            approved.append(path)
+        return tuple(approved)
+
+    def _remove_unsafe_sidecar(self, path: Path) -> bool:
+        """Drop a link or special file planted at a RECOVERABLE sidecar name.
+
+        Returns whether the name is clear afterwards -- True when it was already absent
+        or the unlink succeeded, False when an unsafe entry is still there. The caller
+        turns a False into a refusal to open the store, so this must not report success
+        on a path it did not clear.
+
+        Only ever called for a path :meth:`_is_unrecoverable` rejected, so a caller must
+        not hand it the DB or the ``-wal``: those hold committed memories and removing
+        them would discard acknowledged writes.
+
+        ``missing_ok``-style absence is the normal case and silent: a clean open has no
+        ``-shm`` and no FAISS index yet, and :func:`_is_lockdown_safe` refuses a missing
+        path for exactly that reason. Only a present-but-unsafe entry is news.
+
+        ``unlink`` and not a rewrite: it removes the NAME, which is the only part that
+        is ours. The inode and the attacker's own link to it are untouched, so this
+        destroys nothing that belongs to them -- and nothing that belongs to the user
+        either, since a recoverable sidecar is rebuilt from the DB.
+        """
+        if not _path_present(path):
+            return True
+        try:
+            path.unlink()
+        except OSError:
+            # Reachable on a read-only directory, and on Windows while another process
+            # holds the index mapped. Reported as NOT cleared, which makes init() refuse
+            # the store: the writers would otherwise write THROUGH this entry in place,
+            # and a warning alone would let the embeddings land in it.
+            logger.warning(
+                "Cannot remove the unsafe entry at %s. It is a link or special file, so "
+                "the writers would write THROUGH it and the memories would be readable "
+                "by another local user; the memory store will not be opened. Remove "
+                "that path.",
+                path,
+                exc_info=True,
+            )
+            return False
+        logger.warning(
+            "Removed the unsafe entry at %s: it was a link or special file, which the "
+            "lockdown cannot secure and the writers would have written through. It is "
+            "derived state and will be rebuilt from the database.",
+            path,
+        )
+        return True
 
     def init(self) -> None:
         """Create DB, apply migrations, set permissions."""
+        # Owner-only directory before the connect: WAL keeps `memory.db-wal` /
+        # `-shm` beside the DB and a COMMITTED row lives in the -wal until a
+        # checkpoint moves it, so the sidecars carry the same secrets and SQLite
+        # creates them at moments no caller can hook. 0o700 on POSIX (a directory
+        # needs the execute bit); on Windows the DACL governs the directory ONLY,
+        # so the per-file pass below is the mechanism there, not a belt-and-braces
+        # addition. Rationale and the Windows inheritance caveat:
+        # docs/guides/windows-install.md.
+        #
+        # SCOPE: with the default `db_path` this directory IS the data home, so a
+        # memory init tightens the whole home. Right direction, wider than memory;
+        # tracked in #4543.
+        # The directory ALWAYS exists before the connect two lines down, and the
+        # DIRECTORY is tightened before any file is touched. That order is what makes
+        # the per-file pass safe rather than racy: once the directory is owner-only,
+        # another local user can no longer create, rename or swap an entry inside it,
+        # so the entry `_is_lockdown_safe` inspects is the same one `restrict_to_owner`
+        # then acts on. Validating a pathname and re-opening it would otherwise be a
+        # check/use race.
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Before the connect, so the migrations do not run against a file another local
+        # user can still write. Repeated after it for what SQLite just created.
+        #
+        # The VALIDATION inside this call is inline and synchronous on every platform,
+        # including on the event loop, because it spawns nothing (~0.09ms of lstat/unlink).
+        # So every refusal below is decided before the connect, always. What can be
+        # deferred to a worker on Windows-on-loop is only the `icacls` that applies a DACL
+        # to an already-existing file: the migrations can win that race, leaving those
+        # files briefly on their inherited DACL. Accepted rather than joined, because
+        # blocking the loop on five subprocess spawns is the very thing the offload exists
+        # to avoid, and that residual is the PRE-EXISTING exposure this change otherwise
+        # closes -- never worse than the status quo. `context.get_memory_for` reaches
+        # init() from a worker thread, so even that path is fully ordered in practice.
+        self._lock_down_memory_tree_off_loop()
+        # Refuse to OPEN a store the lockdown refused to secure. Skipping a planted link
+        # and then connecting through it anyway would be the worse half of both choices:
+        # the lockdown declines to re-permission an attacker's target (right), but SQLite
+        # would then write every future memory through their name (wrong).
+        #
+        # The DB and its `-wal` BOTH abort, because both are unrecoverable: a committed
+        # transaction lives in the -wal until a checkpoint moves it into the .db, so
+        # between them sits every memory the user has. Unlinking an unsafe -wal the way a
+        # recoverable sidecar is unlinked would silently discard acknowledged writes --
+        # and connecting anyway would have SQLite replay and extend an attacker-readable
+        # log. Refusing to open is the only response that neither loses the rows nor
+        # leaks the new ones. A recoverable sidecar (`-shm`, the FAISS pair) is UNLINKED
+        # by the lockdown above, so normally it is already handled -- but a removal can
+        # FAIL (read-only directory; on Windows, another process holding the index
+        # mapped), and an entry that is still there when the connect happens gets written
+        # through in place exactly like an unsafe DB would. So `_unsecured_paths` is fatal
+        # too: the store is not opened while any memory path is both unsafe and present.
+        # Neither response is "skip": a planted link left at any of these names gets
+        # written through in place.
+        #
+        # Checked after the lockdown so a legitimately multi-linked-then-tightened file is
+        # not rejected on a stale reading. `lstat`, not `exists()`: the latter FOLLOWS a
+        # symlink, so a DANGLING one reports False and would slip through -- and SQLite
+        # would then create the link's target wherever it points, outside the protected
+        # home, and write the memories there. `lstat` sees the link itself and raises only
+        # when the path is genuinely absent, which is the case that legitimately proceeds.
+        for unrecoverable in (self._db_path, self._wal_path()):
+            if _path_present(unrecoverable) and not _is_lockdown_safe(unrecoverable):
+                raise MemoryStoreUnsafeError(
+                    f"refusing to open {self._db_path}: {unrecoverable} is not a plain "
+                    "single-link file, so another local user may be able to read the "
+                    "memories written through it. It holds committed memories, so Kiro "
+                    "Crew will not remove it for you. Move or delete that path and let "
+                    "Kiro Crew re-create the store."
+                )
+        if self._unsecured_paths:
+            # Wording stays generic across both causes: a sidecar whose removal failed, and
+            # a data home that is a link (which cannot be cleared at all -- deleting an
+            # operator's home link is worse than declining to start). Both mean the same
+            # thing here: a path we could not establish the access of is still in the way.
+            raise MemoryStoreUnsafeError(
+                f"refusing to open {self._db_path}: "
+                + ", ".join(str(p) for p in self._unsecured_paths)
+                + " is not a plain file or directory this process can secure, so the "
+                "memories written through it may be readable by another local user. "
+                "Replace that path and retry."
+            )
         self._db = sqlite3.connect(
             str(self._db_path), check_same_thread=False, isolation_level=None
         )
@@ -730,9 +1318,13 @@ class VectorMemoryStore:
                 self._db.commit()
                 logger.info("Applied memory schema migration v%s", ver)
 
-        # Set file permissions (owner-only). chmod_safe already logs+swallows
-        # OSError internally and is a no-op on Windows, so no wrapper needed.
-        platform_compat.chmod_safe(self._db_path, 0o600)
+        # Again after the connect, for what SQLite just created. `restrict_to_owner`
+        # and not `chmod_safe`, which is a documented no-op on Windows and so left the
+        # memories under the DACL the file inherited. Applied on EVERY init rather than
+        # only on create: an existing DB is exactly the one that may have lost its
+        # protection since (restored backup, home migration, an install predating this
+        # lockdown), and gating on creation would leave all of those readable.
+        self._lock_down_memory_tree_off_loop()
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)
         try:

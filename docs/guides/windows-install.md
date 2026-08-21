@@ -243,6 +243,172 @@ security-warning handlers in each caller fire — a naive `if IS_POSIX: os.chmod
 guard would silently no-op on Windows, leaving secrets group/world-readable
 under NTFS.
 
+`memory.db` (semantic/episodic memories and their embeddings) is protected by an
+owner-only **directory**, not just an owner-only file. It runs under
+`journal_mode=WAL`, so SQLite keeps `memory.db-wal` and `memory.db-shm` beside
+it, and a *committed* row lives in the `-wal` until a checkpoint moves it — so
+locking the `.db` alone would leave committed memories readable under the DACL
+those sidecars inherited. SQLite creates and destroys them throughout the DB's
+life, at moments no caller can hook, which makes the directory the only place
+their access can be settled once. `make_owner_only_dir` handles the split that
+`restrict_to_owner` cannot: `0o700` on POSIX, because a directory needs the
+execute bit to be traversable.
+
+**On Windows the directory protects only itself**, which is why every
+memory-bearing file is named individually. Two separate reasons, and neither is
+obvious:
+
+- *Bypass Traverse Checking* is granted to Everyone by default, so a permissive
+  DACL on an existing file stays reachable even inside a tightened directory.
+- `restrict_to_owner` applies `/inheritance:r` plus **non-inheritable** grants (no
+  `(OI)(CI)`), so a file created later does not inherit owner-only access either —
+  it falls back to the creating process's token default DACL, usually owner +
+  SYSTEM + Administrators. Not world-readable, but a default rather than a
+  guarantee.
+
+So on Windows the per-file pass is the mechanism, not a belt-and-braces addition,
+and a sidecar created mid-session is covered from the next `init()`. On POSIX the
+directory *is* sufficient on its own: `0o700` stops another user traversing into
+it at all, whatever the files inside carry. That pass covers the `.db`, its `-wal`/`-shm` sidecars, and
+`memory.faiss` / `memory.ids.json` (the embedding index and its id map),
+and it runs on **every** `VectorMemoryStore.init()` rather than only when init
+created them — **twice**, once before `sqlite3.connect` and once after. The first
+call is what stops the schema migrations running against a file another local
+user can still write; the second covers whatever SQLite has just created.
+
+> **Scope note.** With the default `db_path`, "the directory" *is* the data home
+> (`config_dir()`), so a memory init tightens the whole home to owner-only.
+> That direction is right — the home also holds the security policy, sessions and
+> lessons, all private on the same boundary — but it is wider than memory, and it
+> is the only place in the tree that does it today. `memory.py`'s FTS index
+> (`memory_index.db`) and its sidecars carry the same secrets and are **not** yet
+> covered by the per-file pass. Tracked in
+> [#4543](https://github.com/kirodotdev/KiroCrew/issues/4543).
+
+**A caller-supplied `db_path` gets no lockdown at all**, and both halves of that are
+deliberate. Its directory belongs to the caller — the eval runner points one at a
+scenario workspace — so narrowing it could cut authorized users off from unrelated
+files they keep there. And tightening the *files* without first securing the
+directory would be a check/use race: the pathname the guard clears is re-opened by
+`restrict_to_owner`, so a user who can write the directory could swap the entry in
+between. There is no safe fd-based form to fall back on — `icacls` is path-only and
+`O_NOFOLLOW` does not exist on Windows — so the files are left exactly as the caller
+had them. The stores that take this branch (the eval runner, the bench ingester) hold
+scenario fixtures rather than the operator's memories; the real data home always
+takes the protected branch.
+
+A DB that already exists is exactly the one that may have lost its protection
+since: a restored backup, a home migration, a manual edit, or simply an install
+that predates this lockdown. Gating on creation would leave every one of those
+permanently readable, which is most of them.
+
+The pass skips a file that does not exist, checked with `exists()` rather than
+caught: `icacls` reports a missing file as `rc=2`, which surfaces as a plain
+`OSError` and not `FileNotFoundError`, so catching the subclass alone made every
+clean init warn "may be readable by other users" for each sidecar SQLite had yet
+to create. Measured on a fresh store, that check takes the Windows cost from 11
+`icacls` spawns per init down to 4.
+
+**The lockdown splits into validation and ACL tightening, and only the tightening is ever
+deferred.** The two differ in cost by nearly three orders of magnitude, which is where the
+line is drawn.
+
+*Validation* — deciding whether each memory path is a plain single-link file, clearing a
+recoverable one that is not, creating the directory, and recording what could not be
+secured — is pure `lstat`/`unlink`/`mkdir` with no subprocess at all: **~0.09ms** for the
+whole five-path sweep, measured. It **always runs inline**, on the calling thread, event
+loop or not, because it is what `init()` reads to decide whether to open the store. Defer
+it and `init()` would connect first and learn afterwards that the path was an attacker's
+link — the store would already be open through it. At that cost there is nothing to gain
+by deferring and a guarantee to lose.
+
+*ACL tightening* is the expensive half: each `restrict_to_owner` spawns `icacls` at
+**~70ms** (10s timeout) and there are up to five. Five call sites reach `init()` from
+inside an `async def` (`cli_server._run_task`, `dashboard.server.start_dashboard`,
+`eval.runner._run_scenario_in`), so spawning any of them on the loop would park it and
+every other coroutine on the gateway. On Windows-on-loop they all move to a worker —
+**including the directory's**, since nothing that spawns may touch the loop thread.
+Offloading rather than *skipping* is the point: a skip would leave a deployment whose only
+inits are those async sites permanently unprotected.
+
+The worker applies them **directory first**, which is a precondition rather than an
+ordering preference: until the directory is owner-only another local user can swap an entry
+between the validation and the `restrict_to_owner` that acts on it, so a directory that
+cannot be tightened abandons the file pass instead of proceeding without it.
+
+Each file is then **re-validated immediately before its own `restrict_to_owner`**, and that
+second check is what closes the swap window rather than merely narrowing it. Validation runs
+before the directory is owner-only — it has to, since it is what decides whether to open the
+store at all — so at that moment a local user who can write the directory could still
+replace an approved entry with a link and have its target re-permissioned. Re-checking after
+the directory is locked means the entry being acted on was confirmed while nobody else could
+write the directory. It costs one `lstat` against a ~70ms `icacls`.
+
+The directory takes **`0o700`** on POSIX rather than going through `restrict_to_owner`,
+which is `chmod(0o600)` there — right for a file, and for a directory it strips the execute
+bit that makes it *traversable*, so the next `sqlite3.connect` fails with "unable to open
+database file". Windows has no such distinction (the DACL carries both), so there the
+directory takes the same `restrict_to_owner` as everything else.
+
+The upshot is that **every refusal is synchronous on every platform**. A planted link, a
+linked data home, a sidecar that could not be cleared — all are decided before the connect,
+on the calling thread. What can land late is only the DACL of a file that already existed,
+never the decision to open the store.
+
+POSIX runs everything inline: `restrict_to_owner` is a bare `os.chmod` there, with no
+subprocess to block on.
+
+**A link planted at one of the memory filenames is never written through.** The
+lockdown refuses to re-permission a non-plain entry — a symlink, a directory, a device,
+or a hardlink alias (`st_nlink > 1`, which needs no privilege on Windows). Leaving it
+at that would be the worse half of both choices: we decline to touch the attacker's
+target, then fill it with the memories anyway. Every writer for these paths truncates
+in place — `faiss.write_index`, the id map's `write_text`, and SQLite's WAL append all
+write *through* an existing inode rather than creating a new one — so "skip" is not the
+neutral act it looks like.
+
+Which response the entry gets turns on whether losing the file would lose memories that
+exist nowhere else:
+
+| Path | Response | Why |
+|---|---|---|
+| `memory.db`, `memory.db-wal` | **`init()` raises `MemoryStoreUnsafeError`**, file left alone | Unrecoverable. A *committed* transaction lives in the `-wal` until a checkpoint moves it into the `.db`, so between the two sits every memory the user has. Unlinking either could discard acknowledged writes; connecting anyway would replay and extend a log another local user can read. Refusing to open is the only response that neither loses the rows nor leaks the new ones — and it leaves the operator holding the only copy instead of us deleting it for them. |
+| `memory.db-shm`, `memory.faiss`, `memory.ids.json` | **unlinked**, `init()` proceeds (and aborts if the unlink fails) | Recoverable. SQLite rebuilds the `-shm` from the `-wal` on connect, and `load_faiss_index` falls back to `build_faiss_index`. |
+
+`unlink` is safe for the recoverable set because it drops *our* directory entry only:
+the inode and the attacker's own name for it are untouched, so nothing of theirs is
+destroyed and nothing of the user's either. If the unlink itself **fails** — a read-only
+directory, or another process holding the index mapped on Windows — the entry is still
+there, so it falls back to the same refusal the unrecoverable paths get: `init()` raises
+rather than connecting. A warning alone would leave every future embedding landing in a
+file another local user can read, which is the outcome the removal exists to prevent, so
+"could not remove it" has to be as fatal as "must not remove it".
+
+An **absent** path is not a finding: `_is_lockdown_safe` refuses a missing file, so a
+clean open reaches the removal branch for every sidecar that does not exist yet, and it
+returns silently rather than warning on every first run.
+
+**The same refusal covers the data home itself.** The home is matched with `resolve()` so
+a legitimately relocated one still qualifies — but that means a symlink or junction
+*planted at* the home compares equal too, and `chmod`/`icacls` follow a directory link
+exactly as they follow a file one, which would re-permission whatever it points at. So a
+home that is a link is refused via `platform_compat.is_link_or_junction` (not
+`Path.is_symlink()`, which reports False for a junction, and a junction needs no
+privilege to create), the tree is left as found, and the per-file pass is abandoned with
+it. Relocate the home with `KIROCREW_HOME`, not with a link.
+
+The worker is **non-daemon**, which matters for the short-lived commands. A daemon
+thread is killed outright at interpreter exit, so a `kirocrew run` or a single eval
+scenario could finish before the lockdown landed and leave the files on their
+inherited DACL — the outcome this whole section exists to prevent. Non-daemon means
+the interpreter waits instead; the wait is bounded by `restrict_to_owner`'s own
+10-second-per-file `icacls` timeout, and it arises only when `init()` was called from
+an event loop in the first place.
+
+It is fail-soft (warn, keep going), which is the contract `restrict_to_owner`
+documents for its callers: memory being unavailable is a supported degraded
+state, so a read-only filesystem must not take init down.
+
 ## File locking on Windows
 
 `platform_compat.file_lock` / `acquire_lock` provide a genuine *blocking*
