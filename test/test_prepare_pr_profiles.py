@@ -11,12 +11,13 @@ package, so we load them by path with importlib. Everything here is stdlib and
 runs on the full CI matrix (3.10 + 3.12); the TOML path is version-guarded
 because tomllib is 3.11+.
 """
-import importlib.util
 import json
 import os
 import re
 import sys
 from pathlib import Path
+
+from skill_script_helpers import load_skill_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr"
@@ -25,12 +26,7 @@ PROFILES_DIR = SKILL_DIR / "profiles"
 
 
 def _load(module_name, filename):
-    path = SCRIPTS_DIR / filename
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_skill_script(module_name, SCRIPTS_DIR / filename)
 
 
 resolve_profile = _load("_pp_resolve_profile", "resolve_profile.py")

@@ -21,7 +21,6 @@ test_prepare_pr_profiles.py. Everything here is stdlib and hermetic: the
 synthetic repos are real local git repos (as in test_push_guard.py) and every
 ``gh`` call is forced to fail so no test touches the network.
 """
-import importlib.util
 import inspect
 import json
 import os
@@ -32,6 +31,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from skill_script_helpers import load_skill_script
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr"
@@ -45,15 +45,15 @@ OPUS_WORKFLOW = WORKFLOWS_DIR / "claude-review.yml"
 
 
 def _load(module_name, filename):
-    path = SCRIPTS_DIR / filename
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_skill_script(module_name, SCRIPTS_DIR / filename)
 
 
 local_review = _load("_pp_local_review", "local_review.py")
+
+#: The child processes below run local_review.py, which loads resolve_profile
+#: from the checked-out skill tree. A parent-side sys.dont_write_bytecode cannot
+#: reach another process, so the child needs the environment variable.
+NO_PYC = {"PYTHONDONTWRITEBYTECODE": "1"}
 
 KIROCREW_PROFILE = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
 PROFILE_MODELS = {r["name"]: r for r in KIROCREW_PROFILE["reviewers"]}
@@ -523,7 +523,7 @@ def test_cli_exits_40_on_a_contract_that_escapes_the_repo(parity_repo, tmp_path)
             ],
             capture_output=True,
             text=True,
-            env={**os.environ, "PATH": os.environ.get("PATH", "")},
+            env={**os.environ, "PATH": os.environ.get("PATH", ""), **NO_PYC},
         )
         assert proc.returncode == local_review.EXIT_PARITY, proc.stderr
         assert "PARITY FAILURE" in proc.stderr
@@ -1223,7 +1223,7 @@ def test_cli_exits_40_when_the_prompt_heredoc_is_gone(parity_repo, tmp_path):
         ],
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": os.environ.get("PATH", "")},
+        env={**os.environ, "PATH": os.environ.get("PATH", ""), **NO_PYC},
     )
     assert proc.returncode == local_review.EXIT_PARITY, proc.stderr
     assert "PARITY FAILURE" in proc.stderr
@@ -1319,6 +1319,7 @@ def test_cli_json_summary_is_machine_readable(parity_repo, tmp_path):
         ],
         capture_output=True,
         text=True,
+        env={**os.environ, **NO_PYC},
     )
     assert proc.returncode == local_review.EXIT_OK, proc.stderr
     payload = json.loads(proc.stdout)

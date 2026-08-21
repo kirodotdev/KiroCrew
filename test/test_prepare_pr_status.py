@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 from pathlib import Path
 from types import ModuleType
+
+from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_status.py"
 
 
 def _load_script() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("prepare_pr_status", SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_skill_script("prepare_pr_status", SCRIPT)
 
 
 def _pr_payload(checks: list[dict[str, str]], **overrides: object) -> str:

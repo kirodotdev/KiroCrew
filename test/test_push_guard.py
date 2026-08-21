@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from skill_script_helpers import no_bytecode
 
 # Resolve the push_guard.py script path relative to the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1353,10 +1354,11 @@ class TestReplayFailClosed:
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
 
-        import push_guard
+        with no_bytecode():
+            import push_guard
 
-        # Reload to get a fresh module state (avoids cross-test contamination).
-        importlib.reload(push_guard)
+            # Reload for fresh module state (avoids cross-test contamination).
+            importlib.reload(push_guard)
 
         # Monkeypatch the git command injection point.
         if fake_git_cmd is not None:
@@ -1544,7 +1546,8 @@ class TestClassifyFetchError:
         )
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
-        from push_guard import _classify_fetch_error
+        with no_bytecode():
+            from push_guard import _classify_fetch_error
 
         return _classify_fetch_error
 
@@ -1650,9 +1653,10 @@ class TestFetchDiagnosticIntegration:
         )
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
-        import push_guard
+        with no_bytecode():
+            import push_guard
 
-        importlib.reload(push_guard)
+            importlib.reload(push_guard)
         return push_guard
 
     def test_fetch_failure_with_bare_token_no_leak(self, tmp_path, monkeypatch):

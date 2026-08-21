@@ -99,13 +99,26 @@ def run(args: list[str], cwd: Optional[str] = None) -> tuple[int, str, str]:
 
 
 def _load_sibling(module_name: str, filename: str) -> Any:
-    """Import a sibling script by path (the scripts dir is not a package)."""
+    """Import a sibling script by path (the scripts dir is not a package).
+
+    Bytecode writing is disabled for the exec. This script is run from a
+    checked-out worktree, so an ordinary import drops a ``__pycache__`` beside
+    the sibling and leaves it there -- an untracked directory appearing inside
+    the user's source tree every time the reviewer runs. prove.py takes the same
+    position from the other side, passing ``PYTHONDONTWRITEBYTECODE`` to the
+    pytest it spawns.
+    """
     path = os.path.join(HERE, filename)
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:  # pragma: no cover - defensive
         raise ParityError("cannot import sibling script {}".format(path))
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 

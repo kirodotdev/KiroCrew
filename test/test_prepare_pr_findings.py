@@ -13,9 +13,10 @@ before the fix and prove nothing.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from types import ModuleType
+
+from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (
@@ -32,12 +33,7 @@ _SIG = "gVhM4aKLA8dyFH-oZlQx6SpYSNPkXA07kpDhWd6UhZI"  # 43 chars, base64url
 
 
 def _load_script() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("prepare_pr_findings", SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_skill_script("prepare_pr_findings", SCRIPT)
 
 
 class TestCredentialRedaction:
@@ -131,12 +127,7 @@ _OLD = "a" * 40
 
 
 def _load_status() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("prepare_pr_status_parity", STATUS_SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_skill_script("prepare_pr_status_parity", STATUS_SCRIPT)
 
 
 class TestMarkerRegexParity:
