@@ -660,10 +660,22 @@ stays `false` for a catalog `git` app until the catalog signature is checked:
 wiring signature verification into `official_catalog` is what flips that, not a
 field the catalog can assert about itself.
 
+User-configured external registries (`config.registries`) are a separate,
+always-present source: both `list_registry` and `list_catalog_apps` merge them
+through one shared site, `_append_external_registry_apps`, so the online and
+offline paths enrich, probe (`detectInstalled`), and trust-stamp external rows
+identically and cannot drift. A catalog/seed/builtin row wins a `name`
+collision; the catalog path reserves every catalog name — snapshotted before the
+`git`-installability filter, so a name the catalog declared but filtered out
+still counts — plus every seed name, so an external row can only ADD a name no
+catalog or seed row claims and can never shadow a name install resolves by.
+External rows keep their `provenance: "external"` / `verified: false` stamp.
+
 A name is a filesystem path on install, so `list_catalog_rows` drops any entry
 whose name is not kebab-case (`KEBAB_RE.fullmatch`), and the catalog fetch runs
 off the event loop (`asyncio.to_thread`) so a cache-expired request never blocks
 the gateway loop.
 
 Writers: `apps/official_catalog.py` (`list_catalog_rows`),
-`apps/registry.py` (`list_catalog_apps`), `apps/routes.py` (`handle_registry`).
+`apps/registry.py` (`list_catalog_apps`, `_append_external_registry_apps`,
+`_detect_installed_probe`), `apps/routes.py` (`handle_registry`).
