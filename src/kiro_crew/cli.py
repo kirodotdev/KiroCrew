@@ -1328,6 +1328,17 @@ Examples:
     sec_sub.add_parser("deny-list", help="Show active deny patterns")
     sel_parser = sec_sub.add_parser("events", help="Show recent security event log entries")
     sel_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
+    # A count alone cannot express "what happened around 14:05" — on a busy log
+    # 6000 entries reached only 15 minutes back, so answering a question about a
+    # two-hour-old event meant pulling ~90k entries and filtering by hand
+    # (issue #4843). Reading the file directly is correctly refused by the
+    # credential-path gate, so the time selector has to live here.
+    _time_help = (
+        "a relative age (30m, 2h, 7d) or an ISO 8601 instant "
+        "(2026-08-21, 2026-08-21T04:00:00Z)"
+    )
+    sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
+    sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)

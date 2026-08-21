@@ -3309,6 +3309,25 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True
 
+    def test_rotated_security_event_segments(self) -> None:
+        # A rotated segment holds exactly the same audit records the live log
+        # does (sel.py closes the log at a size cap and renames it into this
+        # dir), so rotation must not become the way around the fence.
+        assert is_sensitive_path("~/.kiro/crew/security_events.d") is True
+        assert (
+            is_sensitive_path(
+                "~/.kiro/crew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
+            )
+            is True
+        )
+        assert is_sensitive_path("~/.kirocrew/security_events.d") is True
+        assert (
+            is_sensitive_path(
+                "~/.kirocrew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
+            )
+            is True
+        )
+
     def test_sel_files_absolute_path(self) -> None:
         home = str(Path.home())
         assert is_sensitive_path(f"{home}/.kiro/crew/sel_hmac.key") is True
@@ -4272,6 +4291,18 @@ class TestIsSensitiveBashCommand:
         result = is_sensitive_bash_command("cat ~/.kiro/crew/security_events.jsonl")
         assert result is not None and "blocked" in result.lower()
         legacy = is_sensitive_bash_command("cat ~/.kirocrew/security_events.jsonl")
+        assert legacy is not None and "blocked" in legacy.lower()
+
+    def test_cat_rotated_security_event_segment_blocked(self) -> None:
+        # Same evidence, one rename later: a rotated segment must be as
+        # unreadable through the shell as the live log it came from.
+        rotated = is_sensitive_bash_command(
+            "cat ~/.kiro/crew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
+        )
+        assert rotated is not None and "blocked" in rotated.lower()
+        legacy = is_sensitive_bash_command(
+            "cat ~/.kirocrew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
+        )
         assert legacy is not None and "blocked" in legacy.lower()
 
     def test_write_app_admission_policy_blocked(self) -> None:

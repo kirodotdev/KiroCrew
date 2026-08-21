@@ -19,6 +19,7 @@ import argparse
 import io
 import json
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -896,6 +897,48 @@ class TestSecurityCli:
             cc._security(_ns(sec_action="events", limit=5))
         assert "No security events recorded." in capsys.readouterr().out
 
+    def test_events_passes_the_time_window_through(self) -> None:
+        """``-n`` alone cannot express "the last two hours" (issue #4843)."""
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = []
+            cc._security(
+                _ns(sec_action="events", limit=5, since="2026-08-21T00:00:00Z", until="2h")
+            )
+        kwargs = sel.return_value.recent.call_args.kwargs
+        assert kwargs["since"] == datetime(2026, 8, 21, tzinfo=timezone.utc)
+        assert kwargs["until"] is not None and kwargs["until"].tzinfo is not None
+
+    def test_events_rejects_an_unreadable_time(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A typo must not read as "no events in that window"."""
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            with pytest.raises(SystemExit) as exc:
+                cc._security(_ns(sec_action="events", limit=5, since="yesterdayish"))
+        assert exc.value.code == 2
+        assert "cannot read" in capsys.readouterr().out
+        sel.return_value.recent.assert_not_called()
+
+    def test_events_rejects_an_inverted_window(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            with pytest.raises(SystemExit) as exc:
+                cc._security(
+                    _ns(
+                        sec_action="events",
+                        limit=5,
+                        since="2026-08-21T10:00:00Z",
+                        until="2026-08-21T09:00:00Z",
+                    )
+                )
+        assert exc.value.code == 2
+        assert "--since must be earlier than --until" in capsys.readouterr().out
+        sel.return_value.recent.assert_not_called()
+
+    def test_events_names_the_window_when_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("kiro_crew.cli_commands.sel") as sel:
+            sel.return_value.recent.return_value = []
+            cc._security(_ns(sec_action="events", limit=5, since="2026-08-21T00:00:00Z"))
+        out = capsys.readouterr().out
+        assert "No security events recorded in [2026-08-21T00:00:00+00:00, now)." in out
+
     def test_events_renders_error_and_downstream(self, capsys: pytest.CaptureFixture[str]) -> None:
         events = [
             {
@@ -946,6 +989,60 @@ def _fake_ceiling() -> Any:
         boot=SimpleNamespace(require_sandbox=True, allow_terminal=False, fail_closed=True),
         controls={"capabilities.telemetry": "off"},
     )
+
+
+class TestParseTimeSelector:
+    """``--since``/``--until`` input handling for ``security events``."""
+
+    def test_empty_means_no_bound(self) -> None:
+        assert cc.parse_time_selector("") is None
+        assert cc.parse_time_selector("   ") is None
+
+    @pytest.mark.parametrize(
+        ("text", "secs"),
+        [("45s", 45), ("30m", 1800), ("2h", 7200), ("7d", 604800), ("1w", 604800 * 1)],
+    )
+    def test_relative_age_counts_back_from_now(self, text: str, secs: int) -> None:
+        now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+        assert cc.parse_time_selector(text, now=now) == now - timedelta(seconds=secs)
+
+    def test_relative_age_is_case_insensitive(self) -> None:
+        now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+        assert cc.parse_time_selector("2H", now=now) == cc.parse_time_selector("2h", now=now)
+
+    def test_iso_instant_with_z_suffix(self) -> None:
+        # fromisoformat only accepts "Z" from 3.11; the package supports 3.10.
+        assert cc.parse_time_selector("2026-08-21T04:00:00Z") == datetime(
+            2026, 8, 21, 4, tzinfo=timezone.utc
+        )
+
+    def test_bare_date_is_read_as_utc(self) -> None:
+        """The audit log is written in UTC.
+
+        Reading a bare date as local time would silently shift the window by the
+        host's offset, so a window that looks right returns the wrong records.
+        """
+        assert cc.parse_time_selector("2026-08-21") == datetime(
+            2026, 8, 21, tzinfo=timezone.utc
+        )
+
+    def test_offset_is_normalized_to_utc(self) -> None:
+        assert cc.parse_time_selector("2026-08-21T10:00:00+02:00") == datetime(
+            2026, 8, 21, 8, tzinfo=timezone.utc
+        )
+
+    def test_unreadable_input_raises_with_the_accepted_forms(self) -> None:
+        with pytest.raises(ValueError, match="relative age"):
+            cc.parse_time_selector("last tuesday")
+
+    def test_an_absurd_but_well_formed_age_raises_instead_of_overflowing(self) -> None:
+        """``timedelta`` overflows before the subtraction.
+
+        Uncaught, that is an OverflowError traceback and exit 1 from a bad flag
+        value -- the CLI must still refuse it as input (exit 2) with guidance.
+        """
+        with pytest.raises(ValueError, match="too far in the past"):
+            cc.parse_time_selector("999999999999999999w")
 
 
 class TestPolicyCli:

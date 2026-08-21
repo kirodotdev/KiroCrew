@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from kiro_crew import __version__, beacon, platform_compat
@@ -1119,6 +1119,60 @@ def _cron_preview(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+_TIME_SELECTOR_RE = re.compile(r"(?i)\A(?P<value>\d+)(?P<unit>[smhdw])\Z")
+_TIME_SELECTOR_UNITS = {
+    "s": 1,
+    "m": 60,
+    "h": 3600,
+    "d": 86400,
+    "w": 604800,
+}
+
+
+def parse_time_selector(raw: str, *, now: datetime | None = None) -> datetime | None:
+    """Resolve a ``--since``/``--until`` selector to an aware UTC datetime.
+
+    Accepts a relative AGE (``30m``, ``2h``, ``7d``, ``1w``) meaning "that long
+    ago", or an absolute ISO 8601 instant (``2026-08-21``,
+    ``2026-08-21T04:00:00Z``). Empty input means "no bound" and returns ``None``.
+
+    A bare ISO date/time with no offset is read as UTC — the audit log is written
+    in UTC, so interpreting it as local time would silently shift the window by
+    the host's offset. ``Z`` is normalized because ``fromisoformat`` only accepts
+    it from Python 3.11 and this package supports 3.10.
+
+    Raises ``ValueError`` with the accepted forms spelled out, so a typo gets a
+    usable message instead of an empty result the caller reads as "no events".
+    An absurd but well-formed age (``999999999999999999w``) overflows
+    ``timedelta``; that surfaces as the same ``ValueError`` rather than an
+    uncaught ``OverflowError`` traceback, so the CLI still exits 2 with guidance.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    match = _TIME_SELECTOR_RE.match(text)
+    if match:
+        seconds = int(match.group("value")) * _TIME_SELECTOR_UNITS[match.group("unit").lower()]
+        try:
+            return (now or datetime.now(tz=timezone.utc)) - timedelta(seconds=seconds)
+        except (OverflowError, OSError):
+            raise ValueError(
+                f"{raw!r} is too far in the past to represent. Use a smaller age "
+                "(30m, 2h, 7d, 1w) or an ISO 8601 instant."
+            ) from None
+    iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        raise ValueError(
+            f"cannot read {raw!r} as a time. Use a relative age (30m, 2h, 7d, 1w) "
+            "or an ISO 8601 instant (2026-08-21, 2026-08-21T04:00:00Z)."
+        ) from None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _security(args: argparse.Namespace) -> None:
     """Security audit and deny list commands."""
 
@@ -1160,11 +1214,26 @@ def _security(args: argparse.Namespace) -> None:
     elif action == "events":
 
         limit = getattr(args, "limit", 20)
-        events = sel().recent(limit=limit)
+        try:
+            since = parse_time_selector(getattr(args, "since", "") or "")
+            until = parse_time_selector(getattr(args, "until", "") or "")
+        except ValueError as exc:
+            print(f"❌ {exc}")
+            sys.exit(2)
+        if since and until and since >= until:
+            print("❌ --since must be earlier than --until")
+            sys.exit(2)
+        events = sel().recent(limit=limit, since=since, until=until)
+        window = ""
+        if since or until:
+            window = (
+                f" in [{since.isoformat() if since else '-'}, "
+                f"{until.isoformat() if until else 'now'})"
+            )
         if not events:
-            print("No security events recorded.")
+            print(f"No security events recorded{window}.")
             return
-        print(f"📋 Last {len(events)} security event(s):\n")
+        print(f"📋 Last {len(events)} security event(s){window}:\n")
         for e in events:
             ts = e.get("timestamp", "?")[:19]
             etype = e.get("event_type", "?")

@@ -4317,6 +4317,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # this gate.
     "trust",
     "security_events.jsonl",
+    # Rotated SEL segments. sel.py closes the live log at a size cap and renames
+    # it into this directory, so a segment holds exactly the same audit records
+    # the live file does and must be gated identically — a rotated log that the
+    # agent could read (or rewrite, then let the chain re-anchor from) would make
+    # rotation itself the way around the fence. Directory entry, so every
+    # segment is covered without a per-name matcher. sel.py opens segments
+    # directly, not through this gate.
+    "security_events.d",
     "app_admission.json",
     "security_policy.json",
     "profiles",

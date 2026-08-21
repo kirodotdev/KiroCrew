@@ -13,6 +13,13 @@ Storage: ``<config_dir>/security_events.jsonl`` (append-only JSONL); the HMAC
 signing key lives OUTSIDE the log directory in ``<config_dir>/trust/`` so an
 actor who can rewrite the log dir cannot also read the key and re-sign a
 clean-looking chain.
+Rotation: the live log is closed at ``_SEGMENT_MAX_BYTES`` and renamed into
+``<config_dir>/security_events.d/``, keeping ``_SEGMENT_KEEP`` closed segments.
+Each segment is an INDEPENDENT HMAC chain (it starts from genesis), and the
+first record of every new live log is a ``sel_rotation`` event naming the
+segment just closed and its final ``entry_hash`` — so the boundary is auditable
+evidence rather than a chain break, and retention deleting an old segment leaves
+every surviving segment verifiable on its own.
 Retention: configurable, default 365 days per Amazon Security Event Logging Standard.
 """
 
@@ -25,13 +32,17 @@ import json
 import logging
 import os
 import queue
+import re
+import stat
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import IO
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
@@ -54,6 +65,128 @@ def _default_dir() -> Path:
 
 _SEL_FILE = "security_events.jsonl"
 _RETENTION_DAYS = 365
+# ── Size rotation ──
+# The live log is closed (renamed into _SEGMENT_SUBDIR) once an append would
+# push it past _SEGMENT_MAX_BYTES, and at most _SEGMENT_KEEP closed segments are
+# retained, oldest deleted first. Without this the log grew without bound: a
+# long-running install reached 4.09 GB, at which point the sanctioned reader was
+# impractical and every append/read paid the size (issue #4843). The ceiling is
+# _SEGMENT_MAX_BYTES * (_SEGMENT_KEEP + 1) -- ~256 MiB, roughly 500k events at
+# the ~513 bytes/event measured on a real log. Age-based retention
+# (_RETENTION_DAYS, swept by prune()) still applies on top and is unchanged;
+# size rotation is what bounds the log BETWEEN those daily sweeps, which is the
+# window the 4.09 GB was accumulated in.
+# Closed segment: security_events-<6-digit sequence>-<UTC stamp>.jsonl. The
+# SEQUENCE, not the timestamp, orders segments: it is derived from the highest
+# one still on disk plus one, so it keeps increasing across retention deletions
+# and is immune to a clock step (an NTP correction that moved the wall clock
+# backwards would otherwise mint a name sorting as the OLDEST segment, and
+# retention would delete the newest log). The stamp is carried for humans
+# reading the directory. Retention must never delete a merely prefix-matching
+# file an operator parked here, so the pattern is matched in full.
+_SEGMENT_SUBDIR = "security_events.d"
+_SEGMENT_MAX_BYTES = 32 * 1024 * 1024
+_SEGMENT_KEEP = 7
+_SEGMENT_NAME_RE = re.compile(
+    r"security_events-(?P<seq>\d{6,})-(?P<stamp>\d{8}T\d{6}Z)\.jsonl"
+)
+# Cross-process rotation mutex. It lives INSIDE the segment dir so it inherits
+# that directory's sensitive-path fence: a lock file the agent could hold would
+# let it suppress rotation and bring back the unbounded growth. Not a segment
+# name, so _segments_oldest_first() never sees it and retention never deletes it.
+_ROTATE_LOCK_FILE = ".rotate.lock"
+# Ceiling on entries examined when enumerating segments. Rotation itself keeps at
+# most _SEGMENT_KEEP + 1 files there, so a larger directory is someone else's
+# doing; the walk runs on the append path (where a critical audit is written
+# inline, sometimes on the event loop) and must not scale with a directory an
+# agent filled before this release.
+_SEGMENT_SCAN_CAP = 4096
+# Re-chain attempts when a concurrent rotation replaces the live log between
+# chaining and appending. Each collision is a lost microsecond race; after this
+# many the record is written unguarded, because a missing audit record is worse
+# than one suspect chain link.
+_APPEND_RETRIES = 3
+# Ceiling on collision probes when minting a segment name. Each probe is a
+# filesystem stat on the append path (where a critical audit is written inline,
+# sometimes on the event loop), so a directory pre-filled with consecutive
+# segment names must not be able to make rotation stat its way through it.
+_SEGMENT_NAME_PROBES = 64
+
+
+class _LiveLogReplaced(Exception):
+    """The live log was swapped by another process between chaining and appending.
+
+    Internal control flow only: raised by ``_append_lines_locked`` BEFORE anything
+    is written and handled by ``_append_chained_locked``, which re-anchors and
+    chains the batch again. Never escapes the module.
+    """
+
+
+class SelChainContention(OSError):
+    """Repeated foreign writes prevented a correctly-chained append.
+
+    Deliberately an ``OSError``: this class already has one answer for an audit
+    that cannot be written, and it is not "write it wrong". A ``critical=True``
+    caller re-raises and refuses the action it was about to audit (audit-or-deny),
+    and the background writer drops the batch with a warning exactly as it does
+    for a full disk. Raising the same TYPE those paths already handle keeps that
+    behaviour without a new branch at either site.
+
+    Reaching this needs a foreign write to land between our chaining and our open
+    on every one of ``_APPEND_RETRIES + 1`` attempts.
+    """
+
+
+def _live_log_moved_on(
+    previous: tuple[int, int, int], current: tuple[int, int, int]
+) -> bool:
+    """Whether the live log is no longer the file+position *previous* describes.
+
+    Both arguments are ``(st_dev, st_ino, st_size)``. ONE predicate serves both the
+    pre-append check and the post-open guard, because they are asking the same
+    question and answering it differently is how a stale tip survives a collision:
+    a detector that fires on growth paired with a re-anchor that only reacts to a
+    shrink leaves the retry writing the very ``prev_hash`` the collision proved
+    wrong.
+
+    Two independent signals:
+
+    * a DIFFERENT inode -- the file was replaced (a rotation). Skipped when either
+      inode is 0, which some Windows filesystems report instead of a usable index.
+    * a DIFFERENT size -- somebody appended, so the file no longer ends where we
+      chained from. This also covers the case no inode comparison can see: a
+      rotator anchored on an ABSENT replacement has no inode, and only the size
+      reveals that another process already put a record there.
+
+    Our OWN writes never trip this. The anchor is refreshed from the fd's
+    post-write ``fstat`` on every append, so a difference means somebody else.
+    """
+    prev_dev, prev_ino, prev_size = previous
+    cur_dev, cur_ino, cur_size = current
+    if prev_ino and cur_ino and (prev_ino, prev_dev) != (cur_ino, cur_dev):
+        return True
+    return prev_size != cur_size
+
+
+def _identity_changed(expect: tuple[int, int, int], actual: os.stat_result) -> bool:
+    """Whether an opened fd is no longer the file+position *expect* describes.
+
+    Thin adapter over :func:`_live_log_moved_on` so the guard and the pre-append
+    check cannot drift apart.
+    """
+    return _live_log_moved_on(expect, (actual.st_dev, actual.st_ino, actual.st_size))
+
+
+# Tail-read chunk for recent(): the log is append-only, so the newest records
+# live at the END. Reading backward in chunks keeps a bounded read bounded
+# instead of loading the whole segment (the old recent() did
+# read_text().splitlines(), i.e. a 4.09 GB allocation to print 20 lines).
+_TAIL_CHUNK_BYTES = 256 * 1024
+# Ceiling on bytes held while looking for a line boundary in the backward reader.
+# A real SEL record is a few hundred bytes; anything past this has no newline in
+# it, which means a truncated write or a file someone else placed there. Bounds
+# the memory an attacker-influenced segment can make a reader allocate.
+_MAX_LINE_BYTES = 4 * 1024 * 1024
 _HMAC_KEY_FILE = "sel_hmac.key"
 # Dedicated trust-root subdirectory (owner-only, 0o700) holding the HMAC key.
 # The key must not live NEXT TO the log it signs: an actor with write access to
@@ -143,11 +276,17 @@ class SecurityEventLog:
         self._sync = sync
         self._dir = base_dir or _default_dir()
         self._path = self._dir / _SEL_FILE
+        self._segment_dir = self._dir / _SEGMENT_SUBDIR
         # _lock guards _last_hash + the file append (held only inside the writer
         # thread and by synchronous fallbacks / prune, never by enqueuing callers).
         self._lock = threading.Lock()
         self._hmac_key = self._load_or_create_hmac_key()
         self._last_hash = self._read_last_hash()
+        # Identity of the live log as of our last observation, so a replacement
+        # by another process (its rotation) is detected before we chain off a tip
+        # that has moved into the closed segment. Seeded here because
+        # _read_last_hash above just anchored us to THIS file.
+        self._live_seen: tuple[int, int, int] | None = self._live_identity()
         self._forward_callback: Callable[[dict], None] | None = None
         # Background writer: callers enqueue (non-blocking) and one daemon thread
         # maintains the HMAC chain + batches appends off the hot path. Lazily
@@ -228,7 +367,12 @@ class SecurityEventLog:
             if self._pending == 0:
                 self._pending_cond.notify_all()
 
-    def _flush_batch(self, events: list[SecurityEvent], *, raise_on_error: bool = False) -> None:
+    def _flush_batch(
+        self,
+        events: list[SecurityEvent],
+        *,
+        raise_on_error: bool = False,
+    ) -> None:
         """Append a batch of events under the chain lock, then forward them.
 
         When ``raise_on_error=True`` a filesystem failure (unwritable SEL file,
@@ -236,6 +380,15 @@ class SecurityEventLog:
         back, so a fail-closed caller (critical audit) can refuse the action it
         was about to audit. The default (async writer / best-effort) swallows
         the error and keeps the writer thread alive.
+
+        Whether this batch may ROTATE is decided by :meth:`_may_rotate`, not by the
+        call site. Rotation does filesystem work -- a directory scan, a rename, a
+        retention sweep -- and several paths reach this method INLINE on their
+        caller's thread, which for an async handler is the event loop
+        (``no-blocking-call-on-event-loop``): a critical audit, and the fallback
+        taken when the writer thread cannot be started. Deriving the permission
+        from the running thread means a future inline caller cannot reintroduce
+        that stall by forgetting a flag.
         """
         callback: Callable[[dict], None] | None
         with self._lock:
@@ -246,58 +399,175 @@ class SecurityEventLog:
                     raise
                 logger.warning("SEL dir create failed for %d events", len(events), exc_info=True)
                 return
-            # Remember the chain tip so we can roll back if the append fails:
-            # we advance _last_hash per event below, but nothing is persisted
-            # until the write() succeeds. Without the rollback, a failed write
-            # would leave _last_hash pointing at a phantom hash never on disk,
-            # and the next batch would chain off it — silently corrupting the
-            # HMAC chain (verify_integrity would then report a break).
-            prev_last_hash = self._last_hash
-            lines: list[str] = []
-            for event in events:
-                event.prev_hash = self._last_hash
-                event.entry_hash = self._compute_hash(event)
-                lines.append(json.dumps(asdict(event)) + "\n")
-                self._last_hash = event.entry_hash
-            try:
-                # Use os.open with explicit 0o600 mode to prevent other users
-                # from reading the security audit log.
-                fd = os.open(
-                    self._path,
-                    os.O_CREAT | os.O_APPEND | os.O_WRONLY,
-                    0o600,
-                )
-                with os.fdopen(fd, "a", encoding="utf-8") as f:
-                    # If a crash mid-append left a truncated tail line WITHOUT a
-                    # trailing newline, writing directly (O_APPEND) would glue
-                    # this record onto the corrupt fragment, forming a single
-                    # unparseable line. _read_last_hash() recovers the correct
-                    # prev_hash from the last complete record, but that glued
-                    # line stays unreadable by verify_integrity — so the new
-                    # event, though correctly chained, is orphaned from every
-                    # parseable record. Insert a newline boundary first so the
-                    # new record starts on a fresh, parseable line. We do NOT
-                    # truncate the corrupt fragment: the SEL log is append-only
-                    # forensic evidence, and the fragment is preserved as its
-                    # own (skipped) line.
-                    if self._ends_without_newline():
-                        f.write("\n")
-                    f.write("".join(lines))
-                # Ensure permissions are correct even if file pre-existed with
-                # wrong mode (e.g. created by an older version).
+            # Close the live log first when it is already at the size cap, so
+            # this batch lands in a fresh segment, and keep the cross-process
+            # rotation lock held across our own chain + append (see
+            # _rotation_window). Rotation is best-effort and never raises: a
+            # rotation that cannot happen must not stop the audit record it
+            # precedes from being written.
+            with self._rotation_window() if self._may_rotate() else _no_rotation():
+                # Remember the chain tip so we can roll back if the append
+                # fails: we advance _last_hash per event below, but nothing is
+                # persisted until the write() succeeds. Without the rollback, a
+                # failed write would leave _last_hash pointing at a phantom hash
+                # never on disk, and the next batch would chain off it —
+                # silently corrupting the HMAC chain (verify_integrity would
+                # then report a break). Read INSIDE the window: rotation resets
+                # the tip to genesis, and rolling back to a pre-rotation tip
+                # would chain this batch off a record in a different segment.
                 try:
-                    os.chmod(self._path, 0o600)
+                    self._append_chained_locked(events)
                 except OSError:
-                    logger.warning("Failed to enforce 0o600 permissions on SEL audit log %s", self._path, exc_info=True)
-            except OSError:
-                self._last_hash = prev_last_hash  # nothing persisted — roll back
-                if raise_on_error:
-                    raise
-                logger.warning("SEL append failed for %d events", len(events), exc_info=True)
+                    if raise_on_error:
+                        raise
+                    logger.warning(
+                        "SEL append failed for %d events", len(events), exc_info=True
+                    )
             callback = self._forward_callback
         if callback:
             for event in events:
                 self._forward_event(callback, event)
+
+    def _append_chained_locked(self, events: list[SecurityEvent]) -> None:
+        """Chain *events* onto the live log, re-chaining if it moves under us.
+
+        Caller holds ``_lock``. The tip is rolled back on any failure so a
+        record never chains off a hash that was not persisted.
+
+        The retry exists because the append is deliberately lock-free (a blocking
+        cross-process acquire on this path could park an event-loop caller writing
+        a critical audit). Instead of serializing, the append VALIDATES the file it
+        opened and re-chains when another process moved it on — see
+        :meth:`_append_lines_locked`.
+
+        EVERY attempt is validated, including the last. When the retries are
+        exhausted the batch is NOT written; :class:`SelChainContention` is raised.
+
+        An earlier revision wrote the final attempt unguarded, reasoning that a
+        missing audit record is worse than one suspect chain link. That was wrong
+        twice over. A knowingly-broken link does not read as "one imperfect
+        record" -- it makes ``security verify`` report the log as COMPROMISED, and
+        an investigator cannot tell that false signal apart from real tampering.
+        This PR already deleted the rotation record's predecessor-hash claim on
+        exactly that principle (a check that can fire on a benign cause is worse
+        than no check); writing a bad link is the same mistake with the sign
+        flipped. And it invented a third behaviour: this class already answers an
+        unwritable audit by DENYING the action (``critical=True``, audit-or-deny)
+        or by dropping the batch with a warning (best-effort) -- never by writing
+        something it knows to be corrupt.
+
+        Raising an ``OSError`` subclass is what routes it correctly with no new
+        plumbing: a critical caller re-raises and refuses the action it was about
+        to audit, and the background writer treats it exactly as it already treats
+        a full disk.
+        """
+        for attempt in range(_APPEND_RETRIES + 1):
+            prev_last_hash = self._last_hash
+            lines = self._chain_locked(events)
+            try:
+                self._append_lines_locked(lines, expect=self._live_seen)
+                return
+            except _LiveLogReplaced:
+                # The guard proved the file moved on between our chaining and our
+                # open, and the records were never written. Roll the tip back, then
+                # re-anchor UNCONDITIONALLY -- the question the predicate would ask
+                # has already been answered by the collision itself.
+                self._last_hash = prev_last_hash
+                logger.info(
+                    "SEL live log moved on mid-append; re-chaining this batch "
+                    "(attempt %d of %d)",
+                    attempt + 1,
+                    _APPEND_RETRIES + 1,
+                )
+                self._reanchor_now()
+            except OSError:
+                self._last_hash = prev_last_hash  # nothing persisted — roll back
+                raise
+        raise SelChainContention(
+            f"could not append {len(events)} SEL event(s) with a valid chain link "
+            f"after {_APPEND_RETRIES + 1} attempts: another process kept writing to "
+            "the live log between chaining and appending"
+        )
+
+    def _chain_locked(self, events: list[SecurityEvent]) -> list[str]:
+        """Stamp the HMAC chain onto *events* and return their JSONL lines.
+
+        Advances ``_last_hash`` per event. Caller holds ``_lock`` and is
+        responsible for rolling the tip back if the write does not land.
+        """
+        lines: list[str] = []
+        for event in events:
+            event.prev_hash = self._last_hash
+            event.entry_hash = self._compute_hash(event)
+            lines.append(json.dumps(asdict(event)) + "\n")
+            self._last_hash = event.entry_hash
+        return lines
+
+    def _append_lines_locked(
+        self, lines: list[str], *, expect: tuple[int, int, int] | None = None
+    ) -> None:
+        """Append already-chained JSONL *lines* to the live log. Caller holds ``_lock``.
+
+        ``expect`` is the identity of the file whose tip *lines* were chained from.
+        When given, the file actually opened is validated BY FD before anything is
+        written, and :class:`_LiveLogReplaced` is raised if it is a different file.
+
+        This is what makes a lock-free append safe against a concurrent rotation,
+        and why the check is on the FD rather than on the path. Two outcomes, both
+        correct:
+
+        * the rename has NOT happened yet -- we hold the old inode, the identity
+          matches, we write, and the winner's rename carries our record into the
+          segment still correctly chained off the tip we used;
+        * the rename HAS happened -- ``O_CREAT`` gave us a brand-new file with a
+          different inode, we notice before writing, and the caller re-anchors and
+          re-chains instead of leaving a record whose ``prev_hash`` lives in
+          another file.
+
+        A path ``stat`` cannot do this: whatever it observed may be replaced before
+        the ``open`` that follows it.
+        """
+        # Use os.open with explicit 0o600 mode to prevent other users
+        # from reading the security audit log.
+        fd = os.open(
+            self._path,
+            os.O_CREAT | os.O_APPEND | os.O_WRONLY,
+            0o600,
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            actual = os.fstat(f.fileno())
+            if expect is not None and _identity_changed(expect, actual):
+                raise _LiveLogReplaced(
+                    "live log was replaced between chaining and appending"
+                )
+            # If a crash mid-append left a truncated tail line WITHOUT a
+            # trailing newline, writing directly (O_APPEND) would glue
+            # this record onto the corrupt fragment, forming a single
+            # unparseable line. _read_last_hash() recovers the correct
+            # prev_hash from the last complete record, but that glued
+            # line stays unreadable by verify_integrity — so the new
+            # event, though correctly chained, is orphaned from every
+            # parseable record. Insert a newline boundary first so the
+            # new record starts on a fresh, parseable line. We do NOT
+            # truncate the corrupt fragment: the SEL log is append-only
+            # forensic evidence, and the fragment is preserved as its
+            # own (skipped) line.
+            if self._ends_without_newline():
+                f.write("\n")
+            f.write("".join(lines))
+            f.flush()
+            # Record what we wrote to from the FD, not the path: if a rotation
+            # renames the path immediately after this write, the file we actually
+            # appended to is the one we must remember, so the NEXT append's guard
+            # can see that it has moved on.
+            written = os.fstat(f.fileno())
+        # Ensure permissions are correct even if file pre-existed with
+        # wrong mode (e.g. created by an older version).
+        try:
+            os.chmod(self._path, 0o600)
+        except OSError:
+            logger.warning("Failed to enforce 0o600 permissions on SEL audit log %s", self._path, exc_info=True)
+        self._live_seen = (written.st_dev, written.st_ino, written.st_size)
 
     def _forward_event(self, callback: Callable[[dict], None], event: SecurityEvent) -> None:
         """Redact and forward a single event to the centralized sink."""
@@ -585,6 +855,501 @@ class SecurityEventLog:
             )
         return key
 
+    @contextmanager
+    def _rotation_window(self) -> Iterator[None]:
+        """Rotate if the live log is at the cap, holding the lock over the body.
+
+        Caller holds ``_lock``. The body is the caller's chain + append.
+
+        Below the cap -- the overwhelmingly common case -- this is a single
+        ``stat`` and no lock at all, so a normal append pays nothing.
+
+        At the cap it takes a CROSS-PROCESS lock, because ``_lock`` is a thread
+        lock and SEVERAL PROCESSES share one data home (the gateway, the CLI,
+        cron), all appending to this same file. They therefore reach the cap at
+        the same moment, and two things go wrong unserialized:
+
+        * both pick the same target name, and the second ``os.replace`` moves the
+          freshly recreated live log onto the segment the first just closed,
+          destroying it;
+        * the loser keeps its pre-rotation chain tip and appends from it, so its
+          first record in the new log names a ``prev_hash`` that is not in that
+          file and ``security verify`` reports an untampered log as compromised.
+
+        The acquire is NON-BLOCKING and the whole window is best-effort. A
+        critical (``audit-or-deny``) event is written INLINE on its caller's
+        thread, and some of those callers are event-loop coroutines, so a
+        blocking acquire here could park the loop on another process's rotation —
+        the ``no-blocking-call-on-event-loop`` hazard. Rotation is never worth
+        that: it is deferrable (the next batch retries) while an audit write is
+        not.
+
+        Skipping on contention does NOT leave the loser appending from a stale
+        tip, which is the reason the lock spans the append at all: the contended
+        path re-checks the live log's identity and re-anchors the tip immediately
+        before the caller chains (see :meth:`_reanchor_if_replaced`). A rotation
+        that lands between that check and the append is the residual, and it is
+        the pre-existing cross-process interleaving race rather than an
+        escalation of it -- closing THAT means holding a cross-process lock
+        across every audit write, which is both the event-loop hazard above and
+        the hot-path cost #4247 is about.
+
+        Every failure -- an uncreatable/planted segment dir, a planted or
+        unopenable lock file -- yields WITHOUT rotating so the audit record still
+        lands.
+        """
+        if self._reanchor_if_replaced() < _SEGMENT_MAX_BYTES or not self._ensure_segment_dir():
+            yield
+            return
+        lock_fh = self._open_rotation_lock()
+        if lock_fh is None:
+            yield
+            return
+        try:
+            if not platform_compat.try_acquire_lock(lock_fh.fileno(), exclusive=True):
+                # Another process is rotating right now. Do not wait (see above)
+                # and do not trust the tip we anchored before it started.
+                logger.debug("SEL rotation lock busy; deferring rotation to the next batch")
+                self._reanchor_if_replaced()
+                yield
+                return
+            try:
+                self._rotate_under_lock()
+                yield
+            finally:
+                platform_compat.release_lock(lock_fh.fileno())
+        finally:
+            lock_fh.close()
+
+    def _open_rotation_lock(self) -> IO[bytes] | None:
+        """Open the rotation mutex, refusing a planted link. ``None`` if unusable.
+
+        The path must never be followed through a symlink/junction: opening it
+        CREATES the file and ``chmod``s it, so a link planted before this release
+        (when ``security_events.d`` was not on the sensitive-path floor) would
+        have rotation write a byte into, and relax the mode of, whatever the agent
+        pointed it at. Same defense and same helpers as the segment dir and the
+        SEL trust dir -- the link is removed, never its target -- and if the link
+        cannot be removed we decline to rotate rather than open through it.
+        """
+        lock_path = self._segment_dir / _ROTATE_LOCK_FILE
+        if platform_compat.is_link_or_junction(lock_path):
+            logger.warning(
+                "SEL rotation lock %s is a symlink/junction — removing the link "
+                "(planted before upgrade?)",
+                lock_path,
+            )
+            try:
+                platform_compat.unlink_link_or_junction(lock_path)
+            except OSError:
+                logger.warning(
+                    "cannot remove linked SEL rotation lock %s; refusing to rotate "
+                    "rather than open through the link",
+                    lock_path,
+                    exc_info=True,
+                )
+                return None
+        try:
+            # "a+b": msvcrt.locking needs a writable fd and locks a byte range,
+            # so the file must be non-empty (same shape as metrics retention).
+            lock_fh = open(lock_path, "a+b")
+        except OSError:
+            logger.warning("SEL rotation lock %s could not be opened", lock_path, exc_info=True)
+            return None
+        try:
+            lock_fh.seek(0, os.SEEK_END)
+            if lock_fh.tell() == 0:
+                lock_fh.write(b"\0")
+                lock_fh.flush()
+            try:
+                os.chmod(lock_path, 0o600)
+            except OSError:
+                pass  # perms are hygiene here; the file holds no data
+        except OSError:
+            lock_fh.close()
+            logger.warning("SEL rotation lock %s could not be primed", lock_path, exc_info=True)
+            return None
+        return lock_fh
+
+    def _may_rotate(self) -> bool:
+        """Whether the CURRENT thread is allowed to do rotation's filesystem work.
+
+        Only the dedicated writer thread, or ``sync=True`` (a test mode that has no
+        writer thread and whose caller is the test itself).
+
+        Every other route into ``_flush_batch`` runs inline on a caller's thread
+        that may be the asyncio event loop -- the ``critical=True`` audit-or-deny
+        write, and the fallback taken when ``_ensure_writer`` cannot start the
+        thread. A directory scan plus a rename plus a retention sweep there stalls
+        every gateway task. Rotation is deferrable and an audit write is not, so
+        those paths write the record and leave rotation to the writer's next batch.
+
+        Checked here rather than at each call site on purpose: the previous
+        revision passed a flag from the critical path only, and the writer-start
+        fallback -- added for a different reason and easy to overlook -- kept
+        rotating on whatever thread it landed on.
+        """
+        if self._sync:
+            return True
+        writer = self._writer
+        return writer is not None and threading.current_thread() is writer
+
+    def _live_size(self) -> int:
+        """Size of the live log on disk, or 0 when it is absent/unreadable."""
+        try:
+            return self._path.stat().st_size
+        except OSError:
+            return 0
+
+    def _live_identity(self) -> tuple[int, int, int]:
+        """``(st_dev, st_ino, st_size)`` of the live log, zeros when absent."""
+        try:
+            st = self._path.stat()
+        except OSError:
+            return (0, 0, 0)
+        return (st.st_dev, st.st_ino, st.st_size)
+
+    def _reanchor_if_replaced(self) -> int:
+        """Refresh the cached chain tip if the live log was replaced. Returns its size.
+
+        Caller holds ``_lock``. This is the ONE stat the rotation check already
+        needed, so detecting a foreign rotation is free.
+
+        Why it is needed: several processes share one data home and append to this
+        file, each caching its own tip in ``_last_hash`` and never re-reading it.
+        When ANOTHER process rotates, this process's next append usually does not
+        see the cap at all (the live log is small and fresh), so it never enters
+        the rotation window — and it would chain its record off a tip that now
+        lives inside the closed segment. Unlike the pre-existing interleaving
+        race, which needs two appends to actually collide, that break is
+        GUARANTEED for every process after every foreign rotation, so rotation
+        must not leave it standing.
+
+        Detection needs no lock and no extra syscall. The live log is append-only,
+        so it can never shrink: a smaller size than we last wrote means the file
+        was replaced. ``st_ino`` catches the same event where the filesystem
+        reports it (a fresh file gets a new inode), and is skipped when either
+        side reports 0 — some Windows filesystems do not supply a file index.
+
+        The residual after this is the pre-existing one: a rotation landing
+        between this stat and our append. Closing THAT means holding a
+        cross-process lock across every audit write, which is the hot-path cost
+        #4247 is about, so it stays measured rather than paid for here.
+        """
+        identity = self._live_identity()
+        previous = self._live_seen
+        self._live_seen = identity
+        if previous is not None and _live_log_moved_on(previous, identity):
+            logger.info(
+                "SEL live log moved on since our last write (another process "
+                "rotated or appended); re-reading the chain tip before appending"
+            )
+            self._last_hash = self._read_last_hash()
+        return identity[2]
+
+    def _reanchor_now(self) -> None:
+        """Re-read the chain tip and the live log's identity, unconditionally.
+
+        For the collision path, where the append guard has ALREADY proved the file
+        moved on. There is nothing left to decide there, so this must not route
+        through :meth:`_reanchor_if_replaced`'s predicate: an earlier revision did,
+        and because that predicate reacted only to a shrink while the guard fired
+        on growth too, a foreign APPEND was detected and then not corrected -- the
+        retry re-chained from the same tip the collision had just invalidated and
+        wrote it. Both now share one predicate, and this path skips it entirely.
+        """
+        self._live_seen = self._live_identity()
+        self._last_hash = self._read_last_hash()
+
+    def _ensure_segment_dir(self) -> bool:
+        """Create the segment dir (owner-only), refusing a planted link.
+
+        Returns whether the real directory is now usable. Rotation must NEVER
+        write through a symlink/junction at this path: before this release
+        ``security_events.d`` was not on the sensitive-path floor, so an agent
+        could have pre-planted a link pointing somewhere it can read, and
+        ``mkdir(exist_ok=True)`` succeeds on a link-to-directory. The segments
+        would then land outside the fence, readable and rewritable by the audited
+        agent — rotation itself becoming the way around it. Same defense, and the
+        same helpers, as the SEL trust dir in
+        :meth:`_load_or_create_hmac_key`; the link is removed, never its target.
+
+        When the link cannot be removed (read-only dir) we REFUSE to rotate. The
+        live log then keeps growing, which is the failure this release exists to
+        bound — but an oversized log inside the fence beats a bounded one outside
+        it.
+        """
+        if platform_compat.is_link_or_junction(self._segment_dir):
+            logger.warning(
+                "SEL segment dir %s is a symlink/junction — removing the link "
+                "(planted before upgrade?) and creating a real directory",
+                self._segment_dir,
+            )
+            try:
+                platform_compat.unlink_link_or_junction(self._segment_dir)
+            except OSError:
+                logger.warning(
+                    "cannot remove linked SEL segment dir %s; refusing to rotate "
+                    "rather than write audit segments through the link",
+                    self._segment_dir,
+                    exc_info=True,
+                )
+                return False
+        try:
+            self._segment_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            logger.warning("SEL segment dir %s could not be created", self._segment_dir, exc_info=True)
+            return False
+        platform_compat.chmod_safe(self._segment_dir, 0o700)
+        return True
+
+    def _rotate_under_lock(self) -> None:
+        """Perform one rotation. Caller holds ``_lock`` AND the rotation lock.
+
+        The size is re-read here, not trusted from the check that opened the
+        window: a sibling process may have rotated while we waited for the lock.
+
+        The check reads the size ALREADY ON DISK, so a segment can overshoot the
+        cap by at most the batch being appended (``_QUEUE_DRAIN_BATCH`` events,
+        ~128 KiB against a 32 MiB cap). That keeps rotation one ``stat`` per
+        batch instead of serializing every batch twice to measure it first.
+
+        Chain semantics: the closed segment keeps its own complete chain and the
+        new live log starts from genesis, so BOTH verify independently and
+        retention deleting an old segment can never break a surviving one. The
+        boundary is not lost — it is recorded as the new log's first entry, a
+        ``sel_rotation`` event naming the closed segment and its final
+        ``entry_hash``. An investigator can therefore still walk segment to
+        segment, and a segment that was deleted or swapped is visible as a
+        rotation record whose named predecessor is absent or ends on a different
+        hash.
+        """
+        size = self._live_size()
+        if size < _SEGMENT_MAX_BYTES:
+            # A sibling process rotated while we waited for the lock. Our cached
+            # chain tip now lives in a closed segment, so appending from it would
+            # chain this process's next batch off a record in a different file.
+            # Re-anchor on the live log we are about to append to — safe to trust
+            # because the caller holds the lock across that append.
+            self._last_hash = self._read_last_hash()
+            return
+        target = self._next_segment_path()
+        if target is None:
+            return  # no free name; rotation deferred (see _next_segment_path)
+        try:
+            os.replace(self._path, target)
+        except OSError:
+            logger.warning(
+                "SEL rotation failed; continuing to append to %s", self._path, exc_info=True
+            )
+            return
+        logger.info("SEL rotated %s -> %s (%d bytes)", self._path, target, size)
+        # Anchor on the REPLACEMENT log -- normally absent, so genesis -- and write
+        # the rotation record through the guarded append rather than assuming it
+        # lands first. Another process can create and append to the replacement in
+        # the gap after the rename (it sees a small file, so it never enters the
+        # rotation window and never takes this lock). Writing a genesis record
+        # blindly would then put TWO records claiming an empty prev_hash in the new
+        # log and break its chain from the second line. The guard notices the file
+        # already has content and the record chains off it instead, so the rotation
+        # record is the first one we could place rather than necessarily line 1.
+        self._reanchor_if_replaced()
+        try:
+            self._append_chained_locked([self._rotation_event(target, size)])
+        except OSError:
+            # The boundary record is lost but nothing is corrupt: the new log simply
+            # starts without one. _append_chained_locked already rolled the tip back
+            # to what it was, so the next batch chains off a record that is really
+            # on disk.
+            logger.warning("SEL rotation record could not be written", exc_info=True)
+        self._enforce_segment_retention_locked()
+
+    def _rotation_event(self, segment: Path, closed_bytes: int) -> SecurityEvent:
+        """Build the ``sel_rotation`` record that opens a freshly rotated log.
+
+        It names the segment just closed and its size, and DELIBERATELY does not
+        claim that segment's final ``entry_hash``.
+
+        An earlier revision did. The claim looked valuable -- it would let
+        verification notice a predecessor that had been swapped -- but it cannot be
+        made true without serializing every append: a segment is not immutable the
+        instant it is renamed, because another process may still hold a writable fd
+        to that inode and land a record after the tip is read. Any hash captured
+        here can therefore be stale by the time the record is written, and the
+        result is the WORST failure mode available: verification reporting an
+        untampered log as compromised, from an entirely benign cause.
+
+        Nothing is lost by dropping it, because forgery detection never rested on
+        it. A planted or rewritten segment cannot produce valid per-record HMACs at
+        all (the key lives outside the log directory), so ``verify_integrity``
+        already reports its entries as invalid and the read path already refuses to
+        present them. The segment NAME is what an investigator actually needs to
+        walk the sequence, and a name is not a claim that can go stale.
+        """
+        return SecurityEvent(
+            event_id=uuid.uuid4().hex[:16],
+            timestamp=datetime.now(tz=timezone.utc).isoformat(),
+            event_type="sel_rotation",
+            caller_identity="_host",
+            agent="kirocrew",
+            source="host",
+            operation="sel.rotate",
+            outcome="completed",
+            # Only the file NAME, never the absolute path: the record is
+            # forwarded to the centralized sink and read back by operators, and
+            # the segment always lives in this log's own segment dir.
+            resources=segment.name,
+            metadata={
+                "previous_segment": segment.name,
+                "previous_bytes": closed_bytes,
+            },
+        )
+
+    def _next_segment_path(self) -> Path | None:
+        """An unused segment path for the log being closed now, or ``None``.
+
+        The sequence continues from the highest segment still on disk, so it
+        keeps rising even after retention has deleted earlier ones — a reused
+        number would sort as the OLDEST segment and make the next retention
+        sweep delete the log that was just closed.
+
+        Collision probing is CAPPED. An existing name must never be overwritten
+        (audit history is not silently replaced), but the probe is a filesystem
+        ``stat`` per attempt and this runs on the append path, where a critical
+        audit is written inline and sometimes on the event loop. A directory
+        pre-filled with consecutive segment names could otherwise make rotation
+        stat its way through all of them
+        (``no-blocking-call-on-event-loop``). Returning ``None`` defers rotation,
+        which leaves the log over budget rather than stalling a write.
+        """
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        existing = self._segments_oldest_first()
+        seq = (_segment_seq(existing[-1]) + 1) if existing else 1
+        for _probe in range(_SEGMENT_NAME_PROBES):
+            candidate = self._segment_dir / f"security_events-{seq:06d}-{stamp}.jsonl"
+            if not candidate.exists():
+                return candidate
+            seq += 1
+        logger.warning(
+            "SEL could not find a free segment name within %d probes from %06d in %s; "
+            "deferring rotation (names pre-planted, or a restored backup?)",
+            _SEGMENT_NAME_PROBES,
+            seq - _SEGMENT_NAME_PROBES,
+            self._segment_dir,
+        )
+        return None
+
+    def _segments_oldest_first(self) -> list[Path]:
+        """Closed segments in rotation order (oldest first).
+
+        Only files matching ``_SEGMENT_NAME_RE`` in full are returned, so an
+        unrelated file an operator parked in the segment dir is never treated as
+        rotation output (and so never deleted by retention). A candidate must
+        ALSO be a real regular file: the name check is what protects an
+        operator's file, the ``lstat`` check is what stops a PLANTED link from
+        being read as audit history.
+
+        The link case is reachable on an upgrade and matters on the read side,
+        not the delete side: ``security_events.d`` was not on the sensitive-path
+        floor before this release, so an agent could have pre-planted
+        ``security_events-000001-<stamp>.jsonl`` as a symlink to any file it
+        wanted surfaced -- and every reader here (``recent``, which backs the
+        dashboard's SEL events endpoint, and ``verify_integrity``) would parse
+        the LINKED file's lines and hand back whatever JSON objects it found as
+        events. Retention unlinking such an entry would only remove the link,
+        but the read is a real disclosure, so a non-regular entry is excluded.
+
+        Ordering is by the name's numeric sequence — see ``_SEGMENT_NAME_RE``
+        for why that rather than the timestamp or the mtime.
+
+        Enumeration is BOUNDED at ``_SEGMENT_SCAN_CAP`` entries. Rotation keeps
+        at most ``_SEGMENT_KEEP + 1`` files here, so any larger count is either an
+        operator's dumping ground or entries planted before this release, and this
+        walk runs on the append path — where a critical audit is written inline,
+        sometimes on the event loop. An unbounded listing of a directory someone
+        else filled would stall that caller
+        (``no-blocking-call-on-event-loop``), so the scan stops at the cap and
+        works with what it has: rotation then simply does not find the segments
+        beyond it, which leaves the log over budget rather than blocking a write.
+        """
+        try:
+            scanner = os.scandir(self._segment_dir)
+        except OSError:
+            return []
+        named: list[Path] = []
+        examined = 0
+        truncated = False
+        with scanner:
+            for entry in scanner:
+                examined += 1
+                if examined > _SEGMENT_SCAN_CAP:
+                    truncated = True
+                    break
+                if not _SEGMENT_NAME_RE.fullmatch(entry.name):
+                    continue
+                try:
+                    # follow_symlinks=False, so a symlink is judged as a symlink
+                    # rather than as whatever it points at.
+                    entry_stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(entry_stat.st_mode):
+                    logger.warning(
+                        "SEL ignoring non-regular entry %s in the segment dir "
+                        "(planted link?); it is not audit history",
+                        entry.name,
+                    )
+                    continue
+                named.append(Path(entry.path))
+        if truncated:
+            logger.warning(
+                "SEL segment dir %s holds more than %d entries; scan stopped there. "
+                "Rotation keeps at most %d, so the extra entries were not created by "
+                "it — retention will not see past the cap until they are removed",
+                self._segment_dir,
+                _SEGMENT_SCAN_CAP,
+                _SEGMENT_KEEP + 1,
+            )
+        return sorted(named, key=_segment_seq)
+
+    def _enforce_segment_retention_locked(self) -> int:
+        """Delete the oldest closed segments beyond ``_SEGMENT_KEEP``.
+
+        Returns the number deleted. Caller holds ``_lock``.
+
+        STOPS at the first segment it cannot unlink rather than skipping past it.
+        Skipping would delete the NEXT-oldest instead — trading newer audit
+        history for older history that is stuck occupying a retention slot, so a
+        permission problem on one file would quietly eat the evidence behind it.
+        Stopping leaves the count over budget until the obstruction clears, which
+        is the safe direction, and the next rotation retries. Matches
+        :meth:`_prune_segments_locked`, which already stops for the same reason.
+        """
+        segments = self._segments_oldest_first()
+        excess = len(segments) - _SEGMENT_KEEP
+        if excess <= 0:
+            return 0
+        deleted = 0
+        for path in segments[:excess]:
+            try:
+                path.unlink()
+            except OSError:
+                logger.warning(
+                    "SEL segment retention could not delete %s; stopping this sweep "
+                    "rather than deleting newer segments behind it",
+                    path,
+                    exc_info=True,
+                )
+                break
+            deleted += 1
+        if deleted:
+            logger.info(
+                "SEL retention deleted %d closed segment(s) beyond the %d kept",
+                deleted,
+                _SEGMENT_KEEP,
+            )
+        return deleted
+
     def _ends_without_newline(self) -> bool:
         """True if the log's final byte is not a newline.
 
@@ -605,8 +1370,12 @@ class SecurityEventLog:
         except OSError:
             return False
 
-    def _read_last_hash(self) -> str:
+    def _read_last_hash(self, path: Path | None = None) -> str:
         """Return the entry_hash of the last COMPLETE record, or "" if none.
+
+        Reads the live log by default; *path* names a closed segment instead
+        (rotation reads the tip of the file it just renamed, which is immutable
+        and therefore race-free).
 
         A crash mid-append can leave a truncated/partial final line. The old
         implementation wrapped the parse in a blanket ``except: return ""``, so
@@ -618,10 +1387,11 @@ class SecurityEventLog:
         parseable record at all (nothing to chain from). Skipped corrupt tail
         lines are logged so the integrity concern is surfaced, not hidden.
         """
-        if not self._path.exists():
+        target = path or self._path
+        if not target.exists():
             return ""
         try:
-            with open(self._path, "rb") as f:
+            with open(target, "rb") as f:
                 f.seek(0, 2)
                 pos = f.tell()
                 if pos == 0:
@@ -663,7 +1433,7 @@ class SecurityEventLog:
                                 "SEL: skipping unparseable audit-log line while "
                                 "resolving chain tip in %s; chaining from the last "
                                 "complete record instead of resetting to genesis",
-                                self._path,
+                                target,
                             )
                             continue
                         if not isinstance(data, dict):
@@ -673,21 +1443,21 @@ class SecurityEventLog:
                             logger.warning(
                                 "SEL: skipping non-object audit-log line while "
                                 "resolving chain tip in %s",
-                                self._path,
+                                target,
                             )
                             continue
                         if skipped_corrupt:
                             logger.warning(
                                 "SEL: recovered chain tip from an earlier complete "
                                 "record after a corrupt/truncated tail in %s",
-                                self._path,
+                                target,
                             )
                         return data.get("entry_hash", "")
             # No parseable record anywhere in the file — nothing to chain from.
             return ""
         except OSError:
             logger.warning(
-                "SEL: failed to read chain tip from %s", self._path, exc_info=True
+                "SEL: failed to read chain tip from %s", target, exc_info=True
             )
             return ""
 
@@ -714,6 +1484,12 @@ class SecurityEventLog:
         enqueue order. This is the crux of the "audit-or-deny" invariant: the
         async queue's swallow-and-warn behaviour must NOT apply to a critical
         audit, or the caller's fail-closed branch becomes unreachable.
+
+        A critical write also does not rotate, and neither does the
+        writer-unavailable fallback below: both run inline on their caller's
+        thread, which may be the asyncio event loop. ``_may_rotate`` enforces that
+        from the running thread rather than from a flag here, so the rule cannot be
+        lost at a call site. The background writer rotates on its next batch.
         """
         if self._sync:
             self._flush_batch([event], raise_on_error=critical)
@@ -927,54 +1703,233 @@ class SecurityEventLog:
         )
 
     def verify_integrity(self) -> tuple[int, int]:
-        """Verify HMAC chain. Returns (total_entries, valid_entries)."""
+        """Verify the HMAC chains. Returns (total_entries, valid_entries).
+
+        Every rotated segment (oldest first) is verified BEFORE the live log.
+        Each file is an independent chain that starts from genesis, so a segment
+        deleted by retention cannot make a surviving one look tampered — which is
+        the property rotation had to preserve.
+
+        There is deliberately no cross-file assertion. Forgery is caught per
+        RECORD: a planted or rewritten segment cannot produce a valid HMAC because
+        the key lives outside the log directory, so its entries are counted invalid
+        here regardless of what any boundary record says. An earlier revision also
+        checked a predecessor-hash claim carried in the rotation record; see
+        :meth:`_rotation_event` for why that claim cannot be made true without
+        serializing every append, and why a check that can fire on a benign cause
+        is worse than no check.
+        """
         self.flush()  # ensure all queued events are on disk before verifying
-        if not self._path.exists():
-            return 0, 0
+        total = 0
+        valid = 0
+        for path in self._segments_oldest_first() + [self._path]:
+            if not path.exists():
+                continue
+            file_total, file_valid = self._verify_file(path)
+            total += file_total
+            valid += file_valid
+        return total, valid
+
+    def _verify_file(self, path: Path) -> tuple[int, int]:
+        """Verify one log file's chain. Returns (total, valid).
+
+        Streamed line by line so a capped-but-large segment is never loaded whole.
+        """
         total = 0
         valid = 0
         prev_hash = ""
-        for line in self._path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            total += 1
-            try:
-                data = json.loads(line)
-                stored_hash = data.pop("entry_hash", "")
-                if data.get("prev_hash", "") != prev_hash:
-                    logger.warning("SEL chain break at entry %d", total)
-                    prev_hash = stored_hash
+        try:
+            handle = open(path, encoding="utf-8")
+        except OSError:
+            logger.warning("SEL could not open %s for verification", path, exc_info=True)
+            return 0, 0
+        with handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
                     continue
-                payload = json.dumps(data, sort_keys=True).encode()
-                expected = hmac.new(self._hmac_key, payload, hashlib.sha256).hexdigest()
-                if hmac.compare_digest(stored_hash, expected):
-                    valid += 1
-                else:
-                    logger.warning("SEL HMAC mismatch at entry %d", total)
-                prev_hash = stored_hash
-            except (json.JSONDecodeError, Exception):
-                logger.warning("SEL parse error at entry %d", total)
+                total += 1
+                try:
+                    data = json.loads(line)
+                    stored_hash = data.pop("entry_hash", "")
+                    if data.get("prev_hash", "") != prev_hash:
+                        logger.warning("SEL chain break at entry %d of %s", total, path.name)
+                        prev_hash = stored_hash
+                        continue
+                    # Re-attach the hash: _record_signature_matches owns the one
+                    # payload/compare implementation both readers use.
+                    if self._record_signature_matches({**data, "entry_hash": stored_hash}):
+                        valid += 1
+                    else:
+                        logger.warning("SEL HMAC mismatch at entry %d of %s", total, path.name)
+                    prev_hash = stored_hash
+                except (json.JSONDecodeError, Exception):
+                    logger.warning("SEL parse error at entry %d of %s", total, path.name)
         return total, valid
 
-    def recent(self, limit: int = 100) -> list[dict]:
-        """Return the most recent events."""
+    def recent(
+        self,
+        limit: int = 100,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[dict]:
+        """Return the most recent events, newest first.
+
+        ``since`` / ``until`` bound the window (inclusive ``since``, exclusive
+        ``until``) so a caller can ask "what happened in the last two hours"
+        instead of guessing a count large enough to reach back that far.
+
+        The read is bounded on BOTH ends. Files are scanned backward from the
+        tail in chunks — never loaded whole, which is what made a large log
+        impractical to query — and the walk stops at the first record older than
+        ``since`` because the log is append-ordered. Rotated segments are only
+        opened when the live log has not already satisfied the request.
+
+        Records whose timestamp cannot be parsed are returned when no window was
+        asked for, and skipped when one was: a record that cannot be placed in
+        time cannot be asserted to fall inside the window.
+        """
         self.flush()  # surface any queued-but-unwritten events
-        if not self._path.exists():
-            return []
-        lines = self._path.read_text(encoding="utf-8").splitlines()
-        result = []
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
+        result: list[dict] = []
+        if limit <= 0:
+            return result
+        windowed = since is not None or until is not None
+        # Newest first: the live log, then rotated segments newest to oldest.
+        # Segments are discovered LAZILY (only if the live log has not already
+        # satisfied the request), so the common tail read touches one file.
+        for path in self._read_sources_newest_first():
+            if not path.exists():
                 continue
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-            if len(result) >= limit:
-                break
+            for line in self._iter_lines_backward(path):
+                try:
+                    data = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if windowed:
+                    ts = _parse_timestamp(data.get("timestamp", ""))
+                    if ts is None:
+                        continue
+                    if until is not None and ts >= until:
+                        continue
+                    if since is not None and ts < since:
+                        # Append-ordered log: everything from here back is older.
+                        return result
+                result.append(data)
+                if len(result) >= limit:
+                    return result
         return result
+
+    def _read_sources_newest_first(self) -> Iterator[Path]:
+        """The live log, then ADMISSIBLE segments newest to oldest.
+
+        A segment is only handed to the read path once one of its records
+        verifies under our HMAC key. ``security_events.d`` is created by this
+        release, and it was not on the sensitive-path floor before it, so an agent
+        could have pre-created the directory and left a segment-shaped JSONL of
+        its own choosing in it; without this gate the upgrade would then present
+        those forged records to every reader as audit events. Forging is what the
+        chain key exists to prevent and the key lives outside the log directory,
+        so a planted segment cannot produce a single valid signature.
+
+        The check is ONE record per segment (the last, reached through the same
+        backward reader), not the whole file: full-segment verification would undo
+        the bounded read this release exists to provide, and one valid signature
+        is already unforgeable. ``verify_integrity`` deliberately does NOT filter
+        this way — it reports a rejected segment's entries as invalid instead of
+        hiding them, because an audit tool must surface tampering rather than
+        quietly drop the evidence.
+
+        A generator so segments are neither listed nor opened when the live log
+        already answered the caller.
+        """
+        yield self._path
+        for path in reversed(self._segments_oldest_first()):
+            if self._segment_is_signed_by_us(path):
+                yield path
+            else:
+                logger.warning(
+                    "SEL refusing to read %s as audit history: no record in it is "
+                    "signed with this log's key (planted before upgrade?)",
+                    path.name,
+                )
+
+    def _segment_is_signed_by_us(self, path: Path) -> bool:
+        """Whether *path* holds at least one record signed with our HMAC key."""
+        for line in self._iter_lines_backward(path):
+            try:
+                data = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(data, dict) and self._record_signature_matches(data):
+                return True
+        return False
+
+    def _record_signature_matches(self, record: dict) -> bool:
+        """Whether *record*'s ``entry_hash`` is our HMAC over its other fields."""
+        data = dict(record)
+        stored = data.pop("entry_hash", "")
+        if not isinstance(stored, str) or not stored:
+            return False
+        try:
+            payload = json.dumps(data, sort_keys=True).encode()
+        except (TypeError, ValueError):
+            return False
+        expected = hmac.new(self._hmac_key, payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(stored, expected)
+
+    def _iter_lines_backward(self, path: Path) -> Iterator[str]:
+        """Yield *path*'s non-empty lines from last to first, reading in chunks.
+
+        Same backward scan as :meth:`_read_last_hash`: only the tail is touched
+        unless the caller keeps consuming, so reading 20 entries out of a
+        size-capped segment costs one chunk rather than the whole file.
+
+        The pending buffer is CAPPED at ``_MAX_LINE_BYTES``. Held bytes are
+        whatever has not yet been split into a complete line, so a file with no
+        newline in it would otherwise accumulate to its full size in memory --
+        and this reader is pointed at attacker-influenced input: a segment planted
+        before this release (when the directory was not fenced) is read here both
+        by the time-range read and by segment admission. A single planted
+        gigabyte-long unterminated line would exhaust the process. Hitting the cap
+        ends the scan, so a caller sees the lines it already got and admission
+        simply fails to find a signed record -- which is the safe direction.
+        """
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                pos = f.tell()
+                buf = b""
+                while pos > 0:
+                    read_start = max(pos - _TAIL_CHUNK_BYTES, 0)
+                    f.seek(read_start)
+                    buf = f.read(pos - read_start) + buf
+                    pos = read_start
+                    parts = buf.split(b"\n")
+                    if pos > 0:
+                        # First element may be incomplete — defer it until the
+                        # next chunk supplies its start.
+                        buf = parts[0]
+                        complete = parts[1:]
+                    else:
+                        buf = b""
+                        complete = parts
+                    for raw in reversed(complete):
+                        stripped = raw.strip()
+                        if stripped:
+                            yield stripped.decode("utf-8", errors="replace")
+                    if len(buf) > _MAX_LINE_BYTES:
+                        logger.warning(
+                            "SEL stopping the backward scan of %s: over %d bytes with no "
+                            "line boundary (truncated or planted file?)",
+                            path.name,
+                            _MAX_LINE_BYTES,
+                        )
+                        return
+        except OSError:
+            logger.warning("SEL could not read %s", path, exc_info=True)
 
     def prune(self, keep_days: int = _RETENTION_DAYS) -> int:
         """Remove entries older than keep_days. Returns count removed.
@@ -987,52 +1942,187 @@ class SecurityEventLog:
         or block until after the replace (and land in the new file). Appends
         run on the background writer thread, so blocking them for the prune
         duration never touches the event loop.
+
+        ``_lock`` is a THREAD lock, so it does nothing about a sibling process --
+        and prune's read-then-replace is the one window where that is
+        destructive rather than merely untidy. If another process rotates while
+        we are streaming, our ``os.replace`` drops a snapshot of the OLD file
+        over the fresh live log, discarding its rotation record and every event
+        appended since. That is the only path in this class that can lose
+        already-persisted audit events, so the window is serialized with the
+        cross-process ROTATION lock (the same one rotation takes) via
+        :meth:`_prune_live_locked`.
+
+        Unlike rotation, prune WAITS for that lock instead of skipping. Rotation
+        is deferrable and runs on the audit hot path; prune is a once-a-day sweep
+        on the maintenance executor, never on the event loop, and skipping it
+        would postpone retention for a whole day. When the lock cannot be taken
+        at all the live sweep is skipped and reported, because doing it
+        unserialized is what loses events.
+
+        Rotated segments are aged out WHOLE rather than rewritten: a segment
+        whose newest record is past the cutoff is deleted outright, which keeps
+        every surviving segment's chain intact (rewriting one would orphan its
+        first record's ``prev_hash``). Their entries are included in the
+        returned count.
         """
         self.flush()  # don't rewrite the file out from under queued appends
         cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=keep_days)
-        cutoff_str = cutoff_dt.isoformat()
 
         removed = 0
         with self._lock:
+            removed += self._prune_segments_locked(cutoff_dt)
             if not self._path.exists():
-                return 0
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=str(self._path.parent), prefix=".sel_prune_", suffix=".tmp"
-            )
+                return removed
+            lock_fh = self._open_rotation_lock() if self._ensure_segment_dir() else None
+            if lock_fh is None:
+                logger.warning(
+                    "SEL prune could not take the rotation lock; skipping the live-log "
+                    "sweep rather than risking a concurrent rotation's events"
+                )
+                return removed
             try:
-                with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
-                    with open(self._path, encoding="utf-8") as src_f:
-                        for raw_line in src_f:
-                            line = raw_line.strip()
-                            if not line:
-                                continue
-                            try:
-                                data = json.loads(line)
-                                if data.get("timestamp", "") < cutoff_str:
-                                    removed += 1
-                                    continue
-                            except json.JSONDecodeError:
-                                removed += 1
-                                continue
-                            tmp_f.write(line)
-                            tmp_f.write("\n")
-
-                if removed:
-                    os.replace(tmp_path, self._path)
-                    self._last_hash = self._read_last_hash()
-                    logger.info(
-                        "SEL pruned %d entries older than %d days", removed, keep_days
-                    )
-                else:
-                    os.unlink(tmp_path)
-            except BaseException:
-                # Clean up temp file on any failure
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+                with platform_compat.file_lock(lock_fh.fileno(), exclusive=True):
+                    removed += self._prune_live_locked(cutoff_dt, keep_days)
+            except OSError:
+                logger.warning(
+                    "SEL prune could not serialize the live-log sweep; skipped",
+                    exc_info=True,
+                )
+            finally:
+                lock_fh.close()
         return removed
+
+    def _prune_live_locked(self, cutoff_dt: datetime, keep_days: int) -> int:
+        """Rewrite the live log without its aged-out entries. Returns count removed.
+
+        Caller holds ``_lock`` AND the cross-process rotation lock, so no sibling
+        can rotate the file out from under the read-then-replace below.
+        """
+        cutoff_str = cutoff_dt.isoformat()
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(self._path.parent), prefix=".sel_prune_", suffix=".tmp"
+        )
+        live_removed = 0
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
+                with open(self._path, encoding="utf-8") as src_f:
+                    for raw_line in src_f:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                            if data.get("timestamp", "") < cutoff_str:
+                                live_removed += 1
+                                continue
+                        except json.JSONDecodeError:
+                            live_removed += 1
+                            continue
+                        tmp_f.write(line)
+                        tmp_f.write("\n")
+
+            if live_removed:
+                os.replace(tmp_path, self._path)
+                # The replace gives the live log a NEW inode and a smaller size, so
+                # re-anchor both the tip and the identity we compare against.
+                # Leaving the identity stale would make the next append see a
+                # foreign change and re-chain needlessly.
+                self._reanchor_now()
+                logger.info(
+                    "SEL pruned %d entries older than %d days", live_removed, keep_days
+                )
+            else:
+                os.unlink(tmp_path)
+        except BaseException:
+            # Clean up temp file on any failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return live_removed
+
+    def _prune_segments_locked(self, cutoff: datetime) -> int:
+        """Delete whole rotated segments whose NEWEST record predates *cutoff*.
+
+        Returns the number of entries dropped with them. Caller holds ``_lock``.
+        A segment is deleted only when its last record is past the cutoff, so a
+        segment straddling the boundary is kept in full rather than rewritten:
+        rewriting it would orphan its first record's ``prev_hash`` and turn a
+        retention sweep into an apparent chain break. Best-effort — a segment
+        that cannot be read or unlinked is logged and left alone.
+        """
+        removed = 0
+        for path in self._segments_oldest_first():
+            newest = self._newest_timestamp(path)
+            if newest is None or newest >= cutoff:
+                # Unreadable/undatable, or still within retention. Segments are
+                # chronological, so the first keeper ends the sweep.
+                break
+            count = sum(1 for _ in self._iter_lines_backward(path))
+            try:
+                path.unlink()
+            except OSError:
+                logger.warning("SEL could not delete aged-out segment %s", path, exc_info=True)
+                break
+            removed += count
+            logger.info("SEL deleted aged-out segment %s (%d entries)", path.name, count)
+        return removed
+
+    def _newest_timestamp(self, path: Path) -> datetime | None:
+        """Timestamp of *path*'s newest parseable record, or ``None``."""
+        for line in self._iter_lines_backward(path):
+            try:
+                data = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            parsed = _parse_timestamp(data.get("timestamp", ""))
+            if parsed is not None:
+                return parsed
+        return None
+
+
+@contextmanager
+def _no_rotation() -> Iterator[None]:
+    """A do-nothing stand-in for the rotation window (see ``_flush_batch``)."""
+    yield
+
+
+def _segment_seq(path: Path) -> int:
+    """Rotation sequence encoded in a segment's name (0 if it has none).
+
+    Sort key for :meth:`SecurityEventLog._segments_oldest_first`; callers filter
+    non-segment names first, so the fallback only guards a caller that does not.
+    """
+    match = _SEGMENT_NAME_RE.fullmatch(path.name)
+    return int(match.group("seq")) if match else 0
+
+
+def _parse_timestamp(raw: object) -> datetime | None:
+    """Parse a SEL record timestamp into an aware UTC datetime, or ``None``.
+
+    Records are written with ``datetime.now(timezone.utc).isoformat()``, but a
+    hand-edited or forwarded record may carry a ``Z`` suffix or no offset at all.
+    ``fromisoformat`` only accepts ``Z`` from Python 3.11, and the package
+    supports 3.10, so the suffix is normalized here. A naive timestamp is read as
+    UTC — the only offset SEL ever writes — so it stays comparable with an aware
+    window bound instead of raising.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    text = raw.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _infer_source(session_key: str) -> str:
