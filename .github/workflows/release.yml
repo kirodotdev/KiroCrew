@@ -32,9 +32,25 @@ jobs:
       base_version: ${{ steps.channel.outputs.base_version }}
       channel: ${{ steps.channel.outputs.channel }}
       wheel_version: ${{ steps.channel.outputs.wheel_version }}
+      # rebuild: "true" only when this is a stable tag AND the opt-in repo
+      # variable STABLE_REBUILD names exactly this base version. Then stable is
+      # BUILT fresh from source (like insider, but on the stable channel with a
+      # bare version) instead of PROMOTED, so the shipped bytes carry the clean
+      # "0.3.0" stamp rather than the candidate's "-insider.N". Default stable
+      # (variable unset or mismatched) is unchanged: promotion of soaked bytes.
+      rebuild: ${{ steps.channel.outputs.rebuild }}
+      # promote_mode: "true" for the ordinary stable path (promote soaked bytes).
+      # Every downstream "stable ? promotion : fresh" choice keys off THIS, so a
+      # rebuild takes the fresh/insider-shaped branch on the stable channel.
+      promote_mode: ${{ steps.channel.outputs.promote_mode }}
     steps:
       - name: Derive version + channel from tag
         id: channel
+        env:
+          # Scoped to ONE version on purpose (mirrors STABLE_GATE_OVERRIDE): it
+          # must equal the base being released, so it cannot be left switched on
+          # for every future stable tag.
+          STABLE_REBUILD: ${{ vars.STABLE_REBUILD }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
@@ -69,7 +85,25 @@ jobs:
           echo "base_version=$BASE" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "wheel_version=$WHEEL_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Releasing $VERSION on channel $CHANNEL (base: $BASE, wheel: $WHEEL_VERSION)"
+
+          # Opt-in stable REBUILD lane. A bare stable tag normally promotes the
+          # soaked prerelease bytes (which carry the candidate's -insider.N
+          # stamp). When STABLE_REBUILD names this exact base version, stable is
+          # instead built fresh from source so the shipped app advertises the
+          # clean "$BASE" -- the only way a promoted client can display a bare
+          # stable version, since promotion never re-stamps. Everything else on
+          # the stable channel keys off promote_mode.
+          REBUILD="false"
+          if [ "$CHANNEL" = "stable" ] && [ "${STABLE_REBUILD:-}" = "$BASE" ]; then
+            REBUILD="true"
+          fi
+          PROMOTE_MODE="false"
+          if [ "$CHANNEL" = "stable" ] && [ "$REBUILD" != "true" ]; then
+            PROMOTE_MODE="true"
+          fi
+          echo "rebuild=$REBUILD" >> "$GITHUB_OUTPUT"
+          echo "promote_mode=$PROMOTE_MODE" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION on channel $CHANNEL (base: $BASE, wheel: $WHEEL_VERSION, rebuild: $REBUILD, promote_mode: $PROMOTE_MODE)"
 
   # Release tags do not trigger ci.yml, so prerelease candidates run a
   # dedicated backend test gate against the exact commit being packaged. The
@@ -153,7 +187,7 @@ jobs:
 
   resolve-promotion:
     name: Resolve Tested Candidate
-    if: needs.version.outputs.channel == 'stable'
+    if: needs.version.outputs.promote_mode == 'true'
     needs: version
     runs-on: ubuntu-latest
     permissions:
@@ -239,6 +273,9 @@ jobs:
         env:
           CHANNEL: ${{ needs.version.outputs.channel }}
           VERSION: ${{ needs.version.outputs.version }}
+          # A fresh stable rebuild is not a promotion, so the insider-soak
+          # evidence check (2) is skipped for it -- see below.
+          REBUILD: ${{ needs.version.outputs.rebuild }}
           # Scoped to ONE version on purpose: it must equal the version being
           # released, so it cannot be left switched on for every future tag.
           OVERRIDE: ${{ vars.STABLE_GATE_OVERRIDE }}
@@ -268,6 +305,12 @@ jobs:
             failures=$((failures + 1))
           fi
 
+          # A fresh stable REBUILD (STABLE_REBUILD set) is built from source, not
+          # promoted from a soaked candidate, so the insider-soak evidence check
+          # does not apply. Check 1 (the CHANGELOG section) still gates it.
+          if [ "$REBUILD" = "true" ]; then
+            echo "rebuild: skipping the insider-soak promotion check (stable built fresh from source)"
+          else
           # ── 2. Stable only promotes bytes insiders actually received ─────
           # A TAG IS NOT EVIDENCE OF A RELEASE. A cancelled or failed
           # prerelease run leaves its tag behind, so matching on tag names
@@ -313,6 +356,7 @@ jobs:
               failures=$((failures + 1))
             fi
           fi
+          fi
 
           if [ "$failures" -eq 0 ]; then
             echo "stable gate: both preconditions satisfied for $VERSION"
@@ -333,7 +377,7 @@ jobs:
 
   build-wheel:
     name: Build Wheel
-    if: needs.version.outputs.channel == 'insider'
+    if: needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true'
     needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-wheel.yml
     with:
@@ -341,7 +385,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop
-    if: needs.version.outputs.channel == 'insider'
+    if: needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true'
     needs: [version, dependency-vulnerability-gate]
     uses: ./.github/workflows/build-desktop.yml
     with:
@@ -380,8 +424,8 @@ jobs:
     needs: [version, stable-gate, build-wheel, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          ((needs.version.outputs.channel == 'insider' && needs.build-wheel.result == 'success') ||
-           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-wheel.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       id-token: write
@@ -390,8 +434,8 @@ jobs:
     with:
       channel: ${{ needs.version.outputs.channel }}
       version: ${{ needs.version.outputs.version }}
-      wheel_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
-      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      wheel_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets: inherit
 
@@ -422,8 +466,8 @@ jobs:
     needs: [version, stable-gate, build-desktop, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
-           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       id-token: write
@@ -431,11 +475,11 @@ jobs:
     uses: ./.github/workflows/publish-linux.yml
     with:
       channel: ${{ needs.version.outputs.channel }}
-      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      version: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       arch: x64
       publish: true
-      appimage_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
-      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      appimage_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-x64' }}
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets: inherit
 
@@ -444,8 +488,8 @@ jobs:
     needs: [version, stable-gate, build-desktop, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          ((needs.version.outputs.channel == 'insider' && needs.build-desktop.result == 'success') ||
-           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       id-token: write
@@ -453,11 +497,11 @@ jobs:
     uses: ./.github/workflows/publish-linux.yml
     with:
       channel: ${{ needs.version.outputs.channel }}
-      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      version: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       arch: arm64
       publish: true
-      appimage_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-arm64' }}
-      promote: ${{ needs.version.outputs.channel == 'stable' }}
+      appimage_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'build-linux-arm64' }}
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
     secrets: inherit
 
@@ -472,8 +516,8 @@ jobs:
     needs: [version, stable-gate, build-wheel, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          ((needs.version.outputs.channel == 'insider' && needs.build-wheel.result == 'success') ||
-           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-wheel.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read
       packages: write
@@ -488,9 +532,9 @@ jobs:
       # anonymously, so a release that lands behind a private package is a
       # broken release. Fail the lane rather than advertise an unpullable tag.
       require_public_access: true
-      wheel_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
-      promote: ${{ needs.version.outputs.channel == 'stable' }}
-      promote_digest: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.docker_digest || '' }}
+      wheel_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || 'cli-wheel' }}
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
+      promote_digest: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.docker_digest || '' }}
     # No `secrets: inherit`: the lane authenticates with GITHUB_TOKEN only
     # (implicitly available to reusable workflows). Inheriting would expose
     # every repo secret (signing, CDN) to a lane documented as needing none.
@@ -506,8 +550,8 @@ jobs:
     needs: [version, stable-gate, build-wheel, build-desktop, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          ((needs.version.outputs.channel == 'insider' && needs.build-wheel.result == 'success' && needs.build-desktop.result == 'success') ||
-           (needs.version.outputs.channel == 'stable' && needs.resolve-promotion.result == 'success')) }}
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-wheel.result == 'success' && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       id-token: write
       contents: read
@@ -516,10 +560,10 @@ jobs:
     secrets: inherit
     with:
       channel: ${{ needs.version.outputs.channel }}
-      version: ${{ needs.version.outputs.channel == 'stable' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      version: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
       write_feed: true
-      promote: ${{ needs.version.outputs.channel == 'stable' }}
-      promotion_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
+      promotion_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
 
   github-release:
@@ -537,7 +581,7 @@ jobs:
           path: artifacts
 
       - name: Verify promoted release bytes
-        if: needs.version.outputs.channel == 'stable'
+        if: needs.version.outputs.promote_mode == 'true'
         run: |
           python3 scripts/release_promotion.py verify \
             --bundle-dir "artifacts/KiroCrew-notarized-stable-${{ needs.version.outputs.version }}" \
