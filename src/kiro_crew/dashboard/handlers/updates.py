@@ -18,7 +18,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
-from kiro_crew.changelog import Release, build_release_list
+from kiro_crew.changelog import Release, base_version, build_release_list
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -154,6 +154,36 @@ def remediation_command(info: dict[str, object]) -> str:
     return ""
 
 
+def _display_version(version: str, channel: str) -> str:
+    """The version string shown to the user for the CURRENT build.
+
+    Promotion never re-stamps: a promoted STABLE build carries the soaked
+    candidate's prerelease stamp (``0.3.0rc13`` for the wheel, ``0.3.0-insider.13``
+    for the desktop), because that stamp is baked into the bytes at insider-build
+    time and is load-bearing there -- it keeps two insider RCs on distinct
+    immutable per-version keys, and the auto-updater's compare gate requires the
+    app version to equal the feed version. It therefore cannot be made clean in
+    the bytes without abandoning promotion. So fold it to its clean base
+    (``0.3.0``) for DISPLAY on the stable channel only; insider and nightly keep
+    their full stamp, where the prerelease number is meaningful.
+
+    Pure by design: the ``channel`` is passed in (from the off-loop
+    ``_update_info["channel"]``) rather than read here, so this never touches the
+    event loop. DISPLAY ONLY -- every version COMPARISON (``_is_newer``,
+    ``update_required``, the feed check) still uses the raw ``__version__``, so
+    folding here can never make a client miscompare or loop on updates.
+    """
+    return base_version(version) if channel == "stable" else version
+
+
+def _display_local_version() -> str:
+    """``_local_version`` folded for display, keyed on the off-loop channel that
+    a prior ``_do_update_check`` resolved into ``_update_info`` -- a plain dict
+    read, so this stays off the event loop.
+    """
+    return _display_version(_local_version, str(_update_info.get("channel") or ""))
+
+
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -187,7 +217,7 @@ async def api_update_check(request: web.Request) -> web.Response:
     return web.json_response(
         {
             **_update_info,
-            "current_version": _local_version,
+            "current_version": _display_local_version(),
             "auto_update": cfg.auto_update,
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button.
@@ -959,12 +989,12 @@ async def api_releases(request: web.Request) -> web.Response:
     """
 
     def _read_and_parse() -> list[Release]:
-        return build_release_list(_read_changelog(), _local_version)
+        return build_release_list(_read_changelog(), _display_local_version())
 
     releases = await asyncio.to_thread(_read_and_parse)
     return web.json_response(
         {
-            "current_version": _local_version,
+            "current_version": _display_local_version(),
             "releases": [r._asdict() for r in releases],
             "stale": any(r.in_progress for r in releases),
         }
@@ -1093,9 +1123,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
         if not applied:
             # A configured provider's failure is a failure. Falling through to
             # the git path would be the bypass the policy exists to prevent.
-            state.push_update_progress(
-                "failed", "Policy-defined update command failed — see logs"
-            )
+            state.push_update_progress("failed", "Policy-defined update command failed — see logs")
             return web.json_response(
                 {
                     "error": "policy-defined update command failed",
@@ -1544,7 +1572,7 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     # `status_update_fields()` is the one reader; /api/status and the
                     # WebSocket push already go through it.
                     **state.status_snapshot(**status_update_fields()),  # type: ignore[arg-type]
-                    "version": _local_version,
+                    "version": _display_local_version(),
                 }
             )
             await resp.write(f"event: dashboard\ndata: {data}\n\n".encode())

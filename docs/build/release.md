@@ -62,8 +62,51 @@ rebuild that hopes for reproducibility. The mechanism:
   identity. pip users selecting a promoted (prerelease-versioned) wheel by
   version must allow prereleases; the stable channel feed remains
   channel-sticky.
+- **Stable DISPLAYS a clean base version even though the bytes keep the RC
+  stamp.** The embedded version cannot change under promotion, so the remedy is
+  at the read layer: `_display_version()` in
+  `src/kiro_crew/dashboard/handlers/updates.py` folds the running version to its
+  bare `X.Y.Z` on the **stable** channel only (insider/nightly keep the full
+  stamp), so About and the Releases page show `0.4.0`, not `0.4.0rc3` /
+  `0.4.0-insider.3`. It is DISPLAY-ONLY — every version *comparison* still reads
+  the raw `__version__`, so it cannot cause an update loop —
+  `test/test_stable_version_display.py` is the regression gate. **This fix must
+  ride in the RC bytes**: promotion never rebuilds, so a display change added
+  after the RC is cut can never reach the promoted stable. Land it before the RC
+  is cut, or stable shows the RC stamp with no in-band remedy.
 - **Hot patches follow the same rule**: at least one recorded RC before the
   bare patch tag.
+
+### Runbook: promoting an RC to stable
+
+The constraint that shapes the whole timeline: **promotion is byte-for-byte, so
+anything a stable user will see must already be in the RC that gets promoted** —
+there is no build step at stable-tag time to add it.
+
+1. **Before the RC is cut — bake the fix in.**
+   - *CHANGELOG*: the release branch already carries `## [X.Y.Z] — <date>` (no
+     `[Unreleased]`, enforced by the changelog gate). Confirm at cut time.
+   - *Version display*: the base-version fold above must be merged to `main`
+     and cherry-picked to `release/X.Y` **before the RC is cut**, or stable will
+     show the RC stamp.
+2. **Cut the RC — verify content, not PR status.** On the target commit confirm:
+   `github-release` has an `if:`; `CHANGELOG.md` line 5 is `## [X.Y.Z]` with zero
+   non-bare-release `##` headings; exactly one `### Contributors`;
+   `__version__ = "X.Y.Z"`; the bytecode/pycache test fix is present; the
+   base-version fold is present (stable About shows `X.Y.Z`); no existing bare
+   `vX.Y.Z` tag. Then tag `vX.Y.Z-insider.N`.
+3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
+   byte-affecting change to the release branch between soak and promote** — the
+   guarantee is that stable gets exactly the soaked bytes.
+4. **Promote (bare tag).** Confirm the `vX.Y.Z-insider.N` run at the target
+   commit is SUCCESS (`resolve-promotion` finds the candidate by it). Push a bare
+   `vX.Y.Z` tag on that commit. The build lanes skip; `resolve-promotion`
+   re-verifies the recorded bundle and republishes it to stable.
+   `Create GitHub Release` runs (the `if:` fix) and renders GitHub's own
+   contributor block — **do not hand-write a contributors list in the body**
+   (that duplicated the native block on v0.3.0). Verify: stable feed points at
+   the RC's version, About shows the clean `X.Y.Z` via the fold, CHANGELOG shows
+   no draft heading.
 
 ## Workflows in the release path
 
@@ -350,6 +393,41 @@ number collapse onto the same PEP 440 wheel version, because `release.yml` maps
 by trailing number alone. `v0.2.0-rc.1` and `v0.2.0-insider.1` both map to
 `0.2.0rc1`, and the second publish fails as a republish of an immutable key.
 Stick to one convention (`-rc.N`) per base version.
+
+### Version numbering policy
+
+`__version__` in `src/kiro_crew/__init__.py` is the branch's DECLARED identity.
+A tagged build overrides all three manifests from the tag (the table above), so
+the in-code value is what a non-tag build reports and what the promote sequence
+manipulates — the final byte stamp is decided by the tag, not this value.
+
+- **On an insider release branch, `__version__` carries the RC suffix, and the
+  tag matches.** The branch reads as what it is: `__version__ = "X.Y.ZrcN"`,
+  tags `vX.Y.Z-insider.N`. Do not leave a release branch declaring a bare
+  `X.Y.Z` while it is still cutting RCs.
+- **Promoting an insider line to stable is a three-step sequence:**
+  1. **Drop the RC in a PR** — change `__version__` from `X.Y.ZrcN` to the bare
+     `X.Y.Z`. This is the release commit; it also sets the base the stable
+     display folds to (`_display_version`, see "Client auto-update").
+  2. **Cut one more RC tag** (`vX.Y.Z-insider.<N+1>`) on that commit and let it
+     soak. This bare-`__version__` commit is the promotion candidate.
+  3. **Tag the bare `vX.Y.Z`** on the same commit to promote — promotion
+     republishes the soaked candidate's exact bytes (see "Stable promotion").
+- **`main` (nightly) is always one MINOR ahead of the active insider line.**
+  While `release/0.4` stabilizes on insider at `0.4.x`, `main`'s `__version__`
+  is already `0.5.0`. The release branch owns the version being shipped; `main`
+  owns the next one. This keeps every nightly strictly newer than any RC of the
+  shipping line, so a nightly user is never offered what looks like a downgrade
+  to an RC.
+
+**Why the display still folds even after step 1.** The build stamps the version
+FROM THE TAG, and the desktop's embedded version MUST equal the feed version or
+the auto-updater's compare gate breaks (see "Client auto-update"). So the
+promotion candidate's *bytes* still carry the RC/insider stamp (`0.4.0rcN` /
+`0.4.0-insider.N`) even though the branch declares a bare `__version__`. The
+bare declaration sets the source-of-truth and the fold's base; `_display_version`
+is what actually shows a stable user `0.4.0`. The two are complementary, not
+alternatives.
 
 ## CLI channel and the signed manifest
 

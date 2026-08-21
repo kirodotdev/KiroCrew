@@ -229,6 +229,13 @@ One logical change per commit.
 
 ## Release Changelog
 
+> **Releasing or promoting a version? Read `docs/build/release.md` first.** It is
+> the authority on the channel model, version stamping, and the **RC → stable
+> promotion runbook** — including why anything a stable user will see (a clean
+> version number, a finalized changelog) must be baked into the RC bytes *before
+> the RC is cut*, since promotion never rebuilds. This section covers only the
+> changelog rules.
+
 `CHANGELOG.md` is written **only when a version is bumped**, and everything
 already in it is immutable. Two halves enforce that: the
 `changelog-is-written-at-version-bump-only` rule in `AUTOSDE.yaml` applies the
