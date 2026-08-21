@@ -2027,6 +2027,22 @@ class MemoryConfig:
         default=10_000,
         metadata=_meta("Episodic Max Count", "Maximum total episodic memories stored."),
     )
+    decay_rates: dict[str, float] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Memory Decay Rates",
+            "Per-tag episodic recency decay rates, per day (retrieval score factor "
+            "exp(-rate * days_old)). Keys are memory tags (case-insensitive); the "
+            "reserved 'default' key replaces the built-in 0.03 for memories matching "
+            "no configured tag. A memory carrying several configured tags uses the "
+            "slowest (smallest) rate, so a broad tag can never age out a "
+            "long-retention one. 0 means never ages out of retrieval ranking; 1 "
+            "drops a memory out of retrieval within about a day. Ranking only: "
+            "episodic_max_count cap eviction (lowest importance, then oldest) "
+            "still applies regardless of decay rate. Values are clamped to 0..10; "
+            "non-numeric values are ignored with a logged warning.",
+        ),
+    )
     semantic_keys: list[str] = field(
         default_factory=list,
         metadata=_meta("Semantic Keys", "Keys to index for semantic search."),
@@ -6356,6 +6372,9 @@ class KiroCrewConfig:
                 episodic_dedup_threshold=memory_data.get("episodic_dedup_threshold", 0.88),
                 episodic_max_results=memory_data.get("episodic_max_results", 8),
                 episodic_max_count=memory_data.get("episodic_max_count", 10_000),
+                decay_rates=(
+                    dr if isinstance(dr := memory_data.get("decay_rates", {}), dict) else {}
+                ),
                 semantic_keys=memory_data.get("semantic_keys", []),
                 history_idle_hours=memory_data.get("history_idle_hours", 3.0),
                 history_max_days=memory_data.get("history_max_days", 365),

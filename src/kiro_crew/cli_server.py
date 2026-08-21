@@ -1434,6 +1434,7 @@ async def _run_task(args: argparse.Namespace) -> None:
         extra_prefixes=cfg.memory.semantic_keys or None,
         episodic_limit=cfg.memory.episodic_max_results,
         embedding_dim=cfg.memory.embedding_dim,
+        decay_rates=cfg.memory.decay_rates or None,
     )
     vector_memory.init()
     # Embeddings are always-on: wire the factory; bind embed_fn when the model

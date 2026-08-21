@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -19,6 +22,7 @@ from kiro_crew.vector_memory import (
     _get_snowball,
     _jaccard,
     _mmr_rerank,
+    _sanitize_decay_rates,
     _stem_one,
     _stem_words,
     _tokenize,
@@ -3311,3 +3315,155 @@ class TestPromotionSkipIsObservable:
 
         warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert len([m for m in warns if "Promotion skipped pref.os" in m]) == 2, warns
+
+
+class TestSanitizeDecayRates:
+    """_sanitize_decay_rates: user-edited JSON is screened, not trusted."""
+
+    def test_clamps_to_bounds(self) -> None:
+        out = _sanitize_decay_rates({"fast": 99.0, "neg": -5.0, "ok": 0.5})
+        assert out == {"fast": 10.0, "neg": 0.0, "ok": 0.5}
+
+    def test_oversized_json_integers_clamp_instead_of_crashing(self) -> None:
+        # json.loads parses arbitrary-precision integers; float()/math.isfinite()
+        # raise OverflowError past ~1e308, which would abort store construction
+        # (gateway boot) on a garbage config value. Clamping must happen first.
+        big = 10**400
+        out = _sanitize_decay_rates({"huge": big, "neghuge": -big})
+        assert out == {"huge": 10.0, "neghuge": 0.0}
+
+    def test_ignores_non_numeric_with_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.vector_memory"):
+            out = _sanitize_decay_rates(
+                {"legal": "forever", "flag": True, "nan": float("nan"), "ok": 0.1}
+            )
+        assert out == {"ok": 0.1}
+        warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len([m for m in warns if "decay_rates" in m]) == 3, warns
+
+    def test_lowercases_and_strips_keys(self) -> None:
+        assert _sanitize_decay_rates({" Legal ": 0.0}) == {"legal": 0.0}
+
+    def test_empty_and_none_yield_empty(self) -> None:
+        assert _sanitize_decay_rates(None) == {}
+        assert _sanitize_decay_rates({}) == {}
+
+
+class TestEpisodicDecayRates:
+    """Per-tag configurable recency decay (memory.decay_rates) in retrieval scoring."""
+
+    _DIM = 4
+
+    @staticmethod
+    def _vec() -> list[float]:
+        # Unit vector: query == stored embedding gives cosine_sim of exactly 1.0.
+        return [1.0, 0.0, 0.0, 0.0]
+
+    def _store(self, tmp_path: Path, rates: dict[str, object] | None = None) -> VectorMemoryStore:
+        store = VectorMemoryStore(
+            db_path=tmp_path / "mem.db",
+            embedding_dim=self._DIM,
+            decay_rates=rates,  # type: ignore[arg-type]
+        )
+        store.init()
+        return store
+
+    def _write_backdated(
+        self,
+        store: VectorMemoryStore,
+        text: str,
+        days: int,
+        tags: list[str] | None = None,
+    ) -> None:
+        assert store.write_episodic(text, embedding=self._vec(), tags=tags)
+        # The extra hour keeps (now - created).days at exactly `days` for the
+        # duration of the test regardless of sub-second timing.
+        created = (datetime.now(tz=timezone.utc) - timedelta(days=days, hours=1)).isoformat()
+        store.db.execute(
+            "UPDATE episodic_memories SET created_at = ? WHERE text = ?", (created, text)
+        )
+        # init() runs the connection with implicit transactions (isolation_level
+        # ""), so the raw UPDATE above opens one that must be committed here --
+        # otherwise the next write_episodic's BEGIN IMMEDIATE raises "cannot
+        # start a transaction within a transaction".
+        store.db.commit()
+
+    def _score(self, store: VectorMemoryStore, text: str) -> float:
+        results = store.search_episodic(query_embedding=self._vec(), query_text="q", mmr=False)
+        by_text = {r["text"]: r["score"] for r in results}
+        assert text in by_text, f"memory {text!r} not retrieved: {sorted(by_text)}"
+        return by_text[text]
+
+    @staticmethod
+    def _expected(rate: float, days: int) -> float:
+        # cosine_sim = 1.0, default importance 0.5 -> base factor 0.85.
+        return 1.0 * (0.7 + 0.3 * 0.5) * math.exp(-rate * days)
+
+    def test_default_rate_unchanged_without_config(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path)
+        self._write_backdated(store, "note about the database migration", days=10)
+        assert self._score(store, "note about the database migration") == pytest.approx(
+            self._expected(0.03, 10), abs=1.5e-4
+        )
+
+    def test_per_tag_override_applied(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path, rates={"trading_data": 1.0})
+        self._write_backdated(store, "yesterday's market prices", days=2, tags=["trading_data"])
+        assert self._score(store, "yesterday's market prices") == pytest.approx(
+            self._expected(1.0, 2), abs=1.5e-4
+        )
+
+    def test_multi_tag_picks_slowest_decay(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path, rates={"legal": 0.0, "general": 0.5})
+        self._write_backdated(
+            store, "legal reasoning on the contract", days=30, tags=["legal", "general"]
+        )
+        # Slowest decay (rate 0.0) wins: the broader tag must not age it out.
+        assert self._score(store, "legal reasoning on the contract") == pytest.approx(
+            self._expected(0.0, 30), abs=1.5e-4
+        )
+
+    def test_default_key_overrides_builtin_rate(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path, rates={"default": 0.5})
+        self._write_backdated(store, "untagged observation from a session", days=5)
+        assert self._score(store, "untagged observation from a session") == pytest.approx(
+            self._expected(0.5, 5), abs=1.5e-4
+        )
+
+    def test_unmatched_tag_uses_builtin_default(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path, rates={"legal": 0.0})
+        self._write_backdated(store, "note tagged outside the config", days=10, tags=["other"])
+        assert self._score(store, "note tagged outside the config") == pytest.approx(
+            self._expected(0.03, 10), abs=1.5e-4
+        )
+
+    def test_tag_matching_is_case_insensitive(self, tmp_path: Path) -> None:
+        store = self._store(tmp_path, rates={"LEGAL": 0.0})
+        self._write_backdated(store, "precedent kept forever", days=30, tags=["Legal"])
+        assert self._score(store, "precedent kept forever") == pytest.approx(
+            self._expected(0.0, 30), abs=1.5e-4
+        )
+
+    def test_invalid_values_fall_back_to_default(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.vector_memory"):
+            store = self._store(tmp_path, rates={"legal": "forever", "default": True})
+        self._write_backdated(store, "note with unusable decay config", days=10, tags=["legal"])
+        assert self._score(store, "note with unusable decay config") == pytest.approx(
+            self._expected(0.03, 10), abs=1.5e-4
+        )
+        warns = [r.getMessage() for r in caplog.records if "decay_rates" in r.getMessage()]
+        assert len(warns) == 2, warns
+
+    def test_faiss_path_applies_configured_rate(self, tmp_path: Path) -> None:
+        if not (_HAS_FAISS and _HAS_NUMPY):
+            pytest.skip("FAISS/numpy not available on this platform")
+        store = self._store(tmp_path, rates={"legal": 0.0})
+        self._write_backdated(store, "faiss path retention check", days=30, tags=["legal"])
+        store.build_faiss_index()
+        assert store._faiss_index is not None
+        assert store._faiss_index.ntotal > 0  # type: ignore[attr-defined]
+        assert self._score(store, "faiss path retention check") == pytest.approx(
+            self._expected(0.0, 30), abs=1.5e-4
+        )

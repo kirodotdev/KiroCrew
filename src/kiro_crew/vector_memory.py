@@ -21,7 +21,7 @@ import re
 import struct
 import threading
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from fnmatch import fnmatch
@@ -149,6 +149,16 @@ _EPISODIC_LONG_TEXT_CHARS = 300  # texts longer than this get a relaxed threshol
 _EPISODIC_LONG_TEXT_THRESHOLD = 0.42  # relaxed threshold for long entries
 _EPISODIC_TEXT_MIN = 10
 _EPISODIC_TEXT_MAX = 2000
+# Episodic recency decay: score factor exp(-rate * days_old), per day. The
+# built-in rate applies when memory.decay_rates configures nothing else; the
+# reserved "default" key in that mapping replaces it for untagged/unmatched
+# rows. Rates outside [_DECAY_RATE_MIN, _DECAY_RATE_MAX] are clamped: 0 means
+# a memory never ages out, and by 10/day a single day already scales a score
+# by e^-10, so larger values are indistinguishable in ranking.
+_DEFAULT_DECAY_RATE = 0.03
+_DECAY_RATE_MIN = 0.0
+_DECAY_RATE_MAX = 10.0
+_DECAY_DEFAULT_KEY = "default"
 _FAISS_SAVE_INTERVAL = 100  # save index every N writes
 _MMR_LAMBDA = 0.6  # relevance vs diversity tradeoff (higher = more relevance)
 # Recall-safe upper bound on the MMR candidate pool. This is NOT a perf cap that
@@ -617,6 +627,47 @@ def _mmr_rerank(
     return [candidates[i] for i in selected]
 
 
+def _sanitize_decay_rates(raw: Mapping[str, object] | None) -> dict[str, float]:
+    """Validate and clamp user-configured per-tag episodic decay rates.
+
+    The mapping comes from hand-edited config JSON (``memory.decay_rates``), so
+    entries are screened rather than trusted: a non-string key or a non-numeric
+    or non-finite rate is dropped with a warning (logged once, at store
+    construction — retrieval never re-validates per row), and numeric rates are
+    clamped to [``_DECAY_RATE_MIN``, ``_DECAY_RATE_MAX``]. Keys are lowercased
+    to match the case-insensitive tag matching used by episodic retrieval
+    (:meth:`VectorMemoryStore._matches_tags`).
+    """
+    out: dict[str, float] = {}
+    if not raw:
+        return out
+    if not isinstance(raw, Mapping):
+        logger.warning(
+            "memory.decay_rates ignored: expected a mapping, got %r", type(raw).__name__
+        )
+        return out
+    for key, val in raw.items():
+        if not isinstance(key, str) or not key.strip():
+            logger.warning("memory.decay_rates: ignoring non-string key %r", key)
+            continue
+        # bool is an int subclass, but true/false is not a rate; NaN/Infinity
+        # are parsed by json.loads yet are not usable rates either.
+        if (
+            isinstance(val, bool)
+            or not isinstance(val, (int, float))
+            or (isinstance(val, float) and not math.isfinite(val))
+        ):
+            logger.warning("memory.decay_rates[%r]: ignoring non-numeric rate %r", key, val)
+            continue
+        # Clamp BEFORE converting to float: JSON admits arbitrary-precision
+        # integers, and float() (like math.isfinite()) raises OverflowError past
+        # ~1e308 -- crashing store construction on a garbage config value
+        # instead of clamping it. int/float comparison is exact in Python, so
+        # the clamp itself never overflows.
+        out[key.strip().lower()] = float(min(max(val, _DECAY_RATE_MIN), _DECAY_RATE_MAX))
+    return out
+
+
 # ── Store ──
 
 
@@ -632,6 +683,7 @@ class VectorMemoryStore:
         episodic_max: int = _DEFAULT_EPISODIC_MAX,
         embedding_dim: int = 1024,
         episodic_limit: int = _DEFAULT_EPISODIC_LIMIT,
+        decay_rates: dict[str, float] | None = None,
     ):
         self._db_path = db_path or (config_dir() / _DB_FILE)
         self._faiss_path = self._db_path.parent / _FAISS_FILE
@@ -640,6 +692,15 @@ class VectorMemoryStore:
         self._episodic_max = episodic_max
         self._episodic_limit = episodic_limit
         self._embedding_dim = embedding_dim
+        # Per-tag episodic recency decay (memory.decay_rates). Sanitized once
+        # here — clamped, non-numeric entries warned about and dropped — so the
+        # per-row resolver (_decay_rate_for) only ever sees clean floats. The
+        # reserved "default" key is split out: it replaces the built-in rate
+        # for rows matching no configured tag and never participates in
+        # per-tag matching.
+        _rates = _sanitize_decay_rates(decay_rates)
+        self._decay_default = _rates.pop(_DECAY_DEFAULT_KEY, _DEFAULT_DECAY_RATE)
+        self._decay_by_tag = _rates
         self._prefixes = list(_BUILTIN_PREFIXES)
         if extra_prefixes:
             self._prefixes.extend(extra_prefixes)
@@ -1813,6 +1874,9 @@ class VectorMemoryStore:
     ) -> list[dict]:
         """Search episodic memories by vector similarity with decay scoring.
 
+        The recency decay rate defaults to ``_DEFAULT_DECAY_RATE`` per day and
+        is configurable per tag via ``memory.decay_rates`` (see
+        :meth:`_decay_rate_for`).
         When ``mmr=True`` (default), applies Maximal Marginal Relevance
         reranking to balance relevance with diversity.
         When ``tag_filter`` is provided, only entries matching ANY of the
@@ -1870,8 +1934,11 @@ class VectorMemoryStore:
                         continue
                     created = datetime.fromisoformat(mem["created_at"])
                     days_old = max(0, (now - created).days)
+                    decay_rate = self._decay_rate_for(mem.get("tags"))
                     score = (
-                        cosine_sim * (0.7 + 0.3 * mem["importance"]) * math.exp(-0.03 * days_old)
+                        cosine_sim
+                        * (0.7 + 0.3 * mem["importance"])
+                        * math.exp(-decay_rate * days_old)
                     )
                     candidates.append(
                         {**mem, "score": round(score, 4), "cosine_sim": round(cosine_sim, 4)}
@@ -1958,7 +2025,8 @@ class VectorMemoryStore:
             cosine_sim = sum(a * b for a, b in zip(q, vec))
             created = datetime.fromisoformat(r["created_at"])
             days_old = max(0, (now - created).days)
-            score = cosine_sim * (0.7 + 0.3 * r["importance"]) * math.exp(-0.03 * days_old)
+            decay_rate = self._decay_rate_for(r["tags"])
+            score = cosine_sim * (0.7 + 0.3 * r["importance"]) * math.exp(-decay_rate * days_old)
             candidates.append(
                 {
                     "id": r["id"],
@@ -2092,6 +2160,27 @@ class VectorMemoryStore:
         raw = mem.get("tags", "[]")
         entry_tags = json.loads(raw) if isinstance(raw, str) else (raw or [])
         return bool(set(t.lower() for t in entry_tags) & set(t.lower() for t in tag_filter))
+
+    def _decay_rate_for(self, raw_tags: str | list[str] | None) -> float:
+        """Resolve the per-day recency decay rate for an episodic row.
+
+        Rates come from the ``memory.decay_rates`` config mapping, keyed by tag
+        (case-insensitive, same as :meth:`_matches_tags`); the reserved
+        ``default`` key replaces the built-in ``_DEFAULT_DECAY_RATE`` for rows
+        matching no configured tag. A row carrying several configured tags uses
+        the SLOWEST decay — the smallest rate, i.e. maximum retention — so a
+        memory tagged both a long-retention tag (rate 0.0) and a general tag
+        (rate 0.03) never ages out because of the broader tag.
+        """
+        if not self._decay_by_tag:
+            return self._decay_default
+        entry_tags = json.loads(raw_tags) if isinstance(raw_tags, str) else (raw_tags or [])
+        matched = [
+            self._decay_by_tag[t.lower()]
+            for t in entry_tags
+            if isinstance(t, str) and t.lower() in self._decay_by_tag
+        ]
+        return min(matched) if matched else self._decay_default
 
     def _get_episodic(self, mem_id: str) -> dict | None:
         row = self._fetch_one_locked(
