@@ -262,8 +262,11 @@ class TeamsClient:
 
     async def close(self) -> None:
         self._closed = True
-        for task in list(self._handler_tasks):
-            task.cancel()
+        if self._handler_tasks:
+            for task in list(self._handler_tasks):
+                task.cancel()
+            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
+            self._handler_tasks.clear()
         if self._session is not None and not self._session.closed:
             await self._session.close()
             self._session = None
