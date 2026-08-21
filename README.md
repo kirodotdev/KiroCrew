@@ -60,7 +60,7 @@ remote Gateway over an SSH tunnel. See the
 [desktop app guide](docs/build/desktop-app.md).
 
 - **macOS** (Apple Silicon/Intel): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
-- **Windows** (x64): Stable — none, use a [source install](#build-from-source) | Insider — from 0.4.0 | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-Setup.exe) · [why](docs/guides/windows-install.md#desktop-installer)
+- **Windows** (x64): Stable — none, use a [source install](#build-from-source) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-Setup.exe) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-Setup.exe) · [why](docs/guides/windows-install.md#desktop-installer)
 
 **On Linux, start with the one-line install** — it is the smoothest path, works
 on every distro and both architectures, and puts `kirocrew` on your `PATH`,
@@ -81,14 +81,12 @@ carries a manual sandbox step. `uname -m` prints which architecture you need.
 
 | Linux desktop package | x86_64 | aarch64 (Graviton, Raspberry Pi, ARM laptops) |
 |---|---|---|
-| **`.deb`** (Debian, Ubuntu) — **Nightly only for now** | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.deb) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.deb) |
-| **`.rpm`** (Fedora, RHEL, CentOS Stream, Amazon Linux 2023) — **Nightly only for now** | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.rpm) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.rpm) |
+| **`.deb`** (Debian, Ubuntu) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.deb) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.deb) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.deb) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.deb) |
+| **`.rpm`** (Fedora, RHEL, CentOS Stream, Amazon Linux 2023) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.rpm) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.rpm) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.rpm) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.rpm) |
 | **AppImage** (no root, any distro) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage) | [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.AppImage) · [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.AppImage) · [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.AppImage) |
 
-**`.deb` and `.rpm` publish on Nightly only until 0.4.0**, as does the Windows
-installer's Insider lane — the per-format publish lanes landed after the 0.3.0
-release branch was cut. On Stable and Insider, take the AppImage or the one-line
-CLI install above.
+**`.deb` and `.rpm` reach Stable when 0.4.0 does** — their publish lanes landed
+after the 0.3.0 release branch was cut, so Stable serves the AppImage for now.
 
 ```bash
 sudo apt install ./KiroCrew-x86_64.deb     # Debian, Ubuntu
