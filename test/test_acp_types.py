@@ -1,6 +1,15 @@
 """Tests for ACP types."""
 
-from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage, JsonRpcRequest
+from kiro_crew.acp.types import (
+    JSONRPC_METHOD_NOT_FOUND,
+    AcpPromptStats,
+    JsonRpcMessage,
+    JsonRpcRequest,
+)
+
+
+def test_jsonrpc_method_not_found_is_reserved_code():
+    assert JSONRPC_METHOD_NOT_FOUND == -32601
 
 
 class TestJsonRpcRequest:

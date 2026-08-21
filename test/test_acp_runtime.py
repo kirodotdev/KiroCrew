@@ -42,6 +42,7 @@ from kiro_crew.acp.runtime import (
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_TEXT_CHUNK,
+    JSONRPC_METHOD_NOT_FOUND,
     METHOD_COMMANDS_EXECUTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_SESSION_LOAD,
@@ -2142,7 +2143,7 @@ async def test_dispatch_unknown_server_request_gets_error_response():
         for call in calls:
             data = json.loads(call.args[0].decode())
             if data.get("id") == 9999 and "error" in data:
-                assert data["error"]["code"] == -32601
+                assert data["error"]["code"] == JSONRPC_METHOD_NOT_FOUND
                 error_sent = True
         assert error_sent, "Expected -32601 error response for unknown server request"
     finally:

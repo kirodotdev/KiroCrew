@@ -81,6 +81,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
+    JSONRPC_METHOD_NOT_FOUND,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
     METHOD_PROMPT,
@@ -2071,7 +2072,9 @@ class AcpSessionHandle:
                     self._awaiting_permission = True
                     yield _perm_event
                 elif action == "server_request_unknown":
-                    await self._runtime.send_error(msg.id, -32601, "Method not found")
+                    await self._runtime.send_error(
+                        msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found"
+                    )
                 elif action == "update":
                     for ev in self._handle_update(msg):
                         yield ev

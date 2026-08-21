@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
 from kiro_crew.mcp_gateway import backend as backend_mod
 from kiro_crew.mcp_gateway.backend import (
     HARD_WEDGE_CEILING_SECS,
@@ -396,6 +397,38 @@ def test_unknown_notification_silently_ignored() -> None:
     # The subsequent tools/call (id=7) still got its response
     tool_responses = [c for c in respond_calls if c[0] == 7]
     assert len(tool_responses) == 1, f"tools/call after unknown notification must still work: {respond_calls}"
+
+
+def test_unknown_request_uses_canonical_method_not_found_code() -> None:
+    """An unknown MCP request receives the shared JSON-RPC reserved code."""
+    import kiro_crew.mcp_shared as mod
+    from kiro_crew.mcp_shared import run_mcp_stdio_loop
+
+    messages = iter(
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 9, "method": "future/method", "params": {}},
+        ]
+    )
+
+    def fake_read_message(stdin):
+        return next(messages, None)
+
+    responses: list = []
+
+    def capturing_respond(rid, result=None, error=None):
+        responses.append((rid, result, error))
+
+    with patch.object(mod, "_read_message", fake_read_message), patch.object(
+        mod, "respond", capturing_respond
+    ):
+        run_mcp_stdio_loop("test-server", "0.1.0", lambda: [], lambda _name, _args: "")
+
+    unknown = next(response for response in responses if response[0] == 9)
+    assert unknown[2] == {
+        "code": JSONRPC_METHOD_NOT_FOUND,
+        "message": "Unknown method: future/method",
+    }
 
 
 def test_constants_relationships() -> None:

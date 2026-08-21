@@ -35,7 +35,11 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
     LivenessOracle,
 )
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpPromptStats
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    JSONRPC_METHOD_NOT_FOUND,
+    AcpPromptStats,
+)
 
 # Windows lacks os.killpg and POSIX process-tree APIs (ps, /proc).
 # Tests that exercise these paths are skipped on Windows.
@@ -7130,7 +7134,6 @@ class TestProcessMessageUnknownServerRequest:
 
     @pytest.mark.asyncio
     async def test_reject_sends_method_not_found_error(self, tmp_path):
-        from kiro_crew.acp.client import _JSONRPC_METHOD_NOT_FOUND
         from kiro_crew.acp.types import JsonRpcMessage
 
         client = AcpClient(work_dir=tmp_path)
@@ -7143,7 +7146,7 @@ class TestProcessMessageUnknownServerRequest:
         written = client._process.stdin.write.call_args[0][0].decode()
         payload = json.loads(written)
         assert payload["id"] == 42
-        assert payload["error"]["code"] == _JSONRPC_METHOD_NOT_FOUND
+        assert payload["error"]["code"] == JSONRPC_METHOD_NOT_FOUND
         assert "terminal/create" in payload["error"]["message"]
 
     @pytest.mark.asyncio
