@@ -6782,6 +6782,20 @@
       "webhook_unbound_reason": "वेबहुक टोकन अभी किसी Crew से बंधे नहीं हैं, इसलिए कोई भी टोकन किसी भी Crew को जगा सकता है।",
       "webhook_unbound_short": "किसी Crew से बंधा नहीं",
       "wire_what_it_works_with": "यह किसके साथ काम करता है"
+    },
+    "awsConsentGate": {
+      "confirm_title": "पहले अनुरोध से पहले AWS उपयोग की पुष्टि करें",
+      "confirmed_title": "AWS उपयोग की पुष्टि हो गई",
+      "account_changed": "यह किसी दूसरे AWS खाते के लिए पुष्ट किया गया था, इसलिए पुष्टि वापस ले ली गई। नीचे दिया खाता देखें और फिर पुष्टि करें।",
+      "service": "सेवा",
+      "region": "क्षेत्र",
+      "credential_source": "क्रेडेंशियल स्रोत",
+      "aws_account": "AWS खाता",
+      "provider_default": "(प्रदाता का डिफ़ॉल्ट)",
+      "unresolved_account": "हल नहीं किया जा सका",
+      "billing_notice": "यह एक सशुल्क AWS सेवा है। पुष्टि होने तक कोई अनुरोध नहीं भेजा जाता।",
+      "confirm_button": "पुष्टि करें और चालू करें",
+      "withdraw": "पुष्टि वापस लें"
     }
   },
   "hooks": {

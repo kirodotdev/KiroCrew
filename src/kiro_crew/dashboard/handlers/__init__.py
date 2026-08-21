@@ -563,6 +563,15 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
     return [dict(p) for p in result]
 
 
+# Paid-AWS-service consent — the operator's confirmation surface for Amazon
+# Polly (TTS) and Amazon Transcribe (STT). Sole writer of the keystone grant
+# alongside the ``kirocrew aws-consent`` CLI.
+from kiro_crew.dashboard.handlers.aws_consent import (  # noqa: E402, F401
+    api_aws_consent_delete,
+    api_aws_consent_get,
+    api_aws_consent_post,
+)
+
 # Computer use — the Settings config pair (browser, cookie-authed) plus the two
 # loopback legs: ``invoke`` (the ``kirocrew-computer`` MCP shim's forward) and
 # ``frame`` (the live-view PiP mirror of an already-captured screenshot).

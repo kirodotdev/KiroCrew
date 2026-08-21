@@ -28,6 +28,7 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
+from kiro_crew import aws_consent
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -433,12 +434,32 @@ async def _synthesize_polly(
     ``ssml`` may be SSML (starting with ``<speak``) or plain text;
     text-type is auto-detected from the leading ``<speak`` tag.
     """
+    # Polly is a PAID AWS service and this is the request that spends money, so
+    # it does not happen without a recorded operator consent for this exact
+    # profile+region. The check is local (no AWS call of its own) because this
+    # path runs unattended — a Slack thread reply, an auto-reply to a voice
+    # memo, a scheduled job — so there is nobody here to prompt. Refusing
+    # returns None, which is this function's established "no audio" contract:
+    # callers already fall back to a text-only reply.
+    if not await aws_consent.refuse_and_log(
+        aws_consent.SERVICE_POLLY, profile=aws_profile, region=region
+    ):
+        return None
     # Polly is OPTIONAL and driven via the ``aws`` CLI (no boto3 dependency).
     # On a vanilla machine without the CLI installed, degrade gracefully here
     # instead of raising FileNotFoundError from create_subprocess_exec.
     if shutil.which("aws") is None:
         logger.info("voice_reply: Polly unavailable (aws CLI not on PATH); skipping TTS")
         return None
+    if not aws_profile:
+        # The reporter's core case: with no profile the argv below carries no
+        # ``--profile``, so the CLI's own chain decides which account is
+        # billed. The consent record above pinned that choice, but say so in
+        # the log too, because "no profile" reads as "no account" and is not.
+        logger.info(
+            "voice_reply: Polly is using the %s",
+            aws_consent.credential_source(aws_profile),
+        )
     if engine not in VALID_ENGINES:
         logger.error("Invalid Polly engine %r, falling back to neural", engine)
         engine = DEFAULT_ENGINE

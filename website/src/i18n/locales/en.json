@@ -4646,6 +4646,20 @@
       "verdict_tap_noop": "That’s a quick tap — in “{{mode}}” mode nothing would happen. Hold the key longer.",
       "verdict_toggle": "Recognised — in a real chat this press would start recording, and the next press would stop it.",
       "verdict_wrong_key": "That was {{got}}, not the {{want}} you chose above. If your keyboard has no such key, pick a different one under “{{field}}”."
+    },
+    "awsConsentGate": {
+      "confirm_title": "Confirm AWS usage before the first request",
+      "confirmed_title": "AWS usage confirmed",
+      "account_changed": "This was confirmed for a different AWS account, so the confirmation was withdrawn. Review the account below and confirm again.",
+      "service": "Service",
+      "region": "Region",
+      "credential_source": "Credential source",
+      "aws_account": "AWS account",
+      "provider_default": "(provider default)",
+      "unresolved_account": "could not be resolved",
+      "billing_notice": "This is a paid AWS service. Until you confirm, no request is sent.",
+      "confirm_button": "Confirm and enable",
+      "withdraw": "Withdraw confirmation"
     }
   },
   "hooks": {

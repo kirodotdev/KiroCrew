@@ -680,9 +680,48 @@ class TestSynthesizePiper:
 # ── _synthesize_polly() ──────────────────────────────────────────────────
 
 
+def _matching_identity(consent_mod, account: str):
+    """An async ``probe_identity`` stand-in that resolves to ``account``."""
+
+    async def _probe(_profile: str, _region: str, *, use_cache: bool = True):
+        return consent_mod.Identity(ok=True, account=account)
+
+    return _probe
+
+
+@pytest.fixture()
+def _polly_consented(tmp_path_factory, monkeypatch):
+    """Record operator consent for Polly under the default profile+region.
+
+    ``_synthesize_polly`` now refuses without one, so every test that means to
+    exercise the SYNTHESIS path has to consent first. The grant is written into
+    a throwaway data home, never the real one. Tests that assert the refusal
+    itself deliberately do not use this fixture (see ``test_aws_consent.py``).
+    """
+    home = tmp_path_factory.mktemp("consent-home")
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    from kiro_crew import aws_consent
+    from kiro_crew.config.loader import config_dir
+
+    config_dir().mkdir(parents=True, exist_ok=True)
+    aws_consent.record_grant(
+        aws_consent.SERVICE_POLLY,
+        profile="",
+        region="",
+        account="111122223333",
+        arn="arn:aws:iam::111122223333:user/test",
+        granted_at="2026-08-21T00:00:00+00:00",
+    )
+    # The gate also verifies the LIVE account, which would spawn the AWS CLI.
+    # These cases are about synthesis, so return a matching identity instead.
+    monkeypatch.setattr(
+        aws_consent, "probe_identity", _matching_identity(aws_consent, "111122223333")
+    )
+
+
 class TestSynthesizePolly:
     @pytest.fixture(autouse=True)
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, monkeypatch, _polly_consented):
         # _synthesize_polly() calls wrap_argv before create_subprocess_exec.
         # wrap_argv fail-closes on any host with no OS sandbox backend (macOS 26,
         # every Windows host), which is caught and returns None. Patch to
@@ -717,6 +756,20 @@ class TestSynthesizePolly:
 
     @pytest.mark.asyncio
     async def test_profile_and_region_passed_through(self, tmp_path) -> None:
+        # The class fixture consents for the DEFAULT profile+region, and a grant
+        # is keyed on both -- so this case has to consent for the pair it
+        # actually uses. That is the gate working: consent for one account does
+        # not silently transfer to another profile or region.
+        from kiro_crew import aws_consent
+
+        aws_consent.record_grant(
+            aws_consent.SERVICE_POLLY,
+            profile="my-profile",
+            region="us-east-2",
+            account="111122223333",
+            arn="arn:aws:iam::111122223333:user/test",
+            granted_at="2026-08-21T00:00:00+00:00",
+        )
         proc = _mock_subprocess(returncode=0)
 
         captured: list[str] = []
@@ -1165,7 +1218,7 @@ class TestTextTypeAutoDetection:
     """Tests for --text-type dynamic selection (ssml vs text)."""
 
     @pytest.fixture(autouse=True)
-    def _passthrough_sandbox(self, monkeypatch):
+    def _passthrough_sandbox(self, monkeypatch, _polly_consented):
         # See TestSynthesizePolly._passthrough_sandbox.
         monkeypatch.setattr(
             "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)

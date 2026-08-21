@@ -633,6 +633,30 @@ class TestTranscribeAudio:
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake audio")
         cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        # Transcribe is a paid service and `_transcribe_aws` refuses without a
+        # recorded consent for this profile+region, so this case -- which is
+        # about WHERE the read runs, not about the gate -- consents first. The
+        # refusal itself is covered in `test_aws_consent.py`.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        from kiro_crew import aws_consent
+        from kiro_crew.config.loader import config_dir
+
+        config_dir().mkdir(parents=True, exist_ok=True)
+        aws_consent.record_grant(
+            aws_consent.SERVICE_TRANSCRIBE,
+            profile=cfg.transcribe_profile,
+            region=cfg.transcribe_region,
+            account="111122223333",
+            arn="arn:aws:iam::111122223333:user/test",
+            granted_at="2026-08-21T00:00:00+00:00",
+        )
+
+        # The gate also verifies the LIVE account, which would spawn the AWS CLI.
+        # This case is about WHERE the read runs, so return a matching identity.
+        async def _probe(_profile, _region, *, use_cache=True):
+            return aws_consent.Identity(ok=True, account="111122223333")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _probe)
         loop_thread = get_ident()
         read_threads = []
 

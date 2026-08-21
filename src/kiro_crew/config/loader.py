@@ -628,6 +628,27 @@ def oauth_endpoints_path() -> Path:
     return config_dir() / "oauth_endpoints.json"
 
 
+def aws_consent_path() -> Path:
+    """Return path to aws_service_consent.json — paid-AWS-service consent.
+
+    Same KEYSTONE reasoning as :func:`computer_use_state_path`, and the leaf is
+    on ``security._CREW_SECRET_LEAVES`` for the same reason: a recorded consent
+    to call a PAID AWS service is an authorization, not a preference. Storing it
+    in ``config.json`` would leave it writable by any auto-approved agent shell,
+    so a prompt-injected agent could mint the grant and consent, on the
+    operator's behalf, to spending the operator's money in an account it picked.
+    ``is_sensitive_path`` blocks the tool path and ``is_sensitive_bash_command``
+    blocks the shell forms.
+
+    Holds ``{"<service>": {profile, region, account, arn, granted_at}}``; every
+    read fails soft to NO CONSENT (see ``aws_consent.read_grant``). The writers
+    are the authenticated dashboard ``/api/aws/consent`` handler and the
+    ``kirocrew aws-consent`` CLI, both of which open the path directly rather
+    than through this gate. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "aws_service_consent.json"
+
+
 def read_local_secret(port: int) -> str:
     """Read the internal-API credential for the gateway on *port*.
 

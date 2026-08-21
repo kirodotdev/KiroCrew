@@ -106,6 +106,14 @@ def register(app: web.Application) -> None:
     # set and is registered in ``_register_mcp_routes``.
     app.router.add_get("/api/computer-use/config", handlers.api_computer_use_config_get)
     app.router.add_put("/api/computer-use/config", handlers.api_computer_use_config_save)
+
+    # Paid-AWS-service consent (Settings > Voice). Browser-called and
+    # cookie-authed like the computer-use pair above, and for the same reason:
+    # this is the operator's out-of-band surface for an authorization the agent
+    # must not be able to grant itself.
+    app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
+    app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
+    app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 

@@ -286,12 +286,15 @@ class _Cfg:
 
 
 class TestSetOrchCfgProviderValidation:
-    def test_unknown_provider_falls_back_to_polly(self, monkeypatch, caplog):
+    def test_unknown_provider_falls_back_to_local(self, monkeypatch, caplog):
+        # Flipped from a "polly" fallback: an unrecognised provider value must
+        # not land on a PAID cloud service. Local costs nothing and degrades
+        # visibly; a cloud fallback bills an account nobody chose.
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
         with caplog.at_level("WARNING"):
             h.set_orch_cfg(_Cfg({"enabled": True, "provider": "ploly"}))
-        assert h._vc.provider == "polly"
+        assert h._vc.provider == "piper"
         assert "ploly" in caplog.text
 
     def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, monkeypatch):

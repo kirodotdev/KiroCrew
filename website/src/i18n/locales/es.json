@@ -6871,6 +6871,20 @@
       "webhook_unbound_reason": "Los tokens de webhook aún no están vinculados a ningún crew, por lo que cualquier token puede activar cualquier crew.",
       "webhook_unbound_short": "Sin vincular a un crew",
       "wire_what_it_works_with": "Con qué trabaja"
+    },
+    "awsConsentGate": {
+      "confirm_title": "Confirma el uso de AWS antes de la primera solicitud",
+      "confirmed_title": "Uso de AWS confirmado",
+      "account_changed": "Esto se confirmo para otra cuenta de AWS, por lo que se retiro la confirmacion. Revisa la cuenta de abajo y vuelve a confirmar.",
+      "service": "Servicio",
+      "region": "Region",
+      "credential_source": "Origen de las credenciales",
+      "aws_account": "Cuenta de AWS",
+      "provider_default": "(valor predeterminado del proveedor)",
+      "unresolved_account": "no se pudo resolver",
+      "billing_notice": "Este es un servicio de AWS de pago. Hasta que lo confirmes, no se envia ninguna solicitud.",
+      "confirm_button": "Confirmar y activar",
+      "withdraw": "Retirar la confirmacion"
     }
   },
   "hooks": {

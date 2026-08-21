@@ -6871,6 +6871,20 @@
       "webhook_unbound_reason": "Les jetons de webhook ne sont pas encore liés à un crew, donc n'importe quel jeton peut réveiller n'importe quel crew.",
       "webhook_unbound_short": "Non lié à un crew",
       "wire_what_it_works_with": "Ce qu'il utilise"
+    },
+    "awsConsentGate": {
+      "confirm_title": "Confirmer l'utilisation d'AWS avant la premiere requete",
+      "confirmed_title": "Utilisation d'AWS confirmee",
+      "account_changed": "La confirmation portait sur un autre compte AWS ; elle a donc ete retiree. Verifiez le compte ci-dessous et confirmez a nouveau.",
+      "service": "Service",
+      "region": "Region",
+      "credential_source": "Source des identifiants",
+      "aws_account": "Compte AWS",
+      "provider_default": "(valeur par defaut du fournisseur)",
+      "unresolved_account": "n'a pas pu etre resolu",
+      "billing_notice": "Ce service AWS est payant. Aucune requete n'est envoyee avant votre confirmation.",
+      "confirm_button": "Confirmer et activer",
+      "withdraw": "Retirer la confirmation"
     }
   },
   "hooks": {

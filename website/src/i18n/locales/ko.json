@@ -6693,6 +6693,20 @@
       "webhook_unbound_reason": "웹훅 토큰은 아직 크루에 연결되지 않으므로 어떤 토큰으로도 아무 크루를 깨울 수 있습니다.",
       "webhook_unbound_short": "크루에 연결되지 않음",
       "wire_what_it_works_with": "무엇으로 작동하는지"
+    },
+    "awsConsentGate": {
+      "confirm_title": "첫 요청 전에 AWS 사용 확인",
+      "confirmed_title": "AWS 사용이 확인됨",
+      "account_changed": "이전에는 다른 AWS 계정으로 확인되었기 때문에 확인이 취소되었습니다. 아래 계정을 검토한 후 다시 확인하세요.",
+      "service": "서비스",
+      "region": "리전",
+      "credential_source": "자격 증명 출처",
+      "aws_account": "AWS 계정",
+      "provider_default": "(공급자 기본값)",
+      "unresolved_account": "확인할 수 없음",
+      "billing_notice": "유료 AWS 서비스입니다. 확인하기 전에는 요청이 전송되지 않습니다.",
+      "confirm_button": "확인하고 사용",
+      "withdraw": "확인 취소"
     }
   },
   "hooks": {

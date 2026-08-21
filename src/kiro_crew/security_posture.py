@@ -105,6 +105,19 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "AWS identity-probe failures",
+        "aws_consent.py",
+        "The stderr of a failed `aws sts get-caller-identity`, run to show the "
+        "operator which account a paid AWS service would bill before they confirm "
+        "it. The text reaches TWO surfaces: the Settings > Voice consent card "
+        "(`identityDetail` over `GET /api/aws/consent`) and `kirocrew aws-consent "
+        "show` on stdout. The CLI quotes back what it was resolving, so a failure "
+        "can carry a `credential_process` command line, an SSO start URL, or a "
+        "role ARN, and an endpoint override can carry an inline-credential URL -- "
+        "so the first stderr line goes through the shared credential + "
+        "exfiltration-URL chain at the source, before it is put on an `Identity`.",
+    ),
+    (
         "Browser CLI install failures",
         "browser_cli/install.py",
         "The stderr of a failed `npm install -g @playwright/cli` / browser download, "

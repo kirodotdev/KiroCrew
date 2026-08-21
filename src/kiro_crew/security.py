@@ -4687,6 +4687,19 @@ _CREW_SECRET_LEAVES: list[str] = [
     # to the read+write keystone floor. Dashboard PUT is the sole writer and opens the
     # path directly.
     "ops_mission_control_policy.json",
+    # Recorded consent to call a PAID AWS service (Amazon Polly for TTS, Amazon
+    # Transcribe for STT). Same class of control as ``computer_use.json`` above:
+    # the record is what AUTHORIZES billable requests against a specific AWS
+    # account, so an agent that could write it would consent on the operator's
+    # behalf to spending the operator's money — and one that could write it
+    # could also point the grant at an account of its choosing, which is the
+    # unintended-account outcome the gate exists to prevent. Reading it is
+    # fenced too: the file names the account id and caller ARN that a profile
+    # resolves to, which is reconnaissance an agent should not get for free from
+    # the shared gate. The authenticated dashboard ``/api/aws/consent`` handler
+    # and the ``kirocrew aws-consent`` CLI are the only writers and open the
+    # path directly, not through this gate, so both keep working.
+    "aws_service_consent.json",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",

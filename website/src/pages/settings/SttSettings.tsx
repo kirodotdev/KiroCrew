@@ -7,6 +7,7 @@ import { api } from '../../api/client'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
 import { isEmbeddedPane } from '../../lib/embedded'
 import { PttTestStrip } from '../../components/PttTestStrip'
+import AwsConsentGate from '../../components/AwsConsentGate'
 import {
   BARE_CODE_LABEL_KEY,
   BARE_CODE_LABEL_KEY_OTHER,
@@ -453,6 +454,7 @@ export default function SttSettings({ cardIndex }: {
 
         {isTranscribe && (
           <>
+            <AwsConsentGate service="transcribe" />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_profile_transcribe')} description={i18nT('pages.settings.sttSettings.aws_credentials_profile_for_transcribe_blank_def')} value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.sttSettings.default')} disabled={saving} />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} description={i18nT('pages.settings.sttSettings.aws_region_for_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
           </>

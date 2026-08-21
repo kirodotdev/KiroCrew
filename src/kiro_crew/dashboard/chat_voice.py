@@ -20,12 +20,14 @@ import time
 
 from aiohttp import web
 
+from kiro_crew import aws_consent
 from kiro_crew.config.loader import config_path
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.handler import _vc
 from kiro_crew.voice_reply import (
     PROVIDER_PIPER,
+    PROVIDER_POLLY,
     VALID_ENGINES,
     VALID_PROVIDERS,
     stitch_mp3s,
@@ -304,6 +306,29 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     now = time.time()
     if _voices_cache is not None and (now - _voices_cache_ts) < _VOICES_CACHE_TTL:
         return web.json_response({"voices": _voices_cache})
+
+    # The catalogue lives behind a paid provider, so two gates come before the
+    # subprocess. Both used to be absent here: the ONLY thing stopping this
+    # endpoint from calling AWS was the frontend declining to fetch it while
+    # Piper was selected, so any other client — or a direct request — reached
+    # `aws polly describe-voices` against whatever the ambient credential chain
+    # resolved to.
+    #
+    # 1. Not the active provider: a Piper user has no business shipping a
+    #    request to Polly at all.
+    if _vc.provider != PROVIDER_POLLY:
+        return web.json_response({"voices": []})
+    # 2. Polly IS selected but unconfirmed. Same empty list: the operator-facing
+    #    explanation is the consent card's job (it has its own GET carrying the
+    #    reason), so returning a second copy here would be a response field with
+    #    no reader. Routed through ``refuse_and_log`` rather than ``authorize``
+    #    so the denial reaches the tamper-evident audit log like every other
+    #    gated call site -- a denial that only logs is a denial an incident
+    #    review cannot see.
+    if not await aws_consent.refuse_and_log(
+        aws_consent.SERVICE_POLLY, profile=_vc.aws_profile, region=_vc.region
+    ):
+        return web.json_response({"voices": []})
 
     if await asyncio.to_thread(shutil.which, "aws") is None:
         # Polly voice listing needs the AWS CLI, which is optional (the

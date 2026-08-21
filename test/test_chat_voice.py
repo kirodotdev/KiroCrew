@@ -346,13 +346,59 @@ class TestVoiceSynthesize:
         assert call_args[0][1]["slot"] == "s1"
 
 
+def _consent_to_polly(*, profile: str, region: str) -> None:
+    """Record operator consent for Polly under one profile+region pair."""
+    from kiro_crew import aws_consent
+
+    aws_consent.record_grant(
+        aws_consent.SERVICE_POLLY,
+        profile=profile,
+        region=region,
+        account="111122223333",
+        arn="arn:aws:iam::111122223333:user/test",
+        granted_at="2026-08-21T00:00:00+00:00",
+    )
+
+
 class TestVoiceVoices:
+    @pytest.fixture(autouse=True)
+    def _polly_consented(self, tmp_path_factory, monkeypatch):
+        """Consent for Polly under the default profile+region, throwaway home.
+
+        The voice catalogue is an ``aws polly describe-voices`` call, so it is
+        gated like every other billable Polly request. Cases that assert the
+        REFUSAL live in ``test_aws_consent.py``; these cases are about the
+        catalogue's own success and error handling, so they consent first.
+
+        Exactly ONE grant exists per service (a grant records the profile+region
+        it was given for), so a case using a different pair records its own --
+        see ``test_voices_returns_list``.
+        """
+        home = tmp_path_factory.mktemp("voices-consent-home")
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        from kiro_crew.config.loader import config_dir
+
+        config_dir().mkdir(parents=True, exist_ok=True)
+        _consent_to_polly(profile="", region="")
+        # The gate also verifies the LIVE account, which would spawn the AWS CLI
+        # and collide with this class's single-argument `shutil.which` stub.
+        # These cases are about the catalogue, so return a matching identity.
+        from kiro_crew import aws_consent
+
+        async def _probe(_profile, _region, *, use_cache=True):
+            return aws_consent.Identity(ok=True, account="111122223333")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _probe)
+
     @pytest.mark.asyncio
     async def test_voices_returns_list(self, tmp_path, monkeypatch):
         """Test successful voice listing."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(aws_profile="polly", region="us-east-1")
+        mock_vc = MagicMock(provider="polly", aws_profile="polly", region="us-east-1")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        # This case uses a NON-default profile+region, and a grant is keyed on
+        # both, so the class fixture's grant does not cover it.
+        _consent_to_polly(profile="polly", region="us-east-1")
         # Reset cache
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
@@ -394,7 +440,7 @@ class TestVoiceVoices:
         """Test that cached voices are returned without subprocess call."""
         import time
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(aws_profile="", region="")
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cached = [
             {"id": "Ruth", "name": "Ruth", "language": "English",
@@ -418,7 +464,7 @@ class TestVoiceVoices:
     async def test_voices_cli_failure(self, tmp_path, monkeypatch):
         """Test error handling when aws cli fails."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(aws_profile="", region="")
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
@@ -449,7 +495,7 @@ class TestVoiceVoices:
         """Test timeout handling."""
         import asyncio
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(aws_profile="", region="")
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
@@ -483,7 +529,7 @@ class TestVoiceVoices:
     async def test_voices_aws_not_found(self, tmp_path, monkeypatch):
         """aws CLI absent from PATH → 200 with empty list, no subprocess spawn."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(aws_profile="", region="")
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
@@ -514,7 +560,7 @@ class TestVoiceVoices:
         (binary removed in between, or a script with a missing interpreter)
         → same graceful empty-list degrade, no 500."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(aws_profile="", region="")
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)

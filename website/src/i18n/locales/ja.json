@@ -6693,6 +6693,20 @@
       "webhook_unbound_reason": "Webhook トークンはまだクルーに紐づいていないため、どのトークンでもどのクルーでも起動できます。",
       "webhook_unbound_short": "クルーに未紐付け",
       "wire_what_it_works_with": "何を使うか"
+    },
+    "awsConsentGate": {
+      "confirm_title": "最初のリクエスト前に AWS の利用を確認",
+      "confirmed_title": "AWS の利用を確認済み",
+      "account_changed": "以前は別の AWS アカウントで確認されていたため、確認を取り消しました。以下のアカウントを確認して、再度承認してください。",
+      "service": "サービス",
+      "region": "リージョン",
+      "credential_source": "認証情報のソース",
+      "aws_account": "AWS アカウント",
+      "provider_default": "(プロバイダーの既定値)",
+      "unresolved_account": "解決できませんでした",
+      "billing_notice": "これは有料の AWS サービスです。確認するまでリクエストは送信されません。",
+      "confirm_button": "確認して有効化",
+      "withdraw": "確認を取り消す"
     }
   },
   "hooks": {

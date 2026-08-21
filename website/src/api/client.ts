@@ -539,6 +539,27 @@ export interface DeniedUserRule {
   note?: string
 }
 
+/** What a paid AWS service would bill, and whether the operator confirmed it. */
+export interface AwsConsentStatus {
+  service: string
+  serviceLabel: string
+  /** Configured profile name. Empty means the provider's own default chain. */
+  profile: string
+  /** Human-readable rendering of `profile` for display. */
+  credentialSource: string
+  region: string
+  account: string
+  arn: string
+  identityResolved: boolean
+  identityDetail: string
+  granted: boolean
+  /** Operator-facing explanation when `granted` is false. */
+  reason: string
+  /** True when this GET withdrew a stale grant because the account changed. */
+  revokedOnAccountChange: boolean
+  grant: { account: string; region: string; profile: string; granted_at: string } | null
+}
+
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
 export interface DeniedCommandsData {
   builtins: DeniedCommandRule[]
@@ -2433,6 +2454,22 @@ export const api = {
   voiceConfig: () => fetch('/api/voice/config').then(j),
   updateVoiceConfig: (body: object) => put('/api/voice/config', body).then(j),
   voiceVoices: () => fetch('/api/voice/voices').then(j),
+  // Paid-AWS-service consent (Amazon Polly for TTS, Amazon Transcribe for STT).
+  // The GET reports what would be billed AND performs the identity probe, so it
+  // is the call that surfaces the account before the operator agrees to it.
+  awsConsent: (service: string) =>
+    fetch('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<AwsConsentStatus>,
+  grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }) =>
+    post('/api/aws/consent', {
+      service,
+      // Echo back exactly what was on screen. The backend rejects a mismatch, so
+      // a confirmation can only ever apply to the account the operator read.
+      expectedProfile: shown.profile,
+      expectedRegion: shown.region,
+      expectedAccount: shown.account,
+    }).then(j) as Promise<{ ok?: boolean; error?: string; code?: string; identityDetail?: string }>,
+  revokeAwsConsent: (service: string) =>
+    del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
   voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string }) =>
     post('/api/voice/synthesize', { slot, text, ...opts }).then(j),
 

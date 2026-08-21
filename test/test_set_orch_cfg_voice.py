@@ -119,29 +119,41 @@ def test_provider_piper_accepted(tmp_path, monkeypatch):
     assert _vc.provider == "piper"
 
 
-def test_provider_typo_falls_back_to_polly_with_warning(tmp_path, monkeypatch, caplog):
-    """An invalid provider value must be rejected with a warning + fallback to polly."""
+def test_provider_typo_falls_back_to_local_with_warning(tmp_path, monkeypatch, caplog):
+    """An invalid provider value must warn and fall back to the LOCAL provider.
+
+    Flipped from asserting a "polly" fallback: falling back to a PAID cloud
+    service on a typo is the wrong direction. A wrong local provider costs
+    nothing and degrades to a "TTS isn't configured" notice, whereas a wrong
+    cloud fallback bills an AWS account the operator never chose.
+    """
     import logging
 
     _cfg_file(tmp_path, monkeypatch, {"provider": "ploly"})
     with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.handler"):
         set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "polly"
+    assert _vc.provider == "piper"
     assert any(
         "voice_reply.provider" in rec.message and "ploly" in rec.message for rec in caplog.records
     ), "expected a warning log naming the bad provider value"
 
 
-def test_provider_empty_string_falls_back_to_polly(tmp_path, monkeypatch):
+def test_provider_empty_string_falls_back_to_local(tmp_path, monkeypatch):
     _cfg_file(tmp_path, monkeypatch, {"provider": ""})
     set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "polly"
+    assert _vc.provider == "piper"
 
 
-def test_provider_omitted_defaults_to_polly(tmp_path, monkeypatch):
+def test_provider_omitted_defaults_to_local(tmp_path, monkeypatch):
+    """The regression this flip closes: voice ON, provider unnamed.
+
+    This previously resolved to Amazon Polly, so a config that only said
+    ``enabled: true`` reached a paid AWS service under whatever the ambient
+    credential chain resolved to -- with no operator decision behind it.
+    """
     _cfg_file(tmp_path, monkeypatch, {})
     set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "polly"
+    assert _vc.provider == "piper"
 
 
 # ── restore without a Slack orchestrator (dashboard-only gateway) ────────

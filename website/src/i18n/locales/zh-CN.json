@@ -6693,6 +6693,20 @@
       "webhook_unbound_reason": "Webhook 令牌目前不携带 Crew 绑定，因此任何令牌都能唤醒任何 Crew。",
       "webhook_unbound_short": "未绑定到 Crew",
       "wire_what_it_works_with": "它用什么工作"
+    },
+    "awsConsentGate": {
+      "confirm_title": "首次请求前确认 AWS 用量",
+      "confirmed_title": "已确认 AWS 用量",
+      "account_changed": "此前确认的是另一个 AWS 账号，因此确认已被撤销。请核对下方账号后重新确认。",
+      "service": "服务",
+      "region": "区域",
+      "credential_source": "凭证来源",
+      "aws_account": "AWS 账号",
+      "provider_default": "（服务方默认值）",
+      "unresolved_account": "无法解析",
+      "billing_notice": "这是付费 AWS 服务。在你确认之前不会发送任何请求。",
+      "confirm_button": "确认并启用",
+      "withdraw": "撤销确认"
     }
   },
   "hooks": {

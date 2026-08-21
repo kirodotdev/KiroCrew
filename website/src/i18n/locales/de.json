@@ -6782,6 +6782,20 @@
       "webhook_unbound_reason": "Webhook-Token sind noch nicht an eine Crew gebunden, daher kann jedes Token jede Crew wecken.",
       "webhook_unbound_short": "Nicht an eine Crew gebunden",
       "wire_what_it_works_with": "Womit sie arbeitet"
+    },
+    "awsConsentGate": {
+      "confirm_title": "AWS-Nutzung vor der ersten Anfrage bestaetigen",
+      "confirmed_title": "AWS-Nutzung bestaetigt",
+      "account_changed": "Die Bestaetigung galt fuer ein anderes AWS-Konto und wurde daher zurueckgezogen. Pruefen Sie das Konto unten und bestaetigen Sie erneut.",
+      "service": "Dienst",
+      "region": "Region",
+      "credential_source": "Quelle der Anmeldedaten",
+      "aws_account": "AWS-Konto",
+      "provider_default": "(Standard des Anbieters)",
+      "unresolved_account": "konnte nicht ermittelt werden",
+      "billing_notice": "Dies ist ein kostenpflichtiger AWS-Dienst. Bis zur Bestaetigung wird keine Anfrage gesendet.",
+      "confirm_button": "Bestaetigen und aktivieren",
+      "withdraw": "Bestaetigung zuruecknehmen"
     }
   },
   "hooks": {

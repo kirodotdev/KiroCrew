@@ -131,7 +131,7 @@ from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.task import Task
 from kiro_crew.taskrunner import TaskRunner
-from kiro_crew.voice_reply import VALID_PROVIDERS
+from kiro_crew.voice_reply import DEFAULT_PROVIDER, VALID_PROVIDERS
 from kiro_crew.voice_reply import is_available as _tts_available
 from kiro_crew.voice_reply import validate_length_scale as _validate_length_scale
 from kiro_crew.voice_reply import voice_reply as _voice_reply_fn
@@ -539,8 +539,13 @@ class _VoiceConfig:
     default_pitch: str = "+0%"
     aws_profile: str = ""
     region: str = ""
-    # TTS provider: "polly" (default, AWS) or "piper" (local neural TTS).
-    provider: str = "polly"
+    # TTS provider. Defaults to the LOCAL provider (Piper), matching
+    # ``voice_reply.DEFAULT_PROVIDER``. It used to default to "polly" here,
+    # which meant enabling voice reply without naming a provider silently sent
+    # text to a paid AWS service under whatever the ambient credential chain
+    # resolved to. Sourced from the single constant so the two cannot drift
+    # again.
+    provider: str = DEFAULT_PROVIDER
     # Piper-specific (ignored when provider="polly"):
     piper_binary: str = ""
     piper_model: str = ""
@@ -1227,15 +1232,22 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     # Validate provider on load — a typo (e.g. "ploly") would otherwise pass
     # through and only fail at synthesis time, after the user has already sent
     # a voice memo expecting a voice reply.
-    _provider = _vr.get("provider", "polly")
+    #
+    # Both the absent-key default and the invalid-value fallback resolve to the
+    # LOCAL provider. They previously resolved to "polly", so a config that
+    # enabled voice reply without naming a provider — or that named one with a
+    # typo — reached a paid AWS service with no operator decision behind it.
+    # Falling back to local is also the safer half of the pair: a wrong local
+    # provider costs nothing and degrades to a "TTS isn't configured" notice.
+    _provider = _vr.get("provider", DEFAULT_PROVIDER)
     if _provider not in VALID_PROVIDERS:
         logger.warning(
             "voice_reply.provider %r not in %s, defaulting to %r",
             _provider,
             sorted(VALID_PROVIDERS),
-            "polly",
+            DEFAULT_PROVIDER,
         )
-        _provider = "polly"
+        _provider = DEFAULT_PROVIDER
     _vc.provider = _provider
     _vc.piper_binary = _vr.get("piper_binary", "")
     _vc.piper_model = _vr.get("piper_model", "")

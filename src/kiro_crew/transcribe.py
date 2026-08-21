@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import aws_consent, platform_compat
 from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
 
 # Transcribe-path deps are an OPTIONAL 'aws' extra (amazon-transcribe + boto3).
@@ -493,6 +493,18 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
     ext = os.path.splitext(audio_path)[1].lower()
     if ext not in (".ogg", ".webm"):
         logger.error("Unsupported format '%s' for Transcribe (expected .ogg or .webm)", ext)
+        return None
+
+    # Transcribe is a PAID AWS service, so no audio leaves the host without a
+    # recorded operator consent for this exact profile+region. Checked before
+    # the optional-dependency probe and before any remux work, so a refusal
+    # costs nothing and no temp file is created. Returning None is this
+    # function's established failure contract.
+    if not await aws_consent.refuse_and_log(
+        aws_consent.SERVICE_TRANSCRIBE,
+        profile=stt_config.transcribe_profile,
+        region=stt_config.transcribe_region,
+    ):
         return None
 
     # amazon-transcribe + boto3 are an optional 'aws' extra. Absent on a vanilla

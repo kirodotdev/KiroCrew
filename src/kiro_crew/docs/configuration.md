@@ -250,6 +250,39 @@ from the dashboard — see each channel's doc for keys and credentials.
 | `stt.transcribe_region` | AWS region for the Transcribe API (transcribe provider only) | `"us-east-1"` |
 | `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR` | `"en-US"` |
 
+### Paid AWS services need an explicit confirmation
+
+Two providers reach a **paid** AWS service: `voice_reply.provider: "polly"`
+(text-to-speech) and `stt.provider: "transcribe"` (speech-to-text). Selecting
+one is not enough to start spending — neither sends a request until you confirm
+it in **Settings > Voice**, and the confirmation names the AWS account it
+resolves to first.
+
+Three things worth knowing:
+
+- **An empty profile is not "no account".** With `aws_profile` /
+  `transcribe_profile` unset, nothing is passed to the provider and its own
+  default credential chain resolves — environment variables, the shared config's
+  `default` profile, or container/instance metadata. The confirmation shows you
+  which account that turns out to be.
+- **A confirmation is tied to the profile, region and account it was given for.**
+  Changing the profile or region asks again, and the live account is re-checked
+  before each call: if the profile is later repointed at a different AWS account,
+  the call is refused and the confirmation withdrawn.
+- **The check needs to be able to run.** If the account cannot be resolved, the
+  call is refused rather than allowed, so an outage withholds a paid request
+  instead of risking an unconfirmed charge.
+
+The record lives in `aws_service_consent.json` in the data home rather than in
+`config.json`, because it is an authorization rather than a preference: it is on
+the read+write keystone floor, so an agent can neither read it nor grant itself
+permission to spend. The authenticated dashboard is the only writer — there is
+deliberately no CLI verb, because a terminal command that records a grant on
+request is a grant an automated caller can take.
+
+Both local defaults (`piper` for TTS, `whisper` for STT) need no AWS account and
+no confirmation.
+
 ### Memory and embeddings
 
 Embeddings are always on and run in-process through the bundled
