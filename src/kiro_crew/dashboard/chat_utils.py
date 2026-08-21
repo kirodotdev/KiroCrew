@@ -1663,14 +1663,12 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
     rather than messages, and a bound taken before this reduction is spent on
     rows the response will not contain.
 
-    Runs of ``chunk`` fold into one ``chunk`` row; ``done`` rows drop. Both are
-    output-equivalent to leaving them for :func:`_prepare_messages`, which
-    reads nothing from a ``chunk`` row but its ``content``, accumulates a run
-    into one output row, and skips ``done`` WITHOUT flushing that accumulator
-    -- so dropping a terminator here, rather than letting it split a run, is
-    what matches its behaviour. No redaction is applied and no other role is
-    rewritten, which is what lets this run ahead of a slice without changing
-    what the slice renders as.
+    Runs of ``chunk`` fold into one ``chunk`` row; ``done`` rows drop. This is
+    the canonical first pass for :func:`_prepare_messages`, so dropping a
+    terminator here rather than letting it split a run defines the render
+    behaviour too. No redaction is applied and no other role is rewritten,
+    which is what lets this run ahead of a slice without changing what the
+    slice renders as.
 
     Input dicts are never mutated: a merged row is a fresh dict, because these
     rows are shared with the live window the event loop appends to.
@@ -1705,55 +1703,53 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
 def _prepare_messages(messages: list[dict], running: bool) -> list[dict]:
     """Prepare messages for API response."""
     out: list[dict] = []
-    chunk_text = ""
-    for m in messages:
+    for m in _collapse_wire_rows(messages):
         role = m.get("role", "")
         if role == "chunk":
-            chunk_text += m.get("content", "")
-        elif role == "done":
-            continue
-        else:
-            if chunk_text:
-                redacted_chunk, _ = redact_exfiltration_urls(chunk_text)
-                redacted_chunk, _ = redact_credentials(redacted_chunk)
-                out.append({"role": "streaming", "content": redacted_chunk, "cls": "msg msg-a"})
-                chunk_text = ""
             text = m.get("content", "")
-            # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
-            # display-time redaction boundary for everything the slot detail
-            # endpoint returns — including the frozen-prefix lines read straight
-            # off disk — so it must cover every non-user role. The load path does
-            # not redact on load, and `system` content is written to disk
-            # unredacted (see _build_message_entry's gate), so excluding it here
-            # would emit raw stored bytes.
-            # User-authored content stays raw: the user typed it and is the only
-            # one who sees it back.
-            if role != "user" and text:
+            if text:
                 text, _ = redact_exfiltration_urls(text)
                 text, _ = redact_credentials(text)
-                m = {**m, "content": text}
-            msg_out = dict(m)
-            if msg_out.get("variants"):
-                # Snapshot for the same reason as _redact_meta — this runs in a
-                # worker thread (slot-detail render offload) while the event
-                # loop may still be appending variants to the live list.
-                msg_out["variants"] = [
-                    {**v, "content": redact_credentials(redact_exfiltration_urls(v.get("content", ""))[0])[0]}
-                    for v in list(msg_out["variants"]) if isinstance(v, dict)
-                ]
-            meta = parse_cls_meta(m.get("cls", ""))
-            if meta is not None:
-                msg_out["meta"] = _redact_meta_for_role(role, meta)
-            elif isinstance(msg_out.get("meta"), dict):
-                # Redact the STORED meta too. Without this branch the stored dict
-                # passes through by reference (dict(m) is shallow), so it would
-                # reach the client exactly as loaded. This is the only guard on
-                # meta for the slot-detail response (the load path does not
-                # redact meta).
-                msg_out["meta"] = _redact_meta_for_role(role, msg_out["meta"])
-            out.append(msg_out)
-    if chunk_text:
-        redacted_chunk, _ = redact_exfiltration_urls(chunk_text)
-        redacted_chunk, _ = redact_credentials(redacted_chunk)
-        out.append({"role": "streaming", "content": redacted_chunk, "cls": "msg msg-a"})
+                out.append({"role": "streaming", "content": text, "cls": "msg msg-a"})
+            continue
+        text = m.get("content", "")
+        # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
+        # display-time redaction boundary for everything the slot detail
+        # endpoint returns — including the frozen-prefix lines read straight
+        # off disk — so it must cover every non-user role. The load path does
+        # not redact on load, and `system` content is written to disk
+        # unredacted (see _build_message_entry's gate), so excluding it here
+        # would emit raw stored bytes.
+        # User-authored content stays raw: the user typed it and is the only
+        # one who sees it back.
+        if role != "user" and text:
+            text, _ = redact_exfiltration_urls(text)
+            text, _ = redact_credentials(text)
+            m = {**m, "content": text}
+        msg_out = dict(m)
+        if msg_out.get("variants"):
+            # Snapshot for the same reason as _redact_meta — this runs in a
+            # worker thread (slot-detail render offload) while the event
+            # loop may still be appending variants to the live list.
+            msg_out["variants"] = [
+                {
+                    **v,
+                    "content": redact_credentials(
+                        redact_exfiltration_urls(v.get("content", ""))[0]
+                    )[0],
+                }
+                for v in list(msg_out["variants"])
+                if isinstance(v, dict)
+            ]
+        meta = parse_cls_meta(m.get("cls", ""))
+        if meta is not None:
+            msg_out["meta"] = _redact_meta_for_role(role, meta)
+        elif isinstance(msg_out.get("meta"), dict):
+            # Redact the STORED meta too. Without this branch the stored dict
+            # passes through by reference (dict(m) is shallow), so it would
+            # reach the client exactly as loaded. This is the only guard on
+            # meta for the slot-detail response (the load path does not
+            # redact meta).
+            msg_out["meta"] = _redact_meta_for_role(role, msg_out["meta"])
+        out.append(msg_out)
     return out

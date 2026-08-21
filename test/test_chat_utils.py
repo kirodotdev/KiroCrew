@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import kiro_crew.dashboard.chat_utils as chat_utils
 from kiro_crew.dashboard.chat_utils import (
     _extract_bash_command,
     _history_key_for,
@@ -126,6 +127,26 @@ class TestRemoveQueuedById:
 
 
 class TestPrepareMessages:
+    def test_reuses_canonical_wire_row_collapse(self, monkeypatch):
+        messages = [
+            {"role": "chunk", "content": "hel"},
+            {"role": "done", "content": ""},
+            {"role": "chunk", "content": "lo"},
+        ]
+        calls = []
+        collapse = chat_utils._collapse_wire_rows
+
+        def record_collapse(rows):
+            calls.append(rows)
+            return collapse(rows)
+
+        monkeypatch.setattr(chat_utils, "_collapse_wire_rows", record_collapse)
+
+        result = _prepare_messages(messages, running=True)
+
+        assert calls == [messages]
+        assert result == [{"role": "streaming", "content": "hello", "cls": "msg msg-a"}]
+
     def test_strips_done(self):
         msgs = [{"role": "user", "content": "hi"}, {"role": "done", "content": ""}]
         result = _prepare_messages(msgs, running=False)
