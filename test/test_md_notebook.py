@@ -1141,11 +1141,45 @@ async def test_note_listing(fixtures) -> None:
         assert status == 200
         by_path = {n["path"]: n for n in body["notes"]}
         assert set(by_path) == {"One.md", "sub/Two.md"}
-        # Frontmatter title wins; otherwise the filename is used.
+        # The filename is the label. The seed's frontmatter `title` happens to
+        # equal its filename, so the divergent case is pinned separately below.
         assert by_path["sub/Two.md"]["title"] == "Two"
         assert by_path["One.md"]["title"] == "One"
         assert by_path["One.md"]["createdAt"] > 0
         assert by_path["One.md"]["syncStatus"] == "synced"
+
+
+@pytest.mark.asyncio
+async def test_display_name_is_the_filename_not_a_frontmatter_title(fixtures) -> None:
+    """A frontmatter ``title`` names a wikilink target, not the note in the rail.
+
+    One note must read the same on every surface -- the rail row, the editor header
+    and a search hit -- because the rail's rename field is seeded from that label
+    and renames the FILE. So display is the filename, while a link written against
+    a frontmatter title still resolves.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        await _clone(client, remote)
+        named = {"path": "Named.md", "content": "---\ntitle: A Different Title\n---\n\nbody\n"}
+        linker = {"path": "Linker.md", "content": "points at [[A Different Title]]\n"}
+        assert (await client.put("/api/note", named))[0] == 200
+        assert (await client.put("/api/note", linker))[0] == 200
+
+        status, body = await client.get("/api/notes")
+        assert status == 200, body
+        assert {n["path"]: n["title"] for n in body["notes"]}["Named.md"] == "Named"
+
+        # A search hit reads the same as the tree row for the same note, which also
+        # means the filename is what the boosted field matches on.
+        status, body = await client.get("/api/search?q=Named")
+        assert status == 200, body
+        assert {r["path"]: r["title"] for r in body["results"]}["Named.md"] == "Named"
+
+        # Resolution is unchanged: the frontmatter title is still a link target.
+        status, body = await client.get("/api/note?path=Named.md")
+        assert status == 200, body
+        assert [b["sourcePath"] for b in body["backlinks"]] == ["Linker.md"]
 
 
 @pytest.mark.asyncio

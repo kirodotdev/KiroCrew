@@ -163,7 +163,13 @@ def extract_tags(content: str) -> list[str]:
 
 
 def note_title(path: str, content: str) -> str:
-    """Title for a note: frontmatter ``title`` when set, else the filename."""
+    """Wikilink resolution key: frontmatter ``title`` when set, else the filename.
+
+    This is NOT the note's display name -- the rail, the editor header and search
+    hits all show ``note_basename``, so a note reads the same wherever it appears.
+    A frontmatter ``title`` only decides what ``[[target]]`` a note answers to, so
+    an existing link written against a frontmatter title keeps resolving.
+    """
     data, _ = parse_frontmatter(content)
     title = data.get("title")
     if isinstance(title, str) and title.strip():

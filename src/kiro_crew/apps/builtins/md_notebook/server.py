@@ -876,9 +876,11 @@ async def rebuild_cache(vault: dict[str, Any]) -> dict[str, Any]:
             continue  # refused by the gate, or unreadable
         contents[rel] = text
     docs = [
-        notes_mod.SearchDoc(
-            path=p, title=notes_mod.note_title(p, c), content=c
-        )
+        # The boosted field carries the note's DISPLAY name (its filename), so a
+        # search hit in the rail reads the same as the same note in the tree. A
+        # frontmatter title stays findable through `content`, which includes the
+        # frontmatter block, just without the title boost.
+        notes_mod.SearchDoc(path=p, title=notes_mod.note_basename(p), content=c)
         for p, c in contents.items()
     ]
     cache = {
@@ -907,7 +909,7 @@ async def refresh_statuses(vault: dict[str, Any], cache: dict[str, Any]) -> None
 
 
 async def note_listing(vault: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every note with its title, timestamps and sync status."""
+    """Every note with its display name, timestamps and sync status."""
     root = await vault_path(vault)
     cache = await get_cache(vault)
     await refresh_statuses(vault, cache)
@@ -920,6 +922,8 @@ async def note_listing(vault: dict[str, Any]) -> list[dict[str, Any]]:
             st = await asyncio.to_thread(os.stat, abs_path)
         except OSError:
             continue
+        # Read only so the sensitive-path gate can filter: a `.md` symlink aimed at
+        # a credential store elsewhere on disk must not reach the listing at all.
         content = await read_note_text(abs_path)
         if content is None:
             continue  # refused by the gate, or unreadable
@@ -928,7 +932,13 @@ async def note_listing(vault: dict[str, Any]) -> list[dict[str, Any]]:
         listing.append(
             {
                 "path": rel,
-                "title": notes_mod.note_title(rel, content),
+                # The filename, not a frontmatter `title`: this label is the note's
+                # identity everywhere the user acts on it -- the rail row, the editor
+                # header, the name-sort key, the rename field (which renames the FILE)
+                # and the delete confirmation -- and it matches Obsidian, whose file
+                # explorer lists filenames too. A frontmatter `title` is still a
+                # wikilink target; `note_title` is the key for that.
+                "title": notes_mod.note_basename(rel),
                 "modifiedAt": st.st_mtime * 1000,
                 "createdAt": created * 1000,
                 "syncStatus": cache["statuses"].get(prefix + rel, "synced"),
@@ -1492,9 +1502,7 @@ async def api_note_save(request: web.Request) -> web.Response:
     mark_self_write(abs_path)
     cache = await get_cache(vault)
     cache["index"].update(
-        notes_mod.SearchDoc(
-            path=rel, title=notes_mod.note_title(rel, content), content=content
-        )
+        notes_mod.SearchDoc(path=rel, title=notes_mod.note_basename(rel), content=content)
     )
     # Backlinks are a whole-vault relation, so recompute them from disk.
     root = await vault_path(vault)

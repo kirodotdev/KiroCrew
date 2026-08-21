@@ -19,6 +19,7 @@ export interface Vault {
 
 export interface Note {
   path: string
+  /** Display name: the filename without its `.md` extension, never a frontmatter title. */
   title: string
   modifiedAt: number
   createdAt?: number
