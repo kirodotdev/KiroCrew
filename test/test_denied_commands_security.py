@@ -200,6 +200,283 @@ class TestCatalog:
         assert pinned_builtin_command_ids() == set()
 
 
+class TestSelfProtectionFlagInterposition:
+    """The whole self-protection category stays deny-closed under interposed flags (#4799).
+
+    The CLI accepts top-level flags BEFORE the subcommand (``-v``/``--verbose`` is
+    ``action="count"`` and ``--no-jail`` sits on the top-level parser), so
+    ``kirocrew -v restart`` runs the same restart as ``kirocrew restart``. Four
+    self-protection patterns anchored the subcommand directly to the program name
+    and were defeated by exactly that spelling. This walk covers EVERY rule in the
+    category so the class cannot regress one rule at a time: a new self-protection
+    rule fails the completeness assertion until it registers its own template here.
+
+    Asserted through ``is_denied`` (the real enforcement path), not against
+    ``rule.pattern`` -- see ``test_token_mint_is_blocked_in_both_the_cli_and_module_forms``
+    for why that distinction matters.
+    """
+
+    # rule id -> command template; ``{flags}`` is where an attacker interposes
+    # flags between the anchor word and the token the rule keys on.
+    _TEMPLATES = {
+        "self-protection-restart": "kirocrew {flags} restart",
+        "self-protection-update": "kirocrew {flags} update",
+        "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
+        "self-protection-cloud": "kirocrew {flags} cloud destroy",
+        # cron-adopt (added on main) already tolerates interposed flags via its own
+        # tempered-greedy pattern, so it needs no widening/floor from this PR -- it
+        # is listed here only to satisfy the category-completeness invariant.
+        "self-protection-cron-adopt": "kirocrew {flags} cron adopt",
+        # The kill rules key on the kill TARGET, not a CLI subcommand; their gap
+        # is between the kill verb and the product name.
+        "self-protection-kill": "pkill {flags} kirocrew",
+        "self-protection-kill-interpreter": (
+            "python -c \"import os; os.system('pkill {flags} -f kirocrew')\""
+        ),
+    }
+    _FLAGS = ("-v", "-vv", "--verbose", "--no-jail", "-v --no-jail")
+
+    @staticmethod
+    def _effective():
+        from kiro_crew import security
+
+        return list(
+            security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
+        )
+
+    def test_every_self_protection_rule_has_a_template(self):
+        category_ids = {r.id for r in BUILTIN_DENIED_RULES if r.category == "self-protection"}
+        assert category_ids == set(self._TEMPLATES), (
+            "every self-protection rule must register an interposed-flag template "
+            "in this walk (and every template must name a live rule)"
+        )
+
+    def test_bare_and_flag_interposed_forms_are_all_denied(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for rule_id, template in self._TEMPLATES.items():
+            # The bare form first: widening must not have lost the plain match.
+            bare = " ".join(template.format(flags="").split())
+            assert security.is_denied(
+                bare, denied_regexes=effective
+            ), f"{rule_id}: bare form not denied: {bare!r}"
+            for flags in self._FLAGS:
+                cmd = template.format(flags=flags)
+                assert security.is_denied(
+                    cmd, denied_regexes=effective
+                ), f"{rule_id}: flag-interposed form not denied: {cmd!r}"
+
+    def test_cloud_flag_interposition_denied_for_every_lifecycle_subcommand(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for sub in ("destroy", "stop", "start", "launch", "connect", "tunnel", "login", "logout"):
+            cmd = f"kirocrew -v cloud {sub}"
+            assert security.is_denied(
+                cmd, denied_regexes=effective
+            ), f"cloud {sub} not denied behind -v: {cmd!r}"
+
+    def test_widened_patterns_still_require_the_subcommand_token(self):
+        """Not over-broad: the flag run alone must never satisfy a rule.
+
+        Benign invocations -- other subcommands behind the same flags, the flags
+        alone, and cloud subcommands outside the destructive list -- stay allowed.
+        """
+        from kiro_crew import security
+
+        effective = self._effective()
+        for allowed in (
+            "kirocrew -v",
+            "kirocrew --verbose",
+            "kirocrew --no-jail doctor",
+            "kirocrew -v status",
+            "kirocrew -vv cloud status",
+        ):
+            assert not security.is_denied(
+                allowed, denied_regexes=effective
+            ), f"false positive on {allowed!r}"
+
+    def test_stale_governance_pin_still_resolves_to_the_rule_id(self):
+        """A persisted policy pins by pattern STRING; widening must not orphan it.
+
+        The pin resolvers treat a governance pattern as pinning a built-in rule
+        only when it maps back to a rule id.  A ceiling/profile written against
+        the pre-widening catalog persists the OLD spelling, so without the legacy
+        aliases the pin would silently fall out of the id map on upgrade and a
+        user opt-out could drop a rule the administrator pinned.
+        """
+        from kiro_crew import security
+
+        legacy_to_id = {
+            ".*kiro.?crew restart.*": "self-protection-restart",
+            ".*kiro.?crew update.*": "self-protection-update",
+            ".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|log(in|out)).*": (
+                "self-protection-cloud"
+            ),
+            ".*kiro.?crew gateway restart.*": "self-protection-gateway-restart",
+        }
+        for legacy, rule_id in legacy_to_id.items():
+            # The old spelling resolves to the same rule id...
+            assert security._rule_id_for_pattern(legacy) == rule_id
+            # ...as the current spelling does.
+            current = next(r.pattern for r in BUILTIN_DENIED_RULES if r.id == rule_id)
+            assert security._rule_id_for_pattern(current) == rule_id
+        assert security._rule_id_for_pattern("not a rule") is None
+
+    def test_legacy_alias_spellings_stay_out_of_the_enforced_catalog(self):
+        """Aliases are lookup-only: not enforced, not built-in, not in the golden."""
+        from kiro_crew import security
+
+        golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
+        golden_patterns = {g["pattern"] for g in golden}
+        for legacy in security._LEGACY_RULE_ID_BY_PATTERN:
+            assert legacy not in BUILTIN_DENY_PATTERNS
+            assert legacy not in security._RULE_ID_BY_PATTERN
+            assert legacy not in golden_patterns
+
+    # Round 2 -> Option 2 (#4824): the four self-protection SUBCOMMAND rules get an
+    # argv-structural floor (``_is_self_*`` evaluated on the de-escaped, de-quoted
+    # argv), because a regex over RAW text cannot see through the shell's own
+    # de-escaping. Every dressing below reaches the shell as the plain command but
+    # splits a token in the raw string the regex tier matches, so only the floor
+    # catches it.
+    _SUBCOMMANDS = {
+        "self-protection-restart": ["restart"],
+        "self-protection-update": ["update"],
+        "self-protection-gateway-restart": ["gateway", "restart"],
+        "self-protection-cloud": ["cloud", "destroy"],
+    }
+
+    @staticmethod
+    def _dressings(words):
+        """Shell spellings that all tokenize to argv ``[kirocrew, *words]``."""
+        rest = " ".join(words)
+        first = words[0]
+        tail = (" " + " ".join(words[1:])) if len(words) > 1 else ""
+        return {
+            "bare": f"kirocrew {rest}",
+            "real-flag": f"kirocrew -v {rest}",
+            "backslash-escaped-flag": f"kirocrew -\\v {rest}",  # -\v -> -v
+            "escaped-verb-letter": f"kirocrew \\{first}{tail}",  # \restart -> restart
+            "line-continuation-flag": f"kirocrew -\\\nv {rest}",
+            "continuation-before-verb": f"kirocrew \\\n{first}{tail}",
+            "each-word-quoted": "kirocrew " + " ".join(f'"{w}"' for w in words),
+        }
+
+    def test_self_protection_subcommands_denied_under_every_shell_dressing(self):
+        from kiro_crew import security
+
+        effective = self._effective()
+        for rule_id, words in self._SUBCOMMANDS.items():
+            for label, cmd in self._dressings(words).items():
+                assert security.is_denied(
+                    cmd, denied_regexes=effective
+                ), f"{rule_id} not denied under {label}: {cmd!r}"
+
+    def test_self_protection_floor_covers_the_four_subcommand_rules(self):
+        """The argv floor must cover every self-protection subcommand rule, so a
+        regex-only rule cannot silently ship bypassable by shell de-escaping.
+        """
+        from kiro_crew import security
+
+        expected = {
+            "self-protection-restart",
+            "self-protection-update",
+            "self-protection-gateway-restart",
+            "self-protection-cloud",
+        }
+        assert expected <= security._SELF_PROTECTION_FLOOR_RULE_IDS
+        # the predicate for each is wired and fires on a de-escaped argv
+        assert security._is_self_restart("kirocrew -\\v restart")
+        assert security._is_self_update("kirocrew \\update")
+        assert security._is_self_gateway_restart("kirocrew -\\v gateway restart")
+        assert security._is_self_cloud_destructive("kirocrew -\\v cloud destroy")
+
+    def test_self_protection_denied_under_interposed_redirection(self):
+        """A redirection is removed from argv by the shell and can sit anywhere in
+        a simple command, so it must not shift the leading subcommand (#4824 r4).
+        """
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in (
+            "kirocrew 2>/tmp/x restart",  # attached redirect leaves fd residue
+            "kirocrew > /tmp/x restart",  # separate target
+            "kirocrew 2>&1 restart",
+            "kirocrew restart 2>/tmp/log",  # redirect AFTER the subcommand
+            "kirocrew >/dev/null -v update",  # redirect + flag
+            "kirocrew > 'audit;log' restart",  # quoted ';' in the target is a filename, not a boundary
+            "kirocrew 2> 'x|y' restart",  # quoted '|' in the target
+        ):
+            assert security.is_denied(
+                cmd, denied_regexes=effective
+            ), f"redirection-interposed form not denied: {cmd!r}"
+        # A redirect whose TARGET is a file named like the subcommand runs no
+        # subcommand, so it must stay allowed by the floor.
+        assert not security._is_self_restart("kirocrew > restart")
+
+    def test_self_protection_denied_under_dollar_quoting(self):
+        """ANSI-C (``$'...'``) and locale (``$"..."``) quoting decode to the value
+        bash passes, so a flag or the verb hidden in them must not slip past the
+        floor -- shlex leaves the ``$`` and does not decode ANSI-C escapes (#4824 r6).
+        """
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in (
+            "kirocrew $'-v' restart",  # ANSI-C flag
+            "kirocrew $'\\x2d\\x76' restart",  # ANSI-C hex -> -v
+            'kirocrew $"-v" restart',  # locale flag
+            "kirocrew $'restart'",  # ANSI-C on the verb
+            "kirocrew $'-v' cloud destroy",
+        ):
+            assert security.is_denied(
+                cmd, denied_regexes=effective
+            ), f"$-quoted self-protection form not denied: {cmd!r}"
+
+    def test_self_protection_module_form_denied_under_shell_dressing(self):
+        """``python -m kiro_crew <subcommand>`` dispatches the same self-action. The
+        escaped module form (``python -m kiro_crew -\\v restart``) slips past the
+        interpreter-position regex, so the floor resolves the module name and checks
+        the operands after it (#4824 r5).
+        """
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in (
+            "python -m kiro_crew restart",
+            r"python -m kiro_crew -\v restart",  # escaped: regex misses, floor catches
+            r"python -mkiro_crew -\v restart",  # attached -m spelling
+            r"python -m kiro_crew \update",
+            "python -m kiro_crew gateway restart",
+            r"python -m kiro_crew -\v cloud destroy",
+        ):
+            assert security.is_denied(
+                cmd, denied_regexes=effective
+            ), f"module-form self-protection not denied: {cmd!r}"
+        # benign module invocations stay allowed at the floor (not a targeted subcommand)
+        assert not security._is_self_restart("python -m kiro_crew status")
+        assert not security._is_self_cloud_destructive("python -m kiro_crew cloud status")
+        assert not security._is_self_restart("python -m pytest test/test_restart.py")
+
+    def test_self_protection_floor_is_not_over_broad(self):
+        """The floor matches a real subcommand invocation, not a mention, a
+        benign subcommand, or a different rule's verb.
+        """
+        from kiro_crew import security
+
+        assert not security._is_self_restart("kirocrew -v status")
+        assert not security._is_self_cloud_destructive("kirocrew cloud status")
+        assert not security._is_self_cloud_destructive("kirocrew -vv cloud status")
+        # a mention inside another program's args is not a run (data-consumer /
+        # non-program position), so the floor itself does not fire on it
+        assert not security._is_self_restart("echo kirocrew restart")
+        assert not security._is_self_restart("grep restart /var/log/kirocrew.log")
+        # gateway-restart is a distinct rule from bare restart
+        assert not security._is_self_restart("kirocrew gateway restart")
+
+
 class TestComputeEffectiveDenied:
     def _ids(self):
         return [r.id for r in BUILTIN_DENIED_RULES]
