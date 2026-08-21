@@ -3122,7 +3122,7 @@
       "reset": {
         "cancel": "Cancelar",
         "confirm": "Redefinir",
-        "desc": "Redefinição completa: limpa a conversa, o registro de atividades, as capturas de tela e todas as preferências aprendidas. {{name}} começa totalmente do zero.",
+        "desc": "Redefinição completa: limpa a conversa, o registro de atividades, as capturas de tela e todas as preferências aprendidas. “{{name}}” começa totalmente do zero.",
         "title": "Redefinir “{{name}}”?"
       },
       "settingsPanel": {
@@ -3831,7 +3831,7 @@
         "create": "Criar",
         "create_one_above_or_clone_an_existing_repository": "Crie um acima ou clone um repositório existente.",
         "delete_paper": "Eliminar {{name}}",
-        "delete_paper_confirm": "Excluir {{name}} e todos os seus arquivos? Esta ação não pode ser desfeita.",
+        "delete_paper_confirm": "Excluir “{{name}}” e todos os seus arquivos? Esta ação não pode ser desfeita.",
         "dismiss_error": "Dispensar",
         "downloading_compiler_progress": "A baixar… {{done}} de {{total}}",
         "install_compiler": "Instalar compilador",
@@ -3864,7 +3864,7 @@
         "co_author": "Coautor",
         "co_author_conflict": "O coautor alterou este arquivo",
         "co_author_conflict_discard": "Descartar as minhas edições e recarregar",
-        "co_author_conflict_discard_confirm": "Descartar as tuas edições não guardadas em {{file}} e carregar a versão do coautor? Não é possível anular esta ação.",
+        "co_author_conflict_discard_confirm": "Descartar as tuas edições não guardadas em “{{file}}” e carregar a versão do coautor? Não é possível anular esta ação.",
         "commit_and_push": "Confirmar e enviar",
         "commit_message_prompt": "Descreve esta confirmação. Inclui todas as alterações do artigo.",
         "compile": "Compilar",

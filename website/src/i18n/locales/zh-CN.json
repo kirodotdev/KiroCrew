@@ -3030,7 +3030,7 @@
       "reset": {
         "cancel": "取消",
         "confirm": "重置",
-        "desc": "完全重置：清除对话、活动日志、截图和所有学习偏好。{{name}} 将从零开始。",
+        "desc": "完全重置：清除对话、活动日志、截图和所有学习偏好。“{{name}}”将从零开始。",
         "title": "重置“{{name}}”？"
       },
       "settingsPanel": {
@@ -3717,7 +3717,7 @@
         "create": "创建",
         "create_one_above_or_clone_an_existing_repository": "在上方新建一篇，或克隆一个已有的仓库。",
         "delete_paper": "删除 {{name}}",
-        "delete_paper_confirm": "删除 {{name}} 及其所有文件？此操作无法撤销。",
+        "delete_paper_confirm": "删除“{{name}}”及其所有文件？此操作无法撤销。",
         "dismiss_error": "忽略",
         "downloading_compiler_progress": "正在下载…… {{done}} / {{total}}",
         "install_compiler": "安装编译器",
@@ -3750,7 +3750,7 @@
         "co_author": "合著者",
         "co_author_conflict": "协作者已修改此文件",
         "co_author_conflict_discard": "放弃我的修改并重新加载",
-        "co_author_conflict_discard_confirm": "放弃你对 {{file}} 未保存的修改并加载协作者的版本？此操作无法撤销。",
+        "co_author_conflict_discard_confirm": "放弃你对“{{file}}”未保存的修改并加载协作者的版本？此操作无法撤销。",
         "commit_and_push": "提交并推送",
         "commit_message_prompt": "描述此次提交。它将包含论文中的所有更改。",
         "compile": "编译",

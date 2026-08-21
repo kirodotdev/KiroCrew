@@ -3108,7 +3108,7 @@
       "reset": {
         "cancel": "Abbrechen",
         "confirm": "Zurücksetzen",
-        "desc": "Vollständiges Zurücksetzen: löscht Gespräch, Aktivitätsprotokoll, Screenshots und alle gelernten Einstellungen. {{name}} beginnt völlig neu.",
+        "desc": "Vollständiges Zurücksetzen: löscht Gespräch, Aktivitätsprotokoll, Screenshots und alle gelernten Einstellungen. „{{name}}“ beginnt völlig neu.",
         "title": "„{{name}}“ zurücksetzen?"
       },
       "settingsPanel": {
@@ -3806,7 +3806,7 @@
         "create": "Erstellen",
         "create_one_above_or_clone_an_existing_repository": "Erstellen Sie oben eines, oder klonen Sie ein bestehendes Repository.",
         "delete_paper": "{{name}} löschen",
-        "delete_paper_confirm": "{{name}} und alle zugehörigen Dateien löschen? Dies kann nicht rückgängig gemacht werden.",
+        "delete_paper_confirm": "„{{name}}“ und alle zugehörigen Dateien löschen? Dies kann nicht rückgängig gemacht werden.",
         "dismiss_error": "Verwerfen",
         "downloading_compiler_progress": "Wird heruntergeladen… {{done}} von {{total}}",
         "install_compiler": "Compiler installieren",
@@ -3839,7 +3839,7 @@
         "co_author": "Koautor",
         "co_author_conflict": "Co-Autor hat diese Datei geändert",
         "co_author_conflict_discard": "Meine Änderungen verwerfen und neu laden",
-        "co_author_conflict_discard_confirm": "Nicht gespeicherte Änderungen an {{file}} verwerfen und die Version des Co-Autors laden? Dies kann nicht rückgängig gemacht werden.",
+        "co_author_conflict_discard_confirm": "Nicht gespeicherte Änderungen an „{{file}}“ verwerfen und die Version des Co-Autors laden? Dies kann nicht rückgängig gemacht werden.",
         "commit_and_push": "Committen & senden",
         "commit_message_prompt": "Beschreibe diesen Commit. Er erfasst jede Änderung im Papier.",
         "compile": "Kompilieren",

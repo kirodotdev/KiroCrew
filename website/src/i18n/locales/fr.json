@@ -464,7 +464,7 @@
         },
         "learningRail": {
           "add_namespace": "Ajouter un namespace",
-          "confirm_delete": "Supprimer « {{name}} » et tous ses acquis ? C’est irréversible.",
+          "confirm_delete": "Supprimer « {{name}} » et tous ses acquis ? C’est irréversible.",
           "delete_2": "Supprimer",
           "delete_namespace": "Supprimer le namespace {{name}}",
           "keep_it": "Le garder",
@@ -3154,7 +3154,7 @@
       "reset": {
         "cancel": "Annuler",
         "confirm": "Réinitialiser",
-        "desc": "Réinitialisation complète : efface la conversation, le journal d'activité, les captures d'écran et toutes les préférences apprises. {{name}} repart complètement à zéro.",
+        "desc": "Réinitialisation complète : efface la conversation, le journal d'activité, les captures d'écran et toutes les préférences apprises. « {{name}} » repart complètement à zéro.",
         "title": "Réinitialiser « {{name}} » ?"
       },
       "settingsPanel": {
@@ -3863,7 +3863,7 @@
         "create": "Créer",
         "create_one_above_or_clone_an_existing_repository": "Créez-en un ci-dessus, ou clonez un dépôt existant.",
         "delete_paper": "Supprimer {{name}}",
-        "delete_paper_confirm": "Supprimer {{name}} et tous ses fichiers ? Cette action est irréversible.",
+        "delete_paper_confirm": "Supprimer « {{name}} » et tous ses fichiers ? Cette action est irréversible.",
         "dismiss_error": "Ignorer",
         "downloading_compiler_progress": "Téléchargement… {{done}} sur {{total}}",
         "install_compiler": "Installer le compilateur",
@@ -3896,7 +3896,7 @@
         "co_author": "Coauteur",
         "co_author_conflict": "Le co-auteur a modifié ce fichier",
         "co_author_conflict_discard": "Abandonner mes modifications et recharger",
-        "co_author_conflict_discard_confirm": "Abandonner vos modifications non enregistrées de {{file}} et charger la version du co-auteur ? Cette action est irréversible.",
+        "co_author_conflict_discard_confirm": "Abandonner vos modifications non enregistrées de « {{file}} » et charger la version du co-auteur ? Cette action est irréversible.",
         "commit_and_push": "Valider et publier",
         "commit_message_prompt": "Décrivez ce commit. Il inclut toutes les modifications de l’article.",
         "compile": "Compiler",

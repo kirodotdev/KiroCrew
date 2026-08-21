@@ -3062,7 +3062,7 @@
       "reset": {
         "cancel": "취소",
         "confirm": "초기화",
-        "desc": "전체 초기화: 대화, 활동 기록, 스크린샷, 학습한 설정을 모두 지웁니다. {{name}}은(는) 완전히 처음부터 다시 시작합니다.",
+        "desc": "전체 초기화: 대화, 활동 기록, 스크린샷, 학습한 설정을 모두 지웁니다. ‘{{name}}’은(는) 완전히 처음부터 다시 시작합니다.",
         "title": "‘{{name}}’을(를) 초기화하시겠습니까?"
       },
       "settingsPanel": {
@@ -3749,7 +3749,7 @@
         "create": "만들기",
         "create_one_above_or_clone_an_existing_repository": "위에서 하나를 만들거나 기존 저장소를 클론하세요.",
         "delete_paper": "{{name}} 삭제",
-        "delete_paper_confirm": "{{name}}와(과) 모든 파일을 삭제하시겠습니까? 되돌릴 수 없습니다.",
+        "delete_paper_confirm": "‘{{name}}’와(과) 모든 파일을 삭제하시겠습니까? 되돌릴 수 없습니다.",
         "dismiss_error": "닫기",
         "downloading_compiler_progress": "다운로드 중… {{total}} 중 {{done}}",
         "install_compiler": "컴파일러 설치",
@@ -3782,7 +3782,7 @@
         "co_author": "공동 저자",
         "co_author_conflict": "공동 저자가 이 파일을 변경했습니다",
         "co_author_conflict_discard": "내 편집을 버리고 다시 불러오기",
-        "co_author_conflict_discard_confirm": "{{file}}에 저장하지 않은 편집을 버리고 공동 저자의 버전을 불러오시겠습니까? 되돌릴 수 없습니다.",
+        "co_author_conflict_discard_confirm": "‘{{file}}’에 저장하지 않은 편집을 버리고 공동 저자의 버전을 불러오시겠습니까? 되돌릴 수 없습니다.",
         "commit_and_push": "커밋 & 푸시",
         "commit_message_prompt": "이 커밋을 설명하세요. 논문의 모든 변경 사항을 스테이징합니다.",
         "compile": "컴파일",

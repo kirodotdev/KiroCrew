@@ -464,7 +464,7 @@
         },
         "learningRail": {
           "add_namespace": "Añadir namespace",
-          "confirm_delete": "¿Eliminar «{{name}}» y todos sus aprendizajes? Esto no se puede deshacer.",
+          "confirm_delete": "¿Eliminar “{{name}}” y todos sus aprendizajes? Esto no se puede deshacer.",
           "delete_2": "Eliminar",
           "delete_namespace": "Eliminar el namespace {{name}}",
           "keep_it": "Conservarlo",
@@ -3122,7 +3122,7 @@
       "reset": {
         "cancel": "Cancelar",
         "confirm": "Restablecer",
-        "desc": "Restablecimiento completo: borra la conversación, el registro de actividad, las capturas de pantalla y todas las preferencias aprendidas. {{name}} empieza completamente de cero.",
+        "desc": "Restablecimiento completo: borra la conversación, el registro de actividad, las capturas de pantalla y todas las preferencias aprendidas. “{{name}}” empieza completamente de cero.",
         "title": "¿Restablecer “{{name}}”?"
       },
       "settingsPanel": {
@@ -3831,7 +3831,7 @@
         "create": "Crear",
         "create_one_above_or_clone_an_existing_repository": "Crea uno arriba o clona un repositorio existente.",
         "delete_paper": "Eliminar {{name}}",
-        "delete_paper_confirm": "¿Eliminar {{name}} y todos sus archivos? Esta acción no se puede deshacer.",
+        "delete_paper_confirm": "¿Eliminar “{{name}}” y todos sus archivos? Esta acción no se puede deshacer.",
         "dismiss_error": "Descartar",
         "downloading_compiler_progress": "Descargando… {{done}} de {{total}}",
         "install_compiler": "Instalar compilador",
@@ -3864,7 +3864,7 @@
         "co_author": "Coautor",
         "co_author_conflict": "El coautor cambió este archivo",
         "co_author_conflict_discard": "Descartar mis cambios y recargar",
-        "co_author_conflict_discard_confirm": "¿Descartar tus cambios sin guardar en {{file}} y cargar la versión del coautor? Esta acción no se puede deshacer.",
+        "co_author_conflict_discard_confirm": "¿Descartar tus cambios sin guardar en “{{file}}” y cargar la versión del coautor? Esta acción no se puede deshacer.",
         "commit_and_push": "Confirmar y enviar",
         "commit_message_prompt": "Describe esta confirmación. Incluye todos los cambios del artículo.",
         "compile": "Compilar",

@@ -1,19 +1,25 @@
 /**
- * Screenshots for the destructive-confirm operand quoting (#4657).
+ * Screenshots for the destructive-confirm operand quoting (#4657, #4676).
  *
- * Drives website/capture/confirm-operand-quotes.html. Two scenes:
+ * Drives website/capture/confirm-operand-quotes.html. Three scenes:
  *   - mochi-reset: opens the REAL ChatPanel context menu, clicks the real
- *     "Reset Everything" item, and photographs the shipped reset dialog.
+ *     "Reset Everything" item, and photographs the shipped reset dialog
+ *     (title AND description).
  *   - papyrus-delete: photographs the real delete_file_confirm i18n string in
  *     labelled harness chrome (the product uses native window.confirm, which
  *     has no DOM).
+ *   - papyrus-delete-paper: same chrome for delete_paper_confirm, the
+ *     paper-level delete #4676 quotes.
  *
  * Each scene ASSERTS THE RENDERED TEXT before writing the file, so a frame
- * cannot silently photograph the wrong state:
- *   default (after) mode expects the QUOTED operand — Reset “Everything”? /
- *   Delete “Everything”? — and fails on the bare string.
- *   --before mode inverts the assertion (run it against base code, e.g. with
- *   the locale changes stashed) and expects the BARE operand.
+ * cannot silently photograph the wrong state. #4677 landed the title-level
+ * quoting, so the reset TITLE and delete_file_confirm are expected QUOTED in
+ * both modes; --before / default (after) flip only the #4676 keys:
+ *   default (after) expects the QUOTED reset description and paper delete —
+ *   “Everything” starts completely fresh. / Delete “Everything” and all of
+ *   its files? — and fails on the bare string.
+ *   --before mode inverts those two assertions (run it against base
+ *   catalogs, e.g. with the locale changes stashed) and expects them BARE.
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6823 --strictPort   # in another shell
@@ -31,9 +37,12 @@ mkdirSync(OUT, { recursive: true })
 const Q_OPEN = '\u201c'
 const Q_CLOSE = '\u201d'
 const QUOTED_RESET = `Reset ${Q_OPEN}Everything${Q_CLOSE}?`
-const BARE_RESET = 'Reset Everything?'
+const DESC_LEAD = 'Full reset: clears conversation, activity log, screenshots, and all learned preferences. '
+const QUOTED_DESC = `${DESC_LEAD}${Q_OPEN}Everything${Q_CLOSE} starts completely fresh.`
+const BARE_DESC = `${DESC_LEAD}Everything starts completely fresh.`
 const QUOTED_DELETE = `Delete ${Q_OPEN}Everything${Q_CLOSE}?`
-const BARE_DELETE = 'Delete Everything?'
+const QUOTED_PAPER = `Delete ${Q_OPEN}Everything${Q_CLOSE} and all of its files? This cannot be undone.`
+const BARE_PAPER = 'Delete Everything and all of its files? This cannot be undone.'
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 460, height: 520 }, deviceScaleFactor: 2 })
@@ -52,31 +61,50 @@ let failed = false
   const item = page.getByRole('menuitem', { name: 'Reset Everything' })
   await item.waitFor({ timeout: 10000 })
   await item.click()
-  const expected = BEFORE ? BARE_RESET : QUOTED_RESET
-  const wrong = BEFORE ? QUOTED_RESET : BARE_RESET
-  const title = page.getByText(expected, { exact: true })
+  // The TITLE was quoted by #4677 and is expected quoted in BOTH modes; the
+  // description is the #4676 key, so it is what --before flips.
+  const expectedDesc = BEFORE ? BARE_DESC : QUOTED_DESC
+  const wrongDesc = BEFORE ? QUOTED_DESC : BARE_DESC
+  const title = page.getByText(QUOTED_RESET, { exact: true })
+  const desc = page.getByText(expectedDesc, { exact: true })
   try {
     await title.waitFor({ timeout: 5000 })
-    console.log(`mochi-reset: title=${JSON.stringify(expected)} OK`)
+    await desc.waitFor({ timeout: 5000 })
+    console.log(`mochi-reset: title=${JSON.stringify(QUOTED_RESET)} desc=${JSON.stringify(expectedDesc)} OK`)
     await page.screenshot({ path: `${OUT}/${PREFIX}mochi-reset-confirm.png` })
   } catch {
-    const alt = await page.getByText(wrong, { exact: true }).count()
-    console.error(`mochi-reset: expected ${JSON.stringify(expected)} not found` + (alt ? ` (found ${JSON.stringify(wrong)} — wrong mode?)` : ''))
+    const alt = await page.getByText(wrongDesc, { exact: true }).count()
+    console.error(`mochi-reset: expected title ${JSON.stringify(QUOTED_RESET)} + desc ${JSON.stringify(expectedDesc)} not found` + (alt ? ` (found ${JSON.stringify(wrongDesc)} — wrong mode?)` : ''))
     failed = true
   }
 }
 
 // --- Scene 2: the real Papyrus delete_file_confirm string ---
+// Quoted by #4677, so expected quoted in BOTH modes.
 {
   await page.goto(`${BASE}/capture/confirm-operand-quotes.html?scene=papyrus-delete`)
   await page.waitForSelector('[data-confirm-message]')
   const text = (await page.locator('[data-confirm-message]').innerText()).trim()
-  const expected = BEFORE ? BARE_DELETE : QUOTED_DELETE
-  if (text === expected) {
+  if (text === QUOTED_DELETE) {
     console.log(`papyrus-delete: message=${JSON.stringify(text)} OK`)
     await page.screenshot({ path: `${OUT}/${PREFIX}papyrus-delete-confirm.png` })
   } else {
-    console.error(`papyrus-delete: message=${JSON.stringify(text)} expected ${JSON.stringify(expected)}`)
+    console.error(`papyrus-delete: message=${JSON.stringify(text)} expected ${JSON.stringify(QUOTED_DELETE)}`)
+    failed = true
+  }
+}
+
+// --- Scene 3: the real Papyrus delete_paper_confirm string (#4676) ---
+{
+  await page.goto(`${BASE}/capture/confirm-operand-quotes.html?scene=papyrus-delete-paper`)
+  await page.waitForSelector('[data-confirm-message]')
+  const text = (await page.locator('[data-confirm-message]').innerText()).trim()
+  const expected = BEFORE ? BARE_PAPER : QUOTED_PAPER
+  if (text === expected) {
+    console.log(`papyrus-delete-paper: message=${JSON.stringify(text)} OK`)
+    await page.screenshot({ path: `${OUT}/${PREFIX}papyrus-delete-paper-confirm.png` })
+  } else {
+    console.error(`papyrus-delete-paper: message=${JSON.stringify(text)} expected ${JSON.stringify(expected)}`)
     failed = true
   }
 }

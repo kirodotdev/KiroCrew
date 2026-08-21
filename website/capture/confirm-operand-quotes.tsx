@@ -1,13 +1,14 @@
 /**
- * Evidence for the destructive-confirm operand quoting (#4657).
+ * Evidence for the destructive-confirm operand quoting (#4657, #4676).
  *
- * THE PROBLEM: two destructive confirm prompts interpolate a user-supplied
+ * THE PROBLEM: destructive confirm prompts interpolate a user-supplied
  * name BARE — `Reset {{name}}?` and `Delete {{file}}?` — so a name that
  * happens to be an ordinary word blends into the sentence: a pet named
  * "Everything" produced "Reset Everything?" and the reader cannot tell where
- * the name ends and the question resumes.
+ * the name ends and the question resumes. #4677 quoted the two title-level
+ * prompts; #4676 finishes the class (reset.desc plus two Papyrus confirms).
  *
- * Two scenes, selected with ?scene=:
+ * Scenes, selected with ?scene=:
  *
  *   ?scene=mochi-reset — mounts the REAL ChatPanel. The pet name comes
  *     through the REAL config path (`getMochiConfig` → `resolvePetName`): the
@@ -23,6 +24,11 @@
  *     (`apps.papyrus.workspace.delete_file_confirm`, file="Everything") and
  *     renders it inside clearly-labelled harness chrome shaped like a native
  *     confirm, so the frame shows the exact text the OS dialog displays.
+ *
+ *   ?scene=papyrus-delete-paper — same harness chrome, for the paper-level
+ *     delete (`apps.papyrus.page.delete_paper_confirm`, name="Everything"),
+ *     the key #4676 quotes. ProjectList.tsx also asks via window.confirm,
+ *     so the string is again the real i18n output with no DOM of its own.
  */
 import { createRoot } from 'react-dom/client'
 
@@ -67,8 +73,12 @@ if (scene === 'mochi-reset') {
     </div>,
   )
 } else {
-  // papyrus-delete: real string, harness-drawn native-confirm chrome.
-  const message = i18nT('apps.papyrus.workspace.delete_file_confirm', { file: PET_NAME })
+  // papyrus-delete / papyrus-delete-paper: real string, harness-drawn
+  // native-confirm chrome. Both call sites use window.confirm, so the message
+  // is the entire dialog surface a screenshot can carry.
+  const message = scene === 'papyrus-delete-paper'
+    ? i18nT('apps.papyrus.page.delete_paper_confirm', { name: PET_NAME })
+    : i18nT('apps.papyrus.workspace.delete_file_confirm', { file: PET_NAME })
   createRoot(document.getElementById('root')!).render(
     <div data-capture-root style={{ width: 420, padding: 24, background: 'var(--bg)', color: 'var(--text)', boxSizing: 'border-box' }}>
       {/* Harness chrome: window.confirm has no DOM; this frame shows the real

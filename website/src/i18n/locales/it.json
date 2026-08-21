@@ -464,7 +464,7 @@
         },
         "learningRail": {
           "add_namespace": "Aggiungi namespace",
-          "confirm_delete": "Eliminare “{{name}}” e tutto ciò che ha imparato? Non si può annullare.",
+          "confirm_delete": "Eliminare «{{name}}» e tutto ciò che ha imparato? Non si può annullare.",
           "delete_2": "Elimina",
           "delete_namespace": "Elimina il namespace {{name}}",
           "keep_it": "Conservalo",
@@ -3122,7 +3122,7 @@
       "reset": {
         "cancel": "Annulla",
         "confirm": "Reimposta",
-        "desc": "Reimpostazione completa: cancella conversazione, registro attività, screenshot e tutte le preferenze apprese. {{name}} riparte completamente da zero.",
+        "desc": "Reimpostazione completa: cancella conversazione, registro attività, screenshot e tutte le preferenze apprese. «{{name}}» riparte completamente da zero.",
         "title": "Reimpostare «{{name}}»?"
       },
       "settingsPanel": {
@@ -3831,7 +3831,7 @@
         "create": "Crea",
         "create_one_above_or_clone_an_existing_repository": "Creane uno qui sopra, oppure clona un repository esistente.",
         "delete_paper": "Elimina {{name}}",
-        "delete_paper_confirm": "Eliminare {{name}} e tutti i suoi file? Questa azione non può essere annullata.",
+        "delete_paper_confirm": "Eliminare «{{name}}» e tutti i suoi file? Questa azione non può essere annullata.",
         "dismiss_error": "Ignora",
         "downloading_compiler_progress": "Download… {{done}} di {{total}}",
         "install_compiler": "Installa compilatore",
@@ -3864,7 +3864,7 @@
         "co_author": "Coautore",
         "co_author_conflict": "Il coautore ha modificato questo file",
         "co_author_conflict_discard": "Scarta le mie modifiche e ricarica",
-        "co_author_conflict_discard_confirm": "Scartare le modifiche non salvate a {{file}} e caricare la versione del coautore? L’azione non può essere annullata.",
+        "co_author_conflict_discard_confirm": "Scartare le modifiche non salvate a «{{file}}» e caricare la versione del coautore? L’azione non può essere annullata.",
         "commit_and_push": "Esegui commit e invia",
         "commit_message_prompt": "Descrivi questo commit. Includerà tutte le modifiche dell’articolo.",
         "compile": "Compila",

@@ -62,6 +62,31 @@ export const QUOTE_PAIRS = {
 }
 export const DEFAULT_QUOTE_PAIR = ['\u201C', '\u201D']
 
+/**
+ * The pair each locale wraps an interpolated destructive-confirm OPERAND in
+ * (#4653, #4657, #4676). This is deliberately a separate table from
+ * `QUOTE_PAIRS` above: that one drives the `odd-quote-count` CHECK, where
+ * guillemets are a documented false-negative class with their own spacing
+ * rules — folding these pairs into it would silently start balance-checking
+ * every guillemet in every French/Italian/Russian value, which is a behaviour
+ * change this table must not cause. Consumed by
+ * `src/i18n/destructiveConfirm.test.ts`, which asserts the operand of each
+ * listed confirm key is wrapped in its locale's pair.
+ *
+ * French embeds U+202F (narrow no-break space) INSIDE the guillemets, so the
+ * fr pair strings carry it — the operand renders as «\u202fname\u202f».
+ * Locales absent here (en, es, pt, bn, hi) use `DEFAULT_QUOTE_PAIR`.
+ */
+export const OPERAND_QUOTE_PAIRS = {
+  de: ['\u201E', '\u201C'],
+  fr: ['\u00AB\u202F', '\u202F\u00BB'],
+  it: ['\u00AB', '\u00BB'],
+  ru: ['\u00AB', '\u00BB'],
+  ja: ['\u300C', '\u300D'],
+  ko: ['\u2018', '\u2019'],
+  'zh-CN': ['\u201C', '\u201D'],
+}
+
 const count = (haystack, needle) => haystack.split(needle).length - 1
 
 export const CHECKS = [

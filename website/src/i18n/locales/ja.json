@@ -3062,7 +3062,7 @@
       "reset": {
         "cancel": "キャンセル",
         "confirm": "リセット",
-        "desc": "完全リセット: 会話、アクティビティログ、スクリーンショット、すべての学習した環境設定をクリアします。{{name}}は完全に最初からやり直します。",
+        "desc": "完全リセット: 会話、アクティビティログ、スクリーンショット、すべての学習した環境設定をクリアします。「{{name}}」は完全に最初からやり直します。",
         "title": "「{{name}}」をリセットしますか？"
       },
       "settingsPanel": {
@@ -3749,7 +3749,7 @@
         "create": "作成",
         "create_one_above_or_clone_an_existing_repository": "上記を作成するか、既存のリポジトリーをクローンしてください。",
         "delete_paper": "{{name}} を削除",
-        "delete_paper_confirm": "{{name}} とそのすべてのファイルを削除しますか？これは取り消せません。",
+        "delete_paper_confirm": "「{{name}}」とそのすべてのファイルを削除しますか？これは取り消せません。",
         "dismiss_error": "閉じる",
         "downloading_compiler_progress": "ダウンロード中… {{done}} / {{total}}",
         "install_compiler": "コンパイラーをインストール",
@@ -3782,7 +3782,7 @@
         "co_author": "共著者",
         "co_author_conflict": "共著者がこのファイルを変更しました",
         "co_author_conflict_discard": "編集を破棄して再度読み込む",
-        "co_author_conflict_discard_confirm": "{{file}} への保存されていない編集を破棄して、共著者のバージョンを読み込みますか？これは取り消せません。",
+        "co_author_conflict_discard_confirm": "「{{file}}」への保存されていない編集を破棄して、共著者のバージョンを読み込みますか？これは取り消せません。",
         "commit_and_push": "コミット＆プッシュ",
         "commit_message_prompt": "このコミットについて説明してください。ペーパー内のすべての変更をステージングします。",
         "compile": "コンパイル",

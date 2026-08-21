@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from 'vitest'
 
+import { OPERAND_QUOTE_PAIRS, DEFAULT_QUOTE_PAIR } from '../../scripts/lib/qa-checks.mjs'
 import { CATALOGS } from './index'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from './languages'
 import { BULK_DELETE_TOKEN } from '../pages/SchedulePage'
@@ -145,6 +146,58 @@ describe('destructive confirmations are translated', () => {
       const untranslated = DESTRUCTIVE
         .filter(k => en[k] !== undefined && FLAT[code][k] === en[k])
       expect(untranslated, `${code} left destructive copy in English: ${untranslated.join(', ')}`)
+        .toEqual([])
+    })
+  }
+})
+
+/**
+ * Confirm keys whose interpolated operand MUST be quoted in every authored
+ * catalog, in that locale's own convention (#4653, #4657/#4677, #4676).
+ *
+ * A destructive confirm that interpolates a user-supplied name bare lets an
+ * ordinary-word name blend into the sentence: a pet named "Everything"
+ * produced "Reset Everything?", indistinguishable from a sentence about
+ * resetting everything.
+ *
+ * This list is an enumerated regression pin, not a convention detector: it
+ * keeps the keys the #4653/#4657/#4676 wave quoted from regressing in any
+ * locale, but a brand-new confirm key does not join it automatically — a
+ * pattern-based sweep that forces new keys onto this list (or an explicit
+ * exemption list) is tracked separately. When adding a destructive confirm
+ * key that interpolates a user-supplied name, add it here.
+ *
+ * Intentionally NOT listed (recorded as an exemption in #4657):
+ *   - pages.agentsPage.delete_the_template_named_confirm
+ *   - pages.kiroCrewAgentsPage.delete_crew_named_confirm
+ * Both name the object kind next to the operand ("the template {{name}}",
+ * "crew {{name}}"), so the operand cannot read as prose. Do not add them
+ * without revisiting that decision.
+ */
+export const QUOTED_OPERAND_CONFIRM_KEYS = [
+  'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
+  'apps.mochi.reset.title', // quoted by #4677
+  'apps.mochi.reset.desc', // #4676
+  'apps.papyrus.page.delete_paper_confirm', // #4676
+  'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
+  'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
+]
+
+describe('destructive-confirm operands are quoted', () => {
+  const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+  for (const { code } of AUTHORED) {
+    it(`${code} wraps the operand of every listed confirm in its quote pair`, () => {
+      // The pair table lives in scripts/lib/qa-checks.mjs so the plain-Node
+      // gates and this test can never disagree about a locale's glyphs.
+      const [open, close] = (OPERAND_QUOTE_PAIRS as Record<string, [string, string]>)[code]
+        ?? DEFAULT_QUOTE_PAIR
+      const quoted = new RegExp(`${escapeRe(open)}\\{\\{\\w+\\}\\}${escapeRe(close)}`)
+      const offenders = QUOTED_OPERAND_CONFIRM_KEYS
+        .filter(k => FLAT[code][k] === undefined || !quoted.test(FLAT[code][k]))
+      expect(offenders,
+        `${code} interpolates a destructive-confirm operand bare (expected `
+        + `${open}{{…}}${close}): ${offenders.join(', ')}`)
         .toEqual([])
     })
   }

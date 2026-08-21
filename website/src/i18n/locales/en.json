@@ -2081,7 +2081,7 @@
       "reset": {
         "cancel": "Cancel",
         "confirm": "Reset",
-        "desc": "Full reset: clears conversation, activity log, screenshots, and all learned preferences. {{name}} starts completely fresh.",
+        "desc": "Full reset: clears conversation, activity log, screenshots, and all learned preferences. “{{name}}” starts completely fresh.",
         "title": "Reset “{{name}}”?"
       },
       "settingsPanel": {
@@ -2779,7 +2779,7 @@
         "create": "Create",
         "create_one_above_or_clone_an_existing_repository": "Create one above, or clone an existing repository.",
         "delete_paper": "Delete {{name}}",
-        "delete_paper_confirm": "Delete {{name}} and all of its files? This cannot be undone.",
+        "delete_paper_confirm": "Delete “{{name}}” and all of its files? This cannot be undone.",
         "dismiss_error": "Dismiss",
         "downloading_compiler_progress": "Downloading… {{done}} of {{total}}",
         "install_compiler": "Install compiler",
@@ -2812,7 +2812,7 @@
         "co_author": "Co-author",
         "co_author_conflict": "Co-author changed this file",
         "co_author_conflict_discard": "Discard my edits and reload",
-        "co_author_conflict_discard_confirm": "Discard your unsaved edits to {{file}} and load the co-author’s version? This cannot be undone.",
+        "co_author_conflict_discard_confirm": "Discard your unsaved edits to “{{file}}” and load the co-author’s version? This cannot be undone.",
         "commit_and_push": "Commit & Push",
         "commit_message_prompt": "Describe this commit. It stages every change in the paper.",
         "compile": "Compile",
