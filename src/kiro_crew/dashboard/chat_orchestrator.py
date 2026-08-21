@@ -184,6 +184,27 @@ def _completion_excerpts(result_paths: tuple[tuple[int, str], ...]) -> dict[int,
     return excerpts
 
 
+def _orchestration_stopped(slot: "_ChatSlot", tracker: OrchestrationTracker) -> bool:
+    """True when the stage loop must not advance the plan any further.
+
+    Two independent channels revoke a run, and they do not mean the same thing:
+
+    * ``slot._stopping`` — session/ACP teardown. The slot itself is going away,
+      so nothing on it may keep running.
+    * ``tracker.stopped`` — the user revoked approval to keep ORCHESTRATING, via
+      the plan Cancel control (``api_chat_plan_action``) or an orchestrator stop
+      word. The slot stays alive and usable; only the plan ends.
+
+    A plan cancel sets the second and deliberately not the first, so an
+    advancement gate reading one flag observes only half the cancels. Every gate
+    below therefore reads both. The inverse fix — having Cancel set
+    ``slot._stopping`` — would hand a plan cancel the teardown semantics that
+    flag carries for paths outside this loop, which is not what the user asked
+    for by cancelling a plan.
+    """
+    return bool(slot._stopping) or bool(tracker.stopped)
+
+
 async def _stage_loop(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -232,7 +253,7 @@ async def _stage_loop(
     slot._in_stage_execution = True
     try:
         for stage_idx in range(start_idx, total):
-            if slot._stopping:
+            if _orchestration_stopped(slot, tracker):
                 break
 
             stage_num = stage_idx + 1  # 1-based for display
@@ -387,7 +408,7 @@ async def _stage_loop(
                 )
                 break
 
-            if slot._stopping:
+            if _orchestration_stopped(slot, tracker):
                 break
 
             # Wait for pending subagents spawned during this stage
@@ -479,7 +500,7 @@ async def _stage_loop(
                 while (
                     _pending
                     and _sa_rounds < _sa_max_rounds
-                    and not slot._stopping
+                    and not _orchestration_stopped(slot, tracker)
                 ):
                     _sa_rounds += 1
                     await asyncio.sleep(2)
@@ -555,7 +576,7 @@ async def _stage_loop(
                 )
                 break
 
-            if slot._stopping:
+            if _orchestration_stopped(slot, tracker):
                 break
 
             # Capture result to disk
