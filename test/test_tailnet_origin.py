@@ -286,6 +286,19 @@ class TestSpawnHardening:
             assert candidate.startswith(("/", "C:\\")), candidate
             assert "tailscale" in candidate.lower(), candidate
 
+    def test_windows_candidate_must_pass_acl_validation(self, monkeypatch) -> None:
+        candidate = r"C:\Program Files\Tailscale\tailscale.exe"
+        monkeypatch.setattr(tailnet, "IS_POSIX", False)
+        monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (candidate,))
+        monkeypatch.setattr(tailnet.os.path, "isfile", lambda _path: True)
+        monkeypatch.setattr(tailnet.os, "access", lambda _path, _mode: True)
+        with patch(
+            "kiro_crew.github_runner.validate_provider_executable",
+            side_effect=ValueError("executable can be replaced by Everyone"),
+        ) as validate:
+            assert tailnet._cli_path() is None
+        validate.assert_called_once_with(candidate)
+
     def test_credentials_are_not_inherited(self) -> None:
         """The child gets a scrubbed environment, not ``os.environ``."""
         witness = "AWS_SECRET_ACCESS_KEY"
