@@ -282,8 +282,15 @@ is what makes nightlies read as previews of the *next* release:
 | `pyproject.toml` | `[project] version` — what the wheel carries |
 | `website/electron/package.json` | `version` — the updater's version compare |
 
-Keep it a bare `X.Y.Z`: `nightly.yml` builds both a semver and a PEP 440 stamp
-from it, and a suffixed base (`.dev0`) produces invalid versions.
+Keep it a bare `X.Y.Z` **on `main`**: `nightly.yml` builds both a semver and a
+PEP 440 stamp from it, and a suffixed base (`.dev0`) produces invalid versions.
+
+On an **insider release branch** the in-code version instead carries the RC, so
+a source/dev checkout reads as the candidate it is. The three files use their
+own dialects, because one string is not valid in all three: `__init__.py` and
+`pyproject.toml` take the PEP 440 spelling (`0.4.0rc3`), `package.json` takes
+the semver spelling (`0.4.0-rc.3`). The tag still overrides all three at build
+time (see `docs/build/release.md` → "Version numbering policy").
 
 ### One trap worth knowing
 

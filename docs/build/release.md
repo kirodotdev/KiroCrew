@@ -404,7 +404,10 @@ manipulates — the final byte stamp is decided by the tag, not this value.
 - **On an insider release branch, `__version__` carries the RC suffix, and the
   tag matches.** The branch reads as what it is: `__version__ = "X.Y.ZrcN"`,
   tags `vX.Y.Z-insider.N`. Do not leave a release branch declaring a bare
-  `X.Y.Z` while it is still cutting RCs.
+  `X.Y.Z` while it is still cutting RCs. The three version files use their own
+  dialects (one string is not valid in all three): `src/kiro_crew/__init__.py`
+  and `pyproject.toml` take PEP 440 (`0.4.0rc3`), `website/electron/package.json`
+  takes semver (`0.4.0-rc.3`).
 - **Promoting an insider line to stable is a three-step sequence:**
   1. **Drop the RC in a PR** — change `__version__` from `X.Y.ZrcN` to the bare
      `X.Y.Z`. This is the release commit; it also sets the base the stable

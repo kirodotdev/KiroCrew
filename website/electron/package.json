@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.4.0",
+  "version": "0.4.0-rc.3",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
