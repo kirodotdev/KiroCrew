@@ -18,9 +18,15 @@ Policy:
     and pass the same sensitive gate.
   - All paths are canonicalized via os.path.realpath before checks.
 """
+
 import os
+import pathlib
 import stat as _stat
 import sys
+
+# Directory-descriptor operations are POSIX-only: Windows has no O_DIRECTORY and
+# os.open there does not accept dir_fd, so the anchored walk cannot run at all.
+_HAVE_DIRFD = hasattr(os, "O_DIRECTORY") and os.open in getattr(os, "supports_dir_fd", set())
 
 
 def _sensitive_gate(real_path, write=False):
@@ -64,8 +70,7 @@ def safe_input_path(path):
     real = os.path.realpath(os.path.expanduser(path))
     if _sensitive_gate(real):
         print(
-            f"FATAL: refusing to open sensitive path: {path}\n"
-            f"  (resolved: {real})",
+            f"FATAL: refusing to open sensitive path: {path}\n" f"  (resolved: {real})",
             file=sys.stderr,
         )
         sys.exit(78)
@@ -95,8 +100,7 @@ def read_json_input(path):
     data = hooks.safe_read_file_bytes_nolink(real)
     if data is None:
         print(
-            f"FATAL: hooks read gate refused input: {path}\n"
-            f"  (resolved: {real})",
+            f"FATAL: hooks read gate refused input: {path}\n" f"  (resolved: {real})",
             file=sys.stderr,
         )
         sys.exit(78)
@@ -133,9 +137,7 @@ def open_media_input(path, workdir=None):
         sys.exit(78)
     if workdir is None:
         workdir = os.getcwd()
-    tmp_path = hooks.safe_copy_file_nolink(
-        os.path.expanduser(path), dest_dir=workdir
-    )
+    tmp_path = hooks.safe_copy_file_nolink(os.path.expanduser(path), dest_dir=workdir)
     if tmp_path is None:
         print(
             f"FATAL: media input refused by hooks copy gate: {path}",
@@ -173,15 +175,74 @@ def safe_output_path(path, workdir=None):
         sys.exit(78)
     if _sensitive_gate(real, write=True):
         print(
-            f"FATAL: refusing to write to sensitive path: {path}\n"
-            f"  (resolved: {real})",
+            f"FATAL: refusing to write to sensitive path: {path}\n" f"  (resolved: {real})",
             file=sys.stderr,
         )
         sys.exit(78)
     return real
 
 
-def safe_open_output(path, workdir=None, mode="w"):
+class _AtomicPublish:
+    """A write handle that publishes to its final name only on a clean close.
+
+    Regenerating an artifact must not destroy the previous one before the new
+    content exists, so the caller writes a stage file beside the destination and
+    this renames it into place. A failed or abandoned write leaves the old
+    artifact untouched and removes the stage. When the platform supports
+    directory descriptors the rename runs against the same validated descriptor
+    the stage was created through, so it cannot be redirected by a directory swap
+    in between; ``dir_fd=None`` is the portable path, which renames by name.
+    """
+
+    def __init__(self, handle, stage_name, final_name, dir_fd):
+        self._handle = handle
+        self._stage = stage_name
+        self._final = final_name
+        self._dir_fd = dir_fd
+        self._done = False
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._finish(failed=exc_type is not None)
+        return False
+
+    def close(self):
+        self._finish(failed=False)
+
+    def _finish(self, failed):
+        if self._done:
+            return
+        self._done = True
+        try:
+            self._handle.close()
+            if failed:
+                if self._dir_fd is None:
+                    os.unlink(self._stage)
+                else:
+                    os.unlink(self._stage, dir_fd=self._dir_fd)
+            elif self._dir_fd is None:
+                os.replace(self._stage, self._final)
+            else:
+                os.replace(
+                    self._stage,
+                    self._final,
+                    src_dir_fd=self._dir_fd,
+                    dst_dir_fd=self._dir_fd,
+                )
+        finally:
+            if self._dir_fd is not None:
+                try:
+                    os.close(self._dir_fd)
+                except OSError:
+                    pass
+
+
+def safe_open_output(path, workdir=None, mode="w", replace=False):
     """Validate an output path and open it without following any symlink.
 
     Closes the check-then-open TOCTOU gap in safe_output_path(): after
@@ -190,9 +251,18 @@ def safe_open_output(path, workdir=None, mode="w"):
     O_NOFOLLOW, so neither the final component nor any ancestor directory
     can be swapped for a symlink between validation and open.
 
-    Create-only (O_EXCL): the destination must not already exist, so this
-    helper can never truncate or overwrite pre-existing content — callers
-    always emit fresh recording artifacts under new names.
+    Create-only (O_EXCL) by default: the destination must not already exist,
+    so this helper can never truncate or overwrite pre-existing content —
+    right for a recording artifact emitted under a new name.
+
+    Pass replace=True for an artifact that is REGENERATED by design (the
+    composed HTML, the measured timeline). The new content is written to a
+    stage file beside the destination and published with an atomic rename on a
+    clean close, so an interrupted write cannot destroy the previous good
+    artifact or leave a partial one in its place. A symlink at the destination
+    is still refused and the create is still O_EXCL|O_NOFOLLOW. Without this
+    the documented "change a word and re-compose" loop fails on its second
+    run.
     Returns an open file object.
     """
     if workdir is None:
@@ -213,8 +283,23 @@ def safe_open_output(path, workdir=None, mode="w"):
 
     if not parts or ".." in parts:
         _fail("path resolves to workdir itself or escapes it")
+
+    if not _HAVE_DIRFD:
+        # Windows has neither O_DIRECTORY nor dir_fd support, so an output here
+        # cannot be pinned against a link swap. A pathname-based fallback was
+        # tried and is worse than nothing: it looks like the same guarantee while
+        # a concurrent swap can still redirect the write. Refusing keeps the
+        # contract honest AND is still a clean, explained exit rather than the
+        # AttributeError this used to raise.
+        _fail(
+            "this platform has no directory-descriptor support, so an output "
+            "cannot be pinned against a link swap -- run the pipeline on a POSIX host"
+        )
+
     fd = -1
     dfd = -1
+    target = parts[-1]
+    publish_from = None
     try:
         dfd = os.open(real_wd, os.O_RDONLY | os.O_DIRECTORY | nofollow)
         st_dfd = os.fstat(dfd)
@@ -225,8 +310,38 @@ def safe_open_output(path, workdir=None, mode="w"):
             nfd = os.open(comp, os.O_RDONLY | os.O_DIRECTORY | nofollow, dir_fd=dfd)
             os.close(dfd)
             dfd = nfd
+        if replace:
+            # A REGENERATED artifact (index.html, narr.json) must be rewritable, or
+            # the documented "change a word and re-compose" loop fails on its second
+            # run. Unlinking the old entry first would trade that for a worse
+            # problem: an interrupted or failed write leaves the previous good
+            # artifact gone. So the new content is staged beside the destination and
+            # published with an atomic rename on a clean close.
+            #
+            # The symlink test runs on the REQUESTED name, because validation above
+            # resolves the path and would report a link's TARGET as an ordinary
+            # regular file.
+            requested = pathlib.Path(os.path.expanduser(str(path)))
+            if requested.is_symlink():
+                _fail("destination is a symlink; refusing to regenerate through it")
+            try:
+                st_dst = os.lstat(target, dir_fd=dfd)
+            except FileNotFoundError:
+                st_dst = None
+            if st_dst is not None and not _stat.S_ISREG(st_dst.st_mode):
+                _fail("destination exists and is not a regular file")
+            publish_from = target
+            target = f".{target}.tmp-{os.getpid()}"
+            try:
+                st_tmp = os.lstat(target, dir_fd=dfd)
+            except FileNotFoundError:
+                st_tmp = None
+            if st_tmp is not None:
+                if not _stat.S_ISREG(st_tmp.st_mode):
+                    _fail("stage file exists and is not a regular file")
+                os.unlink(target, dir_fd=dfd)
         fd = os.open(
-            parts[-1],
+            target,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
             0o644,
             dir_fd=dfd,
@@ -243,11 +358,15 @@ def safe_open_output(path, workdir=None, mode="w"):
                 pass
         _fail(f"error: {e}")
     finally:
-        if dfd >= 0:
+        # When publishing, the rename must run against the SAME validated directory
+        # descriptor, so ownership of dfd passes to the wrapper below and it is not
+        # closed here.
+        if dfd >= 0 and publish_from is None:
             try:
                 os.close(dfd)
             except OSError:
                 pass
-    if "b" in mode:
-        return os.fdopen(fd, "wb")
-    return os.fdopen(fd, "w")
+    handle = os.fdopen(fd, "wb" if "b" in mode else "w")
+    if publish_from is None:
+        return handle
+    return _AtomicPublish(handle, target, publish_from, dfd)

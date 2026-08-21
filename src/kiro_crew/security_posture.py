@@ -1081,6 +1081,20 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Bundled dev-skill script: prints CI/review findings to a
         # developer terminal, not an agent-output egress path.
         "builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_findings.py",
+        # Same shape, one step further: a bundled dev-skill AUTHORING script that
+        # an author runs from a shell to narrate a demo film. It scrubs the
+        # author's own script text before handing it to the author's own cloud
+        # speech account -- defensive hygiene on a line that would otherwise be
+        # spoken aloud in a published video. The gateway neither imports nor runs
+        # it, so it is not a path this product carries agent output over, and
+        # counting it would inflate "egress paths covered" with a surface the
+        # product does not have.
+        "apps/builtins/dev_fleet/skills/feature-demo-recording/references/narrate.py",
+        # Same shape, the other authored input: the compositor scrubs `brand.json`
+        # prose before rendering it onto a slide, so a credential in a brand file is
+        # not published in the film. Also not a path this product carries agent
+        # output over -- the gateway neither imports nor runs it.
+        "apps/builtins/dev_fleet/skills/feature-demo-recording/references/compose.py",
         # Ops Mission Control provider-token redactor. ``secrets.py`` DEFINES
         # ``redact_tokens`` (the PagerDuty/Datadog token shapes) rather than
         # crossing a boundary with it — the same self-referential case as

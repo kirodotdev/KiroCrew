@@ -60,6 +60,13 @@ HMAC-signed gateway proxy, not agent-prompt-selected). ``_start_dev_proc`` is
 directly analogous to ``code_reviewer/git.py`` and is a follow-up sandbox-routing
 candidate; routing a long-lived dev server would need the resource/filesystem
 wrapper not to starve it.
+
+OUT OF SCOPE BY SHAPE: a skill's own helper scripts, under ``builtin_skills/**``
+or ``apps/builtins/<app>/skills/**`` (see ``_is_bundled_skill_asset``). These are
+scripts an agent runs in a shell, gated by the shell approval path, not
+subprocesses this package spawns; the gateway neither imports them (pinned by
+``test_bundled_skill_assets_are_not_imported``) nor execs them (such an exec
+would be a spawn site in a non-exempt file, reviewed there).
 """
 
 from __future__ import annotations
@@ -69,6 +76,30 @@ import functools
 from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
+
+
+def _is_bundled_skill_asset(path: Path) -> bool:
+    """True for a skill's own helper script rather than gateway runtime code.
+
+    Two shapes hold the same kind of thing:
+
+    * ``builtin_skills/**`` -- the top-level bundled skills.
+    * ``apps/builtins/<app>/skills/**`` -- skills an app ships with itself
+      (dev-fleet's recording and pod-e2e scripts).
+
+    Both are scripts the AGENT runs in the USER's repo/shell, not code the
+    gateway imports or spawns; they ship under the package only for packaging,
+    and ``test_bundled_skill_assets_are_not_imported`` pins that. The sandbox
+    spawn chokepoint governs the gateway's OWN subprocess usage, so these
+    assets are out of scope for this audit -- the shell approval path is what
+    governs an agent running them, exactly as it governs the agent's own
+    browser commands (see ``browser_cli`` in the module docstring).
+    """
+    parts = path.relative_to(_SRC_ROOT).parts
+    if "builtin_skills" in parts:
+        return True
+    return parts[:2] == ("apps", "builtins") and "skills" in parts[2:]
+
 
 # Attribute names that actually spawn a child process.
 _SPAWN_ATTRS = {
@@ -1027,7 +1058,7 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     out: set[str] = set()
     for path in _SRC_ROOT.rglob("*.py"):
         rel = path.relative_to(_SRC_ROOT).as_posix()
-        if rel == "sandbox.py" or "builtin_skills" in path.relative_to(_SRC_ROOT).parts:
+        if rel == "sandbox.py" or _is_bundled_skill_asset(path):
             continue
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
@@ -1094,13 +1125,9 @@ def _collect_spawn_functions() -> dict[str, str]:
     """
     out: dict[str, str] = {}
     for path in _SRC_ROOT.rglob("*.py"):
-        # ``builtin_skills/**`` are bundled skill helper scripts the AGENT runs
-        # in the USER's repo/shell (e.g. git/gh in prepare-pr's scripts), not
-        # gateway runtime code paths. The gateway never imports or spawns them;
-        # they ship under the package only for packaging. The sandbox spawn
-        # chokepoint governs the gateway's own subprocess usage, so these assets
-        # are out of scope for this audit.
-        if "builtin_skills" in path.relative_to(_SRC_ROOT).parts:
+        # A skill's own helper scripts are not gateway runtime code paths --
+        # see ``_is_bundled_skill_asset`` for why they are out of scope.
+        if _is_bundled_skill_asset(path):
             continue
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
@@ -1304,4 +1331,60 @@ def test_every_routed_spawn_applies_cgroup_scope():
         "(pids.max + memory.max fork-bomb / memory-DoS ceiling), or route the "
         "spawn through sandboxed_spawn_argv which applies it. "
         "See security-review finding bdf0d7e5."
+    )
+
+
+def test_bundled_skill_assets_are_not_imported():
+    """The skill-asset exemption is only honest while the gateway never imports one.
+
+    ``_is_bundled_skill_asset`` takes a skill's helper scripts out of the spawn
+    audit on the premise that they are scripts an agent runs in a shell, not
+    code this package runs. That premise has one failure mode: someone imports
+    such a script as a module, and its unrouted spawns become gateway spawns
+    while staying invisible to the audit. This test forbids that.
+
+    The sibling claim -- that the gateway never EXECS one either -- needs no
+    test: a gateway function spawning ``narrate.py`` would itself be a spawn
+    site in a non-exempt file, so the audit reviews it there.
+
+    Reading these files as DATA is expected and not what this pins: the skills
+    loader lists and reads skill directories, which is the whole point of
+    shipping them.
+    """
+    assets = [p for p in _SRC_ROOT.rglob("*.py") if _is_bundled_skill_asset(p)]
+    # Non-vacuity: a predicate matching nothing would make this pass while
+    # pinning nothing, and would mean the exemption itself is dead.
+    assert assets, "no bundled skill assets found -- the exemption matches nothing"
+    app_bundled = [p for p in assets if "builtin_skills" not in p.relative_to(_SRC_ROOT).parts]
+    assert app_bundled, "app-bundled skill assets (apps/builtins/*/skills/**) not matched"
+
+    asset_modules = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
+        for p in assets
+    }
+    asset_packages = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
+    }
+
+    offenders: list[str] = []
+    for path in _SRC_ROOT.rglob("*.py"):
+        if _is_bundled_skill_asset(path):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        rel = path.relative_to(_SRC_ROOT).as_posix()
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            for name in names:
+                if name in asset_modules or name in asset_packages:
+                    offenders.append(f"{rel}:{node.lineno} imports {name}")
+
+    assert not offenders, (
+        "Gateway code imports a bundled skill asset, which the spawn audit "
+        "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nEither move the "
+        "shared logic into a real module under src/kiro_crew (where the spawn "
+        "audit reviews it), or drop the import."
     )

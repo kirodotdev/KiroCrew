@@ -1,320 +1,335 @@
 ---
 name: feature-demo-recording
-description: Record a polished headless-browser demo video of a web feature (mouse-follow cursor, caption cards, scene script) and deliver it to Slack. Use when the user asks to "record a video / demo / screen recording" of a feature, dashboard, or web UI flow.
+description: Record a demo video of a web feature from a real browser. Two modes -- a NARRATED film where measured voiceover drives the timeline (designed slides, subtitles, punch-in camera, rendered from an HTML timeline), and a SILENT evidence clip for a PR or a QA pass. Use when the user asks to record a video, demo, or screen recording of a feature, dashboard, or web UI flow.
 ---
 
 # Feature Demo Recording
 
-Produce a **polished, narrated, Screen-Studio-style** recording of a web feature using headless
-Playwright — an injected cursor that follows the real mouse, click ripples, premium caption
-cards, and an **automatic spring-eased zoom (punch-in) on every click** plus **dead-air
-trimming** — then transcode to mp4 and (optionally) send it to Slack.
+Record a real browser and cut it into either of two things:
 
-This skill is the distilled, reusable version of the Session Grid demo. The hard parts
-(cursor overlay that survives navigation, caption styling, picking the *right* webm, auth, the
-"don't shoot Chinese/PII into the frame" rule, **auto-zoom camera + spring easing + dead-air
-trim**) are already solved in `references/`. **You write a thin scene script; the harness records
-an event log, and a pure-Python post-processor turns it into the cinematic cut.**
+- **Narrated film** (default when someone will *watch and listen*): designed brand
+  slides, spoken narration, subtitles, and a camera that punches in on whatever is
+  being talked about.
+- **Silent evidence clip** (a PR, a QA pass): the same capture with subtitles and
+  punch-in, no audio, authored durations.
 
-The auto-zoom/easing/trim technique is ported from the open-source
-[`preston176/screen-demo-skill`](https://github.com/preston176/screen-demo-skill) (Playwright +
-Remotion), but re-implemented **fully local in Python** (Pillow + imageio-ffmpeg) — **no Node,
-no Remotion, no Steel cloud browser**, so internal dashboards never leave the machine.
+Both share one pipeline. The only difference is whether the timeline comes from
+measured speech or from durations you write down.
 
----
+## The rule that makes it work
 
-## When to use
+**Narration first, then record.** Generate the audio, measure every line with
+`ffprobe`, and pace the capture to those numbers. Alignment is then true by
+construction instead of repaired in the edit. Recording first and narrating after
+accumulates drift you cannot fix without re-recording -- measured at about 3s by the
+last beat on a two-minute cut, versus under a few hundred ms when the recorder
+holds absolute targets read out of the measured timeline.
 
-- "Record a video of <feature>" / "take a screen recording" / "make a demo"
-- "Show off <dashboard flow> and send it to me on Slack"
-- Any time the deliverable is a **video walkthrough** of a live web UI.
+In silent mode there is nothing to measure, so you write each beat's duration in
+the script instead. Same file, same recorder, `narrate.py --silent`.
 
-Not for: static screenshots (use the `web-verify` skill — `playwright-cli screenshot`), or
-recording a native desktop/terminal app (this is browser-only).
-
----
-
-## The flow (6 steps)
+## Pipeline
 
 ```
-1. SETUP    — one-time: venv with Playwright + Chromium + Pillow + h264 ffmpeg (references/setup.sh)
-2. SCRIPT   — write scenes: a list of (caption, action) using the harness API
-3. AUTH     — get a fresh tokenized dashboard URL (kirocrew token, or ask the user)
-4. RECORD   — run the script headless → webm + events.json  (cursor/captions/video + event log)
-5. POLISH   — render.sh: auto-zoom (spring punch-in on clicks) + dead-air trim → demo.mp4
-6. SHIP     — file_send the mp4 to Slack (or hand back the path)
+script.json ──narrate.py──> narration.mp3 + narr.json      (measured timeline)
+              (--silent: no audio, durations taken from the script)
+                                   │
+                                   ▼  the recorder reads the beat targets
+   record.py (adapted) ──> page.webm + events.json          (capture + beat log)
+                                   │
+                  ffmpeg ──> assets/footage.mp4
+                                   │
+      compose.py (narr.json + events.json) ──> index.html   (HTML timeline)
+                                   │
+                  hyperframes ──> renders/*.mp4
+                                   │
+      verify_align.py ──> drift / audio / picture / streams  (gate before delivery)
 ```
 
-Track these as todos if the request is non-trivial — RECORD often needs 2-3 iterations to get
-selectors right, and you don't want to lose the POLISH/SHIP steps.
+Only `record.py` is written per video. Everything else is generic.
 
-**Two-layer design:** RECORD produces the raw webm **and** an `events.json` (every click's
-timestamp + on-screen focal point + element size; every caption's span). POLISH replays that log
-to drive the camera — so the cinematic part is deterministic, re-runnable, and tunable without
-re-recording.
+## How to invoke these scripts
 
----
+Two rules come from the shared path-safety gate (`references/_pathcheck.py`), which
+every script under `references/` routes its reads and writes through:
 
-## Use subagents — delegate aggressively, work in parallel
+1. **Use an interpreter that can import `kiro_crew`.** The gate consults the
+   CENTRALIZED sensitive-path check rather than a local copy of the denylist, so
+   when the package is not importable it fails closed with exit 78 rather than
+   guessing. Any interpreter the package is installed into will do -- a
+   provisioned worktree venv (`<worktree>/.venv/bin/python`) is the usual one but
+   is NOT guaranteed to exist. Do NOT trust `command -v kirocrew` to name one: on
+   a host using a version manager it resolves to a shim whose interpreter cannot
+   import the package. Verify whichever you pick:
+   `<py> -c "import kiro_crew"`. Exit 78 with "cannot import kiro_crew" means the
+   interpreter, not the script.
+2. **Run from the video project directory, with paths inside it.** Outputs must
+   resolve within the working directory and inputs go through the descriptor-pinned
+   read gate, so `--out /tmp/x.html` is refused by design.
 
-Demo work decomposes cleanly into independent pieces. **Default to spawning subagents** for
-anything that can run on its own; reserve the main thread for orchestration, the live
-token-bearing recording, and final judgment. Spawn with `spawn_sub_agents`
-(blocks, returns results — best when you need the output to continue) or
-`spawn_run` with a `tasks` array (fire-and-wait for completion events).
-
-**Where subagents help most (run these in parallel):**
-
-1. **SCRIPT — scene authoring, fanned out.** Give each subagent the feature's scene list and have
-   each draft 1-2 scenes (selectors + caption text) against the harness API, then merge the best.
-   For a wide feature, one subagent per scene; for a tour, split by phase.
-2. **SCRIPT — selector scouting.** Before writing clicks, spawn a subagent to open the app
-   (read-only / its own token) and report the real `aria-label`/`title`/text for each control you
-   need to target. Selector misses are the #1 cause of re-records — scout them first.
-3. **REVIEW — adversarial check of the scene script** (do this *before* the expensive RECORD).
-   Spawn a reviewer subagent to read `record.py` against this SKILL's scene-design rules and flag:
-   English-only captions? PII/real-data risk in any scene? preconditions seeded before dependent
-   actions? selectors as ordered lists? captions short enough? It returns a checklist; you fix
-   before recording. Cheaper than discovering issues in the webm.
-4. **VERIFY — post-render QA.** After POLISH, spawn a subagent to sample frames from the mp4 and
-   confirm: punch-in zoom present on clicks, captions not occluding, no PII visible, duration sane.
-   (This is the pixel-proof step — delegate it so the main thread can prep delivery.)
-5. **RESEARCH — technique upgrades.** When asked to make the video cooler, spawn subagents to
-   survey open-source approaches (e.g. how this skill's auto-zoom was ported from
-   `preston176/screen-demo-skill`) in parallel with implementation.
-
-**Division of labor, concretely:**
-
-| Stage | Main thread | Subagents (parallel) |
-|-------|-------------|----------------------|
-| SCRIPT | merge + own the final `record.py` | draft scenes; scout selectors |
-| REVIEW | apply fixes | adversarial scene-script review |
-| RECORD | run it (holds the live token) | — (single, stateful, token-bearing) |
-| POLISH | run `render.sh`, pick params | — (fast, local) |
-| VERIFY | decide pass/fail | sample frames, check zoom/occlusion/PII |
-| SHIP | `file_send` | draft the Slack message text |
-
-**Keep on the main thread:** the actual RECORD run (it holds the short-lived token and is a
-single stateful browser session — don't fan that out), and any step that *uses* the credential.
-Hand subagents read-only or compute-only work; never pass a live token into a subagent prompt.
-
----
-
-## Step 1 — Setup (one-time per machine)
-
-Run the setup helper. It creates `~/.kiro/crew/workspace/.demo-recording-venv` with Playwright,
-and reuses the already-installed browsers in `~/.cache/ms-playwright/` (they are typically
-already present from prior Playwright usage, so this is usually instant).
+**The gate applies to `references/` only.** Your own recorder -- the copy of
+`record_template.py` that lives in the video project -- imports playwright and the
+standard library, and is not gated. It therefore needs the opposite thing: an
+interpreter with **playwright** installed, which is often NOT the one that can
+import `kiro_crew`. Two interpreters is the normal case, and a
+`ModuleNotFoundError: playwright` there is not the exit-78 gate.
 
 ```bash
-bash <app-skills-dir>/feature-demo-recording/references/setup.sh
+PY=<worktree>/.venv/bin/python      # must satisfy: $PY -c "import kiro_crew"
+REC=python3                         # must satisfy: $REC -c "import playwright"
+cd <video-project-dir>
+$PY <skill>/references/deps.py
 ```
 
-It prints the venv's python path and the bundled ffmpeg path. If the venv already exists it's a
-no-op. See `references/setup.sh` for what it checks.
+## What leaves the machine
 
-**ffmpeg**: Playwright bundles one at `~/.cache/ms-playwright/ffmpeg-*/ffmpeg-linux`. The setup
-script finds it and writes the path to `.demo-recording-venv/FFMPEG_PATH`. No separate install.
+Be straight with the user about this, because a demo often captures an internal
+dashboard. Narration goes through the same speech providers the product's own
+voice-reply path uses, so the answer depends on which one is picked:
 
----
+- The **capture never leaves**: Playwright runs headless and local, and the
+  transcode is local ffmpeg.
+- **`--provider piper`** (preferred, what `auto` picks when it is installed): local
+  neural TTS, so the narration text never leaves either. Needs the `piper` binary
+  and an `.onnx` voice model.
+- **`--provider polly`**: synthesis happens in the caller's OWN AWS account through
+  the `aws` CLI. Costs a little, needs credentials, stays inside their account.
+- **`--silent`**: no speech at all, nothing sent.
 
-## Step 2 — Write the scene script
+There is deliberately no third-party speech service. Narration text is product
+content and a demo often narrates an internal surface, so the only destinations this
+pipeline will speak to are the machine it runs on and the caller's own account. When
+neither is available it stops and says so rather than reaching for a convenient
+endpoint.
+- The **renderer is fetched**: `hyperframes` comes from npm on demand and the
+  composition loads GSAP from a CDN, so a render needs network the first time.
 
-Copy `references/record_template.py` to your working dir (e.g.
-`~/.kiro/crew/workspace/uploads/<feature>-video/record.py`) and fill in the `SCENES`.
+`references/deps.py` prints which providers exist and which one `auto` will pick.
+For a strictly air-gapped run use `piper` or `--silent`, and pre-warm the npm/CDN
+caches -- do not claim the whole pipeline is local without checking.
 
-The harness gives you a `Demo` object with these methods (full reference:
-`references/demo_harness.py` docstrings):
+## Step 0 -- dependencies
 
-| Method | What it does |
-|---|---|
-| `d.caption(eyebrow, title, sub="", secs=3)` | Show a caption card, hold `secs`. **Captions are the narration.** |
-| `d.cap_hide()` | Hide the current caption (before an action you want unobstructed) |
-| `d.click(selectors, label="")` | Glide the cursor to the first visible match and click. `selectors` = list, tried in order |
-| `d.click_side(selectors, side, label)` | Click the left-most / right-most match (for distinct panes/columns) |
-| `d.type(text, delay=35)` | Type into the focused element (with the cursor parked there) |
-| `d.press(key)` | Keyboard press, e.g. `"Enter"`, `"Meta+d"` |
-| `d.focus_composer()` | Click the first visible `textarea` / contenteditable |
-| `d.wait(ms)` | Plain wait |
-| `d.shot(name)` | Debug screenshot -> `debug-<name>.png` (use liberally while iterating) |
-| `d.goto_nav(text)` | Click a top-nav item by exact text (e.g. `"Schedule"`, then `"Chat"`) |
+```bash
+$PY references/deps.py            # report, exit 1 if anything is missing
+$PY references/deps.py --install  # install what is installable
+```
 
-A scene is just calls in sequence. Example (one scene):
+Only user-level installs (pip `--user`, the Playwright browser cache, the npx
+cache). Anything needing root -- a language runtime, a system font -- is reported
+with the exact command for a human rather than escalated silently. Existing tooling
+on disk is reused, not rebuilt.
+
+| Dependency | Why | If missing |
+|---|---|---|
+| a speech provider | narration (none needed in silent mode) | reported, not auto-installed. piper counts as ready only with a voice model (`KC_VIDEO_PIPER_MODEL`), because `resolve_provider` needs one -- a binary alone would make the doctor claim a local default it will not actually pick. `auto` has no third-party fallback to reach for |
+| `ffmpeg` with **libx264** | transcode the capture, normalise clips | `pip install --user imageio-ffmpeg` (auto). The ffmpeg Playwright bundles is vp8/webm-only with no mp4 muxer, so the doctor checks for the encoder, not just the binary |
+| `ffprobe` | measures durations; the timeline depends on it | NOT provided by imageio-ffmpeg -- needs a full ffmpeg install, so the doctor marks it human-installable |
+| `playwright` + chromium | drive and record the real UI | `pip install --user playwright` + `playwright install chromium` (auto) |
+| Node 18+ / `npx` | runs the renderer | reported, never installed -- this skill does not install a language runtime |
+| `hyperframes` (pinned) | HTML timeline -> MP4 | fetched by npx at RENDER time. The doctor only asks the registry whether the pinned version resolves (`npm view`, metadata, nothing executed -- a check that runs a downloaded package is a worse hazard than the one it reports). It tries the configured registry FIRST and falls back to `--registry=https://registry.npmjs.org` when that one refuses (an authenticated mirror answers E401 for public packages), and tells you which applies |
+| a CJK font | only for CJK subtitles | reported. An *undeclared* family fails the render gate rather than degrading, so the family name is configuration |
+
+## Step 1 -- write and measure the narration
+
+Copy `references/script.example.json`, write the lines, then:
+
+```bash
+$PY references/narrate.py script.json --out-dir assets/audio
+$PY references/narrate.py script.json --out-dir assets/audio --provider piper \
+        --piper-model ~/.local/share/piper/en_US-amy-medium.onnx
+$PY references/narrate.py script.json --out-dir assets/audio --silent   # evidence clip
+```
+
+`--provider auto` prefers piper, then polly, and stops if neither is available --
+there is no third-party fallback to fall through to. Check what that resolves
+to on the current host before running it on sensitive text.
+
+Roles: `intro` (a designed slide), `footage` (over the capture), `outro`. `say` is
+spoken, `cap` is the subtitle -- keep them separate, because a glyph like the
+command key reads badly aloud and a subtitle must be shorter than a sentence. In
+silent mode give each line a `dur`.
+
+**The number of `footage` lines is the number of beats the recorder marks.** That is
+the contract between steps 1 and 2.
+
+Budget about 2.5 spoken words per second, and keep any single footage line under
+roughly 15s. A longer line leaves the frame sitting still while the voice keeps
+going, which reads as a dead shot; put long explanations on a *slide*, where a
+static frame is the intended look.
+
+## Step 2 -- record, paced by the timeline
+
+Copy `references/record_template.py` and adapt only the beat blocks. The template
+carries the parts that are easy to get wrong: absolute-target pacing, `preroll_s`
+capture, `beat` tagging, and cursor honesty.
 
 ```python
-d.caption("01 - Split", "Split a chat",
-          "Press Cmd+D, then pick another session to view them side-by-side.", secs=3)
-d.click(['[aria-label="Enter split view"]', '[title*="Split view" i]'], label="enter split")
-d.wait(1500)
-d.shot("split-opened")
+hold_until(targets[n] - lead, page)   # idle until just before the beat
+...do the work (click, type, navigate)...
+hold_until(targets[n], page)          # absorb whatever the work cost
+mark(page, "what is on screen", box, kind="focus", beat=n)
 ```
 
-The harness automatically:
-- injects the **cursor + click-ripple + caption** overlay and **re-injects on every navigation**,
-- seeds `localStorage` (`kc-onboarded=1`) so the theme modal never appears,
-- records video at 1600x1000,
-- **logs an event for every click** (timestamp + focal point = the exact click coords + the
-  clicked element's size) **and every caption** (its on-screen span) -> `events.json`,
-- at the end, picks the correct webm **by modification time >= run start** (see the hard-won
-  lesson below), prints `MAIN_WEBM: <path>`, and writes `events.json`.
+When the work cannot fit the lead -- a page reload on a short cut -- do the work and
+mark when the result is on screen, and say so in a comment. Watch the run log for
+`! overran beat target`.
 
-You don't call any zoom API in your scenes — just `d.click(...)` and `d.caption(...)` as usual.
-The POLISH step reads `events.json` and adds the punch-in zooms automatically.
+Selector note: production bundles often strip `data-testid`, so probe the running
+page for roles and accessible names instead of trusting selectors from source.
 
-### Scene-design rules (learned the hard way)
+## Step 3 -- transcode
 
-1. **Captions are English-only and describe what's on screen right now.** They are *your* cards,
-   not app content — keep them in English even if the app UI is in another language.
-2. **Never let real user data into the frame.** If the app shows a session list / history /
-   inbox with PII or non-demo content, either (a) create fresh demo data first, (b) filter/search
-   to demo-only rows, or (c) hide just those scroll regions via injected CSS. The harness exposes
-   `extra_init_css` for (c) — see template. Prefer creating fresh demo state over hiding.
-3. **Pre-seed any state an action depends on.** The Session Grid "Fork" button was a no-op
-   because it cloned the *active* session, which was an empty new chat. Fix: seed the source
-   with a real message *before* the fork scene, focus that pane, and assert the button is enabled.
-   Generalize: if an action needs preconditions, set them up in an earlier scene.
-4. **Selectors: pass a list, most-specific first.** Prefer `aria-label`, then `title`, then
-   visible text (`button:has-text("...")`). Always `d.shot()` after a click while iterating so you
-   can see what actually happened.
-5. **Pace for humans.** ~2-4 s per caption, ~600 ms settle after each click. A 6-scene feature
-   tour lands around 90 s-2 min of webm.
-6. **Captions must be TRANSPARENT — never a solid card that occludes the UI.** A caption is
-   narration floating *over* the demo, not a panel that hides the very thing it describes. The
-   harness renders caption text with **no background/box/backdrop** — readability comes from a
-   strong multi-layer text-shadow "halo" (dark + tight layers) that works on light *or* dark
-   backgrounds. It also **auto-hides** after its `secs` (pass `keep=True` to hold it) so the
-   following click/zoom plays unobstructed. Keep captions short — long `sub` text spans more of
-   the frame.
-
----
-
-## Step 3 — Auth (fresh tokenized URL)
-
-The recording navigates to the real dashboard, so it needs a valid token.
-
-- Preferred: `kirocrew token` (TTL 20h) -> gives `http://localhost:5476?token=...`.
-- **If `kirocrew token` is permission-blocked for you** (it has been, in agent contexts),
-  **ask the user to paste a fresh tokenized URL.** Do not block on it silently.
-- Write the URL to a sidecar file the recorder reads, so the JWT never appears inline in a
-  command (inline JWTs can trip secret filters):
-
-  ```bash
-  printf '%s' "<TOKENIZED_URL>" > <workdir>/.tokenurl
-  ```
-
-  The template reads `KC_URL` env or `argv[1]`; pass it via the file + a tiny wrapper, or export
-  `KC_URL="$(cat <workdir>/.tokenurl)"` just before running.
-
-Tokens expire. If a run dies with "no composer / 403", the token is stale — get a fresh one.
-
----
-
-## Step 4 — Record
+`FF` is whatever `deps.py` reported for ffmpeg: an imageio-provided one is NOT on
+PATH, so a bare `ffmpeg` here would fail on a host the doctor called green.
 
 ```bash
-cd <workdir>
-KC_DEMO_REFS="<app-skills-dir>/feature-demo-recording/references" \
-KC_URL="$(cat .tokenurl)" "$(cat ~/.kiro/crew/workspace/.demo-recording-venv/PY_PATH)" record.py
+FF=ffmpeg    # or the path deps.py printed for the ffmpeg row
+"$FF" -y -i "$(cat MAIN_WEBM)" -c:v libx264 -preset medium -crf 20 \
+      -pix_fmt yuv420p -an assets/footage.mp4
 ```
 
-`KC_DEMO_REFS` points back at the skill's `references/` directory so the copied
-`record.py` can import `demo_harness` (the support modules stay in the skill bundle).
-
-Watch `run.log` / stdout. The harness prints each click with coordinates and a final
-`MAIN_WEBM: <path>` + `EVENTS: <n>`. If selectors miss (`!! none visible for ...`), fix the
-selector list and re-run — recording is cheap and idempotent (each run writes a new webm and
-overwrites `events.json`).
-
-**Iterate against screenshots.** The debug PNGs are your eyes; open the ones around a failing
-scene before changing selectors.
-
----
-
-## Step 5 — Polish (auto-zoom + dead-air trim)
-
-One command turns the raw webm + `events.json` into the cinematic cut:
+## Step 4 -- compose and render
 
 ```bash
-bash <app-skills-dir>/feature-demo-recording/references/render.sh \
-     <workdir> <workdir>/<feature>-demo.mp4 --out-fps 30 --dead-air-speed 6
+$PY references/compose.py --brand brand.json   # -> index.html
+npm run check     # in a hyperframes project; fix everything it reports
+                  # a private mirror answers E401 for public packages; pin
+                  # --registry=https://registry.npmjs.org in package.json
+npm run render
 ```
 
-`render.sh` chains two pure-Python stages (no Node/Remotion/cloud):
-- **`camera.py`** — reads `events.json`, emits zoom keyframes. Each click -> a punch-in target:
-  focal = the click point; `zoom = min(max_zoom, max(1.0, 0.30 / target_frac))` so smaller
-  targets zoom in more (capped at `--max-zoom`, default 1.6). Caption spans become full-speed,
-  no-zoom windows.
-- **`postprocess.py`** — replays frames, applies a **spring-eased** (Remotion config:
-  `damping=200, stiffness=100, mass=1, overshootClamping` -> smooth, no overshoot; 18-frame
-  transition) **zoom/pan around each focal point** (wide -> punch-in -> hold -> punch-out), and
-  **time-compresses dead air** between click/caption windows by `--dead-air-speed`x (real cut —
-  `screen-demo-skill`'s trim only *reported* dead air; ours actually removes it). Re-encodes h264.
+Run `check` before every render. It has caught a silent-audio bug, overlapping
+tweens, an undeclared font and failing subtitle contrast in this pipeline -- each of
+which would otherwise have shipped.
 
-Tunables: `--max-zoom` (1.6), `--lead-ms` (280, how early the zoom starts before a click),
-`--hold-ms` (1400, how long it stays zoomed after), `--transition-frames` (18, easing length),
-`--dead-air-speed` (6), `--speed` (overall playback speedup), `--out-fps` (30).
-
-The camera is driven entirely by the event log, so you can **re-tune the look without
-re-recording** — just re-run `render.sh` with different flags against the same webm.
-
-> Captions are composited **during recording** (burned in), but the post-processor keeps caption
-> spans at full speed and zoom=1.0, so they're never sped-up-unreadable or cropped by a zoom.
-
----
-
-## Step 6 — Ship (deliver)
-
-`render.sh` already produced an h264 mp4 (yuv420p + faststart — plays everywhere). If you want a
-plain transcode *without* the auto-zoom (rarely), use the h264 ffmpeg directly:
+## Step 5 -- verify, then deliver
 
 ```bash
-FF="$(cat ~/.kiro/crew/workspace/.demo-recording-venv/FFMPEG_PATH)"
-WEBM="$(cat <workdir>/MAIN_WEBM)"
-"$FF" -y -i "$WEBM" -vf "scale=1280:-2" -c:v libx264 -pix_fmt yuv420p -crf 23 \
-      -movflags +faststart <workdir>/<feature>-plain.mp4
+$PY references/verify_align.py renders/<file>.mp4
 ```
 
-> Warning: **ffmpeg must have libx264.** The ffmpeg Playwright *bundles* is a stripped webm/vp8-only
-> build with **no** libx264 and no mp4 muxer — it errors with `Unrecognized option 'movflags'`.
-> `setup.sh` installs `imageio-ffmpeg` (a full static build) and writes its path to `FFMPEG_PATH`,
-> so use that. `postprocess.py` uses it automatically via imageio.
+Four checks, each for a failure that has actually shipped: per-beat **drift**
+against its line; **audio** loudness (a silent track reads about -91 dB; skipped in
+silent mode); **picture** luminance in slide and footage windows (a near-black
+footage window means the video element never seeked); and **streams** plus duration
+against the composition. Non-zero exit means do not deliver.
 
-> Warning: **Pick the webm by the `MAIN_WEBM:` the recorder just printed** — NOT "the largest .webm in
-> the dir." A past delivery shipped a *stale* video because an older, larger webm from a previous
-> run was still sitting in the folder. The harness selects by mtime >= run-start and writes the
-> path to `<workdir>/MAIN_WEBM`; `render.sh` reads that. Verify the mp4's duration/size changed
-> from the last run before sending.
+Then hand over the mp4 path, or `file_send` it if the user asked for Slack.
 
-Then deliver. To DM the user on Slack, use the `file_send` MCP tool with the mp4 path and a one-line caption.
-If Slack delivery isn't requested, just report the local mp4 path.
+## Scene-design rules
 
----
+1. **Subtitles and slides are English-only** unless the narration language is
+   deliberately something else. They are our cards, not app content.
+2. **Never let real user data into the frame.** Record from an isolated pod, or
+   create fresh demo data. A real session list carries chat titles and internal
+   references.
+3. **Pre-seed any state a beat depends on.** If a beat needs a precondition, set it
+   up in the pre-roll, which is outside the narrated timeline.
+4. **Capture in dark mode when the brand frames are dark.** Cutting from a designed
+   dark slide to a white dashboard is jarring, and near-white subtitles over a light
+   UI fail contrast no matter how heavy the shadow (the subtitle uses a solid pill,
+   so readability holds either way).
 
-## Quick reference: the worked example
+## House style, and where it comes from
 
-`references/session_grid_scenes.py` is the **complete, working 6-scene Session Grid script**
-(split -> fork -> 2x2 grid -> persist -> close -> live-sync). Read it to see real selectors, the
-fork precondition fix, and caption phrasing. Adapt it scene-by-scene for a new feature.
+This is worth stating plainly, because "brand slides plus a punch-in camera over
+screen capture" is a whole genre and a reader could reasonably ask whose look this is.
 
-## Files in this skill
+**The palette is not a choice made here.** `useTheme.tsx` sets
+`DEFAULT_COLOR_THEME = 'kiro'`, so the Kiro theme is what a viewer already sees, and
+the brand frames use its tokens verbatim from the `[data-theme="kiro-dark"]` block in
+`website/src/index.css`: `--bg:#19161d`, `--bg-elevated:#211d25`, `--accent:#8e48ff`,
+`--accent-hover:#9f63ff`, `--text-strong:#f2f1f4`, `--muted:#938f9b`,
+`--border:#352f3d`. **The capture is recorded on the same theme** -- the recorder seeds
+`mc-color-theme=kiro` and `mc-theme=dark` -- so a slide and the dashboard behind it are
+one product rather than two. Getting this wrong is visible: an earlier cut here put
+emerald brand frames (the plain `dark` theme) around a Kiro-purple dashboard, and that
+mismatch is exactly what makes a film look assembled from parts.
 
-- `references/setup.sh` — make/verify the venv (Playwright + Pillow + numpy + imageio + h264 ffmpeg)
-- `references/demo_harness.py` — the `Demo` class (cursor/caption/video/webm-picker **+ event log**). Don't edit per-demo.
-- `references/record_template.py` — copy this, fill in `SCENES`, run it (RECORD)
-- `references/session_grid_scenes.py` — the full Session Grid demo as a reference implementation
-- `references/camera.py` — event log -> auto-zoom keyframes (POLISH stage 1)
-- `references/spring.py` — overdamped spring easing (ported from Remotion's `spring()`)
-- `references/postprocess.py` — spring zoom/pan + dead-air trim -> h264 mp4 (POLISH stage 2)
-- `references/render.sh` — one-shot driver: `camera.py` -> `postprocess.py`
+**The method is the distinctive part, not the look.** Everything here follows from one
+rule -- the voice is measured first and the picture is paced to it. The genre norm is
+the opposite: record at a human pace, then compress the dead air afterwards. That
+inversion is what produces the properties below, and none of them are stylistic
+preferences; each is a number this pipeline paid for once.
 
-## Pipeline at a glance
+- **A beat lands on its line, not near it.** The recorder holds absolute targets read
+  out of the measured timeline, so reload and typing overhead is absorbed. Budget:
+  drift under a few hundred ms across a whole film. Duration-driven pacing measured
+  about 3s of accumulated drift by the last beat, which is where this rule came from.
+- **Roughly 2.5 spoken words per second**, so a footage line over about 15s is a
+  design error rather than a long sentence: the frame sits still while the voice keeps
+  going. Long explanations belong on a slide, where a static frame is the intent.
+- **A hold longer than 9s drifts instead of freezing**, and the drift is sequenced
+  strictly between the punch-out and the next punch-in, because two tweens on one
+  property leave the value undefined on the overlapping frames.
+- **A zoom that computes to 1.0 is a dead beat.** Clamp to a minimum or frame a
+  sub-region; a large focal element otherwise yields no push-in at all.
+- **The cursor appears only for real pointer actions.** A dot teleported onto a
+  keyboard beat claims a click nobody made.
+- **Subtitles sit on a solid pill** rather than relying on a text shadow, so
+  readability does not depend on what the captured UI is doing underneath.
+- **Delivery is gated, not eyeballed.** `verify_align.py` fails on per-beat drift,
+  silence, a near-black footage window, or a duration that disagrees with the
+  composition -- the same posture as a build gate, applied to a video.
 
-```
-record.py --> page@*.webm  +  events.json        (RECORD: harness)
-                    |
-   render.sh --> camera.py  (events.json -> camera.json: zoom keyframes)
-                    |
-              postprocess.py (webm + camera.json -> demo.mp4: spring zoom/pan + dead-air trim)
-                    |
-              file_send --> Slack                  (SHIP)
-```
+**What is genuinely inherited.** The idea of punching in on the point that was just
+clicked is not original to this skill; it is common to the genre, and an earlier
+revision of this bundle carried an implementation derived from an external project.
+That implementation is gone -- easing now comes from GSAP inside the composition, and
+every constant above was set here. What remains shared with the genre is the concept,
+which is the level at which everyone shares it.
+
+## Landmines (each paid for once)
+
+1. **An `<audio>` element with no `id` is not discovered by the renderer** -- the
+   file ships completely silent while every other check passes.
+2. **`events.json` timestamps are on the footage clock, not the video's.** The
+   pre-roll happens before the beat clock starts, so the clip is offset by
+   `preroll_s`. Getting this wrong puts voice and picture seconds apart with nothing
+   else looking broken.
+3. **Never let two tweens animate the same property at once.** The long-hold drift is
+   sequenced strictly between the punch-out and the next punch-in, or the scale is
+   undefined on the overlapping frames and a seeking renderer bakes it in.
+4. **A zoom that computes to 1.0 is a dead beat.** A large focal element yields no
+   push-in; clamp to a minimum or frame a sub-region.
+5. **Only show the cursor for real pointer actions.** A dot teleported onto a
+   keyboard beat claims a click nobody made.
+6. **npm's default registry may be an authenticated mirror** -- pass the public one.
+7. **Do not mint a dashboard credential from the recorder.** A local safety policy
+   blocks command lines pairing a product name with the word token, and moving that
+   same mint into a child process routes around the control instead of satisfying
+   it. The operator hands the finished URL in `KC_VIDEO_TARGET_URL`; the recorder
+   only falls back to the bare pod URL, which is enough when the target asks for no
+   credential.
+8. **A FRESH pod shows first-run modals**, and the gate is server-state driven: set
+   the dashboard onboarded config as well as the localStorage keys. Changing pod
+   config reloads the pod, so any credential in a URL you were handed is stale
+   afterwards -- get the URL after the config change, not before. An
+   already-provisioned pod needs none of this.
+9. **The composition is generated, so fix the generator.** `compose.py` writes
+   `index.html`; a palette or layout change made in the generated file alone is
+   silently reverted by the next compose, and -- worse -- a stale generator paired
+   with a good `index.html` looks fine until someone re-runs the documented step.
+   After changing either, re-compose and check the OUTPUT carries the change.
+10. **The verifier pairs beats exactly only when the recorder tags them.** Each
+    primary mark carries `beat=<index>`; without the tag `verify_align.py` falls
+    back to nearest-in-order inference, which reports a drift figure that is a
+    guess. A recorder predating the tag pairs by inference and says so in its
+    output -- believe that line before believing the number.
+
+## Not this skill
+
+- A still screenshot -> `web-verify`.
+- A quick GIF of one interaction with no cutting -> `browser-recording`.
+
+## Files
+
+- `references/_pathcheck.py` -- the shared path-safety gate every script reads and writes through (centralized sensitive-path check, fail-closed)
+- `references/deps.py` -- detect + user-level install + honest failure
+- `references/narrate.py` -- STEP 1: TTS, measure, emit the timeline (`--silent` supported)
+- `references/compose.py` -- STEP 3: narr.json + events.json -> `index.html`
+- `references/verify_align.py` -- STEP 5: drift / audio / picture / streams gate
+- `references/record_template.py` -- STEP 2: copy and adapt per video
+- `references/script.example.json` -- script format
+- `references/brand.example.json` -- palette, fonts, outro text

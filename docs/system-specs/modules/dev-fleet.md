@@ -872,7 +872,55 @@ The app bundles two skills declared in `app.json`:
   artifacts, kills the browser descendants, and reports a timeout as a distinct
   outcome. Per-phase results are appended to `verdict.jsonl` as they are decided
   so a killed run still yields a verdict.
-- `skills/feature-demo-recording` — headless Playwright video recording
+- `skills/feature-demo-recording` — records a demo of a web feature, in one of
+  two modes (see below).
+
+### Using `feature-demo-recording`
+
+Two modes, and picking the wrong one wastes a recording:
+
+- **Narrated film** — someone sits and watches it (a launch clip, a feature
+  intro). The VOICEOVER drives the timeline: narration is synthesised and
+  measured FIRST, and the recorder then paces the browser to those measured
+  times. This is the order that keeps sound and picture together; pacing the
+  recording first and fitting audio afterwards is what accumulates drift.
+- **Silent evidence clip** — proof that a feature works, for a PR or a review.
+  No narration, no measuring; `narrate.py --silent` writes a timeline from
+  durations you state. The QA + Video row action uses this mode.
+
+The five steps, each a script under the skill's `references/`:
+
+| Step | Script | Produces |
+| --- | --- | --- |
+| 0 | `deps.py` | a report of what is missing, and installs what it may |
+| 1 | `narrate.py script.json` | narration audio + `narr.json` (measured timeline) |
+| 2 | `record_template.py` (copy and adapt) | the screen capture + `events.json` |
+| 3 | `compose.py` | `index.html` — the composition, as a real web page |
+| 4 | `verify_align.py` | pass/fail on drift, audio, picture and streams |
+
+Two things about the shape of this that are easy to get wrong:
+
+- **The composition is generated.** Slides, subtitles and camera moves live in
+  `index.html`, which `compose.py` writes. Changing a word means re-composing,
+  not re-recording — but it also means a palette or layout fix belongs in the
+  generator. Editing the generated file alone gets silently overwritten by the
+  next compose.
+- **Delivery is decided by `verify_align.py`, not by eye.** It exits non-zero on
+  drift beyond budget, on a silent audio track, on a picture that is black or
+  blown out, on a render whose dimensions do not match the capture, and on
+  missing streams. A film that has not passed it is not finished.
+
+Speech providers are `piper` (local, nothing leaves the machine) and `polly`
+(the operator's own AWS account, so it costs them money); `--provider auto`
+prefers local and refuses rather than reaching for a third-party endpoint. Text
+sent to the cloud provider is scrubbed of credential-shaped content first.
+
+Rendering needs Node and pulls `hyperframes` plus GSAP from public registries,
+so the render step is not offline. `deps.py` reports every one of these and says
+which it can install without root.
+
+Prefer `browser-recording` instead when a short silent clip of a UI interaction
+is all that is wanted: it is a smaller tool and needs no narration script.
 
 `kirocrew-worktree-dev` carries no app-bridged copy: the canonical copy is
 owned by the `kirocrew-dev` development-skills suite under
