@@ -44,6 +44,7 @@ import kiro_crew
 import kiro_crew.crash_guard as crash_guard
 from kiro_crew import beacon, dep_sync, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpError, AcpProcessDied
+from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     AutoNudgeService,
@@ -9264,6 +9265,10 @@ class GatewayOrchestrator:
 # be garbage-collected mid-flight.
 _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
 
+# Strong ref to the fire-and-forget agents-dir janitor sweep launched at boot
+# (the loop holds tasks weakly, so without this it could be GC'd mid-flight).
+_AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
+
 
 async def run_gateway(
     cfg: KiroCrewConfig,
@@ -9312,6 +9317,43 @@ async def run_gateway(
 
         _SLICE_LIMITS_TASK = asyncio.create_task(
             _apply_slice_limits(), name="agents-slice-limits"
+        )
+
+    # ── Agents-dir janitor (fire-and-forget) ──
+    # Sweep aged orphaned atomic-write temps + stale backups from the shared
+    # kiro agents directory (see kiro_crew.agents_janitor). Scheduled as a
+    # contained background task and never awaited, so a slow or failing sweep
+    # cannot delay dashboard binding or crash boot: the coroutine offloads the
+    # blocking filesystem work to a thread and swallows every error. The module
+    # global keeps a strong reference (the loop holds tasks weakly). Skipped in
+    # test_mode so the offline E2E gate never touches the developer's real
+    # agents dir.
+    global _AGENTS_JANITOR_TASK
+    if not test_mode:
+
+        async def _run_agents_janitor() -> None:
+            try:
+
+                def _sweep_in_thread() -> None:
+                    # kiro_agents_dir() resolved INSIDE the worker thread, not
+                    # in this coroutine body: the resolver walks env +
+                    # Path.home() + .resolve(), which is blocking filesystem
+                    # work — on an unavailable network home it can stall
+                    # indefinitely, and this coroutine runs on the event loop
+                    # during boot, between bind and serve.
+                    sweep_agents_dir(
+                        kiro_agents_dir(),
+                        sweep_backups=cfg.agent.sweep_agents_backups,
+                    )
+
+                await asyncio.to_thread(_sweep_in_thread)
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "agents-dir janitor sweep failed at boot", exc_info=True
+                )
+
+        _AGENTS_JANITOR_TASK = asyncio.create_task(
+            _run_agents_janitor(), name="agents-dir-janitor"
         )
 
     # ── Anonymous usage beacon (at most one HTTP GET per day) ──

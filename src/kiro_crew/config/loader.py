@@ -1309,6 +1309,20 @@ class AgentConfig:
         default="",
         metadata=_meta("Default Agent", "Default agent name for new sessions."),
     )
+    sweep_agents_backups: bool = field(
+        default=False,
+        metadata=_meta(
+            "Sweep foreign agent backups",
+            "When true, the agents-directory janitor also deletes aged backup "
+            "files (*.bak-<digits> / *.json.bak.<digits>, older than 14 days) "
+            "from the shared kiro agents directory. OFF by default: Kiro Crew "
+            "does not author those backups, so every one it would delete belongs "
+            "to another tool whose retention policy is not ours to decide. The "
+            "orphaned atomic-write TEMP sweep (24h) always runs and reclaims most "
+            "of the growth at near-zero risk; enable this only if you also want "
+            "foreign backups in that directory reaped.",
+        ),
+    )
     sandbox: str = field(
         default="auto",
         metadata=_meta(
@@ -6202,6 +6216,9 @@ class KiroCrewConfig:
                 mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
                 acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
                 default_agent=agent_data.get("default_agent", ""),
+                sweep_agents_backups=_safe_bool(
+                    agent_data.get("sweep_agents_backups", False), False
+                ),
                 sandbox=agent_data.get("sandbox", "auto"),
                 sandbox_allow_no_isolation=bool(
                     agent_data.get("sandbox_allow_no_isolation", False)

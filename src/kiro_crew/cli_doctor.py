@@ -24,6 +24,7 @@ from kiro_crew.acp import kas_assets, kas_auth
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent import AGENT_FILENAME
+from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import config_dir
@@ -1374,6 +1375,42 @@ def _kas_engine_flag_supported(kiro_bin: str) -> bool:
     return kas_assets.KAS_ENGINE_FLAG in (proc.stdout or "") + (proc.stderr or "")
 
 
+def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
+    """Report aged orphaned atomic-write temps and stale backups in the agents dir.
+
+    The shared kiro agents directory accumulates ``<base>.json.<digits>.tmp``
+    orphans and ``*.bak-<digits>`` / ``*.json.bak.<digits>`` backups from the
+    several independent writers that install agents there; nothing else removes
+    them. ``kirocrew doctor`` REPORTS what a sweep would reclaim but never
+    deletes anything itself (``dry_run=True``) — a diagnostic you run *because
+    something broke* must not silently unlink files, including recovery backups,
+    in the same invocation. Actual deletion is left to the fire-and-forget boot
+    sweep, and the report mirrors that sweep's scope: backups are only counted
+    when ``agent.sweep_agents_backups`` is enabled (*sweep_backups*), since Kiro
+    Crew authors none of them and the boot sweep leaves foreign backups alone by
+    default. Advisory only (never appended to ``issues``): reclaimable junk is
+    housekeeping, not a setup fault, and the scan is fail-open so it can never
+    abort the run.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nAgents Directory")
+    agents_dir = _agents_dir()
+    result = sweep_agents_dir(agents_dir, dry_run=True, sweep_backups=sweep_backups)
+    if result.removed:
+        mib = result.freed_bytes / 1048576
+        print(
+            f"  janitor:     🧹 {result.removed} stale temp/backup file(s) "
+            f"reclaimable ({mib:.1f} MiB) — the gateway sweeps these on boot"
+        )
+        for name in result.removed_names:
+            # ``!r`` on the name: this directory is shared with foreign writers,
+            # so a crafted filename could otherwise smuggle a terminal-control
+            # (ANSI/OSC) escape sequence straight to the operator's terminal.
+            print(f"{_INDENT}- {name!r}")
+    else:
+        print("  janitor:     ✅ no stale temp/backup files to reclaim")
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -1613,6 +1650,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_data_home()
     _doctor_path_launcher()
     _doctor_trust_root()
+
+    # ── Agents dir janitor (orphaned atomic-write temps + stale backups) ──
+    _doctor_agents_janitor(issues, cfg.agent.sweep_agents_backups)
 
     # ── KAS backend (only when selected) ──
     _doctor_kas(issues)
