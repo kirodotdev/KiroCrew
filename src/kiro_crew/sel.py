@@ -960,20 +960,37 @@ class SecurityEventLog:
     def recent(self, limit: int = 100) -> list[dict]:
         """Return the most recent events."""
         self.flush()  # surface any queued-but-unwritten events
-        if not self._path.exists():
+        if limit <= 0 or not self._path.exists():
             return []
-        lines = self._path.read_text(encoding="utf-8").splitlines()
-        result = []
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                result.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-            if len(result) >= limit:
-                break
+        result: list[dict] = []
+        # Read backward so the caller's limit bounds normal-case I/O as well as
+        # JSON parsing. ``buf`` may begin with a partial line until we reach the
+        # preceding chunk; all later split elements are complete records.
+        with open(self._path, "rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            buf = b""
+            while pos > 0 and len(result) < limit:
+                size = min(8192, pos)
+                pos -= size
+                f.seek(pos)
+                buf = f.read(size) + buf
+                lines = buf.split(b"\n")
+                buf = lines.pop(0)
+                for raw in reversed(lines):
+                    if len(result) >= limit:
+                        break
+                    try:
+                        line = raw.strip()
+                        if line:
+                            result.append(json.loads(line))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+            if pos == 0 and buf.strip() and len(result) < limit:
+                try:
+                    result.append(json.loads(buf.strip()))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    pass
         return result
 
     def prune(self, keep_days: int = _RETENTION_DAYS) -> int:

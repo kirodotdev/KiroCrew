@@ -243,6 +243,47 @@ class TestRecent:
     def test_empty_log_returns_empty(self, log):
         assert log.recent() == []
 
+    def test_reads_from_tail_in_bounded_chunks(self, log, monkeypatch):
+        for i in range(3):
+            log.log(SecurityEvent(
+                event_id=f"tail{i}",
+                timestamp=f"2026-01-01T00:0{i}:00+00:00",
+                event_type="tool_invocation",
+                caller_identity="dashboard:slot0",
+                agent="kirocrew",
+                source="dashboard",
+                operation="x" * 9000,
+            ))
+        monkeypatch.setattr(log, "flush", lambda: None)
+
+        real_open = open
+        reads: list[int] = []
+
+        class TrackingFile:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.wrapped.__exit__(*args)
+
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+
+            def read(self, size=-1):
+                reads.append(size)
+                return self.wrapped.read(size)
+
+        def tracking_open(path, mode="r", *args, **kwargs):
+            wrapped = real_open(path, mode, *args, **kwargs)
+            return TrackingFile(wrapped) if path == log._path and mode == "rb" else wrapped
+
+        monkeypatch.setattr("builtins.open", tracking_open)
+        assert log.recent(limit=1)[0]["event_id"] == "tail2"
+        assert reads and all(0 < size <= 8192 for size in reads)
+
 
 class TestPrune:
     def test_removes_old_entries(self, log, sel_dir):
