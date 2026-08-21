@@ -32,13 +32,13 @@ from typing import Any
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
-from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 
 # Reasoning-effort vocabulary: ``effort.py`` is the single source of truth for
 # the valid levels; EFFORT_VALUES additionally admits ``""`` ("unset — defer to
 # the role pin / provider default"). Import-safe: ``effort`` pulls in only
 # ``model_registry`` (stdlib-only), so no cycle back into validation.
 from kiro_crew.effort import EFFORT_VALUES
+from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 
 # ── Constants ──
 
