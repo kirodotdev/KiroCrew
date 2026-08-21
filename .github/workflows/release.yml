@@ -653,9 +653,24 @@ jobs:
       promotion_artifact: ${{ needs.version.outputs.channel == 'stable' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
 
+  # `needs` alone is not enough here. With no `if:`, the default condition is
+  # success(), which is false when ANY job in the needs closure was SKIPPED --
+  # and that verdict propagates THROUGH an always()-guarded job that itself
+  # succeeded (actions/runner#2205). sign-and-notarize is always()-guarded and
+  # every release graph skips something upstream by design: resolve-promotion on
+  # insider, the build jobs on stable. So this job silently skipped on every
+  # release after immutable-digest promotion landed, and nothing went red --
+  # a skip is not a failure, so the run still concluded success. v0.3.0 shipped
+  # to Stable with no GitHub Release page and no assets. Naming each dependency
+  # explicitly is the documented workaround and the pattern every other lane in
+  # this file already uses.
   github-release:
     name: Create GitHub Release
     needs: [version, stable-gate, sign-and-notarize]
+    if: >-
+      ${{ always() && needs.version.result == 'success' &&
+          needs.stable-gate.result == 'success' &&
+          needs.sign-and-notarize.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
