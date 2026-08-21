@@ -201,8 +201,15 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
 - **`inclusive-language`** runs a SHA-pinned `woke` over added lines only and fails
   on `(error)` severity. Legacy violations are burned down separately; this stops
   new ones.
-- **`sast`** runs Semgrep in a pinned container, diff-only against the base,
-  `p/python p/typescript p/security-audit p/secrets`, with `--error`. Blocking.
+- **`sast`** runs Semgrep in a pinned container: first `semgrep --test` over the
+  custom rules in `semgrep/` against the annotated fixtures in `semgrep-tests/`
+  (both directions — a `ruleid:` line must match, an `ok:` line must not — so a
+  rule regression goes red here, not on a later unrelated PR; the rules dir is
+  non-hidden because semgrep 1.78's test mode cannot discover tests under a
+  hidden directory), then the scan itself, diff-only against the base,
+  community packs plus `semgrep/`, with `--error`. The fixtures are listed in
+  `.semgrepignore` so the deliberately vulnerable fixture code is never read by
+  the scan. Blocking.
 - **`dep-audit`** calls the reusable `dependency-vulnerability.yml`, which runs
   `scripts/check_npm_audit.py` over every lockfile-backed Node project and fails
   closed on **high or critical production** vulnerabilities. Time-boxed exceptions
