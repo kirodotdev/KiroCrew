@@ -280,6 +280,16 @@ which testpath asked for the workers.
   about the host. Neither replaces the rule: **anything you start, something must
   stop — and a stub is not a stop.**
 
+  A second shape of the same hook survives even a clean shutdown: CPython cannot
+  unregister an at-fork hook, so after a proper `shutdown()` the hook still runs in
+  every fork child and restarts a ticker thread that exits almost immediately. Each
+  fork then races that short-lived thread independently — one fork child can count 1
+  thread while the next counts 2. The consequence for tests: **a single-threaded
+  pre-check fork proves nothing about the fork that produces the verdict.** A guard
+  for the multithreaded collapse must read the collapse off the verdict itself (the
+  probe's reason names it; `sandbox._probe_reason_is_multithreaded_collapse`), not
+  predict it from a separate probe.
+
 - **A handler that answers before its work finishes must be awaited, not slept on.**
   `api_chat_slot_slack_link` returns 200 as soon as the link is persisted and hands the
   Slack backfill to `asyncio.create_task`, tracked in `state._background_tasks`. Six

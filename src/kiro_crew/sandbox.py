@@ -261,6 +261,29 @@ _PROBE_STEP_NEWNS = "unshare(CLONE_NEWNS)"
 #: ``_probe_child_thread_count``.
 _PROBE_STEP_MULTITHREADED = "M"
 
+#: Trailing clause of the reason `_probe_parent_sequence` emits for the
+#: `_PROBE_STEP_MULTITHREADED` collapse. A single shared spelling, because callers
+#: that must RECOGNIZE the collapse (a fork child whose verdict is unobtainable is
+#: an unknown reading, not a disagreement) match against the reason text -- a
+#: hand-copied substring would drift the moment the wording changes.
+_PROBE_MULTITHREADED_REASON = (
+    "an os.register_at_fork hook started one, so the kernel's own verdict is "
+    "unobtainable from this child"
+)
+
+
+def _probe_reason_is_multithreaded_collapse(reason: str) -> bool:
+    """Whether a probe reason reports the multithreaded-fork-child collapse.
+
+    True only for the fork path: the collapse text is emitted by
+    `_probe_parent_sequence` when the probe child counted more than one thread,
+    which happens when an ``os.register_at_fork`` hook armed earlier in the
+    calling process starts a thread inside every fork child. The verdict such a
+    child returns is the hook's artifact, not the kernel's answer.
+    """
+    return _PROBE_MULTITHREADED_REASON in (reason or "")
+
+
 # A probe child that vanished mid-handshake is a harness failure, not a kernel
 # verdict, so it must not be cached as "this host has no sandbox". Kept separate
 # from _TRANSIENT_PROBE_ERRNOS so that set's cache semantics stay untouched.
@@ -752,9 +775,8 @@ def _probe_parent_sequence(
             ok,
             transient,
             f"{reason}; the probe child had {err} threads, which alone makes it "
-            "return EINVAL (CLONE_NEWUSER implies CLONE_THREAD) -- an "
-            "os.register_at_fork hook started one, so the kernel's own verdict is "
-            "unobtainable from this child",
+            "return EINVAL (CLONE_NEWUSER implies CLONE_THREAD) -- "
+            f"{_PROBE_MULTITHREADED_REASON}",
             remedy,
         )
     if step != "U":
