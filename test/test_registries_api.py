@@ -379,7 +379,22 @@ class TestPutRegistriesValidation:
                 json={"registries": [{"repo": "../evil"}]},
             )
             assert resp.status == 400
-            assert "invalid repo name" in (await resp.json())["error"]
+            # The rejection covers full ssh/https URLs too, so the wording says
+            # "URL or name" rather than the misleading name-only phrasing.
+            assert "invalid repo URL or name" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_repo_url(self, tmp_path, monkeypatch):
+        """A malformed full URL is rejected with the URL-or-name wording (the
+        input is a URL, so a bare "invalid repo name" banner would read wrong)."""
+        _setup_env(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={"registries": [{"repo": "ssh://git@evil host/repo.git"}]},
+            )
+            assert resp.status == 400
+            assert "invalid repo URL or name" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
     async def test_rejects_repo_with_spaces(self, tmp_path, monkeypatch):
@@ -564,7 +579,7 @@ class TestPutRegistriesUrls:
                 json={"registries": [{"repo": "acme/apps"}]},
             )
             assert resp.status == 400
-            assert "invalid repo name" in (await resp.json())["error"]
+            assert "invalid repo URL or name" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
     async def test_rejects_shell_metachar_junk(self, tmp_path, monkeypatch):
@@ -575,7 +590,7 @@ class TestPutRegistriesUrls:
                 json={"registries": [{"repo": "https://github.com/a/b;rm -rf /"}]},
             )
             assert resp.status == 400
-            assert "invalid repo name" in (await resp.json())["error"]
+            assert "invalid repo URL or name" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
     async def test_rejects_plaintext_http_url(self, tmp_path, monkeypatch):
@@ -589,7 +604,7 @@ class TestPutRegistriesUrls:
                 json={"registries": [{"repo": "http://github.com/acme/apps"}]},
             )
             assert resp.status == 400
-            assert "invalid repo name" in (await resp.json())["error"]
+            assert "invalid repo URL or name" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
     async def test_blocked_repo_still_blocked(self, tmp_path, monkeypatch):

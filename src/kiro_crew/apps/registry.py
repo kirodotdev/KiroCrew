@@ -3659,10 +3659,13 @@ async def _git_clone_or_pull(
             return {
                 "ok": False,
                 "name": dest.name,
-                "error": "unreadable_clone_origin",
-                "message": (
+                # Human sentence in `error`, machine slug in `code`: the App
+                # Store install banner renders `result.error` and never
+                # `result.message`, so the slug must not sit in `error`.
+                "code": "unreadable_clone_origin",
+                "error": (
                     "The existing checkout's origin remote is unreadable. "
-                    "Remove or fix it manually and retry the install."
+                    f"Remove or fix it manually at {dest} and retry the install."
                 ),
             }
         if existing_origin != git_url:
@@ -3679,10 +3682,11 @@ async def _git_clone_or_pull(
                 return {
                     "ok": False,
                     "name": dest.name,
-                    "error": "stale_clone_not_removed",
-                    "message": (
+                    "code": "stale_clone_not_removed",
+                    "error": (
                         "A checkout of a different repository is present and could not be "
-                        "moved aside. Remove it manually and retry the install."
+                        f"moved aside (a file at {dest} may be locked or in use). "
+                        "Remove it manually and retry the install."
                     ),
                 }
 
@@ -3854,6 +3858,27 @@ async def _git_clone_or_pull(
             raise
         if proc.returncode != 0:
             await asyncio.to_thread(platform_compat.rmtree_force, dest)
+            if index_originated:
+                # The clone ran credential-free (anonymous_git_env + strict
+                # sandbox) because the repo URL came from an external registry
+                # index whose repo differs from the registry URL, so owner
+                # credentials were withheld (confused-deputy defense). A
+                # private sibling repo therefore fails to clone. Tell the owner
+                # the cause and the remedy instead of a bare "git clone failed".
+                # Human sentence in `error`, machine slug in `code`: the install
+                # banner renders `result.error`, never `result.message`.
+                return {
+                    "ok": False,
+                    "name": dest.name,
+                    "code": "git_clone_failed_no_credentials",
+                    "error": (
+                        "Git clone failed (cloned without credentials because "
+                        "this app's repo URL differs from the registry URL, so "
+                        "owner credentials are withheld). Private app repos must "
+                        "live inside the registry repo — see the monorepo layout "
+                        "in docs/app-kit/publishing-guide.md."
+                    ),
+                }
             return {"ok": False, "name": dest.name, "error": "git clone failed"}
         clone_succeeded = True
         return None
@@ -5080,7 +5105,10 @@ async def install_from_registry(
             # Retain moved-aside checkouts so the user can recover local
             # edits; they will be swept after _STALE_CHECKOUT_RETENTION_DAYS.
             for _stale in build_result.get("_pending_stale_cleanup") or []:
-                log_lines.append(f"Previous checkout retained at: {_stale}")
+                log_lines.append(
+                    f"Previous checkout retained at: {_stale} "
+                    f"(removed automatically after {_STALE_CHECKOUT_RETENTION_DAYS} days)"
+                )
                 logger.info("Retained stale checkout: %s", _stale)
             if official_entry:
                 install_receipt.dispatch(
@@ -5137,7 +5165,10 @@ async def install_from_registry(
             # Retain moved-aside checkouts so the user can recover local
             # edits; they will be swept after _STALE_CHECKOUT_RETENTION_DAYS.
             for _stale in build_result.get("_pending_stale_cleanup") or []:
-                log_lines.append(f"Previous checkout retained at: {_stale}")
+                log_lines.append(
+                    f"Previous checkout retained at: {_stale} "
+                    f"(removed automatically after {_STALE_CHECKOUT_RETENTION_DAYS} days)"
+                )
                 logger.info("Retained stale checkout: %s", _stale)
             if official_entry:
                 # Detached best-effort telemetry runs only after durable success.

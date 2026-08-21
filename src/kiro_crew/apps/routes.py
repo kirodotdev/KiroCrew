@@ -2196,7 +2196,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     if not repo or not file_path:
         return web.json_response({"error": "repo and path required"}, status=400)
     if not _is_safe_repo_identifier(repo):
-        return web.json_response({"error": "invalid repo name"}, status=400)
+        return web.json_response({"error": "invalid repo URL or name"}, status=400)
     if not _SAFE_PATH_RE.match(file_path):
         return web.json_response({"error": "invalid path characters"}, status=400)
     if not _SAFE_REF_RE.match(ref):
@@ -2625,7 +2625,7 @@ async def handle_registries(request: web.Request) -> web.Response:
         # vetted full git URL. Reuse the blob-proxy validator, which rejects
         # shell metacharacters / traversal and owner/repo shorthand.
         if not _is_safe_repo_identifier(repo):
-            return _deny(f"invalid repo name: {repo!r}", f"repo={repo}")
+            return _deny(f"invalid repo URL or name: {repo!r}", f"repo={repo}")
         if repo in _blocked_repos:
             return _deny(
                 f"{repo!r} is the core registry — no need to add it", f"blocked_repo={repo}"

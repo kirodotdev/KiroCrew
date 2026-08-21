@@ -2438,7 +2438,7 @@ class TestStaleCloneDeletionFailsClosed:
 
         # Fails closed with an error dict...
         assert err is not None and not err["ok"]
-        assert err["error"] == "stale_clone_not_removed"
+        assert err["code"] == "stale_clone_not_removed"
         # ...and never pulls or clones over the surviving stale checkout.
         assert not any(c[:2] == ["git", "pull"] for c in captured["calls"])
         assert not any(c[:2] == ["git", "clone"] for c in captured["calls"])
@@ -2650,7 +2650,7 @@ class TestOriginMismatchDeleteOrder:
         # Must return stale_clone_not_removed error.
         assert err is not None
         assert err["ok"] is False
-        assert err["error"] == "stale_clone_not_removed"
+        assert err["code"] == "stale_clone_not_removed"
         # The original clone is UNTOUCHED — no data loss.
         assert (dest / "intact.txt").exists()
         assert (dest / "intact.txt").read_text() == "do not touch"
@@ -3014,10 +3014,11 @@ class TestUnreadableOriginAbort:
                 index_originated=False,
             )
 
-        # Must return the unreadable_clone_origin error.
+        # Must return the unreadable_clone_origin error (slug in `code`,
+        # human sentence in `error` — the install banner renders `error`).
         assert err is not None
         assert err["ok"] is False
-        assert err["error"] == "unreadable_clone_origin"
+        assert err["code"] == "unreadable_clone_origin"
         # Dest is UNTOUCHED — no rename, no rmtree, no re-clone.
         assert (dest / "local-edits.txt").exists()
         assert (dest / "local-edits.txt").read_text() == "precious work"
@@ -4439,3 +4440,117 @@ class TestManifestBranchGate:
         assert result is not None
         assert result.get("stale") is not True
         assert result.get("version") == "2.0.0"
+
+
+class TestCloneFailureDiagnostics:
+    """A failed clone must tell an index-originated installer WHY: the clone
+    ran credential-free because the repo URL differs from the registry URL, so
+    a private sibling repo cannot be read. Owner-designated installs keep the
+    ambient identity, so their failure must NOT carry the misleading hint.
+
+    The human sentence lives in ``error`` and the machine slug in ``code``: the
+    App Store install banner renders ``result.error`` and never
+    ``result.message`` (AppDetailPage.tsx), so a slug in ``error`` would be
+    shown to the user verbatim.
+    """
+
+    @staticmethod
+    def _fake_wrap_argv(argv, mode="standard"):
+        return list(argv), None
+
+    class _FailProc:
+        returncode = 128  # git clone failure
+
+        async def communicate(self):
+            return (b"fatal: could not read Username (no credentials)", None)
+
+    @pytest.mark.asyncio
+    async def test_index_originated_failure_explains_credential_posture(self, tmp_path):
+        """index_originated=True + failed fresh clone → error carries the
+        credential-posture explanation and the monorepo-recipe pointer; the
+        machine slug is in ``code``."""
+        import kiro_crew.apps.registry as reg
+
+        git_url = "https://forge.example.com/owner/private-sibling.git"
+        dest = tmp_path / "app-sources" / "myapp"
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            # Fresh clone: dest is created by git, then git exits nonzero.
+            dest.mkdir(parents=True, exist_ok=True)
+            return self._FailProc()
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=self._fake_wrap_argv),
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                git_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=True,
+            )
+
+        assert err is not None
+        assert err["ok"] is False
+        # Machine-stable slug is in `code`, NOT `error`.
+        assert err["code"] == "git_clone_failed_no_credentials"
+        human = err["error"]
+        # The human text must NOT be the bare slug (which the banner would show).
+        assert human != "git_clone_failed_no_credentials"
+        assert human != "git clone failed"
+        # It explains the cause (credential-free / withheld) and the remedy.
+        low = human.lower()
+        assert "credential" in low
+        assert "registry" in low
+        assert "docs/app-kit/publishing-guide.md" in human
+        # No secret/identity material: only the owner's own registry/repo posture
+        # is referenced, never the git URL, a token, or ssh identity.
+        assert git_url not in human
+        assert "ssh" not in low
+        assert "token" not in low
+
+    @pytest.mark.asyncio
+    async def test_owner_designated_failure_has_no_misleading_hint(self, tmp_path):
+        """index_originated=False + failed fresh clone → the bare
+        ``git clone failed`` error, with NO credential-posture hint (the clone
+        kept the ambient identity, so the hint would be wrong)."""
+        import kiro_crew.apps.registry as reg
+
+        git_url = "https://forge.example.com/owner/app.git"
+        dest = tmp_path / "app-sources" / "myapp"
+
+        async def _fake_create_subprocess(*args, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            return self._FailProc()
+
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
+            patch("kiro_crew.apps.registry.wrap_argv", side_effect=self._fake_wrap_argv),
+            patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
+            patch(
+                "kiro_crew.apps.registry.create_subprocess_limited",
+                side_effect=_fake_create_subprocess,
+            ),
+        ):
+            err = await reg._git_clone_or_pull(
+                git_url,
+                "main",
+                dest,
+                log_lines,
+                index_originated=False,
+            )
+
+        assert err is not None
+        assert err["ok"] is False
+        # Unchanged bare failure — no credential-posture code, no hint.
+        assert err["error"] == "git clone failed"
+        assert "code" not in err
+        assert "credential" not in err["error"].lower()
