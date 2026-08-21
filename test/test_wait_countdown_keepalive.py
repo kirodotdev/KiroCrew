@@ -51,7 +51,14 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     return state
 
 
-def _ping(state, body: dict, *, session_key: str = "known", tab: str = SLOT) -> dict:
+def _ping(
+    state,
+    body: dict,
+    *,
+    session_key: str = "known",
+    tab: str = SLOT,
+    provider: object | None = None,
+) -> dict:
     """Invoke _service_wait_ping the way api_session_keepalive does.
 
     ``dashboard_slot_key`` is patched rather than seeded through the surface
@@ -64,7 +71,7 @@ def _ping(state, body: dict, *, session_key: str = "known", tab: str = SLOT) -> 
     with patch(
         "kiro_crew.dashboard.chat_utils.dashboard_slot_key", return_value=tab
     ) as slot_key:
-        _service_wait_ping(state, session_key, wait_id, body, reply)
+        _service_wait_ping(state, session_key, wait_id, body, reply, provider)
     slot_key.assert_called_once_with(session_key)
     return reply
 
@@ -532,7 +539,7 @@ class TestKeepaliveRouteBody:
         state = MagicMock(spec=DashboardState)
         state.sessions = _FakeSessions(provider=provider)
 
-        def _fake(state_arg, session_key, wait_id, body, reply):
+        def _fake(state_arg, session_key, wait_id, body, reply, provider_arg=None):
             reply["end_wait"] = wait_id
 
         with patch.object(sessions_mod, "_service_wait_ping", side_effect=_fake) as f:
@@ -550,6 +557,9 @@ class TestKeepaliveRouteBody:
         assert args[1] == "known"
         assert args[2] == "w1"
         assert args[3]["remaining"] == 297
+        # The resolved provider is forwarded: it carries the session's steer
+        # stamp, which is the other half of the end-early decision.
+        assert args[5] is provider
 
     @pytest.mark.asyncio
     async def test_oversized_wait_id_is_truncated_before_use(self):
@@ -621,3 +631,149 @@ class TestSlotToDict:
 
         assert "end_wait_request" not in d
         assert "_end_wait_request" not in d
+
+
+class TestSteerEndsWait:
+    """A mid-turn steer must not have to outwait a sleeping `wait`.
+
+    kiro-cli can only inject a steer at a model-inference boundary, and an
+    in-flight tool call is the absence of one. So a steer that lands while
+    `wait` is sleeping sits in the backend's queue until the sleep elapses —
+    up to the tool's 1800s ceiling. The keepalive reply is the sleep's only
+    inbound channel, which makes this handler the one place the decision can
+    be delivered.
+    """
+
+    @staticmethod
+    def _provider(steered_at: float = 0.0):
+        """Mutable stand-in for the session provider. Only ``steer()`` moves the
+        stamp in production, so a test bumps it directly to express "a steer
+        landed"."""
+        return SimpleNamespace(last_steer_monotonic=steered_at)
+
+    def test_steer_during_the_sleep_ends_it(self):
+        """The bug: a steer arriving after the sleep began now returns the
+        sleep on its next poll instead of waiting out the full budget."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        prov = self._provider()
+        _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600}, provider=prov)
+        assert slot._wait_steer_baseline == 0.0
+
+        prov.last_steer_monotonic = 500.0  # steer lands mid-sleep
+        reply = _ping(
+            state, {"wait_id": "w1", "seconds": 600, "remaining": 595}, provider=prov
+        )
+
+        assert reply["end_wait"] == "w1"
+        # Same retirement the button path performs: nothing left to re-fire on.
+        assert slot._wait_state is None
+        assert slot._wait_steer_baseline == 0.0
+
+    def test_steer_older_than_the_sleep_does_not_end_it(self):
+        """A steer the backend already had before this sleep began is not a
+        reason to cut it short — otherwise every sleep in the turn would
+        return instantly and the model could spin on `wait`."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        prov = self._provider(500.0)  # already steered before the sleep
+
+        _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600}, provider=prov)
+        assert slot._wait_steer_baseline == 500.0
+        reply = _ping(
+            state, {"wait_id": "w1", "seconds": 600, "remaining": 595}, provider=prov
+        )
+
+        assert "end_wait" not in reply
+        assert slot._wait_state is not None
+
+    def test_one_steer_ends_only_the_sleep_it_arrived_during(self):
+        """The loop guard, stated as behaviour: the baseline is re-read on every
+        mint, so a steer the backend has not yet injected cannot end sleep
+        after sleep for the rest of the turn."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        prov = self._provider()
+
+        _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600}, provider=prov)
+        prov.last_steer_monotonic = 500.0
+        first = _ping(
+            state, {"wait_id": "w1", "seconds": 600, "remaining": 595}, provider=prov
+        )
+        # Model calls wait again; the SAME steer is still unconsumed.
+        _ping(state, {"wait_id": "w2", "seconds": 600, "remaining": 600}, provider=prov)
+        second = _ping(
+            state, {"wait_id": "w2", "seconds": 600, "remaining": 595}, provider=prov
+        )
+
+        assert first["end_wait"] == "w1"
+        assert "end_wait" not in second
+        assert slot._wait_state is not None
+        assert slot._wait_state["wait_id"] == "w2"
+        assert slot._wait_steer_baseline == 500.0
+
+    def test_contested_slot_is_not_ended_by_a_steer(self):
+        """Two sleeps sharing one session key suppress the countdown because
+        there is no way to know which one the user is looking at. A steer must
+        not reopen that hole from the other side."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        clk = _Clock()
+        prov = self._provider()
+        with patch.object(sessions_mod, "time", clk):
+            _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600}, provider=prov)
+            reply_contest = _ping(
+                state, {"wait_id": "w2", "seconds": 600, "remaining": 600}, provider=prov
+            )
+            prov.last_steer_monotonic = 500.0
+            reply = _ping(
+                state, {"wait_id": "w1", "seconds": 600, "remaining": 595}, provider=prov
+            )
+
+        assert slot._wait_contested is True
+        assert "end_wait" not in reply_contest
+        assert "end_wait" not in reply
+
+    def test_button_path_still_works_with_no_provider(self):
+        """Regression on the reason that already existed: a session whose
+        provider exposes no steer stamp (or none at all) must still honour an
+        explicit End-wait click."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+
+        _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600})
+        slot._end_wait_request = "w1"
+        reply = _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 595})
+
+        assert reply["end_wait"] == "w1"
+        assert slot._wait_state is None
+
+    def test_never_steered_session_sleeps_normally(self):
+        """A provider that has never been steered reports 0.0, which must not
+        read as "steered at the epoch" and end every sleep."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        prov = self._provider(0.0)
+
+        _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600}, provider=prov)
+        reply = _ping(
+            state, {"wait_id": "w1", "seconds": 600, "remaining": 595}, provider=prov
+        )
+
+        assert "end_wait" not in reply
+        assert slot._wait_state is not None
+
+    def test_unreadable_steer_stamp_keeps_sleeping(self):
+        """A backend whose stamp is not a number must not raise on the ping that
+        is also what stops the watchdog killing the session mid-sleep."""
+        slot = _ChatSlot(SLOT)
+        state = _mock_state(slot)
+        prov = SimpleNamespace(last_steer_monotonic="not-a-number")
+
+        _ping(state, {"wait_id": "w1", "seconds": 600, "remaining": 600}, provider=prov)
+        reply = _ping(
+            state, {"wait_id": "w1", "seconds": 600, "remaining": 595}, provider=prov
+        )
+
+        assert "end_wait" not in reply
+        assert slot._wait_state is not None

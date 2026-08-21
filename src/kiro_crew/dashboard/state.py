@@ -1469,6 +1469,7 @@ class _ChatSlot:
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
+        "_wait_steer_baseline",
         "_wait_contested",
         "_question_pending",
     )
@@ -1927,6 +1928,12 @@ class _ChatSlot:
         # _service_wait_ping tells a legitimate hand-over from two concurrent
         # waits colliding on one session key.
         self._wait_last_ping: float = 0.0
+        # The session's steer stamp as it read when the tracked wait was minted.
+        # Server-side only (deliberately NOT in to_dict). A steer newer than
+        # this baseline is what ends the sleep early; re-reading it per sleep is
+        # what stops ONE unconsumed steer from ending every subsequent sleep in
+        # the turn and handing the model a `wait` that returns instantly.
+        self._wait_steer_baseline: float = 0.0
         # True once two sleeps have been seen sharing this slot: neither may be
         # tracked or ended, because there is no way to know which one the user is
         # looking at. Latched for the rest of the turn and cleared by the same

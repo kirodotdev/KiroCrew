@@ -148,6 +148,47 @@ def test_steer_is_opt_in() -> None:
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
 
 
+def test_steer_capability_declares_its_stamp() -> None:
+    """H15: a provider that can steer must also report WHEN it steered.
+
+    The pair is load-bearing because the failure of the second half is silent.
+    A sleeping ``wait`` is one of the few regions where a steer cannot be
+    injected — the backend needs a model-inference boundary and an in-flight
+    tool call is the absence of one — so the keepalive route ends the sleep by
+    comparing ``last_steer_monotonic`` against the reading taken when the sleep
+    began. A provider that overrides ``supports_steer`` and inherits the default
+    stamp accepts steers correctly and never interrupts a wait, with nothing
+    raised and nothing logged.
+
+    The route reads the stamp defensively (a keepalive must not fail on the ping
+    that stops the watchdog killing the session mid-sleep), which is exactly why
+    the guarantee has to live here instead: a defensive read cannot tell "this
+    backend does not steer" from "this backend forgot the stamp".
+    """
+    from kiro_crew.acp.session_provider import AcpSessionProvider  # noqa: F401
+    from kiro_crew.providers.acp import AcpProvider  # noqa: F401
+    from kiro_crew.providers.base import LLMProvider
+
+    def _walk(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from _walk(sub)
+
+    checked = []
+    for cls in _walk(LLMProvider):
+        if cls.supports_steer is LLMProvider.supports_steer:
+            continue  # cannot steer, so has nothing to stamp
+        assert cls.last_steer_monotonic is not LLMProvider.last_steer_monotonic, (
+            f"{cls.__name__} overrides supports_steer but inherits the default "
+            "last_steer_monotonic, so a steer it accepts can never end a sleeping wait"
+        )
+        checked.append(cls.__name__)
+
+    # Fail-closed: an import that stopped registering the subclasses would make
+    # the loop vacuous and the ratchet a no-op.
+    assert len(checked) >= 2, f"expected at least 2 steer-capable providers, saw {checked}"
+
+
 def test_is_kiro_cli_is_positive() -> None:
     """H7: the sandbox-delegation flag is membership at every spawn site.
 

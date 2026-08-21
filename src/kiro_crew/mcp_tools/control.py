@@ -511,7 +511,10 @@ def wait(name: str, args: dict[str, Any]) -> str:
     deadline = mcp_core.time.monotonic() + seconds
     # Identity for THIS sleep. The dashboard's "end wait now" button echoes
     # it back through the keepalive response, so a request left over from an
-    # earlier sleep can never terminate the next one in the same session.
+    # earlier sleep can never terminate the next one in the same session. The
+    # same reply also ends the sleep when a mid-turn steer lands after it
+    # began: the backend can only inject a steer at a model-inference
+    # boundary, and this sleep is the absence of one (see _wait_end_reason).
     wait_id = uuid.uuid4().hex
     # Ping session-keepalive every WAIT_PING_SECS so the gateway's
     # is_responsive() doesn't flag this session as stale and SIGTERM the ACP

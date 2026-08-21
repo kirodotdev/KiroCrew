@@ -1156,7 +1156,30 @@ class AcpSessionHandle:
             "_session/steer",
             {"sessionId": self._session_id, "message": wrapped},
         )
+        # Stamped HERE, at the innermost write, because this is the one point
+        # every steer funnels through: the dashboard steers the inner client
+        # directly while the IM transports steer the provider wrapper, and both
+        # end up on this line. A reader of the stamp therefore needs no
+        # per-transport wiring. See ``last_steer_monotonic``.
+        self._last_steer_monotonic = time.monotonic()
         return True
+
+    # Monotonic stamp of the last steer handed to the backend, 0.0 when this
+    # session has never been steered. Read by the dashboard's keepalive route to
+    # decide whether a sleeping `wait` should return early: a steer can only be
+    # injected at a model-inference boundary, and an in-flight tool call is the
+    # absence of one, so a sleep that outlasts the steer would hold the user's
+    # correction in the backend's queue until it elapses.
+    #
+    # Deliberately monotonic, not wall clock: it is only ever compared against
+    # another monotonic stamp taken in the same process (the sleep's start), and
+    # mixing the two clocks is how a suspend-resume silently reorders them.
+    _last_steer_monotonic: float = 0.0
+
+    @property
+    def last_steer_monotonic(self) -> float:
+        """Monotonic time of the last steer written to the backend (0.0 if none)."""
+        return self._last_steer_monotonic
 
     @property
     def supports_steer(self) -> bool:

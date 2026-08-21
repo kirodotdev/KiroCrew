@@ -1339,6 +1339,11 @@ class AcpProvider(LLMProvider):
         return await self._client.steer(message)
 
     @property
+    def last_steer_monotonic(self) -> float:
+        """Monotonic time of the inner client's last steer (0.0 if never)."""
+        return float(getattr(self._client, "last_steer_monotonic", 0.0) or 0.0)
+
+    @property
     def supports_steer(self) -> bool:
         """True when the inner client supports mid-turn steer."""
         return bool(getattr(self._client, "supports_steer", False))

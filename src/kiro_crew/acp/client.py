@@ -4699,7 +4699,19 @@ class AcpClient:
         await self._send_request(
             "_session/steer", {"sessionId": self._session_id, "message": wrapped}
         )
+        # See AcpSessionHandle.steer for why the stamp is taken at the write.
+        self._last_steer_monotonic = time.monotonic()
         return True
+
+    # Monotonic stamp of the last steer handed to the backend, 0.0 when never
+    # steered. Mirrors AcpSessionHandle.last_steer_monotonic — the dashboard's
+    # keepalive route reads whichever of the two backs the live session.
+    _last_steer_monotonic: float = 0.0
+
+    @property
+    def last_steer_monotonic(self) -> float:
+        """Monotonic time of the last steer written to the backend (0.0 if none)."""
+        return self._last_steer_monotonic
 
     @property
     def supports_steer(self) -> bool:

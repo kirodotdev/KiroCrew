@@ -240,6 +240,24 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def last_steer_monotonic(self) -> float:
+        """Monotonic time of the last steer this provider handed to its backend,
+        0.0 when it has never steered one.
+
+        Part of the steer capability rather than an optional extra to it. The
+        dashboard's keepalive route compares this against the reading taken when
+        a sleeping ``wait`` began, because a sleep is one of the few places a
+        steer cannot be injected: the backend needs a model-inference boundary
+        and an in-flight tool call is the absence of one. So a provider that
+        returns True from :attr:`supports_steer` and leaves this at the default
+        steers perfectly well and silently never interrupts a wait — a failure
+        with no error to notice. ``test_harness_parity`` ratchets the two
+        together for that reason; the route's own defensive default is a
+        backstop, not the guarantee.
+        """
+        return 0.0
+
+    @property
     def is_session_sharing_eligible(self) -> bool:
         """True when the provider can host multiplexed sub-agent sessions on one
         process. Default False — session sharing is opt-in, never inherited."""
