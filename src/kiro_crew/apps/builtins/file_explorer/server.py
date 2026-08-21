@@ -311,7 +311,7 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def _contain_in_allowed_roots(path: Path, *, operation: str) -> Path:
+def _contain_in_allowed_roots(path: Path, *, operation: str, audit_denial: bool = True) -> Path:
     """Resolve *path* and confirm it lands inside an allowed root, else 403.
 
     The single sanitizer for user-derived paths that bypass ``_safe_path`` (the
@@ -321,6 +321,12 @@ def _contain_in_allowed_roots(path: Path, *, operation: str) -> Path:
     always inside the allow-list and safe to stat/read. Callers must use the
     returned value, never the original, so no untrusted path reaches a
     filesystem operation.
+
+    ``audit_denial=False`` defers the denial audit to the caller: a caller that
+    retries an alternative candidate through this same barrier must audit at its
+    own FINAL verdict, so a recovered attempt does not stamp a false ``denied``
+    line into the security log and a denied request is audited exactly once.
+    The raise itself is unconditional — only the audit emission is deferred.
     """
     # ``resolve()`` collapses ``..``/symlinks; the very next statement raises
     # unless the result is inside ALLOWED_ROOTS, so this function IS the
@@ -331,7 +337,8 @@ def _contain_in_allowed_roots(path: Path, *, operation: str) -> Path:
     # resolve(). Suppress at the barrier itself; no read/write happens here.
     resolved = path.resolve()  # lgtm[py/path-injection]
     if not any(_is_within(resolved, root) for root in ALLOWED_ROOTS):
-        _sel_audit(operation, str(path), outcome="denied")
+        if audit_denial:
+            _sel_audit(operation, str(path), outcome="denied")
         raise PathError(f"path not allowed: {path}", 403)
     return resolved
 
@@ -1083,11 +1090,40 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
 
         # Route through the shared raising barrier so the SAME contained,
         # resolved Path flows to iterdir() below — CodeQL recognizes the barrier
-        # return value as sanitized (py/path-injection).
+        # return value as sanitized (py/path-injection). The denial audit is
+        # deferred to this handler's FINAL verdict: a bare allowed root recovers
+        # via the retry below, and stamping a false ``denied`` line for it on
+        # every first load would erode the audit signal (and a real denial
+        # would be audited twice).
         try:
-            parent = _contain_in_allowed_roots(Path(parent_str), operation="complete")
-        except PathError:
-            raise
+            parent = _contain_in_allowed_roots(
+                Path(parent_str), operation="complete", audit_denial=False
+            )
+        except PathError as denied:
+            # A bare ALLOWED ROOT reduces to its dirname — legitimately outside
+            # the allow-list — and would 403 here even though the requested
+            # directory itself is allowed (the path bar sends the bare home
+            # path on first load). Only in this already-denied case, retry the
+            # input itself through the same raising barrier and complete it
+            # like its trailing-slash form (empty prefix). Inner directories
+            # never reach this branch — their dirname is inside the roots — so
+            # the prefix-match contract for slash-less inputs is untouched,
+            # and no filesystem call ever touches the raw input: only the
+            # barrier's contained return value flows to the stat/iterdir
+            # below. A rejection re-raises the ORIGINAL denial (audited here,
+            # exactly once, at the final verdict) so genuinely-outside paths
+            # keep today's failure shape.
+            if expanded.endswith("/"):
+                _sel_audit("complete", parent_str, outcome="denied")
+                raise
+            try:
+                parent = _contain_in_allowed_roots(
+                    Path(expanded), operation="complete", audit_denial=False
+                )
+            except (PathError, OSError):
+                _sel_audit("complete", parent_str, outcome="denied")
+                raise denied from None
+            prefix = ""
         except OSError:
             return self._json(200, {"entries": []})
 

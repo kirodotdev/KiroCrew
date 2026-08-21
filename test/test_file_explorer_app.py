@@ -443,6 +443,93 @@ class TestHTTPHandler:
         assert "file.txt" not in names  # kind=dir by default
         assert "subdir" in names
 
+    def test_complete_bare_allowed_root_matches_trailing_slash(self, tmp_tree):
+        """A bare allowed-root path (no trailing slash) must complete exactly
+        like the trailing-slash form instead of reducing to its parent — which
+        is legitimately outside the allow-list — and 403ing (issue regression:
+        the path bar sends the bare home path on first load)."""
+        bare = self._make_request(f"/complete?path={tmp_tree}")
+        slashed = self._make_request(f"/complete?path={tmp_tree}/")
+        assert bare[0][0] == 200
+        assert slashed[0][0] == 200
+        assert bare[0][1]["entries"] == slashed[0][1]["entries"]
+        assert bare[0][1]["prefix"] == ""
+        assert bare[0][1]["parent"] == str(tmp_tree)
+
+    def test_complete_partial_name_still_prefix_matches(self, tmp_tree):
+        """A partial name inside an allowed dir keeps the dirname+prefix split
+        (the bare-directory normalization must not swallow it)."""
+        responses = self._make_request(f"/complete?path={tmp_tree}/sub")
+        assert responses[0][0] == 200
+        body = responses[0][1]
+        assert body["prefix"] == "sub"
+        names = {e["name"] for e in body["entries"]}
+        assert names == {"subdir"}
+
+    def test_complete_bare_inner_directory_still_prefix_matches(self, tmp_tree):
+        """A bare EXISTING directory below a root keeps the documented
+        no-trailing-slash contract (prefix-match against siblings) — the
+        bare-directory normalization applies only when the dirname parent is
+        outside the allowed roots, which only a root itself can be."""
+        responses = self._make_request(f"/complete?path={tmp_tree}/subdir")
+        assert responses[0][0] == 200
+        body = responses[0][1]
+        assert body["parent"] == str(tmp_tree)
+        assert body["prefix"] == "subdir"
+        names = {e["name"] for e in body["entries"]}
+        assert names == {"subdir"}
+
+    def test_complete_outside_allowed_roots_403(self, tmp_tree):
+        """A directory genuinely outside the allowed roots still 403s even
+        when it exists: the fix normalizes the input, it does not widen the
+        allow-list."""
+        outside = tmp_tree.parent
+        responses = self._make_request(f"/complete?path={outside}")
+        assert responses[0][0] == 403
+
+    def test_complete_bare_root_recovery_audits_no_denial(self, tmp_tree):
+        """The recovered bare-root request must not stamp a false ``denied``
+        SEL line (the dirname attempt is an implementation detail, not a
+        security event); it audits exactly one ``complete`` success for the
+        directory actually listed."""
+        events = []
+
+        def record(operation, resources, outcome="granted"):
+            events.append((operation, resources, outcome))
+
+        with patch.object(server, "_sel_audit", record):
+            responses = self._make_request(f"/complete?path={tmp_tree}")
+        assert responses[0][0] == 200
+        assert [e for e in events if e[2] == "denied"] == []
+        assert events == [("complete", str(tmp_tree), "granted")]
+
+    def test_complete_denied_path_audits_exactly_once(self, tmp_tree):
+        """A genuinely-outside request is audited denied exactly once (at the
+        final verdict), not once per barrier attempt."""
+        events = []
+
+        def record(operation, resources, outcome="granted"):
+            events.append((operation, resources, outcome))
+
+        outside = tmp_tree.parent
+        with patch.object(server, "_sel_audit", record):
+            responses = self._make_request(f"/complete?path={outside}")
+        assert responses[0][0] == 403
+        denied = [e for e in events if e[2] == "denied"]
+        assert len(denied) == 1
+        assert denied[0][0] == "complete"
+
+    def test_complete_sensitive_dir_denied_empty(self, tmp_tree):
+        """A sensitive directory typed bare never lists its children, and the
+        response shape does not reveal whether it exists (same keys as any
+        other prefix query)."""
+        existing = self._make_request(f"/complete?path={tmp_tree}/.ssh")
+        assert existing[0][0] == 200
+        assert existing[0][1]["entries"] == []
+        absent = self._make_request(f"/complete?path={tmp_tree}/.nosuchdir")
+        assert absent[0][0] == 200
+        assert set(existing[0][1].keys()) == set(absent[0][1].keys())
+
     def test_404_unknown_route(self, tmp_tree):
         responses = self._make_request("/unknown")
         assert responses[0][0] == 404
