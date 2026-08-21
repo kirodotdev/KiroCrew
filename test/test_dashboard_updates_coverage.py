@@ -541,13 +541,21 @@ class TestChangelogCache:
 
 
 class TestPipInstallFailureReport:
-    """``_venv_pip_install`` — a long stderr is truncated, not dropped."""
+    """``_venv_pip_install`` — a long message is truncated, not dropped."""
 
     @pytest.mark.asyncio
     async def test_a_huge_stderr_is_truncated_with_a_marker(self, monkeypatch):
+        from kiro_crew import dep_sync
+
         state = MagicMock()
-        proc = _FakeProc(err=("x" * 4000).encode(), returncode=1)
-        _sequence_procs(monkeypatch, [proc])
+
+        def fake_sync(repo, target_py, emit=None, timeout=None):
+            # dep_sync passes pip's captured output through verbatim; the cap is
+            # this endpoint's job because it is the one publishing it.
+            emit("x" * 4000, True)
+            return 1
+
+        monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
 
         assert await updates._venv_pip_install("/tmp/proj", state) is False
 

@@ -42,7 +42,7 @@ from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeCli
 
 import kiro_crew
 import kiro_crew.crash_guard as crash_guard
-from kiro_crew import beacon, platform_compat, shutdown_event
+from kiro_crew import beacon, dep_sync, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
@@ -7388,31 +7388,50 @@ class GatewayOrchestrator:
 
             if self.dashboard_state:
                 self.dashboard_state.push_update_progress("building", "Rebuilding package…")
-            # pip install -e . picks up new Python deps / entry points.
-            pip_install = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "-e",
-                ".",
-                "--quiet",
-                cwd=proj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            # Install the reset revision's Python deps / entry points. The gateway
+            # is normally started through the console script pip would have to
+            # rewrite, which Windows locks, so dep_sync picks the reinstall only
+            # where it can actually run and substitutes a dependency-only sync
+            # where it cannot — a reinstall that dies on the locked script has
+            # already deleted the editable .pth.
+            pip_messages: list[tuple[str, bool]] = []
+            # The bound lives on the pip subprocess (dep_sync's `timeout`), not on
+            # an `asyncio.wait_for` around the executor. Cancelling a wait_for does
+            # NOT cancel the thread it is waiting on: expiry would report failure
+            # while a live pip kept writing to the venv and permanently occupied a
+            # subprocess_executor thread. Passing the deadline down means the child
+            # is actually killed and the thread is released.
+            pip_rc = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(
+                    dep_sync.sync_or_reinstall,
+                    Path(proj),
+                    Path(sys.executable),
+                    lambda message, error: pip_messages.append((message, error)),
+                    timeout=600,
+                ),
             )
-            pip_out, pip_err = await asyncio.wait_for(pip_install.communicate(), timeout=400)
-            if pip_install.returncode != 0:
+            if pip_rc != 0:
                 # Same reasoning as the dep-repair path: redact first, cap last.
-                err_text = pip_err.decode(errors="replace")
+                err_text = "; ".join(m for m, _ in pip_messages)
                 err_text, _ = redact_exfiltration_urls(err_text)
                 err_text, _ = redact_credentials(err_text)
                 err_text = err_text[:500]
                 logger.error(
-                    "Auto-update: pip install failed (rc=%d): %s",
-                    pip_install.returncode,
+                    "Auto-update: dependency install failed (rc=%d): %s",
+                    pip_rc,
                     err_text,
                 )
+                if pip_rc == dep_sync.REFUSED:
+                    # REFUSED means the sync stopped BEFORE touching the venv --
+                    # most importantly when that venv serves a different
+                    # checkout. The core-dep repair below would then install into
+                    # exactly the venv the guard just protected, so a refusal ends
+                    # the auto-update here without even repairing: the messages
+                    # above name the remedy, and nothing was changed.
+                    if self.dashboard_state:
+                        self.dashboard_state.push_update_progress("error", err_text)
+                    return
                 if self.dashboard_state:
                     self.dashboard_state.push_update_progress(
                         "building",
@@ -7449,6 +7468,33 @@ class GatewayOrchestrator:
                         fallback.returncode,
                         fb_err.decode(errors="replace")[:300],
                     )
+                # Repair or not, do NOT restart after a sync that did not come back
+                # clean. The tree is already on the new revision (the reset ran
+                # first), and every nonzero result names something the restart
+                # cannot fix by itself:
+                #
+                #   - dependencies still unsatisfied  -> the process this restart
+                #     brings up dies at import and takes the running gateway with
+                #     it, and the repair only covers the CORE deps, not whatever
+                #     the revision actually added.
+                #   - console script repointed or removed by the revision -> the
+                #     wrapper on disk still dispatches to the old target, and no
+                #     dependency install rewrites it. This restart uses
+                #     `-m kiro_crew` so it would survive, but the next restart
+                #     through the service manager runs `kirocrew` and does not.
+                #
+                # Staying up on already-imported modules is strictly better than
+                # either: the operator keeps a working gateway to finish the
+                # install from, and is told so now rather than at the next restart.
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "error",
+                        "Update stopped before restart: the dependency sync did "
+                        "not complete cleanly. The gateway is still running on the "
+                        "previously loaded code — finish the install from a "
+                        "terminal, then restart.",
+                    )
+                return
 
             logger.info("Auto-update: rebuild complete, restarting")
             # Re-read version from rebuilt package

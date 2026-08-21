@@ -41,6 +41,35 @@ Two things a dependency-only install cannot deliver that a reinstall does, so bo
 are checked rather than left silent: the ``requires-python`` gate pip applies when
 it builds the project, and a rewrite of the console script when the incoming
 revision repoints it.
+
+WHERE THIS LIVES, AND WHAT IT MAY IMPORT
+----------------------------------------
+This module is core rather than app-local because the reinstall it stands in for
+is not a Dev Fleet idea: the same ``pip install -e .`` into the venv serving the
+running gateway is spelled out by the dashboard update handler, the Slack
+gateway's auto-update, ``kirocrew update``, and the console-script bootstrap. Four
+of those five callers are core, so a Dev Fleet home would mean core importing from
+a builtin app.
+
+It imports the standard library ONLY, and that is an invariant a caller depends on
+rather than a stylistic preference. ``kiro_crew._bootstrap`` reaches for this
+module precisely when a declared dependency is missing from the venv -- that is the
+condition it exists to heal -- so a third-party import here would fail in exactly
+the case the module is needed. That is also the concrete argument against deciding
+requirement satisfaction with ``packaging.SpecifierSet``: it is the better parser,
+and adopting it would break the one caller that cannot assume its own
+dependencies are installed. ``tomllib`` is imported through a guarded ``tomli``
+fallback for 3.10 for the same reason -- a missing fallback degrades this module,
+it never breaks the import.
+
+The corollary for callers: import this module BEFORE the step that moves the
+working tree. Every caller merges or resets first, so an import deferred until
+after that point parses the file the incoming revision shipped -- and a revision
+that raises the ``requires-python`` floor and uses newer syntax anywhere would
+then die with a ``SyntaxError`` instead of reaching the floor refusal written for
+exactly that case. An already-imported module is served from
+``sys.modules`` and cannot be re-parsed, which is what makes the refusal
+reachable.
 """
 
 from __future__ import annotations
@@ -51,7 +80,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:  # pragma: no cover - exercised by whichever interpreter runs this
     import tomllib as _toml
@@ -60,6 +89,11 @@ except ImportError:  # Python 3.10, which this project still supports
         import tomli as _toml  # type: ignore[no-redef,import-not-found]
     except ImportError:
         _toml = None  # type: ignore[assignment]
+
+#: How a caller receives this module's own messages: ``(message, is_error)``.
+#: Positional rather than keyword so a caller can pass a plain two-argument
+#: function without importing anything from here.
+Emit = Callable[[str, bool], None]
 
 #: Characters that terminate the distribution name at the head of a PEP 508
 #: requirement (version specifier, extras bracket, marker separator, or the
@@ -99,6 +133,56 @@ _PLAIN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: a local file when the file exists, so such a token is refused rather than left
 #: to be disambiguated by the working directory's contents.
 _ARCHIVE_SUFFIXES = (".whl", ".zip", ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz")
+
+
+def locked_console_scripts(target_py: Path) -> list[str]:
+    """The venv's ``kirocrew`` console scripts that cannot currently be rewritten.
+
+    This is the probe every caller uses to decide whether a reinstall is even
+    possible, so it lives beside the substitute rather than beside any one caller.
+
+    Windows holds a mandatory lock on a running executable's image, so when the
+    process is served BY the very venv pip is about to reinstall into -- the
+    ordinary single-checkout setup -- pip cannot replace ``Scripts\\kirocrew.exe``,
+    and the reinstall can never succeed.
+
+    That matters well beyond one failed step. pip's uninstall is not atomic: by the
+    time it reaches the locked script it has already renamed the dist-info aside
+    and deleted the editable ``.pth`` that puts ``src`` on ``sys.path``, and it
+    rolls back neither. The venv is left unable to import the package at all, which
+    also kills the console script the gateway is restarted through. The running
+    process survives on already-imported modules, so the damage stays invisible
+    until the next restart fails.
+
+    Probing with an ``r+b`` open is non-destructive and discriminates correctly: a
+    running executable refuses it while every other script in the same directory
+    opens fine. It does not model every way a delete can fail -- an opener that
+    permits writes but denies deletes would pass this probe -- so a clean result
+    means "no known blocker", not a guarantee. A miss simply leaves the previous
+    behaviour, which is why this is worth doing even though it cannot be
+    exhaustive.
+
+    POSIX returns nothing: an executing binary can be unlinked there, which is why
+    pip has always been able to replace it.
+
+    ``sys.platform`` is read directly rather than through the package's platform
+    helper to keep this module's stdlib-only import discipline (see the module
+    docstring) -- ``_bootstrap`` calls into here when an import is already failing.
+    """
+    if sys.platform != "win32":
+        return []
+    locked: list[str] = []
+    for exe in sorted(Path(target_py).parent.glob("kirocrew*.exe")):
+        try:
+            with exe.open("r+b"):
+                pass
+        except PermissionError:
+            locked.append(str(exe))
+        except OSError:
+            # Unreadable for some other reason. Let pip be the judge rather than
+            # skipping a step that might well have succeeded.
+            continue
+    return locked
 
 
 def normalize(name: str) -> str:
@@ -346,18 +430,26 @@ def installed_package_origin(target_py: Path) -> str | None:
     what the installed dependencies will be imported alongside, so it is the thing
     worth checking.
 
-    Returns ``None`` when the package cannot be located at all.
+    Returns ``None`` when the package cannot be located at all -- including when
+    the interpreter itself cannot be run. That case is not theoretical: the caller
+    resolved this path by a filesystem check, and a venv deleted between that check
+    and this probe would otherwise raise ``OSError`` out of a request handler. The
+    callers read ``None`` as "cannot be shown to serve this checkout" and refuse,
+    which is the right answer to an unrunnable interpreter as well.
     """
     probe = (
         "import importlib.util as u, os;"
         "s=u.find_spec('kiro_crew');"
         "print(os.path.abspath(s.origin) if s and s.origin else '')"
     )
-    proc = subprocess.run(
-        [str(target_py), "-c", probe],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [str(target_py), "-c", probe],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
     if proc.returncode != 0:
         return None
     return proc.stdout.strip() or None
@@ -457,6 +549,19 @@ def _section(toml_text: str, header: str) -> str:
 #: treats a removal like any other disagreement.
 SCRIPT_REMOVED = "removed by the merged revision"
 
+#: Exit code meaning "this stopped before touching the venv". Distinct from 1
+#: because the two demand opposite handling: a caller that reacts to a failed
+#: install by repairing what it can must NOT run that repair after a REFUSED,
+#: since the refusal's whole point is that this venv is not ours to write to.
+#: Every ``_refuse`` path returns it, as does a usage error -- in both cases
+#: nothing was installed.
+#:
+#: An install that RAN and failed returns 1, never pip's own exit code. pip
+#: spends 2 on UNKNOWN_ERROR, so propagating it would announce "nothing was
+#: touched" for a run that may well have changed the venv -- the one reading a
+#: caller must not get wrong. pip's real code is reported in the message.
+REFUSED = 2
+
 
 def console_script_target(repo: Path, script: str) -> str | None:
     """The ``module:attr`` *script* is declared to dispatch to, or ``None``.
@@ -550,32 +655,47 @@ def installed_console_script_target(target_py: Path, script: str) -> str | None:
     return proc.stdout.strip() or None
 
 
-def _refuse(message: str, target_py: Path, repo: Path, remedy: str | None = None) -> int:
+def _print_emit(message: str, error: bool) -> None:
+    """Report to the console -- the shape a subprocess caller reads."""
+    print(message, file=sys.stderr if error else sys.stdout)
+
+
+def _refuse(
+    emit: Emit, message: str, target_py: Path, repo: Path, remedy: str | None = None
+) -> int:
     if remedy is None:
         remedy = (
             "Stop the gateway and finish the sync from a terminal: "
             f'"{target_py}" -m pip install -e "{repo}"'
         )
-    print(
-        f"dep-sync: {message} No dependency was installed. {remedy}",
-        file=sys.stderr,
-    )
-    return 1
+    emit(f"dep-sync: {message} No dependency was installed. {remedy}", True)
+    return REFUSED
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2:
-        print("usage: dep_sync <repo> <target-python>", file=sys.stderr)
-        return 2
-    repo, target_py = Path(args[0]), Path(args[1])
+def sync(
+    repo: Path, target_py: Path, emit: Emit = _print_emit, timeout: float | None = None
+) -> int:
+    """Install what ``repo`` declares into ``target_py``'s venv. 0 when synced.
 
+    Callers in the same process pass ``emit`` to receive every message they would
+    otherwise have to scrape from a subprocess's streams -- the refusals in
+    particular, each of which names the remedy the operator has to run by hand.
+    pip's own output is captured and handed to ``emit`` too, RAW: it echoes the
+    index URL it resolved against, and an authenticated index carries a credential
+    there, so it must reach the caller that knows where it is about to be published
+    rather than whatever this process's stderr happens to be.
+
+    ``timeout`` bounds the pip invocation. ``None`` leaves it unbounded, which is
+    what the module-run path uses: there the step already runs under the
+    supervision of whatever launched it.
+    """
     # Establish that the venv about to be written to serves THIS checkout before
     # anything is installed. `<repo>/.venv` is where the interpreter was found,
     # which says nothing about what it is an install of.
     foreign = venv_not_mapped_to(installed_package_origin(target_py), repo)
     if foreign:
         return _refuse(
+            emit,
             f"{foreign}.",
             target_py,
             repo,
@@ -589,11 +709,12 @@ def main(argv: list[str] | None = None) -> int:
     # them elsewhere has to stop the step rather than have it install a stale set.
     moved = dependency_authority_moved(repo)
     if moved:
-        return _refuse(f"{moved}, so this step would install a stale set.", target_py, repo)
+        return _refuse(emit, f"{moved}, so this step would install a stale set.", target_py, repo)
 
     specs = declared_requirements(repo)
     if specs is None:
         return _refuse(
+            emit,
             "cannot read install_requires from setup.cfg, so the requirements to "
             "install are unknown.",
             target_py,
@@ -607,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
         breach = python_floor_breach(floor_spec, version)
         if breach:
             return _refuse(
+                emit,
                 f"the merged revision requires Python {floor_spec} but the target "
                 f"venv runs {version[0]}.{version[1]}.{version[2]}, so its code "
                 "cannot be imported.",
@@ -615,19 +737,21 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if not specs:
-        print("dep-sync: no requirements declared; nothing to install")
+        emit("dep-sync: no requirements declared; nothing to install", False)
     else:
         rejected = rejected_specs(specs)
         if rejected:
             return _refuse(
+                emit,
                 "the merged revision declares requirements this step will not hand "
                 f"to pip: {'; '.join(rejected)}.",
                 target_py,
                 repo,
             )
-        print(
+        emit(
             f"dep-sync: installing {len(specs)} declared requirements; extras are "
-            "left alone, exactly as a plain `pip install -e .` leaves them"
+            "left alone, exactly as a plain `pip install -e .` leaves them",
+            False,
         )
         # Hand every spec to pip and let it decide: an already-satisfied requirement
         # is a no-op, so this installs what is new and leaves the rest alone without
@@ -636,9 +760,52 @@ def main(argv: list[str] | None = None) -> int:
         # locked console script.
         # `--` ends pip's option parsing, so a declared requirement can never be
         # read as a flag.
-        proc = subprocess.run([str(target_py), "-m", "pip", "install", "--", *specs])
+        #
+        # CAPTURED, not streamed to the inherited stdio. pip echoes the index URL
+        # it resolved against, and an authenticated index carries its credential in
+        # that URL -- inherited stderr on this path is the gateway's own log, so
+        # streaming writes the credential there in the clear. Routing it through
+        # `emit` hands it to the caller that knows where it is about to be
+        # published and is the one redacting it, which is what the reinstall branch
+        # in `sync_or_reinstall` already does. The cost is that a long install stops
+        # being observable line-by-line; that is the right trade against writing a
+        # credential to a log file nobody reviews.
+        try:
+            proc = subprocess.run(
+                [str(target_py), "-m", "pip", "install", "--", *specs],
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # NOT _refuse(): that says "No dependency was installed", and a run
+            # killed mid-install may well have installed some of the set. A killed
+            # install is rerunnable and a partial set is this module's already
+            # accepted exposure; an unbounded one hangs the caller instead.
+            emit(
+                f"dep-sync: installing the declared requirements exceeded "
+                f"{timeout}s and was stopped, so the set may be partially "
+                f"installed. Finish the sync from a terminal: "
+                f'"{target_py}" -m pip install -e "{repo}"',
+                True,
+            )
+            return 1
         if proc.returncode != 0:
-            return proc.returncode
+            # Bytes, then an explicit lossy decode, for the same reason as the
+            # reinstall branch: the locale's codec is not guaranteed to decode
+            # pip's output, and `text=True` would raise instead of reporting.
+            detail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            emit(
+                f"dep-sync: pip exited {proc.returncode} installing the declared "
+                "requirements" + (f": {detail}" if detail else ""),
+                True,
+            )
+            # 1, NOT pip's own code. pip uses 2 for UNKNOWN_ERROR, which is the
+            # value REFUSED carries, and the two mean opposite things to a caller:
+            # this install RAN and may have changed the venv, so a caller that
+            # repairs after a failure must still repair. Propagating pip's code
+            # would tell it nothing was touched. pip's actual code is in the
+            # message above, where it is diagnostic rather than load-bearing.
+            return 1
 
     # The one thing a dependency-only install cannot deliver: if the merged
     # revision REPOINTED the console script -- or dropped it -- the wrapper on
@@ -658,15 +825,111 @@ def main(argv: list[str] | None = None) -> int:
                 f"script is repointed to {declared} by the merged revision while "
                 f"the installed wrapper still calls {installed}"
             )
-        print(
+        emit(
             f"dep-sync: dependencies are installed, but the {_SCRIPT!r} console "
             f"{disagreement}. That wrapper cannot be "
             f"rewritten while a process is running from it: stop the gateway and run "
             f'"{target_py}" -m pip install -e "{repo}" before restarting.',
-            file=sys.stderr,
+            True,
         )
         return 1
     return 0
+
+
+def sync_or_reinstall(
+    repo: Path,
+    target_py: Path,
+    emit: Emit = _print_emit,
+    timeout: float | None = None,
+) -> int:
+    """Bring ``target_py``'s venv up to date with ``repo``. 0 when it succeeded.
+
+    The one entry point for a caller that wants the editable reinstall wherever it
+    can still run and the dependency-only substitute only where it cannot. The
+    reinstall stays the default deliberately: it is the fuller operation, and it is
+    the one that also rewrites a console script the incoming revision repointed --
+    the single thing the substitute can only report. So this does not replace the
+    reinstall, it stops the reinstall from being attempted in the one case where
+    attempting it does damage: pip's uninstall is not atomic, so a run that dies on
+    the locked script has already deleted the editable ``.pth`` (see
+    :func:`locked_console_scripts`).
+
+    ``timeout`` bounds the pip invocation on EITHER branch. The substitute is not
+    left unbounded on the reasoning that a killed dependency install is worse than
+    a hung one: a killed one is rerunnable, and a partially installed set is
+    already this module's accepted failure mode (see the exposure stated at the top
+    of this file), while an unbounded install on a wedged index hangs the surface
+    that called it with no story at all.
+
+    pip's output is captured and handed to ``emit`` RAW. A caller that publishes it
+    anywhere a user can see -- a dashboard progress feed, a log -- owns redacting
+    it first: pip echoes index URLs, which carry credentials when the operator
+    configured an authenticated index.
+    """
+    # Establish that the venv about to be written to serves THIS checkout BEFORE
+    # the branch, so both paths are covered. `sync()` asks the same question again
+    # on the substitute path, and that duplication is deliberate: `sync()` is also
+    # reached directly (as a module run by path, which is how the Dev Fleet sync
+    # invokes it), so it cannot delegate its own safety to a caller. The cost is
+    # one extra short interpreter probe against an install measured in seconds.
+    #
+    # Without this, the reinstall branch would repeat the exact asymmetry this
+    # change fixes at the Dev Fleet endpoint -- a guarded substitute beside an
+    # unguarded reinstall -- and three of this function's four callers take the
+    # checkout from configuration, so a repointed venv is reachable on all three.
+    foreign = venv_not_mapped_to(installed_package_origin(target_py), repo)
+    if foreign:
+        return _refuse(
+            emit,
+            f"{foreign}.",
+            target_py,
+            repo,
+            remedy=(
+                "Give this checkout its own editable install, or run the update "
+                "from the checkout that venv serves."
+            ),
+        )
+
+    locked = locked_console_scripts(target_py)
+    if locked:
+        emit(
+            f"dep-sync: {', '.join(locked)} locked by a running process; "
+            "substituting a dependency-only sync for the editable reinstall",
+            False,
+        )
+        return sync(repo, target_py, emit, timeout=timeout)
+
+    # `-e <repo>` rather than `-e .` with a cwd: the target is explicit in the argv
+    # instead of implied by the working directory this happens to run in.
+    argv = [str(target_py), "-m", "pip", "install", "-e", str(repo), "--quiet"]
+    try:
+        proc = subprocess.run(argv, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        emit(f"dep-sync: pip install -e timed out after {timeout}s", True)
+        return 1
+    if proc.returncode != 0:
+        # Bytes, then an explicit lossy decode: `text=True` decodes with the
+        # locale's codec, and pip's output is not guaranteed to be in it -- on a
+        # non-UTF-8 console that raises UnicodeDecodeError and loses the error
+        # message that was the point of capturing.
+        detail = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        emit(
+            f"dep-sync: pip install -e exited {proc.returncode}"
+            + (f": {detail}" if detail else ""),
+            True,
+        )
+        # 1, not pip's own code, for the same reason as the substitute branch:
+        # pip's 2 (UNKNOWN_ERROR) is REFUSED's value, and this install ran.
+        return 1
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 2:
+        print("usage: dep_sync <repo> <target-python>", file=sys.stderr)
+        return REFUSED
+    return sync(Path(args[0]), Path(args[1]))
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

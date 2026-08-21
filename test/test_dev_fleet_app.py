@@ -36,6 +36,25 @@ _POSIX_ONLY = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _venv_maps_to_the_synced_checkout():
+    """Answer the sync's foreign-venv guard with "it maps", for tests not about it.
+
+    Both install paths now refuse a venv that serves a DIFFERENT checkout, and
+    answering that question RUNS the target interpreter — which every sync test
+    here points at a path that does not exist. Stubbing both halves keeps an
+    unrelated assertion from turning into an unrunnable-interpreter refusal. The
+    guard's own behaviour is asserted by
+    ``test_sync_refuses_a_venv_that_serves_another_checkout``, which patches it
+    back to a refusal, and the logic behind it lives in ``test/test_dep_sync.py``.
+    """
+    from kiro_crew import dep_sync
+
+    with patch.object(dep_sync, "installed_package_origin", return_value="<stubbed>"), \
+         patch.object(dep_sync, "venv_not_mapped_to", return_value=None):
+        yield
+
+
 # --- worktree porcelain parsing ---
 def test_parse_worktree_porcelain_basic():
     from kiro_crew.apps.builtins.dev_fleet.server import _parse_worktree_porcelain
@@ -890,88 +909,9 @@ async def test_sync_script_emits_step_markers():
 
 
 # --- Windows: a write-locked console script must not be handed to pip ---
-def _make_scripts(tmp_path, *names):
-    """A fake venv Scripts/ dir, returning the interpreter path inside it."""
-    scripts = tmp_path / ".venv" / "Scripts"
-    scripts.mkdir(parents=True)
-    for name in names:
-        (scripts / name).write_bytes(b"MZ")
-    return scripts / "python.exe"
-
-
-def _raise_on(monkeypatch, name, exc):
-    """Make Path.open raise *exc* for the file called *name* only."""
-    real_open = Path.open
-
-    def fake_open(self, *args, **kwargs):
-        if self.name == name:
-            raise exc
-        return real_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", fake_open)
-
-
-def test_write_locked_console_scripts_is_a_posix_noop(tmp_path, monkeypatch):
-    """POSIX can unlink an executing binary, so there is nothing to detect."""
-    import kiro_crew.apps.builtins.dev_fleet.server as mod
-
-    py = _make_scripts(tmp_path, "kirocrew.exe")
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-    _raise_on(monkeypatch, "kirocrew.exe", PermissionError(13, "in use"))
-
-    assert mod._write_locked_console_scripts(py) == []
-
-
-def test_write_locked_console_scripts_flags_a_locked_script(tmp_path, monkeypatch):
-    """The real failure: the exe the gateway is executing cannot be replaced."""
-    import kiro_crew.apps.builtins.dev_fleet.server as mod
-
-    py = _make_scripts(tmp_path, "kirocrew.exe")
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    _raise_on(monkeypatch, "kirocrew.exe", PermissionError(13, "in use"))
-
-    locked = mod._write_locked_console_scripts(py)
-    assert len(locked) == 1
-    assert locked[0].endswith("kirocrew.exe")
-
-
-def test_write_locked_console_scripts_passes_a_writable_script(tmp_path, monkeypatch):
-    """A venv the gateway is NOT running from must still get its reinstall."""
-    import kiro_crew.apps.builtins.dev_fleet.server as mod
-
-    py = _make_scripts(tmp_path, "kirocrew.exe")
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-
-    assert mod._write_locked_console_scripts(py) == []
-
-
-def test_write_locked_console_scripts_ignores_unrelated_executables(tmp_path, monkeypatch):
-    """Only the scripts pip would rewrite matter.
-
-    Some other locked exe sharing the Scripts dir must not suppress the
-    reinstall — that would turn an unrelated process into a silent skip.
-    """
-    import kiro_crew.apps.builtins.dev_fleet.server as mod
-
-    py = _make_scripts(tmp_path, "kirocrew.exe", "unrelated.exe")
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    _raise_on(monkeypatch, "unrelated.exe", PermissionError(13, "in use"))
-
-    assert mod._write_locked_console_scripts(py) == []
-
-
-def test_write_locked_console_scripts_lets_pip_judge_other_errors(tmp_path, monkeypatch):
-    """An unreadable-for-other-reasons script is not evidence of a lock.
-
-    Skipping on any OSError would suppress installs that would have worked.
-    """
-    import kiro_crew.apps.builtins.dev_fleet.server as mod
-
-    py = _make_scripts(tmp_path, "kirocrew.exe")
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    _raise_on(monkeypatch, "kirocrew.exe", OSError(5, "I/O error"))
-
-    assert mod._write_locked_console_scripts(py) == []
+# The probe itself moved to kiro_crew.dep_sync with the substitute it feeds, and
+# its tests moved with it (test/test_dep_sync.py). What stays here is the sync's
+# use of the result: which install step gets built.
 
 
 def _steps_from_script(script):
@@ -1004,6 +944,9 @@ async def _run_sync(mod, locked):
     ambient makes them pass or fail on whether the HOST running them happens to
     sit in a Kiro Crew checkout. Assertions that quote the repo path must use
     ``_SYNC_REPO`` rather than reading ``mod.MAIN_REPO``.
+
+    The venv-origin guard is answered by the module's autouse fixture; a test
+    about that guard patches it back to a refusal.
     """
     mod._UPSTREAM_REMOTE = "origin"
     mod._SYNC_RID = None
@@ -1011,7 +954,7 @@ async def _run_sync(mod, locked):
          patch.object(mod, "_git", new_callable=AsyncMock, return_value="main"), \
          patch.object(mod, "_venv_python", return_value=Path("/fake/.venv/bin/python")), \
          patch.object(mod, "_trusted_bin", side_effect=lambda n: f"/usr/bin/{n}"), \
-         patch.object(mod, "_write_locked_console_scripts", return_value=locked), \
+         patch.object(mod.dep_sync, "locked_console_scripts", return_value=locked), \
          patch("kiro_crew.apps.builtins.dev_fleet.server.sandboxed_spawn_argv",
                side_effect=lambda cmd, mode, env=None: (cmd, env or {}, None)), \
          patch.object(mod, "_start_run", new_callable=AsyncMock, return_value="run-123") as mock_start:
@@ -1047,7 +990,7 @@ async def test_sync_substitutes_a_dependency_only_install_when_a_script_is_locke
     Windows layout — the ordinary one — with no working Pull+build at all.
     """
     import kiro_crew.apps.builtins.dev_fleet.server as mod
-    from kiro_crew.apps.builtins.dev_fleet import dep_sync
+    from kiro_crew import dep_sync
 
     result, script = await _run_sync(mod, [r"C:\repo\.venv\Scripts\kirocrew.exe"])
 
@@ -1086,7 +1029,7 @@ async def test_sync_keeps_the_editable_reinstall_when_nothing_is_locked():
     should.
     """
     import kiro_crew.apps.builtins.dev_fleet.server as mod
-    from kiro_crew.apps.builtins.dev_fleet import dep_sync
+    from kiro_crew import dep_sync
 
     result, script = await _run_sync(mod, [])
 
@@ -1129,6 +1072,39 @@ async def test_sync_runs_every_step_when_nothing_is_locked():
     labels = _steps_from_script(script)
     assert "pip install" in labels
     assert "Pull" in labels
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locked", [[], [r"C:\repo\.venv\Scripts\kirocrew.exe"]],
+                         ids=["reinstall-branch", "substitute-branch"])
+async def test_sync_refuses_a_venv_that_serves_another_checkout(locked):
+    """The refusal covers BOTH install paths, and refuses before either runs.
+
+    `<repo>/.venv` is only where the interpreter was found; it can be an install
+    of a different checkout, and `pip install -e .` would then silently repoint
+    that editable install at this repo — so the OTHER checkout's gateway becomes
+    this code on its next restart. The dependency-only path has always refused
+    this; the reinstall path did not, which left the safer path as the only
+    guarded one. Parametrized over both branches because that asymmetry is
+    exactly the bug: a fix that only covers the one it was found on is not one.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+    from kiro_crew import dep_sync
+
+    with patch.object(
+        dep_sync,
+        "venv_not_mapped_to",
+        return_value="the target venv imports this project from /other/checkout",
+    ):
+        result, script = await _run_sync(mod, locked)
+
+    assert result["ok"] is False
+    assert "/other/checkout" in result["error"]
+    # Remedy-first, like every other refusal on this endpoint.
+    assert "own editable install" in result["error"]
+    # Nothing ran: no fetch, no merge, no install. A refusal after the merge
+    # would leave the checkout moved with its dependencies unresolved.
+    assert script is None
 
 
 @pytest.mark.asyncio
@@ -2598,7 +2574,7 @@ async def test_sync_unresolved_git_names_override_not_path(monkeypatch):
          patch.object(mod, "_venv_python",
                       return_value=Path("/fake/.venv/bin/python")), \
          patch.object(mod, "_trusted_bin", side_effect=lambda n: None), \
-         patch.object(mod, "_write_locked_console_scripts", return_value=[]):
+         patch.object(mod.dep_sync, "locked_console_scripts", return_value=[]):
         mod._SYNC_RID = None
         res = await mod._sync()
     assert res["ok"] is False

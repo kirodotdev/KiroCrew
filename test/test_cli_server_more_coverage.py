@@ -953,7 +953,11 @@ class _GitStub:
         if argv[0] == "kiro-cli":
             return subprocess.CompletedProcess(argv, 0, "", "")
         if "pip" in argv:
-            return subprocess.CompletedProcess(argv, self.rc.get("pip", 0), "", "wheel error")
+            # BYTES, like the real call: the install captures without text=True so
+            # a non-UTF-8 console cannot make pip's own error message undecodable.
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("pip", 0), b"", b"wheel error"
+            )
         return subprocess.CompletedProcess(argv, self.rc.get("setup", 0), "", "")
 
 
@@ -984,6 +988,17 @@ def git_checkout(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_server.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: None)
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
+    # Pin the install ROUTE. The real probe reads the test interpreter's own
+    # Scripts dir, so on a Windows dev box running from a checkout these tests
+    # would silently take the dependency-only branch instead of the reinstall
+    # they assert. `kirocrew update`'s own substitute behaviour is covered in
+    # test/test_dep_sync.py.
+    monkeypatch.setattr(cli_server.dep_sync, "locked_console_scripts", lambda target: [])
+    # And the foreign-venv guard, which now runs before either install branch.
+    # Its probe RUNS the target interpreter, which _GitStub intercepts into an
+    # empty answer — read as "cannot be shown to serve this checkout" and refused.
+    # dep_sync's own tests own that guard's behaviour.
+    monkeypatch.setattr(cli_server.dep_sync, "venv_not_mapped_to", lambda origin, repo: None)
     return proj
 
 
@@ -1077,7 +1092,8 @@ class TestUpdateGitPath:
         with pytest.raises(SystemExit) as exc:
             cli_server._update()
         assert exc.value.code == 1
-        assert "Install failed" in capsys.readouterr().out
+        # pip's own reason reaches the console, not just the exit code.
+        assert "wheel error" in capsys.readouterr().out
 
     def test_success_updates_kiro_cli_and_refreshes_agent_config(
         self, monkeypatch, git_checkout, capsys

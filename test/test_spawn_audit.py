@@ -189,13 +189,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # agent-influenced, and the binary is resolved through
         # platform_compat.trusted_system_bin (a vetted absolute path), not PATH.
         "acp/runtime.py::_ps_process_table",
-        # Console-entry self-heal for stale editable installs: ONE fixed
-        # `python -m pip install -e <repo>` argv, no shell. The repo path is
-        # derived from the module's own __file__ (never user/agent input) and
-        # only when setup.cfg + src/kiro_crew exist there. Runs before the
-        # package imports, so it cannot route through sandboxed_spawn_argv —
-        # mirrors dashboard/handlers/updates.py::_venv_pip_install below.
-        "_bootstrap.py::_self_heal",
+        # (_bootstrap.py::_self_heal removed — the console-entry self-heal now
+        # delegates its install to dep_sync.sync_or_reinstall, so the spawn lives
+        # at that key below and an entry here would be stale.)
         # Ops Mission Control ledger-sync tests: fixed `git` argv (init --bare / ls-files)
         # against a per-test tempdir. Nothing here is agent-influenced — the repo path is
         # `tempfile.mkdtemp()` and every argument is a literal in the test file. These are
@@ -605,10 +601,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # sync step, which server.py::worker already wrapped through
         # sandboxed_spawn_argv, and a filesystem-scoped wrapper around pip would
         # block the venv writes that are the point of the step.
-        "apps/builtins/dev_fleet/dep_sync.py::interpreter_version",
-        "apps/builtins/dev_fleet/dep_sync.py::installed_console_script_target",
-        "apps/builtins/dev_fleet/dep_sync.py::installed_package_origin",
-        "apps/builtins/dev_fleet/dep_sync.py::main",
+        #
+        # sync_or_reinstall spawns the EDITABLE REINSTALL for the same callers, and
+        # is allowlisted on the same grounds: it is the identical argv those callers
+        # spelled out inline before, with the target read from sys.executable and
+        # the repo from the operator-configured checkout. Sandboxing it now would
+        # refuse a step every platform has always run unsandboxed.
+        "dep_sync.py::interpreter_version",
+        "dep_sync.py::installed_console_script_target",
+        "dep_sync.py::installed_package_origin",
+        "dep_sync.py::sync",
+        "dep_sync.py::sync_or_reinstall",
         # Foreground last-resort restart (Make Live on hosts with no drivable
         # service manager): a detached `kirocrew restart --port <marker port>`,
         # fixed argv whose binary is validated (basenamed kirocrew, absolute,
@@ -804,7 +807,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # environment value, never agent input. Read-only version comparison —
         # nothing here writes to the tree.
         "dashboard/handlers/updates.py::_check_git_checkout",
-        "dashboard/handlers/updates.py::_venv_pip_install",
+        # (_venv_pip_install removed — it now delegates the install to
+        # dep_sync.sync_or_reinstall and spawns nothing itself.)
         "dashboard/handlers/updates.py::api_update_apply",
         "dashboard/handlers_system.py::_collect_system_metrics",
         # Split out of _collect_system_metrics above so the whole-machine process

@@ -458,7 +458,9 @@ class TestUpdateFailures:
             # pip install -e . fails
             if cmd and "pip" in cmd and "install" in cmd:
                 m.returncode = 1
-                m.stderr = "build failed"
+                # BYTES: the install captures without text=True.
+                m.stderr = b"build failed"
+                m.stdout = b""
             return m
 
         with (
@@ -467,6 +469,11 @@ class TestUpdateFailures:
             patch("kiro_crew.cli_server.shutil.which", return_value=None),
             patch("kiro_crew.cli_server.build_frontend_sync"),
             patch("kiro_crew.cli._ensure_node"),
+            # Pin the install route to the reinstall this test is about; the real
+            # probe reads the test interpreter's own Scripts dir, and the origin
+            # guard would otherwise run the stubbed interpreter for its answer.
+            patch("kiro_crew.dep_sync.locked_console_scripts", return_value=[]),
+            patch("kiro_crew.dep_sync.venv_not_mapped_to", return_value=None),
             patch("subprocess.run", side_effect=_side_effect),
         ):
             try:

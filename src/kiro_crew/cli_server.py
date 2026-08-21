@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from kiro_crew import __version__, platform_compat
+from kiro_crew import __version__, dep_sync, platform_compat
 from kiro_crew.beacon import distribution, is_default_home
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -1109,15 +1109,19 @@ def _update() -> None:
     # Build the dashboard frontend assets (npm), then reinstall the package.
     build_frontend_sync(Path(proj))
 
-    print("  🔨 pip install -e .")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
-        cwd=proj,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(f"  ❌ Install failed:\n{result.stderr.strip()}")
+    # Install the pulled revision into this CLI's own venv. `kirocrew update` is
+    # itself run FROM the console script pip would have to rewrite, so on Windows
+    # the reinstall cannot succeed and dep_sync substitutes a dependency-only sync
+    # (it reports, rather than silently tolerating, a revision that repointed the
+    # script — that is the one case still needing a terminal without kirocrew
+    # running).
+    print("  🔨 Installing the pulled revision…")
+
+    def _emit(message: str, error: bool) -> None:
+        print(f"  {'❌' if error else '•'} {message}")
+
+    rc = dep_sync.sync_or_reinstall(Path(proj), Path(sys.executable), _emit)
+    if rc != 0:
         sys.exit(1)
 
     print("\n✅ Kiro Crew updated!")

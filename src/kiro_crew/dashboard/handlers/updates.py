@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import functools
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import shutdown_event
+from kiro_crew import dep_sync, shutdown_event
 from kiro_crew.changelog import Release, base_version, build_release_list
 from kiro_crew.config.loader import (
     ConfigReadError,
@@ -26,6 +27,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.update_capability import (
     CHECK_DEFERRED,
     CHECK_FAILED,
@@ -1030,45 +1032,61 @@ async def _build_frontend(proj: str, state: DashboardState) -> None:
 
 
 async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
-    """Run `pip install -e .` to (re)install the package from source.
+    """Install the pulled revision into this gateway's own venv.
 
     Returns ``True`` on success. On failure, pushes an error to ``state`` and
     returns ``False`` — caller should ``return``.
+
+    Delegates the choice of HOW to :func:`kiro_crew.dep_sync.sync_or_reinstall`:
+    an editable reinstall where it can run, and a dependency-only sync where it
+    cannot. This endpoint is one of the paths that cannot always run it — the
+    gateway it updates is normally started through the very console script pip
+    would have to rewrite, which Windows locks, and a reinstall that dies there
+    has already deleted the editable ``.pth`` and left the venv unable to import
+    the package at all.
+
+    ``dep_sync`` is imported at MODULE level (see its docstring): this runs after
+    the pull, so an import deferred to here would parse the file the incoming
+    revision shipped.
     """
     state.push_update_progress("building", "Installing package (pip)…")
-    install = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "-e",
-        ".",
-        "--quiet",
-        cwd=proj,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
+    loop = asyncio.get_running_loop()
+
+    def _publish(step: str, message: str) -> None:
+        # dep_sync hands pip's output over raw; this is the surface that publishes
+        # it, so redaction and the length cap belong here.
+        message, _ = redact_credentials(message)
+        message, _ = redact_exfiltration_urls(message)
+        if len(message) > 1000:
+            message = message[:1000] + "\n…(truncated)"
+        state.push_update_progress(step, message)
+
+    def _emit(message: str, error: bool) -> None:
+        # Called from the EXECUTOR THREAD, and push_update_progress touches
+        # loop-bound state (the SSE subscriber queues), so it is handed to the
+        # serving loop rather than run here. Doing it inline is the kind of
+        # cross-thread mutation that works until a client is actually connected
+        # and then raises out of a worker thread. Same pattern as the log ring
+        # handler below, which emits from arbitrary logger threads.
+        loop.call_soon_threadsafe(_publish, "error" if error else "building", message)
+
+    rc = await loop.run_in_executor(
+        subprocess_executor(),
+        functools.partial(
+            dep_sync.sync_or_reinstall,
+            Path(proj),
+            Path(sys.executable),
+            _emit,
+            # 600s, not the 120s this endpoint used to put on `pip install -e .`.
+            # The bound now covers a dependency install that may be resolving and
+            # downloading a set this venv has never seen — and building a wheel for
+            # one of them — where 120s is a routine, not an exceptional, overrun.
+            # It is a real bound either way: dep_sync kills the pip child on
+            # expiry rather than letting the step hang on a wedged index.
+            timeout=600,
+        ),
     )
-    try:
-        _, stderr = await asyncio.wait_for(install.communicate(), timeout=120)
-    except asyncio.TimeoutError:
-        try:
-            install.kill()
-        except ProcessLookupError:
-            pass
-        await install.communicate()
-        state.push_update_progress("error", "pip install timed out")
-        return False
-    if install.returncode != 0:
-        raw_err = stderr.decode()
-        raw_err, _ = redact_credentials(raw_err)
-        raw_err, _ = redact_exfiltration_urls(raw_err)
-        # Build wheel / native extension errors often have the actionable message
-        # mid-stderr after a long traceback, so keep up to 1000 chars after redaction.
-        if len(raw_err) > 1000:
-            raw_err = raw_err[:1000] + "\n…(truncated)"
-        state.push_update_progress("error", f"pip install failed: {raw_err}")
-        return False
-    return True
+    return rc == 0
 
 
 async def _restart_gateway(state: DashboardState) -> None:

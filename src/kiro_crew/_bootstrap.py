@@ -10,18 +10,26 @@ repair itself. Release installs are unaffected (pip resolves
 
 This module is the console-script entry point
 (``kirocrew = kiro_crew._bootstrap:main``). It imports the real CLI and, on
-``ModuleNotFoundError`` from a source checkout, runs ONE
-``pip install -e <repo>`` and retries the import in-process. A failed import
+``ModuleNotFoundError`` from a source checkout, installs the checkout's
+declared dependencies once and retries the import in-process. A failed import
 is side-effect-free (Python evicts the failing module from ``sys.modules``),
 so the retry needs no re-exec — which also sidesteps the POSIX/Windows
-``execv`` divergence. On Windows the heal itself is skipped — a running
-console launcher cannot be replaced — and the one-line manual fix is printed
-instead, as it is outside a source checkout.
+``execv`` divergence. HOW the install runs is
+:func:`kiro_crew.dep_sync.sync_or_reinstall`'s decision: an editable
+reinstall where pip can replace the console script, and a dependency-only
+install where it cannot — which on Windows is always, since this process was
+launched through the very ``kirocrew.exe`` a reinstall would have to rewrite.
+That is why the heal now runs there instead of printing a manual one-liner: a
+dependency install never touches that wrapper, and a missing dependency is
+precisely what brought us here.
 
 Everything imported here MUST be stdlib: this module runs BEFORE the
-package's dependencies are known to exist. Output MUST stay ASCII-only —
-it prints before ``platform_compat.ensure_utf8_console()`` has run, so
-non-ASCII would UnicodeEncodeError on Windows cp1252 pipes.
+package's dependencies are known to exist. ``kiro_crew.dep_sync`` is the one
+package import it makes, and counts as stdlib for this purpose because it is
+required to stay stdlib-only — it imports nothing else, so it cannot raise the
+very error being healed, and a test asserts that. Output MUST stay
+ASCII-only — it prints before ``platform_compat.ensure_utf8_console()`` has
+run, so non-ASCII would UnicodeEncodeError on Windows cp1252 pipes.
 """
 
 from __future__ import annotations
@@ -31,6 +39,12 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
+
+# Module scope, not function-local: this is the one package import this file can
+# safely make at import time, because dep_sync imports the standard library only
+# (asserted by a test) and so cannot raise the ModuleNotFoundError this file
+# exists to heal. `kiro_crew.__init__` itself imports nothing but asyncio.
+from kiro_crew import dep_sync
 
 _PIP_TIMEOUT_SECS = 300
 
@@ -56,35 +70,40 @@ def _source_checkout_root() -> Path | None:
 
 
 def _self_heal(missing: str) -> bool:
-    """Run ONE ``pip install -e <repo>``; ``True`` when it succeeded.
+    """Bring this venv up to the checkout's declared dependencies. ``True`` on success.
 
-    The argv is fixed and the repo path is derived from this module's own
-    ``__file__`` — never user or agent input. pip's own stderr flows to the
-    console so failures stay diagnosable.
+    The repo path is derived from this module's own ``__file__`` -- never user or
+    agent input -- and the argv is built by :mod:`kiro_crew.dep_sync`, which picks
+    the editable reinstall where it can run and a dependency-only install where it
+    cannot. Windows is the case where it cannot: pip cannot replace the running
+    ``kirocrew.exe`` this very process was launched through, and a reinstall that
+    dies on it has already deleted the editable ``.pth``. Installing only the
+    declared requirements never touches that wrapper, which is why the heal can run
+    there at all -- it is exactly the missing dependency that brought us here.
     """
-    if sys.platform == "win32":
-        # Windows locks a running console launcher, so pip cannot replace
-        # kirocrew.exe from inside a process started by it and the reinstall
-        # fails partway. The manual one-liner works there: the user runs it
-        # from a shell where kirocrew is not running.
-        return False
     root = _source_checkout_root()
     if root is None:
         return False
     print(
         f"kirocrew: missing dependency {missing!r} - your checkout added "
-        "dependencies since the last install. Running one-time "
-        "`pip install -e .` to catch up...",
+        "dependencies since the last install. Installing the declared "
+        "requirements to catch up...",
         file=sys.stderr,
     )
+
+    def _emit(message: str, error: bool) -> None:
+        # This module's output must stay ASCII (see the module docstring): it
+        # prints before ensure_utf8_console(), and these messages carry pip's
+        # output and filesystem paths, neither of which is ASCII by nature.
+        print(message.encode("ascii", "replace").decode("ascii"), file=sys.stderr)
+
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", str(root), "--quiet"],
-            timeout=_PIP_TIMEOUT_SECS,
+        rc = dep_sync.sync_or_reinstall(
+            root, Path(sys.executable), _emit, timeout=_PIP_TIMEOUT_SECS
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return proc.returncode == 0
+    return rc == 0
 
 
 def main() -> None:

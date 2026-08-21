@@ -51,8 +51,8 @@ from typing import Any, Callable
 
 from aiohttp import web
 
-from kiro_crew import frontend, hooks, platform_compat
-from kiro_crew.apps.builtins.dev_fleet import dep_sync, gateway_service
+from kiro_crew import dep_sync, frontend, hooks, platform_compat
+from kiro_crew.apps.builtins.dev_fleet import gateway_service
 from kiro_crew.apps.proxy_auth import raw_request_target
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
@@ -3491,49 +3491,6 @@ def _venv_python(repo: str) -> Path | None:
     return None
 
 
-def _write_locked_console_scripts(venv_python: Path) -> list[str]:
-    """The venv's ``kirocrew`` console scripts that cannot currently be rewritten.
-
-    Windows holds a mandatory lock on a running executable's image, so when the
-    gateway is served BY the very venv pip is about to reinstall into — the
-    ordinary single-checkout setup — pip cannot replace
-    ``Scripts\\kirocrew.exe``, and the reinstall can never succeed.
-
-    That matters well beyond one failed step. pip's uninstall is not atomic: by
-    the time it reaches the locked script it has already renamed the dist-info
-    aside and deleted the editable ``.pth`` that puts ``src`` on ``sys.path``,
-    and it rolls back neither. The venv is left unable to import the package at
-    all, which also kills the console script the gateway is restarted through.
-    The running process survives on already-imported modules, so the damage
-    stays invisible until the next restart fails.
-
-    Probing with an ``r+b`` open is non-destructive and discriminates correctly:
-    a running executable refuses it while every other script in the same
-    directory opens fine. It does not model every way a delete can fail — an
-    opener that permits writes but denies deletes would pass this probe — so a
-    clean result means "no known blocker", not a guarantee. A miss simply leaves
-    the previous behaviour, which is why this is worth doing even though it
-    cannot be exhaustive.
-
-    POSIX returns nothing: an executing binary can be unlinked there, which is
-    why pip has always been able to replace it.
-    """
-    if not platform_compat.IS_WINDOWS:
-        return []
-    locked: list[str] = []
-    for exe in sorted(Path(venv_python).parent.glob("kirocrew*.exe")):
-        try:
-            with exe.open("r+b"):
-                pass
-        except PermissionError:
-            locked.append(str(exe))
-        except OSError:
-            # Unreadable for some other reason. Let pip be the judge rather than
-            # skipping a step that might well have succeeded.
-            continue
-    return locked
-
-
 async def _sync_start_locked() -> dict:
     """Start the sync run. Caller holds _SYNC_LOCK."""
     global _SYNC_RID  # noqa: F824 (assigned below after await)
@@ -3569,15 +3526,17 @@ async def _sync_start_locked() -> dict:
     # Both binary lookups stat the filesystem (`_trusted_bin` walks the trusted
     # dirs; `_toolchain_bin` adds a `shutil.which` over the node bin dirs, which
     # may be NFS-backed). The console-script probe opens files in the target
-    # venv. Resolve them together on the executor so /api/sync cannot stall the
-    # gateway's requests and liveness behind a directory scan.
+    # venv, and the origin probe RUNS that interpreter. Resolve them together on
+    # the executor so /api/sync cannot stall the gateway's requests and liveness
+    # behind a directory scan or a subprocess.
     loop = asyncio.get_running_loop()
-    git_bin, npm_bin, locked_scripts = await loop.run_in_executor(
+    git_bin, npm_bin, locked_scripts, venv_origin = await loop.run_in_executor(
         subprocess_executor(),
         lambda: (
             _trusted_bin("git"),
             _toolchain_bin("npm"),
-            _write_locked_console_scripts(target_py),
+            dep_sync.locked_console_scripts(target_py),
+            dep_sync.installed_package_origin(target_py),
         ),
     )
     if git_bin is None:
@@ -3659,6 +3618,23 @@ async def _sync_start_locked() -> dict:
                   _build_env(with_credentials=True), "Pull")
     merge_step = ([git_bin, "merge", "--ff-only", f"{remote}/{BASE_BRANCH}"], "strict",
                   _build_env(), "Pull")
+    # The venv must be an install OF this checkout before either install step
+    # runs, and that is true of the reinstall just as much as the substitute.
+    #
+    # `<repo>/.venv` is only where the interpreter was FOUND; it says nothing
+    # about what it is an install of. When it serves a different checkout,
+    # `pip install -e .` silently repoints its editable install at this repo and
+    # the other checkout's gateway becomes this code on its next restart -- the
+    # same hijack the target_py resolution above exists to prevent, arriving by
+    # the other direction. The substitute has always refused this (dep_sync's own
+    # first check); the reinstall branch did not, so the safer path was the only
+    # guarded one. Checking here covers both, on every platform.
+    foreign = dep_sync.venv_not_mapped_to(venv_origin, Path(repo))
+    if foreign:
+        return {"ok": False, "error": (
+            f"refusing to sync: {foreign}. Give this checkout its own editable "
+            "install, or run the sync from the checkout that venv serves."
+        )}
     dep_sync_snapshot: Path | None = None
     if locked_scripts:
         logger.info(

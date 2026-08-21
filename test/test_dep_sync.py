@@ -9,13 +9,17 @@ a repointed console script), and it refuses to write to a venv that serves a
 different checkout.
 """
 
+import ast
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.apps.builtins.dev_fleet import dep_sync
+from kiro_crew import dep_sync
 
 _SETUP_CFG = textwrap.dedent("""
     [options]
@@ -400,6 +404,8 @@ def test_main_hands_every_spec_to_pip_and_stops_on_failure(repo):
         def __init__(self, rc):
             self.returncode = rc
             self.stdout = ""
+            # The pip call captures now, so the failure path decodes stderr.
+            self.stderr = b""
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
@@ -454,7 +460,7 @@ def test_main_refuses_a_declaration_that_names_the_project(repo, capsys):
     ):
         rc = dep_sync.main([str(repo), "py"])
 
-    assert rc == 1
+    assert rc == dep_sync.REFUSED
     assert not sp.run.called
     err = capsys.readouterr().err
     assert "will not hand to pip" in err
@@ -472,7 +478,7 @@ def test_main_refuses_when_the_interpreter_is_below_the_declared_floor(repo, cap
     ):
         rc = dep_sync.main([str(repo), "py"])
 
-    assert rc == 1
+    assert rc == dep_sync.REFUSED
     assert not sp.run.called
     err = capsys.readouterr().err
     assert "3.13" in err
@@ -490,7 +496,7 @@ def test_main_refuses_a_venv_serving_another_checkout(repo, capsys):
     ):
         rc = dep_sync.main([str(repo), "py"])
 
-    assert rc == 1
+    assert rc == dep_sync.REFUSED
     assert not sp.run.called
     err = capsys.readouterr().err
     assert "other" in err
@@ -506,7 +512,7 @@ def test_main_refuses_when_the_requirements_moved_to_pyproject(repo, capsys):
     with patch.object(dep_sync, "subprocess") as sp:
         rc = dep_sync.main([str(repo), "py"])
 
-    assert rc == 1
+    assert rc == dep_sync.REFUSED
     assert not sp.run.called
     assert "stale" in capsys.readouterr().err
 
@@ -592,3 +598,401 @@ def test_main_tolerates_an_unreadable_installed_entry_point(repo):
 def test_main_rejects_a_wrong_argument_count():
     assert dep_sync.main(["only-one"]) == 2
     assert dep_sync.main(["a", "b", "c"]) == 2
+
+
+# --- the probe every caller shares: which install is even possible ------------
+def _make_scripts(tmp_path, *names):
+    """A fake venv Scripts/ dir, returning the interpreter path inside it."""
+    scripts = tmp_path / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    for name in names:
+        (scripts / name).write_bytes(b"MZ")
+    return scripts / "python.exe"
+
+
+def _raise_on(monkeypatch, name, exc):
+    """Make Path.open raise *exc* for the file called *name* only."""
+    real_open = Path.open
+
+    def fake_open(self, *args, **kwargs):
+        if self.name == name:
+            raise exc
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+
+def test_locked_console_scripts_is_a_posix_noop(tmp_path, monkeypatch):
+    """POSIX can unlink an executing binary, so there is nothing to detect."""
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(sys, "platform", "linux")
+    _raise_on(monkeypatch, "kirocrew.exe", PermissionError(13, "in use"))
+
+    assert dep_sync.locked_console_scripts(py) == []
+
+
+def test_locked_console_scripts_flags_a_locked_script(tmp_path, monkeypatch):
+    """The real failure: the exe the gateway is executing cannot be replaced."""
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(sys, "platform", "win32")
+    _raise_on(monkeypatch, "kirocrew.exe", PermissionError(13, "in use"))
+
+    locked = dep_sync.locked_console_scripts(py)
+    assert len(locked) == 1
+    assert locked[0].endswith("kirocrew.exe")
+
+
+def test_locked_console_scripts_passes_a_writable_script(tmp_path, monkeypatch):
+    """A venv the gateway is NOT running from must still get its reinstall."""
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    assert dep_sync.locked_console_scripts(py) == []
+
+
+def test_locked_console_scripts_ignores_unrelated_executables(tmp_path, monkeypatch):
+    """Only the scripts pip would rewrite matter.
+
+    Some other locked exe sharing the Scripts dir must not suppress the
+    reinstall — that would turn an unrelated process into a silent skip.
+    """
+    py = _make_scripts(tmp_path, "kirocrew.exe", "unrelated.exe")
+    monkeypatch.setattr(sys, "platform", "win32")
+    _raise_on(monkeypatch, "unrelated.exe", PermissionError(13, "in use"))
+
+    assert dep_sync.locked_console_scripts(py) == []
+
+
+def test_locked_console_scripts_lets_pip_judge_other_errors(tmp_path, monkeypatch):
+    """An unreadable-for-other-reasons script is not evidence of a lock.
+
+    Skipping on any OSError would suppress installs that would have worked.
+    """
+    py = _make_scripts(tmp_path, "kirocrew.exe")
+    monkeypatch.setattr(sys, "platform", "win32")
+    _raise_on(monkeypatch, "kirocrew.exe", OSError(5, "I/O error"))
+
+    assert dep_sync.locked_console_scripts(py) == []
+
+
+# --- sync_or_reinstall: the reinstall stays the default -----------------------
+def _maps():
+    """Answer the pre-branch foreign-venv guard with "it maps".
+
+    Scoped per test rather than autouse: this module also asserts that the guard
+    REFUSES, and a blanket stub would silence the tests that prove it.
+    """
+    return patch.object(dep_sync, "venv_not_mapped_to", return_value=None)
+
+
+def _origin_stub():
+    """Skip the probe subprocess; the interpreter paths here do not exist."""
+    return patch.object(dep_sync, "installed_package_origin", return_value="<stub>")
+
+
+def test_sync_or_reinstall_prefers_the_reinstall_when_nothing_is_locked(tmp_path):
+    """No lock means no substitute. The reinstall is the fuller operation.
+
+    Only the reinstall also rewrites a console script the incoming revision
+    repointed, so substituting where pip could have run would quietly downgrade
+    every caller on every platform.
+    """
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["timeout"] = kwargs.get("timeout")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(dep_sync, "sync", side_effect=AssertionError("must not substitute")),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = dep_sync.sync_or_reinstall(tmp_path, Path("/venv/bin/python"), timeout=42)
+
+    assert rc == 0
+    assert seen["argv"][1:] == ["-m", "pip", "install", "-e", str(tmp_path), "--quiet"]
+    assert seen["timeout"] == 42
+
+
+def test_sync_or_reinstall_substitutes_when_a_script_is_locked(tmp_path):
+    """A locked script routes to the substitute, and the caller is told why.
+
+    The reinstall must not merely fail here: pip's uninstall is not atomic, so
+    reaching the locked script means the editable .pth is already gone.
+    """
+    messages = []
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[r"C:\v\kirocrew.exe"]),
+        patch.object(dep_sync, "sync", return_value=0) as sync_mock,
+        patch.object(dep_sync.subprocess, "run", side_effect=AssertionError("must not reinstall")),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path, Path("/venv/bin/python"), lambda m, e: messages.append((m, e))
+        )
+
+    assert rc == 0
+    assert sync_mock.call_count == 1
+    assert any("kirocrew.exe" in m and "dependency-only" in m for m, _ in messages)
+
+
+def test_sync_or_reinstall_guards_the_reinstall_branch_too(tmp_path):
+    """The foreign-venv refusal covers the branch pip can still run.
+
+    Guarding only the substitute would rebuild, inside this shared function, the
+    exact asymmetry it was written to remove: three of its four callers take the
+    checkout from configuration, so a venv serving a DIFFERENT checkout is
+    reachable on all three, and `pip install -e <repo>` against it silently
+    repoints that other checkout's editable install at this repo.
+    """
+    messages = []
+
+    with (
+        patch.object(dep_sync, "installed_package_origin", return_value="/other/src/x.py"),
+        patch.object(
+            dep_sync,
+            "locked_console_scripts",
+            side_effect=AssertionError("must refuse before probing the lock"),
+        ),
+        patch.object(dep_sync.subprocess, "run", side_effect=AssertionError("must not install")),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path, Path("/venv/bin/python"), lambda m, e: messages.append((m, e))
+        )
+
+    assert rc == dep_sync.REFUSED
+    joined = " ".join(m for m, _ in messages)
+    # Not "/other": the message renders a resolved path, so the separator (and on
+    # Windows the drive) is the platform's, not the one written in the stub.
+    assert "other" in joined
+    assert "No dependency was installed" in joined
+
+
+def test_a_refusal_is_a_distinct_exit_code_from_a_failed_attempt():
+    """REFUSED must not be spelled the same as "the install failed".
+
+    A caller that reacts to a failed install by repairing what it can has to be
+    able to tell the two apart: running that repair after a refusal would write
+    into the very venv the refusal was protecting. Pinned as a contract because
+    the Slack auto-update branches on it.
+    """
+    assert dep_sync.REFUSED != 0
+    assert dep_sync.REFUSED != 1
+
+
+@pytest.mark.parametrize("pip_rc", [1, 2, 3, 120])
+def test_an_attempted_install_never_returns_the_refusal_code(tmp_path, pip_rc):
+    """pip's own exit code is NOT propagated, on either branch.
+
+    pip spends 2 on UNKNOWN_ERROR, which is REFUSED's value. Propagating it would
+    tell a caller "nothing was touched" about a run that may have changed the
+    venv — and the Slack auto-update reads exactly that to decide whether to skip
+    its core-dep repair, so the collision would skip the repair of a modified
+    venv. Both branches normalize an attempted failure to 1.
+    """
+    (tmp_path / "setup.cfg").write_text(_SETUP_CFG, encoding="utf-8")
+
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(returncode=pip_rc, stdout=b"", stderr=b"boom")
+
+    # The substitute branch (pip install <specs>).
+    with (
+        _maps(),
+        _origin_stub(),
+        patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 0)),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        assert dep_sync.sync(tmp_path, Path("/venv/bin/python"), lambda m, e: None) == 1
+
+    # And the reinstall branch (pip install -e <repo>).
+    with (
+        _maps(),
+        _origin_stub(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = dep_sync.sync_or_reinstall(tmp_path, Path("/venv/bin/python"), lambda m, e: None)
+    assert rc == 1
+
+
+def test_sync_or_reinstall_reports_a_failed_reinstall_through_emit(tmp_path):
+    """pip's own diagnosis has to reach the caller, not just the exit code.
+
+    Three of the four callers publish this text somewhere a person reads it, and
+    an exit code alone leaves them with nothing to act on.
+    """
+    messages = []
+
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"no matching distribution")
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path, Path("/venv/bin/python"), lambda m, e: messages.append((m, e))
+        )
+
+    assert rc == 1
+    assert any(e and "no matching distribution" in m for m, e in messages)
+
+
+def test_sync_or_reinstall_survives_undecodable_pip_output(tmp_path):
+    """pip's stderr is captured as BYTES and decoded leniently.
+
+    `text=True` would decode with the locale's codec, so on a non-UTF-8 console
+    a byte pip emitted would raise UnicodeDecodeError and lose the very message
+    the capture exists to surface.
+    """
+    messages = []
+
+    def fake_run(argv, **kwargs):
+        assert kwargs.get("text") is not True
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"\xff\xfe bad bytes")
+
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=[]),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = dep_sync.sync_or_reinstall(
+            tmp_path, Path("/venv/bin/python"), lambda m, e: messages.append((m, e))
+        )
+
+    assert rc == 1
+    assert any("bad bytes" in m for m, _ in messages)
+
+
+def test_sync_or_reinstall_bounds_both_branches(tmp_path):
+    """``timeout`` reaches the substitute as well as the reinstall.
+
+    Leaving the substitute unbounded was the wrong trade: a killed dependency
+    install is rerunnable and a partial set is already this module's accepted
+    exposure, while an unbounded one hangs the surface that called it — the
+    dashboard endpoint had a hard 120s bound before this refactor and would
+    otherwise have come out of it with none.
+    """
+    with (
+        _origin_stub(),
+        _maps(),
+        patch.object(dep_sync, "locked_console_scripts", return_value=["x.exe"]),
+        patch.object(dep_sync, "sync", return_value=0) as sync_mock,
+    ):
+        dep_sync.sync_or_reinstall(tmp_path, Path("/venv/bin/python"), timeout=7)
+
+    assert sync_mock.call_args.kwargs["timeout"] == 7
+
+
+def test_sync_kills_a_hung_pip_and_says_the_set_may_be_partial(tmp_path):
+    """A timed-out install reports honestly instead of claiming a clean refusal.
+
+    The refusal wording ("No dependency was installed") would be a lie here: pip
+    was killed mid-run, so some of the set may be on disk. The message has to say
+    so, because the operator's next step depends on it.
+    """
+    messages = []
+    (tmp_path / "setup.cfg").write_text(_SETUP_CFG, encoding="utf-8")
+
+    def fake_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout"))
+
+    with (
+        _maps(),
+        patch.object(dep_sync, "installed_package_origin", return_value="<stub>"),
+        patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 0)),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = dep_sync.sync(
+            tmp_path, Path("/venv/bin/python"), lambda m, e: messages.append((m, e)), timeout=5
+        )
+
+    assert rc == 1
+    joined = " ".join(m for m, _ in messages)
+    assert "may be partially installed" in joined
+    assert "No dependency was installed" not in joined
+
+
+def test_installed_package_origin_fails_closed_on_an_unrunnable_interpreter(tmp_path):
+    """An interpreter that cannot be RUN answers None, it does not raise.
+
+    Callers resolve the path by a filesystem check, so a venv deleted between that
+    check and this probe would otherwise raise OSError out of a request handler.
+    None is read as "cannot be shown to serve this checkout", which is the right
+    answer for an interpreter that is not there.
+    """
+    with patch.object(dep_sync.subprocess, "run", side_effect=FileNotFoundError(2, "gone")):
+        assert dep_sync.installed_package_origin(tmp_path / "python") is None
+    # And that answer refuses rather than proceeding.
+    assert dep_sync.venv_not_mapped_to(None, tmp_path) is not None
+
+
+def test_sync_captures_pip_output_instead_of_writing_it_to_stderr(tmp_path, capsys):
+    """pip's output must reach ``emit``, never the inherited stderr.
+
+    pip echoes the index URL it resolved against, and an authenticated index
+    carries its credential there. On the in-process paths the inherited stderr IS
+    the gateway's log, so streaming would write that credential to a file nobody
+    reviews. Handing it to ``emit`` puts it in front of the caller that knows where
+    it is about to be published and is the one redacting it.
+    """
+    messages = []
+    (tmp_path / "setup.cfg").write_text(_SETUP_CFG, encoding="utf-8")
+    secret = "https://user:s3cr3t@index.example.com/simple"
+
+    def fake_run(argv, **kwargs):
+        # Captured, so pip's stream never reaches this process's stderr.
+        assert kwargs.get("capture_output") is True
+        assert kwargs.get("text") is not True
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=f"looking in {secret}".encode())
+
+    with (
+        _maps(),
+        patch.object(dep_sync, "installed_package_origin", return_value="<stub>"),
+        patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 0)),
+        patch.object(dep_sync.subprocess, "run", side_effect=fake_run),
+    ):
+        rc = dep_sync.sync(tmp_path, Path("/venv/bin/python"), lambda m, e: messages.append((m, e)))
+
+    assert rc == 1
+    assert any(secret in m for m, _ in messages), messages
+    # And it did NOT leak to the streams this module was printing to before.
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+def test_module_imports_stdlib_only():
+    """The invariant ``kiro_crew._bootstrap`` depends on, enforced.
+
+    That caller reaches for this module precisely when a declared dependency is
+    missing from the venv, so a third-party import here would fail in exactly the
+    case the module exists to repair. Reading the AST rather than the import graph
+    keeps this honest even when the offending package happens to be installed on
+    the machine running the tests.
+    """
+    tree = ast.parse(Path(dep_sync.__file__).read_text(encoding="utf-8"))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    # Both names of the TOML ladder are allowed, and neither weakens the check:
+    # `tomllib` IS stdlib, but only from 3.11 — on the 3.10 interpreter this
+    # project still supports it is absent from `sys.stdlib_module_names`, so
+    # deriving the allowance from the running interpreter would make this test
+    # pass or fail on the version that happens to run it. `tomli` is the
+    # third-party fallback for exactly that version. Both imports are guarded, so
+    # a missing one degrades a reader rather than breaking the module.
+    third_party = roots - set(sys.stdlib_module_names) - {"tomllib", "tomli"}
+    assert not third_party, f"dep_sync must import stdlib only; found {sorted(third_party)}"
