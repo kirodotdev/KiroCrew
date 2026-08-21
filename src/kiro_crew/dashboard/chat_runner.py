@@ -3638,7 +3638,12 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # rendering as speech. `synthetic_payload` is the existing answer to exactly
     # that question, so reuse it rather than inventing a second signal.
     if row_role == "inject":
-        _inject_kind = "cron" if is_cron else "recovery" if synthetic_payload else "user_replay"
+        if is_cron:
+            _inject_kind = "cron"
+        elif synthetic_payload:
+            _inject_kind = "recovery"
+        else:
+            _inject_kind = "user_replay"
         _inject_meta: dict = {"injectKind": _inject_kind}
         if is_cron:
             _inject_meta["cronLabel"] = cron_label

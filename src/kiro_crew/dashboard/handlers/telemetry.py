@@ -31,7 +31,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Iterator, NamedTuple
 
 from aiohttp import web
 
@@ -69,11 +69,11 @@ _COST_WINDOW_DAYS = 7
 # two entries wide and needs no cap.
 _OTHER_SPLIT_ATTRS = frozenset({"warm"})
 
-# F4: only terminal-fault outcomes count toward fault_rate. The two watchdog
+# Only terminal-fault outcomes count toward fault_rate. The two watchdog
 # recovery outcomes ("tool_stall" and "stale_recover") are NOT faults: a
 # recovered stall is re-driven in place and tracked separately under
-# kirocrew.watchdog.recovery.outcome. Counting them as faults inflated the
-# fault rate and hid the true error population. Use an explicit allowlist so
+# kirocrew.watchdog.recovery.outcome. Counting them as faults would inflate the
+# fault rate and hide the true error population. Use an explicit allowlist so
 # future outcome labels added to _turn_outcome() must actively opt in — a
 # cross-module test (test_telemetry_handler) fails on any label that is
 # neither here nor explicitly excluded, so drift can't silently deflate
@@ -394,6 +394,13 @@ class _Hist:
 
 
 def _day_of(dp: dict[str, Any], fallback: str) -> str:
+    """The local calendar day a data point was recorded on, else *fallback*.
+
+    ``OSError`` belongs in the except tuple below: ``astimezone()`` raises it on a
+    broken tz database, and this is the only OS-touching call in the aggregation
+    loop — which runs outside the shard reader's own ``OSError`` handler, so an
+    escape here would 500 the whole panel over one malformed ``time_unix_nano``.
+    """
     ns = dp.get("time_unix_nano")
     if ns:
         try:
@@ -405,6 +412,112 @@ def _day_of(dp: dict[str, Any], fallback: str) -> str:
         except (ValueError, OverflowError, OSError):
             pass
     return fallback
+
+
+def _iter_export_cycles(
+    shard_paths: list[Path],
+) -> Iterator[tuple[dict[str, Any], str]]:
+    """Yield ``(export cycle, shard day)`` for every parseable line of each shard.
+
+    One JSONL line is one ``MetricsData.to_json()`` export cycle. Corruption is
+    skipped at the narrowest scope that can still be salvaged: one unparseable
+    line, or one shard that is unreadable / not valid UTF-8. Cycles already
+    yielded from a shard that then fails mid-read are kept — a torn tail must not
+    discard the cycles ahead of it.
+    """
+    for p in shard_paths:
+        shard_day = "-".join(p.stem.split("-")[1:4])
+        try:
+            with p.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    yield obj, shard_day
+        except (OSError, UnicodeDecodeError):
+            continue
+
+
+def _iter_metric_points(
+    shard_paths: list[Path],
+) -> Iterator[tuple[str, dict[str, Any], str]]:
+    """Yield ``(metric name, data point, shard day)`` for every ``kirocrew.*`` point.
+
+    The name filter is load-bearing rather than defensive. One meter carries all
+    three namespaces the recorder accepts — ``kirocrew.*``, ``gen_ai.*`` and
+    ``app.<app_id>.*`` (``metrics/schema.py``) — so points from every one of them
+    reach this shard. Dropping the other two here is what keeps them out of
+    :func:`_other_series`, whose rows the startup panel renders as core metrics.
+    """
+    for obj, shard_day in _iter_export_cycles(shard_paths):
+        # resource -> scope -> metric is pure OTLP grouping; nothing below reads
+        # the resource or the scope.
+        metrics = (
+            m
+            for rm in obj.get("resource_metrics", []) or []
+            for sm in rm.get("scope_metrics", []) or []
+            for m in sm.get("metrics", []) or []
+        )
+        for metric in metrics:
+            name = metric.get("name") or ""
+            if not name.startswith("kirocrew."):
+                continue
+            data = metric.get("data") or {}
+            for dp in data.get("data_points", []) or []:
+                yield name, dp, shard_day
+
+
+def _daily_series(daily: dict[str, dict[str, _Hist]]) -> list[dict[str, Any]]:
+    """Per-day startup percentiles (cold p50/p90, warm p50), oldest day first."""
+    out: list[dict[str, Any]] = []
+    for day in sorted(daily):
+        c, w = daily[day]["cold"], daily[day]["warm"]
+        out.append(
+            {
+                "date": day,
+                "count": c.count + w.count,
+                "cold_p50_ms": round(_pct_from_buckets(c.buckets, c.bounds, 0.50), 1),
+                "cold_p90_ms": round(_pct_from_buckets(c.buckets, c.bounds, 0.90), 1),
+                "warm_p50_ms": round(_pct_from_buckets(w.buckets, w.bounds, 0.50), 1),
+            }
+        )
+    return out
+
+
+def _other_series(
+    other_hist: dict[str, _Hist],
+    other_split: dict[str, dict[str, _Hist]],
+    other_ctr: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The generic surface: every point that no dedicated block claimed.
+
+    Selection is by data-point SHAPE, not by metric name, so a startup or turn
+    point that is not a histogram lands here under its own name instead of in the
+    block named after it.
+
+    Histograms first, then counters, each group name-sorted, so a panel reading
+    this list renders the same order on every request.
+    """
+    out: list[dict[str, Any]] = []
+    for name in sorted(other_hist):
+        s = other_hist[name].stats()
+        s.update({"name": name, "kind": "histogram"})
+        splits = other_split.get(name)
+        if splits:
+            s["splits"] = {sig: splits[sig].stats() for sig in sorted(splits)}
+        out.append(s)
+    for name in sorted(other_ctr):
+        rec = other_ctr[name]
+        out.append(
+            {
+                "name": name,
+                "kind": "counter",
+                "total": round(rec["total"], 3),
+                "by_attr": {k: round(v, 3) for k, v in rec["by_attr"].items()},
+            }
+        )
+    return out
 
 
 def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
@@ -421,124 +534,55 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     other_ctr: dict[str, dict[str, Any]] = {}  # name -> {total, by_attr}
     turn = _Hist()
 
-    for p in shard_paths:
-        shard_day = "-".join(p.stem.split("-")[1:4])
-        try:
-            with p.open(encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    for rm in obj.get("resource_metrics", []) or []:
-                        for sm in rm.get("scope_metrics", []) or []:
-                            for m in sm.get("metrics", []) or []:
-                                name = m.get("name") or ""
-                                if not name.startswith("kirocrew."):
-                                    continue
-                                data = m.get("data") or {}
-                                for dp in data.get("data_points", []) or []:
-                                    attrs = dp.get("attributes") or {}
-                                    is_hist = "bucket_counts" in dp
-                                    if name == _STARTUP_METRIC and is_hist:
-                                        # One startup emits an end-to-end point
-                                        # (phase absent, or phase=total from the
-                                        # kiro path) PLUS one point per internal
-                                        # phase. Only the end-to-end point is a
-                                        # startup: counting the phase points too
-                                        # would multiply the startup count by ~4
-                                        # and sum four unrelated latency
-                                        # distributions into one set of buckets,
-                                        # a bimodal "distribution" that is really
-                                        # set_model + session_new + spawn_init +
-                                        # total stacked together.
-                                        phase = str(attrs.get("phase", _PHASE_TOTAL))
-                                        if phase != _PHASE_TOTAL:
-                                            phases.setdefault(phase, _Hist()).add(dp)
-                                            continue
-                                        spawned = bool(attrs.get("spawned"))
-                                        oc = str(attrs.get("outcome", "unknown"))
-                                        (cold if spawned else warm).add(dp)
-                                        # Which conversation source paid this
-                                        # startup. Older shards predate the
-                                        # attribute, so they aggregate under
-                                        # "unknown" rather than being dropped.
-                                        by_channel.setdefault(
-                                            str(attrs.get("channel", "unknown")), _Hist()
-                                        ).add(dp)
-                                        # Outcomes go through _Hist so they are
-                                        # scoped to the same bounds generation as
-                                        # the count and percentiles reported.
-                                        overall.add(dp, outcome=oc)
-                                        day = _day_of(dp, shard_day)
-                                        db = daily.setdefault(
-                                            day, {"cold": _Hist(), "warm": _Hist()}
-                                        )
-                                        db["cold" if spawned else "warm"].add(dp)
-                                    elif name == _TURN_METRIC and is_hist:
-                                        turn.add(
-                                            dp,
-                                            outcome=str(
-                                                attrs.get("outcome", "unknown")
-                                            ),
-                                        )
-                                    elif is_hist:
-                                        other_hist.setdefault(name, _Hist()).add(dp)
-                                        for ak in _OTHER_SPLIT_ATTRS:
-                                            if ak not in attrs:
-                                                continue
-                                            sig = f"{ak}={str(attrs[ak]).lower()}"
-                                            other_split.setdefault(
-                                                name, {}
-                                            ).setdefault(sig, _Hist()).add(dp)
-                                    elif "value" in dp:
-                                        rec = other_ctr.setdefault(
-                                            name, {"total": 0.0, "by_attr": {}}
-                                        )
-                                        val = float(dp.get("value", 0.0) or 0.0)
-                                        rec["total"] += val
-                                        if attrs:
-                                            key = ",".join(
-                                                f"{k}={attrs[k]}"
-                                                for k in sorted(attrs)
-                                            )
-                                            rec["by_attr"][key] = (
-                                                rec["by_attr"].get(key, 0.0) + val
-                                            )
-        except (OSError, UnicodeDecodeError):
-            continue
+    for name, dp, shard_day in _iter_metric_points(shard_paths):
+        attrs = dp.get("attributes") or {}
+        is_hist = "bucket_counts" in dp
+        if name == _STARTUP_METRIC and is_hist:
+            # One startup emits an end-to-end point (phase absent, or
+            # phase=total from the kiro path) PLUS one point per internal phase.
+            # Only the end-to-end point is a startup: counting the phase points
+            # too would multiply the startup count by ~4 and sum four unrelated
+            # latency distributions into one set of buckets, a bimodal
+            # "distribution" that is really set_model + session_new +
+            # spawn_init + total stacked together.
+            phase = str(attrs.get("phase", _PHASE_TOTAL))
+            if phase != _PHASE_TOTAL:
+                phases.setdefault(phase, _Hist()).add(dp)
+                continue
+            spawned = bool(attrs.get("spawned"))
+            oc = str(attrs.get("outcome", "unknown"))
+            (cold if spawned else warm).add(dp)
+            # Which conversation source paid this startup. Older shards predate
+            # the attribute, so they aggregate under "unknown" rather than being
+            # dropped.
+            by_channel.setdefault(
+                str(attrs.get("channel", "unknown")), _Hist()
+            ).add(dp)
+            # Outcomes go through _Hist so they are scoped to the same bounds
+            # generation as the count and percentiles reported.
+            overall.add(dp, outcome=oc)
+            day = _day_of(dp, shard_day)
+            db = daily.setdefault(day, {"cold": _Hist(), "warm": _Hist()})
+            db["cold" if spawned else "warm"].add(dp)
+        elif name == _TURN_METRIC and is_hist:
+            turn.add(dp, outcome=str(attrs.get("outcome", "unknown")))
+        elif is_hist:
+            other_hist.setdefault(name, _Hist()).add(dp)
+            for ak in _OTHER_SPLIT_ATTRS:
+                if ak not in attrs:
+                    continue
+                sig = f"{ak}={str(attrs[ak]).lower()}"
+                other_split.setdefault(name, {}).setdefault(sig, _Hist()).add(dp)
+        elif "value" in dp:
+            rec = other_ctr.setdefault(name, {"total": 0.0, "by_attr": {}})
+            val = float(dp.get("value", 0.0) or 0.0)
+            rec["total"] += val
+            if attrs:
+                key = ",".join(f"{k}={attrs[k]}" for k in sorted(attrs))
+                rec["by_attr"][key] = rec["by_attr"].get(key, 0.0) + val
 
-    daily_out = []
-    for day in sorted(daily):
-        c, w = daily[day]["cold"], daily[day]["warm"]
-        daily_out.append(
-            {
-                "date": day,
-                "count": c.count + w.count,
-                "cold_p50_ms": round(_pct_from_buckets(c.buckets, c.bounds, 0.50), 1),
-                "cold_p90_ms": round(_pct_from_buckets(c.buckets, c.bounds, 0.90), 1),
-                "warm_p50_ms": round(_pct_from_buckets(w.buckets, w.bounds, 0.50), 1),
-            }
-        )
-
-    other = []
-    for name in sorted(other_hist):
-        s = other_hist[name].stats()
-        s.update({"name": name, "kind": "histogram"})
-        splits = other_split.get(name)
-        if splits:
-            s["splits"] = {sig: splits[sig].stats() for sig in sorted(splits)}
-        other.append(s)
-    for name in sorted(other_ctr):
-        rec = other_ctr[name]
-        other.append(
-            {
-                "name": name,
-                "kind": "counter",
-                "total": round(rec["total"], 3),
-                "by_attr": {k: round(v, 3) for k, v in rec["by_attr"].items()},
-            }
-        )
+    daily_out = _daily_series(daily)
+    other = _other_series(other_hist, other_split, other_ctr)
 
     turn_outcome = turn.outcomes
     turn_total = sum(turn_outcome.values())
