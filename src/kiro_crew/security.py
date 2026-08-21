@@ -1343,7 +1343,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="self-protection-restart",
-        pattern=".*kiro.?crew restart.*",
+        pattern=".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+restart.*",
         category="self-protection",
         description=(
             "Blocks 'kirocrew restart' so the agent cannot restart its own gateway process and "
@@ -1352,7 +1352,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="self-protection-update",
-        pattern=".*kiro.?crew update.*",
+        pattern=".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+update.*",
         category="self-protection",
         description=(
             "Blocks 'kirocrew update' so the agent cannot self-update (git pull + rebuild + "
@@ -1361,7 +1361,10 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="self-protection-cloud",
-        pattern=".*kiro.?crew\\s+cloud\\s+(destroy|stop|start|launch|connect|tunnel|log(in|out)).*",
+        pattern=(
+            ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+cloud\\s+"
+            "(destroy|stop|start|launch|connect|tunnel|log(in|out)).*"
+        ),
         category="self-protection",
         description=(
             "Blocks 'kirocrew cloud' lifecycle subcommands "
@@ -1389,7 +1392,10 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="self-protection-gateway-restart",
-        pattern=".*kiro.?crew gateway restart.*",
+        pattern=(
+            ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*"
+            "\\s+gateway restart.*"
+        ),
         category="self-protection",
         description=(
             "Blocks 'kirocrew gateway restart' so the agent cannot bounce its own gateway "
@@ -1559,19 +1565,38 @@ def floor_enforced_builtin_command_ids() -> frozenset[str]:
     return _FLOOR_ENFORCED_RULE_IDS
 
 
-# The two self-protection rules whose enforcement lives in the argv-structural
-# floor (``_is_credential_mint`` / ``_is_self_kill``) rather than in the regex
-# tier.  Their ``pattern`` is retained as the catalog-visible, human-auditable
-# statement of intent -- and it is a correct SUBSET of the floor -- but it is not
-# fed to ``re`` because a raw-string match cannot resolve shell quoting or
-# redirection, and a pattern loose enough to try would re-block ordinary paths.
+# Self-protection rules also enforced by the argv-structural floor.  Their raw
+# patterns remain in the regex tier as an additive backstop, but only tokenized
+# argv can resolve quoted flags and subcommands without broadening raw-text
+# matching into ordinary paths and prose.
 _SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
-    {"credential-exfil-kirocrew-token", "self-protection-kill"}
+    {
+        "credential-exfil-kirocrew-token",
+        "self-protection-kill",
+        "self-protection-restart",
+        "self-protection-update",
+        "self-protection-cloud",
+        "self-protection-gateway-restart",
+    }
 )
 _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
     r.id: r.pattern for r in BUILTIN_DENIED_RULES if r.id in _SELF_PROTECTION_FLOOR_RULE_IDS
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
+_SELF_LIFECYCLE_FLOOR_BY_ID: dict[str, tuple[frozenset[str], ...]] = {
+    "self-protection-restart": (frozenset({"restart"}),),
+    "self-protection-update": (frozenset({"update"}),),
+    "self-protection-cloud": (
+        frozenset({"cloud"}),
+        frozenset(
+            {"destroy", "stop", "start", "launch", "connect", "tunnel", "login", "logout"}
+        ),
+    ),
+    "self-protection-gateway-restart": (
+        frozenset({"gateway"}),
+        frozenset({"restart"}),
+    ),
+}
 
 # The two INTERPRETER-payload rules.  They are ordinary regex-tier rules, but an
 # interpreter CONCATENATES adjacent string literals, so they are additionally matched
@@ -1961,8 +1986,9 @@ def is_safe_user_regex(pattern: str) -> bool:
     reject/skip a pattern that fails this check so a catastrophic user regex can
     never freeze the synchronous PreToolUse gate.
 
-    The known-safe linearized aws flag run is stripped before the structural
-    check so the (harmless) built-in construct is never misflagged.
+    The known-safe aws flag runs are stripped before the structural check only
+    when the complete pattern is a built-in.  A user pattern wrapping the same
+    fragment receives no exemption.
 
     A pattern with a TOP-LEVEL alternation (``a|b``) is also rejected: it cannot
     be split on ``.*`` for the linear full-length fragment matcher, so it would
@@ -1976,7 +2002,11 @@ def is_safe_user_regex(pattern: str) -> bool:
         re.compile(pattern)
     except re.error:
         return False
-    scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(_LINEARIZED_AWS_FLAG_RUN, "")
+    scrubbed = pattern
+    if pattern in BUILTIN_DENY_PATTERNS:
+        scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(
+            _LINEARIZED_AWS_FLAG_RUN, ""
+        )
     if _redos_prone(scrubbed):
         return False
     return not _has_top_level_alternation(scrubbed)
@@ -2318,14 +2348,14 @@ DENY_REASON_MATCH_PREFIX = DENY_REASON_PREFIX.rstrip()
 
 
 # ── Self-protection floor (argv-structural, not a regex) ──
-# The two self-protection rules below are enforced by TOKENIZING the command
-# rather than by matching its raw text.  A raw-string regex cannot decide these:
+# The self-protection rules below are also enforced by TOKENIZING the command.
+# A raw-string regex cannot decide the shell-equivalent quoted forms safely:
 # the gap between the product name and the verb has to step over ordinary shell
 # noise (a quoted verb, global flags, a redirect), but every character class wide
 # enough to do that also steps over a filesystem path -- and "a path that
 # contains the product name" is exactly the false positive these rules exist to
 # stop.  Tokenizing resolves quoting and redirection BEFORE matching, so both
-# sides can be exact.  See ``_is_credential_mint`` / ``_is_self_kill``.
+# sides can be exact.  See the ``_is_self_*`` predicates below.
 _SELF_NAME_RE = re.compile(r"kiro[-.]?crew")
 # ``[k]irocrew`` -- a one-character bracket class expands to that character, so it names
 # the protected program.  Collapsed before comparison rather than folded into every name
@@ -2511,6 +2541,44 @@ _INLINE_DYNAMIC_EXEC_RE = re.compile(
 )
 
 
+def _self_module_command_start(tokens: list[str], i: int) -> int | None:
+    """Index after a supported ``python -m kiro_crew`` module operand.
+
+    Interpreter flags may precede ``-m`` and some consume the following argv
+    word.  The returned index lets callers start product CLI parsing after the
+    module operand instead of mistaking ``kiro_crew`` for a subcommand.  A
+    Python script or another module merely containing that text is not a module
+    invocation and returns ``None``.
+    """
+    if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
+        return None
+    skip_next = False
+    module_next = False
+    for j, later in enumerate(tokens[i + 1 :], start=i + 1):
+        stripped = _normalize_operand(later).strip("\"'")
+        if module_next:
+            return j + 1 if stripped in _SELF_MODULE_SPELLINGS else None
+        if skip_next:
+            skip_next = False
+            # A real ``-m`` is never the operand of an over-matched lower-case
+            # interpreter flag (notably ``-x`` after command lower-casing).
+            if stripped != "-m" and not stripped.startswith("-m"):
+                continue
+        if stripped == "-m":
+            module_next = True
+            continue
+        if stripped.startswith("-m"):
+            return j + 1 if stripped[2:] in _SELF_MODULE_SPELLINGS else None
+        if stripped in _PYTHON_OPERAND_FLAGS:
+            skip_next = True
+            continue
+        if len(stripped) > 2 and stripped[:2] in _PYTHON_OPERAND_FLAGS:
+            continue
+        if not stripped.startswith("-"):
+            return None
+    return None
+
+
 def _inline_payload_reaches_cli(payload: str) -> bool:
     """True if an inline-program payload could import this package, LITERALLY or opaquely.
 
@@ -2553,6 +2621,8 @@ def _is_self_module_invocation(tokens: list[str], i: int) -> bool:
     first non-flag" is not expressible as a heuristic here, because an operand and a script
     path look identical.
     """
+    if _self_module_command_start(tokens, i) is not None:
+        return True
     if not _PYTHON_PROGRAM_RE.match(_program_basename(tokens[i])):
         return False
     skip_next = False
@@ -3753,6 +3823,45 @@ def _normalize_operand(token: str) -> str:
 def _is_mint_verb(token: str) -> bool:
     """True if *token* is the credential-minting verb, however it is dressed."""
     return _normalize_operand(token) == "token"
+
+
+def _is_self_lifecycle(
+    text_lower: str, command_words: tuple[frozenset[str], ...]
+) -> bool:
+    """True if a Kiro Crew argv invokes the specified lifecycle command.
+
+    The raw catalog patterns cover ordinary spellings and stay as an additive
+    backstop.  This tokenized view covers the shell-equivalent forms those
+    patterns cannot safely express, including quoted global flags and quoted
+    subcommands.
+    """
+    if not _self_floor_can_fire(text_lower):
+        return False
+    for tokens in _self_token_frames(text_lower):
+        programs = _argv_programs(tokens)
+        for i, token in enumerate(tokens):
+            command_start = i + 1 if _is_self_program(token) else None
+            if command_start is None:
+                command_start = _self_module_command_start(tokens, i)
+            if command_start is None:
+                continue
+            if _data_consumer_exempt(i, token, programs, tokens):
+                continue
+            position = 0
+            depth = 0
+            for later in tokens[command_start:]:
+                operand = _normalize_operand(later)
+                if operand and not operand.startswith("-"):
+                    if operand not in command_words[position]:
+                        break
+                    position += 1
+                    if position == len(command_words):
+                        return True
+                depth += _substitution_depth_delta(later)
+                if depth <= 0 and _ends_argv(later):
+                    break
+                depth = max(depth, 0)
+    return False
 
 
 def _is_self_kill(text_lower: str) -> bool:
@@ -8704,7 +8813,7 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _GIT_PUBLISH_RULE_PATTERNS]
-    # The two self-protection rules get an ADDITIONAL argv-structural floor
+    # The self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
     # ``kirocrew-wt-x/test_token_auth.py``.  The floor is a UNION with the regex
@@ -8778,6 +8887,14 @@ def is_denied(
         if predicate(lower):
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id.
+            _emit_deny_event(tool_name, pattern, lower)
+            return _reason(pattern)
+
+    for rule_id, command_words in _SELF_LIFECYCLE_FLOOR_BY_ID.items():
+        pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
+        if pattern is None or pattern not in floor_enabled:
+            continue
+        if _is_self_lifecycle(lower, command_words):
             _emit_deny_event(tool_name, pattern, lower)
             return _reason(pattern)
 
