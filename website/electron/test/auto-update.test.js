@@ -58,11 +58,42 @@ test("resolveChannel: production stamps follow the preference when set", () => {
   assert.strictEqual(resolveChannel("insider", "stable"), "stable");
 });
 
-test("resolveChannel: no/invalid preference falls back to the stamp", () => {
+test("resolveChannel: no/invalid preference defaults to STABLE, not to the stamp", () => {
+  // A stable release is PROMOTED, not rebuilt: the stable and insider downloads
+  // of a promoted version are the same file carrying the same prerelease stamp,
+  // so the stamp cannot say which feed to follow. Insider is an explicit opt-in.
   assert.strictEqual(resolveChannel("stable", ""), "stable");
-  assert.strictEqual(resolveChannel("insider", undefined), "insider");
+  assert.strictEqual(resolveChannel("insider", undefined), "stable");
   assert.strictEqual(resolveChannel("stable", "nightly"), "stable"); // nightly is not a valid opt-in
-  assert.strictEqual(resolveChannel("insider", "bogus"), "insider");
+  assert.strictEqual(resolveChannel("insider", "bogus"), "stable");
+});
+
+test("a promoted -insider.N build with no preference follows the STABLE feed", async () => {
+  // The regression this exists for: promoting 0.3.0 publishes the insider
+  // candidate's exact bytes to stable, so every stable install would otherwise
+  // read its own version stamp and migrate itself onto the insider feed.
+  const { deps, calls } = makeDeps({ appVersion: "0.3.0-insider.13" });
+  deps.getChannelPreference = () => "";
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.ok(calls.setFeedURL.length >= 1);
+  assert.ok(
+    calls.setFeedURL.every((o) => o.url === "https://cdn.example.dev/feed/stable/"),
+    `expected stable feed urls, got: ${calls.setFeedURL.map((o) => o.url)}`,
+  );
+  assert.strictEqual(u.getInfo().channel, "stable");
+});
+
+test("an explicit insider preference still selects insider on promoted bytes", async () => {
+  const { deps, calls } = makeDeps({ appVersion: "0.3.0-insider.13" });
+  deps.getChannelPreference = () => "insider";
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.ok(
+    calls.setFeedURL.every((o) => o.url === "https://cdn.example.dev/feed/insider/"),
+    `expected insider feed urls, got: ${calls.setFeedURL.map((o) => o.url)}`,
+  );
+  assert.strictEqual(u.getInfo().channel, "insider");
 });
 
 // ---------------------------------------------------------------------------
