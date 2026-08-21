@@ -67,21 +67,27 @@
 // the question is convergence between two strategies rather than first-time
 // adoption.
 //
-// The decision carries one obligation. Height truth spans the DOM, `HeightCache`,
-// `OffsetIndex` and the memos derived from them. Collapsing that to a single seam
-// is the standing follow-through, and it is HALF DONE:
-//   - Done: `HeightIndex` owns the cache and the offset tree and is the only
-//     surface this hook reads heights through, so the two-readers seam and the
-//     duplicated per-structure session guard are gone (one guard, and the tree
-//     can no longer outlive its cache).
-//   - Remaining: the memo invalidation is still a hand-bumped `heightVersion`
-//     token, because a memo cannot observe a mutation of the (stable-identity)
-//     owner. Deriving it from the owner instead is the other half, deliberately
-//     left to its own change -- unlike the read consolidation, a missed bump
-//     fails SILENTLY (stale offsets, no error, no failing test), so it is worth
-//     reviewing on its own rather than alongside a mechanical redirect.
+// The decision carries one obligation, and it is now DISCHARGED. Height truth
+// spans the DOM, `HeightCache`, the offset tree and the geometry derived from
+// them; it used to stay coherent by convention -- a hand-bumped version counter
+// in memo dependency arrays, plus a session guard held separately by the cache
+// and by the tree. `HeightIndex` now owns all of it:
+//   - it holds the cache and the tree, and is the only surface this hook reads
+//     heights through, so the two-readers seam and the duplicated session guard
+//     are gone (one guard, and the tree cannot outlive its cache);
+//   - it announces a geometry change in the same call that mutates the tree, so
+//     the invalidation is subscribed to rather than maintained by hand -- there
+//     is no bump site left to forget.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { isRailSettling, RAIL_SETTLE_MS } from '../useRailWidth'
 import { HeightIndex } from './HeightIndex'
 import {
@@ -459,7 +465,7 @@ export function useVirtualChat<T>(
   // SEPARATE from anchorPendingRef: that one is consumed by the
   // windowRange-keyed effect, and window commits land constantly while rows
   // mount — sharing the slot lets an unrelated window commit consume (and
-  // clear) the anchor before the heightVersion commit it was captured for,
+  // clear) the anchor before the height-sync commit it was captured for,
   // leaving the repricing shift uncompensated (observed as a nondeterministic
   // 170-190px lurch after a far jump with scroll anchoring unavailable).
   const heightAnchorPendingRef = useRef<{ key: string; top: number } | null>(null)
@@ -535,17 +541,15 @@ export function useVirtualChat<T>(
   // caller's jump-to-bottom pill).
   const [isAtBottom, setIsAtBottom] = useState<boolean>(true)
 
-  // Bumped whenever a mounted row's measured height changes IN PLACE (a
-  // ResizeObserver re-measure with no window/itemCount change). The offset
-  // memos below read the mutable HeightCache through `getH`, whose identity is
-  // stable, so they only recompute when windowRange/itemCount change — NOT
-  // when heights change. After a content SHRINK (streaming finalize, widget
-  // settle, markdown reflow) `totalHeight` would stay stale-large and
-  // `offsetAfter = totalHeight - offset(end)` would inflate into a phantom
-  // bottom spacer (the "blank space at the bottom" bug, and the "flicker when
-  // the scroll stops"). Including this version in the memo deps forces a
-  // recompute on every genuine height change so the spacers track reality.
-  const [heightVersion, setHeightVersion] = useState(0)
+  // NOTE: geometry invalidation is NOT a piece of state here. It lives on the
+  // height owner, which announces a change in the same call that mutates the
+  // tree -- see the `useSyncExternalStore` subscription further down, and
+  // HeightIndex.syncAndAnnounce. A local counter used to serve this role, which
+  // meant every writer had to remember to bump it: after a content SHRINK
+  // (streaming finalize, widget settle, markdown reflow) a missed bump left
+  // `totalHeight` stale-large and inflated `offsetAfter` into a phantom bottom
+  // spacer (the "blank space at the bottom" bug, and the "flicker when the
+  // scroll stops"), with nothing to catch it.
 
   // ---- Reading-position anchor (persisted; see ScrollAnchorCache) ----
   //
@@ -707,9 +711,9 @@ export function useVirtualChat<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heightIndex, itemCount, estimatedHeight])
 
-  // Debounced height→memo sync. Cache writes (RO re-measure, measureRef seed)
-  // call this instead of bumping heightVersion directly. The bump (which
-  // invalidates the offset memos) fires only after heights have been STABLE
+  // Debounced height sync. Cache writes (RO re-measure, measureRef seed) call
+  // this; the owner announces the change (which invalidates the geometry reads)
+  // only after heights have been STABLE
   // for HEIGHT_SYNC_DEBOUNCE_MS, and only if the total actually changed. This
   // (a) corrects a one-time shrink's phantom spacer a beat later, and
   // (b) refuses to re-render during a continuous height oscillation (an
@@ -740,24 +744,24 @@ export function useVirtualChat<T>(
   // fires for a user who was actually following.
   const railSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const railSettleFollowRef = useRef(false)
-  const lastSyncedTotalRef = useRef(-1)
   const heightSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncHeightsNow = useCallback(() => {
     const idx = heightIndexRef.current
     if (!idx) return
-    idx.sync(itemsRef.current.length)
-    const total = idx.totalHeight()
-    if (Math.abs(total - lastSyncedTotalRef.current) > 1) {
-      lastSyncedTotalRef.current = total
+    // The owner mutates the tree, decides whether the total actually moved, and
+    // announces it -- there is no version to bump here, so there is no bump to
+    // forget. The callback runs only when a change IS being announced, after the
+    // mutation and before subscribers see it.
+    idx.syncAndAnnounce(itemsRef.current.length, () => {
       // Spacer repricing about to commit: rows ABOVE the viewport re-price
       // (estimates replaced by real heights), which moves everything below by
       // the delta. Chrome's native scroll anchoring absorbs that shift; iOS
       // Safari has none, so a reader sees the transcript slide under their
       // finger (measured 13-25px right after a far jump, when a whole streak
       // of first measurements lands in one sync). Capture the top visible row
-      // now so the anchor-compensation layout effect (keyed on heightVersion
-      // below) can hold it steady across the commit. Skipped while stick is
-      // armed — the bottom pin owns positioning there.
+      // now so the anchor-compensation layout effect below can hold it steady
+      // across the commit. Skipped while stick is armed -- the bottom pin owns
+      // positioning there.
       if (!stickRef.current && scrollerRef.current) {
         const a = captureTopAnchorFrom(scrollerRef.current, elIndexRef.current.entries(), (i) => {
           const it = itemsRef.current[i]
@@ -765,8 +769,7 @@ export function useVirtualChat<T>(
         })
         if (a) heightAnchorPendingRef.current = a
       }
-      setHeightVersion((v) => v + 1)
-    }
+    })
     // No `getH` dependency: the owner is read from its ref inside, and the tree
     // sync no longer takes a getter. Listing it here would tie this callback's
     // identity to the owner's, which the imperative writers must NOT rely on for
@@ -787,27 +790,19 @@ export function useVirtualChat<T>(
     }, HEIGHT_SYNC_DEBOUNCE_MS)
   }, [syncHeightsNow])
 
-  // NOTE: `heightVersion` is an intentional manual-invalidation key in the
-  // three memos below — it is not referenced in the bodies, so eslint flags it
-  // as "unnecessary", but removing it reintroduces the stale-spacer bug
-  // (memos reading the mutable OffsetIndex never recompute on a height change).
-  // Do NOT remove it. `offsetIndex` has a STABLE ref identity (it is the same
-  // tree object mutated in place by sync), so it is listed for clarity but the
-  // real triggers are itemCount / heightVersion / windowRange.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const totalHeight = useMemo(() => offsetIndex.totalHeight(), [offsetIndex, itemCount, heightVersion])
-  const offsetBefore = useMemo(
-    () => offsetIndex.offsetOf(windowRange.start),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [offsetIndex, windowRange.start, itemCount, heightVersion],
-  )
+  // Geometry is READ, not memoized-and-invalidated. Subscribing to the owner is
+  // what schedules a re-render when heights move; the three values below are then
+  // read fresh during that render, so there is no invalidation token to list in a
+  // dependency array and no way for one to go stale. `totalHeight()` is O(1) and
+  // `offsetOf` is O(log N), so memoizing them was never buying much -- and what it
+  // cost was a hand-maintained key that eslint could not see and review could not
+  // check.
+  const heightCommit = useSyncExternalStore(offsetIndex.subscribe, offsetIndex.getVersion)
+  const totalHeight = offsetIndex.totalHeight()
+  const offsetBefore = offsetIndex.offsetOf(windowRange.start)
   // Height of all items AFTER the window — used as the bottom spacer so the
   // scroll content keeps its full size while only the window renders real DOM.
-  const offsetAfter = useMemo(
-    () => Math.max(0, offsetIndex.totalHeight() - offsetIndex.offsetOf(windowRange.end)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [offsetIndex, windowRange.end, itemCount, totalHeight, heightVersion],
-  )
+  const offsetAfter = Math.max(0, totalHeight - offsetIndex.offsetOf(windowRange.end))
 
   // Topmost visible mounted row, resolved against the LIVE items. Used by the
   // scroll-anchor preservation path and the debounced reading-position save.
@@ -1522,9 +1517,16 @@ export function useVirtualChat<T>(
     recomputeWindow()
   }, [windowRange, scrollerRef, writeScrollTop, recomputeWindow])
 
-  // Same correction for a HEIGHT-SYNC commit (spacer repricing): keyed on
-  // heightVersion, consuming the anchor syncHeightsNow captured. See
-  // heightAnchorPendingRef for why this cannot share the window effect's slot.
+  // Same correction for a HEIGHT-SYNC commit (spacer repricing), keyed on the
+  // owner's announced version. See heightAnchorPendingRef for why this cannot
+  // share the window effect's slot.
+  //
+  // `heightCommit` is the invalidation key: the effect must run in the commit the
+  // announcement scheduled, and the version identifies it. Unlike the counter this
+  // replaced, it cannot go stale or be forgotten -- the owner bumps it in the same
+  // call that mutates the tree, so there is no bump site to miss. It is also a
+  // real subscribed value rather than a token invisible to tooling, which is why
+  // no exhaustive-deps exemption is needed here any more.
   useLayoutEffect(() => {
     const pending = heightAnchorPendingRef.current
     heightAnchorPendingRef.current = null
@@ -1540,7 +1542,7 @@ export function useVirtualChat<T>(
     if (Math.abs(delta) > 0.5) {
       writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
     }
-  }, [heightVersion, scrollerRef, writeScrollTop])
+  }, [heightCommit, scrollerRef, writeScrollTop])
 
 
   // ---- Follow-output: pin to bottom when items append ----
@@ -1782,9 +1784,9 @@ export function useVirtualChat<T>(
         ro?.observe(el)
         // Seed the cache with the current height so the next render has a real
         // height for placeholders. A changed value must also bump
-        // heightVersion: this seed is the SECOND cache writer (besides the RO)
+        // reach the tree: this seed is the SECOND cache writer (besides the RO)
         // and the RO won't re-fire for a value we just seeded, so without this
-        // the offset memos keep a stale height and leave a phantom spacer.
+        // the geometry keeps a stale height and leaves a phantom spacer.
         const it = itemsRef.current[index]
         if (it) {
           const h = measureBorderBoxHeight(el)

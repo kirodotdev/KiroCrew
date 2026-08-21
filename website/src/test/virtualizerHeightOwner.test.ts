@@ -96,6 +96,27 @@ describe('height truth has one owner (structural)', () => {
     expect(code).not.toMatch(/sessionId/)
     expect(code).not.toMatch(/HeightCache/)
   })
+
+  it('the hook holds no hand-bumped geometry version', () => {
+    const code = stripComments(readSource('useVirtualChat.ts'))
+    // The counter this replaced lived in the hook as React state and had to be
+    // bumped at every write site and listed in every memo dependency array. Its
+    // absence is the invariant: invalidation is subscribed to, not maintained.
+    expect(code).not.toMatch(/heightVersion/)
+    expect(code).not.toMatch(/setHeightVersion/)
+    // And the subscription is what replaces it.
+    expect(code).toMatch(/useSyncExternalStore\(/)
+  })
+
+  it('the offset math is read, not memoized behind an invisible key', () => {
+    const code = stripComments(readSource('useVirtualChat.ts'))
+    // Three memos used to carry an invalidation token their bodies never read,
+    // each needing an exhaustive-deps exemption plus a "Do NOT remove it" note.
+    // Reading the values directly is what removed all three exemptions.
+    expect(code).not.toMatch(/useMemo\(\(\)\s*=>\s*offsetIndex\.totalHeight\(\)/)
+    expect(code).toMatch(/const totalHeight = offsetIndex\.totalHeight\(\)/)
+    expect(code).toMatch(/const offsetBefore = offsetIndex\.offsetOf\(/)
+  })
 })
 
 describe('HeightIndex read surface (behavioural)', () => {
@@ -227,5 +248,156 @@ describe('HeightIndex read surface (behavioural)', () => {
     expect(b.peekMeasured(0)).toBeUndefined()
     b.sync(2)
     expect(b.totalHeight()).toBe(2 * ESTIMATE)
+  })
+})
+
+// The owner is also the store that announces "the geometry moved". This half
+// replaces a counter the hook used to bump by hand and list in memo dependency
+// arrays -- a token eslint could not see, guarded only by a "Do NOT remove it"
+// comment, whose failure mode was silent (stale spacers, no error, no red test).
+// Announcing inside the same call that mutates the tree removes the bump site,
+// so these tests pin the contract that makes that safe.
+describe('HeightIndex announces geometry changes (store contract)', () => {
+  const ESTIMATE = 80
+
+  function makeIndex(sessionId: string, keys: (string | null)[]): HeightIndex {
+    return new HeightIndex(sessionId, {
+      rowCount: keys.length,
+      estimate: ESTIMATE,
+      keyAt: (i) => keys[i] ?? null,
+    })
+  }
+
+  it('plain sync does NOT notify, so the render path cannot update during render', () => {
+    // Load-bearing: the hook syncs the tree during render (so that render's reads
+    // are fresh). If that call notified, React would be told to re-render while
+    // rendering. This is the one property the announcing path must not acquire.
+    const idx = makeIndex(`nosync-${Math.random()}`, ['a'])
+    let calls = 0
+    idx.subscribe(() => {
+      calls += 1
+    })
+
+    idx.setMeasured(0, 500)
+    idx.sync(1)
+
+    expect(idx.totalHeight()).toBe(500) // the tree DID update
+    expect(calls).toBe(0) // and nobody was notified
+    expect(idx.getVersion()).toBe(0)
+  })
+
+  it('syncAndAnnounce notifies once when the total moves', () => {
+    const idx = makeIndex(`announce-${Math.random()}`, ['a'])
+    let calls = 0
+    idx.subscribe(() => {
+      calls += 1
+    })
+
+    idx.setMeasured(0, 500)
+    idx.syncAndAnnounce(1)
+
+    expect(calls).toBe(1)
+    expect(idx.getVersion()).toBe(1)
+    expect(idx.totalHeight()).toBe(500)
+  })
+
+  it('does not announce a sub-pixel move, and holds the version steady', () => {
+    const idx = makeIndex(`epsilon-${Math.random()}`, ['a'])
+    idx.setMeasured(0, 500)
+    idx.syncAndAnnounce(1)
+    const settled = idx.getVersion()
+
+    let calls = 0
+    idx.subscribe(() => {
+      calls += 1
+    })
+    // Within the epsilon: re-measuring the same row must not schedule a render.
+    idx.setMeasured(0, 500.4)
+    idx.syncAndAnnounce(1)
+
+    expect(calls).toBe(0)
+    // A steady version is what stops useSyncExternalStore from looping: repeated
+    // reads have to be Object.is-equal until something is actually announced.
+    expect(idx.getVersion()).toBe(settled)
+    expect(idx.getVersion()).toBe(settled)
+  })
+
+  it('still announces once the accumulated drift clears the epsilon', () => {
+    // The baseline must NOT advance on a swallowed sync, or a slow drift of
+    // sub-epsilon steps would never announce and the spacer would rot.
+    const idx = makeIndex(`drift-${Math.random()}`, ['a'])
+    idx.setMeasured(0, 500)
+    idx.syncAndAnnounce(1)
+    const settled = idx.getVersion()
+
+    idx.setMeasured(0, 500.4)
+    idx.syncAndAnnounce(1)
+    expect(idx.getVersion()).toBe(settled)
+
+    idx.setMeasured(0, 500.8)
+    idx.syncAndAnnounce(1)
+    expect(idx.getVersion()).toBe(settled)
+
+    // 502 is 2px from the ANNOUNCED 500, so it clears -- even though each step
+    // was under the epsilon.
+    idx.setMeasured(0, 502)
+    idx.syncAndAnnounce(1)
+    expect(idx.getVersion()).toBe(settled + 1)
+  })
+
+  it('runs beforeNotify after the mutation and before subscribers', () => {
+    // The caller captures pre-commit DOM geometry in this slot, so it must see
+    // the NEW total (mutation done) while no subscriber has been told yet
+    // (the re-render it schedules has not happened).
+    const idx = makeIndex(`order-${Math.random()}`, ['a'])
+    const order: string[] = []
+    let totalSeenByCallback = -1
+    idx.subscribe(() => {
+      order.push('listener')
+    })
+
+    idx.setMeasured(0, 500)
+    idx.syncAndAnnounce(1, () => {
+      order.push('beforeNotify')
+      totalSeenByCallback = idx.totalHeight()
+    })
+
+    expect(order).toEqual(['beforeNotify', 'listener'])
+    expect(totalSeenByCallback).toBe(500)
+  })
+
+  it('skips beforeNotify entirely when nothing is announced', () => {
+    // Otherwise the caller would capture an anchor for a commit that never comes
+    // and a later unrelated commit would consume it.
+    const idx = makeIndex(`skip-${Math.random()}`, ['a'])
+    idx.setMeasured(0, 500)
+    idx.syncAndAnnounce(1)
+
+    let ran = 0
+    idx.setMeasured(0, 500.2)
+    idx.syncAndAnnounce(1, () => {
+      ran += 1
+    })
+
+    expect(ran).toBe(0)
+  })
+
+  it('stops delivering after unsubscribe', () => {
+    const idx = makeIndex(`unsub-${Math.random()}`, ['a'])
+    let calls = 0
+    const unsubscribe = idx.subscribe(() => {
+      calls += 1
+    })
+
+    idx.setMeasured(0, 500)
+    idx.syncAndAnnounce(1)
+    expect(calls).toBe(1)
+
+    unsubscribe()
+    idx.setMeasured(0, 900)
+    idx.syncAndAnnounce(1)
+    expect(calls).toBe(1)
+    // The announcement still happened -- only delivery to this listener stopped.
+    expect(idx.getVersion()).toBe(2)
   })
 })

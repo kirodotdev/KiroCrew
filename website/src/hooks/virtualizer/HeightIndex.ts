@@ -68,13 +68,41 @@ type RowKeyResolver = (index: number) => string | null
  *     the user just viewed.
  *   - `readMeasured` DOES promote. It is for a row that is actually mounted or
  *     rendering, which is genuine access.
+ *
+ * ANNOUNCING A CHANGE
+ * ===================
+ * The owner is also the subscribable store for "the geometry moved". Callers do
+ * NOT maintain an invalidation token: `syncAndAnnounce` mutates the tree and, if
+ * the total actually moved, bumps a version and notifies subscribers in one step,
+ * so a mutation cannot reach the tree without being announced. Read the version
+ * through `subscribe` / `getVersion` (React's `useSyncExternalStore` shape).
+ *
+ * The announce threshold lives here rather than at the call site because it is a
+ * property of height truth, not of any one consumer: a sub-pixel total change is
+ * not worth a re-render, and announcing every sync would re-render on every
+ * measurement -- the render storm the caller's debounce exists to prevent.
  */
+
+/**
+ * Minimum total-height movement, in px, that counts as a change worth
+ * announcing. Sub-pixel drift from re-measuring the same rows must not schedule
+ * a render, and the spacer cannot express it anyway.
+ */
+const ANNOUNCE_EPSILON_PX = 1
+
 export class HeightIndex {
   readonly sessionId: string
   private readonly cache: HeightCache
   private readonly tree: OffsetIndex
   private readonly keyAt: RowKeyResolver
   private estimate: number
+  // Bumped only by syncAndAnnounce, and only when the total actually moved. The
+  // subscribed value is what tells a consumer its cached geometry is stale.
+  private version = 0
+  // Total as of the last ANNOUNCED change. Starts at -1 ("nothing announced
+  // yet") so the first real total always announces, including a total of 0.
+  private lastAnnouncedTotal = -1
+  private readonly listeners = new Set<() => void>()
 
   constructor(
     sessionId: string,
@@ -148,6 +176,57 @@ export class HeightIndex {
   sync(itemCount: number): void {
     this.tree.sync(itemCount, this.getHeight)
   }
+
+  /**
+   * Reconcile the tree and, if the total moved, announce it to subscribers.
+   *
+   * For a mutation that happens OUTSIDE render (a measurement batch settling, the
+   * streaming tick). Use plain `sync` from inside render, where the reader is
+   * about to read fresh values anyway and notifying would be a state update
+   * during render.
+   *
+   * `beforeNotify` runs synchronously AFTER the tree is mutated but BEFORE
+   * subscribers are notified, and only when a change is actually being announced.
+   * That slot exists because the caller has to capture pre-commit DOM geometry
+   * (the top visible row, so a spacer reprice can be compensated) and the capture
+   * is only valid before the re-render this announcement schedules. Passing it in
+   * makes the ordering unconditional instead of relying on when React happens to
+   * flush the update.
+   *
+   * Deliberately does NOT update the announced baseline when nothing is
+   * announced, so a later sync still sees the full accumulated delta.
+   */
+  syncAndAnnounce(itemCount: number, beforeNotify?: () => void): void {
+    this.tree.sync(itemCount, this.getHeight)
+    const total = this.tree.totalHeight()
+    if (Math.abs(total - this.lastAnnouncedTotal) <= ANNOUNCE_EPSILON_PX) return
+    this.lastAnnouncedTotal = total
+    beforeNotify?.()
+    this.version += 1
+    for (const listener of this.listeners) listener()
+  }
+
+  /**
+   * Subscribe to announced geometry changes. Returns an unsubscribe function.
+   *
+   * A stable bound property so React's `useSyncExternalStore` does not resubscribe
+   * on every render; its identity changes only when the owner itself is replaced,
+   * which is exactly when a consumer should rebind (a session switch).
+   */
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  /**
+   * Current announced version -- the `getSnapshot` half of the store.
+   *
+   * A plain number so successive reads are `Object.is`-equal until something is
+   * actually announced, which is what keeps `useSyncExternalStore` from looping.
+   */
+  readonly getVersion = (): number => this.version
 
   /** Cumulative height of rows [0, index). O(log N). */
   offsetOf(index: number): number {
