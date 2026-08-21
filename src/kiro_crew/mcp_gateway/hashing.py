@@ -12,7 +12,7 @@ those heavy submodules into CLI/test/MCP startup.
 from __future__ import annotations
 
 import hashlib
-from typing import Mapping
+from typing import Collection, Mapping
 
 
 def hash_command(command: str, args: list[str]) -> str:
@@ -46,6 +46,15 @@ def hash_command(command: str, args: list[str]) -> str:
 #: pooled backend, and one must never be forwarded into it. Servers that need a
 #: per-session secret read it from disk (the platform credential helper / the
 #: provider's default credential chain, unchanged by pooling) or stay ``poolable: false``.
+#:
+#: An operator can lift the exclusion for a NAMED variable via
+#: ``mcp_gateway.pool_identity_env`` — see the ``identity_keys`` argument of
+#: :func:`non_secret_env`. That is not a hole in the reasoning above, it is the
+#: reasoning applied in reverse: naming a key makes it part of
+#: ``effective_env_hash``, so the hash becomes INJECTIVE over it, two sessions
+#: declaring different values no longer collide, and "no single correct value"
+#: stops being true for that key. Forwarding it is then safe by exactly the
+#: argument that already makes every other hashed key safe to forward.
 ENV_SCRUB_PREFIXES: tuple[str, ...] = ("AWS_SECRET", "AWS_SESSION", "OAUTH")
 
 
@@ -67,7 +76,9 @@ def is_secret_env_key(key: str) -> bool:
     return any(key.startswith(prefix) for prefix in ENV_SCRUB_PREFIXES)
 
 
-def non_secret_env(env_pairs: Mapping[str, str]) -> dict[str, str]:
+def non_secret_env(
+    env_pairs: Mapping[str, str], *, identity_keys: Collection[str] = ()
+) -> dict[str, str]:
     """Return ``env_pairs`` minus every :func:`is_secret_env_key` entry.
 
     This is the set folded into :func:`hash_effective_env`, and the OUTER bound
@@ -79,19 +90,41 @@ def non_secret_env(env_pairs: Mapping[str, str]) -> dict[str, str]:
     It is not sufficient on its own: the forwarding path in ``gatewayd`` also
     drops ``manager.is_credential_env_key`` matches, so a declared credential
     key that the daemon scrub removes is never re-introduced.
+
+    ``identity_keys`` names variables an operator has declared pool-identity-
+    relevant (``mcp_gateway.pool_identity_env``). A named key is KEPT even when
+    :func:`is_secret_env_key` matches it, which folds its value into the hash and
+    so restores the very property the exclusion gives up: two sessions declaring
+    different values get different ``effective_env_hash`` values and therefore
+    different backends. Matching is by exact name, not by prefix — the point is
+    for an operator to accept the rotation-splits-the-pool cost for ONE variable,
+    not to disable a whole prefix class.
+
+    Default ``()`` is byte-for-byte today's behaviour: an installation that names
+    nothing computes exactly the hash it computed before this argument existed,
+    so no existing PoolKey is invalidated.
     """
-    return {k: v for k, v in env_pairs.items() if not is_secret_env_key(k)}
+    keep = frozenset(identity_keys)
+    return {k: v for k, v in env_pairs.items() if k in keep or not is_secret_env_key(k)}
 
 
-def hash_effective_env(env_pairs: Mapping[str, str]) -> str:
+def hash_effective_env(env_pairs: Mapping[str, str], *, identity_keys: Collection[str] = ()) -> str:
     """Sorted ``K=V\\0``-delimited SHA-256 over the NON-SECRET env pairs.
 
     Feeds the ``effective_env_hash`` dimension of
     :class:`kiro_crew.mcp_gateway.pool.PoolKey`. Implemented on top of
     :func:`non_secret_env` so the hashed set and the forwardable set are the
-    same set by construction.
+    same set by construction — including for ``identity_keys``, which widens
+    both together and can therefore never widen one without the other.
+
+    WRITER AND READER MUST PASS THE SAME ``identity_keys``. The stub computes
+    this hash for its Register frame; ``gatewayd._declared_env_pairs`` recomputes
+    it at cold spawn and refuses to forward on a mismatch. That gate is what
+    makes the stub's copy of the list untrusted data rather than authority: a
+    stub that claims a different set than the daemon's configured one produces a
+    hash the daemon does not reproduce, so forwarding fails closed.
     """
-    filtered = non_secret_env(env_pairs)
+    filtered = non_secret_env(env_pairs, identity_keys=identity_keys)
     h = hashlib.sha256()
     for k in sorted(filtered):
         h.update(k.encode("utf-8"))

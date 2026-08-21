@@ -185,7 +185,7 @@ That split is also the export contract. The telemetry layer requires low-cardina
 | `not_stdio` | disqualified | No stdio pipe — out of scope, not unsafe. **The other durable ground, and the only remaining `disqualified` code.** |
 | `handshake_not_reproducible` | note | Pre-flight saw a divergent replayed surface (capabilities, protocol version, `serverInfo` shape, or the tool list). Reported and gates nothing: see below. |
 | `session_bound_by_construction` | disqualified | A managed server that resolves its caller from its own process rather than the injected caller block. Kept gating because `mcp_cron._check_cron_job_ownership` treats a falsy session key as *allow*, so a pooled backend reading EMPTY skips the ownership check rather than merely losing a feature -- and no routing-shaped hazard code would ever record it. |
-| `rotating_secret_env` | note | Declares an env name excluded from the pool key. Detail is the name. |
+| `rotating_secret_env` | note | Declares an env name excluded from the pool key. Detail is the name. Not emitted for a name in `mcp_gateway.pool_identity_env`, which IS in the pool key. |
 | `degrades_when_shared` | note | `resources.subscribe` or `logging`; detail names which. |
 | `not_probed` | unknown | No handshake was observed. |
 | `declares_caller_identity` | declared | Advertises the caller-identity extension. |
@@ -225,7 +225,13 @@ Measured against that, four codes were disqualifying on an inference:
   receives *nobody's* secret rather than the wrong session's. What pooling costs is
   a server that authenticates from declared env; one following the documented
   pattern (read the credential from disk) declares the key without needing it and
-  pools fine, and the declaration cannot tell those apart.
+  pools fine, and the declaration cannot tell those apart. Naming the variable in
+  `mcp_gateway.pool_identity_env` is how an operator resolves that ambiguity for a
+  server that genuinely does authenticate from env: the key joins the pool key, so
+  it is forwarded, `_withheld_env_count` stops counting it, the rewriter pools the
+  entry — and this note goes with it. The withholding tracks the guard that
+  actually runs in BOTH directions; leaving the note would make the page decline a
+  share the broker performs.
 `session_bound_by_construction` is NOT in that list. It looks like the same
 shape -- a feature that stops working -- but the consumer decides what EMPTY means,
 and `mcp_cron._check_cron_job_ownership` returns *allow* on a falsy session key, so

@@ -4501,6 +4501,27 @@ class McpGatewayConfig:
             "stub set.",
         ),
     )
+    pool_identity_env: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Pool Identity Env Keys",
+            "Env variable NAMES whose value is part of a shared backend's "
+            "identity. Names listed here are folded into the backend's env hash "
+            "even when they look like a rotating secret (AWS_SECRET*, "
+            "AWS_SESSION*, OAUTH*), which is what makes them safe to apply to a "
+            "shared backend: two sessions declaring different values get "
+            "different backends instead of colliding onto one. Use it to let a "
+            "server that authenticates from such a variable be shared at all — "
+            "by default it declares one, so nothing is forwarded and the server "
+            "runs unwrapped. The cost is the reason the exclusion exists: "
+            "rotating a named value re-partitions that server's pool, so the "
+            "next session cold-starts a backend. Exact names, not prefixes. "
+            "Names the daemon's own credential scrub removes (AWS_ACCESS*, "
+            "AWS_SECRET*, AWS_SESSION*, SSH_AUTH_SOCK*, GNUPGHOME*, "
+            "GIT_ASKPASS*) are ignored here — that scrub is a separate, broader "
+            "guard this setting does not lift. Empty by default.",
+        ),
+    )
     prewarm_count: int = field(
         default=0,
         metadata=_meta(
@@ -6808,6 +6829,15 @@ class KiroCrewConfig:
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
                 stub_servers=_resolve_stub_servers(mcp_gateway_data),
+                # Hand-editable list of env NAMES; keep only strings and drop
+                # blanks so a stray null or nested object cannot reach the
+                # hashing layer as a key. Not deduplicated here — every consumer
+                # builds a frozenset from it.
+                pool_identity_env=[
+                    s.strip()
+                    for s in mcp_gateway_data.get("pool_identity_env", [])
+                    if isinstance(s, str) and s.strip()
+                ],
                 prewarm_count=max(0, _safe_int(mcp_gateway_data.get("prewarm_count", 0), 0)),
                 read_buffer_limit_bytes=max(
                     1024,

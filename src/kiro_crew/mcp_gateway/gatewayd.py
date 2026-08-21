@@ -39,7 +39,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Collection, Iterator, Optional
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.loader import config_dir as _config_dir
@@ -70,6 +70,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     env_sidecar_dir,
     env_sidecar_name,
     forward_declared_env_enabled,
+    pool_identity_env_keys,
     records_dir,
     resolve_overlay_dir,
 )
@@ -1124,18 +1125,38 @@ def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
     What survives is operator-declared, non-secret, and part of the PoolKey —
     every session sharing this backend agrees on it by construction.
 
+    A name in ``mcp_gateway.pool_identity_env`` survives (1) BECAUSE it is part
+    of the PoolKey: :func:`rewriter.pool_identity_env_keys` is the authoritative
+    read, the same one the coherence gate in :func:`_declared_env_pairs` uses, so
+    the sentence above stays true rather than being weakened. It cannot bypass
+    (2) — that helper drops credential-scrub names before returning them.
+
     BLOCKING: reads a file. Callers must run it off the event loop.
     """
-    pairs = _declared_env_pairs(pool_key)
-    return {k: v for k, v in non_secret_env(pairs).items() if not is_credential_env_key(k)}
+    identity_keys = pool_identity_env_keys()
+    pairs = _declared_env_pairs(pool_key, identity_keys)
+    return {
+        k: v
+        for k, v in non_secret_env(pairs, identity_keys=identity_keys).items()
+        if not is_credential_env_key(k)
+    }
 
 
-def _declared_env_pairs(pool_key: PoolKey) -> dict[str, str]:
+def _declared_env_pairs(pool_key: PoolKey, identity_keys: Collection[str]) -> dict[str, str]:
     """Return the declared env sidecar's contents for ``pool_key``, or ``{}``.
 
     Unfiltered, but coherence-gated: a sidecar whose contents no longer hash to
     ``pool_key.effective_env_hash`` yields ``{}``. Callers apply whatever
     co-tenancy filtering their acquisition path requires.
+
+    ``identity_keys`` is REQUIRED rather than read here, so the caller's ONE
+    snapshot of ``pool_identity_env_keys()`` governs both the hash recomputed
+    below and whatever filtering the caller then applies. Reading it here as well
+    would make those two decisions two different observations of a file an
+    operator can edit at any moment: the gate could accept a sidecar under one
+    set while the caller filtered under another, and the wider of the two would
+    decide what reaches the backend. Passing it in makes that mismatch
+    unrepresentable instead of merely unlikely.
 
     BLOCKING: reads a file. Callers must run it off the event loop.
     """
@@ -1174,7 +1195,18 @@ def _declared_env_pairs(pool_key: PoolKey) -> dict[str, str]:
     # Recomputing the hash here and requiring equality closes that window. The
     # construction mirrors the stub's ``_parse_env_json`` (str-coerced keys and
     # values, empty keys dropped) so a coherent sidecar always matches.
-    if hash_effective_env(pairs) != pool_key.effective_env_hash:
+    #
+    # ``identity_keys`` comes from the OPERATOR's config, never from the Register
+    # frame, and is the CALLER's single snapshot -- see this function's docstring
+    # for why it is a parameter rather than a second read. The stub was handed the
+    # same set on its argv only so it could compute this hash; a stub that claims a
+    # different set produces a hash this line does not reproduce, so the mismatch
+    # branch runs and nothing is forwarded. That is what keeps "which secrets may
+    # reach a shared backend" an operator decision while leaving the stub the
+    # untrusted client it is documented to be — and it needs no new check, because
+    # the gate that already guards a spec edited mid-session guards a lying stub
+    # identically.
+    if hash_effective_env(pairs, identity_keys=identity_keys) != (pool_key.effective_env_hash):
         logger.warning(
             "declared-env: sidecar for %r no longer matches the PoolKey it was "
             "hashed under (the spec was edited after this session started); "
@@ -1211,7 +1243,7 @@ def _declared_env_for_private_backend(pool_key: PoolKey) -> dict[str, str]:
 
     BLOCKING: never call this on the event loop.
     """
-    return _declared_env_pairs(pool_key)
+    return _declared_env_pairs(pool_key, pool_identity_env_keys())
 
 
 def _declared_env_to_forward(pool_key: PoolKey) -> dict[str, str]:

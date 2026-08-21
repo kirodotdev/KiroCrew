@@ -181,6 +181,21 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument("--channel-id", default=None, dest="channel_id")
     p.add_argument(
+        "--pool-identity-env",
+        default="",
+        dest="pool_identity_env",
+        help=(
+            "Env variable NAMES (separated by --target-args-sep) whose value the "
+            "operator declared part of backend identity via "
+            "mcp_gateway.pool_identity_env. Folded into effective_env_hash even "
+            "when the name looks like a rotating secret. Names only, never "
+            "values, so this is safe on argv. Carries NO authority: gatewayd "
+            "re-reads the operator's own list at spawn and refuses to forward "
+            "when the hash it recomputes does not match the one registered here, "
+            "so a stub cannot widen what gets applied to a shared backend."
+        ),
+    )
+    p.add_argument(
         "--socket",
         default=os.environ.get("KIROCREW_MCP_SOCKET") or os.environ.get("MC_MCP_SOCKET") or _default_socket_path(),
     )
@@ -396,6 +411,12 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         env_pairs = _parse_env_csv(args.env)
     auto_approve = _parse_auto_approve(args.auto_approve)
     channel_id = _resolve_channel_id(args.channel_id)
+    # Reuses the target-args separator rather than ',' so a name can never be
+    # split the way the legacy CSV env encoding split values. Empty -> the
+    # default set, which hashes exactly as it did before this flag existed.
+    identity_keys = frozenset(
+        n for n in args.pool_identity_env.split(args.target_args_sep) if n
+    )
 
     try:
         work_dir = str(Path(args.work_dir).resolve())
@@ -410,7 +431,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "server_name": args.server,
         "agent_name": args.agent,
         "command_args_hash": hash_command(args.target_command, target_args),
-        "effective_env_hash": hash_effective_env(env_pairs),
+        "effective_env_hash": hash_effective_env(env_pairs, identity_keys=identity_keys),
         "work_dir": work_dir,
         "binary_version": _binary_version(args.target_command),
         # Not os.getuid(): that attribute does not exist on Windows, where an

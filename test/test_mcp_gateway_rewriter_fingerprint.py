@@ -88,6 +88,11 @@ _AMBIENT_READ_ALLOWLIST = frozenset(
         # fingerprinted as "forward_declared_env" (see
         # test_forward_declared_env_change_invalidates).
         ("forward_declared_env_enabled", "config-import:kiro_crew.config.loader"),
+        # Output-AFFECTING: decides which secret-prefixed keys are folded into
+        # effective_env_hash and passed on stub argv. Read once per pass in
+        # rewrite_agents and fingerprinted as "pool_identity_env" (see
+        # test_pool_identity_env_change_invalidates).
+        ("pool_identity_env_keys", "config-import:kiro_crew.config.loader"),
     }
 )
 
@@ -307,6 +312,10 @@ def _forward_declared_env_on(monkeypatch: pytest.MonkeyPatch) -> None:
     this per-call to prove the flag is itself a fingerprint input.
     """
     monkeypatch.setattr(rewriter, "forward_declared_env_enabled", lambda: True)
+    # Same reasoning for the identity set: pin it to the default (nothing opted
+    # in) so these tests never read the developer's real config, and let
+    # ``test_pool_identity_env_change_invalidates`` override it per-call.
+    monkeypatch.setattr(rewriter, "pool_identity_env_keys", lambda: frozenset())
 
 
 def _rewrite(root: Path, **overrides: Any) -> tuple[dict[str, int], dict[str, str]]:
@@ -381,6 +390,45 @@ def test_forward_declared_env_change_invalidates(
     assert rewrite_counter["n"] == 4, "flag flip must not serve the cache"
     # Forwarding off: the env-declaring servers are declassified (unwrapped).
     assert off != on
+
+
+def test_pool_identity_env_change_invalidates(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Naming a key in ``mcp_gateway.pool_identity_env`` regenerates the overlays.
+
+    The list decides which keys are folded into ``effective_env_hash`` and passed
+    on stub argv. Serving a cached overlay across an edit is not a cosmetic
+    staleness: the cached stub would keep hashing the OLD set while gatewayd
+    hashes the new one, so the coherence gate would refuse to forward and the
+    setting would appear to do nothing.
+    """
+    _mk_tree(tmp_path, with_env=True)
+    # Declare a rotating-secret-shaped key so the list has something to act on.
+    # With nothing opted in this key is withheld from a shared backend, so the
+    # pre-classification leaves the server UNWRAPPED (issue #3495 cause B).
+    spec_path = tmp_path / "agents" / "agent-0.json"
+    spec = json.loads(spec_path.read_text())
+    spec["mcpServers"]["srv"]["env"]["OAUTH_TOKEN"] = "t"
+    spec_path.write_text(json.dumps(spec))
+
+    before = _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 2
+    # agent-0 declares 'srv' (env-bearing) plus the injected 'global-x'. Only
+    # global-x is wrapped while OAUTH_TOKEN is withheld.
+    assert before[0]["agent-0.json"] == 1, "a withheld key must block pooling"
+
+    monkeypatch.setattr(
+        rewriter, "pool_identity_env_keys", lambda: frozenset({"OAUTH_TOKEN"})
+    )
+    after = _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 4, "an identity-list edit must not serve the cache"
+    # Non-vacuous, and the feature's headline behaviour: naming the key folds it
+    # into the pool identity, so it is no longer withheld and 'srv' pools too.
+    assert after[0]["agent-0.json"] == 2
+    assert before != after
 
 
 def test_source_content_change_invalidates(

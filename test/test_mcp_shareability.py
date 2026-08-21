@@ -115,6 +115,30 @@ class TestDisqualifiers:
         assert verdict.recommend_share is False
         assert "rotating_secret_env" in _codes(verdict)
 
+    def test_a_named_identity_key_stops_withholding_the_share(self) -> None:
+        """The withholding follows the guard, in BOTH directions.
+
+        The test above pins that the page declines a share the rewriter declines.
+        Once ``mcp_gateway.pool_identity_env`` names the key the rewriter DOES pool
+        the entry (``_withheld_env_count`` stops counting it, because the key is
+        now inside ``effective_env_hash`` and really is forwarded). If the note
+        survived that, the page would decline a share the broker performs -- the
+        same two-components-disagreeing failure, mirrored.
+        """
+        evidence = ShareEvidence(
+            name="x",
+            probe_ok=True,
+            has_tools=True,
+            declared_env_names=("OAUTH_TOKEN",),
+            capabilities={"experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}}},
+            preflight_ran=True,
+        )
+        verdict = assess(evidence, {"OAUTH_TOKEN"})
+        assert verdict.recommend_share is True
+        assert "rotating_secret_env" not in _codes(verdict)
+        # A DIFFERENT name in the list must not silence this key's note.
+        assert "rotating_secret_env" in _codes(assess(evidence, {"OTHER_TOKEN"}))
+
     def test_a_broker_gap_does_not_borrow_that_withholding(self) -> None:
         """The two must not collapse into one rule.
 

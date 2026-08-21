@@ -94,8 +94,17 @@ def identity_for(server: Any) -> Identity:
     adding a second row.
 
     Env is hashed by the same helper the pool uses, so the rotating-secret
-    exclusions apply identically — a credential rotation must not look like a
-    different server here either.
+    exclusions apply — a credential rotation must not look like a different
+    server here either.
+
+    It deliberately does NOT pass ``identity_keys``, so a variable an operator
+    named in ``mcp_gateway.pool_identity_env`` still does not enter THIS hash.
+    The pool needs the value in its key because the value decides which backend
+    is the right backend; a measurement is a claim about the server's BEHAVIOUR,
+    and rotating a credential does not change that. Folding it in here would
+    discard a good measurement on every rotation, which is the stale-verdict
+    failure this identity exists to prevent, in reverse. So the two hashes agree
+    on the default set and diverge only on named keys, on purpose.
 
     ``binary_version`` fingerprints everything the launch actually runs, not just
     the executable. Most MCP servers are launched THROUGH an interpreter —

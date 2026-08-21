@@ -32,7 +32,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 from kiro_crew import __version__, platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -204,7 +204,11 @@ def _normalized_env(entry: dict[str, Any], *, context: str = "") -> dict[str, An
     return {}
 
 
-def _withheld_env_count(entry_env: dict[str, Any], forward_env: bool) -> int:
+def _withheld_env_count(
+    entry_env: dict[str, Any],
+    forward_env: bool,
+    identity_keys: Collection[str] = (),
+) -> int:
     """How many declared env keys a shared pooled backend would NOT receive.
 
     The pooling bargain is "the backend starts with your declared env"; any
@@ -216,6 +220,13 @@ def _withheld_env_count(entry_env: dict[str, Any], forward_env: bool) -> int:
     mirroring ``gatewayd._declared_non_secret_env`` exactly, so this
     classifier never promises an env the forwarder will refuse to apply.
 
+    ``identity_keys`` is :func:`pool_identity_env_keys`, and a named key stops
+    being withheld here for the same reason the forwarder starts applying it: it
+    is now inside ``effective_env_hash``. The two sides consult ONE resolved set
+    so they cannot disagree, and because that helper already drops
+    credential-scrub names, a name can never be un-withheld here while the
+    forwarder still refuses it.
+
     That mirror is load-bearing BECAUSE of the default flip: with forwarding off
     this function short-circuits on ``len(entry_env)`` and the forwarder is never
     consulted, so the two could not disagree. With forwarding on they must agree
@@ -224,10 +235,11 @@ def _withheld_env_count(entry_env: dict[str, Any], forward_env: bool) -> int:
     """
     if not forward_env:
         return len(entry_env)
+    identity = frozenset(identity_keys)
     return sum(
         1
         for k in entry_env
-        if is_secret_env_key(k) or is_credential_env_key(k)
+        if (is_secret_env_key(k) and k not in identity) or is_credential_env_key(k)
     )
 
 
@@ -245,6 +257,7 @@ def _build_stub_entry(
     approval_mode: str,
     sidecars_written: set[str] | None = None,
     poolable: bool = False,
+    identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
 ) -> dict[str, Any]:
     """Return the rewritten ``mcpServers[name]`` entry.
@@ -280,6 +293,17 @@ def _build_stub_entry(
     ]
     if poolable:
         stub_args.append("--poolable")
+    # Names only, never values — so this is safe on argv, which is
+    # world-readable via /proc/<pid>/cmdline (the reason the env itself goes to a
+    # 0600 sidecar instead). Only the names the ENTRY actually declares are
+    # passed: the flag exists solely so the stub reproduces gatewayd's hash for
+    # THIS server, and a fleet-wide list on every stub's argv would be noise that
+    # also leaks which variables other servers care about. Sorted for a stable
+    # argv, which keeps the overlay byte-identical across passes and so keeps the
+    # rewrite fingerprint's skip path effective.
+    entry_identity_keys = sorted(k for k in frozenset(identity_keys) if k in env_pairs)
+    if entry_identity_keys:
+        stub_args.extend(["--pool-identity-env", _TARGET_ARGS_SEP.join(entry_identity_keys)])
     if env_pairs:
         # JSON-encode env so values containing ',' or '=' round-trip
         # intact. A prior CSV serialisation ``K=V,K2=V2`` silently
@@ -429,6 +453,7 @@ def _rewrite_single_spec(
     stub_servers: frozenset[str],
     pooling_enabled: bool = True,
     forward_env: bool = False,
+    identity_keys: Collection[str] = (),
     inject_servers: dict[str, Any] | None = None,
     target_env: dict[str, str] | None = None,
     sidecars_written: set[str] | None = None,
@@ -534,7 +559,11 @@ def _rewrite_single_spec(
             )
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        withheld = _withheld_env_count(entry_env, forward_env) if pooling_enabled else 0
+        withheld = (
+            _withheld_env_count(entry_env, forward_env, identity_keys)
+            if pooling_enabled
+            else 0
+        )
         if withheld:
             # Fix for issue #3495 cause B: a pooled backend is spawned WITHOUT
             # part (or, with forwarding off, all) of the env this spec
@@ -575,6 +604,7 @@ def _rewrite_single_spec(
             # Sharing is global over the stub set: being stubbed is the only
             # per-server decision, so there is nothing further to consult here.
             poolable=pooling_enabled,
+            identity_keys=identity_keys,
             notes=notes,
         )
         wrapped += 1
@@ -676,6 +706,7 @@ def _rewrite_single_spec(
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
             poolable=pooling_enabled,
+            identity_keys=identity_keys,
             notes=notes,
         )
         wrapped += 1
@@ -692,6 +723,7 @@ def _injectable_settings_servers(
     *,
     pooling_enabled: bool = True,
     forward_env: bool = False,
+    identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
 ) -> dict[str, Any]:
     """Return ``{raw_name: raw_entry}`` of stdio servers in the global
@@ -757,7 +789,11 @@ def _injectable_settings_servers(
                 entry.get("command", ""), name,
             )
             continue
-        withheld = _withheld_env_count(entry_env, forward_env) if pooling_enabled else 0
+        withheld = (
+            _withheld_env_count(entry_env, forward_env, identity_keys)
+            if pooling_enabled
+            else 0
+        )
         if withheld:
             # Issue #3495 cause B, settings edition: pooling would withhold
             # part or all of this server's declared env and crash-loop it.
@@ -808,6 +844,7 @@ def _rewrite_inputs_fingerprint(
     stub_set: frozenset[str],
     pooling_enabled: bool,
     forward_env: bool,
+    identity_keys: Collection[str],
 ) -> dict[str, Any]:
     """Return a JSON-serializable snapshot of every input that can change
     :func:`rewrite_agents`'s output.
@@ -832,6 +869,12 @@ def _rewrite_inputs_fingerprint(
     * ``forward_declared_env`` — decides whether an env-declaring server is
       pooled at all (issue #3495 cause B pre-classification), so flipping the
       config flag must regenerate the overlays.
+    * ``pool_identity_env`` — decides which secret-prefixed keys are hashed into
+      the PoolKey and passed on stub argv, so editing the list must regenerate
+      the overlays. Without this, naming a key would take effect only once some
+      unrelated input changed, and until then the stub would keep hashing the old
+      set while gatewayd hashed the new one — the coherence gate would refuse to
+      forward, so the feature would silently not work.
     * ``schema`` / ``package`` — invalidate on rewriter logic changes.
     """
     sources: dict[str, list[Any] | None] = {
@@ -845,6 +888,7 @@ def _rewrite_inputs_fingerprint(
         "pathext": os.environ.get("PATHEXT", ""),
         "path_augment": spec_env_path(""),
         "forward_declared_env": bool(forward_env),
+        "pool_identity_env": sorted(frozenset(identity_keys)),
         "source_dir": str(source_dir),
         "overlay_dir": str(overlay_dir),
         "socket_path": str(socket_path),
@@ -1213,6 +1257,10 @@ def rewrite_agents(
     # consumer in this pass must see the same value, and the fingerprint must
     # record it (a flip regenerates the overlays).
     forward_env = forward_declared_env_enabled()
+    # Same contract for the identity set: ONE resolved value per pass, recorded in
+    # the fingerprint, handed to every consumer in it. gatewayd re-reads the same
+    # helper at spawn rather than taking the stub's word for it.
+    identity_keys = pool_identity_env_keys()
     current_inputs = _rewrite_inputs_fingerprint(
         source_dir=source_dir,
         settings_path=kiro_settings_json,
@@ -1224,6 +1272,7 @@ def rewrite_agents(
         stub_set=stub_set,
         pooling_enabled=pooling_enabled,
         forward_env=forward_env,
+        identity_keys=identity_keys,
     )
     stored = _load_fingerprint(fingerprint_path)
     if stored is not None and stored.get("inputs") == current_inputs:
@@ -1266,6 +1315,7 @@ def rewrite_agents(
                     loaded, stub_set,
                     pooling_enabled=pooling_enabled,
                     forward_env=forward_env,
+                    identity_keys=identity_keys,
                     notes=notes,
                 )
         except OSError as exc:
@@ -1317,6 +1367,7 @@ def rewrite_agents(
             stub_servers=stub_set,
             pooling_enabled=pooling_enabled,
             forward_env=forward_env,
+            identity_keys=identity_keys,
             inject_servers=settings_poolable,
             target_env=target_env,
             sidecars_written=written_sidecars,
@@ -1668,6 +1719,55 @@ def forward_declared_env_enabled() -> bool:
     except Exception:
         logger.debug("rewriter: config unreadable; declared-env forwarding off", exc_info=True)
         return False
+
+
+def pool_identity_env_keys() -> frozenset[str]:
+    """Return ``mcp_gateway.pool_identity_env`` as an effective key set.
+
+    The AUTHORITATIVE source for which env variables an operator has declared
+    pool-identity-relevant. Every consumer that must agree on this set reads it
+    HERE: the rewriter (to hash and to count withheld keys) and ``gatewayd`` (to
+    re-hash the sidecar and to decide what to forward). The stub is handed the
+    resolved set on its command line instead of reading config itself, and its
+    copy carries no authority — ``hash_effective_env`` explains how the coherence
+    gate turns a disagreeing stub into a refusal to forward.
+
+    Names matched by :func:`manager.is_credential_env_key` are DROPPED. That
+    scrub is a separate and broader guard — it keeps one session's credentials
+    out of another session's backend in the per-session topology too — and this
+    setting is not a way to lift it. Filtering here rather than at each consumer
+    is what stops a half-state where a name is folded into the hash but still
+    refused by the forwarder, which would leave the entry unpoolable anyway while
+    silently re-partitioning it on every rotation.
+
+    Fails CLOSED to the empty set: an unreadable config means nothing is opted
+    in, which is exactly today's behaviour.
+    """
+    try:
+        # circular import: config.loader imports THIS module at its own top level
+        # (for default_overlay_dir / default_socket_path), so a module-scope
+        # import here would be a cycle. Mirrors forward_declared_env_enabled.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        declared = KiroCrewConfig.load().mcp_gateway.pool_identity_env or []
+    except Exception:
+        logger.debug("rewriter: config unreadable; no pool-identity env keys", exc_info=True)
+        return frozenset()
+    kept: set[str] = set()
+    for name in declared:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        if is_credential_env_key(name):
+            logger.warning(
+                "mcp_gateway.pool_identity_env names %r, which the daemon's own "
+                "credential scrub removes; ignoring it (that scrub is not lifted "
+                "by this setting)",
+                name,
+            )
+            continue
+        kept.add(name)
+    return frozenset(kept)
 
 
 def runtime_dir() -> Path:

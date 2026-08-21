@@ -2555,7 +2555,11 @@ def _stub_eligibility(
     """
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
     from kiro_crew.mcp_gateway.evaluate import identity_for
-    from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS, _withheld_env_count
+    from kiro_crew.mcp_gateway.rewriter import (
+        UNPOOLABLE_SERVERS,
+        _withheld_env_count,
+        pool_identity_env_keys,
+    )
     from kiro_crew.mcp_gateway.verdict_cache import load_cache
 
     rows = _collect_server_rows()
@@ -2581,7 +2585,9 @@ def _stub_eligibility(
             skipped.append({"name": name, "reason": "cannot_stub"})
             continue
         if sharing_on and _withheld_env_count(
-            {k: "" for k in row["env_names"]}, forward_declared_env
+            {k: "" for k in row["env_names"]},
+            forward_declared_env,
+            pool_identity_env_keys(),
         ):
             skipped.append({"name": name, "reason": "pooling_blocked_by_env"})
             continue
@@ -2605,6 +2611,7 @@ def _stub_eligibility(
             env_names=tuple(sorted(row["env_names"])),
             observed_hazards=observed.get(name, ()),
             preflight=preflight,
+            identity_keys=pool_identity_env_keys(),
         )
         allowed = verdict.recommend_share if sharing_on else verdict.recommend_stub
         if not allowed:
@@ -2631,11 +2638,18 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     global switch (``mcp_gateway.enabled``), reported by the status endpoint.
     """
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
-    from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS, _withheld_env_count
+    from kiro_crew.mcp_gateway.rewriter import (
+        UNPOOLABLE_SERVERS,
+        _withheld_env_count,
+        pool_identity_env_keys,
+    )
 
     gw_cfg = KiroCrewConfig.load().mcp_gateway
     stub_set = set(gw_cfg.stub_servers)
     forward_declared_env = bool(gw_cfg.forward_declared_env)
+    # Resolved ONCE for the whole payload, same reason the shareability files are:
+    # two rows in one response must not disagree about the operator's list.
+    identity_keys = pool_identity_env_keys()
 
     rows = await asyncio.to_thread(_collect_server_rows)
 
@@ -2677,7 +2691,9 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # row builder's value-free discipline holds.
         pooling_blocked = bool(
             gw_cfg.enabled
-            and _withheld_env_count({k: "" for k in row["env_names"]}, forward_declared_env)
+            and _withheld_env_count(
+                {k: "" for k in row["env_names"]}, forward_declared_env, identity_keys
+            )
         )
         result.append(
             {
@@ -2707,6 +2723,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                     preflight=(
                         preflights.get(name) if len(row["launch_ids"]) <= 1 else None
                     ),
+                    identity_keys=identity_keys,
                 ).to_dict(),
             }
         )
@@ -2754,6 +2771,7 @@ def _assess_server(
     env_names: tuple[str, ...],
     observed_hazards: tuple[str, ...],
     preflight: tuple[bool, bool] | None,
+    identity_keys: Collection[str] = (),
 ) -> ShareVerdict:
     """Build evidence for one row and hand it to the verdict engine.
 
@@ -2785,7 +2803,8 @@ def _assess_server(
             observed_hazards=observed_hazards,
             preflight_ran=preflight[0] if preflight else None,
             preflight_caller_sensitive=preflight[1] if preflight else False,
-        )
+        ),
+        identity_keys,
     )
 
 

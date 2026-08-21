@@ -64,6 +64,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Collection
 
 # The capability an MCP server advertises to say it can tell its callers apart.
 # Kept as a literal rather than imported from ``mcp_caller`` so this module has
@@ -211,10 +212,22 @@ class ShareVerdict:
         }
 
 
-def rotating_secret_env(env_names: tuple[str, ...]) -> tuple[str, ...]:
-    """Declared env names whose value is excluded from the pool key."""
+def rotating_secret_env(
+    env_names: tuple[str, ...], identity_keys: Collection[str] = ()
+) -> tuple[str, ...]:
+    """Declared env names whose value is excluded from the pool key.
+
+    ``identity_keys`` is ``mcp_gateway.pool_identity_env`` as resolved by
+    :func:`rewriter.pool_identity_env_keys`. A named variable IS in the pool key,
+    so it is not one of these — reporting it would tell the operator sharing is
+    unsafe for the exact key they made safe, and would withhold a share
+    recommendation the rewriter now grants.
+    """
+    named = frozenset(identity_keys)
     return tuple(
-        n for n in env_names if n.upper().startswith(ROTATING_SECRET_ENV_PREFIXES)
+        n
+        for n in env_names
+        if n not in named and n.upper().startswith(ROTATING_SECRET_ENV_PREFIXES)
     )
 
 
@@ -270,8 +283,15 @@ def _all_tools_read_only(annotations: list[dict]) -> bool:
     return all(a.get("readOnlyHint") is True for a in annotations)
 
 
-def assess(evidence: ShareEvidence) -> ShareVerdict:
-    """Turn evidence into a verdict. Pure; no IO, no config, no clock."""
+def assess(
+    evidence: ShareEvidence, identity_keys: Collection[str] = ()
+) -> ShareVerdict:
+    """Turn evidence into a verdict. Pure; no IO, no config, no clock.
+
+    ``identity_keys`` is passed IN rather than read here precisely to keep that
+    contract: it is config, so the caller resolves it (see
+    :func:`rewriter.pool_identity_env_keys`).
+    """
 
     def verdict(
         strength: Strength,
@@ -358,9 +378,15 @@ def assess(evidence: ShareEvidence) -> ShareVerdict:
     #    answer. So the verdict follows the guard that actually runs, and when that
     #    guard changes (routing by credential identity, with ``credwatch`` already
     #    handling rotation by content digest) this withholding goes with it.
+    #
+    #    ``mcp_gateway.pool_identity_env`` is the first instalment of exactly that
+    #    change: a named key IS routed by its value, so ``_withheld_env_count`` no
+    #    longer counts it and the rewriter does pool the entry. The withholding
+    #    follows, via ``identity_keys`` — otherwise the page would decline a share
+    #    the broker performs, the same disagreement in the other direction.
     notes: list[Reason] = []
     withhold_share = False
-    for name in rotating_secret_env(evidence.declared_env_names):
+    for name in rotating_secret_env(evidence.declared_env_names, identity_keys):
         notes.append(Reason("rotating_secret_env", name))
         withhold_share = True
 
