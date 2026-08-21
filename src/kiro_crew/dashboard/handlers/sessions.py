@@ -10,7 +10,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider  # noqa: F811
@@ -1605,6 +1605,30 @@ def _service_wait_ping(
         state.push_slots_update()
 
 
+def _read_managed_tool_policy_sync(agent_path: Path) -> dict[str, Any] | None:
+    """Read one agent's ``managedToolPolicy`` from disk. Blocking.
+
+    Split out so the whole filesystem transaction -- the existence probe, the
+    read and the JSON parse -- crosses to a worker as ONE unit. Offloading only
+    the read would leave the ``stat`` and the parse on the gateway's single event
+    loop, which is the same defect in a smaller form.
+
+    ``None`` means "no policy to report", and is deliberately distinct from an
+    empty dict. The caller answers ``{}`` for both, but only a dict is an agent
+    whose config was read and understood, which is what its SEL ``ok`` record
+    attests -- an unreadable or malformed file is not an agent with no policy.
+    Collapsing the two would start logging success for files this never parsed.
+    """
+    try:
+        if not agent_path.is_file():
+            return None
+        config = json.loads(agent_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    policy = config.get("managedToolPolicy", {})
+    return policy if isinstance(policy, dict) else None
+
+
 async def api_session_tool_policy(request: web.Request) -> web.Response:
     """GET /api/session-tool-policy — return managedToolPolicy for the
     calling session's agent.
@@ -1672,18 +1696,15 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid agent name"}, status=400)
 
-    # Read agent config from disk
+    # Read agent config from disk, OFF the event loop. A managed MCP server
+    # calls this to filter its tool list, so it runs on ordinary request traffic
+    # rather than at startup: the stat, the read and the parse would otherwise
+    # execute on the single loop every gateway request shares.
     agent_path = kiro_agents_dir() / f"{agent_name}.json"
-    if not agent_path.is_file():
-        return web.json_response({})
-
-    try:
-        config = json.loads(agent_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return web.json_response({})
-
-    policy = config.get("managedToolPolicy", {})
-    if not isinstance(policy, dict):
+    policy = await asyncio.to_thread(_read_managed_tool_policy_sync, agent_path)
+    if policy is None:
+        # Missing, unreadable, malformed, or a non-dict policy: answer the same
+        # empty policy as before and, as before, do not log it as a success.
         return web.json_response({})
 
     _sel().log_api_access(
