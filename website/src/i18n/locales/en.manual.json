@@ -3913,6 +3913,21 @@
       "truncated_showing_first_200kb": "… truncated (showing first 200KB) …"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "Sign in on mobile",
+        "create_a_one_time_link_for_mobile_or_another_browser": "Create a short-lived sign-in link for mobile or another browser. It expires in 5 minutes.",
+        "creating_link": "Creating link…",
+        "create_mobile_sign_in_link": "Create mobile sign-in link",
+        "create_new_mobile_sign_in_link": "Create new link",
+        "mobile_sign_in_link": "Mobile sign-in link",
+        "copy_sign_in_link": "Copy sign-in link",
+        "link_copied": "Link copied",
+        "link_expires_in_minutes": "This link expires in {{minutes}} minutes.",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "Send the copied link to your mobile device, then open it there.",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "The dashboard URL is not configured. Set dashboard.url to create a mobile sign-in link.",
+        "could_not_create_a_sign_in_link_try_again": "Could not create a sign-in link. Try again.",
+        "copy_failed_select_the_link_and_copy_it_manually": "Copy failed. Select the link and copy it manually."
+      },
       "aboutPanel": {
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
         "automatic_updates_unavailable_channel": "Automatic updates are unavailable because this release channel has no builds for your platform yet. Switch channels above to receive updates.",

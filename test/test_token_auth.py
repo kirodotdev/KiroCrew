@@ -1421,6 +1421,8 @@ async def test_non_api_path_gets_html_403() -> None:
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
     assert resp.content_type == "text/html"
+    assert b"Settings \xe2\x86\x92 Security \xe2\x86\x92 Sign in on mobile" in resp.body
+    assert b"kirocrew token" in resp.body
 
 
 # -- Property 12b: SPA shell is public so the app can cold-start refresh --
@@ -2033,14 +2035,17 @@ def test_revoked_store_locks_the_file_down_to_its_owner(tmp_path, monkeypatch) -
     assert locked, (
         "the revoked-nonce store was persisted without restrict_to_owner; a raw "
         "chmod is a no-op on Windows and leaves the denylist readable by other "
-        "local accounts")
+        "local accounts"
+    )
     locked_path, size_at_lockdown = locked[0]
     assert size_at_lockdown == 0, (
         "the denylist was written before the lockdown applied; on Windows "
         "restrict_to_owner shells out to icacls, so the nonces would sit under "
-        "the parent-inherited DACL for the length of that call")
-    assert locked_path.startswith(str(state_path)), (
-        f"locked down {locked_path}, which is not the store's own temp file")
+        "the parent-inherited DACL for the length of that call"
+    )
+    assert locked_path.startswith(
+        str(state_path)
+    ), f"locked down {locked_path}, which is not the store's own temp file"
 
     # The store still works, and on POSIX the resulting mode is observable.
     assert store.is_revoked("nonce-locked") is True

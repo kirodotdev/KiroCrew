@@ -10226,6 +10226,21 @@
       "uptime": "가동 시간"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "모바일에서 로그인",
+        "create_a_one_time_link_for_mobile_or_another_browser": "모바일이나 다른 브라우저에서 사용할 수 있는 단기 로그인 링크를 만드세요. 링크는 5분 후에 만료됩니다.",
+        "creating_link": "링크 만드는 중…",
+        "create_mobile_sign_in_link": "모바일 로그인 링크 만들기",
+        "create_new_mobile_sign_in_link": "새 링크 만들기",
+        "mobile_sign_in_link": "모바일 로그인 링크",
+        "copy_sign_in_link": "로그인 링크 복사",
+        "link_copied": "링크가 복사되었습니다",
+        "link_expires_in_minutes": "이 링크는 {{minutes}}분 후에 만료됩니다.",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "복사한 링크를 모바일 기기로 보낸 다음 그곳에서 여세요.",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "대시보드 URL이 구성되지 않았습니다. 모바일 로그인 링크를 만들려면 dashboard.url을 설정하세요.",
+        "could_not_create_a_sign_in_link_try_again": "로그인 링크를 만들 수 없습니다. 다시 시도하세요.",
+        "copy_failed_select_the_link_and_copy_it_manually": "복사하지 못했습니다. 링크를 선택하고 직접 복사하세요."
+      },
       "aboutPanel": {
         "a_new_version": "새 버전",
         "a_newer_version_is_available": "새 버전을 사용할 수 있습니다.",

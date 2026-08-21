@@ -10226,6 +10226,21 @@
       "uptime": "稼働時間"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "モバイルでサインイン",
+        "create_a_one_time_link_for_mobile_or_another_browser": "モバイルまたは別のブラウザー用に、有効期限の短いサインインリンクを作成します。5分で有効期限が切れます。",
+        "creating_link": "リンクを作成中…",
+        "create_mobile_sign_in_link": "モバイル用サインインリンクを作成",
+        "create_new_mobile_sign_in_link": "新しいリンクを作成",
+        "mobile_sign_in_link": "モバイル用サインインリンク",
+        "copy_sign_in_link": "サインインリンクをコピー",
+        "link_copied": "リンクをコピーしました",
+        "link_expires_in_minutes": "このリンクは{{minutes}}分で期限切れになります。",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "コピーしたリンクをモバイル端末に送信して、そこで開いてください。",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "ダッシュボード URL が設定されていません。モバイル用サインインリンクを作成するには dashboard.url を設定してください。",
+        "could_not_create_a_sign_in_link_try_again": "サインインリンクを作成できませんでした。もう一度試してください。",
+        "copy_failed_select_the_link_and_copy_it_manually": "コピーに失敗しました。リンクを選択して手動でコピーしてください。"
+      },
       "aboutPanel": {
         "a_new_version": "新しいバージョン",
         "a_newer_version_is_available": "新しいバージョンが利用可能です。",

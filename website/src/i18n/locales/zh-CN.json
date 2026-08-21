@@ -2905,7 +2905,7 @@
       },
       "menu": {
         "clear_screen": "清空聊天界面",
-        "dashboard": "Kiro Crew Dashboard",
+        "dashboard": "Kiro Crew 仪表板",
         "delete_history": "删除聊天历史",
         "gallery": "外观画廊",
         "hide": "隐藏",
@@ -10226,6 +10226,21 @@
       "uptime": "运行时长"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "在移动设备上登录",
+        "create_a_one_time_link_for_mobile_or_another_browser": "为移动设备或其他浏览器创建短时有效的登录链接。链接将在 5 分钟后失效。",
+        "creating_link": "正在创建链接…",
+        "create_mobile_sign_in_link": "创建移动设备登录链接",
+        "create_new_mobile_sign_in_link": "创建新链接",
+        "mobile_sign_in_link": "移动设备登录链接",
+        "copy_sign_in_link": "复制登录链接",
+        "link_copied": "链接已复制",
+        "link_expires_in_minutes": "此链接将在 {{minutes}} 分钟后失效。",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "将复制的链接发送到你的移动设备，然后在该设备上打开。",
+        "dashboard_url_required_to_create_a_mobile_sign_in_link": "未配置仪表板 URL。请设置 dashboard.url 以创建移动设备登录链接。",
+        "could_not_create_a_sign_in_link_try_again": "无法创建登录链接。请重试。",
+        "copy_failed_select_the_link_and_copy_it_manually": "复制失败。请选择该链接并手动复制。"
+      },
       "aboutPanel": {
         "a_new_version": "新版本",
         "a_newer_version_is_available": "有新版本可用。",

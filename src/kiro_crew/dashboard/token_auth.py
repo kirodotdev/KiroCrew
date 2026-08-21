@@ -625,9 +625,12 @@ _403_HTML = (
     "</style></head><body>"
     "<div class='c'>"
     "<div class='logo'>👻</div>"
-    "<h1>403 — {reason}</h1>"
-    "<p>Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
-    "<input id='u' type='text' placeholder='Paste token URL or raw token…' autofocus>"
+    "<h1>Sign in required — {reason}</h1>"
+    "<p>This browser does not have a dashboard session.</p>"
+    "<p>On a device already signed in, open <strong>Settings → Security → Sign in on mobile</strong>, "
+    "then send the sign-in link to this device. Or paste a sign-in link below.</p>"
+    "<p>No other signed-in device? Run <code>kirocrew token</code> in your terminal, then paste the URL below.</p>"
+    "<input id='u' type='text' placeholder='Paste sign-in link or token…' autofocus>"
     "<button onclick='go()'>Connect</button>"
     "<div class='err' id='e'>Invalid URL</div>"
     "</div>"
@@ -1273,12 +1276,14 @@ def _api_pattern_matches(pattern: str, path: str) -> bool:
 # (``useDashboardHealthProbe``), which runs on a dashboard-user token and never
 # reaches this list. An app that genuinely wants it declares it in
 # ``permissions.api`` — the shipped ``design_critique`` manifest does.
-_APP_TOKEN_IMPLICIT_ALLOW: frozenset[str] = frozenset({
-    # Connecting grants no events by itself: the socket records the caller's
-    # manifest declarations and every frame is filtered per socket, payload AND
-    # envelope, in ws_event_scope.py / DashboardState._serialize_for_client.
-    "/api/ws",
-})
+_APP_TOKEN_IMPLICIT_ALLOW: frozenset[str] = frozenset(
+    {
+        # Connecting grants no events by itself: the socket records the caller's
+        # manifest declarations and every frame is filtered per socket, payload AND
+        # envelope, in ws_event_scope.py / DashboardState._serialize_for_client.
+        "/api/ws",
+    }
+)
 
 
 def app_token_path_allowed(app_name: str, path: str) -> bool:
@@ -1979,9 +1984,7 @@ def token_auth_middleware(
         # qualifies as "local" for the internal branch even though it has no
         # loopback peer IP (request.remote is empty for AF_UNIX transports).
         _unix_sock = _unix_request_socket(request) if _matches_internal else None
-        if _matches_internal and (
-            _unix_sock is not None or is_loopback(request.remote or "")
-        ):
+        if _matches_internal and (_unix_sock is not None or is_loopback(request.remote or "")):
             # Kernel-attested peer verification (AF_UNIX only): deny a caller
             # whose /proc ancestry resolves to a DIFFERENT session than the
             # one its X-Session-Key header declares. Runs before either auth
