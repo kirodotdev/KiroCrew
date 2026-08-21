@@ -107,6 +107,35 @@ class SecretVault:
         async with self._lock:
             await asyncio.to_thread(self._set_sync, name, value)
 
+    async def set_if_absent(self, name: str, value: str) -> bool:
+        """Store ``value`` under ``name`` ONLY if the key is not already present.
+
+        Returns ``True`` if this call wrote the entry, ``False`` if a value was
+        already present (left untouched). The presence check happens INSIDE the
+        cross-process store lock (see ``_write_store``), so a concurrent writer
+        that stored the key between a caller's earlier ``list_names()`` and this
+        call always wins — this call becomes a no-op rather than clobbering the
+        newer value. Used by the .env→vault importer, which must never overwrite
+        a credential a dashboard/other writer saved to the vault in the meantime.
+        """
+        async with self._lock:
+            return await asyncio.to_thread(self._set_if_absent_sync, name, value)
+
+    def _set_if_absent_sync(self, name: str, value: str) -> bool:
+        wrote = False
+
+        def _mutate(entries: dict) -> dict:
+            nonlocal wrote
+            if name in entries:
+                # Concurrent writer already populated it under the lock — do not
+                # overwrite. Return entries unchanged so the write is a no-op.
+                return entries
+            wrote = True
+            return {**entries, name: self._encrypt_entry(name, value.encode("utf-8"))}
+
+        self._write_store(_mutate)
+        return wrote
+
     def _set_sync(self, name: str, value: str) -> None:
         self._write_store(
             lambda entries: {**entries, name: self._encrypt_entry(name, value.encode("utf-8"))}

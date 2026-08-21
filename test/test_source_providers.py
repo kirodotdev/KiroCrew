@@ -7418,6 +7418,114 @@ class TestGetJiraAuth:
         result = source._get_jira_auth("acme.atlassian.net")
         assert result == ("dev@acme.com", "per-host-secret")
 
+    def test_vault_token_preferred_over_env(self, monkeypatch):
+        """A vault secret wins over the legacy .env value for the same host."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": "env-token"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        host_key = "acme.atlassian.net".encode().hex().upper()
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "vault-token" if name == f"JIRA_TOKEN_{host_key}" else "",
+        )
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "vault-token")
+
+    def test_vault_miss_falls_back_to_env(self, monkeypatch):
+        """When the vault has no entry, the .env / environ value is used."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": "env-token"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(source, "_resolve_jira_token_from_vault", lambda name: "")
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "env-token")
+
+    def test_vault_single_host_global_token(self, monkeypatch):
+        """Single host with no per-host vault entry uses the global vault secret."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(
+            source,
+            "_resolve_jira_token_from_vault",
+            lambda name: "vault-global" if name == "JIRA_API_TOKEN" else "",
+        )
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("dev@acme.com", "vault-global")
+
+    def test_returns_none_when_no_token_anywhere(self, monkeypatch):
+        """Configured host but neither vault nor env holds a token → None."""
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.setattr(source, "_resolve_jira_token_from_vault", lambda name: "")
+        assert source._get_jira_auth("acme.atlassian.net") is None
+
 
 class TestJiraIsCloud:
     def test_cloud_host(self):

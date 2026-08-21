@@ -29,7 +29,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import github_runner, platform_compat
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 
 # Validation policy, well-known install dirs, and the strict-mode toggle are
@@ -49,6 +49,7 @@ from kiro_crew.github_runner import (
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
 from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.secrets import SecretVault
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 _MAX_URL_LENGTH = 2048
@@ -2210,12 +2211,14 @@ _JIRA_MAX_COMMENTS = 50
 
 
 def _get_jira_auth(host: str) -> tuple[str, str] | None:
-    """Return (email, token) for *host* from config + .env, or None if unconfigured.
+    """Return (email, token) for *host* from config + vault/.env, or None.
 
-    Host and email come from config.json (non-sensitive metadata).
-    The token comes from the protected .env file (JIRA_API_TOKEN env var),
-    following the same credential isolation pattern as Slack/Discord/Telegram
-    tokens — never stored in the agent-readable config.json.
+    Host and email come from config.json (non-sensitive metadata). The token is
+    resolved from the encrypted vault first (successor store, populated by
+    ``kirocrew secrets import``), falling back to the protected .env file /
+    environment for installs that have not migrated — following the same
+    credential isolation pattern as Slack/Discord/Telegram tokens, never stored
+    in the agent-readable config.json.
 
     Raises ValueError on config load failures so callers can distinguish
     "config is broken" from "no credentials configured" (None).
@@ -2239,13 +2242,35 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
             # Injective host-to-key: hex-encode the normalized host to avoid
             # collisions (e.g. jira-a.x.com vs jira.a-x.com).
             host_key = entry_host.encode().hex().upper()
-            token = creds.get(f"JIRA_TOKEN_{host_key}", "")
+            per_host_name = f"JIRA_TOKEN_{host_key}"
+            # Resolution order: the encrypted vault first (the successor store,
+            # populated by `kirocrew secrets import`), then the legacy .env /
+            # environment value so existing installs keep working unchanged.
+            token = _resolve_jira_token_from_vault(per_host_name)
+            if not token and len(entries) == 1:
+                token = _resolve_jira_token_from_vault("JIRA_API_TOKEN")
+            if not token:
+                token = creds.get(per_host_name, "")
             if not token and len(entries) == 1:
                 token = creds.get("JIRA_API_TOKEN", "")
             if not token:
                 return None
             return (entry.email or "", token)
     return None
+
+
+def _resolve_jira_token_from_vault(name: str) -> str:
+    """Return the vault secret *name*, or ``""`` if absent/unavailable.
+
+    Best-effort: a missing vault, missing entry, or read error all yield the
+    empty string so the caller falls back to the legacy .env / environment
+    value rather than failing.
+    """
+    try:
+        secret = SecretVault(config_dir()).get(name)
+    except Exception:
+        return ""
+    return secret.reveal() if secret is not None else ""
 
 
 def _jira_is_cloud(host: str) -> bool:
