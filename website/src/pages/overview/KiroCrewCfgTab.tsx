@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Bot, FolderOpen, Brain, Settings, Lock, Flame } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Badge, EmptyState } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { useProvider } from '../../providers'
@@ -151,7 +152,7 @@ export default function KiroCrewCfgTab() {
     patchMut.mutate({ path, value })
   }
 
-  if (err) return <Card><p className="text-danger text-sm">{err}</p></Card>
+  if (err) return <Card><ErrorNotice message={err} askAgent /></Card>
   if (!cfg) return <Card><div className="skeleton h-40 rounded" /></Card>
 
   const agents = Object.entries(cfg.agents)

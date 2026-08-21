@@ -899,7 +899,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               aria-label={i18nT('pages.kiroCrewAgentsPage.new_sessions_use')}
               style={{ width: 190 }}
             />
-            <ErrorNotice message={error} variant="inline" />
+            {/* Hand-off is safe here: the select commits immediately on change,
+                so there is no unsaved draft for the navigation to destroy. */}
+            <ErrorNotice message={error} variant="inline" askAgent />
           </div>
         )}
 

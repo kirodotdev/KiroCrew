@@ -299,7 +299,7 @@ export function InstancesPanel() {
         <Btn primary onClick={() => setEnabledMutation.mutate(true)} disabled={setEnabledMutation.isPending}>
           <Power className="lucide-inline" /> {setEnabledMutation.isPending ? i18nT('pages.settings.instancesPanel.enabling') : i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}
         </Btn>
-        <ErrorNotice message={actionErr} className="mt-2" />
+        <ErrorNotice message={actionErr} askAgent className="mt-2" />
         <p className="mt-2 text-[12px] text-muted">
           <Trans
             i18nKey="pages.settings.instancesPanel.enable_via_setting"

@@ -59,6 +59,7 @@ import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
+import AskAgentButton from './components/AskAgentButton'
 import AppIcon from './components/AppIcon'
 import Clickable from './components/Clickable'
 import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
@@ -2617,9 +2618,14 @@ export default function App() {
             <div className="text-4xl mb-4"><AlertTriangle className="lucide-inline" /></div>
             <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.update_failed')}</div>
             <div className="text-sm text-danger mb-6">{updateError}</div>
-            <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={() => setUpdateError('')}>
-              {i18nT('app.dismiss')}
-            </button>
+            {/* A failed self-update is exactly what the agent can diagnose
+                (channel, feed, venv state), and a modal has no draft to lose. */}
+            <div className="flex items-center justify-center gap-3">
+              <AskAgentButton message={updateError} variant="solid" onHandoff={() => setUpdateError('')} />
+              <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={() => setUpdateError('')}>
+                {i18nT('app.dismiss')}
+              </button>
+            </div>
           </div>
         </div>
       )}

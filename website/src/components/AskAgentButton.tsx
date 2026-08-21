@@ -48,6 +48,7 @@ export default function AskAgentButton({
   message,
   variant = 'link',
   hard = false,
+  onHandoff,
   className = '',
 }: {
   report?: ErrorReport
@@ -56,6 +57,12 @@ export default function AskAgentButton({
   variant?: 'link' | 'solid'
   /** Force a full page load (crash fallbacks, where the live tree is suspect). */
   hard?: boolean
+  /**
+   * Called after the hand-off is staged. For callers that render inside a
+   * modal: the soft navigation does not unmount the modal's owner, so the
+   * modal would sit over the chat the hand-off lands on — close it here.
+   */
+  onHandoff?: () => void
   className?: string
 }) {
   // Render only needs to know whether there is anything to offer. The report is
@@ -72,6 +79,7 @@ export default function AskAgentButton({
       report ?? findReport(message) ?? (message ? { message } : null)
     if (!resolved) return
     sendErrorToChat(askAgentPrompt(resolved), { hard })
+    onHandoff?.()
   }
 
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'

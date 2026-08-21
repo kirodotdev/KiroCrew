@@ -8,6 +8,7 @@ import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { PageHeader, Card, Badge, Btn } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { CommentsSidebar } from '../components/CommentsSidebar'
 import { CommentPopover } from '../components/CommentOverlay'
@@ -347,7 +348,9 @@ export default function RemoteArtifactDetailPage() {
 
         {art.summary && <div className="mb-3 text-sm text-muted italic">{art.summary}</div>}
         {forkError && (
-          <div className="mb-3 px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">{forkError}</div>
+          /* No hand-off: the comments sidebar's draft shares this page —
+             navigating away would discard an in-progress comment. */
+          <ErrorNotice message={forkError} className="mb-3" />
         )}
 
         <div className="flex gap-4 items-start">

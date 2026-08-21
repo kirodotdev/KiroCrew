@@ -775,7 +775,9 @@ export default function AppsPage() {
       />
 
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-        {/* Notifications */}
+        {/* Notifications. No hand-off on the error notice: the SourcesPopover's
+            install-path input shares this page — navigating away would discard
+            what the user typed. */}
         {displayError && (
           <ErrorNotice
             message={displayError}

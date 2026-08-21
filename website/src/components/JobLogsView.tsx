@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Btn } from './ui'
+import ErrorNotice from './ErrorNotice'
 import LogEntry, { type LogEntryData } from './LogEntry'
 
 import { i18nT } from '../i18n/t'
@@ -48,9 +49,9 @@ export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, 
       {/* A cancel failure sets panelError in the parent; on the Logs tab that
           error had no DOM anchor (it only rendered in the Details branch), so a
           failed Cancel showed no feedback. Render it here too. */}
-      {cancelError && <div className="text-danger text-[13px] px-3">{cancelError}</div>}
+      {cancelError && <ErrorNotice message={cancelError} variant="inline" askAgent className="px-3" />}
       {error ? (
-        <div className="text-danger text-sm px-3">{error instanceof Error ? error.message : i18nT('components.jobLogsView.failed_to_load_history')}</div>
+        <div className="px-3"><ErrorNotice message={error instanceof Error ? error.message : i18nT('components.jobLogsView.failed_to_load_history')} askAgent /></div>
       ) : isLoading ? (
         <div className="text-muted text-sm px-3 animate-pulse">{i18nT('components.jobLogsView.loading_logs')}</div>
       ) : entries.length === 0 ? (

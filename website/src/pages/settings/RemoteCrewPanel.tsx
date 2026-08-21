@@ -624,6 +624,8 @@ function LaunchProgressCard({ job, onCancel, onSignin, cancelling }: {
         </div>
       )}
 
+      {/* No hand-off: this card sits in the setup flow whose form fields
+          (name, host, size) are still live — navigating away discards them. */}
       {job.error ? <ErrorNotice message={job.error} className="mt-3" /> : null}
       <p className="mt-3 text-[12px] text-muted">
         {job.status === 'done' ? i18nT('pages.settings.remoteCrewPanel.launch_done') : i18nT('pages.settings.remoteCrewPanel.runs_on_gateway')}
@@ -1016,7 +1018,7 @@ export function RemoteCrewPanel() {
         <Btn primary onClick={() => enableMutation.mutate()} disabled={enableMutation.isPending}>
           <Power className="lucide-inline" /> {enableMutation.isPending ? i18nT('pages.settings.instancesPanel.enabling') : i18nT('pages.settings.instancesPanel.enable_remote_crew_management')}
         </Btn>
-        <ErrorNotice message={actionErr} className="mt-2" />
+        <ErrorNotice message={actionErr} askAgent className="mt-2" />
       </Card>
     )
   }
@@ -1088,6 +1090,8 @@ export function RemoteCrewPanel() {
               // Never fall through to the empty state on a failed load — that
               // reads as "your crews are gone" when the list simply did not load.
               <div className="py-1">
+                {/* No hand-off: the add-crew form shares this tab — a failed
+                    list refresh must not offer a navigation that discards it. */}
                 <ErrorNotice message={errMsg(instancesQuery.error ?? launchesQuery.error, i18nT('pages.settings.instancesPanel.unknown_error'))} />
                 {/* Refresh replays the same rejected credential, so it can only
                     reproduce the error until the user re-authenticates through

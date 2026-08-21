@@ -13,6 +13,7 @@ import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
 import JobForm from '../components/JobForm'
 import JobLogsView from '../components/JobLogsView'
+import ErrorNotice from '../components/ErrorNotice'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import InfoTip from '../components/InfoTip'
 import type { CronJob } from '../types'
@@ -510,7 +511,7 @@ export default function SchedulePage() {
         <div className={`flex-1 overflow-y-auto px-3 sm:px-6 min-h-0 ${showEmptyState ? 'pb-2' : 'pb-8'}`}>
           {loadError ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
-              <p className="text-danger text-sm mb-3">{loadError}</p>
+              <ErrorNotice message={loadError} askAgent className="mb-3" />
               <Btn onClick={load}>{i18nT('pages.schedulePage.retry')}</Btn>
             </div>
           ) : loading ? (
