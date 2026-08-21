@@ -572,7 +572,21 @@ export default defineConfig({
     // ceiling that fails a genuine leak loudly instead of dragging the host down.
     // (Vitest 4 pool rework: these are top-level, not poolOptions; minWorkers
     // was removed — only maxWorkers has effect.)
-    maxWorkers: 2,
+    //
+    // 3, not 2: `ubuntu-latest` has 4 vCPU (this workflow's own backend job
+    // documents "4 cores via -n auto"), so 2 left half of every shard's runner
+    // idle. 3 is exactly what vitest itself would pick there when uncapped
+    // (`max(availableParallelism - 1, 1)` in run mode), leaving a core for the
+    // main process — so this raises throughput without oversubscribing, and the
+    // cap still protects the high-core fleet the paragraph above is about.
+    //
+    // MEASURED on 6 of the heaviest files with --coverage, same input each time:
+    //   maxWorkers 2 -> 106.7s, peak 2001 MB total
+    //   maxWorkers 3 ->  81.2s, peak 2674 MB total   <- chosen
+    //   maxWorkers 4 ->  83.3s, peak 3475 MB total
+    // 3 is both the fastest and cheaper in memory than 4; peak single-fork RSS
+    // was ~1.0-1.4 GB against the 3072 MB per-fork heap ceiling below.
+    maxWorkers: 3,
     execArgv: ['--max-old-space-size=3072'],
     // Default 5s is too tight for tests that ``await import(...)`` inside the
     // body: under a full concurrent forks run the collect phase can starve the
