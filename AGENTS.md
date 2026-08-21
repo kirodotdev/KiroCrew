@@ -17,8 +17,9 @@ sessions. It drives an LLM through the KiroACP provider (the ACP adapter running
 - **Backend:** Python package `kiro_crew` in `src/kiro_crew/`.
 - **Frontend:** React + TS + Vite SPA in `website/`; the built `dist/` is staged
   into `src/kiro_crew/static/dist/` and served by the backend.
-- **Data home:** `~/.kiro/crew` (the legacy `~/.kirocrew` auto-migrates).
-  Override with `KIROCREW_HOME`.
+- **Data home:** `~/.kiro/crew`, overridden with `KIROCREW_HOME`. The legacy
+  `~/.kirocrew` is fully deprecated and no longer auto-migrates; it survives only
+  in sensitive-path deny lists, which must keep covering it.
 - **Distribution:** public GitHub, plain setuptools, public PyPI / public npm.
 
 Full map: [`docs/architecture/overview.md`](docs/architecture/overview.md).

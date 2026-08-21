@@ -165,6 +165,7 @@
       "pyspy-dump.js",
       "perf-metrics.js",
       "host-config.js",
+      "store-rename.js",
       "remote-token.js",
       "token-acquire.js",
       "token-retry.js",

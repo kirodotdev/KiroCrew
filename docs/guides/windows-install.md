@@ -15,15 +15,12 @@ build — the installer compresses its own already-signed executable — so that
 needs AWS credentials the shared build workflow deliberately does not hold.
 Current status:
 
-- **Published on nightly and insider** — `publish-windows.yml` writes the
-  installer, its `.blockmap` and the `latest.yml` feed to the download CDN. The
-  `latest/` alias is the human download:
+- **Published on every channel — nightly, insider and stable.** The `latest/`
+  alias is the human download:
   `https://download.crew.kiro.dev/desktop/<channel>/latest/KiroCrew-Setup.exe`.
-  **Stable has no Windows lane yet**: the stable release republishes the
-  immutable promotion bundle, whose artifact roles include no Windows installer,
-  so `WINDOWS_CHANNELS` in `auto-update.js` admits only `nightly` and `insider`
-  and a stable Windows client reports updates as unavailable rather than
-  resolving a feed nobody wrote.
+  A stable release republishes the already-signed installer it verified at
+  insider time rather than rebuilding it. If a Windows build fails, that release
+  simply ships without an installer instead of holding up the other platforms.
 - **Authenticode-signed** — signing runs during the build through AWS Signer and
   the publish lane refuses to publish bytes whose certificate table is empty,
   whose signer is not the pinned publisher, or which carry no RFC3161
@@ -74,7 +71,11 @@ Current status:
   channel cannot touch the other's pending download or window state. An install
   predating that split leaves a shared `kirocrew-electron-mac-updater` behind,
   which is deliberately NOT removed for the same reason — it may still belong to
-  the other channel. **Deliberately kept:** `~/.kiro/crew` — sessions, memory,
+  the other channel. **Your settings survive that rename**: the first launch after
+  it carries over your update channel, remote hosts, hotkey and window position,
+  so an Insider install is not quietly moved to Stable. A preference you have
+  already changed is never overwritten.
+  **Deliberately kept:** `~/.kiro/crew` — sessions, memory,
   the database and config. Delete it by hand to remove Kiro Crew's data too.
   Also kept, because it belongs to a different product:
   `%LOCALAPPDATA%\Kiro-Cli`.

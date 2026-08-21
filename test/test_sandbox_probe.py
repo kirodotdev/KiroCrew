@@ -902,14 +902,20 @@ print(before, after, spawned)
         path's transient failure strings name a Popen-owned child differently, and
         that difference is not a verdict.
 
-        The comparison only means something while a fork child of this worker is
-        single-threaded: an ``os.register_at_fork`` hook armed earlier in the same
-        worker (test ordering under xdist decides this) starts a thread inside
-        every child, and the fork path then reports the deliberate
+        The comparison only means something while the fork child that PRODUCED the
+        verdict was single-threaded. An ``os.register_at_fork`` hook armed earlier
+        in the same worker (test ordering under xdist decides this) starts a thread
+        inside every child, and the fork path then reports the deliberate
         ``_PROBE_STEP_MULTITHREADED`` collapse instead of the kernel's verdict --
         an unknown reading, so it is skipped, not compared (see
         docs/system-specs/common/testing-conventions.md; the collapse itself is
         issue #4219's open decision).
+
+        Two guards, because the hook-started thread is SHORT-LIVED and each fork
+        races it independently: the `_forked_child_thread_count` pre-check is
+        cheap and catches the steady state, but a clean pre-check child does not
+        prove the verdict child was clean. The decisive check therefore reads the
+        collapse off the verdict tuple itself, after the probe ran.
         """
         child_threads = _forked_child_thread_count()
         if child_threads < 0:
@@ -929,6 +935,14 @@ print(before, after, spawned)
         spawned = sb._probe_unshare_via_spawn()
         assert spawned is not None, "this host can spawn an interpreter"
         forked = sb._probe_unshare_via_fork()
+        if sb._probe_reason_is_multithreaded_collapse(forked[2]):
+            pytest.skip(
+                "the fork child that produced the verdict came up multithreaded "
+                "despite a clean pre-check: the at-fork-hook thread is short-lived "
+                "and each fork races it independently, so the kernel's verdict is "
+                "unobtainable from this worker's fork children (the collapse is "
+                "deliberate; see issue #4219)"
+            )
         assert spawned[0] == forked[0], (spawned, forked)
         assert spawned[1] == forked[1], (spawned, forked)
         assert spawned[3] == forked[3], (spawned, forked)
@@ -948,6 +962,36 @@ print(before, after, spawned)
         with pytest.raises(pytest.skip.Exception):
             self.test_both_paths_report_the_same_verdict_on_this_host()
         assert probed["n"] == 0, "the guard must skip BEFORE probing anything"
+
+    def test_verdict_comparison_skips_when_the_verdict_child_itself_collapsed(
+        self, monkeypatch
+    ):
+        """A clean pre-check does not clear the verdict child -- each fork races.
+
+        The at-fork-hook thread is short-lived, so the `_forked_child_thread_count`
+        pre-check child and `_probe_unshare_via_fork`'s verdict child can disagree:
+        pre-check counts 1, verdict child still comes up multithreaded and reports
+        the collapse. That reading is unknown, never a red -- the skip must be
+        decided off the verdict tuple itself.
+        """
+        monkeypatch.setattr(
+            sys.modules[__name__], "_forked_child_thread_count", lambda: 1
+        )
+        monkeypatch.setattr(
+            sb, "_probe_unshare_via_spawn",
+            lambda: (False, False, "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)", "apparmor_userns"),
+        )
+        collapse = (
+            False,
+            False,
+            "unshare(CLONE_NEWUSER) failed with errno 22 (EINVAL); the probe child "
+            f"had 2 threads, which alone makes it return EINVAL (CLONE_NEWUSER "
+            f"implies CLONE_THREAD) -- {sb._PROBE_MULTITHREADED_REASON}",
+            "no_user_ns",
+        )
+        monkeypatch.setattr(sb, "_probe_unshare_via_fork", lambda: collapse)
+        with pytest.raises(pytest.skip.Exception):
+            self.test_both_paths_report_the_same_verdict_on_this_host()
 
     def test_verdict_comparison_still_fails_on_a_real_disagreement(self, monkeypatch):
         """The guard must not swallow a genuine disagreement on a clean shard.

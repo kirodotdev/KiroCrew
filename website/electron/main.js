@@ -127,7 +127,17 @@ const {
 
 const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = require("./host-config");
 
+const { seedRenamedStore } = require("./store-rename");
+
 const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
+
+// Carry settings across the npm `name` rename, by writing the new store's file
+// BEFORE electron-store opens it. Order is load-bearing: construction writes the
+// defaults, after which the file always exists and the seed can never run. It only
+// ever writes a file that does not exist, so it cannot overwrite anything.
+seedRenamedStore(app.getPath("userData"), {
+  log: (m) => console.log(`store migration: ${m}`),
+});
 
 const store = new Store({
   defaults: {
@@ -144,6 +154,7 @@ const store = new Store({
     linuxFrameless: null,                  // Linux window chrome: true = frameless, false = native frame, null = follow the desktop environment (see linux-frame.js)
   },
 });
+
 
 // Read ONCE at launch, because the setting takes effect on the next launch.
 // startGateway() is also the recovery path for a gateway that died mid-session,
