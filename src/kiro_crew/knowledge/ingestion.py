@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 CODE_EXTS = {
     '.py', '.java', '.ts', '.js', '.rs', '.go', '.rb', '.c', '.cpp', '.h',
-    '.sh', '.cs', '.kt', '.swift', '.scala',
+    '.sh', '.ps1', '.psm1', '.cs', '.kt', '.swift', '.scala',
 }
 
 MARKDOWN_EXTS = {'.md', '.docx'}

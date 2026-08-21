@@ -28,6 +28,9 @@ from kiro_crew.knowledge.readers import FileReader
 _WEBSITE = Path(__file__).resolve().parents[1] / "website"
 _HELPERS = _WEBSITE / "src" / "pages" / "knowledge" / "helpers.ts"
 _LOCALES = _WEBSITE / "src" / "i18n" / "locales"
+_KNOWLEDGE_DOC = (
+    Path(__file__).resolve().parents[1] / "docs" / "system-specs" / "modules" / "knowledge.md"
+)
 
 # `export const FALLBACK_SUPPORTED_FORMATS = [ ... ]` -- capture the array body
 # up to the first closing bracket.
@@ -55,6 +58,26 @@ def test_frontend_fallback_matches_backend_supported_formats() -> None:
         "(readers.py) have drifted. Update the frontend fallback to "
         "`sorted(FileReader.SUPPORTED - {''})` -- the backend list is the "
         "single source of truth for what upload ingests."
+    )
+
+
+def test_docs_supported_listing_matches_backend() -> None:
+    # The knowledge module spec carries a hand-written copy of
+    # ``FileReader.SUPPORTED``. It is prose, so nothing at runtime reconciles
+    # it, and it has drifted before (.jsonl/.ndjson were in the code but not
+    # the spec). Compare set-wise: the block mirrors declaration order, not
+    # sorted order, and '' (the extensionless marker) is a legitimate entry.
+    source = _KNOWLEDGE_DOC.read_text(encoding="utf-8")
+    marker = "is the ingestion allowlist:"
+    idx = source.find(marker)
+    assert idx != -1, "knowledge.md no longer carries the SUPPORTED listing intro"
+    block = re.search(r"```\n(?P<body>.*?)```", source[idx:], re.DOTALL)
+    assert block, "no fenced code block after the SUPPORTED listing intro"
+    exts = set(re.findall(r"'(?P<ext>[^']*)'", block.group("body")))
+    assert exts == FileReader.SUPPORTED, (
+        "The SUPPORTED listing in docs/system-specs/modules/knowledge.md has "
+        "drifted from FileReader.SUPPORTED (readers.py). Update the docs "
+        "block when the allowlist changes."
     )
 
 

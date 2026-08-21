@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import importlib
 import json
 import logging
@@ -217,6 +218,67 @@ class TestFileReader:
         reader = FileReader()
         for ext in ('.md', '.txt', '.py', '.html', '.json', '.jsonl', '.ndjson', '.yaml', '.csv'):
             assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
+
+    def test_powershell_extensions_ingested_as_plain_text(self, tmp_path):
+        # PowerShell scripts (.ps1), modules (.psm1), and module manifests
+        # (.psd1) are plain UTF-8 text: they must be in SUPPORTED (so folder
+        # sources ingest rather than silently skip them) and must flow through
+        # the generic _read_text path, not a _DISPATCH reader.
+        reader = FileReader()
+        samples = {
+            '.ps1': 'Write-Host "hello from a script"',
+            '.psm1': 'function Get-Thing { "hello from a module" }',
+            '.psd1': "@{ ModuleVersion = '1.0'; Description = 'hello manifest' }",
+        }
+        for ext, content in samples.items():
+            assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
+            assert ext not in reader._DISPATCH, f"{ext} must use the generic text path"
+            f = tmp_path / f"sample{ext}"
+            f.write_text(content, encoding="utf-8")
+            text, meta = reader.read(str(f))
+            assert content in text
+            assert meta['format'] == ext.lstrip('.')
+            assert meta['extension'] == ext
+        # Scripts and modules chunk at function boundaries like their .sh/.rb
+        # peers; the .psd1 manifest is data, so it stays on the generic path.
+        from kiro_crew.knowledge.ingestion import CODE_EXTS
+        assert '.ps1' in CODE_EXTS
+        assert '.psm1' in CODE_EXTS
+        assert '.psd1' not in CODE_EXTS
+
+    def test_utf16_powershell_files_decode_cleanly(self, tmp_path):
+        # Windows PowerShell 5.1 tooling (New-ModuleManifest, the legacy ISE)
+        # writes UTF-16LE with a BOM. Without BOM sniffing those bytes miss
+        # utf-8 and land in the latin-1 fallback, which preserves the BOM and
+        # interleaved NULs -- the store would index mojibake, not the script.
+        reader = FileReader()
+        content = "@{ ModuleVersion = '1.0'; Description = 'utf16 manifest' }"
+        for name, encoding in (
+            ("manifest-le.psd1", "utf-16-le"),
+            ("manifest-be.psd1", "utf-16-be"),
+        ):
+            f = tmp_path / name
+            # Write the BOM explicitly so both endiannesses are exercised.
+            bom = codecs.BOM_UTF16_LE if encoding == "utf-16-le" else codecs.BOM_UTF16_BE
+            f.write_bytes(bom + content.encode(encoding))
+            text, meta = reader.read(str(f))
+            assert content in text, f"{name}: UTF-16 content not decoded"
+            assert '\x00' not in text, f"{name}: NUL bytes leaked into indexed text"
+            assert meta['format'] == 'psd1'
+        # A BOM that lies (truncated/invalid UTF-16 payload) degrades to
+        # latin-1 like the utf-8 branch does -- ingest never hard-fails on it.
+        liar = tmp_path / "truncated.psd1"
+        liar.write_bytes(codecs.BOM_UTF16_LE + b'A')
+        text, meta = reader.read(str(liar))
+        assert meta['format'] == 'psd1', "invalid UTF-16 must degrade, not error"
+        # The HTML reader shares the same decode: BOM'd UTF-16 HTML from
+        # Windows tooling must not fall into the latin-1 mojibake path either.
+        page = tmp_path / "saved.html"
+        page.write_bytes(codecs.BOM_UTF16_LE
+                         + "<html><body>utf16 page body</body></html>".encode("utf-16-le"))
+        text, meta = reader.read(str(page))
+        assert "utf16 page body" in text
+        assert '\x00' not in text
 
 
 def _make_pdf(text: str = "Hello PDF regression") -> bytes:

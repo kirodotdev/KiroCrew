@@ -140,12 +140,12 @@ The gap is therefore a **KB-scoped golden set over the query classes above, plus
 ```
 '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
 '.html', '.htm', '.docx', '.pdf',
-'.csv', '.log', '.json', '.yaml', '.yml', '.sh', '.rb', '.c', '.cpp', '.h'
+'.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml', '.sh', '.rb', '.ps1', '.psm1', '.psd1', '.c', '.cpp', '.h'
 ```
 
 It includes markdown/plain-text (`.md`/`.txt`/`.org`), source-code extensions, and the two binary formats with declared optional deps (`.pdf` → pdfplumber, `.docx` → python-docx).
 
-**Dispatch (`_DISPATCH`, `readers.py`)** routes only `.pdf`/`.pptx`/`.docx`/`.html`/`.htm` to specialized readers. Anything else — including `.org`, `.txt`, `.md`, and every source-code extension — falls through to the generic `_read_text` path (UTF-8 with a latin-1 fallback) and into the generic chunker downstream. So `.org` is treated as plain text; there is no Org-mode-specific parser.
+**Dispatch (`_DISPATCH`, `readers.py`)** routes only `.pdf`/`.pptx`/`.docx`/`.html`/`.htm` to specialized readers. Anything else — including `.org`, `.txt`, `.md`, and every source-code extension — falls through to the generic `_read_text` path and into the generic chunker downstream. So `.org` is treated as plain text; there is no Org-mode-specific parser. Text decoding (shared by `_read_text` and `_read_html` via `_decode_text_bytes`) is a single-open buffer decode: BOM-sniffed UTF-16 LE/BE first, otherwise UTF-8 with a latin-1 fallback. The UTF-16 branch is extension-agnostic — any text format arriving as BOM'd UTF-16 decodes correctly, not only the PowerShell files (Windows tooling writes UTF-16LE) that motivated it.
 
 **`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). Reachable only if `.pptx` were re-added to `SUPPORTED`.
 
