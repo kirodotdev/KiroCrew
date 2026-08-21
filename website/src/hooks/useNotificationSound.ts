@@ -103,6 +103,39 @@ const PRESETS: Record<Exclude<SoundPreset, 'none'>, ToneStep[]> = {
   ],
 }
 
+const ATTACK_DURATION = 0.005
+const RELEASE_DURATION = 0.005
+const ENVELOPE_FLOOR_RATIO = 0.01
+const VOLUME_EXPONENT = 1.5
+const CURVE_POINTS = 32
+
+/** Chime partials overlap and can otherwise exceed full scale. Single-voice
+ * presets retain almost all of their existing level while sharing a little
+ * output headroom. */
+const PRESET_OUTPUT_GAIN: Record<Exclude<SoundPreset, 'none'>, number> = {
+  chime: 0.89,
+  ding: 0.98,
+  blip: 0.98,
+  pop: 0.98,
+  pulse: 0.98,
+}
+
+function smoothstepCurve(from: number, to: number): Float32Array {
+  return Float32Array.from({ length: CURVE_POINTS }, (_, i) => {
+    const x = i / (CURVE_POINTS - 1)
+    const smooth = x * x * (3 - 2 * x)
+    return from + (to - from) * smooth
+  })
+}
+
+function scheduleEnvelope(gain: AudioParam, start: number, duration: number, peak: number): void {
+  const floor = peak * ENVELOPE_FLOOR_RATIO
+  const releaseStart = start + duration - RELEASE_DURATION
+  gain.setValueCurveAtTime(smoothstepCurve(0, peak), start, ATTACK_DURATION)
+  gain.exponentialRampToValueAtTime(floor, releaseStart)
+  gain.setValueCurveAtTime(smoothstepCurve(floor, 0), releaseStart, RELEASE_DURATION)
+}
+
 export function playPreset(preset: SoundPreset, volume: number): void {
   if (preset === 'none' || volume <= 0) return
   // Backoff guard: once MAX_CLOSED_RECOVERIES consecutive 'closed' hits occur,
@@ -150,14 +183,14 @@ function scheduleTones(ctx: AudioContext, preset: Exclude<SoundPreset, 'none'>, 
   // close events over the page lifetime.
   closedRecoveryCount = 0
   const now = ctx.currentTime
+  const perceptualVolume = Math.min(1, Math.max(0, volume)) ** VOLUME_EXPONENT
   for (const step of PRESETS[preset]) {
     const osc = ctx.createOscillator()
     const g = ctx.createGain()
     osc.type = 'sine'
     osc.frequency.value = step.freq
-    const peak = Math.max(0.001, volume * step.gain)
-    g.gain.setValueAtTime(peak, now + step.start)
-    g.gain.exponentialRampToValueAtTime(0.01, now + step.start + step.dur)
+    const peak = Math.max(0.001, perceptualVolume * step.gain * PRESET_OUTPUT_GAIN[preset])
+    scheduleEnvelope(g.gain, now + step.start, step.dur, peak)
     osc.connect(g)
     g.connect(ctx.destination)
     osc.onended = () => { osc.disconnect(); g.disconnect() }

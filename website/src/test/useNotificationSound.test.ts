@@ -29,7 +29,7 @@ const mockCtx = {
     return o
   }),
   createGain: vi.fn(() => ({
-    gain: { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+    gain: { setValueCurveAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
     connect: vi.fn(),
     disconnect: vi.fn(),
   })),
@@ -231,6 +231,48 @@ describe('playPreset', () => {
   it('schedules oscillators for a valid preset when running', () => {
     playPreset('ding', 0.5)
     expect(mockCtx.createOscillator).toHaveBeenCalled()
+  })
+
+  it('schedules a perceptual-volume envelope with smooth attack and release', () => {
+    mockCtx.currentTime = 2
+    playPreset('ding', 0.5)
+
+    const gainNode = mockCtx.createGain.mock.results.at(-1)!.value as {
+      gain: {
+        setValueCurveAtTime: ReturnType<typeof vi.fn>
+        exponentialRampToValueAtTime: ReturnType<typeof vi.fn>
+      }
+    }
+    const expectedPeak = (0.5 ** 1.5) * 0.98
+    const expectedFloor = expectedPeak * 0.01
+    const attack = gainNode.gain.setValueCurveAtTime.mock.calls[0][0] as Float32Array
+    const release = gainNode.gain.setValueCurveAtTime.mock.calls[1][0] as Float32Array
+
+    expect(attack[0]).toBe(0)
+    expect(attack.at(-1)).toBeCloseTo(expectedPeak)
+    const quarterIndex = Math.round((attack.length - 1) * 0.25)
+    const threeQuarterIndex = Math.round((attack.length - 1) * 0.75)
+    expect(attack[quarterIndex]).toBeLessThan(expectedPeak * 0.25)
+    expect(attack[threeQuarterIndex]).toBeGreaterThan(expectedPeak * 0.75)
+    expect(gainNode.gain.setValueCurveAtTime).toHaveBeenNthCalledWith(1, attack, 2, 0.005)
+    const decay = gainNode.gain.exponentialRampToValueAtTime.mock.calls[0]
+    const releaseCall = gainNode.gain.setValueCurveAtTime.mock.calls[1]
+    expect(decay[0]).toBeCloseTo(expectedFloor)
+    expect(decay[1]).toBeCloseTo(2.445)
+    expect(release[0]).toBeCloseTo(expectedFloor)
+    expect(release.at(-1)).toBe(0)
+    expect(releaseCall[0]).toBe(release)
+    expect(releaseCall[1]).toBeCloseTo(2.445)
+    expect(releaseCall[2]).toBe(0.005)
+  })
+
+  it('applies extra headroom to the overlapping chime preset', () => {
+    playPreset('chime', 0.5)
+    const gainNode = mockCtx.createGain.mock.results[0]!.value as {
+      gain: { setValueCurveAtTime: ReturnType<typeof vi.fn> }
+    }
+    const attack = gainNode.gain.setValueCurveAtTime.mock.calls[0][0] as Float32Array
+    expect(attack.at(-1)).toBeCloseTo((0.5 ** 1.5) * 0.89)
   })
 
   it('disconnects oscillator and gain when onended fires (memory-leak guard)', () => {
