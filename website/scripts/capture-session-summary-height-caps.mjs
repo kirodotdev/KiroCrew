@@ -327,7 +327,10 @@ async function run(page, base, theme, summary, kind) {
   await page.getByRole('button', { name: /How this project works/i }).click()
   await page.waitForTimeout(400)
   await shoot(page, `${kind}-04-notes-expanded-${theme}`)
-  const n = await metrics(page, NOTES_CARD, 'ul')
+  // The scroller is the named region wrapping the list, not the `<ul>` — the list
+  // keeps its implicit role, so measuring it would report natural content height
+  // and read as a cap that is not binding.
+  const n = await metrics(page, NOTES_CARD, 'div[role="region"]')
   if (kind === 'tall') {
     check('tall: notes footer is capped once expanded', n !== null)
     if (n) {
@@ -353,6 +356,54 @@ async function run(page, base, theme, summary, kind) {
         fadeDissolvesInto(nFade),
         `surface=${nFade.surfaceBg} gradient=${nFade.gradient}`,
       )
+
+      // Bounding this list made it a scroll region whose items are plain text, so
+      // without a tab stop everything past the fold is pointer-only.
+      //
+      // What this can and cannot prove: Chromium puts a scroll container with no
+      // focusable children into the tab order BY ITSELF (keyboard-focusable
+      // scrollers), so Tab reaches this list here even with `tabIndex` removed —
+      // measured, not assumed. Safari and Firefox do not, which is why the
+      // attribute stays; the jsdom test pins it, since jsdom implements no such
+      // behaviour. So what is asserted here is the part Chromium does NOT supply:
+      // the region carries an accessible NAME, and focus is VISIBLE once it lands.
+      await page.getByRole('button', { name: /How this project works/i }).focus()
+      await page.keyboard.press('Tab')
+      await page.waitForTimeout(150)
+      const landed = await page.evaluate(() => {
+        const el = document.activeElement
+        if (!el) return { tag: 'none', role: '', name: '', ringWidth: '', listRole: '' }
+        const cs = getComputedStyle(el)
+        // The list must remain a list: an explicit role replaces an element's
+        // implicit one, so putting `role="region"` on the `<ul>` would cost its
+        // items their `listitem` exposure.
+        const ul = el.querySelector('ul')
+        return {
+          tag: el.tagName,
+          role: el.getAttribute('role') || '',
+          name: el.getAttribute('aria-label') || '',
+          // The ring is drawn as a box-shadow by Tailwind's ring utilities; an
+          // empty/none value means the reader cannot see where focus went.
+          ringWidth: cs.boxShadow === 'none' ? '' : cs.boxShadow,
+          listRole: ul ? ul.getAttribute('role') || 'implicit-list' : 'no list',
+        }
+      })
+      check(
+        'tall: focus lands on the notes region and it is NAMED',
+        landed.tag === 'DIV' && landed.role === 'region' && landed.name.length > 0,
+        `active=${landed.tag} role=${landed.role || '-'} name="${landed.name}"`,
+      )
+      check(
+        'tall: the notes list inside it is still exposed as a list',
+        landed.listRole === 'implicit-list',
+        `list=${landed.listRole}`,
+      )
+      check(
+        'tall: the focused region shows a visible focus indicator',
+        landed.ringWidth !== '',
+        `boxShadow=${landed.ringWidth || 'none'}`,
+      )
+      await shoot(page, `${kind}-05-notes-focused-${theme}`)
     }
   } else {
     check(

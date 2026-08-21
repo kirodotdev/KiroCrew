@@ -93,7 +93,7 @@ export interface TriageItem extends IntentNextStep {
  *  `done` and `dropped` contribute nothing. The block answers "does this need
  *  me?" and a finished-and-verified intent does not — whatever next steps it
  *  still carries are residue. Counting them inflates the header chip on
- *  precisely the long sessions where the storage rail lets many finished
+ *  precisely the long sessions where the high storage ceiling lets many finished
  *  intents accumulate, which is where the chip most needs to be trusted. */
 /** How many open items the block RENDERS. The count beside the heading is
  *  deliberately NOT capped by this — a chip reading "3 open items" for a session

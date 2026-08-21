@@ -390,8 +390,8 @@ losing the feature.
 | `enabled` | `false` | Top-level switch; the subsystem is inert while off |
 | `min_user_turns` | `2` | A one-exchange session has no intent structure |
 | `regenerate_after_turns` | `1` | Turns between rebuilds; raise to trade freshness for tokens |
-| `max_intents` | `50` | Storage rail, not a display limit; the oldest-touched tail is trimmed before the write |
-| `max_constraints` | `50` | Storage rail for project notes; `0` suppresses the section |
+| `max_intents` | `50` | Safety ceiling, not a display limit; the oldest-touched tail is dropped from the record before the write |
+| `max_constraints` | `50` | Safety ceiling on project notes; `0` suppresses the section |
 | `assistant_excerpt_chars` | `400` | Head/tail kept per assistant message |
 
 Out-of-range values are clamped with a warning rather than raising, and a

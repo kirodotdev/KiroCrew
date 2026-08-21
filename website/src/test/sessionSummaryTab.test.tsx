@@ -851,6 +851,34 @@ describe('project notes', () => {
     await screen.findByText(/how this project works/i)
     expect(screen.getByText('a durable fact')).toBeTruthy()
   })
+
+  it('the bounded notes list is reachable by keyboard', async () => {
+    sessionSummary.mockResolvedValue(
+      payload({ intents: [intent()], constraints: ['a durable fact'] }),
+    )
+    mount('chat-kbd')
+    fireEvent.click(await screen.findByText(/how this project works/i))
+    await waitFor(() => expect(screen.getByText('a durable fact')).toBeTruthy())
+
+    // Bounding this list at 33vh turned it into a scroll region, and its items
+    // are plain text — so without a tab stop everything past the fold is
+    // reachable by pointer only. The named region is what makes arrow-key
+    // scrolling possible and tells a screen reader what it landed in.
+    const region = screen.getByRole('region', { name: /how this project works/i })
+    expect(region.getAttribute('tabindex')).toBe('0')
+    region.focus()
+    expect(document.activeElement).toBe(region)
+
+    // And the tab stop must NOT be the <ul> itself: an explicit role replaces an
+    // element's implicit one, so `role="region"` on the list would stop its items
+    // being exposed as listitems — losing "list, N items" for the same cohort the
+    // tab stop is for. The region is the scroller wrapping the list.
+    expect(region.tagName).toBe('DIV')
+    const list = screen.getByRole('list')
+    expect(list.tagName).toBe('UL')
+    expect(region.contains(list)).toBe(true)
+    expect(screen.getAllByRole('listitem').length).toBe(1)
+  })
 })
 
 describe('cost discipline', () => {

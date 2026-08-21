@@ -298,7 +298,7 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
   // Each capped region gets its own cue: they cap independently, and either can
   // be at its end while the other still has more below.
   const openItemsFade = useOverflowFade<HTMLDivElement>(triageAll)
-  const notesFade = useOverflowFade<HTMLUListElement>(notesOpen)
+  const notesFade = useOverflowFade<HTMLDivElement>(notesOpen)
   // Generation is the one thing this panel does that spends money, so its
   // in-flight and failure states are local rather than folded into the query's:
   // `isFetching` already means "re-reading the sidecar", which is free, and a
@@ -751,16 +751,35 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
           </button>
           {notesOpen && (
             <div className="relative flex-1 min-h-0 flex flex-col">
-              <ul
+              {/* The SCROLLER carries the tab stop, not the list. Bounding this
+                  list created a scroll region whose items are plain text, so
+                  without a tab stop everything below the fold is pointer-only.
+                  It is a wrapping div rather than the `<ul>` itself because an
+                  explicit `role` REPLACES an element's implicit one: `role="region"`
+                  on the list would stop its `<li>`s being exposed as `listitem`s,
+                  costing "list, N items" and list navigation for exactly the cohort
+                  this is for. `ring-inset` rather than an outline — an outline on a
+                  scroll container is clipped to a hairline on one edge, which is not
+                  a visible focus indicator (WCAG 2.4.7). The open-items list needs
+                  none of this: its rows are buttons, so tabbing scrolls them into
+                  view. */}
+              {/* eslint-disable jsx-a11y/no-noninteractive-tabindex */}
+              <div
                 ref={notesFade.ref}
-                className="flex-1 min-h-0 overflow-y-auto overscroll-contain pl-7 pr-3 pb-2.5 list-disc"
+                role="region"
+                aria-label={i18nT('pages.chat.sessionSummary.project_notes')}
+                tabIndex={0}
+                className="flex-1 min-h-0 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
               >
-                {data?.constraints.map((note, i) => (
-                  <li key={i} className="text-[12px] text-muted my-[3px]">
-                    {note}
-                  </li>
-                ))}
-              </ul>
+                <ul className="pl-7 pr-3 pb-2.5 list-disc">
+                  {data?.constraints.map((note, i) => (
+                    <li key={i} className="text-[12px] text-muted my-[3px]">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
               {notesFade.faded && (
                 <div
                   aria-hidden

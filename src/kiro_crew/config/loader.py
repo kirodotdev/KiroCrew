@@ -3405,12 +3405,12 @@ class SessionSummaryConfig:
         default=50,
         metadata=_meta(
             "Maximum Intents",
-            "Safety ceiling on intents stored per session (>=1). This is a storage "
-            "rail, not a display limit: the panel renders every intent it receives, "
-            "collapsing all but the most recently touched one. Trimming runs before "
-            "the sidecar is written, so whatever exceeds this is dropped from the "
-            "record rather than hidden -- which is why the ceiling sits high enough "
-            "that reaching it is unusual rather than routine.",
+            "Safety ceiling on intents stored per session (>=1). Trimming runs "
+            "before the summary is saved, so whatever exceeds this is dropped "
+            "from the record rather than hidden -- the panel itself withholds "
+            "nothing, rendering every intent it receives and collapsing all but "
+            "the most recently touched one. The ceiling therefore sits high "
+            "enough that reaching it is unusual rather than routine.",
         ),
     )
     max_constraints: int = field(
@@ -3418,10 +3418,11 @@ class SessionSummaryConfig:
         metadata=_meta(
             "Maximum Project Notes",
             "Safety ceiling on session-level operational notes -- the recurring facts "
-            "about how this project is run (>=0). A storage rail, not a display limit: "
-            "how many are worth writing at all is governed by the generation prompt, "
-            "and the panel bounds the expanded list's height rather than its length. "
-            "Durable cross-session preferences belong in lessons rather than here.",
+            "about how this project is run (>=0). Whatever exceeds this is dropped "
+            "from the record rather than hidden: how many are worth writing at all "
+            "is governed by the generation prompt, and the panel bounds the expanded "
+            "list's height rather than its length. Durable cross-session preferences "
+            "belong in lessons rather than here.",
         ),
     )
     assistant_excerpt_chars: int = field(
