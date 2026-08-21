@@ -43,6 +43,7 @@ not been re-audited since 2026-08-03.
 | [version-compliance-framework.md](version-compliance-framework.md) | `draft` | Nothing. Framework doc, not an RFC; premise is pre-fork and stale |
 | [rfc-everything-is-an-app.md](rfc-everything-is-an-app.md) | `draft` | Nothing. Phase 0's boundary section is in this document's own branch and not yet merged; the eleven declared-but-unread manifest fields it inventories are all still declared and still unread |
 | [rfc-amend-tenets-everything-is-an-app.md](rfc-amend-tenets-everything-is-an-app.md) | `draft` | Nothing. `TENETS.md` still carries seven tenets on main. `git log --follow` on it shows two commits and no prior amendment, and `grep -i tenet` returns zero hits in `GOVERNANCE.md` |
+| [rfc-crew-projects.md](rfc-crew-projects.md) | `draft` | Nothing. Verified at `5cd92ff99`: no project manifest format exists, `slot.project` is a bare directory path, and `grep -ril "confluence\|servicenow" src/kiro_crew` returns zero hits |
 
 Nothing in this directory is `implemented` or `superseded` today.
 
