@@ -60,6 +60,12 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _needs(spec: dict) -> list[str]:
+    """A job's ``needs``, normalized -- the key accepts a bare string too."""
+    needs = spec.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
 def _gate_step() -> dict:
     steps = _workflow()["jobs"][GATE_JOB]["steps"]
     step = next((item for item in steps if item.get("name") == STEP_NAME), None)
@@ -180,6 +186,54 @@ def test_gate_job_has_no_job_level_condition() -> None:
     the step body.
     """
     assert "if" not in _workflow()["jobs"][GATE_JOB]
+
+
+def _skippable_jobs(jobs: dict) -> set[str]:
+    """Every job that can report ``skipped``, transitively.
+
+    A job with an ``if:`` can skip on its own. A job without one skips whenever
+    anything it needs skipped, so the property propagates down the graph -- and
+    it propagates THROUGH an ``always()``-guarded job that itself succeeded,
+    which is the part that is not obvious (actions/runner#2205).
+    """
+    skippable = {name for name, spec in jobs.items() if "if" in spec}
+    while True:
+        grown = {
+            name
+            for name, spec in jobs.items()
+            if name not in skippable and any(n in skippable for n in _needs(spec))
+        }
+        if not grown:
+            return skippable
+        skippable |= grown
+
+
+def test_no_job_downstream_of_a_skippable_one_relies_on_the_default_condition() -> None:
+    """A job with no ``if:`` does not run in a graph that skips anything.
+
+    With no ``if:`` the condition is ``success()``, which is false when ANY job
+    in the needs closure was skipped. Every release graph skips something by
+    design -- ``resolve-promotion`` on insider, the build jobs on stable -- so a
+    lane that leans on the default never executes. It also never goes red: a
+    skip is not a failure, so the run still concludes ``success``. That is how
+    five consecutive releases, v0.3.0 among them, published bytes to a channel
+    with no GitHub Release page and nobody noticed.
+
+    ``stable-gate`` and ``build-windows`` are not exempted by name: they need
+    only ``version``, which has no dependencies and therefore cannot skip.
+    """
+    jobs = _workflow()["jobs"]
+    skippable = _skippable_jobs(jobs)
+    offenders = {
+        name: str(spec.get("if", ""))
+        for name, spec in jobs.items()
+        if any(n in skippable for n in _needs(spec)) and "needs." not in str(spec.get("if", ""))
+    }
+    assert not offenders, (
+        "these jobs depend on a job that can be skipped, but their condition "
+        "does not name their dependencies' results, so a skip upstream silently "
+        f"skips them: {offenders}"
+    )
 
 
 def test_gate_checks_out_full_history() -> None:
