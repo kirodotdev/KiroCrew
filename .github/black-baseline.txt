@@ -182,7 +182,6 @@ src/kiro_crew/apps/route_registry.py
 src/kiro_crew/apps/routes.py
 src/kiro_crew/apps/scaffold.py
 src/kiro_crew/apps/teardown.py
-src/kiro_crew/apps/version.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/artifacts.py
 src/kiro_crew/atomic_write.py
@@ -1413,7 +1412,6 @@ test/test_workflows_runner.py
 test/test_workflows_store.py
 test/test_workspace_absolute_paths.py
 test/test_workspace_symlink_resume.py
-test/test_worktree_create.py
 test/test_write_secret_file.py
 test/test_ws_and_plan_memory_fixes.py
 test/test_ws_event_scoping.py

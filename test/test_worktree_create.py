@@ -44,9 +44,7 @@ def _branch_exists(root: str, branch: str) -> bool:
     return bool(_resolve_commit(root, f"refs/heads/{branch}"))
 
 
-def _make_app(
-    *projects: str, app_claim: str | None = "", user: str = "owner"
-) -> web.Application:
+def _make_app(*projects: str, app_claim: str | None = "", user: str = "owner") -> web.Application:
     """App whose state exposes one slot per allowed project directory.
 
     ``app_claim`` mirrors ``token_auth_middleware``'s ``request["app"]``: ``""``
@@ -67,9 +65,7 @@ def _make_app(
     # (GPT review round 12), so the mock must carry a matching owner_id — a bare
     # MagicMock attribute here would 403 every request for the wrong reason.
     state.owner_id = "owner"
-    state._slots = {
-        f"chat-{i}": MagicMock(project=str(p)) for i, p in enumerate(projects) if p
-    }
+    state._slots = {f"chat-{i}": MagicMock(project=str(p)) for i, p in enumerate(projects) if p}
     app["state"] = state
     app.router.add_post("/api/worktree/create", api_worktree_create)
     return app
@@ -101,7 +97,7 @@ def _git(*args: str, cwd) -> None:
 
 @functools.lru_cache(maxsize=1)
 def _sandbox_exec_reason() -> str:
-    """"" if a sandboxed git can actually run here, else why it cannot.
+    """ "" if a sandboxed git can actually run here, else why it cannot.
 
     `_run_git` routes through the OS-sandbox chokepoint, and the endpoint refuses
     with a 503 when isolation cannot be established. That is a real platform
@@ -156,6 +152,14 @@ def _repo_template(tmp_path_factory):
     _git("init", "-q", "-b", "main", cwd=template)
     _git("config", "user.email", "test@example.com", cwd=template)
     _git("config", "user.name", "Test", cwd=template)
+    # The commit below can spawn background auto-maintenance (gc / maintenance
+    # run --auto), whose transient .git/objects/maintenance.lock races the
+    # per-test shutil.copytree of this template -- the lock is listed by the
+    # directory scan, then gone by the time copytree opens it (seen as a
+    # shutil.Error in the v0.4.0-insider.3 RC gate). Session scope makes the
+    # window span into the first tests, so switch maintenance off entirely.
+    _git("config", "gc.auto", "0", cwd=template)
+    _git("config", "maintenance.auto", "false", cwd=template)
     (template / "README.md").write_text("hi\n")
     _git("add", "README.md", cwd=template)
     _git("commit", "-q", "-m", "init", cwd=template)
@@ -445,9 +449,7 @@ class TestIdempotentReentry:
             return real_run_git(args, cwd)
 
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
-            with patch(
-                "kiro_crew.dashboard.handlers.worktree._run_git", side_effect=fail_add
-            ):
+            with patch("kiro_crew.dashboard.handlers.worktree._run_git", side_effect=fail_add):
                 resp = await client.post(
                     "/api/worktree/create", json={"repo": str(repo), "branch": "feat/doomed"}
                 )
@@ -513,9 +515,7 @@ class TestConcurrencySafety:
         assert _run_git(["worktree", "add", theirs, "feat/theirs"], str(repo)).returncode == 0
         # A different request unwinds ITS branch, whose derived dest collides.
         assert _claim_branch(str(repo), "feat/ours", sha) is True
-        _cleanup_partial(
-            str(repo), theirs, "feat/ours", claimed=True, created=True, base_sha=sha
-        )
+        _cleanup_partial(str(repo), theirs, "feat/ours", claimed=True, created=True, base_sha=sha)
         assert os.path.isdir(theirs), "another branch's worktree was destroyed"
         assert _branch_exists(str(repo), "feat/theirs")
         assert not _branch_exists(str(repo), "feat/ours")
@@ -529,9 +529,7 @@ class TestConcurrencySafety:
         squatter = repo.parent / "proj-wt-untouched"
         squatter.mkdir()
         (squatter / "precious.txt").write_text("do not delete")
-        _cleanup_partial(
-            str(repo), str(squatter), "feat/whatever", claimed=False, created=False
-        )
+        _cleanup_partial(str(repo), str(squatter), "feat/whatever", claimed=False, created=False)
         assert (squatter / "precious.txt").is_file()
 
     def test_cleanup_survives_a_failed_worktree_listing(self, repo):
@@ -539,9 +537,7 @@ class TestConcurrencySafety:
         ours = repo.parent / "proj-wt-ours"
         ours.mkdir()
         (ours / "marker").write_text("x")
-        with patch(
-            "kiro_crew.dashboard.handlers.worktree._worktree_branches", return_value=None
-        ):
+        with patch("kiro_crew.dashboard.handlers.worktree._worktree_branches", return_value=None):
             # created=True: the mkdir claim is what authorizes removal, not the
             # (unavailable) listing.
             _cleanup_partial(str(repo), str(ours), "feat/ours", claimed=False, created=True)
@@ -590,9 +586,7 @@ class TestConcurrencySafety:
         theirs = str(repo.parent / "proj-wt-adopted")
         assert _run_git(["worktree", "add", theirs, "feat/adopted"], str(repo)).returncode == 0
         ours = str(repo.parent / "proj-wt-ours-failed")
-        _cleanup_partial(
-            str(repo), ours, "feat/adopted", claimed=True, created=False, base_sha=sha
-        )
+        _cleanup_partial(str(repo), ours, "feat/adopted", claimed=True, created=False, base_sha=sha)
         assert _branch_exists(str(repo), "feat/adopted"), "deleted a branch in use"
         head = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], theirs)
         assert head.stdout.strip() == "feat/adopted"
@@ -602,9 +596,7 @@ class TestConcurrencySafety:
         reporting "already exists" is recoverable where a broken worktree is not."""
         sha = _resolve_commit(str(repo), "HEAD")
         assert _claim_branch(str(repo), "feat/unknown", sha) is True
-        with patch(
-            "kiro_crew.dashboard.handlers.worktree._worktree_branches", return_value=None
-        ):
+        with patch("kiro_crew.dashboard.handlers.worktree._worktree_branches", return_value=None):
             _cleanup_partial(
                 str(repo),
                 str(repo.parent / "proj-wt-unknown"),
@@ -626,9 +618,7 @@ class TestConcurrencySafety:
         assert _claim_branch(str(repo), "feat/advanced", sha) is True
         # A concurrent process advances the claimed ref (a commit pushed into it).
         wt = tmp_path / "concurrent"
-        assert _run_git(
-            ["worktree", "add", str(wt), "feat/advanced"], str(repo)
-        ).returncode == 0
+        assert _run_git(["worktree", "add", str(wt), "feat/advanced"], str(repo)).returncode == 0
         (wt / "new.txt").write_text("work someone else did\n")
         _git("add", "new.txt", cwd=wt)
         _git("-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-qm", "concurrent", cwd=wt)
@@ -643,9 +633,9 @@ class TestConcurrencySafety:
             created=False,
             base_sha=sha,
         )
-        assert _resolve_commit(str(repo), "refs/heads/feat/advanced") == advanced, (
-            "cleanup discarded commits added after the claim"
-        )
+        assert (
+            _resolve_commit(str(repo), "refs/heads/feat/advanced") == advanced
+        ), "cleanup discarded commits added after the claim"
 
     def test_cleanup_leaves_a_branch_it_did_not_claim(self, repo):
         sha = _resolve_commit(str(repo), "HEAD")
@@ -797,9 +787,7 @@ class TestCheckoutFilters:
     def test_probe_failure_fails_closed(self, repo):
         """An unreadable config scope refuses rather than assuming "no filter"."""
         failed = subprocess.CompletedProcess(args=["git"], returncode=128, stdout="", stderr="x")
-        with patch(
-            "kiro_crew.dashboard.handlers.worktree._run_git", return_value=failed
-        ):
+        with patch("kiro_crew.dashboard.handlers.worktree._run_git", return_value=failed):
             assert _checkout_filter(str(repo)) == _FILTER_PROBE_FAILED
 
     @pytest.mark.asyncio
@@ -873,9 +861,7 @@ class TestRound9Hardening:
         """Fail CLOSED: no OS isolation available means the git spawn does not run."""
         from kiro_crew.dashboard.handlers import worktree as wt
 
-        with patch.object(
-            wt, "sandboxed_spawn_argv", side_effect=RuntimeError("no backend")
-        ):
+        with patch.object(wt, "sandboxed_spawn_argv", side_effect=RuntimeError("no backend")):
             async with TestClient(TestServer(_make_app(str(repo)))) as client:
                 resp = await client.post(
                     "/api/worktree/create", json={"repo": str(repo), "branch": "feat/nosbx"}
@@ -900,8 +886,9 @@ class TestRound9Hardening:
             return list(argv), {}, None
 
         ok = subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
-        with patch.object(wt, "sandboxed_spawn_argv", side_effect=fake_spawn), patch.object(
-            wt.subprocess, "run", return_value=ok
+        with (
+            patch.object(wt, "sandboxed_spawn_argv", side_effect=fake_spawn),
+            patch.object(wt.subprocess, "run", return_value=ok),
         ):
             wt._run_git(["--version"], os.getcwd())
         assert seen["mode"] == "strict"
@@ -924,9 +911,10 @@ class TestRound9Hardening:
             stdout="",
             stderr="sandbox: unshare(NEWNS) failed: errno 1\n",
         )
-        with patch.object(
-            wt, "sandboxed_spawn_argv", side_effect=_passthrough_spawn
-        ), patch.object(wt.subprocess, "run", return_value=denied):
+        with (
+            patch.object(wt, "sandboxed_spawn_argv", side_effect=_passthrough_spawn),
+            patch.object(wt.subprocess, "run", return_value=denied),
+        ):
             with pytest.raises(SandboxUnavailable):
                 wt._run_git(["--version"], os.getcwd())
 
@@ -938,9 +926,10 @@ class TestRound9Hardening:
         failed = subprocess.CompletedProcess(
             args=["git"], returncode=128, stdout="", stderr="fatal: not a git repository\n"
         )
-        with patch.object(
-            wt, "sandboxed_spawn_argv", side_effect=_passthrough_spawn
-        ), patch.object(wt.subprocess, "run", return_value=failed):
+        with (
+            patch.object(wt, "sandboxed_spawn_argv", side_effect=_passthrough_spawn),
+            patch.object(wt.subprocess, "run", return_value=failed),
+        ):
             proc = wt._run_git(["status"], os.getcwd())
         assert proc.returncode == 128
 
@@ -950,9 +939,10 @@ class TestRound9Hardening:
         if os.name != "posix":
             pytest.skip("NTFS rejects newlines in path components")
         dest = tmp_path / "wt\nnewline"
-        assert _run_git(
-            ["worktree", "add", str(dest), "-b", "feat/nl", "HEAD"], str(repo)
-        ).returncode == 0
+        assert (
+            _run_git(["worktree", "add", str(dest), "-b", "feat/nl", "HEAD"], str(repo)).returncode
+            == 0
+        )
         trees = _worktree_branches(str(repo))
         assert trees is not None
         assert trees.get(os.path.normcase(os.path.realpath(str(dest)))) == "feat/nl"
@@ -1165,9 +1155,7 @@ class TestLauncherAdvisoryIsNotARefusal:
 
         severities = {
             token.split()[0]
-            for token in re.findall(
-                r"sandbox: ([^'\"%\\\n]+)", _build_launcher_script("strict")
-            )
+            for token in re.findall(r"sandbox: ([^'\"%\\\n]+)", _build_launcher_script("strict"))
         }
 
         assert severities == {"unshare(NEWUSER)", "unshare(NEWNS)", "BLOCKED", "WARNING"}
