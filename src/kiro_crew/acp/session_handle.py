@@ -52,6 +52,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
+    EVIDENCE_SHELL_CHILD_ABSENT,
     VERDICT_DEAD,
     VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
@@ -59,6 +60,7 @@ from kiro_crew.acp.liveness import (
     LivenessOracle,
     ToolCallState,
     _consume_future_exception,
+    boottime_now,
     consult_offloaded,
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
@@ -281,13 +283,19 @@ def _watchdog_evidence_class(evidence: str) -> str:
     evidence carries pids, byte deltas, and command fragments, so only its
     SHAPE is emitted. Buckets: ``established_flat`` (LLM-shaped — runtime-held
     backend socket, flat subtree), ``mcp_flat`` (opaque MCP tool, moving or
-    flat), ``shell`` (shell-child evidence), ``wait`` (the declared-duration
-    wait tool), ``degraded`` (everything else: sampling baseline, unreadable
-    /proc, no pid, oracle error — the oracle could not attest either way).
+    flat), ``shell_absent`` (shell tool in flight with nothing this dispatch
+    could have started still running), ``shell`` (other shell-child evidence),
+    ``wait`` (the declared-duration wait tool), ``degraded`` (everything else:
+    sampling baseline, unreadable /proc, no pid, oracle error — the oracle could
+    not attest either way).
     """
     e = evidence or ""
     if e.startswith(EVIDENCE_ESTABLISHED_FLAT):
         return "established_flat"
+    if e.startswith(EVIDENCE_SHELL_CHILD_ABSENT):
+        # Checked before the "shell child" substring below, which its evidence
+        # text also contains.
+        return "shell_absent"
     if "mcp subtree" in e:
         return "mcp_flat"
     if "shell child" in e:
@@ -1802,9 +1810,11 @@ class AcpSessionHandle:
                         # a tool, e.g. kiro-cli use_subagent) narrows to the
                         # model-silent budget, because its longest legitimate
                         # silent gap is minutes, not hours. Keyed STRICTLY on
-                        # the oracle's established_flat evidence tag: plain
-                        # flat-subtree or shell-child evidence (a quiet build /
-                        # quiet MCP tool) keeps the full window.
+                        # the oracle's evidence TAGS — established_flat, or
+                        # shell_child_absent for a shell command with no process
+                        # to its name. Untagged evidence (a quiet build's
+                        # unmatched-but-live tree, a quiet MCP tool) keeps the
+                        # full window.
                         # F3 — hard cap: watchdog_tool_stall_hard_cap_secs is
                         # the absolute ceiling for UNKNOWN forbearance. Apply
                         # min(suspect_window, hard_cap) so the configured cap
@@ -1817,6 +1827,22 @@ class AcpSessionHandle:
                         _narrowed = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
                         if _narrowed:
                             _suspect = min(wd.model_silent_probe_secs, _suspect)
+                        elif evidence.startswith(EVIDENCE_SHELL_CHILD_ABSENT):
+                            # The oracle can see the runtime's tree and nothing
+                            # in it is young enough to be this dispatch's child:
+                            # the shell command is not running. Build-scale
+                            # forbearance exists for a QUIET build, not for an
+                            # absent one — a sub-second command whose result
+                            # frame was lost is never observed alive, so without
+                            # this it collects the full suspect window while the
+                            # matched-then-gone fork of the same state acts on
+                            # CHILD_EXIT_GRACE_SECS. Narrowed to the ordinary
+                            # silence window rather than to that grace: absence
+                            # is inferred from start times, so the verdict stays
+                            # UNKNOWN and the action stays the non-lethal
+                            # session cancel at a few minutes.
+                            _narrowed = True
+                            _suspect = min(wd.stale_window_secs, _suspect)
                         _suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
                         _acting = (
                             verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT)
@@ -2308,8 +2334,9 @@ class AcpSessionHandle:
         (tool-stall recovery via _end_stalled_tool). Attrs are all closed
         enums (metrics/schema.py cardinality rule): the free-form evidence is
         bucketed by :func:`_watchdog_evidence_class`; ``window`` is one of:
-        "standard" (default), "narrowed" (tool-branch established_flat reduces
-        the build-scale suspect window to the model-silent budget), or "extended"
+        "standard" (default), "narrowed" (a tool-branch tag reduces the
+        build-scale suspect window — established_flat to the model-silent budget,
+        shell_child_absent to the ordinary silence window), or "extended"
         (model-wait established_flat extends the 300s stale window to the
         model-silent probe window for a non-streamed server-side think).
         ``agent_override`` is the per-agent-override BOOLEAN from the settings
@@ -3017,7 +3044,12 @@ class AcpSessionHandle:
                 self._stale_eligible = False
                 self._tool_dispatched = True
                 # Attribution snapshot for the liveness oracle: title + the
-                # already-redacted input + dispatch time + the trusted shell
+                # already-redacted input + dispatch time on BOTH clocks (monotonic
+                # for elapsed spans, boot for dating a child process against this
+                # dispatch) + the parking this turn has banked so far, which
+                # bounds how far this stamp can lag the runtime's actual spawn
+                # (the park is banked when the consumer returns, i.e. before this
+                # frame is processed, so it is complete here) + the trusted shell
                 # flag. A new dispatch retires the oracle so its tracked child
                 # and counter samples never bleed across tools — including from a
                 # walk still running against the previous tool's command.
@@ -3025,6 +3057,8 @@ class AcpSessionHandle:
                     title=ev.title,
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
+                    dispatch_boot_ts=boottime_now(),
+                    dispatch_parked_secs=self._parked_total,
                     is_shell=ev.is_shell,
                     tool_name=ev.tool_name,
                 )

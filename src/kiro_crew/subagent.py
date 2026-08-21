@@ -27,6 +27,7 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
     LivenessOracle,
     ToolCallState,
+    boottime_now,
     consult_offloaded,
 )
 from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -2028,6 +2029,12 @@ class SubagentManager:
             title=event.title or "",
             command=event.tool_input or "",
             dispatch_ts=time.monotonic(),
+            dispatch_boot_ts=boottime_now(),
+            # No consumer parking on this path: a subagent's events are consumed
+            # by the run loop itself, with no approval / IM send / hook holding a
+            # frame, so this stamp cannot lag the runtime's spawn the way the
+            # dashboard dispatch loop's can.
+            dispatch_parked_secs=0.0,
             is_shell=bool(getattr(event, "is_shell", False)),
             tool_name=getattr(event, "tool_name", "") or "",
         )

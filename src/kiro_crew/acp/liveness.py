@@ -25,7 +25,14 @@ Evidence sources (all Linux ``/proc`` based, no new dependencies):
   definite WORKING (a 40-minute build runs untouched). Once matched, the pid is
   tracked so exit detection is exact: a tracked child that exits without a tool
   result frame flips to DEAD after a short grace. A matched-but-frozen subtree
-  blocked reading a tty/stdin is STUCK_INPUT.
+  blocked reading a tty/stdin is STUCK_INPUT. When nothing matches, the two
+  reasons are kept apart: an OBSERVABLE tree in which no live descendant is
+  young enough to have been started by this dispatch carries the
+  :data:`EVIDENCE_SHELL_CHILD_ABSENT` tag (the command is not running — the
+  caller narrows the UNKNOWN window), while a tree that does hold such a
+  descendant, or one whose child list cannot be read at all, keeps the plain
+  evidence and the full window: the match heuristic may simply have failed to
+  recognize live work.
 - **MCP ``wait`` tool**: declared-duration contract — WORKING until the parsed
   ``seconds`` (+ slack) elapse, then UNKNOWN.
 - **Other MCP tools**: sample the descendant tree's CPU/IO movement across
@@ -76,6 +83,21 @@ VERDICT_STUCK_INPUT = "stuck_input"
 # ordinary stale window.
 EVIDENCE_ESTABLISHED_FLAT = "established_flat"
 
+# Evidence prefix for a shell tool in flight whose command CANNOT be running:
+# the runtime's tree is readable, holds live descendants, and not one of them is
+# young enough to have been started by this dispatch. The caller narrows the
+# UNKNOWN window on this tag (see the shell branch of
+# ``session_handle._dispatch_events``) instead of spending the build-scale
+# suspect window on a command that already exited — the sub-second shell tool
+# whose result frame was lost is never observed alive, so the plain
+# "no matching shell child" evidence used to buy it the full forbearance.
+#
+# Deliberately NOT a DEAD verdict: absence is inferred from process start times,
+# and a live command that exec'd into something the cmdline heuristic misses is
+# still covered by the "young descendant exists" test below, so the narrowing
+# only shortens a non-lethal cancel, never skips straight to one.
+EVIDENCE_SHELL_CHILD_ABSENT = "shell_child_absent"
+
 # Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
 # which starts a sub-agent turn inside the current tool call). The
 # established_flat narrowing is ONLY applied when the in-flight tool's trusted
@@ -104,6 +126,11 @@ CHILD_EXIT_GRACE_SECS = 15.0
 WAIT_TOOL_SLACK_SECS = 120.0
 # Minimum cmdline fragment length for a definite shell-child match.
 _MIN_MATCH_FRAGMENT = 8
+# How much a process may predate its tool's dispatch and still count as started
+# BY that dispatch. Both timestamps come from the boot clock (see
+# :func:`boottime_now`), so this covers only the dispatch-to-spawn gap, not clock
+# skew.
+_DISPATCH_START_TOLERANCE_SECS = 10.0
 # wchan values that indicate a process blocked reading interactive input.
 _STUCK_INPUT_WCHANS = frozenset({"n_tty_read", "pipe_read", "wait_woken"})
 # read(2) syscall numbers: x86_64 = 0, aarch64 = 63.
@@ -179,6 +206,25 @@ def iter_descendants(proc_root: str, pid: int) -> list[int]:
                 if cpid not in visited:
                     stack.append(cpid)
     return order
+
+
+def children_interface_readable(proc_root: str, pid: int) -> bool:
+    """Whether *pid*'s child list can be read at all.
+
+    ``iter_descendants`` walks ``/proc/<p>/task/<tid>/children`` and returns just
+    ``[pid]`` both for a genuinely childless process and for a host where that
+    interface does not exist (no procfs, a kernel built without
+    CONFIG_PROC_CHILDREN, a sandbox that hides the subtree). Only the first case
+    is evidence about the tree, so the absent-shell-child claim requires this to
+    be True — the file reading as EMPTY is the proof, its content is not.
+    """
+    try:
+        tids = os.listdir(f"{proc_root}/{pid}/task")
+    except OSError:
+        return False
+    return any(
+        _read_text(f"{proc_root}/{pid}/task/{tid}/children") is not None for tid in tids
+    )
 
 
 def read_cmdline(proc_root: str, pid: int) -> str:
@@ -273,19 +319,40 @@ def established_inodes(proc_root: str, pid: int) -> set[str]:
     return inodes
 
 
-def process_age_secs(proc_root: str, starttime_ticks: float) -> float | None:
-    """Seconds since a process started, from its stat ``starttime`` ticks."""
-    raw = _read_text(f"{proc_root}/uptime")
-    if not raw:
-        return None
+def boottime_now() -> float | None:
+    """Seconds since boot on the clock ``/proc`` dates processes against.
+
+    ``CLOCK_BOOTTIME`` counts time spent suspended, exactly as ``/proc/uptime``
+    and the ``starttime`` field of ``/proc/<pid>/stat`` do. ``time.monotonic()``
+    (``CLOCK_MONOTONIC``) does not, so the two MUST NOT be mixed in one
+    comparison: after a suspend of S seconds, a boot-clock age minus a monotonic
+    stamp places a process S seconds EARLIER than it really started, which is how
+    a live shell child comes to look like it predates its own dispatch.
+
+    Returns None where the clock is unavailable (no ``CLOCK_BOOTTIME``), which
+    every caller must read as "cannot attribute" rather than as a time.
+    """
     try:
-        uptime = float(raw.split()[0])
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):  # pragma: no cover - platform dependent
+        return None
+
+
+def process_start_boot_secs(starttime_ticks: float) -> float | None:
+    """A process's ``starttime`` ticks as seconds on the :func:`boottime_now` clock.
+
+    None when the tick rate cannot be read — including on a platform with no
+    ``os.sysconf`` at all (Windows raises AttributeError, not OSError), where
+    there is no ``/proc`` to date processes against either. Callers read None as
+    "cannot attribute", never as a time.
+    """
+    try:
         hz = os.sysconf("SC_CLK_TCK")
-    except (ValueError, IndexError, OSError):
+    except (AttributeError, OSError, ValueError):
         return None
-    if hz <= 0:
+    if hz <= 0:  # pragma: no cover - defensive
         return None
-    return uptime - (starttime_ticks / hz)
+    return starttime_ticks / hz
 
 
 # ── Command matching ──
@@ -354,6 +421,24 @@ class ToolCallState:
     command: str = ""  # redacted cached tool input
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
+    # ``boottime_now()`` at EVENT_TOOL_CALL — the SAME clock /proc dates process
+    # start times against, so a child's start can be compared to its dispatch
+    # without mixing clocks (see :func:`boottime_now`). Separate from
+    # ``dispatch_ts``, which stays monotonic because it measures ELAPSED time (the
+    # wait tool's declared duration), where excluding suspend is correct. None
+    # when the clock is unavailable; every consumer must then decline to attribute
+    # a process to this dispatch rather than guess.
+    dispatch_boot_ts: float | None = None
+    # Consumer parking banked in THIS TURN before the stamp above was taken
+    # (``AcpSessionHandle._parked_total``, which is per-turn and includes the whole
+    # of a human approval wait). The stamp is taken when the tool_call frame is
+    # PROCESSED, and the dispatch loop is suspended at its yield for every
+    # consumer-side await — an approval, an IM send, a hook — so a tool whose
+    # frame queued behind one of those was already spawned by the time its stamp
+    # is taken. The child cannot predate the turn, so parking-so-far bounds that
+    # lag and widens the attribution window by exactly as much as the loop itself
+    # measured. Left 0.0 by a dispatch path with no consumer parking.
+    dispatch_parked_secs: float = 0.0
     # Trusted tool name from ``_meta.kiro.toolName`` (empty when the backend
     # does not emit ``_meta``; fail-closed). Required for established_flat
     # attribution: the narrowing applies ONLY when this matches a known
@@ -528,15 +613,27 @@ class LivenessOracle:
             return VERDICT_UNKNOWN, f"shell child exited {gone_for:.0f}s ago (grace)"
 
         # Not matched yet: scan for a live non-zombie descendant whose cmdline
-        # matches this session's cached command.
+        # matches this session's cached command. The same pass answers a second,
+        # cmdline-INDEPENDENT question — is any live descendant young enough to
+        # have been started by this dispatch — which is what separates "the
+        # command already exited" from "the command is running unrecognized".
         fragment = match_fragment(tool.command)
         program = first_program(tool.command)
+        live_descendants = 0
+        started_since_dispatch = False
+        matched_but_older = False
         for pid in descendants:
             if pid == runtime_pid:
                 continue
             stat = read_pid_stat(self._proc, pid)
             if stat is None or stat[0] == "Z":
                 continue
+            live_descendants += 1
+            # Evaluated before the cmdline gate on purpose: a live descendant
+            # whose cmdline is momentarily unreadable (mid-exec, mid-teardown)
+            # still counts as possibly-this-tool's.
+            fresh = self._started_after_dispatch(stat[1], tool)
+            started_since_dispatch = started_since_dispatch or fresh
             cmdline = read_cmdline(self._proc, pid)
             if not cmdline:
                 continue
@@ -546,13 +643,19 @@ class LivenessOracle:
                 matched = program in base_tokens
             if not matched:
                 continue
-            # Best-effort start-time check: skip a process that predates the
-            # dispatch by more than a small tolerance (a pre-existing lookalike).
-            age = process_age_secs(self._proc, stat[1])
-            if age is not None and tool.dispatch_ts:
-                started_at = self._now() - age
-                if started_at < tool.dispatch_ts - 10.0:
-                    continue
+            if not fresh:
+                # Cmdline matches but the process predates the dispatch stamp by
+                # more than the tolerance. Two causes the oracle cannot tell
+                # apart: a coincidental pre-existing lookalike, or THIS command,
+                # whose tool_call frame reached the dispatch loop late — the
+                # stamp is taken when that frame is PROCESSED, and the consumer
+                # can park for minutes on an approval, an IM send or a hook
+                # (see ``_parked`` in the dispatch loop) while kiro-cli has
+                # already spawned. So refuse the match as before, but let it
+                # veto the absence claim below: a live process that looks like
+                # this command is not evidence that nothing is running.
+                matched_but_older = True
+                continue
             self._tracked_child = pid
             self._child_gone_ts = None
             # Prime the stuck-detection movement baseline now so the NEXT check
@@ -560,7 +663,63 @@ class LivenessOracle:
             # ticks: match, baseline, compare).
             self._tree_movement(pid, key_prefix="stuck")
             return VERDICT_WORKING, f"shell child {pid} matched command"
-        return VERDICT_UNKNOWN, "no matching shell child"
+        if started_since_dispatch or matched_but_older:
+            # Something that could be this command is running: either a
+            # descendant young enough to have been started by this dispatch (the
+            # match heuristic may have missed a live command — a shell that
+            # exec'd away, a cached input redacted past any usable fragment), or
+            # one whose cmdline matches while predating a late-taken stamp. That
+            # is what build-scale forbearance exists for, so keep the plain
+            # evidence and the full suspect window.
+            return VERDICT_UNKNOWN, "no matching shell child"
+        if not live_descendants and not children_interface_readable(self._proc, runtime_pid):
+            # No live descendant AND no readable child list: the tree is not
+            # observable (no procfs, no CONFIG_PROC_CHILDREN, a sandbox hiding
+            # the subtree), which is indistinguishable from an empty one. Absence
+            # is not assertable, so nothing narrows.
+            return VERDICT_UNKNOWN, "no matching shell child"
+        # The tree is observable and nothing in it was started for this tool, so
+        # the command is not running: the same physical state the DEAD branch
+        # above reports as "exited, no result frame" — the oracle just never got
+        # to see this one alive. Still UNKNOWN, not DEAD: the claim rests on
+        # start-time attribution and on the child being a DESCENDANT of the
+        # runtime (a double-forked, reparented child would escape the walk), so
+        # the caller shortens its non-lethal cancel rather than acting at once.
+        return (
+            VERDICT_UNKNOWN,
+            f"{EVIDENCE_SHELL_CHILD_ABSENT}: no shell child started since dispatch "
+            f"({live_descendants} live descendants, none started since dispatch)",
+        )
+
+    def _started_after_dispatch(self, starttime_ticks: float, tool: ToolCallState) -> bool:
+        """Whether a process is young enough to be *tool*'s own child.
+
+        Both sides are read on the boot clock — the process's ``starttime`` and
+        the stamp ``boottime_now()`` took at EVENT_TOOL_CALL — so a host suspend
+        between dispatch and this probe moves neither. Deriving the start from an
+        age instead (a boot-clock age subtracted from a monotonic stamp) placed a
+        live child a full suspend EARLIER than it started, so a laptop resumed
+        mid-command read as "this child predates its own dispatch".
+
+        The window opens by ``dispatch_parked_secs`` as well, because the stamp
+        marks when the tool_call frame was PROCESSED, not when the runtime
+        spawned: a frame queued behind a consumer-side await (an approval, an IM
+        send, a hook) is stamped that much late, and its child then looks older
+        than its own dispatch. The dispatch loop already measures exactly that
+        park, so the bound is measured rather than guessed.
+
+        Fail-open by design: a missing boot stamp or an unreadable tick rate
+        answers True, so an unattributable process reads as possibly-this-tool's.
+        That keeps a live command matched and keeps an absence claim from resting
+        on evidence the oracle does not have.
+        """
+        if not tool.dispatch_boot_ts:
+            return True
+        started_boot = process_start_boot_secs(starttime_ticks)
+        if started_boot is None:
+            return True
+        tolerance = _DISPATCH_START_TOLERANCE_SECS + max(0.0, tool.dispatch_parked_secs)
+        return started_boot >= tool.dispatch_boot_ts - tolerance
 
     def _stuck_input_check(self, pid: int) -> str:
         """STUCK_INPUT evidence for a live child subtree, or "" when not stuck.

@@ -76,6 +76,18 @@ class TestEvidenceClass:
             == "shell"
         )
 
+    def test_shell_absent_has_its_own_bucket(self):
+        """The absent-child tag must not fold into ``shell``: it is the bucket
+        that tells a narrowed window apart from a quiet build's full one, and its
+        evidence text also contains the "shell child" substring."""
+        assert (
+            _watchdog_evidence_class(
+                "shell_child_absent: no shell child started since dispatch "
+                "(3 live descendants, all older)"
+            )
+            == "shell_absent"
+        )
+
     def test_wait(self):
         assert _watchdog_evidence_class("wait tool declared 1800s (60s elapsed)") == "wait"
 
@@ -85,11 +97,12 @@ class TestEvidenceClass:
 
     def test_no_free_form_leak(self):
         """Whatever the evidence carries, the output is from the closed set."""
-        closed = {"established_flat", "mcp_flat", "shell", "wait", "degraded"}
+        closed = {"established_flat", "mcp_flat", "shell", "shell_absent", "wait", "degraded"}
         for e in (
             "shell child 999999 alive",
             "stuck_input: pid 7 blocked reading /dev/tty with flat subtree",
             "established_flat: mcp subtree flat (io +12345B cpu +0t)",
+            "shell_child_absent: no shell child started since dispatch (12 live descendants, all older)",
             "backend activity (io +9999B cpu +1t)",
         ):
             assert _watchdog_evidence_class(e) in closed
@@ -257,6 +270,51 @@ async def test_narrowed_established_flat_cancel_tagged_narrowed():
     (c,) = _action_calls(rec, "cancel")
     assert c["attrs"]["window"] == "narrowed"
     assert c["attrs"]["evidence_class"] == "established_flat"
+
+
+@pytest.mark.asyncio
+async def test_absent_shell_child_cancel_tagged_narrowed():
+    """#4840: a shell tool with no process to its name gets the ordinary silence
+    window, not build-scale forbearance.
+
+    Configured so ONLY the narrowing can act: the suspect window, the hard cap
+    and the model-silent budget are all 999s, and stale_window_secs (the window
+    the shell_child_absent tag selects) is the one that fires.
+    """
+    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
+                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=999.0,
+                          stale_window_secs=0.05)
+    handle = _stalling_handle(
+        wd,
+        "shell_child_absent: no shell child started since dispatch "
+        "(3 live descendants, all older)",
+    )
+
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _drain(handle, req_id=1, timeout=5.0)
+
+    (c,) = _action_calls(rec, "cancel")
+    assert c["attrs"]["window"] == "narrowed"
+    assert c["attrs"]["evidence_class"] == "shell_absent"
+
+
+@pytest.mark.asyncio
+async def test_untagged_shell_evidence_keeps_the_full_window():
+    """The other side of #4840's fork: "no matching shell child" without the
+    absence tag means the oracle could not attest that nothing is running (a
+    quiet build whose cmdline the heuristic missed), so the full suspect window
+    still holds and nothing is cancelled at the narrowed one."""
+    wd = WatchdogSettings(check_after_secs=0.01, tool_stall_suspect_secs=999.0,
+                          tool_stall_hard_cap_secs=999.0, model_silent_probe_secs=999.0,
+                          stale_window_secs=0.05)
+    handle = _stalling_handle(wd, "no matching shell child")
+
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        await _drain(handle, req_id=1, timeout=0.3)
+
+    assert not _action_calls(rec, "cancel"), "an untagged shell stall must keep its window"
 
 
 @pytest.mark.asyncio
