@@ -225,6 +225,11 @@ _mcp_probe_cache: list[dict] = []
 _mcp_probe_ts: float = 0.0
 _MCP_PROBE_CACHE_SECS = 600  # 10 min
 _mcp_probe_in_progress = False
+# Handle on the one probe allowed to be in flight. `_mcp_probe_in_progress` is
+# the flag the request handlers below consult to avoid STACKING a re-probe; this
+# is the joinable object that makes `_bg_mcp_probe` single-flight, which the flag
+# alone cannot do (a caller cannot await a bool).
+_mcp_probe_task: asyncio.Task[None] | None = None
 
 
 def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> None:
@@ -476,8 +481,43 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
 
 
 async def _bg_mcp_probe() -> None:
-    """Background MCP probe — populates cache at startup."""
+    """Populate the MCP probe cache — SINGLE-FLIGHT.
+
+    Two independent boot paths reach this: ``dashboard/server.py`` fires it as a
+    background task once the port is bound, and ``slack/gateway.py`` awaits it
+    before warming sessions (kiro-cli reads mcp.json at spawn time). Without a
+    join, boot spawns and handshakes EVERY enabled MCP server twice — doubling
+    the subprocess churn, doubling occupancy of probe_all()'s concurrency
+    semaphore (so the first URL waits longer), and giving each server two
+    chances to trip a rate limit or an auth prompt.
+
+    ``_mcp_probe_in_progress`` could not close this on its own: it was written
+    but never read here, and a bool cannot be awaited, so the second caller had
+    nothing to wait on. The task handle can be, so both callers get one fan-out
+    and both still return only once the cache is populated.
+
+    The join is SHIELDED so a caller giving up (gateway wraps this in
+    ``wait_for`` with a timeout) abandons its own wait without cancelling the
+    probe mid-handshake — the fan-out completes and the cache is populated for
+    whoever asks next, which is what the boot path's
+    "continuing without full probe" message already implies.
+    """
+    global _mcp_probe_task
+
+    inflight = _mcp_probe_task
+    if inflight is not None and not inflight.done():
+        await asyncio.shield(inflight)
+        return
+
+    task = asyncio.ensure_future(_run_mcp_probe())
+    _mcp_probe_task = task
+    await asyncio.shield(task)
+
+
+async def _run_mcp_probe() -> None:
+    """The probe fan-out itself. Reached only through `_bg_mcp_probe`."""
     global _mcp_probe_ts, _mcp_probe_in_progress
+    _mcp_probe_in_progress = True
     try:
         # circular import: mcp_discovery defers imports of kiro_crew.agent
         # which shares state with this module, so importing it at module top

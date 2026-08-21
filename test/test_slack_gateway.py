@@ -4578,11 +4578,11 @@ class TestRunSignalAndBgSession:
 
 
 class TestBgSessionDashboardBranch:
-    """run() -> _start_bg_session dashboard URL printing path."""
+    """run() -> dashboard URL announcement and the probe-gated session warm."""
 
     @pytest.mark.asyncio
     async def test_bg_session_prints_dashboard_url(self):
-        """_start_bg_session prints dashboard URLs when not _no_dashboard."""
+        """_start_bg_session still warms the session pool behind the probe."""
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
         orch._init_services = AsyncMock()
@@ -4636,6 +4636,160 @@ class TestBgSessionDashboardBranch:
                                                                 await asyncio.sleep(0)
                                                                 await asyncio.sleep(0)
 
+        orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
+
+    @pytest.mark.asyncio
+    async def test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited(self):
+        """The URL must not wait on the MCP probe.
+
+        The port is bound before either happens, and nothing about formatting a
+        URL depends on MCP state — only session spawn does (kiro-cli reads
+        mcp.json at spawn time). Printing after the probe cost the operator up
+        to mcp_probe_timeout_secs+15 of blank screen, and all of it whenever the
+        probe timed out.
+
+        Asserted as an ORDER, not a call count, because the defect this pins is
+        purely positional: both the print and the probe happened either way.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+
+        orch._init_services = AsyncMock()
+        orch._start_embeddings = AsyncMock()
+        orch._auto_migrate_memory = AsyncMock()
+        orch._init_cron = AsyncMock()
+        orch._init_heartbeat = AsyncMock()
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_autonudge = AsyncMock()
+        orch._check_for_updates = AsyncMock()
+        orch._shutdown = AsyncMock()
+
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = AsyncMock()
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+        orch._init_dashboard = _init_dash
+
+        # One ordered trace of both events. The URL lines are a distinctive
+        # sentinel so ordinary boot chatter cannot be mistaken for them.
+        trace: list[str] = []
+        real_print = print
+
+        def _tracing_print(*args, **kwargs):
+            if args and isinstance(args[0], str) and args[0].startswith("url-line"):
+                trace.append("url")
+            real_print(*args, **kwargs)
+
+        async def _tracing_probe():
+            trace.append("probe")
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "add_signal_handler"):
+            with patch("kiro_crew.shutdown_event", fresh_event):
+                with patch("kiro_crew.slack.gateway.shutdown_event", fresh_event):
+                    with patch("kiro_crew.slack.gateway.resolve_dashboard_host",
+                               return_value="127.0.0.1"):
+                        with patch("kiro_crew.slack.gateway.build_dashboard_url",
+                                   return_value="http://127.0.0.1:6779/?t=tok"):
+                            with patch("kiro_crew.slack.gateway.format_dashboard_urls",
+                                       return_value=["url-line-1", "url-line-2"]):
+                                with patch("builtins.print", _tracing_print):
+                                    with patch("kiro_crew.slack.events.init_socket_mode"):
+                                        with patch("kiro_crew.slack.interactions.init"):
+                                            with patch("kiro_crew.slack.events.SeenCache"):
+                                                with patch("kiro_crew.session.cleanup_orphaned_sessions"):
+                                                    with patch(
+                                                        "kiro_crew.dashboard.handlers._bg_mcp_probe",
+                                                        _tracing_probe,
+                                                    ):
+                                                        with patch("os._exit"):
+                                                            with patch(
+                                                                "resource.getrlimit",
+                                                                return_value=(256, 10240),
+                                                            ):
+                                                                with patch("resource.setrlimit"):
+                                                                    await orch.run()
+                                                                    await asyncio.sleep(0)
+                                                                    await asyncio.sleep(0)
+
+        assert "url" in trace, f"dashboard URL was never printed; trace={trace}"
+        assert "probe" in trace, f"MCP probe was never awaited; trace={trace}"
+        assert trace.index("url") < trace.index("probe"), (
+            "dashboard URL was printed only AFTER the MCP probe was awaited — "
+            f"the boot-delay regression is back; trace={trace}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_failing_url_announcement_does_not_abort_boot(self):
+        """Announcing the URL is best effort — it must not take the gateway down.
+
+        This block used to live inside a fire-and-forget task, where a raise
+        could not reach the boot path. Hoisting it ahead of the MCP probe put it
+        on the synchronous path, so the fault isolation has to be explicit or a
+        formatting/token failure becomes a failed boot of an already-listening
+        dashboard.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=True)
+
+        orch._init_services = AsyncMock()
+        orch._start_embeddings = AsyncMock()
+        orch._auto_migrate_memory = AsyncMock()
+        orch._init_cron = AsyncMock()
+        orch._init_heartbeat = AsyncMock()
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_autonudge = AsyncMock()
+        orch._check_for_updates = AsyncMock()
+        orch._shutdown = AsyncMock()
+
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = AsyncMock()
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+        orch._init_dashboard = _init_dash
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with patch.object(loop, "add_signal_handler"):
+            with patch("kiro_crew.shutdown_event", fresh_event):
+                with patch("kiro_crew.slack.gateway.shutdown_event", fresh_event):
+                    with patch("kiro_crew.slack.gateway.resolve_dashboard_host",
+                               return_value="127.0.0.1"):
+                        with patch(
+                            "kiro_crew.slack.gateway.format_dashboard_urls",
+                            side_effect=RuntimeError("cannot format URL"),
+                        ):
+                            with patch("kiro_crew.slack.events.init_socket_mode"):
+                                with patch("kiro_crew.slack.interactions.init"):
+                                    with patch("kiro_crew.slack.events.SeenCache"):
+                                        with patch("kiro_crew.session.cleanup_orphaned_sessions"):
+                                            with patch(
+                                                "kiro_crew.dashboard.handlers._bg_mcp_probe",
+                                                new_callable=AsyncMock,
+                                            ):
+                                                with patch("os._exit"):
+                                                    with patch(
+                                                        "resource.getrlimit",
+                                                        return_value=(256, 10240),
+                                                    ):
+                                                        with patch("resource.setrlimit"):
+                                                            # Must not raise.
+                                                            await orch.run()
+                                                            await asyncio.sleep(0)
+                                                            await asyncio.sleep(0)
+
+        # Boot carried on past the failed announcement.
         orch.sessions.start_pool.assert_awaited_once_with(blocking=False)
 
 

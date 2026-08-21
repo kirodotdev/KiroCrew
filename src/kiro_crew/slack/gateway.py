@@ -1902,6 +1902,37 @@ class GatewayOrchestrator:
     # Service initialisation
     # ------------------------------------------------------------------
 
+    async def _auto_open_dashboard(self, dashboard_url: str) -> None:
+        """Open the dashboard in the operator's browser, best effort.
+
+        Offloaded to the subprocess executor — ``webbrowser.open()`` can block
+        indefinitely on a wedged ``/usr/bin/open``, which would starve the
+        default thread pool if this used ``asyncio.to_thread()``. The subprocess
+        executor is a dedicated pool for exactly this class of hang.
+
+        Runs as a background task rather than inline on the boot path so a slow
+        browser launch overlaps the MCP probe instead of adding to it. The URL
+        has already been printed by the time this is called, so a failure here
+        costs the operator a click, not the address.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    webbrowser.open,
+                    dashboard_url,
+                ),
+                timeout=5.0,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.debug("webbrowser.open timed out — skipping")
+            print(
+                "👻 Browser was slow to open — skipping auto-open.\n"
+                "   Dashboard is running. Open this URL manually:\n"
+                f"   {dashboard_url}\n"
+                "   Or run: kirocrew token"
+            )
+
     async def _warn_if_kiro_cli_outdated(self) -> None:
         """Warn when kiro-cli is too old for ``--agent`` (requires >= 1.26).
 
@@ -8016,33 +8047,16 @@ class GatewayOrchestrator:
         self._background_tasks.add(self._update_check_task)
         self._update_check_task.add_done_callback(self._background_tasks.discard)
 
-        # Wait for MCP probe to finish before warming sessions —
-        # kiro-cli reads MCP config at spawn time, so sessions must
-        # start AFTER the probe has synced all servers to mcp.json.
-        from kiro_crew.dashboard.handlers import _bg_mcp_probe
-
-        print("👻 Probing MCP servers…")
-        try:
-            from kiro_crew.config.loader import KiroCrewConfig as _Cfg
-
-            _probe_t = _Cfg.load().dashboard.mcp_probe_timeout_secs + 15
-        except Exception:
-            _probe_t = 30  # fallback: original default (15 + 15)
-        try:
-            await asyncio.wait_for(_bg_mcp_probe(), timeout=_probe_t)
-        except asyncio.TimeoutError:
-            print("👻 MCP probe timed out — continuing without full probe")
-
-        # ── Start background session and print URLs ──
-        async def _start_bg_session() -> None:
+        # ── Announce the dashboard URL — deliberately NOT behind the probe ──
+        # The HTTP port is already listening (bound by _init_dashboard above), and
+        # nothing about building, formatting or printing a URL depends on MCP
+        # state. The ordering constraint documented below covers ONLY session
+        # spawn. Printing here instead of after the probe removes up to
+        # ~mcp_probe_timeout_secs+15 of "no URL on screen" from every boot, and
+        # all of it from the timed-out path.
+        dashboard_url = ""
+        if not self._no_dashboard:
             try:
-                assert self.sessions is not None
-                await self.sessions.start_pool(blocking=False)
-                logger.info("Background session starting")
-            except Exception:
-                logger.warning("Background session start failed", exc_info=True)
-
-            if not self._no_dashboard:
                 host = resolve_dashboard_host(self._local_only, self._configured_host)
                 _cfg_url = self._cfg.dashboard.url
                 if _cfg_url and "://" in _cfg_url:
@@ -8065,35 +8079,52 @@ class GatewayOrchestrator:
 
                 # Auto-open dashboard — skip on headless remote sessions
                 _is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
-                _has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+                _has_display = bool(
+                    os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+                )
                 _skip_open = _is_ssh and not _has_display and sys.platform != "darwin"
                 if self._no_open or not self._cfg.dashboard.auto_open_browser:
                     pass  # suppressed via --no-open flag or config
                 elif _skip_open:
                     print("👻 Headless remote session — skipping browser auto-open")
                 else:
-                    # Offload to subprocess executor — webbrowser.open() can
-                    # block indefinitely on a wedged /usr/bin/open process,
-                    # which would starve the default thread pool if we used
-                    # asyncio.to_thread(). The subprocess executor is a
-                    # dedicated pool for exactly this class of hang.
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.get_running_loop().run_in_executor(
-                                subprocess_executor(),
-                                webbrowser.open,
-                                dashboard_url,
-                            ),
-                            timeout=5.0,
-                        )
-                    except (TimeoutError, asyncio.TimeoutError):
-                        logger.debug("webbrowser.open timed out — skipping")
-                        print(
-                            "👻 Browser was slow to open — skipping auto-open.\n"
-                            "   Dashboard is running. Open this URL manually:\n"
-                            f"   {dashboard_url}\n"
-                            "   Or run: kirocrew token"
-                        )
+                    # Runs as a task so a slow browser launch overlaps the MCP
+                    # probe instead of delaying it. Tracked so it is not GC'd
+                    # mid-flight and is reaped on shutdown with the rest.
+                    _open_task = asyncio.create_task(self._auto_open_dashboard(dashboard_url))
+                    self._background_tasks.add(_open_task)
+                    _open_task.add_done_callback(self._background_tasks.discard)
+            except Exception:
+                # Announcing the URL is BEST EFFORT and must never abort boot.
+                # This block used to sit inside a fire-and-forget task, so a
+                # failure here could not take the gateway down; moving it onto
+                # the boot path has to preserve that. The dashboard is already
+                # listening either way — the operator loses a printed line, not
+                # the service, and `kirocrew token` still produces a URL.
+                logger.warning("Dashboard URL announcement failed", exc_info=True)
+
+        # Wait for MCP probe to finish before warming sessions —
+        # kiro-cli reads MCP config at spawn time, so sessions must
+        # start AFTER the probe has synced all servers to mcp.json.
+        from kiro_crew.dashboard.handlers import _bg_mcp_probe
+
+        print("👻 Probing MCP servers…")
+        # self._cfg is the config this boot already loaded — re-reading it here
+        # would pay a deepcopy plus a full nested-dataclass rebuild for one scalar.
+        _probe_t = self._cfg.dashboard.mcp_probe_timeout_secs + 15
+        try:
+            await asyncio.wait_for(_bg_mcp_probe(), timeout=_probe_t)
+        except asyncio.TimeoutError:
+            print("👻 MCP probe timed out — continuing without full probe")
+
+        # ── Start background session (this IS gated on the probe) ──
+        async def _start_bg_session() -> None:
+            try:
+                assert self.sessions is not None
+                await self.sessions.start_pool(blocking=False)
+                logger.info("Background session starting")
+            except Exception:
+                logger.warning("Background session start failed", exc_info=True)
 
         asyncio.create_task(_start_bg_session())
 
