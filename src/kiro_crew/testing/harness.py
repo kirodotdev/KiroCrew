@@ -456,6 +456,23 @@ def spawn_feature_gateway(
             **os.environ,
             "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
             "KIROCREW_HOME": str(home),
+            # Isolate the AGENT-SPEC home too, not just the data home (issue #4912).
+            # ``kirocrew gateway`` boot runs ``rebuild_agent_config``, which writes the
+            # managed MCP specs into ``kiro_agents_dir()``. Left at the default that
+            # resolves the operator's real machine-wide ``~/.kiro/agents`` -- and the
+            # spawned gateway is an ordinary (non-worktree) install, so ``agent.py``'s
+            # write guard takes the "writing its own shared home" branch and does NOT
+            # decline. It would then stamp this throwaway checkout's venv + tmp data
+            # home into the real install's specs, breaking every managed MCP call on
+            # the machine until the next gateway restart heals it.
+            #
+            # Pointing ``KIRO_HOME`` at ``<home>/kiro`` makes ``kiro_agents_dir()``
+            # resolve to ``<home>/kiro/agents`` -- which is EXACTLY
+            # ``isolated_agents_dir(<home>)``, the dedicated dir the write guard's
+            # private-target exemption already lets this instance own. The whole tree
+            # is removed with ``home`` on teardown, so the gateway writes only its own
+            # specs and leaves the shared install untouched.
+            "KIRO_HOME": str(home / "kiro"),
             # Marks this gateway as a test rig. It grants no launch privilege —
             # the packaged fake backend is exec'd by the ordinary in-place path
             # like any other runnable executable.

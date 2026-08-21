@@ -540,6 +540,61 @@ def test_spawn_feature_gateway_happy_path() -> None:
     assert "--no-crons" in captured_cmd[0]
 
 
+def test_spawn_feature_gateway_isolates_the_agent_spec_home() -> None:
+    """The spawned gateway must write its agent specs under its OWN throwaway home.
+
+    Regression guard for issue #4912. The gateway boot runs ``rebuild_agent_config``,
+    which writes the managed MCP specs into ``kiro_agents_dir()``. With only
+    ``KIROCREW_HOME`` isolated (the data home) and ``KIRO_HOME`` left at the default,
+    that resolver names the operator's real machine-wide ``~/.kiro/agents`` -- and the
+    spawned gateway is an ordinary (non-worktree) install, so ``agent.py``'s write
+    guard takes the "writing its own shared home" branch and does NOT decline. It would
+    then poison the real install's specs with this checkout's venv + a per-test data
+    home, 403-ing every managed MCP call on the machine.
+
+    The harness pins ``KIRO_HOME`` to ``<home>/kiro`` so ``kiro_agents_dir()`` resolves
+    to exactly ``isolated_agents_dir(<home>)`` -- the dedicated dir the write guard's
+    private-target exemption already lets an isolated instance own -- and the whole tree
+    is removed with ``home`` on teardown.
+    """
+    from kiro_crew.config.paths import isolated_agents_dir
+
+    fake_proc = _make_fake_proc_with_ready(
+        '{"port": 51234, "token": "t-abc", "pid": 9876, "home": "/tmp/x"}'
+    )
+    captured_env: dict[str, str] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> FakePopen:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        captured_env.update(env)
+        return fake_proc
+
+    with (
+        patch("kiro_crew.testing.harness.subprocess.Popen", side_effect=fake_popen),
+        patch("kiro_crew.testing.harness._terminate_process_group"),
+    ):
+        with spawn_feature_gateway(fixture="empty") as handle:
+            data_home = handle.home
+
+            # KIRO_HOME is set, points UNDER the gateway's throwaway data home, and is
+            # NOT the operator's real kiro-cli home.
+            assert "KIRO_HOME" in captured_env, "spawned gateway did not isolate KIRO_HOME"
+            kiro_home = Path(captured_env["KIRO_HOME"])
+            assert kiro_home == data_home / "kiro"
+            real_home = Path.home() / ".kiro"
+            assert kiro_home.resolve() != real_home.resolve()
+
+            # The agents dir the gateway will write to (``<KIRO_HOME>/agents``) is
+            # EXACTLY the write guard's private-target exemption for this instance's
+            # own data home -- so the boot-time ``rebuild_agent_config`` is allowed to
+            # write, but only into a directory this test rig owns and tears down.
+            assert kiro_home / "agents" == isolated_agents_dir(data_home)
+
+            # And the data home stays isolated too (unchanged by this fix).
+            assert captured_env["KIROCREW_HOME"] == str(data_home)
+
+
 def test_spawn_feature_gateway_crons_opt_in() -> None:
     """``crons=True`` drops ``--no-crons`` so the scheduler thread runs.
 
