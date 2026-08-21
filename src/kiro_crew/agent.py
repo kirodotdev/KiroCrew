@@ -55,6 +55,7 @@ from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
     _in_ephemeral_tree,
     _in_linked_git_worktree,
+    _under_system_tmp,
     _valid_override_home,
     isolated_agents_dir,
     kiro_agents_dir,
@@ -2675,7 +2676,52 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     # home and then found no agents). A pod needs no arm here: ``build_pod_env``
     # gives it its own ``KIRO_HOME``, so its target is its own dedicated directory
     # and the private-target exemption above already lets it through.
-    ephemeral = _in_linked_git_worktree(Path(__file__).resolve())
+    #
+    # A checkout under the system temp directory is the third positive signal:
+    # like a linked worktree and a pod, its teardown is a matter of WHEN, not
+    # whether — temp trees are reaped by the OS, by CI, and by the automation
+    # that cloned them (a per-task scratch clone is created and deleted around a
+    # single job). A spec stamped from one names a launcher venv, and possibly a
+    # pinned data home, that stop existing when the tree goes; #4781 documents
+    # both live failure modes (ENOENT-dead managed servers, and empty-credential
+    # ``internal_auth_mismatch`` when the pinned home is recreated empty). This
+    # is checked on the CHECKOUT location (``__file__``), not the data home, so
+    # the offline E2E harness — which runs the REPO checkout on a temp data
+    # home — is unaffected, exactly the regression the note above records.
+    #
+    # An AppImage's runtime mount is carved back OUT of that arm. It sits under
+    # the temp root (``/tmp/.mount_<name>XXXXXX``) and the mount itself is indeed
+    # reaped on exit, but the temp signal's premise — a spec outliving the only
+    # instance that would have written it — inverts here: a DURABLE install (the
+    # ``.AppImage`` file on disk) stands behind the mount and re-runs this on
+    # every start, and because the runtime picks a NEW random mount each launch,
+    # rewriting the spec per start is the only way its managed servers ever
+    # resolve. Declining would freeze the spec on a previous launch's mount path
+    # and ENOENT every managed server — manufacturing #4781's own symptom on a
+    # shipped channel — and on a fresh install would leave no spec at all
+    # (``Mode 'kirocrew' not found``). ``_in_ephemeral_tree`` is the same
+    # AppImage-precise predicate the launcher installer uses; the temp-root rule
+    # it declines is the one being narrowed here, not adopted.
+    #
+    # The temp arm also declines only when there is something to preserve. This
+    # guard's entire remedy is "use the specs that already worked" — the log line
+    # below says exactly that — and with no spec present there are none, so
+    # declining does not protect a shared resource, it just leaves the install
+    # dead (every turn fails with ``Mode 'kirocrew' not found``). #4781's harm is
+    # specifically an OVERWRITE of a working spec, which this still refuses: the
+    # spec is present in every reported instance of it. A spec that exists but is
+    # already stale stays stale, same as under the worktree arm — repairing it is
+    # the durable install's job on its next start, and it rewrites unconditionally.
+    # Deliberately scoped to this arm: the worktree and pod arms predate this fix
+    # and their populations were chosen on their own grounds, so widening them is
+    # a separate decision, not a side effect of adding a third signal.
+    checkout = Path(__file__).resolve()
+    temp_scratch = (
+        _under_system_tmp(checkout)
+        and not _in_ephemeral_tree(checkout)
+        and (target / AGENT_FILENAME).exists()
+    )
+    ephemeral = _in_linked_git_worktree(checkout) or temp_scratch
     if not ephemeral:
         # A GRANT over the shared resource, so it is audited like the denial
         # below: every permission decision about the machine-wide agent home is
