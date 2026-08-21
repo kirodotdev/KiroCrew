@@ -49,6 +49,9 @@ _USER_AGENT = "KiroCrew/1.0 (mcp-discovery)"
 # is a few KB; anything bigger is malformed or hostile.
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
+# Per-chunk read size while streaming a response to EOF (64 KiB).
+_HTTP_READ_CHUNK_BYTES = 64 * 1024
+
 # _meta key under which the registry reports official status metadata.
 _META_OFFICIAL = "io.modelcontextprotocol.registry/official"
 
@@ -87,11 +90,21 @@ async def _fetch_json(url: str) -> Any | None:
                     return None
                 if resp.status != 200:
                     raise ProviderUnavailableError(f"registry returned HTTP {resp.status}")
-                # Bound the read — resp.text() would buffer unbounded.
-                body = await resp.content.read(_MAX_RESPONSE_BYTES + 1)
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    raise ProviderUnavailableError("registry response too large")
-                return json.loads(body.decode("utf-8"))
+                # Stream to EOF in bounded chunks. The registry sends search
+                # pages with no Content-Length, and a single
+                # StreamReader.read(n) returns only the bytes already
+                # buffered, so a multi-chunk document would reach json.loads
+                # truncated. The size cap is checked against the accumulated
+                # total, so an oversized body is refused mid-stream rather
+                # than buffered whole.
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.content.iter_chunked(_HTTP_READ_CHUNK_BYTES):
+                    total += len(chunk)
+                    if total > _MAX_RESPONSE_BYTES:
+                        raise ProviderUnavailableError("registry response too large")
+                    chunks.append(chunk)
+                return json.loads(b"".join(chunks).decode("utf-8"))
     except ProviderUnavailableError:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, OSError) as exc:

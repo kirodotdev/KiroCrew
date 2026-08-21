@@ -7,6 +7,7 @@ blocked in this environment, and the tests must stay hermetic anyway.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -381,6 +382,140 @@ class TestOfficialTransport:
         monkeypatch.setattr(official_mod, "_fetch_json", boom)
         with pytest.raises(ProviderUnavailableError):
             await OfficialRegistryProvider().fetch_detail("io.github.acme/weather")
+
+
+# ---------------------------------------------------------------------------
+# Response reading — _fetch_json streams the body to EOF
+# ---------------------------------------------------------------------------
+
+
+class _FakeContent:
+    """Stand-in for ``aiohttp.StreamReader`` that hands out queued chunks.
+
+    ``iter_chunked`` yields them in order, one per chunk. ``read(n)`` returns
+    at most one queued chunk (split when longer than *n*) and ``b""`` at EOF —
+    the documented "up to n bytes" contract a single read cannot satisfy for a
+    streamed body, kept so a single-read implementation is still exercised.
+    """
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.reads = 0
+
+    async def iter_chunked(self, n: int):
+        while self._chunks:
+            yield await self.read(n)
+
+    async def read(self, n: int = -1) -> bytes:
+        self.reads += 1
+        if not self._chunks:
+            return b""
+        chunk = self._chunks.pop(0)
+        if n >= 0 and len(chunk) > n:
+            self._chunks.insert(0, chunk[n:])
+            chunk = chunk[:n]
+        return chunk
+
+    @property
+    def undelivered(self) -> int:
+        return sum(len(c) for c in self._chunks)
+
+
+class _FakeResponse:
+    def __init__(self, status: int, chunks):
+        self.status = status
+        self.content = _FakeContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, headers=None):
+        return self._response
+
+
+def _serve(monkeypatch, *chunks, status: int = 200) -> _FakeResponse:
+    """Route ``_fetch_json``'s HTTP call at a response yielding *chunks*."""
+    response = _FakeResponse(status, chunks)
+    monkeypatch.setattr(
+        official_mod.aiohttp, "ClientSession", lambda *a, **kw: _FakeSession(response)
+    )
+    return response
+
+
+class TestFetchJsonRead:
+    @pytest.mark.asyncio
+    async def test_multi_chunk_body_is_assembled(self, monkeypatch):
+        """A document split across chunks parses whole, not truncated."""
+        body = json.dumps({"servers": [{"name": f"io.github.a/s{i}"} for i in range(200)]})
+        raw = body.encode("utf-8")
+        third = len(raw) // 3
+        _serve(monkeypatch, raw[:third], raw[third : 2 * third], raw[2 * third :])
+
+        doc = await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+        assert doc == json.loads(body)
+
+    @pytest.mark.asyncio
+    async def test_heavily_fragmented_body_is_assembled(self, monkeypatch):
+        """Byte-at-a-time delivery still assembles — the loop has no read cap."""
+        raw = json.dumps({"servers": [{"name": "io.github.a/one"}]}).encode("utf-8")
+        _serve(monkeypatch, *[raw[i : i + 1] for i in range(len(raw))])
+
+        doc = await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+        assert doc == {"servers": [{"name": "io.github.a/one"}]}
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_rejected_mid_stream(self, monkeypatch):
+        """The cap applies to the accumulated total and stops the read early."""
+        monkeypatch.setattr(official_mod, "_MAX_RESPONSE_BYTES", 1024)
+        response = _serve(monkeypatch, *[b"x" * 512] * 20)
+
+        with pytest.raises(ProviderUnavailableError, match="too large"):
+            await official_mod._fetch_json("https://registry.example/v0.1/servers")
+
+        assert response.content.undelivered > 0, "read should abort, not drain the body"
+
+    @pytest.mark.asyncio
+    async def test_body_at_exact_cap_is_accepted(self, monkeypatch):
+        """A body exactly at the cap is not over it."""
+        raw = json.dumps({"servers": []}).encode("utf-8")
+        monkeypatch.setattr(official_mod, "_MAX_RESPONSE_BYTES", len(raw))
+        _serve(monkeypatch, raw[:2], raw[2:])
+
+        assert await official_mod._fetch_json("https://registry.example/v0.1/servers") == {
+            "servers": []
+        }
+
+    @pytest.mark.asyncio
+    async def test_404_returns_none_without_reading(self, monkeypatch):
+        """A missing entry is None, distinct from an unreachable registry."""
+        response = _serve(monkeypatch, b"not json", status=404)
+
+        assert await official_mod._fetch_json("https://registry.example/v0.1/servers") is None
+        assert response.content.reads == 0
+
+    @pytest.mark.asyncio
+    async def test_truncated_body_surfaces_as_provider_unavailable(self, monkeypatch):
+        """A genuinely malformed document is a provider failure, not a crash."""
+        _serve(monkeypatch, b'{"servers": [{"name": "io.git')
+
+        with pytest.raises(ProviderUnavailableError):
+            await official_mod._fetch_json("https://registry.example/v0.1/servers")
 
 
 # ---------------------------------------------------------------------------
