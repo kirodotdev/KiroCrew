@@ -24,6 +24,8 @@ import pytest
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_capability, update_layout
 
+_REAL_FETCH_FEED_BYTES = updates._fetch_feed_bytes
+
 # A well-formed manifest, shaped like the real feed document.
 _FEED_TEMPLATE = {
     "algorithm": "RSASSA_PKCS1_V1_5_SHA_256",
@@ -68,6 +70,89 @@ def _stub_feed(monkeypatch, *, status: int = 200, body: bytes | None = None, exc
 
     monkeypatch.setattr(updates, "_fetch_feed_bytes", _fake)
     return seen
+
+
+class _FragmentedFeedContent:
+    """StreamReader double whose ``read`` returns only one buffered fragment."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _n: int = -1) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+    async def iter_chunked(self, n: int):
+        while self._chunks:
+            yield await self.read(n)
+
+    @property
+    def undelivered(self) -> int:
+        return sum(map(len, self._chunks))
+
+
+class _FeedResponse:
+    status = 200
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.content = _FragmentedFeedContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
+class _FeedSession:
+    def __init__(self, response: _FeedResponse) -> None:
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    def get(self, _url: str) -> _FeedResponse:
+        return self._response
+
+
+def _serve_fragmented_feed(monkeypatch, *chunks: bytes) -> _FeedResponse:
+    response = _FeedResponse(list(chunks))
+    monkeypatch.setattr(
+        updates.aiohttp,
+        "ClientSession",
+        lambda *args, **kwargs: _FeedSession(response),
+    )
+    return response
+
+
+class TestFetchFeedBytes:
+    @pytest.mark.asyncio
+    async def test_fragmented_body_is_assembled_to_eof(self, monkeypatch):
+        raw = _manifest()
+        third = len(raw) // 3
+        _serve_fragmented_feed(
+            monkeypatch,
+            raw[:third],
+            raw[third : 2 * third],
+            raw[2 * third :],
+        )
+
+        status, body = await _REAL_FETCH_FEED_BYTES("https://feed.example/stable.json")
+
+        assert status == 200
+        assert body == raw
+
+    @pytest.mark.asyncio
+    async def test_accumulated_cap_stops_before_draining_tail(self, monkeypatch):
+        monkeypatch.setattr(updates, "_FEED_MAX_BYTES", 10)
+        response = _serve_fragmented_feed(monkeypatch, b"a" * 6, b"b" * 6, b"tail")
+
+        _status, body = await _REAL_FETCH_FEED_BYTES("https://feed.example/stable.json")
+
+        assert len(body) > updates._FEED_MAX_BYTES
+        assert response.content.undelivered > 0
 
 
 @pytest.fixture(autouse=True)

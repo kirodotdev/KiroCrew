@@ -80,6 +80,7 @@ _REQUEST_TIMEOUT_SECONDS = 10
 # hostile or misconfigured endpoint could still stream an unbounded body; the
 # cap bounds what one request can buffer on the event loop.
 _MAX_RESP_BYTES = 1_000_000
+_HTTP_READ_CHUNK_BYTES = 64 * 1024
 
 # The exact set of `responseValue`s Aperture's registered form template accepts
 # for the rating question — the wire values in
@@ -176,14 +177,18 @@ def _survey_identity() -> str:
 async def _read_capped_text(resp: aiohttp.ClientResponse) -> str:
     """Read at most ``_MAX_RESP_BYTES`` from *resp*, raising if it exceeds the cap.
 
-    Mirrors ``kiro_usage_api._read_capped``: reads ``_MAX_RESP_BYTES + 1`` bytes
-    and treats an over-cap body as a failure rather than buffering it, so a
-    hostile endpoint cannot OOM the single-threaded gateway.
+    Stream to EOF because ``StreamReader.read(n)`` may return only one buffered
+    fragment. The accumulated byte count enforces the cap before buffering an
+    oversized chunk, so a hostile endpoint cannot OOM the single-threaded gateway.
     """
-    raw = await resp.content.read(_MAX_RESP_BYTES + 1)
-    if len(raw) > _MAX_RESP_BYTES:
-        raise ValueError("aperture response body exceeded cap")
-    return raw.decode("utf-8", "replace")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.content.iter_chunked(_HTTP_READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > _MAX_RESP_BYTES:
+            raise ValueError("aperture response body exceeded cap")
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", "replace")
 
 
 def _customer_responses(body: dict[str, Any]) -> list[dict[str, Any]]:

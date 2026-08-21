@@ -20,13 +20,21 @@ _TEST_IDENTITY = "install-abc123"
 
 
 class _FakeContent:
-    """Minimal stand-in for ``aiohttp.StreamReader`` exposing ``read(n)``."""
+    """StreamReader double whose ``read`` returns one buffered fragment."""
 
-    def __init__(self, raw: bytes) -> None:
-        self._raw = raw
+    def __init__(self, raw: bytes | list[bytes]) -> None:
+        self._chunks = list(raw) if isinstance(raw, list) else [raw]
 
     async def read(self, n: int = -1) -> bytes:
-        return self._raw
+        return self._chunks.pop(0) if self._chunks else b""
+
+    async def iter_chunked(self, n: int):
+        while self._chunks:
+            yield await self.read(n)
+
+    @property
+    def undelivered(self) -> int:
+        return sum(map(len, self._chunks))
 
 
 class _FakeResp:
@@ -128,6 +136,28 @@ def _dashboard_req(method: str, path: str) -> web.Request:
     req = make_mocked_request(method, path)
     req["app"] = ""
     return req
+
+
+class TestReadCappedText:
+    @pytest.mark.asyncio
+    async def test_fragmented_body_is_assembled_to_eof(self) -> None:
+        resp = _FakeResp(200)
+        resp.content = _FakeContent([b"whole ", b"aperture ", b"reply"])
+
+        assert await feedback._read_capped_text(resp) == "whole aperture reply"
+
+    @pytest.mark.asyncio
+    async def test_accumulated_cap_stops_before_draining_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(feedback, "_MAX_RESP_BYTES", 10)
+        resp = _FakeResp(200)
+        resp.content = _FakeContent([b"a" * 6, b"b" * 6, b"tail"])
+
+        with pytest.raises(ValueError, match="exceeded cap"):
+            await feedback._read_capped_text(resp)
+
+        assert resp.content.undelivered > 0
 
 
 class TestRequireDashboardUser:

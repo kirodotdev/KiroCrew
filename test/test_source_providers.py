@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -7448,6 +7449,101 @@ async def test_fetch_jira_issue_no_credentials_raises_value_error(monkeypatch):
     )
     with pytest.raises(ValueError, match="jira_no_credentials"):
         await source._fetch_jira_issue(ref)
+
+
+class _FragmentedJiraContent:
+    """StreamReader double whose ``read`` returns only one buffered fragment."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _n: int = -1) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+    async def iter_chunked(self, n: int):
+        while self._chunks:
+            yield await self.read(n)
+
+    @property
+    def undelivered(self) -> int:
+        return sum(map(len, self._chunks))
+
+
+class _JiraResponse:
+    status = 200
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.content = _FragmentedJiraContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
+class _JiraSession:
+    def __init__(self, response: _JiraResponse, **_kwargs) -> None:
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    def get(self, _url: str, **_kwargs) -> _JiraResponse:
+        return self._response
+
+
+def _jira_ref() -> source.SourceRef:
+    return source.SourceRef(
+        provider="jira",
+        url="https://acme.atlassian.net/browse/PROJ-123",
+        host="acme.atlassian.net",
+        owner="",
+        repo="PROJ",
+        number=123,
+        kind="issue",
+    )
+
+
+def _serve_fragmented_jira(monkeypatch, *chunks: bytes) -> _JiraResponse:
+    response = _JiraResponse(list(chunks))
+    monkeypatch.setattr(source, "_get_jira_auth", lambda _host: ("dev@example.com", "token"))
+    monkeypatch.setattr(
+        source.aiohttp,
+        "ClientSession",
+        lambda *args, **kwargs: _JiraSession(response, **kwargs),
+    )
+    return response
+
+
+class TestFetchJiraIssueResponseRead:
+    @pytest.mark.asyncio
+    async def test_fragmented_body_is_assembled_to_eof(self, monkeypatch):
+        raw = json.dumps({"fields": {"summary": "Whole Jira issue"}}).encode()
+        third = len(raw) // 3
+        _serve_fragmented_jira(
+            monkeypatch,
+            raw[:third],
+            raw[third : 2 * third],
+            raw[2 * third :],
+        )
+
+        issue = await source._fetch_jira_issue(_jira_ref())
+
+        assert issue["title"] == "Whole Jira issue"
+
+    @pytest.mark.asyncio
+    async def test_accumulated_cap_stops_before_draining_tail(self, monkeypatch):
+        monkeypatch.setattr(source, "_MAX_PAYLOAD_BYTES", 10)
+        response = _serve_fragmented_jira(monkeypatch, b"a" * 6, b"b" * 6, b"tail")
+
+        with pytest.raises(source.SourceProviderError, match="exceeds the size limit"):
+            await source._fetch_jira_issue(_jira_ref())
+
+        assert response.content.undelivered > 0
 
 
 def test_parse_jira_cloud_url() -> None:

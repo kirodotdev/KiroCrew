@@ -63,6 +63,7 @@ _MAX_ERROR_BYTES = 64 * 1024
 # conservatively cover raw bytes, decoded JSON, normalized copies, and Python
 # object overhead while a complete direct fetch remains alive.
 _MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
+_HTTP_READ_CHUNK_BYTES = 64 * 1024
 _SECONDARY_PAGE_SIZE = 100
 _COMMAND_TIMEOUT_SECS = 30
 _CACHE_TTL_SECS = 30
@@ -2417,13 +2418,19 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
                     raise SourceProviderError(
                         f"Jira returned HTTP {resp.status} for {issue_key}."
                     )
-                # Bound response size to prevent memory exhaustion from an
-                # oversized or malicious payload before JSON decoding.
-                body = await resp.content.read(_MAX_PAYLOAD_BYTES + 1)
-                if len(body) > _MAX_PAYLOAD_BYTES:
-                    raise SourceProviderError(
-                        f"Jira response for {issue_key} exceeds the size limit."
-                    )
+                # Stream to EOF because StreamReader.read(n) may return only
+                # one buffered fragment. Enforce the cap against the received
+                # total before retaining an oversized or malicious payload.
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.content.iter_chunked(_HTTP_READ_CHUNK_BYTES):
+                    total += len(chunk)
+                    if total > _MAX_PAYLOAD_BYTES:
+                        raise SourceProviderError(
+                            f"Jira response for {issue_key} exceeds the size limit."
+                        )
+                    chunks.append(chunk)
+                body = b"".join(chunks)
                 try:
                     data = json.loads(body)
                 except RecursionError:

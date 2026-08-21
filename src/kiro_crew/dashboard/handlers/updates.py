@@ -127,6 +127,7 @@ _CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
 #: the very same document. Enforced against RECEIVED bytes, not Content-Length.
 _FEED_MAX_BYTES = 65536
 _FEED_TIMEOUT_SECS = 15
+_HTTP_READ_CHUNK_BYTES = 64 * 1024
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
@@ -733,11 +734,17 @@ async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
     timeout = aiohttp.ClientTimeout(total=_FEED_TIMEOUT_SECS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url) as resp:
-            # +1 byte so an oversized body is DETECTED rather than silently
-            # truncated into a parse error. Mirrors the installer's
-            # --max-filesize on this very document, and is enforced against
-            # RECEIVED bytes rather than a Content-Length claim.
-            return resp.status, await resp.content.read(_FEED_MAX_BYTES + 1)
+            # Stream to EOF: StreamReader.read(n) may return only the currently
+            # buffered fragment. Keep the caller's +1-byte overflow signal and
+            # stop as soon as the RECEIVED total proves the feed is oversized.
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.content.iter_chunked(_HTTP_READ_CHUNK_BYTES):
+                total += len(chunk)
+                chunks.append(chunk)
+                if total > _FEED_MAX_BYTES:
+                    return resp.status, b"".join(chunks)[: _FEED_MAX_BYTES + 1]
+            return resp.status, b"".join(chunks)
 
 
 async def _check_release_feed(capability: UpdateCapability) -> None:
