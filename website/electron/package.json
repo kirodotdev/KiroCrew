@@ -145,6 +145,7 @@
       "bundle-location.js",
       "gateway-auth-hint.js",
       "blocking-prompt.js",
+      "hide-to-tray.js",
       "gateway-stop.js",
       "gateway-wait.js",
       "sandbox-profile.js",

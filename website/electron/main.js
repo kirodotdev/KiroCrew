@@ -19,6 +19,7 @@ const { createTokenRetryHandler } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { exitImmersiveModes } = require("./blocking-prompt");
+const { hideToTray } = require("./hide-to-tray");
 const { shouldRetryLocalTokenMint, tokenMintRetryDelayMs, TOKEN_MINT_MAX_RETRIES } = require("./token-acquire");
 const { createDisplayMediaHandler } = require("./display-media");
 const {
@@ -2118,7 +2119,13 @@ function createWindow() {
   mainWindow.on("close", (e) => {
     if (!isQuitting) {
       e.preventDefault();
-      mainWindow.hide();
+      // Not a quit — hide to the tray. On macOS this MUST leave a native
+      // fullscreen Space first, or the Space is orphaned as a black surface and
+      // the window later re-shows at a degenerate frame (see hide-to-tray.js).
+      // The hide is deferred to `leave-full-screen` in that case; the existing
+      // geometry listener fires on the same event, so the persisted state
+      // truthfully records the window as windowed at its normal bounds.
+      hideToTray(mainWindow);
       return;
     }
     // Real quit — capture the final geometry synchronously before teardown so
