@@ -286,6 +286,74 @@ class TestSpawnHardening:
             assert candidate.startswith(("/", "C:\\")), candidate
             assert "tailscale" in candidate.lower(), candidate
 
+    @staticmethod
+    def _windows_candidate(monkeypatch, candidate: str) -> None:
+        """Present *candidate* as an existing, executable file on a Windows gateway.
+
+        ``isfile``/``access`` are stubbed because the pinned Tailscale install
+        path does not exist on a test runner, and the question under test is what
+        the TRUST check does once a candidate is otherwise viable -- not whether
+        the file is there.
+        """
+        monkeypatch.setattr(tailnet, "IS_POSIX", False)
+        monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (candidate,))
+        monkeypatch.setattr(tailnet.os.path, "isfile", lambda _path: True)
+        monkeypatch.setattr(tailnet.os, "access", lambda _path, _mode: True)
+
+    def test_windows_candidate_must_pass_acl_validation(self, monkeypatch) -> None:
+        """A refused Windows binary is not executed.
+
+        The POSIX predicate this replaced read nothing on Windows -- ``st_uid`` is
+        always 0 and ``st_mode`` always ``0o777`` there -- so the guard passed
+        unconditionally and the spawn happened either way.
+        """
+        candidate = r"C:\Program Files\Tailscale\tailscale.exe"
+        self._windows_candidate(monkeypatch, candidate)
+        with patch(
+            "kiro_crew.github_runner.validate_provider_executable",
+            side_effect=ValueError("executable can be replaced by Everyone"),
+        ) as validate:
+            assert tailnet._cli_path() is None
+        validate.assert_called_once_with(candidate)
+
+    def test_windows_candidate_cleared_by_the_acl_walk_is_used(self, monkeypatch) -> None:
+        """The other half of the contract: a cleared binary still runs.
+
+        A guard that refused every Windows install would "pass" the refusal test
+        above while removing the feature, so the accepting path is pinned too --
+        and pinned to the validator's CANONICAL return rather than to the raw
+        candidate, because that is the path actually spawned.
+        """
+        candidate = r"C:\Program Files\Tailscale\tailscale.exe"
+        canonical = r"C:\Program Files\Tailscale\TAILSCALE.EXE"
+        self._windows_candidate(monkeypatch, candidate)
+        with patch(
+            "kiro_crew.github_runner.validate_provider_executable",
+            return_value=canonical,
+        ) as validate:
+            assert tailnet._cli_path() == canonical
+        validate.assert_called_once_with(candidate)
+
+    def test_posix_keeps_its_own_stricter_check(self, monkeypatch) -> None:
+        """POSIX behaviour is unchanged -- the shared validator is not consulted.
+
+        ``_posix_candidate_trusted`` is stricter than the validator's default
+        policy (which deliberately accepts ordinary user-owned Homebrew installs),
+        so routing POSIX through the shared path would LOOSEN an existing control.
+        This fix is Windows-only by construction.
+        """
+        candidate = "/usr/bin/tailscale"
+        monkeypatch.setattr(tailnet, "IS_POSIX", True)
+        monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (candidate,))
+        monkeypatch.setattr(tailnet.os.path, "isfile", lambda _path: True)
+        monkeypatch.setattr(tailnet.os, "access", lambda _path, _mode: True)
+        monkeypatch.setattr(tailnet, "_posix_candidate_trusted", lambda _c: True)
+        with patch(
+            "kiro_crew.github_runner.validate_provider_executable"
+        ) as validate:
+            assert tailnet._cli_path() == candidate
+        validate.assert_not_called()
+
     def test_credentials_are_not_inherited(self) -> None:
         """The child gets a scrubbed environment, not ``os.environ``."""
         witness = "AWS_SECRET_ACCESS_KEY"

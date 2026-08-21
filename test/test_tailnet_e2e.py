@@ -163,16 +163,20 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(cli),))
     # SECOND deliberate seam, and it disables a security guard, so it is stated
-    # loudly rather than quietly worked around. `_cli_path` refuses any candidate the
-    # gateway user can write (planted-binary defence): the pinned list needs root,
-    # and an agent that can write a `tailscale` there would get it executed on the
-    # auth path. An unprivileged E2E cannot satisfy that — its fake lives in a
+    # loudly rather than quietly worked around. `_cli_path` vets the executable's
+    # ownership and permissions on POSIX and its ACL hierarchy on Windows. An
+    # unprivileged E2E cannot satisfy that provenance policy — its fake lives in a
     # user-owned tmp dir by construction.
     #
     # `test_the_planted_binary_defence_refuses_this_fake` below asserts the guard
     # really does reject this fake when NOT patched, so this bypass is proven
     # deliberate and cannot rot into an accidentally-disabled control.
-    monkeypatch.setattr(tailnet, "_posix_candidate_trusted", lambda _c: True)
+    if tailnet.IS_POSIX:
+        monkeypatch.setattr(tailnet, "_posix_candidate_trusted", lambda _c: True)
+    else:
+        monkeypatch.setattr(
+            tailnet.github_runner, "validate_provider_executable", lambda candidate: candidate
+        )
     monkeypatch.setenv("KIROCREW_PORT", str(_DASH_PORT))
     return {"cli": cli, "state": state, "home": home}
 
@@ -209,8 +213,6 @@ class TestTheSeamIsDeliberate:
         # Undo only the trust bypass; the candidate list still points at the fake.
         monkeypatch.undo()
         monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(env["cli"]),))
-        if not tailnet.IS_POSIX:
-            pytest.skip("the writability guard is POSIX-only")
         assert tailnet._cli_path() is None, (
             "a user-writable fake must be refused — if this passes, the guard the "
             "fixture bypasses is no longer doing anything"

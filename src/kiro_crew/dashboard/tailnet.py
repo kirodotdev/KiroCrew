@@ -37,6 +37,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import github_runner
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.governance_profiles import (
@@ -97,31 +98,40 @@ def _cli_path() -> str | None:
 
     Deliberately does **not** consult ``PATH`` — see ``_CLI_CANDIDATE_PATHS``.
 
-    A candidate is additionally refused when the binary or its directory is
-    writable by the gateway user (checked on POSIX; the Windows entry needs
-    elevation to write). The pinned list mostly needs root, but two entries do
-    not everywhere: Homebrew chowns ``/opt/homebrew/bin`` (and sometimes
-    ``/usr/local/bin``) to the console user, and identity resolution makes
-    this a request-triggered execution on the auth path — an agent that can
-    write there must not be able to plant a ``tailscale`` the next
-    credential-bearing request executes. A refused Homebrew install degrades
-    exactly like a missing binary: the feature contributes nothing and the
-    documented ``dashboard.url`` fallback still works.
+    A candidate is additionally refused when its platform's ownership policy
+    cannot establish trusted provenance. POSIX keeps the stricter local check
+    below; Windows reuses the shared executable validator, which reads the
+    binary and parent ACLs because mode bits carry no useful signal there. A
+    refusal degrades exactly like a missing binary: the feature contributes
+    nothing and the documented ``dashboard.url`` fallback still works.
     """
     # getattr: os.geteuid does not exist on Windows, and tests exercise this
     # path with IS_POSIX patched True on every platform.
     for candidate in _CLI_CANDIDATE_PATHS:
         if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
             continue
-        if IS_POSIX and not _posix_candidate_trusted(candidate):
-            logger.debug(
-                "tailscale CLI at %s is in a location this deployment cannot "
-                "trust; refusing to execute it (planted-binary defence). Use "
-                "an explicit dashboard.url instead.",
-                candidate,
-            )
-            continue
-        return candidate
+        validated = candidate
+        if IS_POSIX:
+            if not _posix_candidate_trusted(candidate):
+                logger.debug(
+                    "tailscale CLI at %s is in a location this deployment cannot "
+                    "trust; refusing to execute it (planted-binary defence). Use "
+                    "an explicit dashboard.url instead.",
+                    candidate,
+                )
+                continue
+        else:
+            try:
+                validated = github_runner.validate_provider_executable(candidate)
+            except ValueError as exc:
+                logger.debug(
+                    "tailscale CLI at %s failed executable trust validation: %s. "
+                    "Use an explicit dashboard.url instead.",
+                    candidate,
+                    exc,
+                )
+                continue
+        return validated
     return None
 
 
