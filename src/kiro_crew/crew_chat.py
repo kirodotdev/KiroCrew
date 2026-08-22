@@ -35,7 +35,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.history import append_if_absent_off_loop
-from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent_persistence import _agent_dir, read_state
@@ -71,6 +71,16 @@ _SUB_TASK_SUFFIX = (
     "with a summary of the result (<=150 words) wrapped EXACTLY as: "
     "<<<SUMMARY your summary here >>>"
 )
+
+
+def _decision_shaped(value: object) -> bool:
+    """Prefer predicate: a dict carrying the decision payload's ``actions`` list.
+
+    Disambiguates the payload from stray braced JSON in surrounding prose (an
+    inline worked example, a ``{placeholder}`` aside) -- those parse as dicts
+    but never carry the schema the executor consumes."""
+    return isinstance(value, dict) and isinstance(value.get("actions"), list)
+
 
 _DECISION_PROMPT = """You are the routing decision function for a multi-topic chat. \
 Decide what to do with each PENDING message. Reply with ONLY a JSON object, no prose.
@@ -1411,8 +1421,15 @@ class CrewOrchestrator:
                     self._sessions, prompt, model=self._decision_model,
                     sel_source="crew_decision", timeout=_DECISION_TIMEOUT,
                 )
-                m = re.search(r"\{.*\}", raw, re.DOTALL)
-                actions = json.loads(m.group(0))["actions"] if m else []
+                data = _extract_json_of_type(raw, dict, prefer=_decision_shaped)
+                if not isinstance(data, dict):
+                    # No usable JSON object: nothing parseable, or two
+                    # DIFFERENT actions-shaped dicts (the shared contract
+                    # refuses to guess which is the real payload). The prompt
+                    # demands a JSON-only reply, so all of these are model
+                    # failures -- take the retry-then-defer path.
+                    raise ValueError("decision reply carried no usable JSON object")
+                actions = data["actions"]
                 break
             except Exception:
                 if attempt == 2:

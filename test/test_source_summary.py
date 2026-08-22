@@ -118,3 +118,53 @@ class TestGenerateSourceSummary:
         row = store.db.execute("SELECT summary_themes FROM sources WHERE id = ?", (sid,)).fetchone()
         themes = json.loads(row["summary_themes"])
         assert len(themes) <= 5
+
+    @pytest.mark.asyncio
+    async def test_stray_brace_in_prose_still_parses(self, pipeline, store):
+        # The old greedy first-'{'-to-last-'}' regex spanned from the
+        # {topic, themes} aside to the trailing "{}" echo, so the slice never
+        # parsed and a valid payload was silently lost.
+        sid = store.add_source("test", "local_file", "/tmp/test.md")
+        store.add_item("title", "content", "doc", source_id=sid, summary="A summary")
+        pipeline.extractor._pool.send.return_value = (
+            'Per the {topic, themes} shape: {"topic": "AI overview", '
+            '"themes": ["AI"]} -- use {} when unsure.'
+        )
+        await pipeline.generate_source_summary(sid)
+        row = store.db.execute(
+            "SELECT summary_topic, summary_themes FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["summary_topic"] == "AI overview"
+        assert json.loads(row["summary_themes"]) == ["AI"]
+
+    @pytest.mark.asyncio
+    async def test_two_different_payloads_refuse_the_guess(self, pipeline, store):
+        # The shared extractor's ambiguity contract: two DIFFERENT
+        # payload-shaped dicts mean the caller cannot know which is real, so
+        # nothing is stored (the pre-swap behavior for such a reply was also
+        # a no-op -- the greedy span across both never parsed).
+        sid = store.add_source("test", "local_file", "/tmp/test.md")
+        store.add_item("title", "content", "doc", source_id=sid, summary="A summary")
+        pipeline.extractor._pool.send.return_value = (
+            '{"topic": "first"} or maybe {"topic": "second"}'
+        )
+        await pipeline.generate_source_summary(sid)
+        row = store.db.execute(
+            "SELECT summary_topic FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["summary_topic"] is None
+
+    @pytest.mark.asyncio
+    async def test_unshaped_fallback_does_not_erase_an_existing_summary(self, pipeline, store):
+        # The scanner falls back to the first dict when nothing is
+        # payload-shaped; a bare "{}" echo in the reply must not overwrite a
+        # previously stored summary with empty topic/themes on re-ingestion.
+        sid = store.add_source("test", "local_file", "/tmp/test.md")
+        store.add_item("title", "content", "doc", source_id=sid, summary="A summary")
+        pipeline.extractor._pool.send.return_value = (
+            '{"topic": "AI overview", "themes": ["AI"]}'
+        )
+        await pipeline.generate_source_summary(sid)
+        pipeline.extractor._pool.send.return_value = 'Use {placeholder} style, or {} when unsure.'
+        await pipeline.generate_source_summary(sid)
+        row = store.db.execute(
+            "SELECT summary_topic FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["summary_topic"] == "AI overview"

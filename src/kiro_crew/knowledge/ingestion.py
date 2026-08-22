@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import time as _time
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -15,6 +14,7 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -234,6 +234,19 @@ def _first_line_title(content: str) -> str:
         if line:
             return line[:80]
     return ""
+
+
+_SUMMARY_PAYLOAD_KEYS = frozenset({"topic", "themes"})
+
+
+def _summary_shaped(value: object) -> bool:
+    """Prefer predicate: a dict carrying at least one source-summary field.
+
+    Disambiguates the payload from stray braced JSON in the surrounding prose
+    or in the untrusted section summaries echoed back by the model -- those
+    parse as dicts but never carry the ``topic``/``themes`` fields this
+    caller consumes."""
+    return isinstance(value, dict) and not _SUMMARY_PAYLOAD_KEYS.isdisjoint(value)
 
 
 class IngestionPipeline:
@@ -1012,10 +1025,12 @@ class IngestionPipeline:
         )
         try:
             response = await self.extractor._pool.send(prompt, timeout=30.0)
-            # Parse JSON from response
-            m = re.search(r'\{[\s\S]*\}', response)
-            if m:
-                data = json.loads(m.group())
+            data = _extract_json_of_type(response, dict, prefer=_summary_shaped)
+            # The shape check guards the WRITE, not just the preference: the
+            # scanner falls back to the first dict when nothing is
+            # payload-shaped (e.g. a bare "{}" echo), and storing that would
+            # overwrite an existing summary with empty values.
+            if isinstance(data, dict) and _summary_shaped(data):
                 topic = _redact(data.get("topic", ""))
                 themes = json.dumps([r for t in data.get("themes", [])[:5] if (r := _redact(t))])
                 self.store.db.execute(
