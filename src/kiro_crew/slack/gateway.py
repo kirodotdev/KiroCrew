@@ -122,6 +122,7 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+from kiro_crew.dashboard.stale_bundle_guard import check_bundle_freshness
 from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
@@ -9120,6 +9121,18 @@ class GatewayOrchestrator:
         )
         self._background_tasks.add(_watchdog)
         _watchdog.add_done_callback(self._background_tasks.discard)
+
+        # Bundle-freshness guard: a one-shot WARN (never a shutdown) if the
+        # served SPA dist was built from a different commit than this backend —
+        # the present-but-stale case the vanish watchdog above cannot catch. A
+        # restart would re-serve the same stale dist, so warning (not shutting
+        # down) is the correct response. Best-effort; never raises. Run on the
+        # subprocess executor: the dev-checkout fallback shells out to
+        # `git rev-parse` (up to 5s if git wedges), which must not block the
+        # event loop.
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), check_bundle_freshness
+        )
 
         print("👻 Kiro Crew gateway starting…")
         print(f"\n{DATA_WARNING}\n")
