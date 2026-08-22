@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.history import on_loop_persist_strict
 from kiro_crew.knowledge.llm_pool import LLMPool
+from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
 
 try:
@@ -2546,14 +2547,36 @@ def _compact_tree(tree: list[dict]) -> str:
     return "\n".join(lines) if lines else "(empty — this is the first round)"
 
 
+def _grill_node_shaped(value: object) -> bool:
+    """Prefer predicate: an array carrying at least one node-shaped record.
+
+    Disambiguates the payload from stray bracketed PROSE that also parses as
+    an array (a "see item [1]:" marker, a trailing "[12]." citation) — those
+    decode to arrays of scalars and are never preferred."""
+    return isinstance(value, list) and any(
+        isinstance(item, dict) and "kind" in item and "text" in item for item in value
+    )
+
+
 def _parse_grill_nodes(raw: str) -> list[dict]:
-    """Extract child node dicts {kind, text, recommended?} from an LLM reply."""
-    start, end = raw.find("["), raw.rfind("]")
-    if start < 0 or end <= start:
-        return []
+    """Extract child node dicts {kind, text, recommended?} from an LLM reply.
+
+    Extraction delegates to the shared ``llm_helpers._extract_json_of_type``
+    scanner, so a stray bracket in surrounding prose no longer corrupts the
+    span the way the old outermost ``find('[') .. rfind(']')`` slice did.
+    Returns [] on any parse failure, or when two DIFFERENT node-shaped arrays
+    make the choice ambiguous (the shared contract refuses to guess)."""
     try:
-        items = json.loads(raw[start : end + 1])
-    except (json.JSONDecodeError, ValueError):
+        items = _extract_json_of_type(raw, list, prefer=_grill_node_shaped)
+    except RecursionError:
+        # The stdlib decoder recurses per nesting level, so a nesting bomb in
+        # the untrusted reply overflows long before any structural bound. This
+        # parser's callers are outside any exception envelope (the grill-expand
+        # handler would surface it as HTTP 500), so degrade to no-nodes here.
+        # PR #5066 makes the shared scanner fail closed on this centrally;
+        # this guard becomes redundant-but-harmless once that lands.
+        return []
+    if not isinstance(items, list):
         return []
     out = []
     for it in items:

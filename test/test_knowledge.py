@@ -1089,7 +1089,7 @@ class TestEntityExtractorExtended:
         result = asyncio.get_event_loop().run_until_complete(ext.extract("text"))
         assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
 
-    def test_parse_response_regex_fallback(self):
+    def test_parse_response_prose_wrapped(self):
         ext = EntityExtractor()
         raw = 'Some preamble text {"entities": [], "relations": [], "category": "runbook", "summary": "ok"} trailing'
         result = ext._parse_response(raw)
@@ -1100,11 +1100,35 @@ class TestEntityExtractorExtended:
         result = ext._parse_response("totally invalid garbage")
         assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
 
-    def test_extract_code_block(self):
+    def test_parse_response_stray_brace_in_prose(self):
+        # The old greedy first-'{'-to-last-'}' regex spanned from the
+        # {placeholder} aside to the trailing "{}" echo, so the slice never
+        # parsed and a valid payload was silently lost.
         ext = EntityExtractor()
-        assert ext._extract_code_block("no block here") is None
-        result = ext._extract_code_block('```\n{"a": 1}\n```')
-        assert result == '{"a": 1}'
+        raw = (
+            'Per the {name, type} shape: {"entities": [], "relations": [], '
+            '"category": "runbook", "summary": "ok"} — use {} when empty.'
+        )
+        result = ext._parse_response(raw)
+        assert result["category"] == "runbook"
+        assert result["summary"] == "ok"
+
+    def test_parse_response_non_dict_reply_is_empty(self):
+        # A top-level array reply must yield the empty result, not leak an
+        # AttributeError out of _validate (which nuked a whole extract_batch
+        # under the old direct json.loads path).
+        ext = EntityExtractor()
+        raw = '[{"entities": []}]'
+        result = ext._parse_response(raw)
+        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
+
+    def test_parse_response_two_different_payloads_refuse_the_guess(self):
+        # The shared extractor's ambiguity contract: two DIFFERENT
+        # payload-shaped dicts mean the caller cannot know which is real.
+        ext = EntityExtractor()
+        raw = '{"summary": "first"} or maybe {"summary": "second"}'
+        result = ext._parse_response(raw)
+        assert result == {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
 
     def test_validate_partial_data(self):
         ext = EntityExtractor()
