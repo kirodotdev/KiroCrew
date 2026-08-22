@@ -53,8 +53,8 @@ vi.mock('../apps/spec-builder/components/DocView', () => ({
 }))
 
 vi.mock('../apps/spec-builder/components/SpecStatePanel', () => ({
-  default: ({ sendMessage }: { sendMessage: (msg: string) => Promise<unknown> }) => (
-    <button type="button" data-testid="state-send" onClick={() => { void sendMessage('Decision: one') }}>
+  default: ({ answerDecision }: { answerDecision: (id: string, option: string, msg: string) => Promise<unknown> }) => (
+    <button type="button" data-testid="state-send" onClick={() => { void answerDecision('transport', 'one', 'Decision: one') }}>
       answer
     </button>
   ),
@@ -401,13 +401,19 @@ describe('SpecDetail phase actions', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Pause/ })).not.toBeDisabled())
   })
 
-  it('routes a state-panel answer through the shared message mutation', async () => {
+  it('sends a state-panel answer with its decision id so the backend can lock it', async () => {
     installFetch(BASE)
     renderDetail()
 
     fireEvent.click(await screen.findByTestId('state-send'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
     expect(JSON.parse(calls[0].body).text).toBe('Decision: one')
+    // Without this the write is an ordinary message and the backend has nothing to
+    // record, so the decision stays re-answerable.
+    expect(JSON.parse(calls[0].body).decision_id).toBe('transport')
+    // The bare option travels separately from the composed prompt: it is what the
+    // backend records and what the card renders back as the answer.
+    expect(JSON.parse(calls[0].body).decision_option).toBe('one')
   })
 
   it('routes a chat message through the shared message mutation', async () => {

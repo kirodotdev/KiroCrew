@@ -1410,7 +1410,8 @@ class _ChatSlot:
         "created_at",
         "messages",
         "total_messages",
-        "task",
+        "_task",
+        "_turn_generation",
         "event",
         "_pending",
         "_pending_consumers",
@@ -1560,7 +1561,11 @@ class _ChatSlot:
         self._source_links_revision = 0
         self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
         self.total_messages: int = 0  # lifetime count (survives trimming)
-        self.task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._task: asyncio.Task[Any] | None = None
+        # Monotonic publication history for turn ownership. ``task`` returns to
+        # None after teardown, so consumers that span awaits cannot distinguish
+        # "stayed idle" from "ran and finished" by comparing task references.
+        self._turn_generation: int = 0
         self.event = asyncio.Event()
         self._pending: list[dict[str, str]] = []
         # Number of readers currently treating ``_pending`` as their delivery
@@ -1572,7 +1577,7 @@ class _ChatSlot:
         # purge never runs again for that slot, so the rows it declined to drop
         # outlive every consumer and the leak survives its own fix.
         self._pending_release_deferred: bool = False
-        self._queue: list[dict[str, str]] = []  # [{"id": uuid, "content": str}, ...]
+        self._queue: list[dict[str, Any]] = []  # [{"id": uuid, "content": str}, ...]
         # Newest enqueue instant, read only while ``_queue`` is non-empty — see
         # ``_note_enqueue``.
         self._last_enqueue_ts: str = ""
@@ -2677,20 +2682,40 @@ class _ChatSlot:
         """
         self._last_enqueue_ts = datetime.now(timezone.utc).isoformat()
 
-    def queue_insert(self, index: int, content: str, kind: str = "", payload: str = "") -> str:
+    def queue_insert(
+        self,
+        index: int,
+        content: str,
+        kind: str = "",
+        payload: str = "",
+        on_consumed: Callable[[bool], None] | None = None,
+    ) -> str:
         """Insert a message at a specific queue position. Returns the queue ID.
 
         See :meth:`queue_append` for the ``kind`` structural origin tag. ``payload``
         is the orthogonal question of whether the TEXT is runner-authored, read by
         ``is_synthetic_payload_item``; a recovery entry that replays the user's own
         message shares the recovery kind but is not machine speech.
+
+        ``on_consumed`` is process-local settlement state for an automatic retry.
+        It follows the exact queue entry through reordering and repeated retries,
+        but queue snapshots expose only id/content and gateway restart deliberately
+        drops it so the durable producer can recover the still-pending delivery.
         """
         qid = uuid.uuid4().hex[:12]
-        self._queue.insert(index, {"id": qid, "content": content, "kind": kind, "payload": payload})
+        item: dict[str, Any] = {
+            "id": qid,
+            "content": content,
+            "kind": kind,
+            "payload": payload,
+        }
+        if on_consumed is not None:
+            item["_on_consumed"] = on_consumed
+        self._queue.insert(index, item)
         self._note_enqueue()
         return qid
 
-    def queue_pop(self, index: int = 0) -> dict[str, str]:
+    def queue_pop(self, index: int = 0) -> dict[str, Any]:
         """Pop a queue item by index. Returns {"id": ..., "content": ...}."""
         return self._queue.pop(index)
 
@@ -2786,6 +2811,16 @@ class _ChatSlot:
                 self._queue.insert(0, self._queue.pop(i))
                 return True
         return False
+
+    @property
+    def task(self) -> asyncio.Task[Any] | None:
+        return self._task
+
+    @task.setter
+    def task(self, value: asyncio.Task[Any] | None) -> None:
+        if value is not None and value is not self._task:
+            self._turn_generation += 1
+        self._task = value
 
     @property
     def running(self) -> bool:
@@ -3494,6 +3529,10 @@ class DashboardState:
         # lifecycle matches the gateway instance.
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
         self._slots: dict[str, _ChatSlot] = {}
+        # Process-local Spec Builder outbox claims, keyed by directory + delivery.
+        # Directory scope matters because aliases use different slots for the same
+        # files; durable status remains owned by the app's decision ledger.
+        self._spec_decision_deliveries_inflight: set[tuple[str, str]] = set()
         # Slot keys that EXIST but are deliberately absent from ``_slots`` while
         # they are being built (see ``session_transfer``'s import path, which
         # retracts a slot so it is unreachable until its transcript and context

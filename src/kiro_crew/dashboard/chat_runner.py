@@ -4115,13 +4115,19 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         # debt was already settled): dispatch this row exactly as before.
         _settleable = []
 
+    _delivery_callbacks = [
+        callback for item in consumed if callable(callback := item.get("_on_consumed"))
+    ]
+
     def _note_consumed(consumed: bool = True) -> None:
         # False is a RETRACTION: the runner re-queued this exact announce verbatim
         # (first empty response), so the delivery that counts has not happened yet.
         _consumed[0] = consumed
+        for callback in _delivery_callbacks:
+            callback(consumed)
 
     _run_kwargs: dict[str, Any] = {"_synthetic_payload": synthetic_payload}
-    if _settleable:
+    if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     task = spawn_guarded_turn(
         state,
@@ -4557,6 +4563,23 @@ async def _run_chat(
             _on_consumed(consumed)
         except Exception:
             logger.debug("consumption report failed for slot %s", slot.key, exc_info=True)
+
+    def _queue_recovery(
+        index: int,
+        content: str,
+        *,
+        kind: str,
+        payload: str = "",
+    ) -> str:
+        """Queue a retry without losing a producer's consumption settlement."""
+
+        return slot.queue_insert(
+            index,
+            content,
+            kind=kind,
+            payload=payload,
+            on_consumed=_on_consumed if not _consumed_reported else None,
+        )
 
     # Model-activity marker for the poisoned-conversation streak ONLY:
     # flipped True on thinking chunks. Deliberately separate from
@@ -7418,7 +7441,7 @@ async def _run_chat(
 
             if _prompt_depth == 0 and slot._stale_recovery_retries < 3:
                 slot._stale_recovery_retries += 1
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     f"{STALE_RECOVERY_PREFIX}\n{build_stale_recovery_prompt()}",
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -7476,7 +7499,7 @@ async def _run_chat(
                     command=_stall_command,
                     stuck_input=_stuck,
                 )
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     f"{TOOL_STALL_RECOVERY_PREFIX}\n{_body}",
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -7519,7 +7542,7 @@ async def _run_chat(
                     cause=ResetCause.CONNECTION_LOST,
                     message_is_synthetic=_is_synthetic,
                 )
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -7726,7 +7749,12 @@ async def _run_chat(
                 # streaming turn ends (so it never surfaces). Only the second
                 # consecutive empty surfaces a persisted notice card below.
                 slot._empty_response_retries += 1
-                slot.queue_insert(
+                # Retract BEFORE building the retry entry. The entry copies an
+                # unsettled consumption callback; copying while the preceding
+                # turn-complete report is still True would drop that callback
+                # and strand a durable producer after the replay succeeds.
+                _report_consumed(False)
+                _queue_recovery(
                     0,
                     message,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -7735,12 +7763,6 @@ async def _run_chat(
                     payload=payload_for_replay(_is_synthetic),
                 )
                 _retrying_empty = True
-                # This message is going out again unchanged, so whoever armed the
-                # turn must not treat it as delivered: a queued sub-agent
-                # completion's retention clock has to wait for the replay that
-                # actually lands (issue #4839). Retracts the turn-complete report
-                # made while streaming, when the empty text was not yet known.
-                _report_consumed(False)
             elif (
                 _prompt_depth == 0
                 and slot._empty_response_retries < 2
@@ -7762,7 +7784,7 @@ async def _run_chat(
                     "ℹ️ The model returned nothing twice — auto-continuing once.",
                     "msg msg-info",
                 )
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     _EMPTY_AUTO_CONTINUE_MSG,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -7909,7 +7931,7 @@ async def _run_chat(
                     "auto-continuing once.",
                     "msg msg-info",
                 )
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     _PROMISE_ONLY_CONTINUE_MSG,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -8162,7 +8184,7 @@ async def _run_chat(
             # queue_insert(0, …) prepends, so insert in reverse to keep several
             # hooks' instructions in firing order.
             for _reason in reversed(_hook_reasons[:_room]):
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\n{_reason}",
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -8200,7 +8222,7 @@ async def _run_chat(
         ):
             _recovery_body = build_refusal_recovery_prompt(_refusal_reasons)
             if _recovery_body:
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     f"{REFUSAL_RECOVERY_PREFIX}\n{_recovery_body}",
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -8349,7 +8371,7 @@ async def _run_chat(
                 cause=ResetCause.CONNECTION_LOST,
                 message_is_synthetic=_is_synthetic,
             )
-            slot.queue_insert(
+            _queue_recovery(
                 0,
                 _requeue_text,
                 kind=SYNTHETIC_RECOVERY_KIND,
@@ -8386,7 +8408,7 @@ async def _run_chat(
                 cause=ResetCause.SESSION_BUSY,
                 message_is_synthetic=_is_synthetic,
             )
-            slot.queue_insert(
+            _queue_recovery(
                 0,
                 _requeue_text,
                 kind=SYNTHETIC_RECOVERY_KIND,
@@ -8485,7 +8507,7 @@ async def _run_chat(
                     ),
                     message_is_synthetic=_is_synthetic,
                 )
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -8545,7 +8567,7 @@ async def _run_chat(
                 # session (no reset), preserving conversation state.
                 slot.append("error", "⟳ Backend hiccup — retrying…", "msg msg-err")
                 await asyncio.sleep(_delay)
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     message,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -8635,7 +8657,7 @@ async def _run_chat(
                 # allowance HERE — only a real enqueue burns it.
                 await asyncio.sleep(_delay)
                 slot._posttoken_retry_used = True
-                slot.queue_insert(
+                _queue_recovery(
                     0,
                     _POSTTOKEN_RECOVER_MSG,
                     kind=SYNTHETIC_RECOVERY_KIND,
@@ -8811,7 +8833,7 @@ async def _run_chat(
                     "context from them)…",
                     "msg msg-err",
                 )
-                slot.queue_insert(0, message, kind=SYNTHETIC_RECOVERY_KIND)
+                _queue_recovery(0, message, kind=SYNTHETIC_RECOVERY_KIND)
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.
                 slot._transient_5xx_retries = 0
             else:

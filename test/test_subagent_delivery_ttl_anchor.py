@@ -311,11 +311,14 @@ class TestConsumptionSignalIsPerTurn:
         gate_line = window[gate_at : window.index("\n", gate_at)]
         assert " in (" not in gate_line and " or " not in gate_line
         assert src.count("_report_consumed()") == 3  # 3 report sites
-        # The retraction lives in the FIRST empty-response branch, beside the
-        # verbatim re-queue -- not anywhere a real delivery could hit it.
-        assert "_report_consumed(False)" in src
-        verbatim_at = src.index("# Verbatim replay: ORIGINAL only if")
-        assert 0 < src.index("_report_consumed(False)") - verbatim_at < 900
+        # The retraction lives in the FIRST empty-response branch and happens
+        # BEFORE the verbatim re-queue copies the callback. Reversing that order
+        # drops the callback and strands the delivery after a successful replay.
+        first_empty_at = src.index("if _prompt_depth == 0 and slot._empty_response_retries < 1:")
+        first_empty_end = src.index("            elif (", first_empty_at)
+        first_empty = src[first_empty_at:first_empty_end]
+        assert first_empty.count("_report_consumed(False)") == 1
+        assert first_empty.index("_report_consumed(False)") < first_empty.index("_queue_recovery(")
         assert "_last_turn_emitted" not in src
         drain = inspect.getsource(mod._start_next_queued_turn)
         assert '_run_kwargs["_on_consumed"] = _note_consumed' in drain

@@ -31,6 +31,10 @@ export interface SpecDecision {
   options?: string[]
   recommended?: string
   answer?: string
+  /** Set by the backend for a decision whose answer it has already dispatched.
+   *  Such a decision is settled for good: the card must never render options for
+   *  it again, even if the agent's own state file re-emits it as pending. */
+  locked?: boolean
 }
 
 /** Phase-2 structured state the agent maintains in .spec-state.json. */
@@ -118,6 +122,13 @@ import { i18nT } from '../../i18n/t'
 
 // ── fetch helper ────────────────────────────────────────────────────────────
 
+/** An error carrying the backend's machine-readable `code`, when it sent one.
+ *  Callers use it to tell a definite refusal ("nothing was recorded") apart from an
+ *  ambiguous failure (the write may have committed and the response was lost). */
+export interface ApiError extends Error {
+  code?: string
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(API + path, {
     credentials: 'same-origin',
@@ -126,12 +137,17 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   })
   if (!r.ok) {
     let msg = i18nT('apps.specBuilder.api.something_went_wrong', { status: r.status })
+    let code: string | undefined
     try {
-      msg = ((await r.json()) as { error?: string }).error || msg
+      const body = (await r.json()) as { error?: string; code?: string }
+      msg = body.error || msg
+      code = body.code
     } catch {
       /* non-JSON error body — keep the generic message */
     }
-    throw new Error(msg)
+    const err: ApiError = new Error(msg)
+    err.code = code
+    throw err
   }
   if (r.status === 204) return undefined as T
   const text = await r.text()
@@ -155,6 +171,18 @@ export const specApi = {
     req<void>('/specs/' + enc(name) + '/message', {
       method: 'POST',
       body: JSON.stringify({ text, ...identity(id) }),
+    }),
+  // A decision card's answer, sent with the decision's id so the backend can
+  // record it and refuse a second answer for the same decision. Same endpoint as
+  // `message` — the id is what makes the write one-way.
+  //
+  // `option` is the bare choice and `text` the composed prompt the agent reads.
+  // They are separate fields because the backend records the OPTION: recording the
+  // prompt would render the whole localized sentence back as the answer.
+  answerDecision: (name: string, decisionId: string, option: string, text: string, id?: SpecIdentity) =>
+    req<void>('/specs/' + enc(name) + '/message', {
+      method: 'POST',
+      body: JSON.stringify({ text, decision_id: decisionId, decision_option: option, ...identity(id) }),
     }),
   execute: (name: string, id?: SpecIdentity) =>
     req<void>('/specs/' + enc(name) + '/execute', {

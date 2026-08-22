@@ -470,7 +470,11 @@ when that exists, so a thread active across the migration keeps one log file.
 opens a DM thread, links the session, and posts the last 5 messages as context.
 
 **Dashboard state:** `ChatSlot.summary()` includes `slack_linked: bool` so
-the frontend can show a link indicator.
+the frontend can show a link indicator. `_ChatSlot.task` publishes ownership through a
+property that increments `_turn_generation` for every new non-null task. The counter is
+process-local and monotonic for the slot lifetime; unlike `task`, normal turn teardown
+does not clear it, so code spanning an await can detect a turn that started and finished
+inside that interval.
 
 **Slash commands** (`slack/events.py`):
 - `/kirocrew sessions` — lists active sessions with Slack link status
