@@ -40,14 +40,18 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     await messageInput.fill('reply with a single word: ready')
     await page.keyboard.press('Enter')
 
-    // Fork button (title="Fork conversation from here") only renders on
-    // assistant messages, so its visibility is a clean signal that the
-    // assistant replied. This used to `test.skip` on a timeout, which reported
-    // green while verifying nothing. The spec is @needs-agent, so it only runs
-    // when an agent is wired, and the harness wires the stub ACP backend, which
-    // always answers. A missing reply is therefore a real failure.
-    const forkButton = page.getByTitle('Fork conversation from here').first()
-    await expect(forkButton).toBeVisible({ timeout: 60000 })
+    // The overflow trigger renders only in an assistant footer, so its visibility is
+    // the reply signal the standalone fork button gave before the row was collapsed.
+    const moreActions = page.getByTestId('assistant-more-actions').first()
+    await expect(moreActions).toBeVisible({ timeout: 60000 })
+    await moreActions.click()
+
+    // By test id, not title: these labels are i18n-driven.
+    const forkButton = page.getByTestId('fork-from-here')
+    await expect(forkButton).toBeVisible({ timeout: 10000 })
+    // Fresh chat has nothing older, so a DISABLED fork here would mean the bounded
+    // initial fetch regressed normal use rather than this spec drifting again.
+    await expect(forkButton).not.toHaveAttribute('aria-disabled', 'true')
 
     await forkButton.hover()
     // GIF-only pauses: skip in normal CI to keep tests fast.

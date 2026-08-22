@@ -17,6 +17,13 @@ import AssistantMessage from '../src/pages/chat/AssistantMessage'
 import { forkSlot } from '../src/store/chatSlice'
 
 describe('Fork Session Integration', () => {
+  /* Fork is no longer a standalone row button: the action row was collapsed into an
+   * overflow menu, so it must be opened first. Radix opens on POINTERDOWN, not click. */
+  const openOverflow = () => fireEvent.pointerDown(
+    screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' },
+  )
+  const forkItem = () => screen.getByRole('menuitem', { name: /Fork conversation from here/ })
+
   it('fork button click → API call → optimistic slot added to store', async () => {
     const store = createTestStore()
     server.use(
@@ -39,7 +46,8 @@ describe('Fork Session Integration', () => {
       </Provider>,
     )
 
-    fireEvent.click(screen.getByTitle('Fork conversation from here'))
+    openOverflow()
+    fireEvent.click(forkItem())
 
     await waitFor(() => {
       const slots = store.getState().dashboard.slots
@@ -71,7 +79,8 @@ describe('Fork Session Integration', () => {
       </Provider>,
     )
 
-    fireEvent.click(screen.getByTitle('Fork conversation from here'))
+    openOverflow()
+    fireEvent.click(forkItem())
 
     await waitFor(() => {
       expect(store.getState().dashboard.slots.length).toBe(before)
@@ -91,7 +100,10 @@ describe('Fork Session Integration', () => {
         />
       </Provider>,
     )
-    expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
+    // The footer is not rendered at all while streaming, so there is no overflow
+    // trigger and fork is unreachable -- assert the trigger, not the old title.
+    expect(screen.queryByTitle('More actions')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /Fork conversation from here/ })).not.toBeInTheDocument()
   })
 
   it('fork button disabled while fork in flight (prevents double-click)', async () => {
@@ -118,13 +130,13 @@ describe('Fork Session Integration', () => {
       </Provider>,
     )
 
-    const btn = screen.getByTitle('Fork conversation from here') as HTMLButtonElement
-    fireEvent.click(btn)
+    openOverflow()
+    fireEvent.click(forkItem())
 
-    await waitFor(() => expect(btn).toBeDisabled())
+    await waitFor(() => expect(forkItem()).toHaveAttribute('aria-disabled', 'true'))
 
     resolve(null)
-    await waitFor(() => expect(btn).not.toBeDisabled())
+    await waitFor(() => expect(forkItem()).not.toHaveAttribute('aria-disabled', 'true'))
   })
 
   it('fork never auto-submits the unsent composer draft', async () => {
@@ -154,7 +166,8 @@ describe('Fork Session Integration', () => {
       </Provider>,
     )
 
-    fireEvent.click(screen.getByTitle('Fork conversation from here'))
+    openOverflow()
+    fireEvent.click(forkItem())
 
     await waitFor(() => {
       expect(store.getState().dashboard.slots).toContainEqual(

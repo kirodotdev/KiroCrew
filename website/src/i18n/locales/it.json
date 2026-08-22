@@ -6232,7 +6232,9 @@
       "next_match": "Corrispondenza successiva",
       "no_results": "Nessun risultato",
       "previous": "Precedente ({{mod}})",
-      "previous_match": "Corrispondenza precedente"
+      "previous_match": "Corrispondenza precedente",
+      "no_results_loaded_only": "Nessun risultato nella cronologia caricata",
+      "results_loaded_only": "{{current}}/{{total}} risultati nella cronologia caricata"
     },
     "searchResultsList": {
       "assistant": "Assistente",
@@ -7863,13 +7865,8 @@
         "next_version": "Versione successiva",
         "plan_from_here": "Pianifica da qui",
         "previous_version": "Versione precedente",
-        "raw": "grezzo",
-        "raw_markdown": "Markdown grezzo",
         "regenerate": "Rigenera",
         "regenerate_response": "Rigenera la risposta",
-        "rendered": "formattato",
-        "rendered_view": "Vista formattata",
-        "speak": "Leggi ad alta voce",
         "speak_message": "Leggi il messaggio ad alta voce",
         "steered": "Indirizzato",
         "switch_to_raw_markdown_view": "Passa alla vista del Markdown grezzo",
@@ -7881,7 +7878,9 @@
         "turn_took_credits_cost": "Il turno ha richiesto {{elapsed}} e ha consumato {{credits}} crediti ({{cost}} di costo API)",
         "use_as_plan_count": "Usa come piano ({{count}} passaggi)",
         "pin_message": "Fissa messaggio",
-        "unpin_message": "Rimuovi fissaggio"
+        "unpin_message": "Rimuovi fissaggio",
+        "needs_earlier_history": "Non disponibile — carica prima tutta la cronologia precedente",
+        "more_actions": "Altre azioni"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -8293,6 +8292,9 @@
         "select_file_hint": "Seleziona un file dall'albero per aprirlo in una nuova scheda",
         "title": "File",
         "tree_error": "Non è stato possibile caricare l’albero dei file"
+      },
+      "deepLink": {
+        "message_unavailable": "Questo messaggio non è più disponibile nella cronologia caricata."
       }
     },
     "chatPage": {

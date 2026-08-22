@@ -1982,7 +1982,9 @@
     "searchBar": {
       "next": "Next ({{mod}})",
       "no_results": "No results",
-      "previous": "Previous ({{mod}})"
+      "previous": "Previous ({{mod}})",
+      "no_results_loaded_only": "No results in loaded history",
+      "results_loaded_only": "{{current}}/{{total}} results in loaded history"
     },
     "searchResultsList": {
       "assistant": "Assistant",
@@ -2745,13 +2747,11 @@
       },
       "assistantMessage": {
         "copied": "Copied!",
-        "raw": "raw",
-        "raw_markdown": "Raw markdown",
-        "rendered": "rendered",
-        "rendered_view": "Rendered view",
         "switch_to_raw_markdown_view": "Switch to raw markdown view",
         "switch_to_rendered_view": "Switch to rendered view",
-        "use_as_plan_count": "Use as Plan ({{count}} steps)"
+        "use_as_plan_count": "Use as Plan ({{count}} steps)",
+        "needs_earlier_history": "Unavailable — load all earlier history first",
+        "more_actions": "More actions"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -2960,6 +2960,9 @@
         "select_file_hint": "Select a file from the tree to open it in a new tab",
         "title": "Files",
         "tree_error": "Couldn't load the file tree"
+      },
+      "deepLink": {
+        "message_unavailable": "This message is no longer available in the loaded history."
       }
     },
     "chatPage": {

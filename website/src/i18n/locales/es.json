@@ -6232,7 +6232,9 @@
       "next_match": "Coincidencia siguiente",
       "no_results": "Sin resultados",
       "previous": "Anterior ({{mod}})",
-      "previous_match": "Coincidencia anterior"
+      "previous_match": "Coincidencia anterior",
+      "no_results_loaded_only": "Sin resultados en el historial cargado",
+      "results_loaded_only": "{{current}}/{{total}} resultados en el historial cargado"
     },
     "searchResultsList": {
       "assistant": "Asistente",
@@ -7863,13 +7865,8 @@
         "next_version": "Versión siguiente",
         "plan_from_here": "Planificar desde aquí",
         "previous_version": "Versión anterior",
-        "raw": "sin formato",
-        "raw_markdown": "Markdown sin formato",
         "regenerate": "Regenerar",
         "regenerate_response": "Regenerar la respuesta",
-        "rendered": "renderizado",
-        "rendered_view": "Vista renderizada",
-        "speak": "Leer en voz alta",
         "speak_message": "Leer el mensaje en voz alta",
         "steered": "Redirigido",
         "switch_to_raw_markdown_view": "Cambiar a la vista de Markdown sin formato",
@@ -7881,7 +7878,9 @@
         "turn_took_credits_cost": "El turno tardó {{elapsed}} y consumió {{credits}} créditos ({{cost}} de coste de API)",
         "use_as_plan_count": "Usar como plan ({{count}} pasos)",
         "pin_message": "Fijar mensaje",
-        "unpin_message": "Desfijar mensaje"
+        "unpin_message": "Desfijar mensaje",
+        "needs_earlier_history": "No disponible: carga primero todo el historial anterior",
+        "more_actions": "Más acciones"
       },
       "chatFooter": {
         "compacting": "Compactando…",
@@ -8293,6 +8292,9 @@
         "select_file_hint": "Selecciona un archivo del árbol para abrirlo en una nueva pestaña",
         "title": "Archivos",
         "tree_error": "No se pudo cargar el árbol de archivos"
+      },
+      "deepLink": {
+        "message_unavailable": "Este mensaje ya no está disponible en el historial cargado."
       }
     },
     "chatPage": {

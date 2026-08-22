@@ -297,6 +297,7 @@ const slotKeyedMaps = (state: ChatState) => [
   // fall against a recreated slot's first fetch and drop a legitimate tail.
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
   state.slotServerTotalSeq,
+  state.thinkingOrphans,
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
@@ -768,6 +769,9 @@ interface ChatState {
    *  only when that count came from a warm carrying one, so an absent entry
    *  means the ordering is unknown and the merge must not act on it. */
   slotServerTotalSeq: Record<string, number>
+  /** Reasoning blocks whose anchoring row is above the loaded window, per slot.
+   *  Client-only, so this is their only copy until the anchor pages back in. */
+  thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
   /** Path B: per-slot live stream state so a non-active pane shows its own
    *  streaming/tool/idle indicator (mirrors slotActivity for tool events). */
   slotRun: Record<string, { state: SlotState; lastChunkSeq?: number }>
@@ -865,6 +869,7 @@ const initialState: ChatState = {
   slotPaneBounded: {},
   slotServerTotal: {},
   slotServerTotalSeq: {},
+  thinkingOrphans: {},
   slotRun: {},
   slotHydrated: {},
   slotLoading: false,
@@ -1092,7 +1097,7 @@ export const fetchHistory = createAsyncThunk(
   },
 )
 
-/** Rows to request per older-history page. */
+/** Rows to request per page — the first paint and every page-back alike. */
 const OLDER_PAGE_LIMIT = 100
 
 // Aborts the in-flight older-history fetch, or null when none is running.
@@ -1258,8 +1263,8 @@ function retainServerTotal(state: ChatState, key: string, total: number | undefi
 }
 
 async function fetchSlotDetail(key: string, limit?: number) {
-  // A limit takes the handler's most-recent-N slice, all a background pane shows.
-  // Omit the arg when unbounded so existing callers keep their one-argument shape.
+  // Unbounded is deliberate for callers that REPLACE a transcript they did not
+  // page: bounding those would discard rows the reader had already loaded.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string }
   return { key, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
@@ -1308,7 +1313,7 @@ export const switchSlot = createAsyncThunk(
     // any older page still in flight is superseded even when the key is unchanged.
     _abortLoadOlder?.()
     dispatch(markSlotRead(key))
-    return fetchSlotDetail(key)
+    return fetchSlotDetail(key, OLDER_PAGE_LIMIT)
   },
 )
 
@@ -1350,7 +1355,26 @@ const isOutOfBandRow = (m: { role: string; kind?: string }): boolean =>
 /** What a preserved reasoning block re-attaches to on the server-refreshed list:
  *  a tool call addressed by its server-minted id, or a run of answer text
  *  addressed by its content. */
-type ThinkingAnchor = { tool: string; text?: undefined } | { tool?: undefined; text: string }
+type ThinkingAnchor = { tool: string; text?: undefined } | { tool?: undefined; text: string; mid?: string }
+
+/** The server-minted row id, or undefined for a row the client minted locally. */
+const rowMid = (m: { meta?: Record<string, unknown> }): string | undefined =>
+  typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
+
+/** A regenerated answer repeats the superseded text at the same ordinal, so only the
+ *  row id separates them -- but a locally-minted row has none, so a recorded id may
+ *  refute a match and must never be required for one. */
+const anchorMidOk = (a: ThinkingAnchor, row: { meta?: Record<string, unknown> }): boolean => {
+  if (a.tool !== undefined || a.mid === undefined) return true
+  const m = rowMid(row)
+  return m === undefined || m === a.mid
+}
+
+/** A reasoning block waiting for its anchor. `occ` is which occurrence of a repeated
+ *  answer text it belongs to; `occTotal` is how many there were when that was measured,
+ *  so a list that has since gained more is detectable rather than silently mismatched.
+ *  Both absent on a record parked by a build before they existed. */
+type ParkedThinking<M> = { msg: M; anchor: ThinkingAnchor; occ?: number; occTotal?: number }
 
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
@@ -1376,26 +1400,46 @@ type ThinkingAnchor = { tool: string; text?: undefined } | { tool?: undefined; t
  *  and the final burst by the answer. An auto-approved call emits two tool rows
  *  sharing one id (🔧 pre-approval + ✅ post-approval, see
  *  `applyToolOutputToMessages`); `used` makes the first win, which is the earlier
- *  row and so the correct side of the pair. */
+ *  row and so the correct side of the pair.
+ *
+ *  An off-window anchored block is handed to `orphanSink` rather than dropped:
+ *  `state.messages` is its only copy, so dropping it loses it for good. */
 function mergePreservedThinking<M extends { role: string; content: string; cls?: string; meta?: Record<string, unknown> }>(
   existing: M[],
   incoming: M[],
+  windowComplete = true,
+  orphanSink?: Array<ParkedThinking<M>>,
 ): M[] {
   const toolAnchorId = (m: M): string => {
     if (m.role !== 'tool') return ''
     const id = m.meta?.tool_call_id
     return typeof id === 'string' ? id : ''
   }
-  const preserved: Array<{ msg: M; anchor: ThinkingAnchor | null }> = []
+  const preserved: Array<{ msg: M; anchor: ThinkingAnchor | null; skip: number }> = []
+  // How many rows already repeated this text, so a duplicated anchor resolves to the
+  // block's OWN turn rather than to the first match.
+  const priorText = new Map<string, number>()
+  // The same count over the WHOLE list, recorded with a parked block so a later list
+  // that gained occurrences invalidates the ordinal instead of misusing it.
+  const existingTotal = new Map<string, number>()
+  for (const m of existing) {
+    if (m.role !== 'assistant' && m.role !== 'streaming') continue
+    const t = m.content.trimEnd()
+    existingTotal.set(t, (existingTotal.get(t) ?? 0) + 1)
+  }
   for (let i = 0; i < existing.length; i++) {
     const m = existing[i]
+    if (m.role === 'assistant' || m.role === 'streaming') {
+      const t = m.content.trimEnd()
+      priorText.set(t, (priorText.get(t) ?? 0) + 1)
+    }
     if (m.role !== 'thinking' || !m.content) continue
     let anchor: ThinkingAnchor | null = null
     for (let j = i + 1; j < existing.length; j++) {
       const cand = existing[j]
       const tid = toolAnchorId(cand)
       if (tid) { anchor = { tool: tid }; break }
-      if (cand.role === 'assistant' || cand.role === 'streaming') { anchor = { text: cand.content.trimEnd() }; break }
+      if (cand.role === 'assistant' || cand.role === 'streaming') { anchor = { text: cand.content.trimEnd(), mid: rowMid(cand) }; break }
       // A confirmed steer does not end this block's turn, so the row after it is
       // still its anchor. Breaking here instead leaves `anchor` null, and an
       // unanchored block is appended at the tail — below the answer and its
@@ -1403,21 +1447,28 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
       // so it stays there and is re-appended on every later refresh.
       if (isTurnBoundaryUser(cand)) break
     }
-    preserved.push({ msg: m, anchor })
+    preserved.push({ msg: m, anchor, skip: anchor?.text !== undefined ? (priorText.get(anchor.text) ?? 0) : 0 })
   }
   if (!preserved.length) return incoming
+  // Counting occurrences cannot catch this: when the real anchor is off-window the
+  // duplicate that makes a text match wrong is the only one loaded. Tool ids are safe.
+  const ambiguous = (a: ThinkingAnchor | null): boolean =>
+    !windowComplete && a?.text !== undefined
   const used = new Set<number>()
   const result: M[] = []
+  const seenText = new Map<string, number>()
   for (const item of incoming) {
     const tid = toolAnchorId(item)
     const isText = item.role === 'assistant' || item.role === 'streaming'
     if (tid || isText) {
       const c = isText ? item.content.trimEnd() : ''
+      let occ = 0
+      if (isText) { occ = seenText.get(c) ?? 0; seenText.set(c, occ + 1) }
       for (let p = 0; p < preserved.length; p++) {
         if (used.has(p)) continue
         const a = preserved[p].anchor
-        if (!a) continue
-        if (tid ? a.tool === tid : a.tool === undefined && a.text === c) {
+        if (!a || ambiguous(a)) continue
+        if (tid ? a.tool === tid : a.tool === undefined && a.text === c && preserved[p].skip === occ && anchorMidOk(a, item)) {
           result.push({ ...preserved[p].msg }); used.add(p); break
         }
       }
@@ -1425,9 +1476,78 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
     result.push(item)
   }
   for (let p = 0; p < preserved.length; p++) {
-    if (!used.has(p)) result.push({ ...preserved[p].msg })
+    if (used.has(p)) continue
+    const { msg, anchor, skip } = preserved[p]
+    // Off-window: its turn sits above the loaded window, so it belongs neither here
+    // (below the newest answer) nor in the bin — park it until its anchor pages in.
+    if (!windowComplete && anchor !== null) {
+      // Carry the occurrence: without it a reseat cannot tell which of two identical
+      // answers is this block's turn, and refusing both hides it for good.
+      const total = anchor.text !== undefined ? (existingTotal.get(anchor.text) ?? 0) : 0
+      orphanSink?.push({ msg, anchor, occ: skip, occTotal: total })
+      continue
+    }
+    result.push({ ...msg })
   }
   return result
+}
+
+/** Re-insert parked reasoning blocks whose anchoring row is now loaded.
+ *  Returns the new list plus the blocks still waiting for their anchor.
+ *
+ *  `windowComplete` is required rather than defaulted so the compiler names every
+ *  call site — the hazard recorded above at the three near-identical reducers.
+ *
+ *  A TEXT anchor needs a complete window: while it is incomplete the genuine anchor may
+ *  sit above it, so the one loaded row carrying that text belongs to a different turn.
+ *  Once complete, a REPEATED text is resolved by the occurrence recorded at park time,
+ *  which is what stops both silent failures — the first duplicate is the wrong turn, and
+ *  refusing every duplicate hides the block for good. That ordinal is only valid while
+ *  the list holds the same number of occurrences, so a changed count falls back to
+ *  staying parked. Tool ids are 1:1 with bursts (#4578) and need none of this. */
+function reinsertThinkingOrphans<M extends { role: string; content: string; meta?: Record<string, unknown> }>(
+  list: M[],
+  parked: Array<ParkedThinking<M>>,
+  windowComplete: boolean,
+): { list: M[]; remaining: Array<ParkedThinking<M>> } {
+  if (!parked.length) return { list, remaining: parked }
+  const used = new Set<number>()
+  const out: M[] = []
+  const textFreq = new Map<string, number>()
+  for (const item of list) {
+    if (item.role !== 'assistant' && item.role !== 'streaming') continue
+    const t = item.content.trimEnd()
+    textFreq.set(t, (textFreq.get(t) ?? 0) + 1)
+  }
+  const seenText = new Map<string, number>()
+  for (const item of list) {
+    const tid = item.role === 'tool' && typeof item.meta?.tool_call_id === 'string' ? item.meta.tool_call_id : ''
+    const isText = item.role === 'assistant' || item.role === 'streaming'
+    if (tid || isText) {
+      const c = isText ? item.content.trimEnd() : ''
+      let occ = 0
+      if (isText) { occ = seenText.get(c) ?? 0; seenText.set(c, occ + 1) }
+      for (let p = 0; p < parked.length; p++) {
+        if (used.has(p)) continue
+        const rec = parked[p]
+        const a = rec.anchor
+        // The guards below exist only because TEXT cannot name a turn; an exact row id can.
+        // One-sided: a missing id changes nothing and can never be required for a match.
+        const midHit = isText && a.tool === undefined && a.mid !== undefined && rowMid(item) === a.mid
+        if (!midHit) {
+          if (!windowComplete && a.tool === undefined) continue
+          const freq = a.tool === undefined ? (textFreq.get(a.text) ?? 0) : 0
+          // A recorded occurrence identifies the turn at ANY count, so a set that shrank to one
+          // is still checked; only GROWTH invalidates it, since removals here are tail-only.
+          if (rec.occ !== undefined ? (freq > (rec.occTotal ?? 0) || rec.occ !== occ) : freq > 1) continue
+        }
+        if (tid ? a.tool === tid : a.tool === undefined && a.text === c && anchorMidOk(a, item)) { out.push({ ...rec.msg }); used.add(p); break }
+      }
+    }
+    out.push(item)
+  }
+  if (!used.size) return { list, remaining: parked }
+  return { list: out, remaining: parked.filter((_, p) => !used.has(p)) }
 }
 
 /** Carry the client-stamped `meta.clientTs` from the current messages onto the
@@ -2553,7 +2673,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
+    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
     replaceMessages(state, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
     /** Path B: seed a non-active slot's message history into the per-slot store
@@ -3943,7 +4063,14 @@ const chatSlice = createSlice({
         // Thinking blocks are client-only (never persisted server-side); re-insert
         // them so a switchSlot refresh does not discard the collapsible reasoning
         // trace. Without this, switching tabs and back drops all thinking blocks.
-        next = mergePreservedThinking(existing, next)
+        const orphaned: Array<{ msg: ChatMessage; anchor: ThinkingAnchor }> = []
+        next = mergePreservedThinking(existing, next, !hasMore, orphaned)
+        // A reopen may load the anchor of a block parked by an earlier bounded reopen.
+        // `??= {}` because a rehydrated state from a build without this field has none.
+        const parked = (state.thinkingOrphans ??= {})
+        const reseated = reinsertThinkingOrphans(next, parked[safeKey(key)] ?? [], !hasMore)
+        next = reseated.list
+        parked[safeKey(key)] = [...reseated.remaining, ...orphaned]
         next = hydrateQueuedBubbles(next, queue)
         // Switching back to an already-loaded slot re-fetches a history that is
         // usually identical; skipping the write keeps every existing reference.
@@ -3998,6 +4125,12 @@ const chatSlice = createSlice({
         // Reasoning is client-only (never persisted server-side); re-insert it so
         // a finished turn's thinking block survives this refresh.
         state.messages = mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted))
+        // A refresh rebuilds `messages` wholesale, so parked reasoning has to be re-seated
+        // here too — otherwise it stays invisible until the next slot switch.
+        const parkedOnRefresh = (state.thinkingOrphans ??= {})
+        const seatedOnRefresh = reinsertThinkingOrphans(state.messages, parkedOnRefresh[safeKey(key)] ?? [], !hasMore)
+        state.messages = seatedOnRefresh.list
+        parkedOnRefresh[safeKey(key)] = seatedOnRefresh.remaining
         // Re-hydrate queued bubbles through the SAME shared path as
         // switchSlot/warmSlotCache. The merge above is rebuilt from server
         // history + preserved perms/thinking and carries no `queued` bubbles, so
@@ -4267,6 +4400,14 @@ const chatSlice = createSlice({
           // ts tuple cannot express this without dropping legitimate rows.
           const fresh = merged.filter(m => !isRedeliveredMessage(state.messages, m.meta))
           state.messages = [...fresh, ...state.messages]
+          // Paging older is exactly when a parked block's anchor becomes loaded.
+          const parked = (state.thinkingOrphans ??= {})
+          const key = safeKey(action.payload.slot)
+          // The payload, not state: setPagingCursor runs below, so state still holds
+          // the previous page's value -- true on any page-back.
+          const seated = reinsertThinkingOrphans(state.messages, parked[key] ?? [], !action.payload.hasMore)
+          state.messages = seated.list
+          parked[key] = seated.remaining
           setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
         }
       })

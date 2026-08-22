@@ -1,6 +1,7 @@
-import { useState, useMemo, useEffect, memo, useRef } from 'react'
+import { useState, useMemo, useEffect, memo, useRef, useId } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff } from 'lucide-react'
+import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal } from 'lucide-react'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
@@ -71,11 +72,14 @@ function SteerAckChip({ summary }: { summary: string }) {
   )
 }
 
-const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats, linkPreviews, pinned, onTogglePin }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void }) {
+const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, onFileOpen, onFolderOpen, onArtifactOpen, planTaskId, onApplyPlan, slotRunning, onSpeak, timestamp, timestampTitle, showFooter = true, onRegenerate, variants, variantIdx, onSwitchVariant, isRegenerating, onFork, onPlanFromHere, forkIndex, onLoadEarlier, onQuote, onAsk, messageTs, slotKey, slotTitle, mode, fileChanges, onOpenDiff, fileChipStyle, artifactPaths, turnStats, linkPreviews, pinned, onTogglePin }: { content: string; isStreaming: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; planTaskId?: string; onApplyPlan?: (steps: PlanStepInput[]) => Promise<boolean>; slotRunning?: boolean; onSpeak?: (content: string) => void; timestamp?: string; timestampTitle?: string; showFooter?: boolean; onRegenerate?: () => void; variants?: { content: string; ts?: string }[]; variantIdx?: number; onSwitchVariant?: (index: number) => void; isRegenerating?: boolean; onFork?: (index: number) => void | Promise<void>; onPlanFromHere?: (index: number) => void | Promise<void>; forkIndex?: number; onLoadEarlier?: () => void; onQuote?: (text: string, rect: DOMRect) => void; onAsk?: (text: string, rect: DOMRect) => void; messageTs?: string; slotKey?: string; slotTitle?: string; mode?: string; fileChanges?: FileChangeEntry[]; onOpenDiff?: (path: string, modified: string, original: string) => void; fileChipStyle?: FileChipStyle; artifactPaths?: Set<string>; turnStats?: TurnStats; linkPreviews?: boolean; pinned?: boolean; onTogglePin?: () => void }) {
   const [applied, setApplied] = useState(false)
   const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const [busyAction, setBusyAction] = useState<'fork' | 'plan' | null>(null)
+  // The disabled reason is VISIBLE text, so it needs an id to be referenced by
+  // rather than a tooltip only a patient mouse can reach.
+  const reasonId = useId()
   const [rawMode, setRawMode] = useState(false)
   const [localIdx, setLocalIdx] = useState<number | null>(null)
   useEffect(() => { setLocalIdx(null) }, [content, variants?.length])
@@ -274,10 +278,76 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy')} aria-label={copied ? i18nT('pages.chat.assistantMessage.copied') : i18nT('pages.chat.assistantMessage.copy')} onClick={() => { copyToClipboard(steerCleaned).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {}) }}>{copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}</button>
         {messageTs && slotKey && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy_link_to_message')} aria-label={i18nT('pages.chat.assistantMessage.copy_link_to_message')} onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(() => { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 1500) }).catch(() => {}) }}>{linkCopied ? <Check size={14} className="text-ok" /> : <Link2 size={14} />}</button>}
         {messageTs && onTogglePin && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={pinned ? i18nT('pages.chat.assistantMessage.unpin_message') : i18nT('pages.chat.assistantMessage.pin_message')} aria-label={pinned ? i18nT('pages.chat.assistantMessage.unpin_message') : i18nT('pages.chat.assistantMessage.pin_message')} onClick={onTogglePin}>{pinned ? <PinOff size={14} /> : <Pin size={14} />}</button>}
-        {onFork && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title={i18nT('pages.chat.assistantMessage.fork_conversation_from_here')} aria-label={i18nT('pages.chat.assistantMessage.fork_conversation_from_here')} onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
-        {onPlanFromHere && forkIndex !== undefined && <button className="text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50" disabled={busyAction !== null} title={i18nT('pages.chat.assistantMessage.plan_from_here')} aria-label={i18nT('pages.chat.assistantMessage.plan_from_here')} onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
-        {text.length >= 50 && onSpeak && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.speak')} aria-label={i18nT('pages.chat.assistantMessage.speak_message')} onClick={() => onSpeak(content)}><Volume2 size={14} /></button>}
-        {text.length > 20 && <button className={`p-0.5 rounded transition-colors flex items-center gap-0.5 text-[11px] leading-4 ${rawMode ? 'text-text' : 'text-muted hover:text-text'}`} title={rawMode ? i18nT('pages.chat.assistantMessage.rendered_view') : i18nT('pages.chat.assistantMessage.raw_markdown')} aria-label={rawMode ? i18nT('pages.chat.assistantMessage.switch_to_rendered_view') : i18nT('pages.chat.assistantMessage.switch_to_raw_markdown_view')} onClick={() => setRawMode(!rawMode)}><Code size={14} />{rawMode ? i18nT('pages.chat.assistantMessage.rendered') : i18nT('pages.chat.assistantMessage.raw')}</button>}
+        {/* `max-two-buttons-per-row`: a menu whose every entry is UNAVAILABLE still adds a
+            control, so this tests actionability, the way the item guards below do. */}
+        {((forkIndex !== undefined && (onFork || onPlanFromHere)) || (text.length >= 50 && onSpeak) || text.length > 20) && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="text-muted hover:text-text p-0.5 rounded transition-colors"
+              title={i18nT('pages.chat.assistantMessage.more_actions')}
+              aria-label={i18nT('pages.chat.assistantMessage.more_actions')}
+              data-testid="assistant-more-actions"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[210px]">
+            {onFork && (
+              <DropdownMenuItem
+                // Radix skips a `disabled` item in keyboard nav and kills pointer events,
+                // so the reason below would be reachable by neither keyboard nor hover.
+                aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
+                aria-describedby={forkIndex === undefined ? `${reasonId}-fork` : undefined}
+                className={[forkIndex === undefined || busyAction !== null ? 'opacity-50' : '', forkIndex === undefined ? 'flex-col items-start gap-0.5' : ''].join(' ').trim() || undefined}
+                data-testid="fork-from-here"
+                onSelect={(e) => { e.preventDefault(); if (busyAction !== null) return; if (forkIndex === undefined) { onLoadEarlier?.(); return } void (async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } })() }}
+              >
+                <span className="flex items-center gap-2">
+                  {busyAction === 'fork' ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
+                  <span>{i18nT('pages.chat.assistantMessage.fork_conversation_from_here')}</span>
+                </span>
+                {forkIndex === undefined && (
+                  <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
+                    {i18nT('pages.chat.assistantMessage.needs_earlier_history')}
+                  </span>
+                )}
+              </DropdownMenuItem>
+            )}
+            {onPlanFromHere && (
+              <DropdownMenuItem
+                aria-disabled={forkIndex === undefined || busyAction !== null || undefined}
+                aria-describedby={forkIndex === undefined ? `${reasonId}-plan` : undefined}
+                className={[forkIndex === undefined || busyAction !== null ? 'opacity-50' : '', forkIndex === undefined ? 'flex-col items-start gap-0.5' : ''].join(' ').trim() || undefined}
+                data-testid="plan-from-here"
+                onSelect={(e) => { e.preventDefault(); if (busyAction !== null) return; if (forkIndex === undefined) { onLoadEarlier?.(); return } void (async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } })() }}
+              >
+                <span className="flex items-center gap-2">
+                  {busyAction === 'plan' ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <ClipboardList size={13} className="shrink-0" />}
+                  <span>{i18nT('pages.chat.assistantMessage.plan_from_here')}</span>
+                </span>
+                {forkIndex === undefined && (
+                  <span id={`${reasonId}-plan`} className="text-[11px] leading-4 text-muted pl-[21px]">
+                    {i18nT('pages.chat.assistantMessage.needs_earlier_history')}
+                  </span>
+                )}
+              </DropdownMenuItem>
+            )}
+            {text.length >= 50 && onSpeak && (
+              <DropdownMenuItem onSelect={() => onSpeak(content)}>
+                <Volume2 size={13} className="shrink-0" />
+                <span>{i18nT('pages.chat.assistantMessage.speak_message')}</span>
+              </DropdownMenuItem>
+            )}
+            {text.length > 20 && (
+              <DropdownMenuItem onSelect={() => setRawMode(!rawMode)}>
+                <Code size={13} className="shrink-0" />
+                <span>{rawMode ? i18nT('pages.chat.assistantMessage.switch_to_rendered_view') : i18nT('pages.chat.assistantMessage.switch_to_raw_markdown_view')}</span>
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        )}
         {onRegenerate && !slotRunning && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.regenerate')} aria-label={i18nT('pages.chat.assistantMessage.regenerate_response')} onClick={onRegenerate}><RefreshCw size={14} /></button>}
         {hasVariants && (() => {
           const curIdx = activeIdx

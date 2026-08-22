@@ -1272,7 +1272,7 @@ describe('chatSlice thunks', () => {
     await Promise.resolve()
 
     // The peer's transcript is still in flight...
-    expect(apiMock.chatSlotDetail).toHaveBeenCalledWith('peer')
+    expect(apiMock.chatSlotDetail).toHaveBeenCalledWith('peer', expect.any(Number))
     // ...yet the tab is already gone and focus already moved.
     expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('doomed')
     expect(chat(store).activeSlot).toBe('peer')

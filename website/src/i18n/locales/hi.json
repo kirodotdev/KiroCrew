@@ -6144,7 +6144,9 @@
       "next_match": "अगला मिलान",
       "no_results": "कोई परिणाम नहीं",
       "previous": "पिछला ({{mod}})",
-      "previous_match": "पिछला मिलान"
+      "previous_match": "पिछला मिलान",
+      "no_results_loaded_only": "लोड किए गए इतिहास में कोई परिणाम नहीं",
+      "results_loaded_only": "लोड किए गए इतिहास में {{current}}/{{total}} परिणाम"
     },
     "searchResultsList": {
       "assistant": "असिस्टेंट",
@@ -7762,13 +7764,8 @@
         "next_version": "अगला संस्करण",
         "plan_from_here": "यहाँ से योजना बनाएँ",
         "previous_version": "पिछला संस्करण",
-        "raw": "रॉ",
-        "raw_markdown": "रॉ markdown",
         "regenerate": "पुनः बनाएँ",
         "regenerate_response": "प्रतिक्रिया पुनः बनाएँ",
-        "rendered": "रेंडर",
-        "rendered_view": "रेंडर किया गया व्यू",
-        "speak": "बोलें",
         "speak_message": "संदेश बोलें",
         "steered": "निर्देशित",
         "switch_to_raw_markdown_view": "रॉ markdown व्यू पर स्विच करें",
@@ -7780,7 +7777,9 @@
         "turn_took_credits_cost": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए ({{cost}} API लागत)",
         "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)",
         "pin_message": "संदेश पिन करें",
-        "unpin_message": "संदेश अनपिन करें"
+        "unpin_message": "संदेश अनपिन करें",
+        "needs_earlier_history": "अनुपलब्ध — पहले पूरा पुराना इतिहास लोड करें",
+        "more_actions": "अधिक क्रियाएँ"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -8189,6 +8188,9 @@
         "select_file_hint": "ट्री से फ़ाइल चुनें, वह नए टैब में खुलेगी",
         "title": "फ़ाइलें",
         "tree_error": "फ़ाइल ट्री लोड नहीं हो सका"
+      },
+      "deepLink": {
+        "message_unavailable": "यह संदेश लोड किए गए इतिहास में अब उपलब्ध नहीं है।"
       }
     },
     "chatPage": {
