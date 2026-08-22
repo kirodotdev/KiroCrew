@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -153,31 +153,34 @@ async def api_memory_settings(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         # Read existing config, update memory section only
-        async with _get_config_lock():
-            path = config_path()
+        # Validated BEFORE the transaction: none of it reads the config, and a
+        # 400 should not have taken the lock or occupied a worker.
+        updates: dict[str, Any] = {}
+        if "history_idle_hours" in body:
             try:
-                data = read_config_for_update(path)
-            except ConfigReadError:
-                # Fail closed: writing back a {} baseline would drop every other setting.
-                logger.exception("Refusing to save memory settings: config unreadable")
-                return web.json_response(
-                    {"error": "failed to read config file", "code": "config_unreadable"},
-                    status=500,
-                )
-            mem = data.setdefault("memory", {})
-            if "history_idle_hours" in body:
-                try:
-                    mem["history_idle_hours"] = max(0.5, float(body["history_idle_hours"]))
-                except (ValueError, TypeError):
-                    return web.json_response({"error": "history_idle_hours must be numeric"}, status=400)
-            if "history_max_days" in body:
-                try:
-                    mem["history_max_days"] = max(7, int(body["history_max_days"]))
-                except (ValueError, TypeError):
-                    return web.json_response({"error": "history_max_days must be an integer"}, status=400)
-            if "migrated" in body:
-                mem["migrated"] = bool(body["migrated"])
-            write_config_atomically(path, data)
+                updates["history_idle_hours"] = max(0.5, float(body["history_idle_hours"]))
+            except (ValueError, TypeError):
+                return web.json_response({"error": "history_idle_hours must be numeric"}, status=400)
+        if "history_max_days" in body:
+            try:
+                updates["history_max_days"] = max(7, int(body["history_max_days"]))
+            except (ValueError, TypeError):
+                return web.json_response({"error": "history_max_days must be an integer"}, status=400)
+        if "migrated" in body:
+            updates["migrated"] = bool(body["migrated"])
+
+        def _apply(data: dict) -> None:
+            data.setdefault("memory", {}).update(updates)
+
+        try:
+            await _update_config_off_loop(_apply)
+        except ConfigReadError:
+            # Fail closed: writing back a {} baseline would drop every other setting.
+            logger.exception("Refusing to save memory settings: config unreadable")
+            return web.json_response(
+                {"error": "failed to read config file", "code": "config_unreadable"},
+                status=500,
+            )
         # Apply to running consolidator
         state: DashboardState = request.app["state"]
         if state.consolidator:
@@ -359,6 +362,42 @@ _faiss_install_lock = asyncio.Lock()
 _migrate_lock: asyncio.Lock | None = None
 
 
+async def _update_config_off_loop(mutate: Callable[[dict], None]) -> None:
+    """Run one config read-modify-write on a worker, under the config lock.
+
+    Every partial config update here has the same shape: read ``config.json``,
+    change one key, write the whole file back. All of it blocks -- the read and
+    the JSON parse, and then ``write_config_atomically``, which is a tmp-file
+    write plus a rename and can fsync. On the gateway loop that stalls every
+    other session for the duration, which is the class the repo has been fixing
+    site by site (#4118, #3803, #4550).
+
+    The WHOLE transaction crosses over, never just the read. Offloading the read
+    alone would put a suspension point between the read and the write-back while
+    the file is unguarded on disk: an external editor, another process, or a CLI
+    command landing in that gap would be silently overwritten by a write derived
+    from state nobody re-checked. Today that gap is zero because the sequence is
+    synchronous, and it stays zero here because the worker performs the whole
+    thing without yielding.
+
+    The lock is still held across the hop, so two coroutines cannot interleave
+    their transactions; ``read_config_for_update`` fails CLOSED on an unreadable
+    file (raising ``ConfigReadError`` rather than returning ``{}``), so the
+    caller aborts instead of writing a single-key config over the user's
+    settings. Callers handle that exception -- it is deliberately not swallowed
+    here, because what to tell the user differs per call site.
+    """
+
+    def _txn() -> None:
+        path = config_path()
+        data = read_config_for_update(path)
+        mutate(data)
+        write_config_atomically(path, data)
+
+    async with _get_config_lock():
+        await asyncio.to_thread(_txn)
+
+
 async def _set_migrated(value: bool) -> None:
     """Set memory.migrated in config.json.
 
@@ -369,21 +408,16 @@ async def _set_migrated(value: bool) -> None:
     closed (skip the flag, keep the file) and let a later boot retry once the
     user has repaired it, rather than silently clobbering their config.
     """
-    async with _get_config_lock():
-        path = config_path()
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                logger.warning(
-                    "config.json is unparseable; skipping memory.migrated write to "
-                    "avoid clobbering other settings — will retry next boot"
-                )
-                return
-        else:
-            data = {}
+    def _apply(data: dict) -> None:
         data.setdefault("memory", {})["migrated"] = value
-        write_config_atomically(path, data)
+
+    try:
+        await _update_config_off_loop(_apply)
+    except ConfigReadError:
+        logger.warning(
+            "config.json is unparseable; skipping memory.migrated write to "
+            "avoid clobbering other settings — will retry next boot"
+        )
 
 
 # ModelDownloadManager.status steps → the setup_step vocabulary the shipped
@@ -406,21 +440,7 @@ async def _write_embed_model_config(path: str, dim: int) -> None:
     config.json is left alone rather than clobbered with only these two keys,
     which would destroy every other recoverable setting.
     """
-    async with _get_config_lock():
-        cfg_path = config_path()
-        if cfg_path.exists():
-            try:
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except Exception:
-                logger.warning(
-                    "config.json is unparseable; refusing to write the embedding "
-                    "model path to avoid clobbering other settings"
-                )
-                raise ValueError(
-                    "config.json could not be parsed — fix it before changing the model"
-                )
-        else:
-            data = {}
+    def _apply(data: dict) -> None:
         memory = data.setdefault("memory", {})
         if path:
             memory["embed_model_path"] = path
@@ -438,7 +458,17 @@ async def _write_embed_model_config(path: str, dim: int) -> None:
         memory.pop("embed_model_id", None)
         if dim > 0:
             memory["embedding_dim"] = dim
-        write_config_atomically(cfg_path, data)
+
+    try:
+        await _update_config_off_loop(_apply)
+    except ConfigReadError as exc:
+        logger.warning(
+            "config.json is unparseable; refusing to write the embedding "
+            "model path to avoid clobbering other settings"
+        )
+        raise ValueError(
+            "config.json could not be parsed — fix it before changing the model"
+        ) from exc
 
 
 def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEventLoop") -> None:

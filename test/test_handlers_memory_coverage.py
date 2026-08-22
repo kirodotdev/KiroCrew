@@ -1577,3 +1577,178 @@ class TestMemoryGraphFailure:
         resp = await mem_mod.api_memory_graph(_make_request(state))
         assert resp.status == 500
         assert _body(resp) == {"error": "failed to build memory graph"}
+
+
+class TestConfigWritesRunOffTheEventLoop:
+    """The config read-modify-write must not run on the gateway loop.
+
+    Reading ``config.json``, parsing it, and writing it back through
+    ``write_config_atomically`` (a tmp-file write plus a rename, which can
+    fsync) is all synchronous file I/O. Inline it stalls every other session for
+    its duration -- the class the repo has been closing site by site (#4118,
+    #3803, #4550).
+
+    The load-bearing property is not merely "off the loop" but **the whole
+    transaction on ONE worker**. Offloading only the read would put a suspension
+    point between the read and the write-back while the file is unguarded on
+    disk, so an external editor or CLI landing in that gap would be silently
+    overwritten by a write derived from state nobody re-checked. The gap is zero
+    today because the sequence is synchronous, and these tests are what keep it
+    zero.
+
+    Every seam here is one BOTH shapes reach -- ``write_config_atomically`` is
+    called by the hand-rolled version too -- and each wrapper delegates to the
+    real function, so the assertions are about where real work ran rather than
+    about which helper happens to be patched.
+    """
+
+    def _instrument(self, monkeypatch, tmp_path, initial: str = '{"existing": "kept"}'):
+        import threading
+
+        cfg = tmp_path / "config.json"
+        cfg.write_text(initial, encoding="utf-8")
+
+        seen: dict[str, Any] = {"read": [], "write": [], "data": None}
+        real_read = mem_mod.read_config_for_update
+        real_write = mem_mod.write_config_atomically
+
+        def _read(path=None):
+            seen["read"].append(threading.get_ident())
+            return real_read(path)
+
+        def _write(path, data, **kwargs):
+            seen["write"].append(threading.get_ident())
+            seen["data"] = data
+            return real_write(path, data, **kwargs)
+
+        monkeypatch.setattr(mem_mod, "read_config_for_update", _read)
+        monkeypatch.setattr(mem_mod, "write_config_atomically", _write)
+        monkeypatch.setattr(mem_mod, "config_path", lambda: cfg)
+        return seen, cfg
+
+    @staticmethod
+    def _assert_one_worker(seen, loop_thread) -> None:
+        assert seen["write"], "the config write never ran"
+        assert seen["write"][0] != loop_thread, (
+            "the config write ran on the gateway loop, stalling every other "
+            "session for a tmp-write plus rename"
+        )
+        assert seen["read"], "the transaction did not read through the shared reader"
+        assert seen["read"][0] != loop_thread, "the config read ran on the gateway loop"
+        assert seen["read"][0] == seen["write"][0], (
+            "the read and the write ran on different threads, so the file was "
+            "unguarded between them -- an external writer landing in that gap "
+            "would be silently overwritten"
+        )
+
+    @pytest.mark.asyncio
+    async def test_set_migrated_runs_its_whole_transaction_on_one_worker(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        import threading
+
+        seen, cfg = self._instrument(monkeypatch, tmp_path)
+
+        await mem_mod._set_migrated(True)
+
+        self._assert_one_worker(seen, threading.get_ident())
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert on_disk["memory"]["migrated"] is True
+        assert on_disk["existing"] == "kept", "the rest of the config was dropped"
+
+    @pytest.mark.asyncio
+    async def test_settings_put_runs_its_whole_transaction_on_one_worker(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        import threading
+
+        seen, cfg = self._instrument(monkeypatch, tmp_path)
+        monkeypatch.setattr(mem_mod.KiroCrewConfig, "load", staticmethod(lambda: MagicMock()))
+
+        state = _make_state(consolidator=None)
+        req = _make_request(state, method="PUT", json_body={"history_max_days": 30})
+        resp = await mem_mod.api_memory_settings(req)
+
+        assert resp.status == 200
+        self._assert_one_worker(seen, threading.get_ident())
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert on_disk["memory"]["history_max_days"] == 30
+        assert on_disk["existing"] == "kept"
+
+    @pytest.mark.asyncio
+    async def test_embed_model_config_runs_its_whole_transaction_on_one_worker(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        import threading
+
+        seen, cfg = self._instrument(monkeypatch, tmp_path)
+
+        await mem_mod._write_embed_model_config("/models/e5.gguf", 768)
+
+        self._assert_one_worker(seen, threading.get_ident())
+        on_disk = json.loads(cfg.read_text(encoding="utf-8"))
+        assert on_disk["memory"]["embed_model_path"] == "/models/e5.gguf"
+        assert on_disk["memory"]["embedding_dim"] == 768
+        assert on_disk["existing"] == "kept"
+
+    # ── fail-closed contracts: preservation, green on both shapes ────────────
+
+    @pytest.mark.asyncio
+    async def test_set_migrated_still_refuses_to_write_an_unreadable_config(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """A ``{}`` baseline written back would destroy every other setting.
+
+        Driven with a genuinely unparseable file rather than a raising stub, so
+        it exercises the same refusal in either shape.
+        """
+        seen, cfg = self._instrument(monkeypatch, tmp_path, initial="{oops")
+
+        await mem_mod._set_migrated(True)  # must not raise: boot retries next time
+
+        assert seen["write"] == [], "an unreadable config was overwritten anyway"
+        assert cfg.read_text(encoding="utf-8") == "{oops", "the file was modified"
+
+    @pytest.mark.asyncio
+    async def test_settings_put_still_fails_closed_on_an_unreadable_config(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        seen, cfg = self._instrument(monkeypatch, tmp_path, initial="{oops")
+        monkeypatch.setattr(mem_mod.KiroCrewConfig, "load", staticmethod(lambda: MagicMock()))
+
+        state = _make_state(consolidator=None)
+        req = _make_request(state, method="PUT", json_body={"history_max_days": 30})
+        resp = await mem_mod.api_memory_settings(req)
+
+        assert resp.status == 500
+        assert json.loads(resp.body)["code"] == "config_unreadable"
+        assert seen["write"] == []
+        assert cfg.read_text(encoding="utf-8") == "{oops"
+
+    @pytest.mark.asyncio
+    async def test_embed_model_config_still_raises_on_an_unreadable_config(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        seen, cfg = self._instrument(monkeypatch, tmp_path, initial="{oops")
+
+        with pytest.raises(ValueError, match="could not be parsed"):
+            await mem_mod._write_embed_model_config("/models/e5.gguf", 768)
+
+        assert seen["write"] == []
+        assert cfg.read_text(encoding="utf-8") == "{oops"
+
+    @pytest.mark.asyncio
+    async def test_settings_put_rejects_a_bad_body_without_touching_the_config(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Validation runs ahead of the transaction; a 400 must not write."""
+        seen, cfg = self._instrument(monkeypatch, tmp_path)
+        monkeypatch.setattr(mem_mod.KiroCrewConfig, "load", staticmethod(lambda: MagicMock()))
+
+        state = _make_state(consolidator=None)
+        req = _make_request(state, method="PUT", json_body={"history_max_days": "abc"})
+        resp = await mem_mod.api_memory_settings(req)
+
+        assert resp.status == 400
+        assert seen["write"] == [], "a rejected body still wrote the config"
+        assert cfg.read_text(encoding="utf-8") == '{"existing": "kept"}'
