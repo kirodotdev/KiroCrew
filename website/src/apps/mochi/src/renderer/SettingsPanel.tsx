@@ -998,7 +998,7 @@ const McpSection: React.FC<{
   const [loading, setLoading] = React.useState(true)
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const [activeTab, setActiveTab] = React.useState<Record<string, 'chat' | 'bg'>>({})
-  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string }>>({})
+  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string; status?: string }>>({})
   const [refreshing, setRefreshing] = React.useState<string | null>(null)
   const [stagedConfigs, setStagedConfigs] = React.useState<Record<string, { agents: ('chat' | 'bg')[]; autoApprove: string[]; disabledTools: string[] }>>({})
 
@@ -1067,7 +1067,15 @@ const McpSection: React.FC<{
           // network hiccup wipe the chip groups a user is mid-way through
           // configuring -- the error message must ADD to the view, not clear it.
           if (result.errorCode && previous) {
-            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode } }
+            // Clear a stale `status` along with the merge: discoverMcpTools never
+            // returns `errorCode` and `status: 'needs_auth'` together, so a fresh
+            // errorCode here means THIS attempt was not needs_auth even if a PRIOR
+            // attempt was. Carrying the old status forward made the muted "Not
+            // verified" copy stick around and silently swallow a real failure that
+            // happened after auth was granted (e.g. a later probe error) --
+            // the two are conflated in the render check below, so unless
+            // status is cleared here, the display would ignore the new errorCode.
+            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode, status: undefined } }
           }
           return { ...prev, [serverName]: result }
         })
@@ -1150,9 +1158,16 @@ const McpSection: React.FC<{
           <span
             role="status"
             aria-live="polite"
-            style={{ fontSize: 11, color: 'var(--danger, #e5484d)' }}
+            style={{
+              fontSize: 11,
+              color: toolData?.status === 'needs_auth'
+                ? 'var(--text-muted)'
+                : 'var(--danger, #e5484d)',
+            }}
           >
-            {toolData?.errorCode ? mcpErrorText(toolData.errorCode) : ''}
+            {toolData?.status === 'needs_auth'
+              ? i18nT('pages.overview.mcpTab.not_verified')
+              : toolData?.errorCode ? mcpErrorText(toolData.errorCode) : ''}
           </span>
         </div>
         {/* Tool lists */}
