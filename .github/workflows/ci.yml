@@ -616,6 +616,31 @@ jobs:
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares
         # the POSIX job's line-continuation and env-interpolation syntax.
+        #
+        # --max-worker-restart=0 overrides setup.cfg's =2 for THIS job only.
+        # pytest-timeout has no SIGALRM on Windows, so it falls back to the
+        # thread method, which cannot fail a single test -- it terminates the
+        # whole worker. Every per-test timeout here therefore lands as
+        # "node down: Not properly terminated", and xdist then enters its
+        # node-replacement path, where #2803 documented a broken invariant (a
+        # node in assigned_work but absent from registered_collections). That
+        # path either dies with INTERNALERROR or, as in #4227, never completes
+        # the session and burns the full 40-minute cap. Refusing the
+        # replacement keeps us out of it: the first dead worker ends the run
+        # promptly with the victim named. setup.cfg keeps =2 deliberately, to
+        # absorb a one-off memory-pressure crash on a developer machine; a CI
+        # runner has no such need.
+        #
+        # Measured on windows-latest-equivalent pins (pytest 9.0.3, xdist
+        # 3.5.0, pytest-timeout 2.2.0) with one test forced past the timeout:
+        # =2 hung indefinitely with no summary and no victim named, and a
+        # single slow test took down TWO workers because the crashed item is
+        # re-dispatched to a live one. =0 exited 1 in 12s and named the test.
+        # The trade-off is deliberate: refusing the replacement abandons the
+        # work still pending on that shard, so a killed shard reports fewer
+        # tests than it collected. That is the right trade for CI -- the job
+        # is red either way, and a named red in 12 minutes beats an
+        # uninterpretable one at the 40-minute cap.
         shell: bash
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
@@ -624,12 +649,12 @@ jobs:
           if [ "$REDUCED" = "true" ]; then
             TARGETS=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
-            pytest -q -n auto --timeout=180 --no-cov \
+            pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
               --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
               "${TARGETS[@]}"
             exit 0
           fi
-          pytest -q -n auto --timeout=180 --no-cov \
+          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
         # namespace sandbox at all, so `userns_available()` is False and every
