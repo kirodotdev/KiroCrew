@@ -2097,12 +2097,13 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # gateway. On Windows treat them as non-fatal notes; POSIX keeps failing so
     # a real STT setup gap is still surfaced.
     stt_fatal = not platform_compat.IS_WINDOWS
+    stt_mark = "❌" if stt_fatal else "⚠️ "
 
     whisper_bin = _find_whisper(cfg.stt.whisper_path)
     if whisper_bin:
         print(f"  whisper:     ✅ {whisper_bin}")
     elif needs_whisper:
-        mark = "❌" if stt_fatal else "⚠️ "
+        mark = stt_mark
         print(f"  whisper:     {mark} not found")
         print(
             "               Fix: "
@@ -2122,7 +2123,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     if ffmpeg_bin:
         print(f"  ffmpeg:      ✅ {ffmpeg_bin}")
     elif needs_ffmpeg:
-        mark = "❌" if stt_fatal else "⚠️ "
+        mark = stt_mark
         print(f"  ffmpeg:      {mark} not found")
         print(
             "               Fix: "
@@ -2165,7 +2166,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         if parakeet_bin:
             print(f"  parakeet:    ✅ {parakeet_bin}")
         else:
-            mark = "❌" if stt_fatal else "⚠️ "
+            mark = stt_mark
             print(f"  parakeet:    {mark} parakeet-mlx not found")
             print("               Fix: pipx install parakeet-mlx  (Apple Silicon only)")
             if stt_fatal:
