@@ -570,6 +570,8 @@ async def test_reused_checkout_pull_never_repoints_origin(monkeypatch, tmp_path)
 
     monkeypatch.setattr(registry, "_clone_origin_url", _fake_origin)
 
+    monkeypatch.setattr(registry, "_read_clone_branch", lambda clone_dir: "main")
+
     spawned: list[list[str]] = []
 
     class _Proc:
@@ -632,6 +634,8 @@ async def test_failed_pull_aborts_instead_of_installing_stale_code(monkeypatch, 
         return "https://example.com/demo.git"
 
     monkeypatch.setattr(registry, "_clone_origin_url", _fake_origin)
+
+    monkeypatch.setattr(registry, "_read_clone_branch", lambda clone_dir: "main")
 
     class _Proc:
         pid = 4242
@@ -923,12 +927,15 @@ async def test_postscript_admission_rejection_rolls_back_preexisting_checkout(
 
 
 @pytest.mark.asyncio
-async def test_moveaside_reclone_treated_as_fresh_on_rejection(monkeypatch, tmp_path):
+async def test_moveaside_reclone_retained_not_restored_on_rejection(monkeypatch, tmp_path):
     """When the origin-mismatch gate moves an old checkout aside and
     fresh-clones, a rejection must delete the fresh re-clone (never preserve it
-    or reset it toward the moved-aside repository's commit) and RESTORE the
-    moved-aside previous checkout — otherwise the slot is left empty and the
-    user's old workspace is stranded as a sweeper-doomed .stale-* sibling."""
+    or reset it toward the moved-aside repository's commit) and must NOT
+    restore the moved-aside previous checkout: an origin-mismatch move-aside is
+    a DIFFERENT repository, so handing it back to the slot would give a later
+    retry the very tree this gate already refused. It stays RETAINED as a
+    `.stale-*` sibling (recoverable by hand, swept on a retention timer), which
+    is why only a same-origin/branch-drift move-aside is ever restored."""
     src = tmp_path / "app-sources" / "demoapp"
     (src / ".git").mkdir(parents=True)  # OLD checkout pre-exists (origin A)
     (src / "old-work.txt").write_text("precious", encoding="utf-8")
@@ -937,7 +944,9 @@ async def test_moveaside_reclone_treated_as_fresh_on_rejection(monkeypatch, tmp_
     monkeypatch.setattr(registry, "_resolved_clone_commit", lambda root: "a" * 40)
 
     async def _fake_clone(git_url, branch, dest, log_lines, **kwargs):
-        # Simulate the origin-mismatch move-aside + fresh re-clone.
+        # Simulate the origin-mismatch move-aside + fresh re-clone. Only
+        # `pending_cleanup` is populated, never `restorable_stale` — an
+        # origin-mismatch move is never restorable.
         moved = dest.with_name("demoapp.stale-deadbeef")
         dest.rename(moved)
         cleanup = kwargs.get("pending_cleanup")
@@ -974,11 +983,13 @@ async def test_moveaside_reclone_treated_as_fresh_on_rejection(monkeypatch, tmp_
     assert result["ok"] is False
     # No rollback is attempted toward the moved-aside repo's commit ...
     assert not any(cmd[:3] == ["git", "reset", "--keep"] for cmd in spawned)
-    # ... the rejected re-clone is gone, and the PREVIOUS checkout is back.
-    assert src.exists()
-    assert (src / "old-work.txt").read_text(encoding="utf-8") == "precious"
-    assert not (src / "app.json").exists()  # the rejected clone's manifest is gone
-    assert not src.with_name("demoapp.stale-deadbeef").exists()  # moved back, not stranded
+    # ... the rejected re-clone is gone from the active slot ...
+    assert not src.exists()
+    # ... and the ORIGIN-mismatched previous checkout is retained, not
+    # restored into the slot the gate just refused it for.
+    stale = src.with_name("demoapp.stale-deadbeef")
+    assert stale.exists()
+    assert (stale / "old-work.txt").read_text(encoding="utf-8") == "precious"
 
 
 @pytest.mark.asyncio
@@ -1636,7 +1647,11 @@ async def test_a_monorepo_subdirectory_is_built_not_the_clone_root(tmp_path, mon
     monkeypatch.setattr(registry, "sel", lambda: MagicMock())
 
     await registry._clone_build_app_locked(
-        "https://example.invalid/r.git", "my-tool", [], subdirectory="apps/my-tool"
+        "https://example.invalid/r.git",
+        "my-tool",
+        [],
+        subdirectory="apps/my-tool",
+        pending_cleanup=[],
     )
 
     assert captured, "the build must be attempted"
@@ -1669,7 +1684,11 @@ async def test_a_traversing_subdirectory_does_not_choose_the_build_dir(tmp_path,
     monkeypatch.setattr(registry, "sel", lambda: MagicMock())
 
     result = await registry._clone_build_app_locked(
-        "https://example.invalid/r.git", "evil", [], subdirectory="../../etc"
+        "https://example.invalid/r.git",
+        "evil",
+        [],
+        subdirectory="../../etc",
+        pending_cleanup=[],
     )
 
     assert result["ok"] is False

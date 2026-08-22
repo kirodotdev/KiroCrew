@@ -784,15 +784,13 @@ class TestRegistryAndProvenanceBoundary:
             return item
 
         monkeypatch.setattr(registry, "_load_external_registries", _no_external_registries)
-        # The official catalog is a THIRD inventory source, so this test has to
-        # isolate it exactly as it already isolates the seed and the external
-        # registries. Left unpatched it reaches the live document over the
-        # network, and the assertion below would then depend on what the store
-        # currently ships. Inventory comes from a fresh fetch, so patching this
-        # source covers both the listing and the install-resolution paths.
-        monkeypatch.setattr(registry.official_catalog, "fetch_inventory_entries", lambda: [])
         monkeypatch.setattr(registry, "list_installed_apps", lambda: [])
         monkeypatch.setattr(registry, "_resolve_manifest", _identity_manifest)
+        # Isolate from the official catalog: list_registry now materialises its
+        # git entries as installable rows via a fresh network fetch. Without this
+        # the listing picks up whatever the live catalog serves, which is neither
+        # deterministic nor what this test is about.
+        monkeypatch.setattr(registry.official_catalog, "fetch_inventory_entries", lambda: [])
         monkeypatch.setattr(execution, "third_party_execution_allowed", lambda: False)
 
         async def _unexpected_spawn(*args, **kwargs):
