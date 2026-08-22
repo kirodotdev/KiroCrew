@@ -128,7 +128,7 @@ class KnowledgeWatcher:
             # every interval, and an unanticipated persistent error would
             # otherwise emit a full traceback forever.
             sig = f"{type(exc).__name__}:{exc}"
-            if sig != getattr(self, "_discover_error_sig", None):
+            if sig != self._discover_error_sig:
                 self._discover_error_sig = sig
                 logger.warning("Knowledge drop-folder discovery failed", exc_info=True)
             else:
@@ -173,7 +173,7 @@ class KnowledgeWatcher:
                 )
         except Exception as exc:
             sig = f"{type(exc).__name__}:{exc}"
-            if sig != getattr(self, "_project_docs_error_sig", None):
+            if sig != self._project_docs_error_sig:
                 self._project_docs_error_sig = sig
                 logger.warning("Knowledge project-docs discovery failed", exc_info=True)
             else:
