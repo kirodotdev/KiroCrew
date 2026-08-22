@@ -17,7 +17,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from tmpdir_helpers import short_tmp_base
@@ -85,6 +85,15 @@ class TestSafeReadSnapshot:
         f = tmp_path / "file.txt"
         f.write_text("hello\nworld\n")
         assert _safe_read_snapshot(str(f)) == "hello\nworld\n"
+
+    def test_reads_with_explicit_utf8_encoding(self, tmp_path: Path):
+        f = tmp_path / "unicode.txt"
+        f.write_text("こんにちは", encoding="utf-8")
+
+        with patch.object(Path, "read_text", return_value="こんにちは") as read_text:
+            assert _safe_read_snapshot(str(f)) == "こんにちは"
+
+        read_text.assert_called_once_with(encoding="utf-8", errors="replace")
 
     def test_returns_none_for_missing_file(self, tmp_path: Path):
         assert _safe_read_snapshot(str(tmp_path / "ghost")) is None

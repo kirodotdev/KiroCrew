@@ -153,6 +153,39 @@ async def test_untracked_file_in_git_repo(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
+async def test_git_output_is_decoded_as_utf8(tmp_path):
+    """Every git text subprocess opts out of the Windows locale code page."""
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    (tmp_path / "init.txt").write_text("x")
+    subprocess.run(["git", "add", "init.txt"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+    target = tmp_path / "unicode.txt"
+    target.write_text("こんにちは\n", encoding="utf-8")
+
+    calls = []
+    original_run = subprocess.run
+
+    def spy_run(cmd, **kwargs):
+        calls.append(kwargs)
+        return original_run(cmd, **kwargs)
+
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=spy_run):
+        response = await api_file_diff(_req(str(target)))
+
+    body = json.loads(response.body)
+    assert body["status"] == "untracked"
+    assert "こんにちは" in body["diff"]
+    assert calls
+    assert all(call.get("text") is True for call in calls)
+    assert all(call.get("encoding") == "utf-8" for call in calls)
+    assert all(call.get("errors") == "replace" for call in calls)
+
+
+@pytest.mark.asyncio
+@requires_git
 async def test_textconv_hardening(tmp_path):
     """Git commands use textconv/filter hardening flags."""
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)

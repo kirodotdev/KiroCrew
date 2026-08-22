@@ -2480,35 +2480,41 @@ async def api_file_diff(request: web.Request) -> web.Response:
         try:
             subprocess.run(
                 [*_git, "rev-parse", "--git-dir"],
-                cwd=dirpath, capture_output=True, timeout=5, check=True, env=_env,
+                cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=5, check=True, env=_env,
             )
             # Get HEAD content
             root = subprocess.run(
                 [*_git, "rev-parse", "--show-toplevel"],
-                cwd=dirpath, capture_output=True, text=True, timeout=5, env=_env,
+                cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=5, env=_env,
             ).stdout.strip()
             rel = os.path.relpath(raw_path, root)
             head = subprocess.run(
                 [*_git, "show", "--no-textconv", f"HEAD:{rel}"],
-                cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
+                cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10, env=_env,
             )
             original = head.stdout if head.returncode == 0 else ""
             # Get diff
             r = subprocess.run(
                 [*_git, "diff", "--no-textconv", "--no-ext-diff", "HEAD", "--", raw_path],
-                cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
+                cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10, env=_env,
             )
             diff = r.stdout.strip() if r.returncode == 0 else ""
             if not diff:
                 # Check for untracked file
                 r2 = subprocess.run(
                     [*_git, "status", "--porcelain", "--", raw_path],
-                    cwd=dirpath, capture_output=True, text=True, timeout=5, env=_env,
+                    cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=5, env=_env,
                 )
                 if r2.returncode == 0 and r2.stdout.strip().startswith("??"):
                     r3 = subprocess.run(
                         [*_git, "diff", "--no-textconv", "--no-ext-diff", "--no-index", "/dev/null", raw_path],
-                        cwd=dirpath, capture_output=True, text=True, timeout=10, env=_env,
+                        cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=10, env=_env,
                     )
                     diff = r3.stdout if r3.stdout else ""
                     return {"diff": diff, "original": "", "status": "untracked"}

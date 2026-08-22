@@ -792,7 +792,10 @@ def _safe_read_snapshot(path: str) -> str | None:
         p = Path(validated)
         if not p.is_file():
             return None
-        return _truncate_snapshot(p.read_text(errors="replace"))
+        # Git and agent-authored files are UTF-8 regardless of the host's
+        # preferred code page. Passing the encoding matters on Windows, where
+        # Path.read_text() otherwise defaults to a legacy locale such as cp1252.
+        return _truncate_snapshot(p.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return None
 
