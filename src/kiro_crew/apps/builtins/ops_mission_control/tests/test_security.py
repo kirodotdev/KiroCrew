@@ -482,26 +482,31 @@ class TestTheScheduleIsWriteProtectedButReadable(unittest.TestCase):
         verb-independent, because a narrow allowlist is bypassable by a quoted redirect, `cp`,
         or any novel write verb.
 
-        Spelled with POSIX separators, which is what the gate matches and what a bash command
-        carries. A native `WindowsPath` renders all-backslash and matches nothing — a
-        whole-gate limitation on `security`'s home-anchored patterns, not specific to this
-        leaf, so pinning it here would assert a fix this file does not own.
+        Both spellings are asserted, because the gate now recognises both. The HOME FORMS
+        (`~`, `$HOME`, `/home/<user>`, `/Users/<user>`) are what the string matcher has always
+        anchored on. `self._path()` is the RESOLVED path — under test isolation, and on any
+        install with a custom `KIROCREW_HOME` (a pod, `dev-backend.sh`), it carries neither a
+        home spelling nor a crew prefix, so it used to reach the gate as an ordinary path.
 
-        Iterates the HOME FORMS rather than `self._path()`, the same way the incidents-index
-        equivalent below does, and the difference is load-bearing rather than stylistic. The
-        bash gate is a STRING matcher over `_CREW_HOME_PREFIXES` (`.kiro/crew`, `.kirocrew`),
-        so it recognises a command only by the home spelling the command carries. The tool
-        gate on the two tests above is not: `is_sensitive_write_path` resolves through
-        `config_dir()`, so it DOES follow a non-default `KIROCREW_HOME`.
-
-        That asymmetry means a custom-`KIROCREW_HOME` install (a pod, `dev-backend.sh`) has
-        this file protected against the agent's file tools but not against a bash redirect
-        naming the resolved path. It is a `security` gate limitation, not this app's, so it is
-        recorded here rather than half-fixed at this leaf. Handing `self._path()` to the bash
-        gate does not test it either way: under test isolation that path is a tmp dir, so the
-        assertion passed only while the suite was reading the operator's REAL home, and it
-        reported a guarantee it had not checked.
+        That gap was the asymmetry this test previously recorded rather than pinned: the tool
+        gate on the two tests above resolves through `config_dir()` and followed the override,
+        while the shell gate did not, leaving this file protected against the agent's file
+        tools and reachable by a bash redirect naming its real path. `security` now anchors
+        the resolved data home as well, so the resolved form belongs in the assertion — and
+        keeping it here is what stops the two gates drifting apart again at this leaf.
         """
+        for path in (self._path(),):
+            for cmd in (
+                f"echo 'who: attacker' > {path}",
+                f"cp /tmp/evil.yaml {path}",
+                f"tee {path}",
+                f"""python -c "open('{path}','w').write('x')" """,
+            ):
+                with self.subTest(resolved=cmd[:40]):
+                    self.assertTrue(
+                        security.is_sensitive_bash_command(cmd),
+                        f"shell write to the RESOLVED path not blocked: {cmd!r}",
+                    )
         for home in ("~", "$HOME", "/home/alice", "/Users/alice"):
             path = f"{home}/.kiro/crew/apps/ops-mission-control/data/rotation.yaml"
             for cmd in (
