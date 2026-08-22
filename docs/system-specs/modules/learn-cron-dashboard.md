@@ -466,6 +466,26 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   during an operation, every three seconds for a waiting non-owner, and every
   30 seconds otherwise; those polls are now free reads that render whatever the
   latch says.
+  **A probe that TIMED OUT is a third condition, not a missing binary.**
+  `probe_timed_out` on the snapshot separates "the spawn never answered" from
+  both "no binary on disk" and "the sandbox refused the spawn". It is its own
+  field rather than a reuse of `sandbox_unavailable` because a timeout raises no
+  typed sandbox failure, so every `sandbox_*` field is legitimately empty, and a
+  consumer that maps `sandbox_unavailable` to a userns remedy must not be handed a
+  slow filesystem to fix with an AppArmor profile. A timeout with a runnable
+  candidate reports `installed=True` (the binary was stat'd; verification is what
+  failed) and `authenticated=False` as UNKNOWN, since `whoami` runs through the
+  same probe path and is never reached on such a host.
+  **Known interim gap:** `KiroPrerequisiteGate.tsx` keys only on
+  `sandbox_unavailable` / `installed` / `authenticated`, so `probe_timed_out` has
+  no UI consumer yet. On a FIRST-RUN host (`initial_setup_complete=false`) a
+  timed-out probe therefore falls past the `sandbox_unavailable` intercept into
+  the generic setup shell, which highlights signing in — a remedy that cannot
+  speed up a slow probe. That is not worse than the state it replaced (the same
+  host previously read `installed=false` and was told to install a CLI it already
+  has), but it is still wrong, and the field is the carrier for the intercept that
+  closes it. An established install is unaffected: `initial_setup_complete=true`
+  returns before either branch.
   **A mid-session logout is discovered by the ACP attempt, not by a probe.**
   Because the latch can be arbitrarily stale, turn-starting paths do **not**
   gate on it: `reject_if_kiro_not_ready()` is advisory and always admits (its

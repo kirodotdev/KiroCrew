@@ -370,6 +370,17 @@ class PrerequisiteStatus:
     # only show the raw errno, which is the dead end reported in issue #1660: the
     # probe knows the fix is an AppArmor profile and the user cannot tell.
     sandbox_remedy: str = ""
+    # The verification probe hit ``_PROBE_TIMEOUT_SECS`` instead of answering. A
+    # THIRD condition, distinct from both a missing binary and a sandbox refusal:
+    # the spawn was accepted and raised no typed failure, so every ``sandbox_*``
+    # field stays empty and none of them can carry it. Without this the timeout
+    # collapsed into bare ``installed=False`` with all ``sandbox_*`` empty — a
+    # combination that does not merely fail to help, it actively rules out the true
+    # cause and sends the operator to reinstall or re-login, neither of which can
+    # work on a host whose CLI is installed, signed in, and serving turns the whole
+    # time (issue #4577: 4081 SEL ``probe_version`` events, every one
+    # ``outcome=failed error=timeout``, on exactly such a host).
+    probe_timed_out: bool = False
     # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
     # requires these on disk, not merely a viable binary and a good ``whoami``:
     # without them kiro-cli answers every ``session/set_mode`` with
@@ -2107,6 +2118,68 @@ class KiroPrerequisiteService:
                         sandbox_failure_kind=kind,
                         sandbox_detail=detail,
                         sandbox_remedy=remedy,
+                    )
+                    self._last_probe_at = self._clock()
+                    self._has_probed = True
+                    return self._status
+                if (
+                    version_probe is not None
+                    and version_probe.timed_out
+                    and candidate_runnable
+                ):
+                    # A probe that never answered is not evidence of absence. The
+                    # spawn was accepted and raised no typed failure, so the
+                    # sandbox branch above cannot claim it, and falling through to
+                    # the bare default below asserts installed=False about a binary
+                    # this function just confirmed is present and executable.
+                    #
+                    # Reported as the SAME shape as a sandbox refusal, for the same
+                    # reason: present on disk, verification is what failed. The
+                    # timeout gets its own flag rather than reusing sandbox_* --
+                    # nothing about the sandbox failed here, and a caller that keys
+                    # a userns remedy off sandbox_unavailable must not be handed a
+                    # slow filesystem to fix with an AppArmor profile.
+                    #
+                    # WARNING on the TRANSITION into the condition, DEBUG while it
+                    # persists. This branch runs on EVERY probe, and on an affected
+                    # host that is one probe per ~40s (the readiness gate's 30s
+                    # staleness window plus this probe's own 10s timeout), so ~90
+                    # lines/hour into the dashboard's 1000-entry log ring. A line that
+                    # reports a slow host must not be the thing that evicts the rest of
+                    # the evidence about it.
+                    #
+                    # The latched status IS the transition record, so this needs no
+                    # timestamp and no re-warn floor: every probe rewrites
+                    # ``self._status``, so a recovery re-arms the warning by itself and
+                    # the next timeout speaks up. The dashboard gate needs the extra
+                    # floor only because it has no object to hang state on and its
+                    # clear path depends on a caller happening to observe the recovery.
+                    if self._status.probe_timed_out:
+                        logger.debug(
+                            "Kiro CLI at %s still unverified: probe timed out again "
+                            "after %ss (already reported)",
+                            first_candidate,
+                            _PROBE_TIMEOUT_SECS,
+                        )
+                    else:
+                        logger.warning(
+                            "Kiro CLI at %s is present and executable but could not be "
+                            "verified: the probe timed out after %ss. The CLI may be "
+                            "installed and signed in; this is not evidence it is "
+                            "missing. Further timeouts log at DEBUG until it recovers.",
+                            first_candidate,
+                            _PROBE_TIMEOUT_SECS,
+                        )
+                    self._status = PrerequisiteStatus(
+                        platform=_platform_label(self._platform),
+                        installed=True,
+                        # Unknown, not false: whoami runs through the same probe
+                        # path, and on this host it is never even reached.
+                        authenticated=False,
+                        ready=False,
+                        repair_required=False,
+                        initial_setup_complete=self._initial_setup_complete,
+                        probe_timed_out=True,
                     )
                     self._last_probe_at = self._clock()
                     self._has_probed = True
