@@ -2656,6 +2656,34 @@ def _clean_id_list(raw: object, is_valid: Callable[[str], bool], label: str) -> 
     return out
 
 
+async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
+    """Run the blocking ``.env`` write on a worker, drained under the config lock.
+
+    Every caller holds ``_get_config_lock()`` across this, and a thread cannot be
+    cancelled -- so a bare ``await asyncio.to_thread(...)`` lets a cancelled
+    request (a client disconnecting mid-save, gateway shutdown) unwind the
+    ``async with`` while the worker is still rewriting ``.env``. The next channel
+    save then enters the critical section against a file still being replaced and
+    writes it back from lines it read before the first write landed, discarding
+    whichever credential the other save was persisting.
+
+    Shielding and draining puts the lock release after the worker instead. It
+    cannot change WHETHER the write happens -- the thread runs to completion
+    either way -- so the only thing it decides is whether the lock outlives it.
+    The cancellation is re-raised, never swallowed.
+
+    All six channel saves go through here. The offload itself is already in
+    place on every one of them; the bare offload is what leaves the hole, so
+    covering a subset would leave the same window open in the rest.
+    """
+    fut = asyncio.ensure_future(asyncio.to_thread(_write_env_updates, updates))
+    try:
+        await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        await asyncio.wait([fut])
+        raise
+
+
 def _write_env_updates(updates: dict[str, str | None]) -> None:
     """Update select keys in config_dir/.env, preserving comments and order.
 
@@ -2669,6 +2697,16 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     lockdown fails. ``restrict_on_error="warn"`` keeps this writer's contract:
     a host where the lockdown cannot be applied must not abort a token save
     that already succeeded.
+
+    CALLER CONTRACT: blocking, and every caller is an async request handler
+    holding ``_get_config_lock()``, so each one must reach this through
+    ``_write_env_off_loop`` rather than ``asyncio.to_thread`` directly --
+    the drain there is what keeps the lock from being released mid-write.
+    Offload the WHOLE call, never a part of it: the read-modify-write is one
+    transaction, and a suspension point between the read and the rename would
+    let a concurrent writer's keys be dropped by a write derived from lines
+    nobody re-read. ``test/test_channel_env_write_off_loop.py`` pins both
+    properties for all six channels.
     """
     from kiro_crew.config.loader import env_path  # noqa: F811
 
@@ -2940,7 +2978,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
-        await asyncio.to_thread(_write_env_updates, env_updates)
+        await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state.
         # load_credentials() lets os.environ win over .env, so without this a
         # replaced/cleared token would keep being reported as installed by GET
@@ -3357,7 +3395,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
-        await asyncio.to_thread(_write_env_updates, env_updates)
+        await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
@@ -3697,7 +3735,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
-        await asyncio.to_thread(_write_env_updates, env_updates)
+        await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
@@ -4294,7 +4332,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         if env_updates:
             # Off-loop: restrict_to_owner spawns whoami/icacls subprocesses on
             # Windows, which would stall the gateway loop if run inline.
-            await asyncio.to_thread(_write_env_updates, env_updates)
+            await _write_env_off_loop(env_updates)
             for key, new_val in env_updates.items():
                 if new_val is None:
                     os.environ.pop(key, None)
@@ -4507,7 +4545,7 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
         if env_updates:
             # Off-loop: on Windows the owner-only lockdown shells out to icacls,
             # which must not block the event loop.
-            await asyncio.to_thread(_write_env_updates, env_updates)
+            await _write_env_off_loop(env_updates)
             # Keep the live process environment in sync (see the Slack save path).
             for key, new_val in env_updates.items():
                 if new_val is None:
@@ -5051,7 +5089,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
-        await asyncio.to_thread(_write_env_updates, env_updates)
+        await _write_env_off_loop(env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
