@@ -4908,6 +4908,7 @@
       "more_actions": "Другие действия"
     },
     "chatInput": {
+      "drop_to_attach": "Отпустите, чтобы прикрепить",
       "add_files_options": "Добавить файлы и параметры",
       "agent": "Агент: {{name}}",
       "allow_once": "Разрешить один раз",

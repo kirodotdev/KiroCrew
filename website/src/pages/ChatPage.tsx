@@ -105,6 +105,7 @@ import ModelEffortDropdown from '../components/ModelEffortDropdown'
 
 import ChatInput from '../components/ChatInput'
 import ErrorNotice from '../components/ErrorNotice'
+import ChatDropOverlay, { useChatFileDrop } from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
@@ -1705,7 +1706,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
   }, [])
 
-  const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   // Staged folder chips DERIVE from the composer text: an `@rel/` token is the
@@ -3077,8 +3077,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (slot === activeSlotRef.current) setInput(optimized)
   }, [saveDrafts])
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setDragOver(false)
+  const handleDrop = useCallback((dataTransfer: DataTransfer) => {
     // Classify BEFORE acting (issue #743): a dropped folder inserts its path
     // into the composer as an `@rel/` token — the same reference the @-picker
     // stages — instead of taking the upload route, which cannot ingest a
@@ -3086,7 +3085,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // plain browser no real path is visible, so classifyDrop leaves folders
     // on the upload route there (today's behaviour) rather than inserting a
     // misleading bare name.
-    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    const { files, dirPaths } = classifyDrop(dataTransfer)
     if (dirPaths.length) {
       // Short relative form when the folder lies inside the project root,
       // absolute otherwise — exactly the picker's own fallback convention.
@@ -3107,6 +3106,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       uploadFiles(files)
     }
   }, [uploadFiles])
+  const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
 
   // Scroll to bottom helper — delegates to the virtualizer (single controller).
   const scrollBottom = useCallback((instant: boolean = false) => {
@@ -6592,12 +6592,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           </div>
         ) : (
           <SearchHighlightContext.Provider value={searchCtxValue}>
-          <div className="relative flex flex-col flex-1 min-h-0">
+          <div className="relative flex flex-col flex-1 min-h-0" {...dropTargetProps}>
             {/* Claude-style title row — absolute overlay, solid top fading to transparent.
                 Inset on the right by the 6px scrollbar width (see ::-webkit-scrollbar
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
-            <div className="absolute top-0 left-0 right-1.5 z-10 pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            <div className="absolute top-0 left-0 right-1.5 z-[45] pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               {/* The row's left padding GLIDES between its open (20px) and
                   collapsed (60px, clearing the stationary toggle + divider)
                   values on the same 320ms curve as the panel — an instant
@@ -6739,6 +6739,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 />
               )}
             </div>
+            <ChatDropOverlay active={dragOver} />
             {slotLoading && (
               <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
                 <Loader size={20} className="animate-spin text-muted" />
@@ -7213,10 +7214,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
               isMac={isMac}
-              onDrop={handleDrop}
-              dragOver={dragOver}
-              onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
-              onDragLeave={e => { if (e.currentTarget === e.target) setDragOver(false) }}
+              onDrop={dropTargetProps.onDrop}
+              onDragOver={dropTargetProps.onDragOver}
+              onDragLeave={dropTargetProps.onDragLeave}
               voiceRecording={voiceOwned && voice.recording}
               voiceTranscribing={voiceOwned && voice.transcribing}
               voiceError={voice.error}

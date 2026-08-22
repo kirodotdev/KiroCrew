@@ -4689,6 +4689,7 @@
       "more_actions": "추가 작업"
     },
     "chatInput": {
+      "drop_to_attach": "놓아서 첨부",
       "add_files_options": "파일 및 옵션 추가",
       "agent": "에이전트: {{name}}",
       "allow_once": "한 번만 허용",

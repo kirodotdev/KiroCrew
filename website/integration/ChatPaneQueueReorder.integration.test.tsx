@@ -28,6 +28,7 @@ vi.mock('framer-motion', () => ({
   },
   useMotionValue: () => ({ set: vi.fn(), get: () => 0, jump: vi.fn() }),
   useSpring: () => ({ set: vi.fn(), get: () => 0, jump: vi.fn() }),
+  useReducedMotion: () => false,
 }))
 
 const SLOT = 'pane-reorder-test'

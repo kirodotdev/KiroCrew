@@ -4762,6 +4762,7 @@
       "more_actions": "और कार्रवाइयां"
     },
     "chatInput": {
+      "drop_to_attach": "छोड़कर अटैच करें",
       "add_files_options": "फ़ाइलें और विकल्प जोड़ें",
       "agent": "एजेंट: {{name}}",
       "allow_once": "एक बार अनुमति दें",

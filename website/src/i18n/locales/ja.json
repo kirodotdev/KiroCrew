@@ -4689,6 +4689,7 @@
       "more_actions": "その他の操作"
     },
     "chatInput": {
+      "drop_to_attach": "ドロップして添付",
       "add_files_options": "ファイルとオプションを追加",
       "agent": "エージェント：{{name}}",
       "allow_once": "1 回のみ許可",

@@ -8,6 +8,7 @@ import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
+import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
@@ -75,7 +76,6 @@ export default function ChatPane({
   const connectionsUiOn = useConnectionsUiEnabled()
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
-  const [dragOver, setDragOver] = useState(false)
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -259,12 +259,12 @@ export default function ChatPane({
   // appended — the pane does not track a live composer caret. In a plain
   // browser no real path is visible, so classifyDrop leaves folders on the
   // upload route there (today's behaviour).
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+  const handleDrop = useCallback((dataTransfer: DataTransfer) => {
+    const { files, dirPaths } = classifyDrop(dataTransfer)
     if (dirPaths.length) setInput((prev) => spliceDirTokens(prev, null, dirPaths).value)
     if (files.length) uploadFiles(files)
   }, [uploadFiles])
+  const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
 
   /** Put a payload the server never accepted back into the composer.
    *
@@ -481,10 +481,11 @@ export default function ChatPane({
            name: classes here are styling and can churn without anyone
            auditing focus behaviour. */
         data-chat-pane={focused ? 'focused' : ''}
-        className={`flex flex-col h-full min-h-0 rounded-lg overflow-hidden bg-bg border transition-colors ${focused ? 'border-accent' : 'border-border'}`}
+        {...dropTargetProps}
+        className={`relative flex flex-col h-full min-h-0 rounded-lg overflow-hidden bg-bg border transition-colors ${focused ? 'border-accent' : 'border-border'}`}
         style={{ '--mc-content-width': '100%' } as React.CSSProperties}
       >
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
+        <div className="relative z-50 flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
           {parentKey && (
@@ -513,6 +514,8 @@ export default function ChatPane({
             </button>
           )}
         </div>
+
+        <ChatDropOverlay active={dragOver} />
 
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
         {/* overflow-x-hidden: `overflow-y-auto` alone leaves overflow-x at
@@ -590,10 +593,9 @@ export default function ChatPane({
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}
-          onDrop={handleDrop}
-          dragOver={dragOver}
-          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
-          onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false) }}
+          onDrop={dropTargetProps.onDrop}
+          onDragOver={dropTargetProps.onDragOver}
+          onDragLeave={dropTargetProps.onDragLeave}
         />
 
         {/* Agent picker portal — anchored to the input-bar agent button. */}

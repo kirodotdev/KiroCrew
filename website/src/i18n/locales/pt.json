@@ -4835,6 +4835,7 @@
       "more_actions": "Mais ações"
     },
     "chatInput": {
+      "drop_to_attach": "Solte para anexar",
       "add_files_options": "Adicionar arquivos e opções",
       "agent": "Agente: {{name}}",
       "allow_once": "Permitir uma vez",

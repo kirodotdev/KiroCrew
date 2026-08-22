@@ -4689,6 +4689,7 @@
       "more_actions": "更多操作"
     },
     "chatInput": {
+      "drop_to_attach": "松开即可附加",
       "add_files_options": "添加文件与选项",
       "agent": "代理：{{name}}",
       "allow_once": "允许一次",

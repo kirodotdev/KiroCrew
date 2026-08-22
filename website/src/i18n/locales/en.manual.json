@@ -1313,6 +1313,7 @@
       "terminal": "Terminal"
     },
     "chatInput": {
+      "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
       "branch": "Branch: {{branch}}",
